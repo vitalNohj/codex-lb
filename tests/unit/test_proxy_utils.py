@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from app.core.openai.parsing import parse_sse_event
 from app.core.clients.proxy import _build_upstream_headers, filter_inbound_headers
+from app.core.openai.parsing import parse_sse_event
 
 pytestmark = pytest.mark.unit
 

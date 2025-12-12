@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 DEFAULT_EMAIL = "unknown@example.com"
 DEFAULT_PLAN = "unknown"
 

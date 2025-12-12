@@ -9,12 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import SessionLocal, get_session
 from app.modules.accounts.repository import AccountsRepository
-from app.modules.request_logs.repository import RequestLogsRepository
-from app.modules.usage.repository import UsageRepository
 from app.modules.accounts.service import AccountsService
 from app.modules.oauth.service import OauthService
 from app.modules.proxy.service import ProxyService
+from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.request_logs.service import RequestLogsService
+from app.modules.usage.repository import UsageRepository
 from app.modules.usage.service import UsageService
 
 

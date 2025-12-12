@@ -11,7 +11,6 @@ from app.core.auth import (
     fallback_account_id,
     parse_auth_json,
 )
-
 from app.core.crypto import TokenEncryptor
 from app.core.usage.logs import cost_from_log
 from app.core.utils.time import from_epoch_seconds, to_utc_naive, utcnow

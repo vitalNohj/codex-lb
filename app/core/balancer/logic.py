@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Iterable
 
-from app.core.utils.retry import parse_retry_after
 from app.core.balancer.types import UpstreamError
+from app.core.utils.retry import parse_retry_after
 from app.db.models import AccountStatus
 
 PERMANENT_FAILURE_CODES = {

@@ -13,8 +13,8 @@ from app.core.balancer import (
 from app.core.balancer.types import UpstreamError
 from app.db.models import Account, AccountStatus
 from app.modules.accounts.repository import AccountsRepository
-from app.modules.usage.repository import UsageRepository
 from app.modules.proxy.usage_updater import UsageUpdater
+from app.modules.usage.repository import UsageRepository
 
 
 @dataclass

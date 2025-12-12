@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from app.core.crypto import TokenEncryptor
 from app.core.auth.refresh import RefreshError, refresh_access_token, should_refresh
 from app.core.balancer import PERMANENT_FAILURE_CODES
+from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.modules.accounts.repository import AccountsRepository

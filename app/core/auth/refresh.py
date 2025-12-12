@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import logging
 
 import aiohttp
 from pydantic import ValidationError
 
 from app.core.auth import OpenAIAuthClaims, extract_id_token_claims
-from app.core.clients.http import get_http_client
-from app.core.balancer import PERMANENT_FAILURE_CODES
 from app.core.auth.models import OAuthTokenPayload
+from app.core.balancer import PERMANENT_FAILURE_CODES
+from app.core.clients.http import get_http_client
 from app.core.config.settings import get_settings
 from app.core.types import JsonObject
 from app.core.utils.request_id import get_request_id

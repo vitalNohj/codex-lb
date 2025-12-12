@@ -17,8 +17,6 @@ from app.core.auth import (
     extract_id_token_claims,
     fallback_account_id,
 )
-
-from app.core.crypto import TokenEncryptor
 from app.core.clients.oauth import (
     OAuthError,
     OAuthTokens,
@@ -29,6 +27,7 @@ from app.core.clients.oauth import (
     request_device_code,
 )
 from app.core.config.settings import get_settings
+from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.modules.accounts.repository import AccountsRepository

@@ -7,26 +7,23 @@ from typing import AsyncIterator, Iterable, Mapping
 from pydantic import ValidationError
 
 from app.core import usage as usage_core
-from app.core.crypto import TokenEncryptor
 from app.core.auth.refresh import RefreshError
-from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, openai_error, response_failed_event
 from app.core.balancer import PERMANENT_FAILURE_CODES
 from app.core.balancer.types import UpstreamError
-
-from app.core.openai.models import OpenAIError, OpenAIResponsePayload
-from app.core.openai.parsing import parse_sse_event
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.clients.proxy import ProxyResponseError, filter_inbound_headers
 from app.core.clients.proxy import compact_responses as core_compact_responses
 from app.core.clients.proxy import stream_responses as core_stream_responses
+from app.core.crypto import TokenEncryptor
+from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, openai_error, response_failed_event
+from app.core.openai.models import OpenAIError, OpenAIResponsePayload
+from app.core.openai.parsing import parse_sse_event
+from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.usage.types import UsageWindowRow, UsageWindowSummary
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.sse import format_sse_event
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
-from app.modules.request_logs.repository import RequestLogsRepository
-from app.modules.usage.repository import UsageRepository
 from app.modules.proxy.auth_manager import AuthManager
 from app.modules.proxy.load_balancer import LoadBalancer
 from app.modules.proxy.types import (
@@ -36,6 +33,8 @@ from app.modules.proxy.types import (
     RateLimitWindowSnapshotData,
 )
 from app.modules.proxy.usage_updater import UsageUpdater
+from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.usage.repository import UsageRepository
 
 
 class ProxyService:

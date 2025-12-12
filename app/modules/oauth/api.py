@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
 
-from app.core.errors import dashboard_error
 from app.core.clients.oauth import OAuthError
+from app.core.errors import dashboard_error
 from app.dependencies import OauthContext, get_oauth_context
 from app.modules.oauth.schemas import (
     OauthCompleteRequest,

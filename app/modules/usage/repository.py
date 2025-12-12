@@ -5,8 +5,8 @@ from datetime import datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.utils.time import utcnow
 from app.core.usage.types import UsageAggregateRow
+from app.core.utils.time import utcnow
 from app.db.models import UsageHistory
 
 

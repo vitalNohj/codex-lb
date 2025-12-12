@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.errors import openai_error
 from app.core.clients.proxy import ProxyResponseError
+from app.core.errors import openai_error
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.dependencies import ProxyContext, get_proxy_context
 from app.modules.proxy.schemas import RateLimitStatusPayload

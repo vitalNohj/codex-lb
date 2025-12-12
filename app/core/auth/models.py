@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from app.core.types import JsonObject

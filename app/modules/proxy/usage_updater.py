@@ -4,14 +4,14 @@ import logging
 import math
 from typing import Mapping
 
-from app.core.crypto import TokenEncryptor
 from app.core.auth.refresh import RefreshError
+from app.core.clients.usage import UsageFetchError, fetch_usage
 from app.core.config.settings import get_settings
+from app.core.crypto import TokenEncryptor
+from app.core.usage.models import UsagePayload
 from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
-from app.core.clients.usage import UsageFetchError, fetch_usage
 from app.db.models import Account, AccountStatus, UsageHistory
-from app.core.usage.models import UsagePayload
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.proxy.auth_manager import AuthManager
 from app.modules.usage.repository import UsageRepository

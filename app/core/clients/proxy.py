@@ -5,12 +5,12 @@ from typing import AsyncIterator, Mapping
 
 import aiohttp
 
-from app.core.errors import OpenAIErrorEnvelope, ResponseFailedEvent, openai_error, response_failed_event
 from app.core.clients.http import get_http_client
+from app.core.config.settings import get_settings
+from app.core.errors import OpenAIErrorEnvelope, ResponseFailedEvent, openai_error, response_failed_event
 from app.core.openai.models import OpenAIResponsePayload
 from app.core.openai.parsing import parse_error_payload, parse_response_payload, parse_sse_event
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
-from app.core.config.settings import get_settings
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import format_sse_event
 

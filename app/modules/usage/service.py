@@ -15,9 +15,9 @@ from app.core.usage.types import (
 from app.core.utils.time import from_epoch_seconds, utcnow
 from app.db.models import Account, RequestLog
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.proxy.usage_updater import UsageUpdater
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.repository import UsageRepository
-from app.modules.proxy.usage_updater import UsageUpdater
 from app.modules.usage.schemas import (
     UsageCost,
     UsageCostByModel,
