@@ -84,6 +84,7 @@ def get_usage_context(
         service=service,
     )
 
+
 @asynccontextmanager
 async def _accounts_repo_context() -> AsyncIterator[AccountsRepository]:
     async with SessionLocal() as session:

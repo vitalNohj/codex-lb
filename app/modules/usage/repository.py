@@ -82,9 +82,7 @@ class UsageRepository:
                 samples=int(row.samples),
                 last_recorded_at=row.last_recorded_at,
                 reset_at_max=int(row.reset_at_max) if row.reset_at_max is not None else None,
-                window_minutes_max=int(row.window_minutes_max)
-                if row.window_minutes_max is not None
-                else None,
+                window_minutes_max=int(row.window_minutes_max) if row.window_minutes_max is not None else None,
             )
             for row in rows
         ]
@@ -97,11 +95,7 @@ class UsageRepository:
                 conditions = UsageHistory.window == window
         else:
             conditions = or_(UsageHistory.window == "primary", UsageHistory.window.is_(None))
-        stmt = (
-            select(UsageHistory)
-            .where(conditions)
-            .order_by(UsageHistory.account_id, UsageHistory.recorded_at.desc())
-        )
+        stmt = select(UsageHistory).where(conditions).order_by(UsageHistory.account_id, UsageHistory.recorded_at.desc())
         result = await self._session.execute(stmt)
         latest: dict[str, UsageHistory] = {}
         for entry in result.scalars().all():
@@ -114,8 +108,6 @@ class UsageRepository:
             conditions = or_(UsageHistory.window == "primary", UsageHistory.window.is_(None))
         else:
             conditions = UsageHistory.window == window
-        result = await self._session.execute(
-            select(func.max(UsageHistory.window_minutes)).where(conditions)
-        )
+        result = await self._session.execute(select(func.max(UsageHistory.window_minutes)).where(conditions))
         value = result.scalar_one_or_none()
         return int(value) if value is not None else None

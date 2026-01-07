@@ -75,8 +75,6 @@ class AccountsRepository:
             values["plan_type"] = plan_type
         if email is not None:
             values["email"] = email
-        result = await self._session.execute(
-            update(Account).where(Account.id == account_id).values(**values)
-        )
+        result = await self._session.execute(update(Account).where(Account.id == account_id).values(**values))
         await self._session.commit()
         return bool(result.rowcount)

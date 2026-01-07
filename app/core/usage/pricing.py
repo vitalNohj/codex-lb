@@ -56,6 +56,7 @@ def _normalize_usage(usage: UsageTokens | ResponseUsage | None) -> UsageTokens |
         cached_input_tokens=cached_tokens,
     )
 
+
 DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     "gpt-5.2": ModelPrice(input_per_1m=1.75, cached_input_per_1m=0.175, output_per_1m=14.0),
     "gpt-5.1": ModelPrice(input_per_1m=1.25, cached_input_per_1m=0.125, output_per_1m=10.0),
@@ -129,9 +130,7 @@ def calculate_cost_from_usage(usage: UsageTokens | ResponseUsage | None, price: 
     billable_input = normalized.input_tokens - normalized.cached_input_tokens
 
     input_rate = price.input_per_1m
-    cached_rate = (
-        price.cached_input_per_1m if price.cached_input_per_1m is not None else input_rate
-    )
+    cached_rate = price.cached_input_per_1m if price.cached_input_per_1m is not None else input_rate
     output_rate = price.output_per_1m
 
     return (
@@ -165,10 +164,7 @@ def calculate_costs(
         totals[canonical] += cost
         total_usd += cost
 
-    by_model = [
-        UsageCostByModel(model=model, usd=round(value, 6))
-        for model, value in sorted(totals.items())
-    ]
+    by_model = [UsageCostByModel(model=model, usd=round(value, 6)) for model, value in sorted(totals.items())]
     return UsageCostSummary(
         currency="USD",
         total_usd_7d=round(total_usd, 6),

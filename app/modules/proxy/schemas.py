@@ -42,9 +42,7 @@ class RateLimitStatusDetails(BaseModel):
         return cls(
             allowed=data.allowed,
             limit_reached=data.limit_reached,
-            primary_window=RateLimitWindowSnapshot.from_data(data.primary_window)
-            if data.primary_window
-            else None,
+            primary_window=RateLimitWindowSnapshot.from_data(data.primary_window) if data.primary_window else None,
             secondary_window=RateLimitWindowSnapshot.from_data(data.secondary_window)
             if data.secondary_window
             else None,

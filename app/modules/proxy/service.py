@@ -81,6 +81,7 @@ class ProxyService:
             )
         account = await self._ensure_fresh(account)
         account_id = _header_account_id(account.id)
+
         async def _call_compact(target: Account) -> OpenAIResponsePayload:
             access_token = self._encryptor.decrypt(target.access_token_encrypted)
             return await core_compact_responses(payload, filtered, access_token, account_id)
@@ -312,11 +313,7 @@ class ProxyService:
                     event_type = event.type
                     if event_type in ("response.failed", "error"):
                         status = "error"
-                        error = (
-                            event.response.error
-                            if event_type == "response.failed"
-                            else event.error
-                        )
+                        error = event.response.error if event_type == "response.failed" else event.error
                         error_code = _normalize_error_code(
                             error.code if error else None,
                             error.type if error else None,
@@ -456,11 +453,7 @@ PLAN_TYPE_PRIORITY = (
 
 
 def _select_accounts_for_limits(accounts: Iterable[Account]) -> list[Account]:
-    return [
-        account
-        for account in accounts
-        if account.status not in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED)
-    ]
+    return [account for account in accounts if account.status not in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED)]
 
 
 def _summarize_window(

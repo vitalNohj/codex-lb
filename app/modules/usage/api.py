@@ -22,6 +22,7 @@ async def get_usage_history(
 ) -> UsageHistoryResponse:
     return await context.service.get_usage_history(hours)
 
+
 @router.get("/window", response_model=UsageWindowResponse)
 async def get_usage_window(
     window: str = Query("primary", pattern="^(primary|secondary)$"),

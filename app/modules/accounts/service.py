@@ -46,16 +46,8 @@ class AccountsService:
         if not accounts:
             return []
         await self._refresh_usage(accounts)
-        primary_usage = (
-            await self._usage_repo.latest_by_account(window="primary")
-            if self._usage_repo
-            else {}
-        )
-        secondary_usage = (
-            await self._usage_repo.latest_by_account(window="secondary")
-            if self._usage_repo
-            else {}
-        )
+        primary_usage = await self._usage_repo.latest_by_account(window="primary") if self._usage_repo else {}
+        secondary_usage = await self._usage_repo.latest_by_account(window="secondary") if self._usage_repo else {}
         cost_by_account = await self._costs_last_24h()
         return [
             self._account_to_summary(
@@ -120,12 +112,8 @@ class AccountsService:
         secondary_used_percent = _normalize_used_percent(secondary_usage) or 0.0
         primary_remaining_percent = usage_core.remaining_percent_from_used(primary_used_percent) or 0.0
         secondary_remaining_percent = usage_core.remaining_percent_from_used(secondary_used_percent) or 0.0
-        reset_at_primary = (
-            from_epoch_seconds(primary_usage.reset_at) if primary_usage is not None else None
-        )
-        reset_at_secondary = (
-            from_epoch_seconds(secondary_usage.reset_at) if secondary_usage is not None else None
-        )
+        reset_at_primary = from_epoch_seconds(primary_usage.reset_at) if primary_usage is not None else None
+        reset_at_secondary = from_epoch_seconds(secondary_usage.reset_at) if secondary_usage is not None else None
         capacity_primary = usage_core.capacity_for_plan(account.plan_type, "primary")
         capacity_secondary = usage_core.capacity_for_plan(account.plan_type, "secondary")
         remaining_credits_primary = usage_core.remaining_credits_from_percent(

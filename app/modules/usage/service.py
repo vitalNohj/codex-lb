@@ -59,9 +59,7 @@ class UsageService:
             secondary_minutes = usage_core.default_window_minutes("secondary")
         logs_secondary: list[RequestLog]
         if secondary_minutes:
-            logs_secondary = await self._logs_repo.list_since(
-                now - timedelta(minutes=secondary_minutes)
-            )
+            logs_secondary = await self._logs_repo.list_since(now - timedelta(minutes=secondary_minutes))
         else:
             logs_secondary = []
         cost_items = [item for item in (_log_to_cost_item(log) for log in logs_secondary) if item]
@@ -77,10 +75,7 @@ class UsageService:
         since = now - timedelta(hours=hours)
         accounts = await self._accounts_repo.list_accounts()
         account_map = {account.id: account for account in accounts}
-        usage_rows = [
-            row.to_window_row()
-            for row in await self._usage_repo.aggregate_since(since, window="primary")
-        ]
+        usage_rows = [row.to_window_row() for row in await self._usage_repo.aggregate_since(since, window="primary")]
         logs = await self._logs_repo.list_since(since)
 
         accounts_history = _build_account_history(usage_rows, logs, account_map, "primary")
@@ -154,9 +149,7 @@ def _build_account_history(
         used_percent_value = float(used_percent) if used_percent is not None else 0.0
         remaining_percent = usage_core.remaining_percent_from_used(used_percent_value) or 0.0
         capacity = usage_core.capacity_for_plan(account.plan_type, window)
-        remaining_credits = (
-            usage_core.remaining_credits_from_percent(used_percent_value, capacity) or 0.0
-        )
+        remaining_credits = usage_core.remaining_credits_from_percent(used_percent_value, capacity) or 0.0
         results.append(
             UsageHistoryItem(
                 account_id=account_id,
@@ -217,9 +210,7 @@ def _top_error_code(logs: list[RequestLog]) -> str | None:
 def _summary_payload_to_response(payload: UsageSummaryPayload) -> UsageSummaryResponse:
     return UsageSummaryResponse(
         primary_window=_window_snapshot_to_model(payload.primary_window),
-        secondary_window=_window_snapshot_to_model(payload.secondary_window)
-        if payload.secondary_window
-        else None,
+        secondary_window=_window_snapshot_to_model(payload.secondary_window) if payload.secondary_window else None,
         cost=_cost_summary_to_model(payload.cost),
         metrics=_metrics_summary_to_model(payload.metrics) if payload.metrics else None,
     )
@@ -227,12 +218,8 @@ def _summary_payload_to_response(payload: UsageSummaryPayload) -> UsageSummaryRe
 
 def _window_snapshot_to_model(snapshot: UsageWindowSnapshot) -> UsageWindow:
     capacity_credits = float(snapshot.capacity_credits)
-    remaining_credits = (
-        usage_core.remaining_credits_from_used(snapshot.used_credits, capacity_credits) or 0.0
-    )
-    remaining_percent = (
-        max(0.0, 100.0 - float(snapshot.used_percent)) if capacity_credits > 0 else 0.0
-    )
+    remaining_credits = usage_core.remaining_credits_from_used(snapshot.used_credits, capacity_credits) or 0.0
+    remaining_percent = max(0.0, 100.0 - float(snapshot.used_percent)) if capacity_credits > 0 else 0.0
     return UsageWindow(
         remaining_percent=remaining_percent,
         capacity_credits=capacity_credits,

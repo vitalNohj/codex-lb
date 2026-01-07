@@ -116,9 +116,7 @@ async def test_proxy_stream_records_cached_and_reasoning_tokens(async_client, mo
 
     async with SessionLocal() as session:
         result = await session.execute(
-            select(RequestLog)
-            .where(RequestLog.account_id == "acc_usage")
-            .order_by(RequestLog.requested_at.desc())
+            select(RequestLog).where(RequestLog.account_id == "acc_usage").order_by(RequestLog.requested_at.desc())
         )
         log = result.scalars().first()
         assert log is not None
@@ -215,4 +213,3 @@ async def test_proxy_stream_usage_limit_returns_http_error(async_client, monkeyp
         acc = await session.get(Account, "acc_limit")
         assert acc is not None
         assert acc.status == AccountStatus.RATE_LIMITED
-

@@ -15,9 +15,7 @@ class RequestLogsRepository:
         self._session = session
 
     async def list_since(self, since: datetime) -> list[RequestLog]:
-        result = await self._session.execute(
-            select(RequestLog).where(RequestLog.requested_at >= since)
-        )
+        result = await self._session.execute(select(RequestLog).where(RequestLog.requested_at >= since))
         return list(result.scalars().all())
 
     async def add_log(

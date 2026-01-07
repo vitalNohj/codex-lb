@@ -56,9 +56,7 @@ class LoadBalancer:
             used_percent = primary_entry.used_percent if primary_entry else None
             reset_at = runtime.reset_at
 
-            secondary_used = (
-                secondary_entry.used_percent if secondary_entry is not None else None
-            )
+            secondary_used = secondary_entry.used_percent if secondary_entry is not None else None
             secondary_reset = secondary_entry.reset_at if secondary_entry else None
             if (
                 status not in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED)

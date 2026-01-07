@@ -32,11 +32,7 @@ def _make_account(account_id: str, email: str, plan_type: str = "plus") -> Accou
 
 def _cost(input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> float:
     billable = input_tokens - cached_tokens
-    return (
-        (billable / 1_000_000) * 1.25
-        + (cached_tokens / 1_000_000) * 0.125
-        + (output_tokens / 1_000_000) * 10.0
-    )
+    return (billable / 1_000_000) * 1.25 + (cached_tokens / 1_000_000) * 0.125 + (output_tokens / 1_000_000) * 10.0
 
 
 @pytest.mark.asyncio

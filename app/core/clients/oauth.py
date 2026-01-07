@@ -19,6 +19,7 @@ from app.core.utils.request_id import get_request_id
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True)
 class DeviceCode:
     verification_url: str
