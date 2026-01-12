@@ -6,8 +6,7 @@
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         "app/__init__.py"
-      ],
-      "skip-github-release": true
+      ]
     }
   }
 }
