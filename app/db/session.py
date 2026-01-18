@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config.settings import get_settings
 
@@ -60,3 +60,24 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _run_migrations(conn)
+
+
+async def _run_migrations(conn: AsyncConnection) -> None:
+    if conn.dialect.name != "sqlite":
+        return
+    await _sqlite_add_column_if_missing(conn, "accounts", "chatgpt_account_id", "VARCHAR")
+
+
+async def _sqlite_add_column_if_missing(
+    conn: AsyncConnection,
+    table: str,
+    column: str,
+    column_type: str,
+) -> None:
+    result = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
+    rows = result.fetchall()
+    existing = {row[1] for row in rows if len(row) > 1}
+    if column in existing:
+        return
+    await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")

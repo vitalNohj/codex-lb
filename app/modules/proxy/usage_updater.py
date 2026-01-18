@@ -67,7 +67,7 @@ class UsageUpdater:
         try:
             payload = await fetch_usage(
                 access_token=access_token,
-                account_id=account.id,
+                account_id=account.chatgpt_account_id,
             )
         except UsageFetchError as exc:
             if exc.status_code != 401 or not self._auth_manager:
@@ -80,7 +80,7 @@ class UsageUpdater:
             try:
                 payload = await fetch_usage(
                     access_token=access_token,
-                    account_id=account.id,
+                    account_id=account.chatgpt_account_id,
                 )
             except UsageFetchError:
                 return

@@ -19,6 +19,7 @@ class AccountsRepository:
     async def upsert(self, account: Account) -> Account:
         existing = await self._session.get(Account, account.id)
         if existing:
+            existing.chatgpt_account_id = account.chatgpt_account_id
             existing.email = account.email
             existing.plan_type = account.plan_type
             existing.access_token_encrypted = account.access_token_encrypted
@@ -64,6 +65,7 @@ class AccountsRepository:
         last_refresh: datetime,
         plan_type: str | None = None,
         email: str | None = None,
+        chatgpt_account_id: str | None = None,
     ) -> bool:
         values = {
             "access_token_encrypted": access_token_encrypted,
@@ -75,6 +77,8 @@ class AccountsRepository:
             values["plan_type"] = plan_type
         if email is not None:
             values["email"] = email
+        if chatgpt_account_id is not None:
+            values["chatgpt_account_id"] = chatgpt_account_id
         result = await self._session.execute(update(Account).where(Account.id == account_id).values(**values))
         await self._session.commit()
         return bool(result.rowcount)

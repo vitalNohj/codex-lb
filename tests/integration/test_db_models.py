@@ -29,14 +29,17 @@ def _make_account(account_id: str, email: str, status: AccountStatus) -> Account
 
 
 @pytest.mark.asyncio
-async def test_unique_email_constraint(db_setup):
+async def test_duplicate_emails_allowed_with_unique_ids(db_setup):
     async with SessionLocal() as session:
         session.add(_make_account("acc1", "dup@example.com", AccountStatus.ACTIVE))
         await session.commit()
 
         session.add(_make_account("acc2", "dup@example.com", AccountStatus.ACTIVE))
-        with pytest.raises(IntegrityError):
-            await session.commit()
+        await session.commit()
+
+        result = await session.execute(select(Account).where(Account.email == "dup@example.com"))
+        accounts = list(result.scalars().all())
+        assert len(accounts) == 2
 
 
 @pytest.mark.asyncio

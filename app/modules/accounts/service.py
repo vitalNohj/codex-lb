@@ -8,7 +8,7 @@ from app.core.auth import (
     DEFAULT_PLAN,
     claims_from_auth,
     extract_id_token_claims,
-    fallback_account_id,
+    generate_unique_account_id,
     parse_auth_json,
 )
 from app.core.crypto import TokenEncryptor
@@ -65,11 +65,13 @@ class AccountsService:
 
         email = claims.email or DEFAULT_EMAIL
         plan_type = claims.plan_type or DEFAULT_PLAN
-        account_id = claims.account_id or fallback_account_id(email)
+        raw_account_id = claims.account_id
+        account_id = generate_unique_account_id(raw_account_id, email)
         last_refresh = to_utc_naive(auth.last_refresh_at) if auth.last_refresh_at else utcnow()
 
         account = Account(
             id=account_id,
+            chatgpt_account_id=raw_account_id,
             email=email,
             plan_type=plan_type,
             access_token_encrypted=self._encryptor.encrypt(auth.tokens.access_token),
