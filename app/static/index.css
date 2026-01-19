@@ -305,7 +305,7 @@ body {
 
 .legend li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 120px;
   align-items: center;
   gap: 8px;
   font-size: 12px;
@@ -329,7 +329,21 @@ body {
 
 .legend-detail {
   white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.legend-detail-label {
+  min-width: 0;
+}
+
+.legend-detail-value {
+  min-width: 4ch;
   text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 
