@@ -54,6 +54,7 @@ class LoadBalancer:
         sticky_key: str | None = None,
         *,
         reallocate_sticky: bool = False,
+        prefer_earlier_reset_accounts: bool = False,
     ) -> AccountSelection:
         accounts = await self._accounts_repo.list_accounts()
         latest_primary = await self._usage_repo.latest_by_account()
@@ -73,6 +74,7 @@ class LoadBalancer:
             account_map=account_map,
             sticky_key=sticky_key,
             reallocate_sticky=reallocate_sticky,
+            prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
         )
         for state in states:
             account = account_map.get(state.account_id)
@@ -99,12 +101,13 @@ class LoadBalancer:
         account_map: dict[str, Account],
         sticky_key: str | None,
         reallocate_sticky: bool,
+        prefer_earlier_reset_accounts: bool,
     ) -> SelectionResult:
         if not sticky_key or not self._sticky_repo:
-            return select_account(states)
+            return select_account(states, prefer_earlier_reset=prefer_earlier_reset_accounts)
 
         if reallocate_sticky:
-            chosen = select_account(states)
+            chosen = select_account(states, prefer_earlier_reset=prefer_earlier_reset_accounts)
             if chosen.account is not None and chosen.account.account_id in account_map:
                 await self._sticky_repo.upsert(sticky_key, chosen.account.account_id)
             return chosen
@@ -115,11 +118,11 @@ class LoadBalancer:
             if pinned is None:
                 await self._sticky_repo.delete(sticky_key)
             else:
-                pinned_result = select_account([pinned])
+                pinned_result = select_account([pinned], prefer_earlier_reset=prefer_earlier_reset_accounts)
                 if pinned_result.account is not None:
                     return pinned_result
 
-        chosen = select_account(states)
+        chosen = select_account(states, prefer_earlier_reset=prefer_earlier_reset_accounts)
         if chosen.account is not None and chosen.account.account_id in account_map:
             await self._sticky_repo.upsert(sticky_key, chosen.account.account_id)
         return chosen

@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.migrations.versions import add_request_logs_reasoning_effort, normalize_account_plan_types
+from app.db.migrations.versions import add_dashboard_settings
 
 _CREATE_MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -33,6 +34,7 @@ class Migration:
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     Migration("001_normalize_account_plan_types", normalize_account_plan_types.run),
     Migration("002_add_request_logs_reasoning_effort", add_request_logs_reasoning_effort.run),
+    Migration("003_add_dashboard_settings", add_dashboard_settings.run),
 )
 
 

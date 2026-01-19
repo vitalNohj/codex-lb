@@ -46,6 +46,7 @@ from app.modules.proxy.load_balancer import LoadBalancer
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.proxy.types import RateLimitStatusPayloadData
 from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.repository import UsageRepository
 from app.modules.usage.updater import UsageUpdater
 
@@ -59,10 +60,12 @@ class ProxyService:
         usage_repo: UsageRepository,
         logs_repo: RequestLogsRepository,
         sticky_repo: StickySessionsRepository,
+        settings_repo: SettingsRepository,
     ) -> None:
         self._accounts_repo = accounts_repo
         self._usage_repo = usage_repo
         self._logs_repo = logs_repo
+        self._settings_repo = settings_repo
         self._encryptor = TokenEncryptor()
         self._auth_manager = AuthManager(accounts_repo)
         self._load_balancer = LoadBalancer(accounts_repo, usage_repo, sticky_repo)
@@ -90,10 +93,13 @@ class ProxyService:
     ) -> OpenAIResponsePayload:
         _maybe_log_proxy_request_shape("compact", payload, headers)
         filtered = filter_inbound_headers(headers)
-        sticky_key = _sticky_key_from_compact_payload(payload)
+        settings = await self._settings_repo.get_or_create()
+        prefer_earlier_reset = settings.prefer_earlier_reset_accounts
+        sticky_key = _sticky_key_from_compact_payload(payload) if settings.sticky_threads_enabled else None
         selection = await self._load_balancer.select_account(
             sticky_key=sticky_key,
             reallocate_sticky=sticky_key is not None,
+            prefer_earlier_reset_accounts=prefer_earlier_reset,
         )
         account = selection.account
         if not account:
@@ -200,10 +206,15 @@ class ProxyService:
         propagate_http_errors: bool,
     ) -> AsyncIterator[str]:
         request_id = ensure_request_id()
-        sticky_key = _sticky_key_from_payload(payload)
+        settings = await self._settings_repo.get_or_create()
+        prefer_earlier_reset = settings.prefer_earlier_reset_accounts
+        sticky_key = _sticky_key_from_payload(payload) if settings.sticky_threads_enabled else None
         max_attempts = 3
         for attempt in range(max_attempts):
-            selection = await self._load_balancer.select_account(sticky_key=sticky_key)
+            selection = await self._load_balancer.select_account(
+                sticky_key=sticky_key,
+                prefer_earlier_reset_accounts=prefer_earlier_reset,
+            )
             account = selection.account
             if not account:
                 event = response_failed_event(

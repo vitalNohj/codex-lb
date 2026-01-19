@@ -15,6 +15,8 @@ from app.modules.proxy.service import ProxyService
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.request_logs.service import RequestLogsService
+from app.modules.settings.repository import SettingsRepository
+from app.modules.settings.service import SettingsService
 from app.modules.usage.repository import UsageRepository
 from app.modules.usage.service import UsageService
 
@@ -48,6 +50,13 @@ class RequestLogsContext:
     session: AsyncSession
     repository: RequestLogsRepository
     service: RequestLogsService
+
+
+@dataclass(slots=True)
+class SettingsContext:
+    session: AsyncSession
+    repository: SettingsRepository
+    service: SettingsService
 
 
 def get_accounts_context(
@@ -106,7 +115,14 @@ def get_proxy_context(
     usage_repository = UsageRepository(session)
     request_logs_repository = RequestLogsRepository(session)
     sticky_repository = StickySessionsRepository(session)
-    service = ProxyService(accounts_repository, usage_repository, request_logs_repository, sticky_repository)
+    settings_repository = SettingsRepository(session)
+    service = ProxyService(
+        accounts_repository,
+        usage_repository,
+        request_logs_repository,
+        sticky_repository,
+        settings_repository,
+    )
     return ProxyContext(service=service)
 
 
@@ -116,3 +132,11 @@ def get_request_logs_context(
     repository = RequestLogsRepository(session)
     service = RequestLogsService(repository)
     return RequestLogsContext(session=session, repository=repository, service=service)
+
+
+def get_settings_context(
+    session: AsyncSession = Depends(get_session),
+) -> SettingsContext:
+    repository = SettingsRepository(session)
+    service = SettingsService(repository)
+    return SettingsContext(session=session, repository=repository, service=service)

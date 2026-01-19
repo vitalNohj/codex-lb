@@ -47,8 +47,25 @@ async def _import_account(async_client, account_id: str, email: str) -> None:
     assert response.status_code == 200
 
 
+async def _set_routing_settings(
+    async_client,
+    *,
+    sticky_threads_enabled: bool,
+    prefer_earlier_reset_accounts: bool = False,
+) -> None:
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": sticky_threads_enabled,
+            "preferEarlierResetAccounts": prefer_earlier_reset_accounts,
+        },
+    )
+    assert response.status_code == 200
+
+
 @pytest.mark.asyncio
 async def test_proxy_sticky_prompt_cache_key_pins_account(async_client, monkeypatch):
+    await _set_routing_settings(async_client, sticky_threads_enabled=True)
     await _import_account(async_client, "acc_a", "a@example.com")
     await _import_account(async_client, "acc_b", "b@example.com")
 
@@ -116,6 +133,7 @@ async def test_proxy_sticky_prompt_cache_key_pins_account(async_client, monkeypa
 
 @pytest.mark.asyncio
 async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monkeypatch):
+    await _set_routing_settings(async_client, sticky_threads_enabled=True)
     encryptor = TokenEncryptor()
     now = utcnow()
     now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
@@ -192,6 +210,7 @@ async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monk
 
 @pytest.mark.asyncio
 async def test_proxy_compact_reallocates_sticky_mapping(async_client, monkeypatch):
+    await _set_routing_settings(async_client, sticky_threads_enabled=True)
     await _import_account(async_client, "acc_c1", "c1@example.com")
     await _import_account(async_client, "acc_c2", "c2@example.com")
 
