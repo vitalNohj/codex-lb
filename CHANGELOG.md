@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/Soju06/codex-lb/compare/v0.1.5...v0.2.0) (2026-01-19)
+
+
+### Features
+
+* add ty type checking and pre-commit hook
+* add health response schema and typed context cleanup
+
+
+### Refactor
+
+* move auth/usage helpers into module boundaries and extract proxy helpers
+* tighten typing across services and tests
+
 ## [0.1.5](https://github.com/Soju06/codex-lb/compare/v0.1.4...v0.1.5) (2026-01-14)
 
 

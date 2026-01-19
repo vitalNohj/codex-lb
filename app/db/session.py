@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config.settings import get_settings
+from app.db.migrations import run_migrations
 
 DATABASE_URL = get_settings().database_url
+
+logger = logging.getLogger(__name__)
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -60,24 +64,13 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await _run_migrations(conn)
 
-
-async def _run_migrations(conn: AsyncConnection) -> None:
-    if conn.dialect.name != "sqlite":
-        return
-    await _sqlite_add_column_if_missing(conn, "accounts", "chatgpt_account_id", "VARCHAR")
-
-
-async def _sqlite_add_column_if_missing(
-    conn: AsyncConnection,
-    table: str,
-    column: str,
-    column_type: str,
-) -> None:
-    result = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
-    rows = result.fetchall()
-    existing = {row[1] for row in rows if len(row) > 1}
-    if column in existing:
-        return
-    await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+    async with SessionLocal() as session:
+        try:
+            updated = await run_migrations(session)
+            if updated:
+                logger.info("Applied database migrations count=%s", updated)
+        except Exception:
+            logger.exception("Failed to apply database migrations")
+            if get_settings().database_migrations_fail_fast:
+                raise

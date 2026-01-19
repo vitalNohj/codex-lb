@@ -28,6 +28,7 @@ from app.core.clients.oauth import (
 )
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
+from app.core.plan_types import coerce_account_plan_type
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.modules.accounts.repository import AccountsRepository
@@ -295,7 +296,10 @@ class OauthService:
         auth_claims = claims.auth or OpenAIAuthClaims()
         raw_account_id = auth_claims.chatgpt_account_id or claims.chatgpt_account_id
         email = claims.email or DEFAULT_EMAIL
-        plan_type = auth_claims.chatgpt_plan_type or claims.chatgpt_plan_type or DEFAULT_PLAN
+        plan_type = coerce_account_plan_type(
+            auth_claims.chatgpt_plan_type or claims.chatgpt_plan_type,
+            DEFAULT_PLAN,
+        )
         account_id = generate_unique_account_id(raw_account_id, email)
 
         account = Account(
