@@ -187,7 +187,8 @@ async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monk
         seen.append(account_id)
         if account_id == acc_a.id:
             yield (
-                'data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"slow down"}}}\n\n'
+                'data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded",'
+                '"message":"slow down"}}}\n\n'
             )
             return
         yield 'data: {"type":"response.completed","response":{"id":"resp_ok"}}\n\n'

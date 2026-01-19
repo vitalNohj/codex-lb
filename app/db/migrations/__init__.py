@@ -8,8 +8,11 @@ from typing import Awaitable, Callable, Final
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.migrations.versions import add_request_logs_reasoning_effort, normalize_account_plan_types
-from app.db.migrations.versions import add_dashboard_settings
+from app.db.migrations.versions import (
+    add_dashboard_settings,
+    add_request_logs_reasoning_effort,
+    normalize_account_plan_types,
+)
 
 _CREATE_MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (

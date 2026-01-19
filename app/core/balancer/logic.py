@@ -107,9 +107,7 @@ def select_account(
 
     def _usage_sort_key(state: AccountState) -> tuple[float, float, float, str]:
         primary_used = state.used_percent if state.used_percent is not None else 0.0
-        secondary_used = (
-            state.secondary_used_percent if state.secondary_used_percent is not None else primary_used
-        )
+        secondary_used = state.secondary_used_percent if state.secondary_used_percent is not None else primary_used
         last_selected = state.last_selected_at or 0.0
         return secondary_used, primary_used, last_selected, state.account_id
 

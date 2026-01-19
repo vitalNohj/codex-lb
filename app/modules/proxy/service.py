@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from hashlib import sha256
 import time
+from collections.abc import Sequence
 from datetime import timedelta
+from hashlib import sha256
 from typing import AsyncIterator, Mapping
 
 from app.core import usage as usage_core
 from app.core.auth.refresh import RefreshError
-from app.core.config.settings import get_settings
 from app.core.balancer import PERMANENT_FAILURE_CODES
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import ProxyResponseError, filter_inbound_headers
 from app.core.clients.proxy import compact_responses as core_compact_responses
 from app.core.clients.proxy import stream_responses as core_stream_responses
+from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.errors import openai_error, response_failed_event
 from app.core.openai.models import OpenAIResponsePayload
@@ -511,7 +511,8 @@ def _maybe_log_proxy_request_shape(
     header_keys = _interesting_header_keys(headers)
 
     logger.warning(
-        "proxy_request_shape request_id=%s kind=%s model=%s stream=%s input=%s prompt_cache_key=%s prompt_cache_key_raw=%s fields=%s extra=%s headers=%s",
+        "proxy_request_shape request_id=%s kind=%s model=%s stream=%s input=%s "
+        "prompt_cache_key=%s prompt_cache_key_raw=%s fields=%s extra=%s headers=%s",
         request_id,
         kind,
         payload.model,

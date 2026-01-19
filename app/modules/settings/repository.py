@@ -38,4 +38,3 @@ class SettingsRepository:
         await self._session.commit()
         await self._session.refresh(settings)
         return settings
-

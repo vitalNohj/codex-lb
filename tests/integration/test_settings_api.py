@@ -30,4 +30,3 @@ async def test_settings_api_get_and_update(async_client):
     payload = response.json()
     assert payload["stickyThreadsEnabled"] is True
     assert payload["preferEarlierResetAccounts"] is True
-

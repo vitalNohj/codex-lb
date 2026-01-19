@@ -31,4 +31,3 @@ class SettingsService:
             sticky_threads_enabled=row.sticky_threads_enabled,
             prefer_earlier_reset_accounts=row.prefer_earlier_reset_accounts,
         )
-

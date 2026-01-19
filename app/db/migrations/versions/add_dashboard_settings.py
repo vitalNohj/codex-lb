@@ -30,4 +30,3 @@ async def run(session: AsyncSession) -> None:
         )
     )
     await session.flush()
-

@@ -11,4 +11,3 @@ class DashboardSettingsResponse(DashboardModel):
 class DashboardSettingsUpdateRequest(DashboardModel):
     sticky_threads_enabled: bool
     prefer_earlier_reset_accounts: bool
-

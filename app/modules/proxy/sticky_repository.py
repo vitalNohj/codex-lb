@@ -35,4 +35,3 @@ class StickySessionsRepository:
         result = await self._session.execute(delete(StickySession).where(StickySession.key == key))
         await self._session.commit()
         return bool(result.rowcount)
-

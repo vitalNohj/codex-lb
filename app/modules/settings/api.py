@@ -35,4 +35,3 @@ async def update_settings(
         sticky_threads_enabled=updated.sticky_threads_enabled,
         prefer_earlier_reset_accounts=updated.prefer_earlier_reset_accounts,
     )
-
