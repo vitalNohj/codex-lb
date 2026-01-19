@@ -83,5 +83,6 @@ async def init_db() -> None:
             if get_settings().database_migrations_fail_fast:
                 raise
 
+
 async def close_db() -> None:
     await engine.dispose()

@@ -34,7 +34,9 @@ class AccountsRepositoryPort(Protocol):
         chatgpt_account_id: str | None = None,
     ) -> bool: ...
 
+
 logger = logging.getLogger(__name__)
+
 
 class AuthManager:
     def __init__(self, repo: AccountsRepositoryPort) -> None:
