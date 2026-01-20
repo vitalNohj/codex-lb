@@ -626,10 +626,10 @@
 		});
 	};
 
-		const buildUsageWindow = (entries, summaryWindow) => {
-			const entryList = entries || [];
-			const capacityFromEntries = entryList.reduce(
-				(acc, entry) => acc + (toNumber(entry.capacityCredits) || 0),
+	const buildUsageWindow = (entries, summaryWindow) => {
+		const entryList = entries || [];
+		const capacityFromEntries = entryList.reduce(
+			(acc, entry) => acc + (toNumber(entry.capacityCredits) || 0),
 			0,
 		);
 		const remainingFromEntries = entryList.reduce(
@@ -645,19 +645,19 @@
 			toNumber(summaryWindow?.remainingCredits) || 0,
 			remainingFromEntries,
 		);
-			return {
-				capacity,
-				remaining,
-				resetAt: summaryWindow?.resetAt ?? null,
-				windowMinutes: summaryWindow?.windowMinutes ?? null,
-				byAccount: entryList.map((entry) => ({
-					accountId: entry.accountId,
-					capacityCredits: toNumber(entry.capacityCredits) || 0,
-					remainingCredits: toNumber(entry.remainingCredits) || 0,
-					remainingPercentAvg: toNumber(entry.remainingPercentAvg),
-				})),
-			};
+		return {
+			capacity,
+			remaining,
+			resetAt: summaryWindow?.resetAt ?? null,
+			windowMinutes: summaryWindow?.windowMinutes ?? null,
+			byAccount: entryList.map((entry) => ({
+				accountId: entry.accountId,
+				capacityCredits: toNumber(entry.capacityCredits) || 0,
+				remainingCredits: toNumber(entry.remainingCredits) || 0,
+				remainingPercentAvg: toNumber(entry.remainingPercentAvg),
+			})),
 		};
+	};
 
 	const buildDashboardDataFromApi = ({
 		summary,
@@ -735,9 +735,9 @@
 					? percentFromApi
 					: percentFromAccount !== null
 						? percentFromAccount
-					: denominator > 0
-						? (value / denominator) * 100
-						: 0;
+						: denominator > 0
+							? (value / denominator) * 100
+							: 0;
 			const remainingPercent = Math.min(100, Math.max(0, rawPercent));
 			return {
 				accountId: entry.accountId,
@@ -1727,15 +1727,15 @@
 				const items =
 					this.view === "accounts"
 						? [
-								`Selection: ${this.accounts.selectedId || "--"}`,
-								`Rotation: ${this.dashboardData.routing?.rotationEnabled ? "enabled" : "disabled"}`,
-								`Last sync: ${lastSync}`,
-							]
+							`Selection: ${this.accounts.selectedId || "--"}`,
+							`Rotation: ${this.dashboardData.routing?.rotationEnabled ? "enabled" : "disabled"}`,
+							`Last sync: ${lastSync}`,
+						]
 						: [
-								`Last sync: ${lastSync}`,
-								`Routing: ${routingLabel(this.dashboardData.routing?.strategy)}`,
-								`Backend: ${this.backendPath}`,
-							];
+							`Last sync: ${lastSync}`,
+							`Routing: ${routingLabel(this.dashboardData.routing?.strategy)}`,
+							`Backend: ${this.backendPath}`,
+						];
 				if (this.importState.isLoading) {
 					items.unshift(
 						`Importing ${this.importState.fileName || "auth.json"}...`,
