@@ -863,13 +863,23 @@
 				window.key,
 			);
 			const gradient = buildDonutGradient(items, capacity);
-			const legendItems = items.map((item) => ({
-				label: truncateText(item.label, 28),
-				fullLabel: item.label,
-				detailLabel: "Remaining",
-				detailValue: formatPercent(item.remainingPercent),
-				color: item.color,
-			}));
+			const legendItems = items.map((item) => {
+				const percent = item.remainingPercent;
+				let valueClass = "success";
+				if (percent <= 20) {
+					valueClass = "error";
+				} else if (percent <= 50) {
+					valueClass = "limited";
+				}
+				return {
+					label: truncateText(item.label, 28),
+					fullLabel: item.label,
+					detailLabel: "Remaining",
+					detailValue: formatPercent(item.remainingPercent),
+					valueClass,
+					color: item.color,
+				};
+			});
 			if (capacity > 0 && consumed > 0) {
 				const consumedPercent = Math.min(
 					100,

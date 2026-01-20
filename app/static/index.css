@@ -355,6 +355,18 @@ body {
   text-align: right;
 }
 
+.legend-detail-value.success {
+  color: var(--status-active-text);
+}
+
+.legend-detail-value.limited {
+  color: var(--status-warning-text);
+}
+
+.legend-detail-value.error {
+  color: var(--status-error-text);
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
