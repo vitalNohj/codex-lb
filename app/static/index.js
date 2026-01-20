@@ -904,7 +904,13 @@
 				},
 				remaining: remainingRounded,
 				remainingText: formatPercent(secondaryRemaining),
-				progressClass: progressClass(account.status),
+				progressClass: (() => {
+					if (account.status === "exceeded") return "error";
+					if (account.status === "paused" || account.status === "deactivated") return "";
+					if (secondaryRemaining <= 20) return "error";
+					if (secondaryRemaining <= 50) return "limited";
+					return "success";
+				})(),
 				marquee: account.status === "deactivated",
 				meta: formatQuotaResetMeta(
 					account.resetAtSecondary,
@@ -1928,7 +1934,14 @@
 			formatQuotaResetLabel,
 			formatAccessTokenLabel,
 			formatRefreshTokenLabel,
+			formatAccessTokenLabel,
+			formatRefreshTokenLabel,
 			formatIdTokenLabel,
+			theme: localStorage.getItem('theme') || 'dark',
+			toggleTheme() {
+				this.theme = this.theme === 'dark' ? 'light' : 'dark';
+				localStorage.setItem('theme', this.theme);
+			},
 		}));
 	};
 
