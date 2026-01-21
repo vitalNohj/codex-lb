@@ -274,8 +274,7 @@
 		if (!effort) {
 			return base;
 		}
-		const normalized = effort.startsWith("x") ? effort.slice(1) : effort;
-		return `${base} ${normalized}`;
+		return `${base} (${effort})`;
 	};
 
 	const formatCurrency = (value) => {
