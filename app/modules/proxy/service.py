@@ -7,6 +7,8 @@ from datetime import timedelta
 from hashlib import sha256
 from typing import AsyncIterator, Mapping
 
+import anyio
+
 from app.core import usage as usage_core
 from app.core.auth.refresh import RefreshError
 from app.core.balancer import PERMANENT_FAILURE_CODES
@@ -108,7 +110,7 @@ class ProxyService:
                 openai_error("no_accounts", selection.error_message or "No active accounts available"),
             )
         account = await self._ensure_fresh(account)
-        account_id = _header_account_id(account.id)
+        account_id = _header_account_id(account.chatgpt_account_id)
 
         async def _call_compact(target: Account) -> OpenAIResponsePayload:
             access_token = self._encryptor.decrypt(target.access_token_encrypted)
@@ -312,7 +314,7 @@ class ProxyService:
     ) -> AsyncIterator[str]:
         account_id_value = account.id
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
-        account_id = _header_account_id(account_id_value)
+        account_id = _header_account_id(account.chatgpt_account_id)
         model = payload.model
         reasoning_effort = payload.reasoning.effort if payload.reasoning else None
         start = time.monotonic()
@@ -394,28 +396,29 @@ class ProxyService:
             reasoning_tokens = (
                 usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
             )
-            try:
-                await self._logs_repo.add_log(
-                    account_id=account_id_value,
-                    request_id=request_id,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cached_input_tokens=cached_input_tokens,
-                    reasoning_tokens=reasoning_tokens,
-                    reasoning_effort=reasoning_effort,
-                    latency_ms=latency_ms,
-                    status=status,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to persist request log account_id=%s request_id=%s",
-                    account_id_value,
-                    request_id,
-                    exc_info=True,
-                )
+            with anyio.CancelScope(shield=True):
+                try:
+                    await self._logs_repo.add_log(
+                        account_id=account_id_value,
+                        request_id=request_id,
+                        model=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cached_input_tokens=cached_input_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        reasoning_effort=reasoning_effort,
+                        latency_ms=latency_ms,
+                        status=status,
+                        error_code=error_code,
+                        error_message=error_message,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist request log account_id=%s request_id=%s",
+                        account_id_value,
+                        request_id,
+                        exc_info=True,
+                    )
 
     async def _refresh_usage(self, accounts: list[Account]) -> None:
         latest_usage = await self._usage_repo.latest_by_account(window="primary")
@@ -461,11 +464,8 @@ class ProxyService:
         await self._handle_stream_error(account, _upstream_error_from_openai(error), code)
 
     async def _handle_stream_error(self, account: Account, error: UpstreamError, code: str) -> None:
-        if code == "rate_limit_exceeded":
+        if code in {"rate_limit_exceeded", "usage_limit_reached"}:
             await self._load_balancer.mark_rate_limit(account, error)
-            return
-        if code == "usage_limit_reached":
-            await self._load_balancer.mark_quota_exceeded(account, error)
             return
         if code in {"insufficient_quota", "usage_not_included", "quota_exceeded"}:
             await self._load_balancer.mark_quota_exceeded(account, error)

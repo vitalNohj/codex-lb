@@ -195,6 +195,7 @@
 		metrics: {
 			requests7d: 0,
 			tokensSecondaryWindow: null,
+			cachedTokensSecondaryWindow: null,
 			cost7d: 0,
 			errorRate7d: null,
 			topError: "",
@@ -248,6 +249,28 @@
 			return "--";
 		}
 		return compactFormatter.format(numeric);
+	};
+
+	const formatTokensWithCached = (totalTokens, cachedInputTokens) => {
+		const total = toNumber(totalTokens);
+		if (total === null) {
+			return "--";
+		}
+		const cached = toNumber(cachedInputTokens);
+		if (cached === null || cached <= 0) {
+			return formatCompactNumber(total);
+		}
+		return `${formatCompactNumber(total)} (${formatCompactNumber(cached)} Cached)`;
+	};
+
+	const formatCachedTokensMeta = (totalTokens, cachedInputTokens) => {
+		const total = toNumber(totalTokens);
+		const cached = toNumber(cachedInputTokens);
+		if (total === null || total <= 0 || cached === null || cached <= 0) {
+			return "Cached: --";
+		}
+		const percent = Math.min(100, Math.max(0, (cached / total) * 100));
+		return `Cached: ${formatCompactNumber(cached)} (${Math.round(percent)}%)`;
 	};
 
 	const formatModelLabel = (model, reasoningEffort) => {
@@ -588,6 +611,7 @@
 			reasoningEffort: entry.reasoningEffort ?? null,
 			status: entry.status,
 			tokens: toNumber(entry.tokens),
+			cachedInputTokens: toNumber(entry.cachedInputTokens),
 			cost: toNumber(entry.costUsd),
 			errorCode: entry.errorCode ?? null,
 			errorMessage: entry.errorMessage ?? null,
@@ -616,17 +640,21 @@
 			const secondaryRemainingPercent = toNumber(
 				secondaryRow?.remainingPercentAvg,
 			);
+			const mergedSecondaryRemaining =
+				secondaryRemainingPercent ??
+				account.usage?.secondaryRemainingPercent ??
+				0;
+			const mergedPrimaryRemaining =
+				primaryRemainingPercent ??
+				account.usage?.primaryRemainingPercent ??
+				0;
+			const effectivePrimaryRemaining =
+				mergedSecondaryRemaining <= 0 ? 0 : mergedPrimaryRemaining;
 			return {
 				...account,
 				usage: {
-					primaryRemainingPercent:
-						primaryRemainingPercent ??
-						account.usage?.primaryRemainingPercent ??
-						0,
-					secondaryRemainingPercent:
-						secondaryRemainingPercent ??
-						account.usage?.secondaryRemainingPercent ??
-						0,
+					primaryRemainingPercent: effectivePrimaryRemaining,
+					secondaryRemainingPercent: mergedSecondaryRemaining,
 				},
 				resetAtPrimary: account.resetAtPrimary ?? null,
 				resetAtSecondary: account.resetAtSecondary ?? null,
@@ -662,6 +690,7 @@
 				accountId: entry.accountId,
 				capacityCredits: toNumber(entry.capacityCredits) || 0,
 				remainingCredits: toNumber(entry.remainingCredits) || 0,
+				remainingPercentAvg: toNumber(entry.remainingPercentAvg),
 			})),
 		};
 	};
@@ -675,6 +704,7 @@
 		const metrics = summary?.metrics || {};
 		const requests7d = toNumber(metrics.requests7d) ?? 0;
 		const tokensSecondaryWindow = toNumber(metrics.tokensSecondaryWindow);
+		const cachedTokensSecondaryWindow = toNumber(metrics.cachedTokensSecondaryWindow);
 		const errorRate7d = toNumber(metrics.errorRate7d);
 		const topError = metrics.topError || "";
 		return {
@@ -686,6 +716,7 @@
 			metrics: {
 				requests7d,
 				tokensSecondaryWindow,
+				cachedTokensSecondaryWindow,
 				cost7d: toNumber(summary?.cost?.totalUsd7d) || 0,
 				errorRate7d,
 				topError,
@@ -720,7 +751,7 @@
 			return acc;
 		}, {});
 
-	const buildRemainingItems = (entries, accounts, capacity) => {
+	const buildRemainingItems = (entries, accounts, capacity, windowKey) => {
 		const accountMap = new Map(
 			(accounts || []).map((account) => [account.id, account]),
 		);
@@ -728,7 +759,23 @@
 			const account = accountMap.get(entry.accountId);
 			const label = account ? account.email : entry.accountId;
 			const value = toNumber(entry.remainingCredits) || 0;
-			const rawPercent = capacity > 0 ? (value / capacity) * 100 : 0;
+			const percentFromApi = toNumber(entry.remainingPercentAvg);
+			const percentFromAccount =
+				windowKey === "primary"
+					? toNumber(account?.usage?.primaryRemainingPercent)
+					: windowKey === "secondary"
+						? toNumber(account?.usage?.secondaryRemainingPercent)
+						: null;
+			const entryCapacity = toNumber(entry.capacityCredits) || 0;
+			const denominator = entryCapacity > 0 ? entryCapacity : capacity;
+			const rawPercent =
+				percentFromApi !== null
+					? percentFromApi
+					: percentFromAccount !== null
+						? percentFromAccount
+						: denominator > 0
+							? (value / denominator) * 100
+							: 0;
 			const remainingPercent = Math.min(100, Math.max(0, rawPercent));
 			return {
 				accountId: entry.accountId,
@@ -754,6 +801,38 @@
 			color: palette[index % palette.length],
 		}));
 	};
+
+	const buildSecondaryExhaustedIndex = (accounts) => {
+		const exhausted = new Set();
+		(accounts || []).forEach((account) => {
+			const remaining = toNumber(account?.usage?.secondaryRemainingPercent);
+			if (remaining !== null && remaining <= 0 && account?.id) {
+				exhausted.add(account.id);
+			}
+		});
+		return exhausted;
+	};
+
+	const applySecondaryExhaustedToPrimary = (entries, exhaustedIds) => {
+		if (!entries?.length || !exhaustedIds?.size) {
+			return entries || [];
+		}
+		return entries.map((entry) => {
+			if (entry?.accountId && exhaustedIds.has(entry.accountId)) {
+				return {
+					...entry,
+					remainingCredits: 0,
+				};
+			}
+			return entry;
+		});
+	};
+
+	const sumRemainingCredits = (entries) =>
+		(entries || []).reduce(
+			(acc, entry) => acc + (toNumber(entry?.remainingCredits) || 0),
+			0,
+		);
 
 	const buildDonutGradient = (items, total) => {
 		if (!items.length || total <= 0) {
@@ -797,6 +876,7 @@
 		const statusCounts = countByStatus(accounts);
 		const secondaryWindowMinutes =
 			state.dashboardData.usage?.secondary?.windowMinutes ?? null;
+		const secondaryExhaustedAccounts = buildSecondaryExhaustedIndex(accounts);
 
 		const badges = ["active", "paused", "limited", "exceeded", "deactivated"]
 			.map((status) => {
@@ -816,7 +896,10 @@
 			{
 				title: `Tokens (${formatWindowLabel("secondary", secondaryWindowMinutes)})`,
 				value: formatCompactNumber(metrics.tokensSecondaryWindow),
-				meta: "Scope: responses",
+				meta: formatCachedTokensMeta(
+					metrics.tokensSecondaryWindow,
+					metrics.cachedTokensSecondaryWindow,
+				),
 			},
 			{
 				title: "Cost (7d)",
@@ -844,18 +927,37 @@
 				resetAt: null,
 				byAccount: [],
 			};
-			const remaining = toNumber(usage.remaining) || 0;
+			const rawEntries = usage.byAccount || [];
+			const hasPrimaryAdjustments =
+				window.key === "primary" &&
+				rawEntries.some(
+					(entry) =>
+						entry?.accountId && secondaryExhaustedAccounts.has(entry.accountId),
+				);
+			const entries =
+				window.key === "primary"
+					? applySecondaryExhaustedToPrimary(
+							rawEntries,
+							secondaryExhaustedAccounts,
+						)
+					: rawEntries;
+			const remaining =
+				hasPrimaryAdjustments
+					? sumRemainingCredits(entries)
+					: toNumber(usage.remaining) || 0;
 			const capacity = Math.max(remaining, toNumber(usage.capacity) || 0);
 			const consumed = Math.max(0, capacity - remaining);
 			const items = buildRemainingItems(
-				usage.byAccount || [],
+				entries,
 				accounts,
 				capacity,
+				window.key,
 			);
 			const gradient = buildDonutGradient(items, capacity);
 			const legendItems = items.map((item) => ({
 				label: item.label,
-				detail: `Remaining ${formatPercent(item.remainingPercent)}`,
+				detailLabel: "Remaining",
+				detailValue: formatPercent(item.remainingPercent),
 				color: item.color,
 			}));
 			if (capacity > 0 && consumed > 0) {
@@ -865,7 +967,8 @@
 				);
 				legendItems.push({
 					label: "Consumed",
-					detail: `${formatPercent(consumedPercent)}`,
+					detailLabel: "",
+					detailValue: formatPercent(consumedPercent),
 					color: CONSUMED_COLOR,
 				});
 			}
@@ -916,7 +1019,7 @@
 					class: requestStatusClass(request.status),
 					label: requestStatusLabel(request.status),
 				},
-				tokens: formatNumber(request.tokens),
+				tokens: formatTokensWithCached(request.tokens, request.cachedInputTokens),
 				cost: formatCurrency(request.cost),
 				error: rawError ? truncateText(rawError, 80) : "--",
 				errorTitle: rawError,
@@ -1796,15 +1899,15 @@
 				const items =
 					this.view === "accounts"
 						? [
-								`Selection: ${this.accounts.selectedId || "--"}`,
-								`Rotation: ${this.dashboardData.routing?.rotationEnabled ? "enabled" : "disabled"}`,
-								`Last sync: ${lastSync}`,
-							]
+							`Selection: ${this.accounts.selectedId || "--"}`,
+							`Rotation: ${this.dashboardData.routing?.rotationEnabled ? "enabled" : "disabled"}`,
+							`Last sync: ${lastSync}`,
+						]
 						: [
-								`Last sync: ${lastSync}`,
-								`Routing: ${routingLabel(this.dashboardData.routing?.strategy)}`,
-								`Backend: ${this.backendPath}`,
-							];
+							`Last sync: ${lastSync}`,
+							`Routing: ${routingLabel(this.dashboardData.routing?.strategy)}`,
+							`Backend: ${this.backendPath}`,
+						];
 				if (this.importState.isLoading) {
 					items.unshift(
 						`Importing ${this.importState.fileName || "auth.json"}...`,

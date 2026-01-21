@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from sqlalchemy import inspect
-from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.db.models import DashboardSettings
 
 
-def _settings_table_exists(conn: Connection) -> bool:
-    inspector = inspect(conn)
+def _settings_table_exists(session: Session) -> bool:
+    inspector = inspect(session.connection())
     return inspector.has_table("dashboard_settings")
 
 
 async def run(session: AsyncSession) -> None:
-    conn = await session.connection()
-    exists = await conn.run_sync(_settings_table_exists)
+    exists = await session.run_sync(_settings_table_exists)
     if not exists:
         return
 
