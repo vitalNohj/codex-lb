@@ -2,9 +2,13 @@
 
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, view everything in a dashboard.
 
-<p align="center">
-  <img src="docs/screenshots/dashboard.jpg" alt="Codex Load Balancer dashboard" width="100%">
-</p>
+### Main Dashboard View
+
+![main dashboard view](docs/screenshots/dashboard.jpg)
+
+### Accounts view
+
+![Accounts list and details](docs/screenshots/accounts.jpg)
 
 ## Quick Start
 
@@ -25,9 +29,7 @@ uvx codex-lb
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
 
-## Accounts view
 
-![Accounts list and details](docs/screenshots/accounts.jpg)
 
 ## Codex CLI & Extension Setup
 
