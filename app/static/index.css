@@ -184,7 +184,7 @@ body {
 
 .two-column {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 1fr 380px;
   gap: 24px;
   margin-top: 24px;
 }
