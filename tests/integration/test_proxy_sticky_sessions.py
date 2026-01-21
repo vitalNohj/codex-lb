@@ -40,11 +40,13 @@ def _make_auth_json(account_id: str, email: str) -> dict:
     }
 
 
-async def _import_account(async_client, account_id: str, email: str) -> None:
+async def _import_account(async_client, account_id: str, email: str) -> str:
     auth_json = _make_auth_json(account_id, email)
     files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
     response = await async_client.post("/api/accounts/import", files=files)
     assert response.status_code == 200
+    payload = response.json()
+    return payload["accountId"]
 
 
 async def _set_routing_settings(
@@ -66,8 +68,8 @@ async def _set_routing_settings(
 @pytest.mark.asyncio
 async def test_proxy_sticky_prompt_cache_key_pins_account(async_client, monkeypatch):
     await _set_routing_settings(async_client, sticky_threads_enabled=True)
-    await _import_account(async_client, "acc_a", "a@example.com")
-    await _import_account(async_client, "acc_b", "b@example.com")
+    acc_a_id = await _import_account(async_client, "acc_a", "a@example.com")
+    acc_b_id = await _import_account(async_client, "acc_b", "b@example.com")
 
     seen: list[str] = []
 
@@ -83,14 +85,14 @@ async def test_proxy_sticky_prompt_cache_key_pins_account(async_client, monkeypa
     async with SessionLocal() as session:
         usage_repo = UsageRepository(session)
         await usage_repo.add_entry(
-            account_id="acc_a",
+            account_id=acc_a_id,
             used_percent=10.0,
             window="primary",
             reset_at=now_epoch + 3600,
             window_minutes=300,
         )
         await usage_repo.add_entry(
-            account_id="acc_b",
+            account_id=acc_b_id,
             used_percent=20.0,
             window="primary",
             reset_at=now_epoch + 3600,
@@ -111,14 +113,14 @@ async def test_proxy_sticky_prompt_cache_key_pins_account(async_client, monkeypa
     async with SessionLocal() as session:
         usage_repo = UsageRepository(session)
         await usage_repo.add_entry(
-            account_id="acc_a",
+            account_id=acc_a_id,
             used_percent=95.0,
             window="primary",
             reset_at=now_epoch + 3600,
             window_minutes=300,
         )
         await usage_repo.add_entry(
-            account_id="acc_b",
+            account_id=acc_b_id,
             used_percent=5.0,
             window="primary",
             reset_at=now_epoch + 3600,
@@ -140,6 +142,7 @@ async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monk
 
     acc_a = Account(
         id="acc_rl_a",
+        chatgpt_account_id="acc_rl_a",
         email="rl_a@example.com",
         plan_type="plus",
         access_token_encrypted=encryptor.encrypt("access-a"),
@@ -151,6 +154,7 @@ async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monk
     )
     acc_b = Account(
         id="acc_rl_b",
+        chatgpt_account_id="acc_rl_b",
         email="rl_b@example.com",
         plan_type="plus",
         access_token_encrypted=encryptor.encrypt("access-b"),
@@ -212,8 +216,8 @@ async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monk
 @pytest.mark.asyncio
 async def test_proxy_compact_reallocates_sticky_mapping(async_client, monkeypatch):
     await _set_routing_settings(async_client, sticky_threads_enabled=True)
-    await _import_account(async_client, "acc_c1", "c1@example.com")
-    await _import_account(async_client, "acc_c2", "c2@example.com")
+    acc_c1_id = await _import_account(async_client, "acc_c1", "c1@example.com")
+    acc_c2_id = await _import_account(async_client, "acc_c2", "c2@example.com")
 
     now = utcnow()
     now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
@@ -221,14 +225,14 @@ async def test_proxy_compact_reallocates_sticky_mapping(async_client, monkeypatc
     async with SessionLocal() as session:
         usage_repo = UsageRepository(session)
         await usage_repo.add_entry(
-            account_id="acc_c1",
+            account_id=acc_c1_id,
             used_percent=10.0,
             window="primary",
             reset_at=now_epoch + 3600,
             window_minutes=300,
         )
         await usage_repo.add_entry(
-            account_id="acc_c2",
+            account_id=acc_c2_id,
             used_percent=20.0,
             window="primary",
             reset_at=now_epoch + 3600,
@@ -265,14 +269,14 @@ async def test_proxy_compact_reallocates_sticky_mapping(async_client, monkeypatc
     async with SessionLocal() as session:
         usage_repo = UsageRepository(session)
         await usage_repo.add_entry(
-            account_id="acc_c1",
+            account_id=acc_c1_id,
             used_percent=90.0,
             window="primary",
             reset_at=now_epoch + 3600,
             window_minutes=300,
         )
         await usage_repo.add_entry(
-            account_id="acc_c2",
+            account_id=acc_c2_id,
             used_percent=5.0,
             window="primary",
             reset_at=now_epoch + 3600,
