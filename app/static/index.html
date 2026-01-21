@@ -207,11 +207,21 @@
                       <th style="width: 25%">Email</th>
                       <th style="width: 10%">Plan</th>
                       <th style="width: 12%">Status</th>
-                      <th style="text-align: right; width: 12%"
-                        x-text="`Remaining (${formatWindowLabel('secondary', dashboardData.usage.secondary.windowMinutes)})`">
+                      <th style="text-align: center; width: 12%">
+                        <span style="display: inline-flex; flex-direction: column; align-items: center">
+                          <span>Remaining</span>
+                          <span style="font-weight: normal; font-size: 0.9em; color: var(--text-muted)"
+                            x-text="`(${formatWindowLabel('secondary', dashboardData.usage.secondary.windowMinutes)})`">
+                          </span>
+                        </span>
                       </th>
-                      <th style="width: 13%"
-                        x-text="`Quota reset (${formatWindowLabel('secondary', dashboardData.usage.secondary.windowMinutes)})`">
+                      <th style="text-align: center; width: 13%">
+                        <span style="display: inline-flex; flex-direction: column; align-items: center">
+                          <span style="white-space: nowrap">Quota reset</span>
+                          <span style="font-weight: normal; font-size: 0.9em; color: var(--text-muted)"
+                            x-text="`(${formatWindowLabel('secondary', dashboardData.usage.secondary.windowMinutes)})`">
+                          </span>
+                        </span>
                       </th>
                     </tr>
                   </thead>
@@ -225,11 +235,11 @@
                         <td><span class="status-pill" :class="account.status"
                             x-text="statusLabel(account.status)"></span>
                         </td>
-                        <td style="text-align: right"
+                        <td style="text-align: center"
                           :class="calculateTextUsageTextClass(account.status, account.usage?.secondaryRemainingPercent)"
                           x-text="formatPercent(account.usage?.secondaryRemainingPercent)">
                         </td>
-                        <td x-text="formatQuotaResetLabel(account.resetAtSecondary)"></td>
+                        <td style="text-align: center" x-text="formatQuotaResetLabel(account.resetAtSecondary)"></td>
                       </tr>
                     </template>
                     <template x-if="filteredAccounts.length === 0">
