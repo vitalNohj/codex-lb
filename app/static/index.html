@@ -276,7 +276,8 @@
                     <div :style="{ width: `${formatPercentValue(selectedAccount.usage?.primaryRemainingPercent)}%` }">
                     </div>
                   </div>
-                  <span class="text-muted"
+                  <span
+                    :class="calculateProgressTextClass(selectedAccount.status, selectedAccount.usage?.primaryRemainingPercent)"
                     x-text="formatPercent(selectedAccount.usage?.primaryRemainingPercent)"></span>
                 </div>
                 <div class="progress-row">
@@ -288,7 +289,8 @@
                     <div :style="{ width: `${formatPercentValue(selectedAccount.usage?.secondaryRemainingPercent)}%` }">
                     </div>
                   </div>
-                  <span class="text-muted"
+                  <span
+                    :class="calculateProgressTextClass(selectedAccount.status, selectedAccount.usage?.secondaryRemainingPercent)"
                     x-text="formatPercent(selectedAccount.usage?.secondaryRemainingPercent)"></span>
                 </div>
               </div>

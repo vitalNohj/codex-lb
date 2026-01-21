@@ -51,11 +51,11 @@
   --status-active-bg: #dcfce7;
   --status-active-text: #16a34a;
 
-  --status-warning-bg: #fef9c3;
-  --status-warning-text: #ca8a04;
+  --status-warning-bg: #fef3c7;
+  --status-warning-text: #f59e0b;
 
   --status-error-bg: #fee2e2;
-  --status-error-text: #dc2626;
+  --status-error-text: #ef4444;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
