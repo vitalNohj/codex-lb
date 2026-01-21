@@ -891,6 +891,12 @@
 				byAccount: [],
 			};
 			const rawEntries = usage.byAccount || [];
+			const hasPrimaryAdjustments =
+				window.key === "primary" &&
+				rawEntries.some(
+					(entry) =>
+						entry?.accountId && secondaryExhaustedAccounts.has(entry.accountId),
+				);
 			const entries =
 				window.key === "primary"
 					? applySecondaryExhaustedToPrimary(
@@ -899,7 +905,7 @@
 						)
 					: rawEntries;
 			const remaining =
-				window.key === "primary"
+				hasPrimaryAdjustments
 					? sumRemainingCredits(entries)
 					: toNumber(usage.remaining) || 0;
 			const capacity = Math.max(remaining, toNumber(usage.capacity) || 0);
