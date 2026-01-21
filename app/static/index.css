@@ -838,6 +838,25 @@ button {
   font-weight: 500;
 }
 
+.token-fieldset {
+  margin-top: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0 16px;
+}
+
+.token-fieldset legend {
+  padding: 0 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  margin-left: -4px;
+}
+
+.token-fieldset .summary-list>div:last-child {
+  border-bottom: none;
+}
+
 .auth-dialog__option {
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
