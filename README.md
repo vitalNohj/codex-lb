@@ -6,7 +6,7 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, view ev
 
 ![main dashboard view](docs/screenshots/dashboard.jpg)
 
-### Accounts view
+### Accounts View
 
 ![Accounts list and details](docs/screenshots/accounts.jpg)
 
