@@ -25,6 +25,9 @@
   --status-error-bg: rgba(239, 68, 68, 0.15);
   --status-error-text: #f87171;
 
+  --status-paused-bg: rgba(59, 130, 246, 0.15);
+  --status-paused-text: #60a5fa;
+
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
 
@@ -56,6 +59,9 @@
 
   --status-error-bg: #fee2e2;
   --status-error-text: #ef4444;
+
+  --status-paused-bg: #dbeafe;
+  --status-paused-text: #2563eb;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -418,9 +424,10 @@ body {
   color: var(--status-error-text);
 }
 
-.status-pill.deactivated {
-  background: var(--bg-surface);
-  color: var(--text-muted);
+.status-pill.deactivated,
+.status-pill.paused {
+  background: var(--status-paused-bg);
+  color: var(--status-paused-text);
 }
 
 .badge-row {

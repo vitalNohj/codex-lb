@@ -226,7 +226,7 @@
                             x-text="statusLabel(account.status)"></span>
                         </td>
                         <td style="text-align: right"
-                          :class="calculateProgressTextClass(account.status, account.usage?.secondaryRemainingPercent)"
+                          :class="calculateTextUsageTextClass(account.status, account.usage?.secondaryRemainingPercent)"
                           x-text="formatPercent(account.usage?.secondaryRemainingPercent)">
                         </td>
                         <td x-text="formatQuotaResetLabel(account.resetAtSecondary)"></td>
@@ -277,7 +277,7 @@
                     </div>
                   </div>
                   <span
-                    :class="calculateProgressTextClass(selectedAccount.status, selectedAccount.usage?.primaryRemainingPercent)"
+                    :class="calculateTextUsageTextClass(selectedAccount.status, selectedAccount.usage?.primaryRemainingPercent)"
                     x-text="formatPercent(selectedAccount.usage?.primaryRemainingPercent)"></span>
                 </div>
                 <div class="progress-row">
@@ -290,7 +290,7 @@
                     </div>
                   </div>
                   <span
-                    :class="calculateProgressTextClass(selectedAccount.status, selectedAccount.usage?.secondaryRemainingPercent)"
+                    :class="calculateTextUsageTextClass(selectedAccount.status, selectedAccount.usage?.secondaryRemainingPercent)"
                     x-text="formatPercent(selectedAccount.usage?.secondaryRemainingPercent)"></span>
                 </div>
               </div>

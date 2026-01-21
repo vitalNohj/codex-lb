@@ -518,6 +518,21 @@
 		const cls = calculateProgressClass(status, remainingPercent);
 		return cls ? `text-${cls}` : "";
 	};
+
+	const calculateTextUsageClass = (status, remainingPercent) => {
+		if (status === "exceeded") return "error";
+		// For text, we show usage color even if paused. Only deactivated is plain.
+		if (status === "deactivated") return "";
+		const percent = toNumber(remainingPercent) || 0;
+		if (percent <= 20) return "error";
+		if (percent <= 50) return "limited";
+		return "success";
+	};
+
+	const calculateTextUsageTextClass = (status, remainingPercent) => {
+		const cls = calculateTextUsageClass(status, remainingPercent);
+		return cls ? `text-${cls}` : "";
+	};
 	const progressClass = (status) => PROGRESS_CLASS_BY_STATUS[status] || "";
 
 	const normalizeSearchInput = (value) =>
@@ -949,9 +964,9 @@
 			const entries =
 				window.key === "primary"
 					? applySecondaryExhaustedToPrimary(
-							rawEntries,
-							secondaryExhaustedAccounts,
-						)
+						rawEntries,
+						secondaryExhaustedAccounts,
+					)
 					: rawEntries;
 			const remaining =
 				hasPrimaryAdjustments
@@ -2133,6 +2148,7 @@
 			statusLabel,
 			requestStatusLabel,
 			requestStatusClass,
+			calculateTextUsageTextClass,
 			progressClass,
 			planLabel,
 			routingLabel,
