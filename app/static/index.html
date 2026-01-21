@@ -371,8 +371,8 @@
             </div>
           </div>
           <div class="auth-dialog__status">
+            <span class="auth-dialog__status-text" x-text="authDialog.statusLabel"></span>
             <span class="spinner animate" aria-hidden="true" x-show="authDialog.status === 'pending'"></span>
-            <span x-text="authDialog.statusLabel"></span>
           </div>
         </div>
       </template>
@@ -387,7 +387,11 @@
           <div class="auth-dialog__device-grid">
             <div>
               <div class="auth-dialog__label">User code</div>
-              <div class="auth-dialog__code-value" x-text="authDialog.userCode"></div>
+              <div class="auth-dialog__code-value">
+                <span x-text="authDialog.userCode"></span>
+                <button type="button" class="copy-btn"
+                  @click="copyToClipboard(authDialog.userCode, 'User code')">Copy</button>
+              </div>
             </div>
             <div>
               <div class="auth-dialog__label">Verification URL</div>
@@ -399,12 +403,13 @@
               </div>
             </div>
           </div>
-          <div class="auth-dialog__device-meta text-muted">
-            Expires in <span x-text="formatCountdown(authDialog.remainingSeconds)"></span>
-          </div>
           <div class="auth-dialog__status">
-            <span class="spinner animate" aria-hidden="true" x-show="authDialog.status === 'pending'"></span>
-            <span x-text="authDialog.statusLabel"></span>
+            <span class="auth-dialog__status-text" x-text="authDialog.statusLabel"></span>
+            <div class="auth-dialog__status-meta" x-show="authDialog.status === 'pending'">
+              <span class="spinner animate" aria-hidden="true"></span>
+              <span class="text-muted">Expires in <span
+                  x-text="formatCountdown(authDialog.remainingSeconds)"></span></span>
+            </div>
           </div>
         </div>
       </template>
@@ -434,11 +439,8 @@
       </div>
       <div class="auth-dialog__actions-row" x-show="authDialog.stage === 'device'">
         <button type="button" @click="resetAuthDialogState">Change method</button>
-        <button type="button" @click="copyToClipboard(authDialog.userCode, 'User code')"
-          :disabled="!authDialog.userCode">Copy code</button>
         <button type="button" class="default" @click="openVerificationUrl" :disabled="!authDialog.verificationUrl">Open
-          link
-        </button>
+          link</button>
       </div>
       <div class="auth-dialog__actions-row" x-show="authDialog.stage === 'success'">
         <button type="button" class="default" @click="closeAddAccountDialog">Done</button>
