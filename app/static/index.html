@@ -367,7 +367,7 @@
               <a class="auth-dialog__value auth-dialog__link" :href="authDialog.authorizationUrl" target="_blank"
                 x-text="authDialog.authorizationUrl"></a>
               <button type="button" class="copy-btn"
-                @click="copyToClipboard(authDialog.authorizationUrl, 'Authorization URL')">Copy</button>
+                @click="copyToClipboard(authDialog.authorizationUrl, 'Authorization URL', $event)">Copy</button>
             </div>
           </div>
           <div class="auth-dialog__status">
@@ -390,7 +390,7 @@
               <div class="auth-dialog__code-value">
                 <span x-text="authDialog.userCode"></span>
                 <button type="button" class="copy-btn"
-                  @click="copyToClipboard(authDialog.userCode, 'User code')">Copy</button>
+                  @click="copyToClipboard(authDialog.userCode, 'User code', $event)">Copy</button>
               </div>
             </div>
             <div>
@@ -399,7 +399,7 @@
                 <a class="auth-dialog__value auth-dialog__link" :href="authDialog.verificationUrl" target="_blank"
                   x-text="authDialog.verificationUrl"></a>
                 <button type="button" class="copy-btn"
-                  @click="copyToClipboard(authDialog.verificationUrl, 'Verification URL')">Copy</button>
+                  @click="copyToClipboard(authDialog.verificationUrl, 'Verification URL', $event)">Copy</button>
               </div>
             </div>
           </div>

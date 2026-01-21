@@ -917,6 +917,10 @@ button {
   color: var(--text-main);
 }
 
+.auth-dialog__detail {
+  margin-bottom: 24px;
+}
+
 .auth-dialog__steps {
   margin: 0 0 24px 0;
   padding-left: 20px;
@@ -1055,6 +1059,14 @@ button {
   gap: 16px;
 }
 
+.auth-dialog__label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
 .auth-dialog__status {
   display: flex;
   flex-direction: column;
@@ -1111,7 +1123,7 @@ button {
   padding: 4px 8px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
 }
 
@@ -1119,6 +1131,11 @@ button {
   background: var(--bg-card);
   color: var(--text-main);
   border-color: var(--text-muted);
+}
+
+.copy-btn.copy-success {
+  color: #10b981 !important;
+  border-color: #10b981 !important;
 }
 
 .auth-dialog__status-meta {

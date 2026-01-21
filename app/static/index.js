@@ -1565,12 +1565,27 @@
 			calculateProgressTextClass(status, remainingPercent) {
 				return calculateProgressTextClass(status, remainingPercent);
 			},
-			async copyToClipboard(value, label) {
-				if (!value) {
-					return;
+			async copyToClipboard(value, label, e) {
+				if (!value) return;
+
+				// Localized feedback in the button
+				let btn = null;
+				let originalText = "";
+				if (e && e.target) {
+					btn = e.target.tagName === "BUTTON" ? e.target : e.target.closest("button");
+					if (btn) {
+						originalText = btn.textContent;
+						btn.textContent = "Copied!";
+						btn.classList.add("copy-success");
+						window.setTimeout(() => {
+							btn.textContent = originalText;
+							btn.classList.remove("copy-success");
+						}, 4000);
+					}
 				}
+
 				try {
-					if (navigator.clipboard?.writeText) {
+					if (navigator.clipboard && navigator.clipboard.writeText) {
 						await navigator.clipboard.writeText(value);
 					} else {
 						const textarea = document.createElement("textarea");
@@ -1583,29 +1598,26 @@
 						document.execCommand("copy");
 						document.body.removeChild(textarea);
 					}
-					if (this.authDialog.open) {
-						const previousLabel = this.authDialog.statusLabel;
-						this.authDialog.statusLabel = `${label} copied.`;
-						window.setTimeout(() => {
-							if (this.authDialog.statusLabel === `${label} copied.`) {
-								this.authDialog.statusLabel = previousLabel;
-							}
-						}, 2000);
-					} else {
+
+					// Only show message box if auth dialog is not open and button feedback wasn't possible
+					if (!this.authDialog.open && !btn) {
 						this.openMessageBox({
 							tone: "success",
 							title: "Copied",
 							message: `${label} copied to clipboard.`,
 						});
 					}
-				} catch (error) {
-					if (this.authDialog.open) {
-						this.authDialog.statusLabel = "Copy failed.";
-					} else {
+				} catch (err) {
+					console.error("Clipboard error:", err);
+					if (btn) {
+						btn.textContent = "Failed";
+						btn.classList.remove("copy-success");
+						window.setTimeout(() => { btn.textContent = originalText; }, 2000);
+					} else if (!this.authDialog.open) {
 						this.openMessageBox({
 							tone: "error",
 							title: "Copy failed",
-							message: "Unable to copy to clipboard.",
+							message: `Could not copy ${label}.`,
 						});
 					}
 				}
