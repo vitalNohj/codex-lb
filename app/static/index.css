@@ -493,8 +493,8 @@ body {
   gap: 6px;
 }
 
-.summary-list .progress-row+.progress-row {
-  margin-top: 16px;
+.progress-row+.progress-row {
+  margin-top: 24px;
 }
 
 .progress-row label {
