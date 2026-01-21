@@ -541,11 +541,17 @@ body {
   font-size: 12px;
   padding: 6px 10px;
   border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--text-main);
+  border: 1px solid var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--accent-primary-text);
   cursor: pointer;
   font-weight: 500;
+  transition: background 0.2s;
+}
+
+.account-actions button:hover {
+  background: var(--accent-primary-hover);
+  border-color: var(--accent-primary-hover);
 }
 
 
@@ -559,17 +565,17 @@ body {
   font-size: 13px;
   padding: 8px 12px;
   border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-surface);
-  color: var(--text-main);
+  border: 1px solid var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--accent-primary-text);
   cursor: pointer;
   font-weight: 500;
   transition: all 0.2s;
 }
 
 .inline-actions button:hover {
-  border-color: var(--accent-primary);
-  background: var(--bg-list-hover);
+  border-color: var(--accent-primary-hover);
+  background: var(--accent-primary-hover);
 }
 
 .table-wrap {
@@ -741,14 +747,15 @@ button {
 .list-actions label[role="button"] {
   display: inline-block;
   padding: 8px 16px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--accent-primary);
   border-radius: 6px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  color: var(--text-main);
+  color: var(--accent-primary-text);
   position: relative;
-  background: transparent;
+  background: var(--accent-primary);
+  transition: background 0.2s;
 }
 
 .list-actions label[role="button"] input {
@@ -758,22 +765,8 @@ button {
 }
 
 .list-actions label[role="button"]:hover {
-  background: var(--bg-list-hover);
-  border-color: var(--accent-primary);
-}
-
-.list-actions label[role="button"],
-.account-actions button {
-  background: var(--bg-surface);
-  border-color: var(--border-strong);
-  color: var(--text-main);
-  transition: all 0.2s;
-}
-
-.list-actions label[role="button"]:hover,
-.account-actions button:hover {
-  background: var(--bg-list-hover);
-  border-color: var(--accent-primary);
+  background: var(--accent-primary-hover);
+  border-color: var(--accent-primary-hover);
 }
 
 .dialog-backdrop {
