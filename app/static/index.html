@@ -342,13 +342,13 @@
           <p class="auth-dialog__lead">Sign in with ChatGPT OAuth. API keys are not supported.</p>
           <fieldset class="auth-dialog__methods">
             <legend>Sign-in method</legend>
-            <div class="auth-dialog__option">
+            <div class="auth-dialog__option" @click="authDialog.selectedMethod = 'browser'">
               <input id="auth-method-browser" type="radio" name="auth-method" value="browser"
                 x-model="authDialog.selectedMethod">
               <label for="auth-method-browser">Browser login (PKCE)</label>
               <div class="auth-dialog__option-meta text-muted">Requires local callback on port 1455.</div>
             </div>
-            <div class="auth-dialog__option">
+            <div class="auth-dialog__option" @click="authDialog.selectedMethod = 'device'">
               <input id="auth-method-device" type="radio" name="auth-method" value="device"
                 x-model="authDialog.selectedMethod">
               <label for="auth-method-device">Device code</label>

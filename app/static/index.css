@@ -979,6 +979,12 @@ button {
   left: 12px;
   margin: 0;
   accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.auth-dialog__option:has(input:checked) {
+  border-color: var(--accent-primary);
+  background: var(--bg-list-hover);
 }
 
 .auth-dialog__option label {
@@ -994,6 +1000,7 @@ button {
   font-size: 12px;
   margin-top: 2px;
   color: var(--text-muted);
+  cursor: pointer;
 }
 
 .auth-dialog__actions,
