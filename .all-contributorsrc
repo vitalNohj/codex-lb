@@ -1,0 +1,50 @@
+{
+  "projectName": "codex-lb",
+  "projectOwner": "Soju06",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": true,
+  "commitConvention": "angular",
+  "contributors": [
+    {
+      "login": "Soju06",
+      "name": "Soju06",
+      "avatar_url": "https://avatars.githubusercontent.com/u/34199905?v=4",
+      "profile": "https://github.com/Soju06",
+      "contributions": [
+        "code",
+        "test",
+        "maintenance",
+        "infra"
+      ]
+    },
+    {
+      "login": "JKamsker",
+      "name": "Jonas Kamsker",
+      "avatar_url": "https://avatars.githubusercontent.com/u/11245306?v=4",
+      "profile": "http://jonas.kamsker.at/",
+      "contributions": [
+        "code",
+        "bug",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "Quack6765",
+      "name": "Quack",
+      "avatar_url": "https://avatars.githubusercontent.com/u/5446230?v=4",
+      "profile": "https://github.com/Quack6765",
+      "contributions": [
+        "code",
+        "bug",
+        "maintenance"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7,
+  "linkToUsage": false
+}
