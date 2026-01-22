@@ -506,6 +506,33 @@
 	};
 	const routingLabel = (strategy) => ROUTING_LABELS[strategy] || "unknown";
 	const errorLabel = (code) => ERROR_LABELS[code] || "--";
+	const calculateProgressClass = (status, remainingPercent) => {
+		if (status === "exceeded") return "error";
+		if (status === "paused" || status === "deactivated") return "";
+		const percent = toNumber(remainingPercent) || 0;
+		if (percent <= 20) return "error";
+		if (percent <= 50) return "limited";
+		return "success";
+	};
+	const calculateProgressTextClass = (status, remainingPercent) => {
+		const cls = calculateProgressClass(status, remainingPercent);
+		return cls ? `text-${cls}` : "";
+	};
+
+	const calculateTextUsageClass = (status, remainingPercent) => {
+		if (status === "exceeded") return "error";
+		// For text, we show usage color even if paused. Only deactivated is plain.
+		if (status === "deactivated") return "";
+		const percent = toNumber(remainingPercent) || 0;
+		if (percent <= 20) return "error";
+		if (percent <= 50) return "limited";
+		return "success";
+	};
+
+	const calculateTextUsageTextClass = (status, remainingPercent) => {
+		const cls = calculateTextUsageClass(status, remainingPercent);
+		return cls ? `text-${cls}` : "";
+	};
 	const progressClass = (status) => PROGRESS_CLASS_BY_STATUS[status] || "";
 
 	const normalizeSearchInput = (value) =>
@@ -937,9 +964,9 @@
 			const entries =
 				window.key === "primary"
 					? applySecondaryExhaustedToPrimary(
-							rawEntries,
-							secondaryExhaustedAccounts,
-						)
+						rawEntries,
+						secondaryExhaustedAccounts,
+					)
 					: rawEntries;
 			const remaining =
 				hasPrimaryAdjustments
@@ -954,21 +981,40 @@
 				window.key,
 			);
 			const gradient = buildDonutGradient(items, capacity);
-			const legendItems = items.map((item) => ({
-				label: item.label,
-				detailLabel: "Remaining",
-				detailValue: formatPercent(item.remainingPercent),
-				color: item.color,
-			}));
-			if (capacity > 0 && consumed > 0) {
+			const legendItems = items.map((item) => {
+				const percent = item.remainingPercent;
+				let valueClass = "success";
+				if (percent <= 20) {
+					valueClass = "error";
+				} else if (percent <= 50) {
+					valueClass = "limited";
+				}
+				return {
+					label: truncateText(item.label, 28),
+					fullLabel: item.label,
+					detailLabel: "Remaining",
+					detailValue: formatPercent(item.remainingPercent),
+					valueClass,
+					color: item.color,
+				};
+			});
+			if (capacity > 0) {
 				const consumedPercent = Math.min(
 					100,
 					Math.max(0, (consumed / capacity) * 100),
 				);
+				let consumedClass = "success";
+				if (consumedPercent >= 80) {
+					consumedClass = "error";
+				} else if (consumedPercent >= 50) {
+					consumedClass = "limited";
+				}
 				legendItems.push({
 					label: "Consumed",
+					fullLabel: "Consumed",
 					detailLabel: "",
 					detailValue: formatPercent(consumedPercent),
+					valueClass: consumedClass,
 					color: CONSUMED_COLOR,
 				});
 			}
@@ -995,7 +1041,7 @@
 				},
 				remaining: remainingRounded,
 				remainingText: formatPercent(secondaryRemaining),
-				progressClass: progressClass(account.status),
+				progressClass: calculateProgressClass(account.status, secondaryRemaining),
 				marquee: account.status === "deactivated",
 				meta: formatQuotaResetMeta(
 					account.resetAtSecondary,
@@ -1700,12 +1746,33 @@
 					window.open(this.authDialog.verificationUrl, "_blank", "noopener");
 				}
 			},
-			async copyToClipboard(value, label) {
-				if (!value) {
-					return;
+			calculateProgressClass(status, remainingPercent) {
+				return calculateProgressClass(status, remainingPercent);
+			},
+			calculateProgressTextClass(status, remainingPercent) {
+				return calculateProgressTextClass(status, remainingPercent);
+			},
+			async copyToClipboard(value, label, e) {
+				if (!value) return;
+
+				// Localized feedback in the button
+				let btn = null;
+				let originalText = "";
+				if (e && e.target) {
+					btn = e.target.tagName === "BUTTON" ? e.target : e.target.closest("button");
+					if (btn) {
+						originalText = btn.textContent;
+						btn.textContent = "Copied!";
+						btn.classList.add("copy-success");
+						window.setTimeout(() => {
+							btn.textContent = originalText;
+							btn.classList.remove("copy-success");
+						}, 4000);
+					}
 				}
+
 				try {
-					if (navigator.clipboard?.writeText) {
+					if (navigator.clipboard && navigator.clipboard.writeText) {
 						await navigator.clipboard.writeText(value);
 					} else {
 						const textarea = document.createElement("textarea");
@@ -1718,29 +1785,26 @@
 						document.execCommand("copy");
 						document.body.removeChild(textarea);
 					}
-					if (this.authDialog.open) {
-						const previousLabel = this.authDialog.statusLabel;
-						this.authDialog.statusLabel = `${label} copied.`;
-						window.setTimeout(() => {
-							if (this.authDialog.statusLabel === `${label} copied.`) {
-								this.authDialog.statusLabel = previousLabel;
-							}
-						}, 2000);
-					} else {
+
+					// Only show message box if auth dialog is not open and button feedback wasn't possible
+					if (!this.authDialog.open && !btn) {
 						this.openMessageBox({
 							tone: "success",
 							title: "Copied",
 							message: `${label} copied to clipboard.`,
 						});
 					}
-				} catch (error) {
-					if (this.authDialog.open) {
-						this.authDialog.statusLabel = "Copy failed.";
-					} else {
+				} catch (err) {
+					console.error("Clipboard error:", err);
+					if (btn) {
+						btn.textContent = "Failed";
+						btn.classList.remove("copy-success");
+						window.setTimeout(() => { btn.textContent = originalText; }, 2000);
+					} else if (!this.authDialog.open) {
 						this.openMessageBox({
 							tone: "error",
 							title: "Copy failed",
-							message: "Unable to copy to clipboard.",
+							message: `Could not copy ${label}.`,
 						});
 					}
 				}
@@ -2084,6 +2148,7 @@
 			statusLabel,
 			requestStatusLabel,
 			requestStatusClass,
+			calculateTextUsageTextClass,
 			progressClass,
 			planLabel,
 			routingLabel,
@@ -2100,7 +2165,14 @@
 			formatQuotaResetLabel,
 			formatAccessTokenLabel,
 			formatRefreshTokenLabel,
+			formatAccessTokenLabel,
+			formatRefreshTokenLabel,
 			formatIdTokenLabel,
+			theme: localStorage.getItem('theme') || 'dark',
+			toggleTheme() {
+				this.theme = this.theme === 'dark' ? 'light' : 'dark';
+				localStorage.setItem('theme', this.theme);
+			},
 		}));
 	};
 
