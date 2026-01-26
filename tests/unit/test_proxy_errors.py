@@ -62,6 +62,33 @@ async def test_error_payload_uses_json_if_valid():
 
 
 @pytest.mark.asyncio
+async def test_error_payload_uses_message_field():
+    json_data = {"message": "Plain message"}
+    resp = MockResponse(400, reason="Bad Request", json_data=json_data, text_data="")
+    payload = await _error_payload_from_response(resp)
+
+    assert payload["error"]["message"] == "Plain message"
+
+
+@pytest.mark.asyncio
+async def test_error_payload_uses_detail_field():
+    json_data = {"detail": "Bad request"}
+    resp = MockResponse(400, reason="Bad Request", json_data=json_data, text_data="")
+    payload = await _error_payload_from_response(resp)
+
+    assert payload["error"]["message"] == "Bad request"
+
+
+@pytest.mark.asyncio
+async def test_error_event_uses_detail_field():
+    json_data = {"detail": "Bad request"}
+    resp = MockResponse(400, reason="Bad Request", json_data=json_data, text_data="")
+    event = await _error_event_from_response(resp)
+
+    assert event["response"]["error"]["message"] == "Bad request"
+
+
+@pytest.mark.asyncio
 async def test_error_event_fallback_no_reason():
     resp = MockResponse(500, reason=None, json_data=None, text_data="")
     event = await _error_event_from_response(resp)

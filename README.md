@@ -1,6 +1,18 @@
+<!--
+About
+Codex/ChatGPT account load balancer & proxy with usage tracking, dashboard, and OpenCode-compatible endpoints
+
+Topics
+python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy codex fastapi usage-tracking chatgpt opencode
+
+Resources
+-->
+
 # codex-lb
 
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, view everything in a dashboard.
+
+## Screenshots
 
 ### Main Dashboard View
 
@@ -28,8 +40,6 @@ uvx codex-lb
 ```
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
-
-
 
 ## Codex CLI & Extension Setup
 

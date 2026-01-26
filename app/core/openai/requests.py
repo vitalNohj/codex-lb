@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.types import JsonObject, JsonValue
 
@@ -44,8 +44,16 @@ class ResponsesRequest(BaseModel):
     prompt_cache_key: str | None = None
     text: ResponsesTextControls | None = None
 
+    @field_validator("store")
+    @classmethod
+    def _ensure_store_false(cls, value: bool | None) -> bool | None:
+        if value is True:
+            raise ValueError("store must be false")
+        return value
+
     def to_payload(self) -> JsonObject:
-        return self.model_dump(mode="json", exclude_none=True)
+        payload = self.model_dump(mode="json", exclude_none=True)
+        return _strip_unsupported_fields(payload)
 
 
 class ResponsesCompactRequest(BaseModel):
@@ -56,4 +64,14 @@ class ResponsesCompactRequest(BaseModel):
     input: list[JsonValue]
 
     def to_payload(self) -> JsonObject:
-        return self.model_dump(mode="json", exclude_none=True)
+        payload = self.model_dump(mode="json", exclude_none=True)
+        return _strip_unsupported_fields(payload)
+
+
+_UNSUPPORTED_UPSTREAM_FIELDS = {"max_output_tokens"}
+
+
+def _strip_unsupported_fields(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    for key in _UNSUPPORTED_UPSTREAM_FIELDS:
+        payload.pop(key, None)
+    return payload

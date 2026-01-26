@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
 from app.core.clients.proxy import _build_upstream_headers, filter_inbound_headers
 from app.core.openai.parsing import parse_sse_event
+from app.core.openai.requests import ResponsesRequest
+from app.core.utils.request_id import reset_request_id, set_request_id
+from app.modules.proxy import service as proxy_service
 
 pytestmark = pytest.mark.unit
 
@@ -64,3 +68,26 @@ def test_parse_sse_event_reads_multiline_payload():
 
 def test_parse_sse_event_ignores_non_data_lines():
     assert parse_sse_event("event: ping\n") is None
+
+
+def test_log_proxy_request_payload(monkeypatch, caplog):
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+
+    class Settings:
+        log_proxy_request_payload = True
+        log_proxy_request_shape = False
+        log_proxy_request_shape_raw_cache_key = False
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
+
+    token = set_request_id("req_log_1")
+    try:
+        caplog.set_level(logging.WARNING)
+        proxy_service._maybe_log_proxy_request_payload("stream", payload, {"X-Request-Id": "req_log_1"})
+    finally:
+        reset_request_id(token)
+
+    assert "proxy_request_payload" in caplog.text
+    assert '"model":"gpt-5.1"' in caplog.text

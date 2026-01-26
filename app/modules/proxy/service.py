@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Sequence
@@ -80,6 +81,7 @@ class ProxyService:
         *,
         propagate_http_errors: bool = False,
     ) -> AsyncIterator[str]:
+        _maybe_log_proxy_request_payload("stream", payload, headers)
         _maybe_log_proxy_request_shape("stream", payload, headers)
         filtered = filter_inbound_headers(headers)
         return self._stream_with_retry(
@@ -93,6 +95,7 @@ class ProxyService:
         payload: ResponsesCompactRequest,
         headers: Mapping[str, str],
     ) -> OpenAIResponsePayload:
+        _maybe_log_proxy_request_payload("compact", payload, headers)
         _maybe_log_proxy_request_shape("compact", payload, headers)
         filtered = filter_inbound_headers(headers)
         settings = await self._settings_repo.get_or_create()
@@ -522,6 +525,32 @@ def _maybe_log_proxy_request_shape(
         prompt_cache_key_raw,
         fields_set,
         extra_keys,
+        header_keys,
+    )
+
+
+def _maybe_log_proxy_request_payload(
+    kind: str,
+    payload: ResponsesRequest | ResponsesCompactRequest,
+    headers: Mapping[str, str],
+) -> None:
+    settings = get_settings()
+    if not settings.log_proxy_request_payload:
+        return
+
+    request_id = get_request_id()
+    payload_dict = payload.model_dump(mode="json", exclude_none=True)
+    extra = payload.model_extra or {}
+    if extra:
+        payload_dict = {**payload_dict, "_extra": extra}
+    header_keys = _interesting_header_keys(headers)
+    payload_json = json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
+
+    logger.warning(
+        "proxy_request_payload request_id=%s kind=%s payload=%s headers=%s",
+        request_id,
+        kind,
+        payload_json,
         header_keys,
     )
 

@@ -126,6 +126,9 @@ async def _error_event_from_response(resp: ErrorResponse) -> ResponseFailedEvent
                 if key in payload:
                     event["response"]["error"][key] = payload[key]
             return event
+        message = _extract_upstream_message(data)
+        if message:
+            return response_failed_event("upstream_error", message, response_id=get_request_id())
     return response_failed_event("upstream_error", fallback_message, response_id=get_request_id())
 
 
@@ -144,7 +147,18 @@ async def _error_payload_from_response(resp: ErrorResponse) -> OpenAIErrorEnvelo
         error = parse_error_payload(data)
         if error:
             return {"error": error.model_dump(exclude_none=True)}
+        message = _extract_upstream_message(data)
+        if message:
+            return openai_error("upstream_error", message)
     return openai_error("upstream_error", fallback_message)
+
+
+def _extract_upstream_message(data: dict) -> str | None:
+    for key in ("message", "detail", "error"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
 
 
 async def stream_responses(

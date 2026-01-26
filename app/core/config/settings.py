@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     database_migrations_fail_fast: bool = True
     log_proxy_request_shape: bool = False
     log_proxy_request_shape_raw_cache_key: bool = False
+    log_proxy_request_payload: bool = False
 
     @field_validator("database_url")
     @classmethod

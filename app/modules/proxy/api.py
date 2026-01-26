@@ -8,10 +8,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import openai_error
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
+from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.dependencies import ProxyContext, get_proxy_context
 from app.modules.proxy.schemas import RateLimitStatusPayload
 
 router = APIRouter(prefix="/backend-api/codex", tags=["proxy"])
+v1_router = APIRouter(prefix="/v1", tags=["proxy"])
 usage_router = APIRouter(tags=["proxy"])
 
 
@@ -20,6 +22,23 @@ async def responses(
     request: Request,
     payload: ResponsesRequest = Body(...),
     context: ProxyContext = Depends(get_proxy_context),
+) -> Response:
+    return await _stream_responses(request, payload, context)
+
+
+@v1_router.post("/responses")
+async def v1_responses(
+    request: Request,
+    payload: V1ResponsesRequest = Body(...),
+    context: ProxyContext = Depends(get_proxy_context),
+) -> Response:
+    return await _stream_responses(request, payload.to_responses_request(), context)
+
+
+async def _stream_responses(
+    request: Request,
+    payload: ResponsesRequest,
+    context: ProxyContext,
 ) -> Response:
     rate_limit_headers = await context.service.rate_limit_headers()
     stream = context.service.stream_responses(
@@ -49,6 +68,23 @@ async def responses_compact(
     request: Request,
     payload: ResponsesCompactRequest = Body(...),
     context: ProxyContext = Depends(get_proxy_context),
+) -> JSONResponse:
+    return await _compact_responses(request, payload, context)
+
+
+@v1_router.post("/responses/compact")
+async def v1_responses_compact(
+    request: Request,
+    payload: V1ResponsesCompactRequest = Body(...),
+    context: ProxyContext = Depends(get_proxy_context),
+) -> JSONResponse:
+    return await _compact_responses(request, payload.to_compact_request(), context)
+
+
+async def _compact_responses(
+    request: Request,
+    payload: ResponsesCompactRequest,
+    context: ProxyContext,
 ) -> JSONResponse:
     rate_limit_headers = await context.service.rate_limit_headers()
     try:

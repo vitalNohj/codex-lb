@@ -102,6 +102,7 @@ def create_app() -> FastAPI:
         return await http_exception_handler(request, exc)
 
     app.include_router(proxy_api.router)
+    app.include_router(proxy_api.v1_router)
     app.include_router(proxy_api.usage_router)
     app.include_router(accounts_api.router)
     app.include_router(usage_api.router)
