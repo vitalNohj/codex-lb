@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import weakref
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import cast
+from typing import AsyncContextManager, ClassVar, cast
 
 from app.core import usage as usage_core
 from app.core.usage.logs import (
@@ -37,17 +41,30 @@ from app.modules.usage.schemas import (
 from app.modules.usage.updater import UsageUpdater
 
 
+@dataclass(slots=True)
+class _RefreshState:
+    lock: asyncio.Lock
+    task: asyncio.Task[None] | None = None
+
+
 class UsageService:
+    _refresh_states: ClassVar[weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _RefreshState]] = (
+        weakref.WeakKeyDictionary()
+    )
+
     def __init__(
         self,
         usage_repo: UsageRepository,
         logs_repo: RequestLogsRepository,
         accounts_repo: AccountsRepository,
+        refresh_repo_factory: Callable[[], AsyncContextManager[tuple[UsageRepository, AccountsRepository]]]
+        | None = None,
     ) -> None:
         self._usage_repo = usage_repo
         self._logs_repo = logs_repo
         self._accounts_repo = accounts_repo
         self._usage_updater = UsageUpdater(usage_repo, accounts_repo)
+        self._refresh_repo_factory = refresh_repo_factory
 
     async def get_usage_summary(self) -> UsageSummaryResponse:
         await self._refresh_usage()
@@ -114,9 +131,53 @@ class UsageService:
         )
 
     async def _refresh_usage(self) -> None:
-        accounts = await self._accounts_repo.list_accounts()
-        latest_usage = await self._usage_repo.latest_by_account(window="primary")
-        await self._usage_updater.refresh_accounts(accounts, latest_usage)
+        state = self._refresh_state()
+        task = state.task
+        if task and not task.done():
+            await asyncio.shield(task)
+            return
+
+        created = False
+        async with state.lock:
+            task = state.task
+            if not task or task.done():
+                task = asyncio.create_task(self._refresh_usage_once())
+                state.task = task
+                created = True
+
+        if task is None:
+            return
+
+        try:
+            if created:
+                await asyncio.shield(task)
+            else:
+                await asyncio.shield(task)
+        finally:
+            if task.done() and state.task is task:
+                state.task = None
+
+    async def _refresh_usage_once(self) -> None:
+        if self._refresh_repo_factory is None:
+            accounts = await self._accounts_repo.list_accounts()
+            latest_usage = await self._usage_repo.latest_by_account(window="primary")
+            await self._usage_updater.refresh_accounts(accounts, latest_usage)
+            return
+
+        async with self._refresh_repo_factory() as (usage_repo, accounts_repo):
+            latest_usage = await usage_repo.latest_by_account(window="primary")
+            accounts = await accounts_repo.list_accounts()
+            updater = UsageUpdater(usage_repo, accounts_repo)
+            await updater.refresh_accounts(accounts, latest_usage)
+
+    @classmethod
+    def _refresh_state(cls) -> _RefreshState:
+        loop = asyncio.get_running_loop()
+        state = cls._refresh_states.get(loop)
+        if state is None:
+            state = _RefreshState(lock=asyncio.Lock())
+            cls._refresh_states[loop] = state
+        return state
 
     async def _latest_usage_rows(self, window: str) -> list[UsageWindowRow]:
         latest = await self._usage_repo.latest_by_account(window=window)
