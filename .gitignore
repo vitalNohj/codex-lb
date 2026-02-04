@@ -37,3 +37,5 @@ node_modules/
 
 app/static/components
 .codex-lb/
+
+.specstory/
