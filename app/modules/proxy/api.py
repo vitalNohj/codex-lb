@@ -181,7 +181,11 @@ async def v1_audio_transcriptions(
 
 
 async def _build_models_response(api_key: ApiKeyData | None) -> Response:
-    reservation = await _enforce_request_limits(api_key, request_model=None)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=None,
+        request_service_tier=None,
+    )
 
     allowed_models = set(api_key.allowed_models) if api_key and api_key.allowed_models else None
     created = int(time.time())
@@ -261,7 +265,11 @@ async def v1_chat_completions(
     except ValidationError as exc:
         error = _openai_validation_error(exc)
         return JSONResponse(status_code=400, content=error, headers=rate_limit_headers)
-    reservation = await _enforce_request_limits(api_key, request_model=payload.model)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=payload.model,
+        request_service_tier=responses_payload.service_tier,
+    )
     responses_payload.stream = True
     stream = context.service.stream_responses(
         responses_payload,
@@ -314,7 +322,11 @@ async def _stream_responses(
     suppress_text_done_events: bool = False,
 ) -> Response:
     _validate_model_access(api_key, payload.model)
-    reservation = await _enforce_request_limits(api_key, request_model=payload.model)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=payload.model,
+        request_service_tier=payload.service_tier,
+    )
 
     rate_limit_headers = await context.service.rate_limit_headers()
     payload.stream = True
@@ -353,7 +365,11 @@ async def _collect_responses(
     suppress_text_done_events: bool = False,
 ) -> Response:
     _validate_model_access(api_key, payload.model)
-    reservation = await _enforce_request_limits(api_key, request_model=payload.model)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=payload.model,
+        request_service_tier=payload.service_tier,
+    )
 
     rate_limit_headers = await context.service.rate_limit_headers()
     payload.stream = True
@@ -431,7 +447,11 @@ async def _compact_responses(
     api_key: ApiKeyData | None,
 ) -> JSONResponse:
     _validate_model_access(api_key, payload.model)
-    reservation = await _enforce_request_limits(api_key, request_model=payload.model)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=payload.model,
+        request_service_tier=_compact_request_service_tier(payload),
+    )
 
     rate_limit_headers = await context.service.rate_limit_headers()
     try:
@@ -478,7 +498,11 @@ async def _transcribe_request(
     api_key: ApiKeyData | None,
 ) -> JSONResponse:
     _validate_model_access(api_key, _TRANSCRIPTION_MODEL)
-    reservation = await _enforce_request_limits(api_key, request_model=_TRANSCRIPTION_MODEL)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=_TRANSCRIPTION_MODEL,
+        request_service_tier=None,
+    )
     rate_limit_headers = await context.service.rate_limit_headers()
     try:
         audio_bytes = await file.read()
@@ -525,6 +549,7 @@ async def _enforce_request_limits(
     api_key: ApiKeyData | None,
     *,
     request_model: str | None,
+    request_service_tier: str | None,
 ) -> ApiKeyUsageReservationData | None:
     if api_key is None:
         return None
@@ -535,6 +560,7 @@ async def _enforce_request_limits(
             return await service.enforce_limits_for_request(
                 api_key.id,
                 request_model=request_model,
+                request_service_tier=request_service_tier,
             )
         except ApiKeyRateLimitExceededError as exc:
             message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
@@ -560,6 +586,16 @@ def _validate_model_access(api_key: ApiKeyData | None, model: str | None) -> Non
     if model is None or model in allowed_models:
         return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
+
+
+def _compact_request_service_tier(payload: ResponsesCompactRequest) -> str | None:
+    if not payload.model_extra:
+        return None
+    value = payload.model_extra.get("service_tier")
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIResponseResult:

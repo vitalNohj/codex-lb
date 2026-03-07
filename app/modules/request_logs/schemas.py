@@ -12,6 +12,7 @@ class RequestLogEntry(DashboardModel):
     account_id: str
     request_id: str
     model: str
+    service_tier: str | None = None
     status: str
     error_code: str | None = None
     error_message: str | None = None

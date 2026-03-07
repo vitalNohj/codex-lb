@@ -28,6 +28,7 @@ def to_request_log_entry(log: RequestLog) -> RequestLogEntry:
         account_id=log.account_id,
         request_id=log.request_id,
         model=log.model,
+        service_tier=log.service_tier,
         reasoning_effort=log.reasoning_effort,
         status=log_status(log),
         error_code=log.error_code,

@@ -176,6 +176,7 @@ export function createRequestLogEntry(overrides: Partial<RequestLogEntry> = {}):
     accountId: "acc_primary",
     requestId: "req_1",
     model: "gpt-5.1",
+    serviceTier: null,
     status: "ok",
     errorCode: null,
     errorMessage: null,
