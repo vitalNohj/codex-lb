@@ -174,6 +174,7 @@ export function createRequestLogEntry(overrides: Partial<RequestLogEntry> = {}):
   return RequestLogSchema.parse({
     requestedAt: offsetIso(-1),
     accountId: "acc_primary",
+    apiKeyName: "Primary Key",
     requestId: "req_1",
     model: "gpt-5.1",
     serviceTier: null,
@@ -195,6 +196,7 @@ export function createDefaultRequestLogs(): RequestLogEntry[] {
     createRequestLogEntry({
       requestId: "req_2",
       accountId: "acc_secondary",
+      apiKeyName: "Secondary Key",
       status: "rate_limit",
       errorCode: "rate_limit_exceeded",
       errorMessage: "Rate limit reached",
@@ -205,6 +207,7 @@ export function createDefaultRequestLogs(): RequestLogEntry[] {
     }),
     createRequestLogEntry({
       requestId: "req_3",
+      apiKeyName: null,
       status: "quota",
       errorCode: "insufficient_quota",
       errorMessage: "Quota exceeded",

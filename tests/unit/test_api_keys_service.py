@@ -6,11 +6,19 @@ import pytest
 
 from app.core.utils.time import utcnow
 from app.db.models import ApiKey, ApiKeyLimit, LimitType
-from app.modules.api_keys.repository import ReservationResult, UsageReservationData, UsageReservationItemData
+from app.modules.api_keys.repository import (
+    _UNSET,
+    ApiKeyUsageSummary,
+    ReservationResult,
+    UsageReservationData,
+    UsageReservationItemData,
+    _Unset,
+)
 from app.modules.api_keys.service import (
     ApiKeyCreateData,
     ApiKeyInvalidError,
     ApiKeyRateLimitExceededError,
+    ApiKeysRepositoryProtocol,
     ApiKeysService,
     LimitRuleInput,
 )
@@ -18,7 +26,7 @@ from app.modules.api_keys.service import (
 pytestmark = pytest.mark.unit
 
 
-class _FakeApiKeysRepository:
+class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
     def __init__(self) -> None:
         self.rows: dict[str, ApiKey] = {}
         self._limits: dict[str, list[ApiKeyLimit]] = {}
@@ -49,11 +57,37 @@ class _FakeApiKeysRepository:
             row.limits = self._limits.get(row.id, [])
         return result
 
-    async def update(self, key_id: str, **kwargs: object) -> ApiKey | None:
+    async def list_usage_summary_by_key(self) -> dict[str, ApiKeyUsageSummary]:
+        return {}
+
+    async def update(
+        self,
+        key_id: str,
+        *,
+        name: str | _Unset = _UNSET,
+        allowed_models: str | None | _Unset = _UNSET,
+        enforced_model: str | None | _Unset = _UNSET,
+        enforced_reasoning_effort: str | None | _Unset = _UNSET,
+        expires_at: datetime | None | _Unset = _UNSET,
+        is_active: bool | _Unset = _UNSET,
+        key_hash: str | _Unset = _UNSET,
+        key_prefix: str | _Unset = _UNSET,
+    ) -> ApiKey | None:
         row = self.rows.get(key_id)
         if row is None:
             return None
-        for field, value in kwargs.items():
+        for field, value in {
+            "name": name,
+            "allowed_models": allowed_models,
+            "enforced_model": enforced_model,
+            "enforced_reasoning_effort": enforced_reasoning_effort,
+            "expires_at": expires_at,
+            "is_active": is_active,
+            "key_hash": key_hash,
+            "key_prefix": key_prefix,
+        }.items():
+            if value is _UNSET:
+                continue
             setattr(row, field, value)
         row.limits = self._limits.get(key_id, [])
         return row
@@ -352,6 +386,39 @@ async def test_create_key_stores_hash_and_prefix() -> None:
     assert stored is not None
     assert stored.key_hash != created.key
     assert stored.key_prefix == created.key[:15]
+
+
+@pytest.mark.asyncio
+async def test_create_key_rejects_enforced_model_outside_allowed_models() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    with pytest.raises(ValueError, match="enforced_model"):
+        await service.create_key(
+            ApiKeyCreateData(
+                name="invalid-policy",
+                allowed_models=["model-alpha"],
+                enforced_model="model-beta",
+                expires_at=None,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_key_normalizes_enforced_reasoning_effort() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="reasoning-policy",
+            allowed_models=None,
+            enforced_reasoning_effort="HIGH",
+            expires_at=None,
+        )
+    )
+
+    assert created.enforced_reasoning_effort == "high"
 
 
 @pytest.mark.asyncio

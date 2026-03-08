@@ -36,6 +36,7 @@ describe("RecentRequestsTable", () => {
           {
             requestedAt: ISO,
             accountId: "acc-primary",
+            apiKeyName: "Key Alpha",
             requestId: "req-1",
             model: "gpt-5.1",
             serviceTier: "priority",
@@ -53,6 +54,7 @@ describe("RecentRequestsTable", () => {
     );
 
     expect(screen.getByText("Primary Account")).toBeInTheDocument();
+    expect(screen.getByText("Key Alpha")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.1 (high, priority)")).toBeInTheDocument();
     expect(screen.getByText("Rate limit")).toBeInTheDocument();
 
