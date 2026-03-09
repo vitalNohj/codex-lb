@@ -6,12 +6,14 @@ import logging
 from typing import cast
 
 import pytest
+from starlette.requests import Request
 
 import app.core.clients.proxy as proxy_module
 from app.core.clients.proxy import _build_upstream_headers, filter_inbound_headers
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
 from app.core.utils.request_id import reset_request_id, set_request_id
+from app.modules.proxy import api as proxy_api
 from app.modules.proxy import service as proxy_service
 
 pytestmark = pytest.mark.unit
@@ -201,6 +203,64 @@ class _TimeoutTranscribeSession:
         raise asyncio.TimeoutError
 
 
+class _JsonCompactResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.status = 200
+        self.reason = "OK"
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self, *, content_type=None):
+        return self._payload
+
+
+class _CompactSession:
+    def __init__(self, response: _JsonCompactResponse) -> None:
+        self._response = response
+
+    def post(
+        self,
+        url: str,
+        *,
+        json=None,
+        headers: dict[str, str] | None = None,
+        timeout=None,
+    ):
+        return self._response
+
+
+class _SsePostResponse:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.status = 200
+        self.content = _DummyContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _SseSession:
+    def __init__(self, response: _SsePostResponse) -> None:
+        self._response = response
+
+    def post(
+        self,
+        url: str,
+        *,
+        json=None,
+        headers: dict[str, str] | None = None,
+        timeout=None,
+    ):
+        return self._response
+
+
 @pytest.mark.asyncio
 async def test_iter_sse_events_handles_large_single_line_without_chunk_too_big():
     large_data = "A" * (200 * 1024)
@@ -245,6 +305,173 @@ def test_log_proxy_request_payload(monkeypatch, caplog):
 
     assert "proxy_request_payload" in caplog.text
     assert '"model":"gpt-5.1"' in caplog.text
+
+
+def test_log_upstream_request_trace(monkeypatch, caplog):
+    class Settings:
+        log_upstream_request_summary = True
+        log_upstream_request_payload = True
+
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: Settings())
+
+    token = set_request_id("req_upstream_1")
+    try:
+        caplog.set_level(logging.INFO)
+        headers = _build_upstream_headers({"session_id": "sid_1"}, "token", "acc_upstream_1")
+        payload_json = '{"model":"gpt-5.1","input":"hi"}'
+        proxy_module._maybe_log_upstream_request_start(
+            kind="responses",
+            url="https://chatgpt.com/backend-api/codex/responses",
+            headers=headers,
+            payload_summary="model=gpt-5.1 stream=True input=str keys=['input','model','stream']",
+            payload_json=payload_json,
+        )
+        proxy_module._maybe_log_upstream_request_complete(
+            kind="responses",
+            url="https://chatgpt.com/backend-api/codex/responses",
+            headers=headers,
+            started_at=0.0,
+            status_code=502,
+            error_code="upstream_error",
+            error_message="backend exploded",
+        )
+    finally:
+        reset_request_id(token)
+
+    assert "upstream_request_start request_id=req_upstream_1" in caplog.text
+    assert "upstream_request_payload request_id=req_upstream_1" in caplog.text
+    assert "upstream_request_complete request_id=req_upstream_1" in caplog.text
+    assert "target=https://chatgpt.com/backend-api/codex/responses" in caplog.text
+    assert "error_message=backend exploded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_starts_upstream_timer_after_image_inlining(monkeypatch):
+    class Settings:
+        upstream_base_url = "https://chatgpt.com/backend-api"
+        upstream_connect_timeout_seconds = 1.0
+        stream_idle_timeout_seconds = 1.0
+        max_sse_event_bytes = 1024
+        image_inline_fetch_enabled = True
+        log_upstream_request_payload = False
+
+    inline_ran = False
+    recorded: dict[str, float] = {}
+
+    async def fake_inline(payload_dict, session, connect_timeout):
+        nonlocal inline_ran
+        inline_ran = True
+        return payload_dict
+
+    def fake_monotonic():
+        assert inline_ran
+        return 123.0
+
+    def fake_complete(**kwargs):
+        recorded["started_at"] = kwargs["started_at"]
+
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(proxy_module, "_inline_input_image_urls", fake_inline)
+    monkeypatch.setattr(proxy_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", fake_complete)
+
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+    session = _SseSession(_SsePostResponse([b'data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n']))
+
+    events = [
+        event
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers={},
+            access_token="token",
+            account_id="acc_1",
+            session=cast(proxy_module.aiohttp.ClientSession, session),
+        )
+    ]
+
+    assert events == ['data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n']
+    assert recorded["started_at"] == 123.0
+
+
+@pytest.mark.asyncio
+async def test_compact_responses_starts_upstream_timer_after_image_inlining(monkeypatch):
+    class Settings:
+        upstream_base_url = "https://chatgpt.com/backend-api"
+        upstream_connect_timeout_seconds = 1.0
+        image_inline_fetch_enabled = True
+        log_upstream_request_payload = False
+
+    inline_ran = False
+    recorded: dict[str, float] = {}
+
+    async def fake_inline(payload_dict, session, connect_timeout):
+        nonlocal inline_ran
+        inline_ran = True
+        return payload_dict
+
+    def fake_monotonic():
+        assert inline_ran
+        return 456.0
+
+    def fake_complete(**kwargs):
+        recorded["started_at"] = kwargs["started_at"]
+
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(proxy_module, "_inline_input_image_urls", fake_inline)
+    monkeypatch.setattr(proxy_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", fake_complete)
+
+    payload = proxy_module.ResponsesCompactRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+    session = _CompactSession(_JsonCompactResponse({"output": []}))
+
+    result = await proxy_module.compact_responses(
+        payload,
+        headers={},
+        access_token="token",
+        account_id="acc_1",
+        session=cast(proxy_module.aiohttp.ClientSession, session),
+    )
+
+    assert result.model_extra == {"output": []}
+    assert recorded["started_at"] == 456.0
+
+
+def test_logged_error_json_response_emits_proxy_error_log(caplog):
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/responses",
+        "raw_path": b"/v1/responses",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 1234),
+        "server": ("testserver", 2455),
+    }
+    request = Request(scope)
+
+    token = set_request_id("req_proxy_error_1")
+    try:
+        caplog.set_level(logging.WARNING)
+        response = proxy_api._logged_error_json_response(
+            request,
+            502,
+            {"error": {"code": "upstream_error", "message": "provider failed"}},
+        )
+    finally:
+        reset_request_id(token)
+
+    assert response.status_code == 502
+    assert "proxy_error_response request_id=req_proxy_error_1" in caplog.text
+    assert "code=upstream_error" in caplog.text
+    assert "message=provider failed" in caplog.text
 
 
 def test_settings_parses_image_inline_allowlist_from_csv(monkeypatch):
