@@ -121,52 +121,52 @@ sqlite3 ~/.codex/state_5.sqlite \
 <summary><img src="https://avatars.githubusercontent.com/u/208539476?s=200" width="20" align="center" alt="OpenCode">&ensp;<b>OpenCode</b></summary>
 <br>
 
+> **Important**: Use the built-in `openai` provider with `baseURL` override — not a custom provider with `@ai-sdk/openai-compatible`. Custom providers use the Chat Completions API which **drops reasoning/thinking content**. The built-in `openai` provider uses the Responses API, which properly preserves `encrypted_content` and multi-turn reasoning state.
+
 `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "codex-lb": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "codex-lb",
-      "options": {
-        "baseURL": "http://127.0.0.1:2455/v1"
-      },
-      "models": {
-        "gpt-5.3-codex": { "name": "GPT-5.3 Codex", "reasoning": true, "interleaved": { "field": "reasoning_details" },"options": { "reasoningEffort": "medium"} }
-      }
-    }
-  },
-  "model": "codex-lb/gpt-5.3-codex"
-}
-```
-
-This keeps OpenCode's default providers/connections available and adds `codex-lb` as an extra selectable provider.
-
-If you use `enabled_providers`, include every provider you want to keep plus `codex-lb`; otherwise non-listed providers are hidden.
-
-**With API key auth:**
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "codex-lb": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "codex-lb",
+    "openai": {
       "options": {
         "baseURL": "http://127.0.0.1:2455/v1",
-        "apiKey": "{env:CODEX_LB_API_KEY}"   // reads from env var
+        "apiKey": "{env:CODEX_LB_API_KEY}"
       },
       "models": {
-        "gpt-5.3-codex": { "name": "GPT-5.3 Codex", "reasoning": true, "interleaved": { "field": "reasoning_details" },"options": { "reasoningEffort": "medium"} }
+        "gpt-5.4": {
+          "name": "GPT-5.4",
+          "reasoning": true,
+          "options": { "reasoningEffort": "high", "reasoningSummary": "detailed" },
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-5.3-codex": {
+          "name": "GPT-5.3 Codex",
+          "reasoning": true,
+          "options": { "reasoningEffort": "high", "reasoningSummary": "detailed" },
+          "limit": { "context": 272000, "output": 65536 }
+        },
+        "gpt-5.1-codex-mini": {
+          "name": "GPT-5.1 Codex Mini",
+          "reasoning": true,
+          "options": { "reasoningEffort": "high", "reasoningSummary": "detailed" },
+          "limit": { "context": 272000, "output": 65536 }
+        },
+        "gpt-5.3-codex-spark": {
+          "name": "GPT-5.3 Codex Spark",
+          "reasoning": true,
+          "options": { "reasoningEffort": "xhigh", "reasoningSummary": "detailed" },
+          "limit": { "context": 128000, "output": 65536 }
+        }
       }
     }
   },
-  "model": "codex-lb/gpt-5.3-codex"
+  "model": "openai/gpt-5.3-codex"
 }
 ```
+
+This overrides the built-in `openai` provider's endpoint to point at codex-lb while keeping the Responses API code path that handles reasoning properly.
 
 ```bash
 export CODEX_LB_API_KEY="sk-clb-..."   # key from dashboard
