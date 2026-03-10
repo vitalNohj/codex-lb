@@ -904,10 +904,11 @@ async def compact_responses(
         account_id,
         accept="application/json",
     )
+    compact_timeout_seconds = settings.upstream_compact_timeout_seconds
     timeout = aiohttp.ClientTimeout(
-        total=60,
+        total=compact_timeout_seconds,
         sock_connect=settings.upstream_connect_timeout_seconds,
-        sock_read=60,
+        sock_read=compact_timeout_seconds,
     )
 
     client_session = session or get_http_client().session
@@ -945,6 +946,13 @@ async def compact_responses(
                 raise ProxyResponseError(resp.status, error_payload)
             try:
                 data = await resp.json(content_type=None)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                error_code = "upstream_unavailable"
+                error_message = str(exc)
+                raise ProxyResponseError(
+                    502,
+                    openai_error("upstream_unavailable", str(exc)),
+                ) from exc
             except Exception as exc:
                 raise ProxyResponseError(
                     502,
