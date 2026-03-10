@@ -6,6 +6,7 @@ import { RefreshCw } from "lucide-react";
 import { AlertMessage } from "@/components/alert-message";
 import { useAccountMutations } from "@/features/accounts/hooks/use-accounts";
 import { AccountCards } from "@/features/dashboard/components/account-cards";
+import { AdditionalQuotas } from "@/features/dashboard/components/additional-quotas";
 import { DashboardSkeleton } from "@/features/dashboard/components/dashboard-skeleton";
 import { RequestFilters } from "@/features/dashboard/components/filters/request-filters";
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
@@ -133,7 +134,10 @@ export function DashboardPage() {
             secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
             primaryWindowMinutes={overview?.windows.primary.windowMinutes ?? null}
             secondaryWindowMinutes={overview?.windows.secondary?.windowMinutes ?? null}
+            safeLine={view.safeLine}
           />
+
+          <AdditionalQuotas items={view.additionalQuotaItems} />
 
           <section className="space-y-4">
             <div className="flex items-center gap-3">

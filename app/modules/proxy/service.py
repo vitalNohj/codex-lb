@@ -12,7 +12,7 @@ import anyio
 
 from app.core import usage as usage_core
 from app.core.auth.refresh import RefreshError
-from app.core.balancer import PERMANENT_FAILURE_CODES
+from app.core.balancer import PERMANENT_FAILURE_CODES, RoutingStrategy
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import ProxyResponseError, filter_inbound_headers
 from app.core.clients.proxy import compact_responses as core_compact_responses
@@ -50,7 +50,12 @@ from app.modules.proxy.helpers import (
 from app.modules.proxy.load_balancer import LoadBalancer
 from app.modules.proxy.rate_limit_cache import get_rate_limit_headers_cache
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
-from app.modules.proxy.types import RateLimitStatusPayloadData
+from app.modules.proxy.types import (
+    AdditionalRateLimitData,
+    RateLimitStatusDetailsData,
+    RateLimitStatusPayloadData,
+    RateLimitWindowSnapshotData,
+)
 from app.modules.usage.updater import UsageUpdater
 
 logger = logging.getLogger(__name__)
@@ -116,7 +121,7 @@ class ProxyService:
         settings = await get_settings_cache().get()
         prefer_earlier_reset = settings.prefer_earlier_reset_accounts
         sticky_threads_enabled = settings.sticky_threads_enabled
-        routing_strategy = getattr(settings, "routing_strategy", "usage_weighted")
+        routing_strategy = _routing_strategy(settings)
         sticky_key, reallocate_sticky = _sticky_key_for_compact_request(
             payload,
             headers,
@@ -253,7 +258,7 @@ class ProxyService:
 
         settings = await get_settings_cache().get()
         prefer_earlier_reset = settings.prefer_earlier_reset_accounts
-        routing_strategy = getattr(settings, "routing_strategy", "usage_weighted")
+        routing_strategy = _routing_strategy(settings)
         try:
             selection = await self._load_balancer.select_account(
                 prefer_earlier_reset_accounts=prefer_earlier_reset,
@@ -484,10 +489,14 @@ class ProxyService:
             primary_window = _window_snapshot(primary_summary, primary_rows, "primary", now_epoch)
             secondary_window = _window_snapshot(secondary_summary, secondary_rows, "secondary", now_epoch)
 
+            # Fetch additional rate limits
+            additional_rate_limits = await self._build_additional_rate_limits(repos, account_map, now_epoch)
+
             return RateLimitStatusPayloadData(
                 plan_type=_plan_type_for_accounts(selected_accounts),
                 rate_limit=_rate_limit_details(primary_window, secondary_window),
                 credits=_credits_snapshot(await self._latest_usage_entries(repos, account_map)),
+                additional_rate_limits=additional_rate_limits,
             )
 
     async def _stream_with_retry(
@@ -507,7 +516,7 @@ class ProxyService:
         settings = await get_settings_cache().get()
         prefer_earlier_reset = settings.prefer_earlier_reset_accounts
         sticky_threads_enabled = settings.sticky_threads_enabled
-        routing_strategy = getattr(settings, "routing_strategy", "usage_weighted")
+        routing_strategy = _routing_strategy(settings)
         sticky_key = _sticky_key_for_responses_request(
             payload,
             headers,
@@ -882,7 +891,7 @@ class ProxyService:
 
     async def _refresh_usage(self, repos: ProxyRepositories, accounts: list[Account]) -> None:
         latest_usage = await repos.usage.latest_by_account(window="primary")
-        updater = UsageUpdater(repos.usage, repos.accounts)
+        updater = UsageUpdater(repos.usage, repos.accounts, repos.additional_usage)
         await updater.refresh_accounts(accounts, latest_usage)
 
     async def _latest_usage_rows(
@@ -915,6 +924,130 @@ class ProxyService:
             return []
         latest = await repos.usage.latest_by_account()
         return [entry for entry in latest.values() if entry.account_id in account_map]
+
+    async def _build_additional_rate_limits(
+        self,
+        repos: ProxyRepositories,
+        account_map: dict[str, Account],
+        now_epoch: int,
+    ) -> list[AdditionalRateLimitData]:
+        """Build additional rate limit entries from AdditionalUsageRepository."""
+        if not account_map:
+            return []
+
+        limit_names = await repos.additional_usage.list_limit_names(account_ids=list(account_map.keys()))
+        additional_limits = []
+
+        for limit_name in limit_names:
+            # Fetch latest entries for this limit across all accounts
+            latest_entries = await repos.additional_usage.latest_by_account(
+                limit_name=limit_name,
+                window="primary",
+            )
+            latest_secondary = await repos.additional_usage.latest_by_account(
+                limit_name=limit_name,
+                window="secondary",
+            )
+
+            # Filter to selected accounts
+            filtered_entries = {
+                account_id: entry for account_id, entry in latest_entries.items() if account_id in account_map
+            }
+            filtered_secondary = {
+                account_id: entry for account_id, entry in latest_secondary.items() if account_id in account_map
+            }
+
+            if not filtered_entries and not filtered_secondary:
+                continue
+
+            first_entry = (
+                next(iter(filtered_entries.values())) if filtered_entries else next(iter(filtered_secondary.values()))
+            )
+            metered_feature = first_entry.metered_feature
+
+            window_snapshot = None
+            avg_used_percent = None
+            if filtered_entries:
+                used_percents = [
+                    entry.used_percent for entry in filtered_entries.values() if entry.used_percent is not None
+                ]
+                if used_percents:
+                    avg_used_percent = sum(used_percents) / len(used_percents)
+                    window_minutes_values = [e.window_minutes for e in filtered_entries.values() if e.window_minutes]
+                    reset_at_values = [e.reset_at for e in filtered_entries.values() if e.reset_at is not None]
+
+                    if window_minutes_values and reset_at_values:
+                        window_minutes = max(window_minutes_values)
+                        limit_window_seconds = int(window_minutes * 60)
+                        reset_at = int(min(reset_at_values))
+                        reset_after_seconds = max(0, reset_at - now_epoch)
+
+                        window_snapshot = RateLimitWindowSnapshotData(
+                            used_percent=int(max(0.0, min(100.0, avg_used_percent))),
+                            limit_window_seconds=limit_window_seconds,
+                            reset_after_seconds=reset_after_seconds,
+                            reset_at=reset_at,
+                        )
+                    else:
+                        # Timing metadata absent — still emit used_percent
+                        # so clients retain visibility into quota consumption.
+                        window_snapshot = RateLimitWindowSnapshotData(
+                            used_percent=int(max(0.0, min(100.0, avg_used_percent))),
+                        )
+
+            secondary_window_snapshot = None
+            if filtered_secondary:
+                sec_used_percents = [e.used_percent for e in filtered_secondary.values() if e.used_percent is not None]
+                if sec_used_percents:
+                    sec_avg = sum(sec_used_percents) / len(sec_used_percents)
+                    sec_window_values = [e.window_minutes for e in filtered_secondary.values() if e.window_minutes]
+                    sec_reset_values = [e.reset_at for e in filtered_secondary.values() if e.reset_at is not None]
+
+                    if sec_window_values and sec_reset_values:
+                        sec_window_minutes = max(sec_window_values)
+                        sec_limit_window_seconds = int(sec_window_minutes * 60)
+                        sec_reset_at = int(min(sec_reset_values))
+                        sec_reset_after_seconds = max(0, sec_reset_at - now_epoch)
+                        secondary_window_snapshot = RateLimitWindowSnapshotData(
+                            used_percent=int(max(0.0, min(100.0, sec_avg))),
+                            limit_window_seconds=sec_limit_window_seconds,
+                            reset_after_seconds=sec_reset_after_seconds,
+                            reset_at=sec_reset_at,
+                        )
+                    else:
+                        secondary_window_snapshot = RateLimitWindowSnapshotData(
+                            used_percent=int(max(0.0, min(100.0, sec_avg))),
+                        )
+
+            rate_limit_details = None
+            if avg_used_percent is not None or secondary_window_snapshot is not None:
+                # Per-account availability: an account is available when
+                # neither its primary nor secondary window is exhausted.
+                # Pool is allowed when at least one account can serve.
+                all_account_ids = set(filtered_entries.keys()) | set(filtered_secondary.keys())
+                any_available = False
+                for aid in all_account_ids:
+                    pri_pct = filtered_entries[aid].used_percent if aid in filtered_entries else 0.0
+                    sec_pct = filtered_secondary[aid].used_percent if aid in filtered_secondary else 0.0
+                    if pri_pct < 100.0 and sec_pct < 100.0:
+                        any_available = True
+                        break
+                rate_limit_details = RateLimitStatusDetailsData(
+                    allowed=any_available,
+                    limit_reached=not any_available,
+                    primary_window=window_snapshot,
+                    secondary_window=secondary_window_snapshot,
+                )
+
+            additional_limits.append(
+                AdditionalRateLimitData(
+                    limit_name=limit_name,
+                    metered_feature=metered_feature,
+                    rate_limit=rate_limit_details,
+                )
+            )
+
+        return additional_limits
 
     async def _ensure_fresh(self, account: Account, *, force: bool = False) -> Account:
         async with self._repo_factory() as repos:
@@ -979,6 +1112,11 @@ def _event_type_from_payload(event: OpenAIEvent | None, payload: dict[str, JsonV
     if isinstance(payload_type, str):
         return payload_type
     return None
+
+
+def _routing_strategy(settings: object) -> RoutingStrategy:
+    value = getattr(settings, "routing_strategy", "usage_weighted")
+    return "round_robin" if value == "round_robin" else "usage_weighted"
 
 
 def _should_suppress_text_done_event(

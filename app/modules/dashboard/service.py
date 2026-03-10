@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any
 
 from app.core import usage as usage_core
 from app.core.crypto import TokenEncryptor
@@ -9,11 +10,22 @@ from app.core.utils.time import utcnow
 from app.db.models import UsageHistory
 from app.modules.accounts.mappers import build_account_summaries
 from app.modules.dashboard.repository import DashboardRepository
-from app.modules.dashboard.schemas import DashboardOverviewResponse, DashboardUsageWindows
+from app.modules.dashboard.schemas import (
+    AdditionalQuotaResponse,
+    AdditionalWindowResponse,
+    DashboardOverviewResponse,
+    DashboardUsageWindows,
+    DepletionResponse,
+)
 from app.modules.usage.builders import (
+    build_additional_usage_summary,
     build_trends_from_buckets,
     build_usage_summary_response,
     build_usage_window_response,
+)
+from app.modules.usage.depletion_service import (
+    compute_aggregate_depletion,
+    compute_depletion_for_account,
 )
 
 
@@ -76,13 +88,213 @@ class DashboardService:
             ),
         )
 
+        # Fetch additional usage data
+        additional_quotas, additional_sync_ts = await self._build_additional_quotas()
+
+        # Compute depletion separately for primary-window and secondary-window
+        # accounts so the aggregate is not skewed by mixing different window
+        # durations.  The response includes a "window" field that tells the
+        # frontend which donut to render the safe-line marker on.
+        normalized_primary_ids = {row.account_id for row in primary_rows}
+        all_account_ids = set(primary_usage.keys()) | set(secondary_usage.keys())
+
+        # Batch fetch: collect account IDs and determine the widest lookback
+        # per window so we can issue at most 2 bulk queries instead of O(N).
+        pri_fetch_ids: list[str] = []
+        sec_fetch_ids: list[str] = []
+        pri_since = now  # will be narrowed to the earliest needed
+        sec_since = now
+        # Per-account cutoffs for in-memory filtering after bulk fetch
+        pri_cutoffs: dict[str, datetime] = {}
+        sec_cutoffs: dict[str, datetime] = {}
+        weekly_only_ids: set[str] = set()
+        weekly_only_history_sources: dict[str, str] = {}
+
+        for account_id in all_account_ids:
+            if account_id in normalized_primary_ids:
+                usage_entry = primary_usage[account_id]
+                acct_window = usage_entry.window_minutes if usage_entry.window_minutes else 300
+                acct_since = now - timedelta(minutes=acct_window)
+                pri_fetch_ids.append(account_id)
+                pri_cutoffs[account_id] = acct_since
+                if acct_since < pri_since:
+                    pri_since = acct_since
+                if account_id in secondary_usage:
+                    sec_entry = secondary_usage[account_id]
+                    sec_window = sec_entry.window_minutes if sec_entry.window_minutes else 10080
+                    s_since = now - timedelta(minutes=sec_window)
+                    sec_fetch_ids.append(account_id)
+                    sec_cutoffs[account_id] = s_since
+                    if s_since < sec_since:
+                        sec_since = s_since
+            elif account_id in primary_usage:
+                weekly_only_ids.add(account_id)
+                primary_entry = primary_usage[account_id]
+                sec_entry = secondary_usage.get(account_id)
+                use_primary_stream = _should_use_weekly_primary_history(primary_entry, sec_entry)
+                weekly_only_history_sources[account_id] = "primary" if use_primary_stream else "secondary"
+                current_entry = primary_entry if use_primary_stream else sec_entry
+                acct_window = current_entry.window_minutes if current_entry and current_entry.window_minutes else 10080
+                acct_since = now - timedelta(minutes=acct_window)
+                if use_primary_stream:
+                    pri_fetch_ids.append(account_id)
+                    pri_cutoffs[account_id] = acct_since
+                    if acct_since < pri_since:
+                        pri_since = acct_since
+                else:
+                    sec_fetch_ids.append(account_id)
+                    sec_cutoffs[account_id] = acct_since
+                    if acct_since < sec_since:
+                        sec_since = acct_since
+            else:
+                sec_entry = secondary_usage[account_id]
+                acct_window = sec_entry.window_minutes if sec_entry.window_minutes else 10080
+                acct_since = now - timedelta(minutes=acct_window)
+                sec_fetch_ids.append(account_id)
+                sec_cutoffs[account_id] = acct_since
+                if acct_since < sec_since:
+                    sec_since = acct_since
+
+        # Issue at most 2 bulk queries
+        all_pri_rows = (
+            await self._repo.bulk_usage_history_since(pri_fetch_ids, "primary", pri_since) if pri_fetch_ids else {}
+        )
+        all_sec_rows = (
+            await self._repo.bulk_usage_history_since(sec_fetch_ids, "secondary", sec_since) if sec_fetch_ids else {}
+        )
+
+        # Filter in-memory to each account's actual cutoff
+        primary_history: dict[str, list[UsageHistory]] = {}
+        secondary_history: dict[str, list[UsageHistory]] = {}
+
+        for account_id in all_account_ids:
+            if account_id in normalized_primary_ids:
+                cutoff = pri_cutoffs[account_id]
+                rows = [r for r in all_pri_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                if rows:
+                    primary_history[account_id] = rows
+                if account_id in sec_cutoffs:
+                    s_cutoff = sec_cutoffs[account_id]
+                    s_rows = [r for r in all_sec_rows.get(account_id, []) if r.recorded_at >= s_cutoff]
+                    if s_rows:
+                        secondary_history[account_id] = s_rows
+            elif account_id in weekly_only_ids:
+                source = weekly_only_history_sources[account_id]
+                if source == "primary":
+                    cutoff = pri_cutoffs[account_id]
+                    rows = [r for r in all_pri_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                else:
+                    cutoff = sec_cutoffs[account_id]
+                    rows = [r for r in all_sec_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                if rows:
+                    secondary_history[account_id] = rows
+            else:
+                cutoff = sec_cutoffs[account_id]
+                rows = [r for r in all_sec_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                if rows:
+                    secondary_history[account_id] = rows
+
+        depletion_response = _build_depletion_by_window(primary_history, secondary_history, now)
+
         return DashboardOverviewResponse(
-            last_sync_at=_latest_recorded_at(primary_usage, secondary_usage),
+            last_sync_at=_latest_recorded_at(primary_usage, secondary_usage, additional_sync_ts),
             accounts=account_summaries,
             summary=summary,
             windows=windows,
             trends=trends,
+            additional_quotas=additional_quotas,
+            depletion=depletion_response,
         )
+
+    async def _build_additional_quotas(self) -> tuple[list[AdditionalQuotaResponse], list[datetime]]:
+        """Fetch additional usage data and build quota responses.
+
+        Returns the quota list and a list of recorded_at timestamps for sync tracking.
+        """
+        repo = self._repo
+        limit_names = await repo.list_additional_limit_names()
+
+        additional_usage_data: dict[str, dict[str, dict[str, Any]]] = {}
+        sync_timestamps: list[datetime] = []
+        for limit_name in limit_names:
+            primary_entries = await repo.latest_additional_usage_by_account(limit_name, "primary")
+            secondary_entries = await repo.latest_additional_usage_by_account(limit_name, "secondary")
+            additional_usage_data[limit_name] = {
+                "primary": primary_entries,
+                "secondary": secondary_entries,
+            }
+            for entry in list(primary_entries.values()) + list(secondary_entries.values()):
+                if hasattr(entry, "recorded_at") and entry.recorded_at is not None:
+                    sync_timestamps.append(entry.recorded_at)
+
+        additional_summaries = build_additional_usage_summary(additional_usage_data)
+
+        quotas = [
+            AdditionalQuotaResponse(
+                limit_name=s.limit_name,
+                metered_feature=s.metered_feature,
+                primary_window=AdditionalWindowResponse(
+                    used_percent=s.primary_window.used_percent,
+                    reset_at=s.primary_window.reset_at,
+                    window_minutes=s.primary_window.window_minutes,
+                )
+                if s.primary_window
+                else None,
+                secondary_window=AdditionalWindowResponse(
+                    used_percent=s.secondary_window.used_percent,
+                    reset_at=s.secondary_window.reset_at,
+                    window_minutes=s.secondary_window.window_minutes,
+                )
+                if s.secondary_window
+                else None,
+            )
+            for s in additional_summaries
+        ]
+        return quotas, sync_timestamps
+
+
+def _build_depletion_by_window(
+    primary_history: dict[str, list[UsageHistory]],
+    secondary_history: dict[str, list[UsageHistory]],
+    now,
+) -> DepletionResponse | None:
+    """Compute depletion per window and return the higher-risk result."""
+
+    def _aggregate(history: dict[str, list[UsageHistory]], window: str):
+        metrics = []
+        for account_id, rows in history.items():
+            m = compute_depletion_for_account(
+                account_id=account_id,
+                limit_name="standard",
+                window=window,
+                history=rows,
+                now=now,
+            )
+            metrics.append(m)
+        return compute_aggregate_depletion(metrics)
+
+    pri_agg = _aggregate(primary_history, "primary")
+    sec_agg = _aggregate(secondary_history, "secondary")
+
+    # Pick the higher-risk window; prefer primary on tie.
+    if pri_agg is not None and sec_agg is not None:
+        chosen, window = (sec_agg, "secondary") if sec_agg.risk > pri_agg.risk else (pri_agg, "primary")
+    elif pri_agg is not None:
+        chosen, window = pri_agg, "primary"
+    elif sec_agg is not None:
+        chosen, window = sec_agg, "secondary"
+    else:
+        return None
+
+    return DepletionResponse(
+        risk=chosen.risk,
+        risk_level=chosen.risk_level,
+        burn_rate=chosen.burn_rate,
+        safe_usage_percent=chosen.safe_usage_percent,
+        projected_exhaustion_at=chosen.projected_exhaustion_at,
+        seconds_until_exhaustion=chosen.seconds_until_exhaustion,
+        window=window,
+    )
 
 
 def _rows_from_latest(latest: dict[str, UsageHistory]) -> list[UsageWindowRow]:
@@ -98,13 +310,36 @@ def _rows_from_latest(latest: dict[str, UsageHistory]) -> list[UsageWindowRow]:
     ]
 
 
+def _should_use_weekly_primary_history(
+    primary_entry: UsageHistory,
+    secondary_entry: UsageHistory | None,
+) -> bool:
+    return usage_core.should_use_weekly_primary(
+        _usage_history_to_window_row(primary_entry),
+        _usage_history_to_window_row(secondary_entry) if secondary_entry is not None else None,
+    )
+
+
+def _usage_history_to_window_row(entry: UsageHistory) -> UsageWindowRow:
+    return UsageWindowRow(
+        account_id=entry.account_id,
+        used_percent=entry.used_percent,
+        reset_at=entry.reset_at,
+        window_minutes=entry.window_minutes,
+        recorded_at=entry.recorded_at,
+    )
+
+
 def _latest_recorded_at(
     primary_usage: dict[str, UsageHistory],
     secondary_usage: dict[str, UsageHistory],
+    extra_timestamps: list[datetime] | None = None,
 ):
     timestamps = [
         entry.recorded_at
         for entry in list(primary_usage.values()) + list(secondary_usage.values())
         if entry.recorded_at is not None
     ]
+    if extra_timestamps:
+        timestamps.extend(extra_timestamps)
     return max(timestamps) if timestamps else None

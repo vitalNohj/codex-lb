@@ -46,3 +46,4 @@ certs/
 .specstory/
 
 .agents/hooks/state/
+.venv

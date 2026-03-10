@@ -25,7 +25,7 @@ from app.modules.accounts.schemas import (
     AccountTrendsResponse,
 )
 from app.modules.usage.repository import UsageRepository
-from app.modules.usage.updater import UsageUpdater
+from app.modules.usage.updater import AdditionalUsageRepositoryPort, UsageUpdater
 
 _SPARKLINE_DAYS = 7
 _DETAIL_BUCKET_SECONDS = 3600  # 1h → 168 points
@@ -40,10 +40,11 @@ class AccountsService:
         self,
         repo: AccountsRepository,
         usage_repo: UsageRepository | None = None,
+        additional_usage_repo: AdditionalUsageRepositoryPort | None = None,
     ) -> None:
         self._repo = repo
         self._usage_repo = usage_repo
-        self._usage_updater = UsageUpdater(usage_repo, repo) if usage_repo else None
+        self._usage_updater = UsageUpdater(usage_repo, repo, additional_usage_repo) if usage_repo else None
         self._encryptor = TokenEncryptor()
 
     async def list_accounts(self) -> list[AccountSummary]:

@@ -52,6 +52,29 @@ export const MetricsTrendsSchema = z.object({
   errorRate: z.array(TrendPointSchema),
 });
 
+export const AdditionalWindowSchema = z.object({
+  usedPercent: z.number(),
+  resetAt: z.number().nullable().optional(),
+  windowMinutes: z.number().nullable().optional(),
+});
+
+export const AdditionalQuotaSchema = z.object({
+  limitName: z.string(),
+  meteredFeature: z.string(),
+  primaryWindow: AdditionalWindowSchema.nullable().optional(),
+  secondaryWindow: AdditionalWindowSchema.nullable().optional(),
+});
+
+export const DepletionSchema = z.object({
+  risk: z.number(),
+  riskLevel: z.enum(["safe", "warning", "danger", "critical"]),
+  burnRate: z.number(),
+  safeUsagePercent: z.number(),
+  projectedExhaustionAt: z.string().datetime({ offset: true }).nullable().optional(),
+  secondsUntilExhaustion: z.number().nullable().optional(),
+  window: z.enum(["primary", "secondary"]).default("primary"),
+});
+
 export const DashboardOverviewSchema = z.object({
   lastSyncAt: z.string().datetime({ offset: true }).nullable(),
   accounts: z.array(AccountSummarySchema),
@@ -66,6 +89,8 @@ export const DashboardOverviewSchema = z.object({
     secondary: UsageWindowSchema.nullable(),
   }),
   trends: MetricsTrendsSchema,
+  additionalQuotas: z.array(AdditionalQuotaSchema).default([]),
+  depletion: DepletionSchema.nullable().optional(),
 });
 
 export const RequestLogSchema = z.object({
@@ -121,3 +146,6 @@ export type RequestLog = z.infer<typeof RequestLogSchema>;
 export type RequestLogsResponse = z.infer<typeof RequestLogsResponseSchema>;
 export type RequestLogFilterOptions = z.infer<typeof RequestLogFilterOptionsSchema>;
 export type FilterState = z.infer<typeof FilterStateSchema>;
+export type AdditionalWindow = z.infer<typeof AdditionalWindowSchema>;
+export type AdditionalQuota = z.infer<typeof AdditionalQuotaSchema>;
+export type Depletion = z.infer<typeof DepletionSchema>;
