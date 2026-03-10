@@ -237,6 +237,43 @@ async def test_load_balancer_treats_weekly_only_primary_as_quota_window(db_setup
 
 
 @pytest.mark.asyncio
+async def test_load_balancer_select_account_uses_cached_rows_for_detached_accounts(db_setup):
+    encryptor = TokenEncryptor()
+    now = utcnow()
+    now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
+    account = Account(
+        id="acc_detached_refresh",
+        email="detached-refresh@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-detached"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-detached"),
+        id_token_encrypted=encryptor.encrypt("id-detached"),
+        last_refresh=now,
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        usage_repo = UsageRepository(session)
+        await accounts_repo.upsert(account)
+        await usage_repo.add_entry(
+            account_id=account.id,
+            used_percent=10.0,
+            window="primary",
+            reset_at=now_epoch + 300,
+            window_minutes=5,
+        )
+
+    balancer = LoadBalancer(_repo_factory)
+    selection = await balancer.select_account()
+
+    assert selection.account is not None
+    assert selection.account.id == account.id
+    assert selection.account.plan_type == "plus"
+
+
+@pytest.mark.asyncio
 async def test_load_balancer_prefers_newer_weekly_primary_over_stale_secondary(db_setup):
     encryptor = TokenEncryptor()
     now = utcnow()

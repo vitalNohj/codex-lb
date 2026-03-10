@@ -37,6 +37,28 @@ The proxy request path MUST read dashboard settings through `SettingsCache` inst
 - **WHEN** `refresh_accounts()` updates usage for one or more accounts
 - **THEN** the system calls `latest_by_account()` again so the refreshed data is reflected (SHALL)
 
+### Requirement: Account selection avoids refresh-driven head-of-line blocking
+`LoadBalancer.select_account()` MUST NOT hold the in-memory runtime lock while it performs pre-selection usage refresh work.
+
+#### Scenario: Runtime mutations proceed while refresh is in flight
+- **WHEN** one request is refreshing usage data before account selection
+- **THEN** concurrent runtime mutations such as `record_error()` are not blocked waiting for that refresh to finish (SHALL)
+
+#### Scenario: Final account selection remains serialized
+- **WHEN** concurrent requests complete any pre-selection refresh work and attempt to choose accounts
+- **THEN** the final in-memory selection and runtime-state update step still runs under the runtime lock (SHALL)
+
+### Requirement: Stale usage refreshes are singleflight per account
+Concurrent callers that detect the same account as stale MUST share one in-flight usage refresh for that account.
+
+#### Scenario: Concurrent stale refreshes share one upstream fetch
+- **WHEN** multiple callers try to refresh the same stale account at the same time
+- **THEN** the system performs at most one upstream usage fetch for that account and the other callers await the same result (SHALL)
+
+#### Scenario: Followers skip duplicate refresh after fresh data lands
+- **WHEN** a caller re-checks the persisted latest primary-window row and finds it is already within the refresh interval
+- **THEN** it skips issuing another upstream usage fetch for that account (SHALL)
+
 ### Requirement: latest_by_account 쿼리 효율화
 `usage_history` latest-row lookups MUST filter at the DB level instead of loading the full table into Python.
 

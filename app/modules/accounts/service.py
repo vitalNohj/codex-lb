@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -69,11 +70,12 @@ class AccountsService:
             for account_id, row in request_usage_rows.items()
         }
         additional_quotas_by_account: dict[str, list[AccountAdditionalQuota]] = {}
-        if self._additional_usage_repo:
-            limit_names = await self._additional_usage_repo.list_limit_names(account_ids=account_ids)
+        additional_usage_repo = cast(AdditionalUsageRepository | None, self._additional_usage_repo)
+        if additional_usage_repo:
+            limit_names = await additional_usage_repo.list_limit_names(account_ids=account_ids)
             for limit_name in limit_names:
-                primary_entries = await self._additional_usage_repo.latest_by_account(limit_name, "primary")
-                secondary_entries = await self._additional_usage_repo.latest_by_account(limit_name, "secondary")
+                primary_entries = await additional_usage_repo.latest_by_account(limit_name, "primary")
+                secondary_entries = await additional_usage_repo.latest_by_account(limit_name, "secondary")
                 for account_id in (set(primary_entries) | set(secondary_entries)) & account_id_set:
                     primary_entry = primary_entries.get(account_id)
                     secondary_entry = secondary_entries.get(account_id)
