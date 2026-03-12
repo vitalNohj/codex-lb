@@ -633,6 +633,59 @@ async def test_stream_responses_starts_upstream_timer_after_image_inlining(monke
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_defaults_total_timeout_to_proxy_request_budget(monkeypatch):
+    class Settings:
+        upstream_base_url = "https://chatgpt.com/backend-api"
+        upstream_connect_timeout_seconds = 8.0
+        stream_idle_timeout_seconds = 45.0
+        max_sse_event_bytes = 1024
+        image_inline_fetch_enabled = False
+        log_upstream_request_payload = False
+        proxy_request_budget_seconds = 5.0
+
+    class _RecordingTimeoutSseSession:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def post(
+            self,
+            url: str,
+            *,
+            json=None,
+            headers: dict[str, str] | None = None,
+            timeout=None,
+        ):
+            self.calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+            raise asyncio.TimeoutError
+
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", lambda **kwargs: None)
+
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+    session = _RecordingTimeoutSseSession()
+
+    events = [
+        event
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers={},
+            access_token="token",
+            account_id="acc_1",
+            session=cast(proxy_module.aiohttp.ClientSession, session),
+        )
+    ]
+
+    timeout = session.calls[0]["timeout"]
+    assert isinstance(timeout, proxy_module.aiohttp.ClientTimeout)
+    assert timeout.total == pytest.approx(5.0, abs=0.01)
+    event = json.loads(events[0].split("data: ", 1)[1])
+    assert event["response"]["error"]["code"] == "upstream_request_timeout"
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_honors_timeout_overrides(monkeypatch):
     class Settings:
         upstream_base_url = "https://chatgpt.com/backend-api"
@@ -696,7 +749,6 @@ async def test_stream_responses_maps_total_timeout_to_request_timeout(monkeypatc
         max_sse_event_bytes = 1024
         image_inline_fetch_enabled = False
         log_upstream_request_payload = False
-        proxy_request_budget_seconds = 5.0
 
     monkeypatch.setattr(proxy_module, "get_settings", lambda: Settings())
     monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
@@ -706,16 +758,21 @@ async def test_stream_responses_maps_total_timeout_to_request_timeout(monkeypatc
         {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
     )
 
-    events = [
-        event
-        async for event in proxy_module.stream_responses(
-            payload,
-            headers={},
-            access_token="token",
-            account_id="acc_1",
-            session=cast(proxy_module.aiohttp.ClientSession, _TimeoutSseSession()),
-        )
-    ]
+    token = set_request_id("req_total_override")
+    try:
+        with proxy_module.override_stream_timeouts(total_timeout_seconds=0.5):
+            events = [
+                event
+                async for event in proxy_module.stream_responses(
+                    payload,
+                    headers={},
+                    access_token="token",
+                    account_id="acc_1",
+                    session=cast(proxy_module.aiohttp.ClientSession, _TimeoutSseSession()),
+                )
+            ]
+    finally:
+        reset_request_id(token)
 
     event = json.loads(events[0].split("data: ", 1)[1])
     assert event["response"]["error"]["code"] == "upstream_request_timeout"
@@ -1500,8 +1557,10 @@ async def test_stream_forced_refresh_reapplies_idle_and_total_budget_overrides(m
     event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event["type"] == "response.completed"
     assert len(overrides) == 2
-    assert overrides[-1] == {"connect": 2.0, "idle": 2.0, "total": 2.0}
-    assert all(override["connect"] == override["idle"] == override["total"] for override in overrides)
+    assert overrides == [
+        {"connect": 6.0, "idle": 6.0, "total": 6.0},
+        {"connect": 2.0, "idle": 2.0, "total": 2.0},
+    ]
 
 
 @pytest.mark.asyncio
