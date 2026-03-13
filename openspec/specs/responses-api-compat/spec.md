@@ -265,16 +265,71 @@ When a backend Codex Responses or compact request includes a non-empty `session_
 - **WHEN** a pinned backend Codex compact request gets a `401` from upstream, refreshes the selected account, and retries
 - **THEN** the retry forwards the refreshed account's `chatgpt-account-id` header instead of reusing the pre-refresh account header
 
-### Requirement: Compact upstream timeout matches Codex CLI by default
-The service MUST not impose a compact request timeout by default for `/responses/compact` requests. The service MAY allow operators to configure an explicit compact timeout override, and upstream read timeouts on compact MUST surface as `502` OpenAI-format errors with code `upstream_unavailable`.
+### Requirement: Compact requests preserve upstream compaction semantics
+The service MUST not impose a dedicated compact request total or read timeout for `/responses/compact` requests. To preserve provider-owned remote compaction semantics, the service MUST fulfill `/backend-api/codex/responses/compact` and `/v1/responses/compact` by calling the upstream ChatGPT Codex `/codex/responses/compact` endpoint directly and returning the upstream JSON payload as the canonical next context window without converting it into a standard buffered Responses result. The service MUST preserve provider-owned compact payload contents without pruning, reordering, or rewriting returned context items beyond generic JSON serialization. While using this direct compact transport, the service MUST preserve compact account-selection semantics, `session_id` affinity, `prompt_cache_key` affinity, `401` refresh-and-retry behavior, API key settlement, and HTTP request logging. The service MUST reject `store=true` as a client payload error, and it MUST omit `store` from the direct upstream compact request instead of forwarding `store=false`. If direct upstream compact execution fails before a valid compact JSON payload is accepted, the service MUST keep the request inside the compact contract. It MUST NOT silently substitute `/codex/responses`, reconstruct compact output from streamed Responses events, or synthesize a compact window locally. The service MAY perform a bounded retry only against `/codex/responses/compact` when the failure occurs in a provably safe transport phase before a valid compact JSON payload is accepted.
 
-#### Scenario: Compact request exceeds read timeout
-- **WHEN** an upstream compact request does not produce a complete JSON response before the configured compact timeout elapses
-- **THEN** the service returns `502` with error code `upstream_unavailable`
+#### Scenario: Compact request returns raw upstream compaction payload
+- **WHEN** a compact request succeeds and the upstream `/codex/responses/compact` response contains `object: "response.compaction"`
+- **THEN** the service returns that JSON payload without rewriting it into `object: "response"`
+
+#### Scenario: Compact request preserves provider-owned compaction summary
+- **WHEN** the upstream compact response includes nested compaction fields such as `compaction_summary.encrypted_content`
+- **THEN** the service returns those nested fields unchanged in the final JSON response
+
+#### Scenario: Compact response includes retained items and encrypted compaction state
+- **WHEN** the upstream compact response returns a window that includes retained context items plus provider-owned compaction state such as encrypted content
+- **THEN** the service returns that window unchanged to the client
+
+#### Scenario: Compact response object shape differs from normal Responses
+- **WHEN** the upstream compact response uses a provider-owned compact object shape instead of a standard `object: "response"` payload
+- **THEN** the service returns that compact object shape unchanged instead of coercing it into a normal Responses payload
+
+#### Scenario: Direct compact request omits store
+- **WHEN** a client sends `/backend-api/codex/responses/compact` or `/v1/responses/compact` without a `store` field
+- **THEN** the direct upstream `/codex/responses/compact` request omits `store`
+
+#### Scenario: Direct compact request sets store true
+- **WHEN** a client sends `/backend-api/codex/responses/compact` or `/v1/responses/compact` with `store=true`
+- **THEN** the service returns a 4xx OpenAI invalid payload error
+- **AND** it does not forward any `store` field upstream
+
+#### Scenario: Direct compact upstream returns an error envelope
+- **WHEN** the upstream direct compact request returns a non-2xx OpenAI-format error payload
+- **THEN** the service propagates the corresponding HTTP status and error envelope to the client
+
+#### Scenario: Direct compact transport fails before response body is available
+- **WHEN** the upstream `/codex/responses/compact` call times out, disconnects, or otherwise fails before yielding a valid compact JSON payload
+- **THEN** the service may retry only `/codex/responses/compact` within a bounded retry budget
+- **AND** it does not attempt a surrogate `/codex/responses` request
+
+#### Scenario: Direct compact transport gets a safe retryable upstream failure
+- **WHEN** the upstream `/codex/responses/compact` call fails with `401`, `502`, `503`, or `504` before a valid compact JSON payload is accepted
+- **THEN** the service may retry only `/codex/responses/compact`
+- **AND** it preserves the request's established compact routing and affinity semantics except for refreshed provider identity on `401`
+- **AND** it does not call `/codex/responses`
+
+#### Scenario: Direct compact response payload is invalid
+- **WHEN** the upstream `/codex/responses/compact` call returns a non-error payload that is not valid compact JSON for pass-through
+- **THEN** the service returns an upstream error to the client
+- **AND** it does not retry via `/codex/responses`
+- **AND** it does not synthesize or reconstruct a replacement compact window
 
 #### Scenario: Compact request uses no timeout by default
 - **WHEN** `/responses/compact` is called and no compact timeout override is configured
 - **THEN** the service forwards the request without setting an upstream total or read timeout
+
+### Requirement: Persist request log transport for Responses requests
+The service MUST persist a stable `transport` value on `request_logs` for Responses proxy requests and MUST expose the same value through `/api/request-logs`. Requests accepted over HTTP on `/backend-api/codex/responses` or `/v1/responses` MUST persist `transport = "http"`. Requests accepted over WebSocket on those paths MUST persist `transport = "websocket"`.
+
+#### Scenario: HTTP Responses request logs http transport
+- **WHEN** a client completes a Responses request over HTTP on `/backend-api/codex/responses` or `/v1/responses`
+- **THEN** the persisted request log has `transport = "http"`
+- **AND** `/api/request-logs` returns that row with `transport = "http"`
+
+#### Scenario: WebSocket Responses request logs websocket transport
+- **WHEN** a client completes a Responses request over WebSocket on `/backend-api/codex/responses` or `/v1/responses`
+- **THEN** the persisted request log has `transport = "websocket"`
+- **AND** `/api/request-logs` returns that row with `transport = "websocket"`
 
 ### Requirement: Emit opt-in safe service-tier trace logs
 When service-tier trace logging is enabled, the service MUST emit a diagnostic log entry for Responses requests that records `request_id`, request `kind`, `requested_service_tier`, and upstream `actual_service_tier`. The diagnostic log MUST NOT include prompt text, input content, or the full request payload.
@@ -336,4 +391,3 @@ When account selection fails for an explicitly mapped gated model, the proxy MUS
 #### Scenario: No eligible accounts returns a specific code
 - **WHEN** a compact or streaming Responses request targets a mapped gated model and the canonical `quota_key` has fresh persisted data but no eligible accounts
 - **THEN** the proxy returns an OpenAI-format error envelope with a stable code for zero eligible additional-quota accounts
-

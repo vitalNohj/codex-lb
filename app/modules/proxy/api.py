@@ -5,7 +5,7 @@ import time
 from collections.abc import AsyncIterator, Mapping
 from typing import cast
 
-from fastapi import APIRouter, Body, Depends, File, Form, Request, Response, Security, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Request, Response, Security, UploadFile, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -13,15 +13,19 @@ from app.core.auth.dependencies import (
     set_openai_error_format,
     validate_codex_usage_identity,
     validate_proxy_api_key,
+    validate_proxy_api_key_authorization,
 )
 from app.core.clients.proxy import ProxyResponseError
+from app.core.config.settings import get_settings
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.exceptions import ProxyAuthError, ProxyModelNotAllowed, ProxyRateLimitError
+from app.core.middleware.api_firewall import _parse_trusted_proxy_networks, resolve_connection_client_ip
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import ChatCompletionResult, collect_chat_completion, stream_chat_chunks
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import UpstreamModel, get_model_registry, is_public_model
 from app.core.openai.models import (
+    CompactResponseResult,
     OpenAIError,
     OpenAIResponsePayload,
     OpenAIResponseResult,
@@ -38,7 +42,7 @@ from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import parse_sse_data_json
 from app.db.session import get_background_session
-from app.dependencies import ProxyContext, get_proxy_context
+from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
     ApiKeyData,
@@ -47,6 +51,8 @@ from app.modules.api_keys.service import (
     ApiKeysService,
     ApiKeyUsageReservationData,
 )
+from app.modules.firewall.repository import FirewallRepository
+from app.modules.firewall.service import FirewallService
 from app.modules.proxy.schemas import (
     ModelListItem,
     ModelListResponse,
@@ -62,10 +68,18 @@ router = APIRouter(
     tags=["proxy"],
     dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
 )
+ws_router = APIRouter(
+    prefix="/backend-api/codex",
+    tags=["proxy"],
+)
 v1_router = APIRouter(
     prefix="/v1",
     tags=["proxy"],
     dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
+)
+v1_ws_router = APIRouter(
+    prefix="/v1",
+    tags=["proxy"],
 )
 usage_router = APIRouter(
     tags=["proxy"],
@@ -105,6 +119,24 @@ async def responses(
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
     return await _stream_responses(request, payload, context, api_key, codex_session_affinity=True)
+
+
+@ws_router.websocket("/responses")
+async def responses_websocket(
+    websocket: WebSocket,
+    context: ProxyContext = Depends(get_proxy_websocket_context),
+) -> None:
+    api_key, denial = await _validate_proxy_websocket_request(websocket)
+    if denial is not None:
+        await websocket.send_denial_response(denial)
+        return
+    await websocket.accept()
+    await context.service.proxy_responses_websocket(
+        websocket,
+        websocket.headers,
+        codex_session_affinity=True,
+        api_key=api_key,
+    )
 
 
 @v1_router.post(
@@ -148,6 +180,24 @@ async def v1_responses(
         context,
         api_key,
         openai_cache_affinity=True,
+    )
+
+
+@v1_ws_router.websocket("/responses")
+async def v1_responses_websocket(
+    websocket: WebSocket,
+    context: ProxyContext = Depends(get_proxy_websocket_context),
+) -> None:
+    api_key, denial = await _validate_proxy_websocket_request(websocket)
+    if denial is not None:
+        await websocket.send_denial_response(denial)
+        return
+    await websocket.accept()
+    await context.service.proxy_responses_websocket(
+        websocket,
+        websocket.headers,
+        codex_session_affinity=False,
+        api_key=api_key,
     )
 
 
@@ -458,7 +508,7 @@ async def _collect_responses(
     )
 
 
-@router.post("/responses/compact", response_model=OpenAIResponseResult)
+@router.post("/responses/compact", response_model=CompactResponseResult)
 async def responses_compact(
     request: Request,
     payload: ResponsesCompactRequest = Body(...),
@@ -468,7 +518,7 @@ async def responses_compact(
     return await _compact_responses(request, payload, context, api_key, codex_session_affinity=True)
 
 
-@v1_router.post("/responses/compact", response_model=OpenAIResponseResult)
+@v1_router.post("/responses/compact", response_model=CompactResponseResult)
 async def v1_responses_compact(
     request: Request,
     payload: V1ResponsesCompactRequest = Body(...),
@@ -642,6 +692,40 @@ def _error_details_from_content(
     code = error_mapping.get("code")
     message = error_mapping.get("message")
     return code if isinstance(code, str) else None, message if isinstance(message, str) else None
+
+
+async def _validate_proxy_websocket_request(
+    websocket: WebSocket,
+) -> tuple[ApiKeyData | None, JSONResponse | None]:
+    denial = await _websocket_firewall_denial_response(websocket)
+    if denial is not None:
+        return None, denial
+    try:
+        api_key = await validate_proxy_api_key_authorization(websocket.headers.get("authorization"))
+    except ProxyAuthError as exc:
+        return None, JSONResponse(
+            status_code=exc.status_code,
+            content=openai_error(exc.code, exc.message, error_type=exc.error_type),
+        )
+    return api_key, None
+
+
+async def _websocket_firewall_denial_response(websocket: WebSocket) -> JSONResponse | None:
+    settings = get_settings()
+    client_ip = resolve_connection_client_ip(
+        websocket.headers,
+        websocket.client.host if websocket.client else None,
+        trust_proxy_headers=settings.firewall_trust_proxy_headers,
+        trusted_proxy_networks=_parse_trusted_proxy_networks(settings.firewall_trusted_proxy_cidrs),
+    )
+    async with get_background_session() as session:
+        service = FirewallService(FirewallRepository(session))
+        if await service.is_ip_allowed(client_ip):
+            return None
+    return JSONResponse(
+        status_code=403,
+        content=openai_error("ip_forbidden", "Access denied for client IP", error_type="access_error"),
+    )
 
 
 async def _enforce_request_limits(

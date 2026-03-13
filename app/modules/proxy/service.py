@@ -5,13 +5,17 @@ import inspect
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import AsyncIterator, Mapping, NoReturn
+from typing import AsyncIterator, Mapping, NoReturn, cast
+from uuid import uuid4
 
 import aiohttp
 import anyio
+from fastapi import WebSocket
+from pydantic import ValidationError
 
 from app.core import usage as usage_core
 from app.core.auth.refresh import (
@@ -32,26 +36,36 @@ from app.core.clients.proxy import (
     push_transcribe_timeout_overrides,
 )
 from app.core.clients.proxy import compact_responses as core_compact_responses
-from app.core.clients.proxy import (
-    stream_responses as core_stream_responses,
-)
-from app.core.clients.proxy import (
-    transcribe_audio as core_transcribe_audio,
+from app.core.clients.proxy import stream_responses as core_stream_responses
+from app.core.clients.proxy import transcribe_audio as core_transcribe_audio
+from app.core.clients.proxy_websocket import (
+    UpstreamResponsesWebSocket,
+    connect_responses_websocket,
+    filter_inbound_websocket_headers,
 )
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
-from app.core.errors import ResponseFailedEvent, openai_error, response_failed_event
-from app.core.openai.models import OpenAIEvent, OpenAIResponsePayload
+from app.core.errors import OpenAIErrorEnvelope, ResponseFailedEvent, openai_error, response_failed_event
+from app.core.exceptions import AppError, ProxyAuthError, ProxyModelNotAllowed, ProxyRateLimitError
+from app.core.openai.exceptions import ClientPayloadError
+from app.core.openai.models import CompactResponsePayload, OpenAIEvent, OpenAIResponsePayload
 from app.core.openai.parsing import parse_sse_event
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
+from app.core.openai.requests import ResponsesCompactRequest, ResponsesReasoning, ResponsesRequest
+from app.core.openai.v1_requests import V1ResponsesRequest
 from app.core.types import JsonValue
 from app.core.usage.types import UsageWindowRow
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.db.models import Account, DashboardSettings, StickySessionKind, UsageHistory
 from app.modules.accounts.auth_manager import AuthManager
-from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
+from app.modules.api_keys.service import (
+    ApiKeyData,
+    ApiKeyInvalidError,
+    ApiKeyRateLimitExceededError,
+    ApiKeysService,
+    ApiKeyUsageReservationData,
+)
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _credits_headers,
@@ -83,6 +97,13 @@ logger = logging.getLogger(__name__)
 
 _TEXT_DELTA_EVENT_TYPES = frozenset({"response.output_text.delta", "response.refusal.delta"})
 _TEXT_DONE_CONTENT_PART_TYPES = frozenset({"output_text", "refusal"})
+_REQUEST_TRANSPORT_HTTP = "http"
+_REQUEST_TRANSPORT_WEBSOCKET = "websocket"
+
+_COMPACT_UPSTREAM_ENDPOINT = "/codex/responses/compact"
+_COMPACT_SAME_CONTRACT_RETRY_BUDGET = 1
+
+
 _ACCOUNT_RECOVERY_RETRY_CODES = frozenset(
     {
         "rate_limit_exceeded",
@@ -101,6 +122,7 @@ class _AffinityPolicy:
     kind: StickySessionKind | None = None
     reallocate_sticky: bool = False
     max_age_seconds: int | None = None
+    source: str = "none"
 
 
 class ProxyService:
@@ -120,6 +142,7 @@ class ProxyService:
         api_key: ApiKeyData | None = None,
         api_key_reservation: ApiKeyUsageReservationData | None = None,
         suppress_text_done_events: bool = False,
+        request_transport: str = _REQUEST_TRANSPORT_HTTP,
     ) -> AsyncIterator[str]:
         _maybe_log_proxy_request_payload("stream", payload, headers)
         _maybe_log_proxy_request_shape("stream", payload, headers)
@@ -133,6 +156,7 @@ class ProxyService:
             api_key=api_key,
             api_key_reservation=api_key_reservation,
             suppress_text_done_events=suppress_text_done_events,
+            request_transport=request_transport,
         )
 
     async def compact_responses(
@@ -144,7 +168,7 @@ class ProxyService:
         openai_cache_affinity: bool = False,
         api_key: ApiKeyData | None = None,
         api_key_reservation: ApiKeyUsageReservationData | None = None,
-    ) -> OpenAIResponsePayload:
+    ) -> CompactResponsePayload:
         _maybe_log_proxy_request_payload("compact", payload, headers)
         _maybe_log_proxy_request_shape("compact", payload, headers)
         filtered = filter_inbound_headers(headers)
@@ -156,7 +180,7 @@ class ProxyService:
         log_status = "error"
         log_error_code: str | None = None
         log_error_message: str | None = None
-        response: OpenAIResponsePayload | None = None
+        response: CompactResponsePayload | None = None
         request_service_tier: str | None = None
         actual_service_tier: str | None = None
 
@@ -209,7 +233,7 @@ class ProxyService:
                 _raise_proxy_unavailable(str(exc) or "Request to upstream timed out")
             request_service_tier = _service_tier_from_compact_payload(payload)
 
-            async def _call_compact(target: Account) -> OpenAIResponsePayload:
+            async def _call_compact(target: Account) -> CompactResponsePayload:
                 access_token = self._encryptor.decrypt(target.access_token_encrypted)
                 account_id = _header_account_id(target.chatgpt_account_id)
                 remaining_budget = _remaining_budget_seconds(deadline)
@@ -234,64 +258,18 @@ class ProxyService:
                 finally:
                     pop_compact_timeout_overrides(timeout_tokens)
 
-            try:
-                response = await _call_compact(account)
-                actual_service_tier = _service_tier_from_response(response)
-                await self._load_balancer.record_success(account)
-                await self._settle_compact_api_key_usage(
-                    api_key=api_key,
-                    api_key_reservation=api_key_reservation,
-                    response=response,
-                    request_service_tier=request_service_tier,
+            safe_retry_budget = _COMPACT_SAME_CONTRACT_RETRY_BUDGET
+            refresh_retry_used = False
+            retry_attempt = 0
+            while True:
+                _maybe_log_compact_contract_trace(
+                    event="attempt",
+                    endpoint=_COMPACT_UPSTREAM_ENDPOINT,
+                    retry_attempt=retry_attempt,
+                    failure_phase=None,
+                    payload_object=None,
+                    affinity_source=affinity.source,
                 )
-                log_status = "success"
-                return response
-            except ProxyResponseError as exc:
-                if exc.status_code != 401:
-                    await self._settle_compact_api_key_usage(
-                        api_key=api_key,
-                        api_key_reservation=api_key_reservation,
-                        response=None,
-                        request_service_tier=request_service_tier,
-                    )
-                    await self._handle_proxy_error(account, exc)
-                    raise
-                try:
-                    remaining_budget = _remaining_budget_seconds(deadline)
-                    if remaining_budget <= 0:
-                        logger.warning(
-                            "Compact request budget exhausted before forced refresh retry request_id=%s account_id=%s",
-                            request_id,
-                            account.id,
-                        )
-                        _raise_proxy_budget_exhausted()
-                    account = await self._ensure_fresh_with_budget(
-                        account, force=True, timeout_seconds=remaining_budget
-                    )
-                except RefreshError as refresh_exc:
-                    if refresh_exc.is_permanent:
-                        await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
-                    await self._settle_compact_api_key_usage(
-                        api_key=api_key,
-                        api_key_reservation=api_key_reservation,
-                        response=None,
-                        request_service_tier=request_service_tier,
-                    )
-                    raise exc
-                except (aiohttp.ClientError, asyncio.TimeoutError) as timeout_exc:
-                    await self._settle_compact_api_key_usage(
-                        api_key=api_key,
-                        api_key_reservation=api_key_reservation,
-                        response=None,
-                        request_service_tier=request_service_tier,
-                    )
-                    logger.warning(
-                        "Compact forced refresh/connect failed request_id=%s account_id=%s",
-                        request_id,
-                        account.id,
-                        exc_info=True,
-                    )
-                    _raise_proxy_unavailable(str(timeout_exc) or "Request to upstream timed out")
                 try:
                     response = await _call_compact(account)
                     actual_service_tier = _service_tier_from_response(response)
@@ -303,13 +281,101 @@ class ProxyService:
                         request_service_tier=request_service_tier,
                     )
                     log_status = "success"
+                    _maybe_log_compact_contract_trace(
+                        event="success",
+                        endpoint=_COMPACT_UPSTREAM_ENDPOINT,
+                        retry_attempt=retry_attempt,
+                        failure_phase=None,
+                        payload_object=_compact_payload_object(response),
+                        affinity_source=affinity.source,
+                    )
                     return response
                 except ProxyResponseError as exc:
+                    _maybe_log_compact_contract_trace(
+                        event="failure",
+                        endpoint=_COMPACT_UPSTREAM_ENDPOINT,
+                        retry_attempt=retry_attempt,
+                        failure_phase=exc.failure_phase,
+                        payload_object=None,
+                        affinity_source=affinity.source,
+                    )
+                    if exc.status_code == 401:
+                        if refresh_retry_used:
+                            await self._settle_compact_api_key_usage(
+                                api_key=api_key,
+                                api_key_reservation=api_key_reservation,
+                                response=None,
+                                request_service_tier=request_service_tier,
+                            )
+                            await self._handle_proxy_error(account, exc)
+                            raise
+                        try:
+                            remaining_budget = _remaining_budget_seconds(deadline)
+                            if remaining_budget <= 0:
+                                logger.warning(
+                                    "Compact request budget exhausted before forced refresh retry request_id=%s "
+                                    "account_id=%s",
+                                    request_id,
+                                    account.id,
+                                )
+                                _raise_proxy_budget_exhausted()
+                            account = await self._ensure_fresh_with_budget(
+                                account,
+                                force=True,
+                                timeout_seconds=remaining_budget,
+                            )
+                        except RefreshError as refresh_exc:
+                            if refresh_exc.is_permanent:
+                                await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+                            await self._settle_compact_api_key_usage(
+                                api_key=api_key,
+                                api_key_reservation=api_key_reservation,
+                                response=None,
+                                request_service_tier=request_service_tier,
+                            )
+                            raise exc
+                        except (aiohttp.ClientError, asyncio.TimeoutError) as timeout_exc:
+                            await self._settle_compact_api_key_usage(
+                                api_key=api_key,
+                                api_key_reservation=api_key_reservation,
+                                response=None,
+                                request_service_tier=request_service_tier,
+                            )
+                            logger.warning(
+                                "Compact forced refresh/connect failed request_id=%s account_id=%s",
+                                request_id,
+                                account.id,
+                                exc_info=True,
+                            )
+                            _raise_proxy_unavailable(str(timeout_exc) or "Request to upstream timed out")
+                        refresh_retry_used = True
+                        retry_attempt += 1
+                        continue
+                    if exc.retryable_same_contract and safe_retry_budget > 0:
+                        safe_retry_budget -= 1
+                        retry_attempt += 1
+                        continue
                     await self._settle_compact_api_key_usage(
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         response=None,
                         request_service_tier=request_service_tier,
+                    )
+                    error = _parse_openai_error(exc.payload)
+                    _log_terminal_compact_failure(
+                        status_code=exc.status_code,
+                        error_code=_normalize_error_code(
+                            error.code if error else None,
+                            error.type if error else None,
+                        ),
+                        error_message=error.message if error else None,
+                        failure_phase=exc.failure_phase,
+                        failure_detail=exc.failure_detail,
+                        failure_exception_type=exc.failure_exception_type,
+                        retryable_same_contract=exc.retryable_same_contract,
+                        retry_attempt=retry_attempt,
+                        affinity_source=affinity.source,
+                        account_id=account_id_value,
                     )
                     await self._handle_proxy_error(account, exc)
                     raise
@@ -342,6 +408,7 @@ class ProxyService:
                     usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
                 ),
                 reasoning_effort=reasoning_effort,
+                transport=_REQUEST_TRANSPORT_HTTP,
                 service_tier=_service_tier_from_response(response) or _service_tier_from_compact_payload(payload),
             )
             _maybe_log_proxy_service_tier_trace(
@@ -510,12 +577,801 @@ class ProxyService:
                 error_message=log_error_message,
             )
 
+    async def proxy_responses_websocket(
+        self,
+        websocket: WebSocket,
+        headers: Mapping[str, str],
+        *,
+        codex_session_affinity: bool,
+        api_key: ApiKeyData | None,
+    ) -> None:
+        filtered_headers = filter_inbound_websocket_headers(dict(headers))
+        settings = await get_settings_cache().get()
+        prefer_earlier_reset = settings.prefer_earlier_reset_accounts
+        routing_strategy = _routing_strategy(settings)
+        sticky_threads_enabled = getattr(settings, "sticky_threads_enabled", False)
+        queued_create_frames: deque[str] = deque()
+        client_send_lock = anyio.Lock()
+        current_request: _WebSocketRequestHandle | None = None
+        downstream_receive_task: asyncio.Task[object] | None = None
+
+        try:
+            while True:
+                if current_request is None and queued_create_frames:
+                    current_request = await self._start_websocket_request(
+                        queued_create_frames.popleft(),
+                        websocket=websocket,
+                        headers=headers,
+                        filtered_headers=filtered_headers,
+                        codex_session_affinity=codex_session_affinity,
+                        sticky_threads_enabled=sticky_threads_enabled,
+                        prefer_earlier_reset=prefer_earlier_reset,
+                        routing_strategy=routing_strategy,
+                        client_send_lock=client_send_lock,
+                        api_key=api_key,
+                    )
+                    continue
+
+                if downstream_receive_task is None:
+                    downstream_receive_task = cast(asyncio.Task[object], asyncio.create_task(websocket.receive()))
+
+                wait_tasks: set[asyncio.Task[object]] = {downstream_receive_task}
+                if current_request is not None:
+                    wait_tasks.add(current_request.reader_task)
+
+                done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+                if current_request is not None and current_request.reader_task in done:
+                    try:
+                        await current_request.reader_task
+                    except asyncio.CancelledError:
+                        pass
+                    current_request = None
+                    continue
+
+                if downstream_receive_task not in done:
+                    continue
+
+                message = cast(Mapping[str, object], downstream_receive_task.result())
+                downstream_receive_task = None
+                message_type = message["type"]
+
+                if message_type == "websocket.disconnect":
+                    if current_request is not None:
+                        await self._fail_websocket_request_state(
+                            current_request.state,
+                            error_code="client_disconnect",
+                            error_message="Downstream websocket disconnected",
+                            api_key=api_key,
+                        )
+                    break
+                if message_type != "websocket.receive":
+                    continue
+
+                text_data = message.get("text")
+                bytes_data = message.get("bytes")
+
+                if isinstance(text_data, str):
+                    payload = _parse_websocket_payload(text_data)
+                    if payload is not None and _is_websocket_response_create(payload):
+                        queued_create_frames.append(text_data)
+                        continue
+
+                if current_request is None:
+                    async with client_send_lock:
+                        await websocket.send_text(
+                            _serialize_websocket_error_event(
+                                _wrapped_websocket_error_event(
+                                    400,
+                                    openai_error(
+                                        "invalid_request_error",
+                                        "WebSocket connection has no active upstream session",
+                                        error_type="invalid_request_error",
+                                    ),
+                                )
+                            )
+                        )
+                    continue
+
+                forwarded = await self._forward_websocket_client_event(
+                    current_request,
+                    text_data=text_data,
+                    bytes_data=bytes_data,
+                )
+                if not forwarded:
+                    try:
+                        await current_request.reader_task
+                    except asyncio.CancelledError:
+                        pass
+                    current_request = None
+        finally:
+            if downstream_receive_task is not None:
+                downstream_receive_task.cancel()
+                try:
+                    await downstream_receive_task
+                except asyncio.CancelledError:
+                    pass
+            if current_request is not None:
+                current_request.reader_task.cancel()
+                try:
+                    await current_request.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _start_websocket_request(
+        self,
+        text_data: str,
+        *,
+        websocket: WebSocket,
+        headers: Mapping[str, str],
+        filtered_headers: dict[str, str],
+        codex_session_affinity: bool,
+        sticky_threads_enabled: bool,
+        prefer_earlier_reset: bool,
+        routing_strategy: RoutingStrategy,
+        client_send_lock: anyio.Lock,
+        api_key: ApiKeyData | None,
+    ) -> _WebSocketRequestHandle | None:
+        start = time.monotonic()
+        deadline = start + get_settings().proxy_request_budget_seconds
+        payload = _parse_websocket_payload(text_data)
+        if payload is None or not _is_websocket_response_create(payload):
+            return None
+
+        try:
+            request_payload, request_service_tier = _prepare_websocket_request_payload(payload, api_key)
+            _validate_websocket_model_access(api_key, request_payload.model)
+            reservation = await self._reserve_websocket_api_key_usage(
+                api_key,
+                request_model=request_payload.model,
+                request_service_tier=request_service_tier,
+            )
+            request_state = _WebSocketRequestState(
+                request_id=f"ws_{uuid4().hex}",
+                model=request_payload.model,
+                service_tier=request_service_tier,
+                reasoning_effort=request_payload.reasoning.effort if request_payload.reasoning else None,
+                api_key_reservation=reservation,
+                started_at=time.monotonic(),
+            )
+            serialized_payload = _serialize_websocket_request_create_event(request_payload)
+            affinity = _sticky_key_for_responses_request(
+                request_payload,
+                headers,
+                codex_session_affinity=codex_session_affinity,
+                openai_cache_affinity=not codex_session_affinity,
+                openai_cache_affinity_max_age_seconds=get_settings().openai_cache_affinity_max_age_seconds,
+                sticky_threads_enabled=sticky_threads_enabled,
+            )
+        except AppError as exc:
+            async with client_send_lock:
+                await websocket.send_text(_serialize_websocket_error_event(_app_error_to_websocket_event(exc)))
+            return None
+        except (ClientPayloadError, ValidationError) as exc:
+            async with client_send_lock:
+                await websocket.send_text(
+                    _serialize_websocket_error_event(_websocket_invalid_payload_event(_validation_param(exc)))
+                )
+            return None
+
+        try:
+            account, upstream = await self._connect_proxy_websocket(
+                filtered_headers,
+                sticky_key=affinity.key,
+                sticky_kind=affinity.kind,
+                prefer_earlier_reset=prefer_earlier_reset,
+                routing_strategy=routing_strategy,
+                model=request_state.model,
+                request_state=request_state,
+                client_send_lock=client_send_lock,
+                websocket=websocket,
+                api_key=api_key,
+                deadline=deadline,
+                sticky_max_age_seconds=affinity.max_age_seconds,
+            )
+        except ProxyResponseError as exc:
+            error = _parse_openai_error(exc.payload)
+            await self._fail_websocket_request_state(
+                request_state,
+                error_code=_normalize_error_code(error.code if error else None, error.type if error else None)
+                or "upstream_unavailable",
+                error_message=error.message if error and error.message else "Upstream unavailable",
+                api_key=api_key,
+            )
+            try:
+                async with client_send_lock:
+                    await websocket.send_text(
+                        _serialize_websocket_error_event(_wrapped_websocket_error_event(exc.status_code, exc.payload))
+                    )
+            except Exception:
+                logger.debug("Failed to send websocket startup proxy error event", exc_info=True)
+            return None
+        except Exception:
+            await self._fail_websocket_request_state(
+                request_state,
+                error_code="internal_error",
+                error_message="WebSocket request setup failed",
+                api_key=api_key,
+            )
+            try:
+                async with client_send_lock:
+                    await websocket.send_text(
+                        _serialize_websocket_error_event(
+                            _wrapped_websocket_error_event(
+                                500,
+                                openai_error(
+                                    "internal_error",
+                                    "WebSocket request setup failed",
+                                    error_type="server_error",
+                                ),
+                            )
+                        )
+                    )
+            except Exception:
+                logger.debug("Failed to send websocket startup internal error event", exc_info=True)
+            return None
+        if upstream is None or account is None:
+            return None
+        request_state.account_id = account.id
+
+        try:
+            await upstream.send_text(serialized_payload)
+        except Exception:
+            message = "Upstream websocket failed before request start"
+            await self._fail_websocket_request_state(
+                request_state,
+                error_code="upstream_unavailable",
+                error_message=message,
+                api_key=api_key,
+            )
+            try:
+                async with client_send_lock:
+                    await websocket.send_text(
+                        _serialize_websocket_error_event(
+                            _wrapped_websocket_error_event(
+                                502,
+                                openai_error(
+                                    "upstream_unavailable",
+                                    message,
+                                    error_type="server_error",
+                                ),
+                            )
+                        )
+                    )
+            except Exception:
+                logger.debug("Failed to send websocket startup error event", exc_info=True)
+            try:
+                await upstream.close()
+            except Exception:
+                logger.debug("Failed to close upstream websocket after send failure", exc_info=True)
+            return None
+
+        reader_task = asyncio.create_task(
+            self._relay_upstream_websocket_messages(
+                websocket,
+                upstream,
+                request_state=request_state,
+                client_send_lock=client_send_lock,
+                api_key=api_key,
+            )
+        )
+        return _WebSocketRequestHandle(
+            state=request_state,
+            upstream=upstream,
+            reader_task=reader_task,
+        )
+
+    async def _connect_proxy_websocket(
+        self,
+        headers: dict[str, str],
+        *,
+        sticky_key: str | None,
+        sticky_kind: StickySessionKind | None = None,
+        prefer_earlier_reset: bool,
+        routing_strategy: RoutingStrategy,
+        model: str | None,
+        request_state: _WebSocketRequestState,
+        client_send_lock: anyio.Lock,
+        websocket: WebSocket,
+        api_key: ApiKeyData | None,
+        deadline: float,
+        sticky_max_age_seconds: int | None = None,
+        exclude_account_ids: set[str] | None = None,
+    ) -> tuple[Account | None, UpstreamResponsesWebSocket | None]:
+        attempted_account_ids = set(exclude_account_ids or ())
+        last_connect_error: ProxyResponseError | None = None
+        last_connect_account: Account | None = None
+
+        while True:
+            selection = await self._select_account_with_budget(
+                deadline,
+                request_id=request_state.request_id,
+                kind="websocket",
+                sticky_key=sticky_key,
+                sticky_kind=sticky_kind,
+                sticky_max_age_seconds=sticky_max_age_seconds,
+                prefer_earlier_reset_accounts=prefer_earlier_reset,
+                routing_strategy=routing_strategy,
+                model=model,
+                exclude_account_ids=attempted_account_ids,
+            )
+            account = selection.account
+            if not account:
+                error_code = selection.error_code or "no_accounts"
+                error_message = selection.error_message or "No active accounts available"
+                await self._release_websocket_reservation(request_state.api_key_reservation)
+                if last_connect_error is not None:
+                    last_error = _parse_openai_error(last_connect_error.payload)
+                    error_code = (
+                        _normalize_error_code(
+                            last_error.code if last_error else None,
+                            last_error.type if last_error else None,
+                        )
+                        or "upstream_unavailable"
+                    )
+                    error_message = last_error.message if last_error and last_error.message else "Upstream unavailable"
+                    await self._write_request_log(
+                        account_id=last_connect_account.id if last_connect_account else None,
+                        api_key=api_key,
+                        request_id=request_state.request_id,
+                        model=request_state.model,
+                        latency_ms=int((time.monotonic() - request_state.started_at) * 1000),
+                        status="error",
+                        error_code=error_code,
+                        error_message=error_message,
+                        reasoning_effort=request_state.reasoning_effort,
+                        transport=_REQUEST_TRANSPORT_WEBSOCKET,
+                        service_tier=request_state.service_tier,
+                    )
+                    async with client_send_lock:
+                        await websocket.send_text(
+                            _serialize_websocket_error_event(
+                                _wrapped_websocket_error_event(
+                                    last_connect_error.status_code,
+                                    last_connect_error.payload,
+                                )
+                            )
+                        )
+                    return None, None
+
+                await self._write_request_log(
+                    account_id=None,
+                    api_key=api_key,
+                    request_id=request_state.request_id,
+                    model=request_state.model,
+                    latency_ms=int((time.monotonic() - request_state.started_at) * 1000),
+                    status="error",
+                    error_code=error_code,
+                    error_message=error_message,
+                    reasoning_effort=request_state.reasoning_effort,
+                    transport=_REQUEST_TRANSPORT_WEBSOCKET,
+                    service_tier=request_state.service_tier,
+                )
+                async with client_send_lock:
+                    await websocket.send_text(
+                        _serialize_websocket_error_event(
+                            _wrapped_websocket_error_event(
+                                503,
+                                openai_error(
+                                    error_code,
+                                    error_message,
+                                    error_type="server_error",
+                                ),
+                            )
+                        )
+                    )
+                return None, None
+
+            connect_error: ProxyResponseError | None = None
+            last_connect_account = account
+            try:
+                remaining_budget = _remaining_budget_seconds(deadline)
+                if remaining_budget <= 0:
+                    logger.warning(
+                        "Websocket request budget exhausted before freshness check request_id=%s account_id=%s",
+                        request_state.request_id,
+                        account.id,
+                    )
+                    _raise_proxy_budget_exhausted()
+                account = await self._ensure_fresh_with_budget(account, timeout_seconds=remaining_budget)
+                remaining_budget = _remaining_budget_seconds(deadline)
+                if remaining_budget <= 0:
+                    logger.warning(
+                        "Websocket request budget exhausted before upstream connect request_id=%s account_id=%s",
+                        request_state.request_id,
+                        account.id,
+                    )
+                    _raise_proxy_budget_exhausted()
+                with anyio.fail_after(remaining_budget):
+                    return account, await self._open_upstream_websocket(account, headers)
+            except ProxyResponseError as exc:
+                connect_error = exc
+                if exc.status_code == 401:
+                    try:
+                        remaining_budget = _remaining_budget_seconds(deadline)
+                        if remaining_budget <= 0:
+                            logger.warning(
+                                (
+                                    "Websocket request budget exhausted before forced refresh retry "
+                                    "request_id=%s account_id=%s"
+                                ),
+                                request_state.request_id,
+                                account.id,
+                            )
+                            _raise_proxy_budget_exhausted()
+                        account = await self._ensure_fresh_with_budget(
+                            account,
+                            force=True,
+                            timeout_seconds=remaining_budget,
+                        )
+                        remaining_budget = _remaining_budget_seconds(deadline)
+                        if remaining_budget <= 0:
+                            logger.warning(
+                                (
+                                    "Websocket request budget exhausted before post-refresh upstream connect "
+                                    "request_id=%s account_id=%s"
+                                ),
+                                request_state.request_id,
+                                account.id,
+                            )
+                            _raise_proxy_budget_exhausted()
+                        with anyio.fail_after(remaining_budget):
+                            return account, await self._open_upstream_websocket(account, headers)
+                    except RefreshError as refresh_exc:
+                        if refresh_exc.is_permanent:
+                            await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+                        attempted_account_ids.add(account.id)
+                        continue
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as timeout_exc:
+                        logger.warning(
+                            "Websocket forced refresh/connect failed request_id=%s account_id=%s",
+                            request_state.request_id,
+                            account.id,
+                            exc_info=True,
+                        )
+                        connect_error = _proxy_unavailable_error(str(timeout_exc) or "Request to upstream timed out")
+                    except ProxyResponseError as retry_exc:
+                        connect_error = retry_exc
+            except RefreshError as exc:
+                if exc.is_permanent:
+                    await self._load_balancer.mark_permanent_failure(account, exc.code)
+                attempted_account_ids.add(account.id)
+                continue
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                logger.warning(
+                    "Websocket refresh/connect failed request_id=%s account_id=%s",
+                    request_state.request_id,
+                    account.id,
+                    exc_info=True,
+                )
+                connect_error = _proxy_unavailable_error(str(exc) or "Request to upstream timed out")
+            except TimeoutError:
+                connect_error = _proxy_unavailable_error("Proxy request budget exhausted")
+
+            assert connect_error is not None
+            await self._handle_websocket_connect_error(account, connect_error)
+            attempted_account_ids.add(account.id)
+            last_connect_error = connect_error
+
+    async def _open_upstream_websocket(
+        self,
+        account: Account,
+        headers: dict[str, str],
+    ) -> UpstreamResponsesWebSocket:
+        access_token = self._encryptor.decrypt(account.access_token_encrypted)
+        account_id = _header_account_id(account.chatgpt_account_id)
+        return await connect_responses_websocket(headers, access_token, account_id)
+
+    async def _handle_websocket_connect_error(self, account: Account, exc: ProxyResponseError) -> None:
+        error = _parse_openai_error(exc.payload)
+        error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+        await self._handle_stream_error(
+            account,
+            _upstream_error_from_openai(error),
+            error_code,
+        )
+
+    async def _relay_upstream_websocket_messages(
+        self,
+        websocket: WebSocket,
+        upstream: UpstreamResponsesWebSocket,
+        *,
+        request_state: _WebSocketRequestState,
+        client_send_lock: anyio.Lock,
+        api_key: ApiKeyData | None,
+    ) -> None:
+        disconnect_error_message = "Upstream websocket closed before response.completed"
+        idle_timeout_seconds = getattr(get_settings(), "stream_idle_timeout_seconds", None)
+        downstream_disconnected = False
+        try:
+            while True:
+                if isinstance(idle_timeout_seconds, (int, float)) and idle_timeout_seconds > 0:
+                    try:
+                        message = await asyncio.wait_for(upstream.receive(), timeout=float(idle_timeout_seconds))
+                    except asyncio.TimeoutError:
+                        disconnect_error_message = "Upstream websocket idle timeout"
+                        break
+                else:
+                    message = await upstream.receive()
+                if message.kind == "text" and message.text is not None:
+                    terminal = await self._process_upstream_websocket_text(
+                        message.text,
+                        request_state=request_state,
+                        api_key=api_key,
+                    )
+                    try:
+                        async with client_send_lock:
+                            await websocket.send_text(message.text)
+                    except Exception:
+                        downstream_disconnected = True
+                        await self._fail_websocket_request_state(
+                            request_state,
+                            error_code="client_disconnect",
+                            error_message="Downstream websocket disconnected",
+                            api_key=api_key,
+                        )
+                        break
+                    if terminal:
+                        break
+                    continue
+                if message.kind == "binary" and message.data is not None:
+                    try:
+                        async with client_send_lock:
+                            await websocket.send_bytes(message.data)
+                    except Exception:
+                        downstream_disconnected = True
+                        await self._fail_websocket_request_state(
+                            request_state,
+                            error_code="client_disconnect",
+                            error_message="Downstream websocket disconnected",
+                            api_key=api_key,
+                        )
+                        break
+                    continue
+                if message.kind == "error":
+                    disconnect_error_message = message.error or disconnect_error_message
+                break
+        finally:
+            try:
+                await upstream.close()
+            except Exception:
+                logger.debug("Failed to close upstream websocket", exc_info=True)
+            if not request_state.terminal_event_seen and not downstream_disconnected:
+                await self._fail_websocket_request_state(
+                    request_state,
+                    error_code="stream_incomplete",
+                    error_message=disconnect_error_message,
+                    api_key=api_key,
+                )
+                try:
+                    async with client_send_lock:
+                        await websocket.send_text(
+                            _serialize_websocket_error_event(
+                                _wrapped_websocket_error_event(
+                                    502,
+                                    openai_error(
+                                        "stream_incomplete",
+                                        disconnect_error_message,
+                                        error_type="server_error",
+                                    ),
+                                )
+                            )
+                        )
+                except Exception:
+                    logger.debug("Failed to send downstream websocket disconnect event", exc_info=True)
+
+    async def _process_upstream_websocket_text(
+        self,
+        text: str,
+        *,
+        request_state: _WebSocketRequestState,
+        api_key: ApiKeyData | None,
+    ) -> bool:
+        event_block = f"data: {text}\n\n"
+        payload = parse_sse_data_json(event_block)
+        event = parse_sse_event(event_block)
+        event_type = _event_type_from_payload(event, payload)
+        response_id = _websocket_response_id(event, payload)
+        if response_id is not None and request_state.response_id is None:
+            request_state.response_id = response_id
+        actual_service_tier = _service_tier_from_event_payload(payload)
+        if actual_service_tier is not None:
+            request_state.service_tier = actual_service_tier
+        if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
+            return False
+        await self._finalize_websocket_request_state(
+            request_state,
+            account_id_value=request_state.account_id or "",
+            event=event,
+            event_type=event_type,
+            payload=payload,
+            api_key=api_key,
+        )
+        return True
+
+    async def _finalize_websocket_request_state(
+        self,
+        request_state: _WebSocketRequestState,
+        *,
+        account_id_value: str,
+        event: OpenAIEvent | None,
+        event_type: str | None,
+        payload: dict[str, JsonValue] | None,
+        api_key: ApiKeyData | None,
+    ) -> None:
+        status = "success"
+        error_code = None
+        error_message = None
+        usage = None
+        response_id = request_state.response_id or request_state.request_id
+        response_service_tier = request_state.service_tier
+
+        if event_type == "error":
+            status = "error"
+            error = event.error if event else None
+            error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+            error_message = error.message if error else None
+        elif event_type in {"response.failed", "response.incomplete"}:
+            status = "error"
+            error = event.response.error if event and event.response else None
+            error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+            error_message = error.message if error else None
+            usage = event.response.usage if event and event.response else None
+            if event and event.response and event.response.id:
+                response_id = event.response.id
+        elif event_type == "response.completed":
+            usage = event.response.usage if event and event.response else None
+            if event and event.response and event.response.id:
+                response_id = event.response.id
+
+        actual_service_tier = _service_tier_from_event_payload(payload)
+        if actual_service_tier is not None:
+            response_service_tier = actual_service_tier
+
+        request_state.terminal_event_seen = True
+        settlement = _StreamSettlement(
+            status=status,
+            model=request_state.model or "",
+            service_tier=response_service_tier,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
+            cached_input_tokens=(
+                usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
+            ),
+        )
+        await self._settle_stream_api_key_usage(
+            api_key,
+            request_state.api_key_reservation,
+            settlement,
+            response_id,
+            count_failure=False,
+        )
+
+        latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
+        cached_input_tokens = usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
+        reasoning_tokens = (
+            usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
+        )
+        await self._write_request_log(
+            account_id=account_id_value,
+            api_key=api_key,
+            request_id=response_id,
+            model=request_state.model or "",
+            latency_ms=latency_ms,
+            status=status,
+            error_code=error_code,
+            error_message=error_message,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
+            cached_input_tokens=cached_input_tokens,
+            reasoning_tokens=reasoning_tokens,
+            reasoning_effort=request_state.reasoning_effort,
+            transport=_REQUEST_TRANSPORT_WEBSOCKET,
+            service_tier=response_service_tier,
+        )
+
+    async def _fail_websocket_request_state(
+        self,
+        request_state: _WebSocketRequestState,
+        *,
+        error_code: str,
+        error_message: str,
+        api_key: ApiKeyData | None,
+    ) -> None:
+        if request_state.terminal_event_seen:
+            return
+        request_state.terminal_event_seen = True
+        settlement = _StreamSettlement(
+            status="error",
+            model=request_state.model or "",
+            service_tier=request_state.service_tier,
+        )
+        await self._settle_stream_api_key_usage(
+            api_key,
+            request_state.api_key_reservation,
+            settlement,
+            request_state.response_id or request_state.request_id,
+            count_failure=True,
+        )
+        if request_state.account_id is None:
+            return
+        latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
+        await self._write_request_log(
+            account_id=request_state.account_id,
+            api_key=api_key,
+            request_id=request_state.response_id or request_state.request_id,
+            model=request_state.model or "",
+            latency_ms=latency_ms,
+            status="error",
+            error_code=error_code,
+            error_message=error_message,
+            reasoning_effort=request_state.reasoning_effort,
+            transport=_REQUEST_TRANSPORT_WEBSOCKET,
+            service_tier=request_state.service_tier,
+        )
+
+    async def _forward_websocket_client_event(
+        self,
+        request_handle: _WebSocketRequestHandle,
+        *,
+        text_data: str | None,
+        bytes_data: bytes | None,
+    ) -> bool:
+        try:
+            if text_data is not None:
+                await request_handle.upstream.send_text(text_data)
+            elif bytes_data is not None:
+                await request_handle.upstream.send_bytes(bytes_data)
+            return True
+        except Exception:
+            try:
+                await request_handle.upstream.close()
+            except Exception:
+                logger.debug("Failed to close upstream websocket after downstream event send failure", exc_info=True)
+            return False
+
+    async def _reserve_websocket_api_key_usage(
+        self,
+        api_key: ApiKeyData | None,
+        *,
+        request_model: str | None,
+        request_service_tier: str | None,
+    ) -> ApiKeyUsageReservationData | None:
+        if api_key is None:
+            return None
+
+        with anyio.CancelScope(shield=True):
+            async with self._repo_factory() as repos:
+                service = ApiKeysService(repos.api_keys)
+                try:
+                    return await service.enforce_limits_for_request(
+                        api_key.id,
+                        request_model=request_model,
+                        request_service_tier=request_service_tier,
+                    )
+                except ApiKeyRateLimitExceededError as exc:
+                    message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
+                    raise ProxyRateLimitError(message) from exc
+                except ApiKeyInvalidError as exc:
+                    raise ProxyAuthError(str(exc)) from exc
+
+    async def _release_websocket_reservation(
+        self,
+        reservation: ApiKeyUsageReservationData | None,
+    ) -> None:
+        if reservation is None:
+            return
+        with anyio.CancelScope(shield=True):
+            async with self._repo_factory() as repos:
+                service = ApiKeysService(repos.api_keys)
+                await service.release_usage_reservation(reservation.reservation_id)
+
     async def _settle_compact_api_key_usage(
         self,
         *,
         api_key: ApiKeyData | None,
         api_key_reservation: ApiKeyUsageReservationData | None,
-        response: OpenAIResponsePayload | None,
+        response: CompactResponsePayload | OpenAIResponsePayload | None,
         request_service_tier: str | None,
     ) -> None:
         if api_key is None or api_key_reservation is None:
@@ -565,6 +1421,8 @@ class ProxyService:
         api_key_reservation: ApiKeyUsageReservationData | None,
         settlement: _StreamSettlement,
         request_id: str,
+        *,
+        count_failure: bool = False,
     ) -> bool:
         """Settle stream reservation. Returns True if settled."""
         if api_key is None or api_key_reservation is None:
@@ -589,6 +1447,15 @@ class ProxyService:
                             input_tokens=settlement.input_tokens,
                             output_tokens=settlement.output_tokens,
                             cached_input_tokens=settlement.cached_input_tokens or 0,
+                            service_tier=settlement.service_tier,
+                        )
+                    elif count_failure:
+                        await api_keys_service.fail_usage_reservation(
+                            reservation_id,
+                            model=model_name,
+                            input_tokens=settlement.input_tokens,
+                            output_tokens=settlement.output_tokens,
+                            cached_input_tokens=settlement.cached_input_tokens,
                             service_tier=settlement.service_tier,
                         )
                     else:
@@ -679,6 +1546,7 @@ class ProxyService:
         api_key: ApiKeyData | None,
         api_key_reservation: ApiKeyUsageReservationData | None,
         suppress_text_done_events: bool,
+        request_transport: str,
     ) -> AsyncIterator[str]:
         request_id = ensure_request_id()
         start = time.monotonic()
@@ -718,6 +1586,7 @@ class ProxyService:
                         error_message="Proxy request budget exhausted",
                         reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                         service_tier=payload.service_tier,
+                        transport=request_transport,
                     )
                     yield format_sse_event(_proxy_request_timeout_event(request_id))
                     return
@@ -749,6 +1618,7 @@ class ProxyService:
                             error_message="Proxy request budget exhausted",
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                             service_tier=payload.service_tier,
+                            transport=request_transport,
                         )
                         yield format_sse_event(_proxy_request_timeout_event(request_id))
                         return
@@ -781,6 +1651,7 @@ class ProxyService:
                         error_code=error_code,
                         error_message=no_accounts_msg,
                         reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                        transport=request_transport,
                         service_tier=payload.service_tier,
                     )
                     return
@@ -806,6 +1677,7 @@ class ProxyService:
                             error_message="Proxy request budget exhausted",
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                             service_tier=payload.service_tier,
+                            transport=request_transport,
                         )
                         yield format_sse_event(_proxy_request_timeout_event(request_id))
                         return
@@ -830,6 +1702,7 @@ class ProxyService:
                             error_message=message,
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                             service_tier=payload.service_tier,
+                            transport=request_transport,
                         )
                         event = response_failed_event(
                             "upstream_unavailable",
@@ -859,6 +1732,7 @@ class ProxyService:
                             error_message="Proxy request budget exhausted",
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                             service_tier=payload.service_tier,
+                            transport=request_transport,
                         )
                         yield format_sse_event(_proxy_request_timeout_event(request_id))
                         return
@@ -873,6 +1747,7 @@ class ProxyService:
                             api_key=api_key,
                             settlement=settlement,
                             suppress_text_done_events=suppress_text_done_events,
+                            request_transport=request_transport,
                         ):
                             yield line
                     finally:
@@ -920,6 +1795,7 @@ class ProxyService:
                                 error_message="Proxy request budget exhausted",
                                 reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                                 service_tier=payload.service_tier,
+                                transport=request_transport,
                             )
                             yield format_sse_event(_proxy_request_timeout_event(request_id))
                             return
@@ -952,6 +1828,7 @@ class ProxyService:
                                 error_message=message,
                                 reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                                 service_tier=payload.service_tier,
+                                transport=request_transport,
                             )
                             event = response_failed_event(
                                 "upstream_unavailable",
@@ -980,6 +1857,7 @@ class ProxyService:
                                 error_message="Proxy request budget exhausted",
                                 reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                                 service_tier=payload.service_tier,
+                                transport=request_transport,
                             )
                             yield format_sse_event(_proxy_request_timeout_event(request_id))
                             return
@@ -994,6 +1872,7 @@ class ProxyService:
                                 api_key=api_key,
                                 settlement=settlement,
                                 suppress_text_done_events=suppress_text_done_events,
+                                request_transport=request_transport,
                             ):
                                 yield line
                         finally:
@@ -1072,6 +1951,7 @@ class ProxyService:
                     error_code="no_accounts",
                     error_message=retries_exhausted_msg,
                     reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                    transport=request_transport,
                     service_tier=payload.service_tier,
                 )
         finally:
@@ -1102,6 +1982,7 @@ class ProxyService:
         api_key: ApiKeyData | None,
         settlement: _StreamSettlement,
         suppress_text_done_events: bool,
+        request_transport: str,
     ) -> AsyncIterator[str]:
         account_id_value = account.id
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
@@ -1266,6 +2147,7 @@ class ProxyService:
                 cached_input_tokens=cached_input_tokens,
                 reasoning_tokens=reasoning_tokens,
                 reasoning_effort=reasoning_effort,
+                transport=request_transport,
                 service_tier=service_tier,
             )
             _maybe_log_proxy_service_tier_trace(
@@ -1290,6 +2172,7 @@ class ProxyService:
         cached_input_tokens: int | None = None,
         reasoning_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        transport: str | None = None,
         service_tier: str | None = None,
     ) -> None:
         with anyio.CancelScope(shield=True):
@@ -1305,6 +2188,7 @@ class ProxyService:
                         cached_input_tokens=cached_input_tokens,
                         reasoning_tokens=reasoning_tokens,
                         reasoning_effort=reasoning_effort,
+                        transport=transport,
                         service_tier=service_tier,
                         latency_ms=latency_ms,
                         status=status,
@@ -1331,6 +2215,7 @@ class ProxyService:
         error_message: str,
         reasoning_effort: str | None,
         service_tier: str | None,
+        transport: str,
     ) -> None:
         await self._write_request_log(
             account_id=account_id,
@@ -1342,6 +2227,7 @@ class ProxyService:
             error_code=error_code,
             error_message=error_message,
             reasoning_effort=reasoning_effort,
+            transport=transport,
             service_tier=service_tier,
         )
 
@@ -1548,6 +2434,7 @@ class ProxyService:
         routing_strategy: RoutingStrategy = "usage_weighted",
         model: str | None = None,
         additional_limit_name: str | None = None,
+        exclude_account_ids: set[str] | None = None,
     ) -> AccountSelection:
         remaining_budget = _remaining_budget_seconds(deadline)
         if remaining_budget <= 0:
@@ -1566,6 +2453,7 @@ class ProxyService:
                     routing_strategy=routing_strategy,
                     model=model,
                     additional_limit_name=additional_limit_name,
+                    exclude_account_ids=exclude_account_ids,
                 )
         except TimeoutError:
             logger.warning("%s account selection exceeded request budget request_id=%s", kind.title(), request_id)
@@ -1655,6 +2543,26 @@ def _should_penalize_stream_error(code: str | None) -> bool:
     return code in _ACCOUNT_RECOVERY_RETRY_CODES
 
 
+@dataclass
+class _WebSocketRequestState:
+    request_id: str
+    model: str | None
+    service_tier: str | None
+    reasoning_effort: str | None
+    api_key_reservation: ApiKeyUsageReservationData | None
+    started_at: float
+    account_id: str | None = None
+    response_id: str | None = None
+    terminal_event_seen: bool = False
+
+
+@dataclass
+class _WebSocketRequestHandle:
+    state: _WebSocketRequestState
+    upstream: UpstreamResponsesWebSocket
+    reader_task: asyncio.Task[None]
+
+
 def _event_type_from_payload(event: OpenAIEvent | None, payload: dict[str, JsonValue] | None) -> str | None:
     if event is not None:
         return event.type
@@ -1669,6 +2577,137 @@ def _event_type_from_payload(event: OpenAIEvent | None, payload: dict[str, JsonV
 def _routing_strategy(settings: DashboardSettings) -> RoutingStrategy:
     value = settings.routing_strategy or "usage_weighted"
     return "round_robin" if value == "round_robin" else "usage_weighted"
+
+
+def _parse_websocket_payload(text: str) -> dict[str, JsonValue] | None:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _is_websocket_response_create(payload: dict[str, JsonValue]) -> bool:
+    payload_type = payload.get("type")
+    return isinstance(payload_type, str) and payload_type in {"response.create", "response.create.v1"}
+
+
+def _websocket_request_model(payload: dict[str, JsonValue]) -> str | None:
+    value = payload.get("model")
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _websocket_reasoning_effort(payload: dict[str, JsonValue]) -> str | None:
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return None
+    effort = reasoning.get("effort")
+    if not isinstance(effort, str):
+        return None
+    stripped = effort.strip()
+    return stripped or None
+
+
+def _validate_websocket_model_access(api_key: ApiKeyData | None, model: str | None) -> None:
+    if api_key is None:
+        return
+    allowed_models = api_key.allowed_models
+    if not allowed_models:
+        return
+    if model is None or model in allowed_models:
+        return
+    raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
+
+
+def _apply_api_key_enforcement_to_websocket_payload(
+    payload: ResponsesRequest,
+    api_key: ApiKeyData | None,
+) -> ResponsesRequest:
+    if api_key is None:
+        return payload
+    if api_key.enforced_model and payload.model != api_key.enforced_model:
+        payload.model = api_key.enforced_model
+
+    if api_key.enforced_reasoning_effort is not None:
+        if payload.reasoning is None:
+            payload.reasoning = ResponsesReasoning(effort=api_key.enforced_reasoning_effort)
+        else:
+            payload.reasoning.effort = api_key.enforced_reasoning_effort
+    return payload
+
+
+def _prepare_websocket_request_payload(
+    payload: dict[str, JsonValue],
+    api_key: ApiKeyData | None,
+) -> tuple[ResponsesRequest, str | None]:
+    request_payload = _normalize_websocket_request_payload(payload)
+    request_payload = _apply_api_key_enforcement_to_websocket_payload(request_payload, api_key)
+    request_payload.service_tier = _normalize_websocket_request_service_tier(request_payload.service_tier)
+    return request_payload, request_payload.service_tier
+
+
+def _normalize_websocket_request_payload(payload: dict[str, JsonValue]) -> ResponsesRequest:
+    payload_type = payload.get("type")
+    body = {key: value for key, value in payload.items() if key != "type"}
+    if payload_type == "response.create.v1":
+        return V1ResponsesRequest.model_validate(body).to_responses_request()
+    try:
+        return ResponsesRequest.model_validate(body)
+    except ValidationError:
+        return V1ResponsesRequest.model_validate(body).to_responses_request()
+
+
+def _serialize_websocket_request_create_event(payload: ResponsesRequest) -> str:
+    event_payload: dict[str, JsonValue] = {"type": "response.create", **payload.to_payload()}
+    return json.dumps(event_payload, ensure_ascii=True, separators=(",", ":"))
+
+
+def _app_error_to_websocket_event(exc: AppError) -> dict[str, JsonValue]:
+    return _wrapped_websocket_error_event(
+        exc.status_code,
+        openai_error(exc.code, exc.message, error_type=getattr(exc, "error_type", "server_error")),
+    )
+
+
+def _websocket_invalid_payload_event(param: str | None = None) -> dict[str, JsonValue]:
+    payload = openai_error("invalid_request_error", "Invalid request payload", error_type="invalid_request_error")
+    if param:
+        payload["error"]["param"] = param
+    return _wrapped_websocket_error_event(400, payload)
+
+
+def _validation_param(exc: ValidationError | ClientPayloadError) -> str | None:
+    if isinstance(exc, ClientPayloadError):
+        return exc.param
+    errors = exc.errors()
+    if not errors:
+        return None
+    loc = errors[0].get("loc")
+    if isinstance(loc, (list, tuple)):
+        parts = [str(part) for part in loc if part != "body"]
+        return ".".join(parts) or None
+    return None
+
+
+def _wrapped_websocket_error_event(
+    status_code: int,
+    payload: OpenAIErrorEnvelope,
+) -> dict[str, JsonValue]:
+    event: dict[str, JsonValue] = {
+        "type": "error",
+        "status": status_code,
+        "error": dict(payload["error"]),
+    }
+    return event
+
+
+def _serialize_websocket_error_event(payload: dict[str, JsonValue]) -> str:
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 def _remaining_budget_seconds(deadline: float) -> float:
@@ -1705,7 +2744,11 @@ def _raise_proxy_budget_exhausted() -> NoReturn:
 
 
 def _raise_proxy_unavailable(message: str) -> NoReturn:
-    raise ProxyResponseError(
+    raise _proxy_unavailable_error(message)
+
+
+def _proxy_unavailable_error(message: str) -> ProxyResponseError:
+    return ProxyResponseError(
         502,
         openai_error("upstream_unavailable", message),
     )
@@ -1809,7 +2852,7 @@ def _maybe_log_proxy_service_tier_trace(
     actual_service_tier: str | None,
 ) -> None:
     settings = get_settings()
-    if not settings.log_proxy_service_tier_trace:
+    if not getattr(settings, "log_proxy_service_tier_trace", False):
         return
 
     logger.warning(
@@ -1818,6 +2861,74 @@ def _maybe_log_proxy_service_tier_trace(
         kind,
         requested_service_tier,
         actual_service_tier,
+    )
+
+
+def _maybe_log_compact_contract_trace(
+    *,
+    event: str,
+    endpoint: str,
+    retry_attempt: int,
+    failure_phase: str | None,
+    payload_object: str | None,
+    affinity_source: str,
+) -> None:
+    settings = get_settings()
+    if not getattr(settings, "log_upstream_request_summary", False) and not getattr(
+        settings,
+        "log_proxy_service_tier_trace",
+        False,
+    ):
+        return
+
+    logger.warning(
+        (
+            "proxy_compact_contract_trace request_id=%s event=%s endpoint=%s retry_attempt=%s "
+            "failure_phase=%s payload_object=%s affinity_source=%s fallback_suppressed=true"
+        ),
+        get_request_id(),
+        event,
+        endpoint,
+        retry_attempt,
+        failure_phase,
+        payload_object,
+        affinity_source,
+    )
+
+
+def _log_terminal_compact_failure(
+    *,
+    status_code: int,
+    error_code: str | None,
+    error_message: str | None,
+    failure_phase: str | None,
+    failure_detail: str | None,
+    failure_exception_type: str | None,
+    retryable_same_contract: bool,
+    retry_attempt: int,
+    affinity_source: str,
+    account_id: str | None,
+) -> None:
+    if status_code < 500:
+        return
+    logger.warning(
+        (
+            "proxy_compact_failure request_id=%s endpoint=%s status=%s error_code=%s error_message=%s "
+            "failure_phase=%s failure_detail=%s failure_exception_type=%s retryable_same_contract=%s "
+            "retry_attempt=%s affinity_source=%s account_id=%s"
+        ),
+        get_request_id(),
+        _COMPACT_UPSTREAM_ENDPOINT,
+        status_code,
+        error_code,
+        error_message,
+        failure_phase,
+        failure_detail,
+        failure_exception_type,
+        retryable_same_contract,
+        retry_attempt,
+        affinity_source,
+        account_id,
     )
 
 
@@ -1913,18 +3024,21 @@ def _sticky_key_for_responses_request(
             return _AffinityPolicy(
                 key=session_key,
                 kind=StickySessionKind.CODEX_SESSION,
+                source="session_id",
             )
     if openai_cache_affinity:
         return _AffinityPolicy(
             key=_sticky_key_from_payload(payload),
             kind=StickySessionKind.PROMPT_CACHE,
             max_age_seconds=openai_cache_affinity_max_age_seconds,
+            source="prompt_cache_key",
         )
     if sticky_threads_enabled:
         return _AffinityPolicy(
             key=_sticky_key_from_payload(payload),
             kind=StickySessionKind.STICKY_THREAD,
             reallocate_sticky=True,
+            source="prompt_cache_key",
         )
     return _AffinityPolicy()
 
@@ -1952,18 +3066,21 @@ def _sticky_key_for_compact_request(
             return _AffinityPolicy(
                 key=session_key,
                 kind=StickySessionKind.CODEX_SESSION,
+                source="session_id",
             )
     if openai_cache_affinity:
         return _AffinityPolicy(
             key=_sticky_key_from_compact_payload(payload),
             kind=StickySessionKind.PROMPT_CACHE,
             max_age_seconds=openai_cache_affinity_max_age_seconds,
+            source="prompt_cache_key",
         )
     if sticky_threads_enabled:
         return _AffinityPolicy(
             key=_sticky_key_from_compact_payload(payload),
             kind=StickySessionKind.STICKY_THREAD,
             reallocate_sticky=True,
+            source="prompt_cache_key",
         )
     return _AffinityPolicy()
 
@@ -1974,13 +3091,28 @@ def _service_tier_from_compact_payload(payload: ResponsesCompactRequest) -> str 
     return _normalize_service_tier_value(payload.model_extra.get("service_tier"))
 
 
-def _service_tier_from_response(response: OpenAIResponsePayload | None) -> str | None:
+def _service_tier_from_response(response: OpenAIResponsePayload | CompactResponsePayload | None) -> str | None:
     if response is None:
         return None
     extra = response.model_extra
     if not isinstance(extra, Mapping):
         return None
     return _normalize_service_tier_value(extra.get("service_tier"))
+
+
+def _compact_payload_object(response: CompactResponsePayload | OpenAIResponsePayload | None) -> str | None:
+    if response is None:
+        return None
+    object_value = getattr(response, "object", None)
+    if isinstance(object_value, str) and object_value:
+        return object_value
+    extra = response.model_extra
+    if not isinstance(extra, Mapping):
+        return None
+    extra_object = extra.get("object")
+    if isinstance(extra_object, str) and extra_object:
+        return extra_object
+    return None
 
 
 def _service_tier_from_event_payload(payload: dict[str, JsonValue] | None) -> str | None:
@@ -1990,6 +3122,37 @@ def _service_tier_from_event_payload(payload: dict[str, JsonValue] | None) -> st
     if not isinstance(response, dict):
         return None
     return _normalize_service_tier_value(response.get("service_tier"))
+
+
+def _websocket_response_id(
+    event: OpenAIEvent | None,
+    payload: dict[str, JsonValue] | None,
+) -> str | None:
+    if event is not None and event.response is not None and isinstance(event.response.id, str):
+        stripped = event.response.id.strip()
+        return stripped or None
+    if not isinstance(payload, dict):
+        return None
+    response = payload.get("response")
+    if not isinstance(response, dict):
+        return None
+    value = response.get("id")
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _normalize_websocket_request_service_tier(value: object) -> str | None:
+    normalized = _normalize_service_tier_value(value)
+    if normalized is None:
+        return None
+    canonical = normalized.lower()
+    if canonical == "fast":
+        return "priority"
+    if canonical in {"auto", "default", "flex", "priority"}:
+        return canonical
+    return None
 
 
 def _normalize_service_tier_value(value: object) -> str | None:
