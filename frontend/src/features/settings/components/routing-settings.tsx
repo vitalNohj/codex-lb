@@ -51,6 +51,31 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
         <div className="divide-y rounded-lg border">
           <div className="flex items-center justify-between gap-4 p-3">
             <div>
+              <p className="text-sm font-medium">Upstream stream transport</p>
+              <p className="text-xs text-muted-foreground">
+                Choose how `codex-lb` connects upstream for streaming responses.
+              </p>
+            </div>
+            <Select
+              value={settings.upstreamStreamTransport}
+              onValueChange={(value) =>
+                save({ upstreamStreamTransport: value as "default" | "auto" | "http" | "websocket" })
+              }
+            >
+              <SelectTrigger className="h-8 w-44 text-xs" disabled={busy}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="default">Server default</SelectItem>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="http">Responses</SelectItem>
+                <SelectItem value="websocket">WebSockets</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 p-3">
+            <div>
               <p className="text-sm font-medium">Routing strategy</p>
               <p className="text-xs text-muted-foreground">Choose usage-based balancing or strict round robin.</p>
             </div>

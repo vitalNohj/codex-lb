@@ -7,6 +7,7 @@ from app.modules.shared.schemas import DashboardModel
 
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
+    upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
     prefer_earlier_reset_accounts: bool
     routing_strategy: str = Field(pattern=r"^(usage_weighted|round_robin)$")
     openai_cache_affinity_max_age_seconds: int = Field(gt=0)
@@ -18,6 +19,10 @@ class DashboardSettingsResponse(DashboardModel):
 
 class DashboardSettingsUpdateRequest(DashboardModel):
     sticky_threads_enabled: bool
+    upstream_stream_transport: str | None = Field(
+        default=None,
+        pattern=r"^(default|auto|http|websocket)$",
+    )
     prefer_earlier_reset_accounts: bool
     routing_strategy: str | None = Field(default=None, pattern=r"^(usage_weighted|round_robin)$")
     openai_cache_affinity_max_age_seconds: int | None = Field(default=None, gt=0)

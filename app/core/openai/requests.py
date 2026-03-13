@@ -383,6 +383,14 @@ class ResponsesRequest(BaseModel):
     def _normalize_tool_choice_field(cls, value: JsonValue | None) -> JsonValue | None:
         return normalize_tool_choice(value)
 
+    @field_validator("service_tier")
+    @classmethod
+    def _normalize_service_tier_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = _normalize_service_tier_alias_value(value)
+        return normalized if isinstance(normalized, str) else value
+
     @model_validator(mode="after")
     def _validate_conversation(self) -> "ResponsesRequest":
         if self.conversation and self.previous_response_id:
@@ -418,6 +426,18 @@ class ResponsesCompactRequest(BaseModel):
             return _sanitize_input_items(input_items)
         raise ValueError("input must be a string or array")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_service_tier_aliases_before_validation(cls, data: object) -> object:
+        if not is_json_mapping(data):
+            return data
+        normalized = dict(data)
+        service_tier = normalized.get("service_tier")
+        normalized_service_tier = _normalize_service_tier_alias_value(service_tier)
+        if isinstance(normalized_service_tier, str):
+            normalized["service_tier"] = normalized_service_tier
+        return normalized
+
     @field_validator("store")
     @classmethod
     def _ensure_store_false(cls, value: bool) -> bool:
@@ -440,6 +460,7 @@ _UNSUPPORTED_UPSTREAM_FIELDS = {
 
 def _strip_unsupported_fields(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     _normalize_openai_compatible_aliases(payload)
+    _normalize_service_tier_aliases(payload)
     _sanitize_interleaved_reasoning_input(payload)
     for key in _UNSUPPORTED_UPSTREAM_FIELDS:
         payload.pop(key, None)
@@ -498,6 +519,21 @@ def _normalize_openai_compatible_aliases(payload: dict[str, JsonValue]) -> None:
         text_map["verbosity"] = top_level_verbosity
     if text_map:
         payload["text"] = text_map
+
+
+def _normalize_service_tier_aliases(payload: dict[str, JsonValue]) -> None:
+    service_tier = payload.get("service_tier")
+    normalized = _normalize_service_tier_alias_value(service_tier)
+    if isinstance(normalized, str):
+        payload["service_tier"] = normalized
+
+
+def _normalize_service_tier_alias_value(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if value.strip().lower() == "fast":
+        return "priority"
+    return value
 
 
 def _normalize_input_text(text: str) -> list[JsonValue]:

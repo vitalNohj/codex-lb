@@ -209,7 +209,7 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
             "tools": [],
             "reasoning": {"effort": "high"},
-            "service_tier": "fast",
+            "service_tier": "priority",
             "store": False,
             "stream": True,
             "include": [],
@@ -221,7 +221,7 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
     assert log["account_id"] == "acct_ws_proxy"
     assert log["request_id"] == "resp_ws_1"
     assert log["model"] == "gpt-5.4"
-    assert log["service_tier"] == "fast"
+    assert log["service_tier"] == "priority"
     assert log["transport"] == "websocket"
     assert log["status"] == "success"
     assert log["input_tokens"] == 3

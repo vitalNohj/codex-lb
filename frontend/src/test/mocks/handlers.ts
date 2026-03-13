@@ -59,6 +59,7 @@ const ApiKeyUpdatePayloadSchema = z.object({
 
 const SettingsPayloadSchema = z.object({
   stickyThreadsEnabled: z.boolean().optional(),
+  upstreamStreamTransport: z.enum(["default", "auto", "http", "websocket"]).optional(),
   preferEarlierResetAccounts: z.boolean().optional(),
   routingStrategy: z.enum(["usage_weighted", "round_robin"]).optional(),
   openaiCacheAffinityMaxAgeSeconds: z.number().int().positive().optional(),

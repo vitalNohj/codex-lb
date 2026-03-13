@@ -7,6 +7,7 @@ import type { DashboardSettings } from "@/features/settings/schemas";
 
 const BASE_SETTINGS: DashboardSettings = {
   stickyThreadsEnabled: false,
+  upstreamStreamTransport: "default",
   preferEarlierResetAccounts: true,
   routingStrategy: "usage_weighted",
   openaiCacheAffinityMaxAgeSeconds: 300,
@@ -31,6 +32,7 @@ describe("RoutingSettings", () => {
 
     expect(onSave).toHaveBeenCalledWith({
       stickyThreadsEnabled: false,
+      upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 180,
@@ -52,6 +54,7 @@ describe("RoutingSettings", () => {
 
     expect(onSave).toHaveBeenLastCalledWith({
       stickyThreadsEnabled: false,
+      upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 240,
@@ -78,6 +81,7 @@ describe("RoutingSettings", () => {
 
     expect(onSave).toHaveBeenCalledWith({
       stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -85,5 +89,12 @@ describe("RoutingSettings", () => {
       totpRequiredOnLogin: false,
       apiKeyAuthEnabled: true,
     });
+  });
+
+  it("shows the configured upstream transport", () => {
+    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByText("Upstream stream transport")).toBeInTheDocument();
+    expect(screen.getByText("Server default")).toBeInTheDocument();
   });
 });

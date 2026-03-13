@@ -95,6 +95,20 @@ def test_responses_preserves_service_tier():
     assert dumped["service_tier"] == "priority"
 
 
+def test_responses_normalizes_fast_service_tier_to_priority_for_upstream():
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [],
+        "service_tier": "fast",
+    }
+    request = ResponsesRequest.model_validate(payload)
+
+    assert request.service_tier == "priority"
+    dumped = request.to_payload()
+    assert dumped["service_tier"] == "priority"
+
+
 def test_compact_known_unsupported_upstream_fields_are_stripped():
     payload = {
         "model": "gpt-5.1",
@@ -110,6 +124,20 @@ def test_compact_known_unsupported_upstream_fields_are_stripped():
     assert "prompt_cache_retention" not in dumped
     assert "safety_identifier" not in dumped
     assert "temperature" not in dumped
+
+
+def test_compact_normalizes_fast_service_tier_to_priority_for_upstream():
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [],
+        "service_tier": "fast",
+    }
+    request = ResponsesCompactRequest.model_validate(payload)
+
+    assert request.model_extra == {"service_tier": "priority"}
+    dumped = request.to_payload()
+    assert dumped["service_tier"] == "priority"
 
 
 def test_openai_prompt_cache_aliases_are_normalized():
@@ -181,6 +209,19 @@ def test_v1_responses_preserves_service_tier():
     }
     request = V1ResponsesRequest.model_validate(payload).to_responses_request()
 
+    dumped = request.to_payload()
+    assert dumped["service_tier"] == "priority"
+
+
+def test_v1_responses_normalizes_fast_service_tier_to_priority_for_upstream():
+    payload = {
+        "model": "gpt-5.1",
+        "input": "hello",
+        "service_tier": "fast",
+    }
+    request = V1ResponsesRequest.model_validate(payload).to_responses_request()
+
+    assert request.service_tier == "priority"
     dumped = request.to_payload()
     assert dumped["service_tier"] == "priority"
 

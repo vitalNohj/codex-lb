@@ -1,9 +1,11 @@
 import { z } from "zod";
 
 export const RoutingStrategySchema = z.enum(["usage_weighted", "round_robin"]);
+export const UpstreamStreamTransportSchema = z.enum(["default", "auto", "http", "websocket"]);
 
 export const DashboardSettingsSchema = z.object({
   stickyThreadsEnabled: z.boolean(),
+  upstreamStreamTransport: UpstreamStreamTransportSchema,
   preferEarlierResetAccounts: z.boolean(),
   routingStrategy: RoutingStrategySchema,
   openaiCacheAffinityMaxAgeSeconds: z.number().int().positive(),
@@ -15,6 +17,7 @@ export const DashboardSettingsSchema = z.object({
 
 export const SettingsUpdateRequestSchema = z.object({
   stickyThreadsEnabled: z.boolean(),
+  upstreamStreamTransport: UpstreamStreamTransportSchema.optional(),
   preferEarlierResetAccounts: z.boolean(),
   routingStrategy: RoutingStrategySchema.optional(),
   openaiCacheAffinityMaxAgeSeconds: z.number().int().positive().optional(),

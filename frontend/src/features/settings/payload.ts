@@ -6,6 +6,7 @@ export function buildSettingsUpdateRequest(
 ): SettingsUpdateRequest {
   return {
     stickyThreadsEnabled: settings.stickyThreadsEnabled,
+    upstreamStreamTransport: settings.upstreamStreamTransport,
     preferEarlierResetAccounts: settings.preferEarlierResetAccounts,
     routingStrategy: settings.routingStrategy,
     openaiCacheAffinityMaxAgeSeconds: settings.openaiCacheAffinityMaxAgeSeconds,

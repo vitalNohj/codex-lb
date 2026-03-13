@@ -127,6 +127,13 @@ class _AffinityPolicy:
     max_age_seconds: int | None = None
 
 
+def _resolve_upstream_stream_transport(settings: object) -> str | None:
+    configured = getattr(settings, "upstream_stream_transport", None)
+    if configured in {"default", "auto", "http", "websocket"}:
+        return None if configured == "default" else configured
+    return None
+
+
 class ProxyService:
     def __init__(self, repo_factory: ProxyRepoFactory) -> None:
         self._repo_factory = repo_factory
@@ -1812,6 +1819,7 @@ class ProxyService:
         settings = await get_settings_cache().get()
         deadline = start + base_settings.proxy_request_budget_seconds
         prefer_earlier_reset = settings.prefer_earlier_reset_accounts
+        upstream_stream_transport = _resolve_upstream_stream_transport(settings)
         affinity = _sticky_key_for_responses_request(
             payload,
             headers,
@@ -2005,6 +2013,7 @@ class ProxyService:
                             api_key=api_key,
                             settlement=settlement,
                             suppress_text_done_events=suppress_text_done_events,
+                            upstream_stream_transport=upstream_stream_transport,
                             request_transport=request_transport,
                         ):
                             yield line
@@ -2130,6 +2139,7 @@ class ProxyService:
                                 api_key=api_key,
                                 settlement=settlement,
                                 suppress_text_done_events=suppress_text_done_events,
+                                upstream_stream_transport=upstream_stream_transport,
                                 request_transport=request_transport,
                             ):
                                 yield line
@@ -2240,6 +2250,7 @@ class ProxyService:
         api_key: ApiKeyData | None,
         settlement: _StreamSettlement,
         suppress_text_done_events: bool,
+        upstream_stream_transport: str | None,
         request_transport: str,
     ) -> AsyncIterator[str]:
         account_id_value = account.id
@@ -2258,13 +2269,23 @@ class ProxyService:
         saw_text_delta = False
 
         try:
-            stream = core_stream_responses(
-                payload,
-                headers,
-                access_token,
-                account_id,
-                raise_for_status=True,
-            )
+            if upstream_stream_transport is not None:
+                stream = core_stream_responses(
+                    payload,
+                    headers,
+                    access_token,
+                    account_id,
+                    raise_for_status=True,
+                    upstream_stream_transport_override=upstream_stream_transport,
+                )
+            else:
+                stream = core_stream_responses(
+                    payload,
+                    headers,
+                    access_token,
+                    account_id,
+                    raise_for_status=True,
+                )
             iterator = stream.__aiter__()
             try:
                 first = await iterator.__anext__()
@@ -3347,4 +3368,8 @@ def _normalize_service_tier_value(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     stripped = value.strip()
-    return stripped or None
+    if not stripped:
+        return None
+    if stripped.lower() == "fast":
+        return "priority"
+    return stripped

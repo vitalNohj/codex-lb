@@ -21,6 +21,7 @@ class SettingsRepository:
         row = DashboardSettings(
             id=_SETTINGS_ID,
             sticky_threads_enabled=False,
+            upstream_stream_transport="default",
             prefer_earlier_reset_accounts=False,
             routing_strategy="usage_weighted",
             openai_cache_affinity_max_age_seconds=get_settings().openai_cache_affinity_max_age_seconds,
@@ -47,6 +48,7 @@ class SettingsRepository:
         self,
         *,
         sticky_threads_enabled: bool | None = None,
+        upstream_stream_transport: str | None = None,
         prefer_earlier_reset_accounts: bool | None = None,
         routing_strategy: str | None = None,
         openai_cache_affinity_max_age_seconds: int | None = None,
@@ -57,6 +59,8 @@ class SettingsRepository:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
             settings.sticky_threads_enabled = sticky_threads_enabled
+        if upstream_stream_transport is not None:
+            settings.upstream_stream_transport = upstream_stream_transport
         if prefer_earlier_reset_accounts is not None:
             settings.prefer_earlier_reset_accounts = prefer_earlier_reset_accounts
         if routing_strategy is not None:

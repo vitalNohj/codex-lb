@@ -88,6 +88,27 @@ wire_api = "responses"
 supports_websockets = true
 ```
 
+Optional: enable native upstream WebSockets for Codex streaming while keeping `codex-lb` pooling:
+
+```bash
+export CODEX_LB_UPSTREAM_STREAM_TRANSPORT=websocket
+```
+
+`auto` is the default and uses native WebSockets for native Codex headers or models that prefer them.
+You can also switch this in the dashboard under Settings -> Routing -> Upstream stream transport.
+
+Note: Codex itself does not currently expose a stable documented `wire_api = "websocket"` provider mode.
+If you want to experiment on the Codex side, the current CLI exposes under-development feature flags:
+
+```toml
+[features]
+responses_websockets = true
+# or
+responses_websockets_v2 = true
+```
+
+These flags are experimental and do not replace `wire_api = "responses"`.
+
 If upstream websocket handshakes must use environment proxies in your deployment, set
 `CODEX_LB_UPSTREAM_WEBSOCKET_TRUST_ENV=true`. By default websocket handshakes connect directly to
 match Codex CLI's native transport.
