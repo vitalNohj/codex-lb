@@ -141,10 +141,45 @@ def test_build_upstream_websocket_headers_strip_hop_by_hop_headers_and_connectio
 
 def test_has_native_codex_transport_headers_requires_allowlisted_originator():
     assert proxy_module._has_native_codex_transport_headers({"originator": "codex_cli_rs"}) is True
-    assert proxy_module._has_native_codex_transport_headers({"originator": "Codex Desktop"}) is True
+    assert proxy_module._has_native_codex_transport_headers({"originator": "codex_exec"}) is True
+    assert proxy_module._has_native_codex_transport_headers({"originator": "codex_vscode"}) is True
     assert proxy_module._has_native_codex_transport_headers({"originator": "codex_atlas"}) is True
+    assert proxy_module._has_native_codex_transport_headers({"originator": "Codex Desktop"}) is True
     assert proxy_module._has_native_codex_transport_headers({"originator": "codex_chatgpt_desktop"}) is True
+    assert proxy_module._has_native_codex_transport_headers({"originator": "Codex Chat"}) is True
     assert proxy_module._has_native_codex_transport_headers({"originator": "other-client"}) is False
+
+
+def test_response_create_client_metadata_preserves_existing_json_values_and_turn_metadata():
+    payload = {
+        "client_metadata": {
+            "bool_flag": True,
+            "count": 2,
+            "nested": {"enabled": False},
+            "x-codex-turn-metadata": '{"turn_id":"payload-turn"}',
+        }
+    }
+
+    metadata = proxy_service._response_create_client_metadata(
+        payload,
+        headers={"x-codex-turn-metadata": '{"turn_id":"header-turn"}'},
+    )
+
+    assert metadata == {
+        "bool_flag": True,
+        "count": 2,
+        "nested": {"enabled": False},
+        "x-codex-turn-metadata": '{"turn_id":"payload-turn"}',
+    }
+
+
+def test_response_create_client_metadata_reads_turn_metadata_case_insensitively():
+    metadata = proxy_service._response_create_client_metadata(
+        {},
+        headers={"X-Codex-Turn-Metadata": '{"turn_id":"header-turn"}'},
+    )
+
+    assert metadata == {"x-codex-turn-metadata": '{"turn_id":"header-turn"}'}
 
 
 def test_has_native_codex_transport_headers_does_not_treat_session_id_as_websocket_signal():
