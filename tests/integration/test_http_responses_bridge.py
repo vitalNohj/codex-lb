@@ -4,16 +4,19 @@ import asyncio
 import base64
 import json
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import cast
 
+import anyio
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
 import app.modules.proxy.service as proxy_module
-from app.db.models import Account
+from app.core.utils.request_id import reset_request_id, set_request_id
+from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
 from app.dependencies import get_proxy_service_for_app
 from app.modules.proxy.load_balancer import AccountSelection
@@ -27,10 +30,15 @@ async def _cleanup_http_bridge_sessions(app_instance):
     service = get_proxy_service_for_app(app_instance)
     async with service._http_bridge_lock:
         sessions = list(service._http_bridge_sessions.values())
+        inflight_sessions = list(service._http_bridge_inflight_sessions.values())
         service._http_bridge_sessions.clear()
+        service._http_bridge_inflight_sessions.clear()
         service._http_bridge_turn_state_index.clear()
     for session in sessions:
         await service._close_http_bridge_session(session)
+    for inflight_future in inflight_sessions:
+        if not inflight_future.done():
+            inflight_future.cancel()
 
 
 def _encode_jwt(payload: dict) -> str:
@@ -292,6 +300,27 @@ class _FailingSendThenCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
         self.sent_text.append(text)
         await self._messages.put(_FakeUpstreamMessage("close", close_code=1011))
         raise RuntimeError("socket closed during send")
+
+
+def _make_dummy_bridge_session(session_key: proxy_module._HTTPBridgeSessionKey) -> SimpleNamespace:
+    async def _close() -> None:
+        return None
+
+    return SimpleNamespace(
+        key=session_key,
+        closed=False,
+        account=SimpleNamespace(id=f"acct_{session_key.affinity_key}", status=AccountStatus.ACTIVE),
+        request_model="gpt-5.4",
+        pending_lock=anyio.Lock(),
+        pending_requests=deque(),
+        queued_request_count=0,
+        last_used_at=time.monotonic(),
+        idle_ttl_seconds=120.0,
+        codex_session=False,
+        downstream_turn_state_aliases=set(),
+        upstream_reader=None,
+        upstream=SimpleNamespace(close=_close),
+    )
 
 
 class _PrewarmingBridgeUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
@@ -817,9 +846,48 @@ async def test_v1_responses_http_bridge_rejects_request_for_non_owner_instance(a
             max_sessions=8,
         )
 
-    exc = cast(proxy_module.ProxyResponseError, exc_info.value)
+    exc = exc_info.value
     assert exc.status_code == 409
     assert exc.payload["error"].get("code") == "bridge_instance_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_missing_turn_state_alias_with_previous_response_id_fails_closed(
+    app_instance,
+    monkeypatch,
+):
+    _install_bridge_settings_with_limits(monkeypatch, enabled=True)
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        await service._get_or_create_http_bridge_session(
+            proxy_module._HTTPBridgeSessionKey("turn_state_header", "http_turn_missing_alias", None),
+            headers={"x-codex-turn-state": "http_turn_missing_alias"},
+            affinity=proxy_module._AffinityPolicy(
+                key="http_turn_missing_alias",
+                kind=proxy_module.StickySessionKind.CODEX_SESSION,
+            ),
+            api_key=None,
+            request_model="gpt-5.1",
+            idle_ttl_seconds=120.0,
+            max_sessions=128,
+            previous_response_id="resp_missing_alias",
+        )
+
+    exc = exc_info.value
+    assert exc.status_code == 400
+    assert exc.payload["error"] == {
+        "message": (
+            "Previous response with id 'resp_missing_alias' not found. "
+            "HTTP bridge continuity was lost. Replay x-codex-turn-state or retry with a stable prompt_cache_key."
+        ),
+        "type": "invalid_request_error",
+        "code": "previous_response_not_found",
+        "param": "previous_response_id",
+    }
 
 
 @pytest.mark.asyncio
@@ -946,9 +1014,16 @@ async def test_v1_responses_http_bridge_replayed_turn_state_alias_preserves_owne
         == "instance-b"
     )
     await service._register_http_bridge_turn_state(session, replay_turn_state)
+    replay_key = proxy_module._HTTPBridgeSessionKey("turn_state_header", replay_turn_state, None)
+    assert (
+        service._http_bridge_turn_state_index[
+            proxy_module._http_bridge_turn_state_alias_key(replay_turn_state, session.key.api_key_id)
+        ]
+        == key
+    )
 
     replayed = await service._get_or_create_http_bridge_session(
-        proxy_module._HTTPBridgeSessionKey("turn_state_header", replay_turn_state, None),
+        replay_key,
         headers={"x-codex-turn-state": replay_turn_state},
         affinity=proxy_module._AffinityPolicy(key=replay_turn_state, kind=proxy_module.StickySessionKind.CODEX_SESSION),
         api_key=None,
@@ -958,10 +1033,20 @@ async def test_v1_responses_http_bridge_replayed_turn_state_alias_preserves_owne
     )
 
     assert replayed is session
+    assert replayed.key == key
+    assert service._http_bridge_sessions[key] is session
+    assert replay_key not in service._http_bridge_sessions
+    assert (
+        service._http_bridge_turn_state_index[
+            proxy_module._http_bridge_turn_state_alias_key(replay_turn_state, session.key.api_key_id)
+        ]
+        == key
+    )
     assert replayed.codex_session is True
     assert replayed.affinity.kind == proxy_module.StickySessionKind.CODEX_SESSION
     assert replayed.affinity.key == replay_turn_state
     assert replayed.idle_ttl_seconds == 600.0
+    replayed.upstream_turn_state = "upstream_turn_state_stale"
     request_state = proxy_module._WebSocketRequestState(
         request_id="req_owner_alias_reconnect",
         model=payload.model,
@@ -973,6 +1058,42 @@ async def test_v1_responses_http_bridge_replayed_turn_state_alias_preserves_owne
     await service._reconnect_http_bridge_session(replayed, request_state=request_state)
     assert connect_headers_seen[-1]["x-codex-turn-state"] == replay_turn_state
     await service._close_http_bridge_session(session)
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_waits_for_inflight_recreation_on_missing_turn_state_alias(app_instance):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+    service._http_bridge_inflight_sessions.clear()
+
+    replay_turn_state = "http_turn_inflight_replay"
+    replay_key = proxy_module._HTTPBridgeSessionKey("turn_state_header", replay_turn_state, None)
+    expected_session = _make_dummy_bridge_session(replay_key)
+    inflight_future: asyncio.Future[SimpleNamespace] = asyncio.get_running_loop().create_future()
+    service._http_bridge_inflight_sessions[replay_key] = inflight_future
+
+    request_key = proxy_module._HTTPBridgeSessionKey("request", "derived-key", None)
+    try:
+        waiter = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                request_key,
+                headers={"x-codex-turn-state": replay_turn_state},
+                affinity=proxy_module._AffinityPolicy(key="derived-key"),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        inflight_future.set_result(expected_session)
+        returned = await waiter
+    finally:
+        service._http_bridge_inflight_sessions.clear()
+
+    assert returned is expected_session
 
 
 @pytest.mark.asyncio
@@ -1044,7 +1165,7 @@ async def test_v1_responses_http_bridge_generated_turn_state_fails_closed_withou
             max_sessions=128,
         )
 
-    exc = cast(proxy_module.ProxyResponseError, exc_info.value)
+    exc = exc_info.value
     assert exc.status_code == 409
     assert exc.payload["error"].get("code") == "bridge_instance_mismatch"
 
@@ -1290,6 +1411,107 @@ async def test_v1_responses_http_bridge_preserves_prior_turn_state_aliases(
     assert "http_turn_alias_a" in replayed.downstream_turn_state_aliases
     assert "http_turn_alias_b" in replayed.downstream_turn_state_aliases
     await service._close_http_bridge_session(session)
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_close_waits_for_turn_state_index_lock(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    _install_bridge_settings_with_limits(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_close_lock",
+        "http-bridge-close-lock@example.com",
+    )
+    account = await _get_account(account_id)
+    service = get_proxy_service_for_app(app_instance)
+    fake_upstream = _FakeBridgeUpstreamWebSocket()
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+    ):
+        del (
+            self,
+            deadline,
+            request_id,
+            kind,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset_accounts,
+            routing_strategy,
+            model,
+            exclude_account_ids,
+            additional_limit_name,
+        )
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return target
+
+    async def fake_connect_responses_websocket(
+        headers,
+        access_token,
+        account_id_header,
+        *,
+        base_url=None,
+        session=None,
+    ):
+        del headers, access_token, account_id_header, base_url, session
+        return fake_upstream
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    payload = proxy_module.ResponsesRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": []})
+    affinity = proxy_module._AffinityPolicy(key="turn-close-lock", kind=proxy_module.StickySessionKind.CODEX_SESSION)
+
+    session = await service._get_or_create_http_bridge_session(
+        proxy_module._make_http_bridge_session_key(
+            payload,
+            headers={},
+            affinity=affinity,
+            api_key=None,
+            request_id="req_close_lock",
+        ),
+        headers={},
+        affinity=affinity,
+        api_key=None,
+        request_model=payload.model,
+        idle_ttl_seconds=120.0,
+        max_sessions=128,
+    )
+    await service._register_http_bridge_turn_state(session, "http_turn_close_lock")
+
+    alias_key = proxy_module._http_bridge_turn_state_alias_key("http_turn_close_lock", session.key.api_key_id)
+
+    async with service._http_bridge_lock:
+        close_task = asyncio.create_task(service._close_http_bridge_session(session))
+        await asyncio.sleep(0)
+        assert not close_task.done()
+        assert service._http_bridge_turn_state_index[alias_key] == session.key
+
+    await close_task
+
+    assert alias_key not in service._http_bridge_turn_state_index
 
 
 @pytest.mark.asyncio
@@ -2696,6 +2918,199 @@ async def test_v1_responses_http_bridge_startup_error_omits_turn_state_header(as
 
 
 @pytest.mark.asyncio
+async def test_backend_responses_http_bridge_refresh_failure_returns_proxy_error(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_backend_http_bridge_refresh_failure",
+        "backend-http-bridge-refresh-failure@example.com",
+    )
+    account = await _get_account(account_id)
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+    ):
+        del (
+            self,
+            deadline,
+            request_id,
+            kind,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset_accounts,
+            routing_strategy,
+            model,
+            exclude_account_ids,
+            additional_limit_name,
+        )
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fail_refresh(self, target, *, force=False, timeout_seconds):
+        del self, target, force, timeout_seconds
+        raise proxy_module.RefreshError("refresh_token_expired", "token expired", True)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fail_refresh)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-5.1",
+            "instructions": "Return exactly OK.",
+            "input": "hello",
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_api_key"
+    assert "x-codex-turn-state" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_refresh_failure_returns_proxy_error(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_v1_http_bridge_refresh_failure",
+        "v1-http-bridge-refresh-failure@example.com",
+    )
+    account = await _get_account(account_id)
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+    ):
+        del (
+            self,
+            deadline,
+            request_id,
+            kind,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset_accounts,
+            routing_strategy,
+            model,
+            exclude_account_ids,
+            additional_limit_name,
+        )
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fail_refresh(self, target, *, force=False, timeout_seconds):
+        del self, target, force, timeout_seconds
+        raise proxy_module.RefreshError("refresh_token_expired", "token expired", True)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fail_refresh)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={
+            "model": "gpt-5.1",
+            "instructions": "Return exactly OK.",
+            "input": "hello",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_api_key"
+    assert "x-codex-turn-state" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_transient_refresh_failure_returns_upstream_error(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_v1_http_bridge_refresh_transient_failure",
+        "v1-http-bridge-refresh-transient-failure@example.com",
+    )
+    account = await _get_account(account_id)
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+    ):
+        del (
+            self,
+            deadline,
+            request_id,
+            kind,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset_accounts,
+            routing_strategy,
+            model,
+            exclude_account_ids,
+            additional_limit_name,
+        )
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fail_refresh(self, target, *, force=False, timeout_seconds):
+        del self, target, force, timeout_seconds
+        raise proxy_module.RefreshError("invalid_response", "temporary refresh failure", False)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fail_refresh)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={
+            "model": "gpt-5.1",
+            "instructions": "Return exactly OK.",
+            "input": "hello",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_unavailable"
+    assert "x-codex-turn-state" not in response.headers
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_http_bridge_does_not_register_turn_state_alias_before_request_admission(
     async_client,
     app_instance,
@@ -2798,7 +3213,7 @@ async def test_v1_responses_http_bridge_does_not_register_turn_state_alias_befor
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         await stream.__anext__()
 
-    exc = cast(proxy_module.ProxyResponseError, exc_info.value)
+    exc = exc_info.value
     assert exc.status_code == 429
     async with service._http_bridge_lock:
         sessions = list(service._http_bridge_sessions.values())
@@ -3378,7 +3793,7 @@ async def test_v1_responses_http_bridge_does_not_evict_active_session_when_pool_
             idle_ttl_seconds=120.0,
             max_sessions=1,
         )
-    exc = cast(proxy_module.ProxyResponseError, exc_info.value)
+    exc = exc_info.value
     assert exc.status_code == 429
     assert hanging_upstream.closed is False
     await service._close_http_bridge_session(first_session)
@@ -3540,7 +3955,7 @@ async def test_v1_responses_http_bridge_does_not_evict_queued_session_when_pool_
             max_sessions=1,
         )
 
-    exc = cast(proxy_module.ProxyResponseError, exc_info.value)
+    exc = exc_info.value
     assert exc.status_code == 429
     assert hanging_upstream.closed is False
 
@@ -3663,10 +4078,701 @@ async def test_v1_responses_http_bridge_enforces_queue_limit_atomically_for_same
             queue_limit=1,
         )
 
-    exc = cast(proxy_module.ProxyResponseError, exc_info.value)
+    exc = exc_info.value
     assert exc.status_code == 429
     assert session.queued_request_count == 1
     await service._close_http_bridge_session(session)
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_creates_different_session_keys_in_parallel(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_started: list[str] = []
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_started.append(key.affinity_key)
+        await asyncio.sleep(0.2)
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key_one = proxy_module._HTTPBridgeSessionKey("request", "bridge-a", None)
+    key_two = proxy_module._HTTPBridgeSessionKey("request", "bridge-b", None)
+    t0 = time.monotonic()
+
+    try:
+        first = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key_one,
+                headers={},
+                affinity=proxy_module._AffinityPolicy(),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        second = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key_two,
+                headers={},
+                affinity=proxy_module._AffinityPolicy(),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        session_one, session_two = await asyncio.gather(first, second)
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.35
+        assert sorted(create_started) == ["bridge-a", "bridge-b"]
+        assert session_one.key == key_one
+        assert session_two.key == key_two
+        assert service._http_bridge_sessions[key_one] is session_one
+        assert service._http_bridge_sessions[key_two] is session_two
+    finally:
+        service._http_bridge_sessions.clear()
+        service._http_bridge_inflight_sessions.clear()
+        service._http_bridge_turn_state_index.clear()
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_singleflights_same_session_key_during_creation(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_started: list[str] = []
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_started.append(key.affinity_key)
+        await asyncio.sleep(0.2)
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("request", "bridge-singleflight", None)
+    t0 = time.monotonic()
+
+    try:
+        first = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key,
+                headers={},
+                affinity=proxy_module._AffinityPolicy(),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        second = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key,
+                headers={},
+                affinity=proxy_module._AffinityPolicy(),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        session_one, session_two = await asyncio.gather(first, second)
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.35
+        assert create_started == ["bridge-singleflight"]
+        assert session_one is session_two
+        assert service._http_bridge_sessions[key] is session_one
+    finally:
+        service._http_bridge_sessions.clear()
+        service._http_bridge_inflight_sessions.clear()
+        service._http_bridge_turn_state_index.clear()
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_waits_for_inflight_capacity_before_rate_limiting_other_keys(
+    app_instance, monkeypatch
+):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=1,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    first_create_started = asyncio.Event()
+    release_first_create = asyncio.Event()
+    create_attempts: list[str] = []
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_attempts.append(key.affinity_key)
+        if key.affinity_key == "bridge-capacity-a":
+            first_create_started.set()
+            await release_first_create.wait()
+            raise RuntimeError("first create failed")
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key_one = proxy_module._HTTPBridgeSessionKey("request", "bridge-capacity-a", None)
+    key_two = proxy_module._HTTPBridgeSessionKey("request", "bridge-capacity-b", None)
+
+    first = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key_one,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=1,
+        )
+    )
+    await first_create_started.wait()
+
+    second = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key_two,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=1,
+        )
+    )
+    await asyncio.sleep(0.01)
+    assert not second.done()
+
+    release_first_create.set()
+
+    with pytest.raises(RuntimeError, match="first create failed"):
+        await first
+    created_session = await asyncio.wait_for(second, timeout=1.0)
+
+    assert create_attempts == ["bridge-capacity-a", "bridge-capacity-b"]
+    assert service._http_bridge_sessions[key_two] is created_session
+    assert key_one not in service._http_bridge_inflight_sessions
+    assert key_two not in service._http_bridge_inflight_sessions
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_singleflight_follower_refreshes_session_model(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_started = asyncio.Event()
+    release_create = asyncio.Event()
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_started.set()
+        await release_create.wait()
+        session = _make_dummy_bridge_session(key)
+        session.request_model = "gpt-5.1"
+        return session
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("session_header", "shared-session", None)
+
+    try:
+        creator = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key,
+                headers={"session_id": "shared-session"},
+                affinity=proxy_module._AffinityPolicy(
+                    key="shared-session",
+                    kind=proxy_module.StickySessionKind.CODEX_SESSION,
+                ),
+                api_key=None,
+                request_model="gpt-5.1",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        await create_started.wait()
+        follower = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key,
+                headers={"session_id": "shared-session"},
+                affinity=proxy_module._AffinityPolicy(
+                    key="shared-session",
+                    kind=proxy_module.StickySessionKind.CODEX_SESSION,
+                ),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        release_create.set()
+        created_session, follower_session = await asyncio.gather(creator, follower)
+
+        assert created_session is follower_session
+        assert follower_session.request_model == "gpt-5.4"
+    finally:
+        service._http_bridge_sessions.clear()
+        service._http_bridge_inflight_sessions.clear()
+        service._http_bridge_turn_state_index.clear()
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_singleflights_stale_session_replacement(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_started: list[str] = []
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_started.append(key.affinity_key)
+        await asyncio.sleep(0.2)
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("request", "bridge-stale-replace", None)
+    stale_session = cast(proxy_module._HTTPBridgeSession, _make_dummy_bridge_session(key))
+    stale_session.closed = True
+    service._http_bridge_sessions[key] = stale_session
+
+    try:
+        first = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key,
+                headers={},
+                affinity=proxy_module._AffinityPolicy(),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        second = asyncio.create_task(
+            service._get_or_create_http_bridge_session(
+                key,
+                headers={},
+                affinity=proxy_module._AffinityPolicy(),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+                max_sessions=8,
+            )
+        )
+        session_one, session_two = await asyncio.gather(first, second)
+
+        assert create_started == ["bridge-stale-replace"]
+        assert session_one is session_two
+        assert service._http_bridge_sessions[key] is session_one
+    finally:
+        service._http_bridge_sessions.clear()
+        service._http_bridge_inflight_sessions.clear()
+        service._http_bridge_turn_state_index.clear()
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_cleans_up_cancelled_singleflight_creator(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    first_create_started = asyncio.Event()
+    create_attempts = 0
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        nonlocal create_attempts
+        create_attempts += 1
+        if create_attempts == 1:
+            first_create_started.set()
+            await asyncio.Event().wait()
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("request", "bridge-cancelled-create", None)
+
+    creator = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        )
+    )
+    await first_create_started.wait()
+    creator.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creator
+
+    replacement = await asyncio.wait_for(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        ),
+        timeout=1.0,
+    )
+
+    assert create_attempts == 2
+    assert service._http_bridge_sessions[key] is replacement
+    assert key not in service._http_bridge_inflight_sessions
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_cleans_up_cancelled_singleflight_creator_after_create(
+    app_instance, monkeypatch
+):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_finished = asyncio.Event()
+    allow_return = asyncio.Event()
+    create_attempts = 0
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        nonlocal create_attempts
+        create_attempts += 1
+        if create_attempts == 1:
+            create_finished.set()
+            await allow_return.wait()
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("request", "bridge-cancelled-after-create", None)
+    creator = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        )
+    )
+    await create_finished.wait()
+    async with service._http_bridge_lock:
+        allow_return.set()
+        await asyncio.sleep(0)
+        creator.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await creator
+
+    replacement = await asyncio.wait_for(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        ),
+        timeout=1.0,
+    )
+
+    assert create_attempts == 2
+    assert service._http_bridge_sessions[key] is replacement
+    assert key not in service._http_bridge_inflight_sessions
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_waits_for_inflight_session_before_continuity_error(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_started = asyncio.Event()
+    release_create = asyncio.Event()
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_started.set()
+        await release_create.wait()
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("request", "bridge-waits-for-inflight", None)
+
+    creator = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        )
+    )
+    await create_started.wait()
+
+    follower = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+            previous_response_id="resp_inflight",
+        )
+    )
+    await asyncio.sleep(0.01)
+    assert follower.done()
+
+    release_create.set()
+    created_session = await creator
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        await follower
+
+    assert service._http_bridge_sessions[key] is created_session
+    exc = exc_info.value
+    assert exc.status_code == 400
+    assert exc.payload["error"] == {
+        "message": (
+            "Previous response with id 'resp_inflight' not found. "
+            "HTTP bridge continuity was lost. Replay x-codex-turn-state or retry with a stable prompt_cache_key."
+        ),
+        "type": "invalid_request_error",
+        "code": "previous_response_not_found",
+        "param": "previous_response_id",
+    }
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_prunes_idle_session_before_reuse(app_instance, monkeypatch):
+    service = get_proxy_service_for_app(app_instance)
+    service._http_bridge_sessions.clear()
+    service._http_bridge_inflight_sessions.clear()
+    service._http_bridge_turn_state_index.clear()
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=True,
+        http_responses_session_bridge_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_codex_idle_ttl_seconds=120.0,
+        http_responses_session_bridge_max_sessions=8,
+        http_responses_session_bridge_instance_id="instance-a",
+        http_responses_session_bridge_instance_ring=[],
+    )
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    create_started: list[str] = []
+
+    async def fake_create_http_bridge_session(
+        self,
+        key,
+        *,
+        headers,
+        affinity,
+        request_model,
+        idle_ttl_seconds,
+    ):
+        del self, headers, affinity, request_model, idle_ttl_seconds
+        create_started.append(key.affinity_key)
+        return _make_dummy_bridge_session(key)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_create_http_bridge_session", fake_create_http_bridge_session)
+
+    key = proxy_module._HTTPBridgeSessionKey("request", "bridge-idle-prune", None)
+    stale_session = cast(proxy_module._HTTPBridgeSession, _make_dummy_bridge_session(key))
+    stale_session.last_used_at = time.monotonic() - 300.0
+    stale_session.idle_ttl_seconds = 120.0
+    service._http_bridge_sessions[key] = stale_session
+
+    try:
+        replacement = await service._get_or_create_http_bridge_session(
+            key,
+            headers={},
+            affinity=proxy_module._AffinityPolicy(),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        )
+
+        assert create_started == ["bridge-idle-prune"]
+        assert replacement is not stale_session
+        assert service._http_bridge_sessions[key] is replacement
+    finally:
+        service._http_bridge_sessions.clear()
+        service._http_bridge_inflight_sessions.clear()
+        service._http_bridge_turn_state_index.clear()
 
 
 @pytest.mark.asyncio
@@ -4471,12 +5577,22 @@ async def test_prepare_http_bridge_request_preserves_existing_client_metadata(ap
         }
     )
 
-    _request_state, text_data = service._prepare_http_bridge_request(
-        payload,
-        {"x-codex-turn-metadata": '{"turn_id":"turn_123","sandbox":"workspace-write"}'},
-        api_key=None,
-        api_key_reservation=None,
-    )
+    token = set_request_id("req_http_bridge_existing")
+    try:
+        first_request_state, text_data = service._prepare_http_bridge_request(
+            payload,
+            {"x-codex-turn-metadata": '{"turn_id":"turn_123","sandbox":"workspace-write"}'},
+            api_key=None,
+            api_key_reservation=None,
+        )
+        second_request_state, _ = service._prepare_http_bridge_request(
+            payload,
+            {"x-codex-turn-metadata": '{"turn_id":"turn_123","sandbox":"workspace-write"}'},
+            api_key=None,
+            api_key_reservation=None,
+        )
+    finally:
+        reset_request_id(token)
 
     assert json.loads(text_data)["client_metadata"] == {
         "bool_flag": True,
@@ -4484,3 +5600,8 @@ async def test_prepare_http_bridge_request_preserves_existing_client_metadata(ap
         "nested": {"enabled": False},
         "x-codex-turn-metadata": '{"turn_id":"turn_123","sandbox":"workspace-write"}',
     }
+    assert first_request_state.request_log_id == "req_http_bridge_existing"
+    assert second_request_state.request_log_id == "req_http_bridge_existing"
+    assert first_request_state.request_id.startswith("ws_")
+    assert second_request_state.request_id.startswith("ws_")
+    assert first_request_state.request_id != second_request_state.request_id
