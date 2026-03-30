@@ -5,7 +5,7 @@ import time
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 import anyio
 
@@ -20,17 +20,18 @@ from app.core.balancer import (
     select_account,
 )
 from app.core.balancer.types import UpstreamError
-from app.core.config.settings import get_settings
 from app.core.openai.model_registry import get_model_registry
 from app.core.usage.quota import apply_usage_quota
 from app.core.usage.types import UsageWindowRow
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
-from app.modules.accounts.repository import AccountsRepository
 from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
-from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.usage.additional_quota_keys import canonicalize_additional_quota_key
+
+if TYPE_CHECKING:
+    from app.modules.accounts.repository import AccountsRepository
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class LoadBalancer:
         model: str | None = None,
         additional_limit_name: str | None = None,
         exclude_account_ids: Collection[str] | None = None,
+        budget_threshold_pct: float = 95.0,
     ) -> AccountSelection:
         excluded_ids = set(exclude_account_ids or ())
 
@@ -256,6 +258,7 @@ class LoadBalancer:
                             sticky_kind=sticky_kind,
                             reallocate_sticky=reallocate_sticky,
                             sticky_max_age_seconds=sticky_max_age_seconds,
+                            budget_threshold_pct=budget_threshold_pct,
                             prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
                             routing_strategy=routing_strategy,
                             sticky_repo=repos.sticky_sessions,
@@ -500,6 +503,7 @@ class LoadBalancer:
         sticky_kind: StickySessionKind | None,
         reallocate_sticky: bool,
         sticky_max_age_seconds: int | None,
+        budget_threshold_pct: float = 95.0,
         prefer_earlier_reset_accounts: bool,
         routing_strategy: RoutingStrategy,
         sticky_repo: StickySessionsRepository | None,
@@ -530,16 +534,34 @@ class LoadBalancer:
         if existing:
             pinned = next((state for state in states if state.account_id == existing), None)
             if pinned is not None:
-                pinned_result = select_account(
-                    [pinned],
-                    prefer_earlier_reset=prefer_earlier_reset_accounts,
-                    routing_strategy=routing_strategy,
-                    allow_backoff_fallback=False,
+                # Check if pinned account has insufficient budget (< 5% remaining)
+                # or rate limit is far away (reset_at more than 10 minutes away)
+                now = time.time()
+                budget_exhausted = (
+                    sticky_kind == StickySessionKind.PROMPT_CACHE
+                    and pinned.status != AccountStatus.RATE_LIMITED
+                    and pinned.used_percent is not None
+                    and pinned.used_percent > budget_threshold_pct
                 )
-                if pinned_result.account is not None:
-                    if not reallocate_sticky and sticky_max_age_seconds is not None:
-                        await sticky_repo.upsert(sticky_key, pinned.account_id, kind=sticky_kind)
-                    return pinned_result
+                rate_limit_far_away = (
+                    sticky_kind == StickySessionKind.PROMPT_CACHE
+                    and pinned.status == AccountStatus.RATE_LIMITED
+                    and pinned.reset_at is not None
+                    and pinned.reset_at - now >= 600  # 10 minutes
+                )
+                if not (budget_exhausted or rate_limit_far_away):
+                    pinned_result = select_account(
+                        [pinned],
+                        prefer_earlier_reset=prefer_earlier_reset_accounts,
+                        routing_strategy=routing_strategy,
+                        allow_backoff_fallback=False,
+                    )
+                    if pinned_result.account is not None:
+                        if sticky_max_age_seconds is not None:
+                            await sticky_repo.upsert(sticky_key, pinned.account_id, kind=sticky_kind)
+                        return pinned_result
+                else:
+                    reallocate_sticky = True
                 # Grace period: if the pinned account is rate-limited with a
                 # known reset time within a short window, retry selection
                 # with a small time advance to preserve prompt cache.
@@ -860,7 +882,10 @@ def _mapped_model_has_registry_entry(model: str | None) -> bool:
     snapshot = get_snapshot()
     if snapshot is None:
         return False
-    return model.strip().lower() in snapshot.model_plans
+    model_plans = getattr(snapshot, "model_plans", None)
+    if not isinstance(model_plans, dict):
+        return False
+    return model.strip().lower() in model_plans
 
 
 def _usage_entry_to_window_row(entry: UsageHistory) -> UsageWindowRow:
@@ -913,6 +938,8 @@ async def _latest_additional_by_key(
 
 
 def _additional_usage_fresh_since(now: datetime | None = None) -> datetime:
+    from app.core.config.settings import get_settings  # noqa: PLC0415
+
     current_time = now or utcnow()
     interval_seconds = max(get_settings().usage_refresh_interval_seconds * 2, 180)
     return current_time - timedelta(seconds=interval_seconds)
