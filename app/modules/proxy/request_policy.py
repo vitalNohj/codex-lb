@@ -58,6 +58,16 @@ def apply_api_key_enforcement(
                 api_key.enforced_reasoning_effort,
             )
 
+    if api_key.enforced_service_tier is not None and payload.service_tier != api_key.enforced_service_tier:
+        logger.info(
+            "api_key_service_tier_enforced request_id=%s key_id=%s requested_tier=%s enforced_tier=%s",
+            get_request_id(),
+            api_key.id,
+            payload.service_tier,
+            api_key.enforced_service_tier,
+        )
+        payload.service_tier = api_key.enforced_service_tier
+
 
 def openai_validation_error(exc: ValidationError) -> OpenAIErrorEnvelope:
     error = openai_invalid_payload_error()
