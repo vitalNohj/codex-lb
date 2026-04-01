@@ -108,24 +108,32 @@ async def login_password(
     payload: PasswordLoginRequest = Body(...),
     context: DashboardAuthContext = Depends(get_dashboard_auth_context),
 ) -> DashboardAuthSessionResponse | JSONResponse:
+    settings = await get_settings_cache().get()
+    if settings.password_hash is None:
+        raise DashboardBadRequestError("Password is not configured", code="password_not_configured")
+
     limiter = get_password_rate_limiter()
     rate_key = _session_client_key(request, prefix="password_login")
-    retry_after = limiter.check(rate_key)
-    if retry_after is not None:
+    try:
+        await limiter.check_and_increment(rate_key, context.session)
+    except DashboardRateLimitError as exc:
         raise DashboardRateLimitError(
-            f"Too many attempts. Try again in {retry_after} seconds.",
-            retry_after=retry_after,
+            f"Too many attempts. Try again in {exc.retry_after} seconds.",
+            retry_after=exc.retry_after,
             code="password_rate_limited",
-        )
+        ) from exc
 
     try:
-        await context.service.verify_password(payload.password)
-        limiter.reset(rate_key)
+        await context.service.verify_password(
+            payload.password, actor_ip=request.client.host if request.client else None
+        )
     except InvalidCredentialsError as exc:
-        limiter.record_failure(rate_key)
         raise DashboardAuthError(str(exc), code="invalid_credentials") from exc
     except PasswordNotConfiguredError as exc:
+        await limiter.clear_for_key(rate_key, context.session)
         raise DashboardBadRequestError(str(exc), code="password_not_configured") from exc
+
+    await limiter.clear_for_key(rate_key, context.session)
 
     session_id = get_dashboard_session_store().create(password_verified=True, totp_verified=False)
     response = await context.service.get_session_state(session_id)
@@ -205,29 +213,33 @@ async def confirm_totp_setup(
 
     limiter = get_totp_rate_limiter()
     rate_key = _session_client_key(request, prefix="totp_setup_confirm")
-    retry_after = limiter.check(rate_key)
-    if retry_after is not None:
+    try:
+        await limiter.check_and_increment(rate_key, context.session)
+    except DashboardRateLimitError as exc:
         raise DashboardRateLimitError(
-            f"Too many attempts. Try again in {retry_after} seconds.",
-            retry_after=retry_after,
+            f"Too many attempts. Try again in {exc.retry_after} seconds.",
+            retry_after=exc.retry_after,
             code="totp_rate_limited",
-        )
+        ) from exc
 
     try:
         session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
-        await context.service.confirm_totp_setup(session_id=session_id, secret=payload.secret, code=payload.code)
-        limiter.reset(rate_key)
+        await context.service.confirm_totp_setup(
+            session_id=session_id,
+            secret=payload.secret,
+            code=payload.code,
+            actor_ip=request.client.host if request.client else None,
+        )
     except PasswordSessionRequiredError as exc:
         raise DashboardAuthError(str(exc)) from exc
     except TotpInvalidCodeError as exc:
-        limiter.record_failure(rate_key)
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
     except TotpInvalidSetupError as exc:
-        limiter.record_failure(rate_key)
         raise DashboardBadRequestError(str(exc), code="invalid_totp_setup") from exc
     except TotpAlreadyConfiguredError as exc:
         raise DashboardBadRequestError(str(exc), code="invalid_totp_setup") from exc
 
+    await limiter.clear_for_key(rate_key, context.session)
     await get_settings_cache().invalidate()
     return JSONResponse(status_code=200, content={"status": "ok"})
 
@@ -240,25 +252,33 @@ async def verify_totp(
 ) -> DashboardAuthSessionResponse | JSONResponse:
     limiter = get_totp_rate_limiter()
     rate_key = _session_client_key(request, prefix="totp_verify")
-    retry_after = limiter.check(rate_key)
-    if retry_after is not None:
-        raise DashboardRateLimitError(
-            f"Too many attempts. Try again in {retry_after} seconds.",
-            retry_after=retry_after,
-            code="totp_rate_limited",
-        )
+    current_session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
     try:
-        current_session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
-        session_id = await context.service.verify_totp(session_id=current_session_id, code=payload.code)
-        limiter.reset(rate_key)
+        await context.service.ensure_active_password_session(current_session_id)
+    except PasswordSessionRequiredError as exc:
+        raise DashboardAuthError(str(exc)) from exc
+    try:
+        await limiter.check_and_increment(rate_key, context.session)
+    except DashboardRateLimitError as exc:
+        raise DashboardRateLimitError(
+            f"Too many attempts. Try again in {exc.retry_after} seconds.",
+            retry_after=exc.retry_after,
+            code="totp_rate_limited",
+        ) from exc
+    try:
+        session_id = await context.service.verify_totp(
+            session_id=current_session_id,
+            code=payload.code,
+            actor_ip=request.client.host if request.client else None,
+        )
     except PasswordSessionRequiredError as exc:
         raise DashboardAuthError(str(exc)) from exc
     except TotpInvalidCodeError as exc:
-        limiter.record_failure(rate_key)
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
     except TotpNotConfiguredError as exc:
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
 
+    await limiter.clear_for_key(rate_key, context.session)
     response = await context.service.get_session_state(session_id)
     json_response = JSONResponse(status_code=200, content=response.model_dump(by_alias=True))
     _set_session_cookie(json_response, session_id, request)
@@ -273,25 +293,33 @@ async def disable_totp(
 ) -> JSONResponse:
     limiter = get_totp_rate_limiter()
     rate_key = _session_client_key(request, prefix="totp_disable")
-    retry_after = limiter.check(rate_key)
-    if retry_after is not None:
-        raise DashboardRateLimitError(
-            f"Too many attempts. Try again in {retry_after} seconds.",
-            retry_after=retry_after,
-            code="totp_rate_limited",
-        )
+    session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
     try:
-        session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
-        await context.service.disable_totp(session_id=session_id, code=payload.code)
-        limiter.reset(rate_key)
+        await context.service.ensure_totp_verified_session(session_id)
+    except PasswordSessionRequiredError as exc:
+        raise DashboardAuthError(str(exc)) from exc
+    try:
+        await limiter.check_and_increment(rate_key, context.session)
+    except DashboardRateLimitError as exc:
+        raise DashboardRateLimitError(
+            f"Too many attempts. Try again in {exc.retry_after} seconds.",
+            retry_after=exc.retry_after,
+            code="totp_rate_limited",
+        ) from exc
+    try:
+        await context.service.disable_totp(
+            session_id=session_id,
+            code=payload.code,
+            actor_ip=request.client.host if request.client else None,
+        )
     except PasswordSessionRequiredError as exc:
         raise DashboardAuthError(str(exc)) from exc
     except TotpInvalidCodeError as exc:
-        limiter.record_failure(rate_key)
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
     except TotpNotConfiguredError as exc:
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
 
+    await limiter.clear_for_key(rate_key, context.session)
     await get_settings_cache().invalidate()
     return JSONResponse(status_code=200, content={"status": "ok"})
 

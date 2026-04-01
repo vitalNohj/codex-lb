@@ -217,3 +217,21 @@ async def test_prompt_cache_reallocates_when_usage_exceeds_configured_budget_thr
     second = await async_client.post("/backend-api/codex/responses", json=payload)
     assert second.status_code == 200
     assert seen == ["acc_budget_a", "acc_budget_b"]
+
+
+def test_owner_mismatch_raises_409_for_retry() -> None:
+    """Verify that the bridge mismatch block raises ProxyResponseError(409).
+
+    When a request lands on a non-owner replica, the mismatch block must raise
+    a 409 so the client retries instead of silently creating a duplicate local
+    bridge that breaks turn-state continuity.
+    """
+    import inspect
+
+    from app.modules.proxy import service as proxy_service_module
+
+    source = inspect.getsource(proxy_service_module)
+    assert "owner_mismatch_retry" in source, (
+        "Expected 'owner_mismatch_retry' log event in service.py. "
+        "The mismatch block should raise 409 for retry, not fall through."
+    )

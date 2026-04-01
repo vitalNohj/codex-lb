@@ -447,6 +447,47 @@ async def test_create_key_normalizes_enforced_reasoning_effort() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_key_normalizes_fast_service_tier_alias() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="service-tier-policy",
+            allowed_models=None,
+            enforced_service_tier="FAST",
+            expires_at=None,
+        )
+    )
+
+    assert created.enforced_service_tier == "priority"
+
+
+@pytest.mark.asyncio
+async def test_update_key_normalizes_service_tier_alias() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="service-tier-update",
+            allowed_models=None,
+            expires_at=None,
+        )
+    )
+
+    updated = await service.update_key(
+        created.id,
+        ApiKeyUpdateData(
+            enforced_service_tier="fast",
+            enforced_service_tier_set=True,
+        ),
+    )
+
+    assert updated.enforced_service_tier == "priority"
+
+
+@pytest.mark.asyncio
 async def test_create_key_with_limits() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)

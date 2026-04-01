@@ -245,6 +245,21 @@ async def test_init_db_uses_quick_check_by_default(monkeypatch, tmp_path) -> Non
         ),
     )
     monkeypatch.setattr(session_module, "check_sqlite_integrity", _check)
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            lambda _: _FakeMigrationState(
+                current_revision="head",
+                head_revision="head",
+                has_alembic_version_table=True,
+                has_legacy_migrations_table=False,
+                needs_upgrade=False,
+            ),
+            lambda _: (_ for _ in ()).throw(AssertionError("startup migrations should stay disabled")),
+            lambda _: (),
+        ),
+    )
 
     await session_module.init_db()
 
@@ -272,6 +287,21 @@ async def test_init_db_uses_full_check_when_configured(monkeypatch, tmp_path) ->
         ),
     )
     monkeypatch.setattr(session_module, "check_sqlite_integrity", _check)
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            lambda _: _FakeMigrationState(
+                current_revision="head",
+                head_revision="head",
+                has_alembic_version_table=True,
+                has_legacy_migrations_table=False,
+                needs_upgrade=False,
+            ),
+            lambda _: (_ for _ in ()).throw(AssertionError("startup migrations should stay disabled")),
+            lambda _: (),
+        ),
+    )
 
     await session_module.init_db()
 
@@ -296,5 +326,105 @@ async def test_init_db_skips_sqlite_check_when_disabled(monkeypatch, tmp_path) -
         ),
     )
     monkeypatch.setattr(session_module, "check_sqlite_integrity", _check)
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            lambda _: _FakeMigrationState(
+                current_revision="head",
+                head_revision="head",
+                has_alembic_version_table=True,
+                has_legacy_migrations_table=False,
+                needs_upgrade=False,
+            ),
+            lambda _: (_ for _ in ()).throw(AssertionError("startup migrations should stay disabled")),
+            lambda _: (),
+        ),
+    )
 
     await session_module.init_db()
+
+
+@pytest.mark.asyncio
+async def test_init_db_fails_when_startup_migrations_are_disabled_but_schema_is_behind(monkeypatch) -> None:
+    def _inspect_migration_state(_: str) -> _FakeMigrationState:
+        return _FakeMigrationState(
+            current_revision="20260330_020000_add_bridge_ring_members",
+            head_revision="20260401_000000_add_cache_invalidation",
+            has_alembic_version_table=True,
+            has_legacy_migrations_table=False,
+            needs_upgrade=True,
+        )
+
+    monkeypatch.setattr(
+        session_module,
+        "_settings",
+        _FakeSettings(
+            database_url="sqlite+aiosqlite:///:memory:",
+            database_migrate_on_startup=False,
+        ),
+    )
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            _inspect_migration_state,
+            lambda _: (_ for _ in ()).throw(AssertionError("startup migrations should stay disabled")),
+            lambda _: (),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="database schema is behind Alembic head"):
+        await session_module.init_db()
+
+
+@pytest.mark.asyncio
+async def test_init_background_db_creates_separate_engine() -> None:
+    session_module.init_background_db("sqlite+aiosqlite:///:memory:")
+
+    assert session_module._background_engine is not None
+    assert session_module._background_session_factory is not None
+
+    await session_module._background_engine.dispose()
+    session_module._background_engine = None
+    session_module._background_session_factory = None
+
+
+@pytest.mark.asyncio
+async def test_init_background_db_uses_smaller_pool_for_postgres() -> None:
+    session_module.init_background_db("postgresql+asyncpg://user:pass@localhost/db")
+
+    assert session_module._background_engine is not None
+    assert session_module._background_session_factory is not None
+
+    pool = session_module._background_engine.pool
+    assert pool.size() == 3  # type: ignore[attr-defined]
+
+    if session_module._background_engine is not None:
+        await session_module._background_engine.dispose()
+    session_module._background_engine = None
+    session_module._background_session_factory = None
+
+
+@pytest.mark.asyncio
+async def test_get_background_session_uses_background_pool_when_initialized() -> None:
+    session_module.init_background_db("sqlite+aiosqlite:///:memory:")
+
+    async with session_module.get_background_session() as session:
+        assert session is not None
+        assert isinstance(session, session_module.AsyncSession)
+
+    if session_module._background_engine is not None:
+        await session_module._background_engine.dispose()
+    session_module._background_engine = None
+    session_module._background_session_factory = None
+
+
+@pytest.mark.asyncio
+async def test_get_background_session_falls_back_to_main_pool_when_not_initialized() -> None:
+    session_module._background_engine = None
+    session_module._background_session_factory = None
+
+    async with session_module.get_background_session() as session:
+        assert session is not None
+        assert isinstance(session, session_module.AsyncSession)

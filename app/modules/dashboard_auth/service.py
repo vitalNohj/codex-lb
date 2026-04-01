@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-from collections import deque
 from dataclasses import dataclass
 from io import BytesIO
 from time import time
@@ -11,8 +10,10 @@ from typing import Protocol
 import bcrypt
 import segno
 
+from app.core.audit.service import AuditService
 from app.core.auth.totp import build_otpauth_uri, generate_totp_secret, verify_totp_code
 from app.core.crypto import TokenEncryptor
+from app.core.rate_limiter.db_rate_limiter import DatabaseRateLimiter
 from app.modules.dashboard_auth.schemas import DashboardAuthSessionResponse, TotpSetupStartResponse
 
 DASHBOARD_SESSION_COOKIE = "codex_lb_dashboard_session"
@@ -140,44 +141,6 @@ class DashboardSessionStore:
         return
 
 
-class TotpRateLimiter:
-    def __init__(self, *, max_failures: int, window_seconds: int) -> None:
-        if max_failures <= 0:
-            raise ValueError("max_failures must be positive")
-        if window_seconds <= 0:
-            raise ValueError("window_seconds must be positive")
-        self._max_failures = max_failures
-        self._window_seconds = window_seconds
-        self._failures: dict[str, deque[int]] = {}
-
-    def check(self, key: str) -> int | None:
-        now = int(time())
-        failures = self._failures.get(key)
-        if failures is None:
-            return None
-        cutoff = now - self._window_seconds
-        while failures and failures[0] <= cutoff:
-            failures.popleft()
-        if not failures:
-            self._failures.pop(key, None)
-            return None
-        if len(failures) >= self._max_failures:
-            retry_after = failures[0] + self._window_seconds - now
-            return max(1, retry_after)
-        return None
-
-    def record_failure(self, key: str) -> None:
-        now = int(time())
-        failures = self._failures.setdefault(key, deque())
-        failures.append(now)
-        cutoff = now - self._window_seconds
-        while failures and failures[0] <= cutoff:
-            failures.popleft()
-
-    def reset(self, key: str) -> None:
-        self._failures.pop(key, None)
-
-
 class DashboardAuthService:
     def __init__(self, repository: DashboardAuthRepositoryProtocol, session_store: DashboardSessionStore) -> None:
         self._repository = repository
@@ -212,12 +175,16 @@ class DashboardAuthService:
         if not setup_ok:
             raise PasswordAlreadyConfiguredError("Password is already configured")
 
-    async def verify_password(self, password: str) -> None:
+    async def verify_password(self, password: str, *, actor_ip: str | None = None) -> None:
         current = await self._repository.get_password_hash()
         if current is None:
             raise PasswordNotConfiguredError("Password is not configured")
         if not _check_password(password, current):
+            AuditService.log_async("login_failed", actor_ip=actor_ip, details={"method": "password"})
             raise InvalidCredentialsError("Invalid credentials")
+        settings = await self._repository.get_settings()
+        if not settings.totp_required_on_login or settings.totp_secret_encrypted is None:
+            AuditService.log_async("login_success", actor_ip=actor_ip, details={"method": "password"})
 
     async def change_password(self, current_password: str, new_password: str) -> None:
         await self.verify_password(current_password)
@@ -243,6 +210,12 @@ class DashboardAuthService:
             raise PasswordSessionRequiredError("TOTP-verified session is required")
         return settings
 
+    async def ensure_active_password_session(self, session_id: str | None) -> None:
+        await self._require_active_password_session(session_id)
+
+    async def ensure_totp_verified_session(self, session_id: str | None) -> None:
+        await self._require_totp_verified_session(session_id)
+
     async def start_totp_setup(self, *, session_id: str | None) -> TotpSetupStartResponse:
         settings = await self._require_active_password_session(session_id)
         if settings.totp_secret_encrypted is not None:
@@ -255,7 +228,14 @@ class DashboardAuthService:
             qr_svg_data_uri=_qr_svg_data_uri(otpauth_uri),
         )
 
-    async def confirm_totp_setup(self, *, session_id: str | None, secret: str, code: str) -> None:
+    async def confirm_totp_setup(
+        self,
+        *,
+        session_id: str | None,
+        secret: str,
+        code: str,
+        actor_ip: str | None = None,
+    ) -> None:
         current = await self._require_active_password_session(session_id)
         if current.totp_secret_encrypted is not None:
             raise TotpAlreadyConfiguredError("TOTP is already configured. Disable it before setting a new secret")
@@ -266,8 +246,9 @@ class DashboardAuthService:
         if not verification.is_valid:
             raise TotpInvalidCodeError("Invalid TOTP code")
         await self._repository.set_totp_secret(self._encryptor.encrypt(secret))
+        AuditService.log_async("totp_enabled", actor_ip=actor_ip)
 
-    async def verify_totp(self, *, session_id: str | None, code: str) -> str:
+    async def verify_totp(self, *, session_id: str | None, code: str, actor_ip: str | None = None) -> str:
         settings = await self._require_active_password_session(session_id)
         secret_encrypted = settings.totp_secret_encrypted
         if secret_encrypted is None:
@@ -280,13 +261,16 @@ class DashboardAuthService:
             last_verified_step=settings.totp_last_verified_step,
         )
         if not verification.is_valid or verification.matched_step is None:
+            AuditService.log_async("login_failed", actor_ip=actor_ip, details={"method": "totp"})
             raise TotpInvalidCodeError("Invalid TOTP code")
         updated = await self._repository.try_advance_totp_last_verified_step(verification.matched_step)
         if not updated:
+            AuditService.log_async("login_failed", actor_ip=actor_ip, details={"method": "totp"})
             raise TotpInvalidCodeError("Invalid TOTP code")
+        AuditService.log_async("login_success", actor_ip=actor_ip, details={"method": "totp"})
         return self._session_store.create(password_verified=True, totp_verified=True)
 
-    async def disable_totp(self, *, session_id: str | None, code: str) -> None:
+    async def disable_totp(self, *, session_id: str | None, code: str, actor_ip: str | None = None) -> None:
         settings = await self._require_totp_verified_session(session_id)
         secret_encrypted = settings.totp_secret_encrypted
         if secret_encrypted is None:
@@ -304,25 +288,26 @@ class DashboardAuthService:
         if not updated:
             raise TotpInvalidCodeError("Invalid TOTP code")
         await self._repository.set_totp_secret(None)
+        AuditService.log_async("totp_disabled", actor_ip=actor_ip)
 
     def logout(self, session_id: str | None) -> None:
         self._session_store.delete(session_id)
 
 
 _dashboard_session_store = DashboardSessionStore()
-_totp_rate_limiter = TotpRateLimiter(max_failures=8, window_seconds=60)
-_password_rate_limiter = TotpRateLimiter(max_failures=8, window_seconds=60)
+_totp_rate_limiter = DatabaseRateLimiter(max_attempts=8, window_seconds=60, type="totp")
+_password_rate_limiter = DatabaseRateLimiter(max_attempts=8, window_seconds=60, type="password")
 
 
 def get_dashboard_session_store() -> DashboardSessionStore:
     return _dashboard_session_store
 
 
-def get_totp_rate_limiter() -> TotpRateLimiter:
+def get_totp_rate_limiter() -> DatabaseRateLimiter:
     return _totp_rate_limiter
 
 
-def get_password_rate_limiter() -> TotpRateLimiter:
+def get_password_rate_limiter() -> DatabaseRateLimiter:
     return _password_rate_limiter
 
 

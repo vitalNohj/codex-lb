@@ -17,6 +17,7 @@ import anyio
 from fastapi import WebSocket
 from pydantic import ValidationError
 
+from app.core import shutdown as shutdown_state
 from app.core import usage as usage_core
 from app.core.auth.refresh import (
     RefreshError,
@@ -24,6 +25,7 @@ from app.core.auth.refresh import (
     push_token_refresh_timeout_override,
 )
 from app.core.balancer import PERMANENT_FAILURE_CODES, RoutingStrategy
+from app.core.balancer.rendezvous_hash import select_node
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import (
     ProxyResponseError,
@@ -49,6 +51,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, ResponseFailedEvent, openai_error, response_failed_event
 from app.core.exceptions import AppError, ProxyAuthError, ProxyRateLimitError
+from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, bridge_instance_mismatch_total
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.models import CompactResponsePayload, OpenAIEvent, OpenAIResponsePayload
 from app.core.openai.parsing import parse_sse_event
@@ -60,6 +63,7 @@ from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.retry import backoff_seconds
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.db.models import Account, AccountStatus, DashboardSettings, StickySessionKind, UsageHistory
+from app.db.session import SessionLocal
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.api_keys.service import (
     ApiKeyData,
@@ -93,6 +97,7 @@ from app.modules.proxy.request_policy import (
     openai_validation_error,
     validate_model_access,
 )
+from app.modules.proxy.ring_membership import RingMembershipService
 from app.modules.proxy.types import (
     AdditionalRateLimitData,
     RateLimitStatusDetailsData,
@@ -143,6 +148,7 @@ class ProxyService:
         self._repo_factory = repo_factory
         self._encryptor = TokenEncryptor()
         self._load_balancer = LoadBalancer(repo_factory)
+        self._ring_membership = RingMembershipService(SessionLocal)
         self._http_bridge_sessions: dict[_HTTPBridgeSessionKey, _HTTPBridgeSession] = {}
         self._http_bridge_inflight_sessions: dict[_HTTPBridgeSessionKey, asyncio.Future[_HTTPBridgeSession]] = {}
         self._http_bridge_turn_state_index: dict[tuple[str, str | None], _HTTPBridgeSessionKey] = {}
@@ -342,6 +348,11 @@ class ProxyService:
                 event_block = await event_queue.get()
                 if event_block is None:
                     break
+                if request_state.latency_first_token_ms is None:
+                    block_payload = parse_sse_data_json(event_block)
+                    block_event_type = _event_type_from_payload(None, block_payload)
+                    if block_event_type in _TEXT_DELTA_EVENT_TYPES:
+                        request_state.latency_first_token_ms = int((time.monotonic() - request_state.started_at) * 1000)
                 yield event_block
         finally:
             with anyio.CancelScope(shield=True):
@@ -1493,35 +1504,6 @@ class ProxyService:
 
                 await self._prune_http_bridge_sessions_locked()
 
-                owner_instance = _http_bridge_owner_instance(key, settings)
-                current_instance, ring = _normalized_http_bridge_instance_ring(settings)
-                if (
-                    key.affinity_kind != "request"
-                    and owner_instance is not None
-                    and len(ring) > 1
-                    and owner_instance != current_instance
-                ):
-                    _log_http_bridge_event(
-                        "owner_mismatch",
-                        key,
-                        account_id=None,
-                        model=request_model,
-                        detail=f"expected_instance={owner_instance}, current_instance={current_instance}",
-                        cache_key_family=key.affinity_kind,
-                        model_class=_extract_model_class(request_model) if request_model else None,
-                    )
-                    raise ProxyResponseError(
-                        409,
-                        openai_error(
-                            "bridge_instance_mismatch",
-                            (
-                                "HTTP responses session bridge request reached the wrong instance "
-                                f"(expected {owner_instance}, got {current_instance})"
-                            ),
-                            error_type="server_error",
-                        ),
-                    )
-
                 existing = self._http_bridge_sessions.get(key)
                 if existing is not None and not existing.closed and existing.account.status == AccountStatus.ACTIVE:
                     existing.request_model = request_model
@@ -1536,6 +1518,46 @@ class ProxyService:
                         model_class=_extract_model_class(existing.request_model) if existing.request_model else None,
                     )
                     return existing
+
+                if shutdown_state.is_bridge_drain_active():
+                    raise ProxyResponseError(
+                        503,
+                        openai_error(
+                            "bridge_drain_active",
+                            "HTTP bridge is draining — new sessions not accepted during shutdown",
+                            error_type="server_error",
+                        ),
+                    )
+
+                owner_instance = await _http_bridge_owner_instance(key, settings, self._ring_membership)
+                current_instance, ring = await _active_http_bridge_instance_ring(settings, self._ring_membership)
+                if (
+                    key.affinity_kind != "request"
+                    and owner_instance is not None
+                    and len(ring) > 1
+                    and owner_instance != current_instance
+                ):
+                    _log_http_bridge_event(
+                        "owner_mismatch_retry",
+                        key,
+                        account_id=None,
+                        model=request_model,
+                        detail=(
+                            f"expected_instance={owner_instance}, current_instance={current_instance}, outcome=retry"
+                        ),
+                        cache_key_family=key.affinity_kind,
+                        model_class=_extract_model_class(request_model) if request_model else None,
+                    )
+                    if PROMETHEUS_AVAILABLE and bridge_instance_mismatch_total is not None:
+                        bridge_instance_mismatch_total.labels(outcome="retry").inc()
+                    raise ProxyResponseError(
+                        409,
+                        openai_error(
+                            "bridge_instance_mismatch",
+                            "HTTP bridge session is owned by a different instance; retry to reach the correct replica",
+                            error_type="server_error",
+                        ),
+                    )
 
                 if existing is not None:
                     old_account_id = existing.account.id
@@ -1710,6 +1732,15 @@ class ProxyService:
                     else None,
                 )
             return created_session
+
+    async def close_all_http_bridge_sessions(self) -> None:
+        async with self._http_bridge_lock:
+            sessions_to_close = list(self._http_bridge_sessions.values())
+            self._http_bridge_sessions.clear()
+            self._http_bridge_inflight_sessions.clear()
+
+        for session in sessions_to_close:
+            await self._close_http_bridge_session(session)
 
     async def _prune_http_bridge_sessions_locked(self) -> None:
         now = time.monotonic()
@@ -2805,6 +2836,7 @@ class ProxyService:
                 service_tier=response_service_tier,
                 requested_service_tier=request_state.requested_service_tier,
                 actual_service_tier=request_state.actual_service_tier,
+                latency_first_token_ms=request_state.latency_first_token_ms,
             )
 
     async def _write_websocket_connect_failure(
@@ -2832,6 +2864,7 @@ class ProxyService:
             service_tier=request_state.service_tier,
             requested_service_tier=request_state.requested_service_tier,
             actual_service_tier=request_state.actual_service_tier,
+            latency_first_token_ms=request_state.latency_first_token_ms,
         )
 
     async def _emit_websocket_connect_failure(
@@ -2950,6 +2983,7 @@ class ProxyService:
                 service_tier=request_state.service_tier,
                 requested_service_tier=request_state.requested_service_tier,
                 actual_service_tier=request_state.actual_service_tier,
+                latency_first_token_ms=request_state.latency_first_token_ms,
             )
 
     async def _emit_websocket_terminal_error(
@@ -3119,8 +3153,10 @@ class ProxyService:
                 return headers
 
             account_map = {account.id: account for account in selected_accounts}
-            primary_rows_raw = await self._latest_usage_rows(repos, account_map, "primary")
-            secondary_rows_raw = await self._latest_usage_rows(repos, account_map, "secondary")
+            primary_rows_raw, secondary_rows_raw = await asyncio.gather(
+                self._latest_usage_rows(repos, account_map, "primary"),
+                self._latest_usage_rows(repos, account_map, "secondary"),
+            )
             primary_rows, secondary_rows = usage_core.normalize_weekly_only_rows(
                 primary_rows_raw,
                 secondary_rows_raw,
@@ -3146,8 +3182,10 @@ class ProxyService:
                 return RateLimitStatusPayloadData(plan_type="guest")
 
             account_map = {account.id: account for account in selected_accounts}
-            primary_rows_raw = await self._latest_usage_rows(repos, account_map, "primary")
-            secondary_rows_raw = await self._latest_usage_rows(repos, account_map, "secondary")
+            primary_rows_raw, secondary_rows_raw = await asyncio.gather(
+                self._latest_usage_rows(repos, account_map, "primary"),
+                self._latest_usage_rows(repos, account_map, "secondary"),
+            )
             primary_rows, secondary_rows = usage_core.normalize_weekly_only_rows(
                 primary_rows_raw,
                 secondary_rows_raw,
@@ -3408,6 +3446,7 @@ class ProxyService:
                                 headers,
                                 request_id,
                                 allow_retry_flag,
+                                request_started_at=start,
                                 allow_transient_retry=(
                                     transient_retries < _MAX_TRANSIENT_SAME_ACCOUNT_RETRIES - 1 or allow_retry_flag
                                 ),
@@ -3583,6 +3622,7 @@ class ProxyService:
                                 headers,
                                 request_id,
                                 False,
+                                request_started_at=start,
                                 api_key=api_key,
                                 settlement=settlement,
                                 suppress_text_done_events=suppress_text_done_events,
@@ -3699,6 +3739,7 @@ class ProxyService:
         request_id: str,
         allow_retry: bool,
         *,
+        request_started_at: float,
         allow_transient_retry: bool = False,
         api_key: ApiKeyData | None,
         settlement: _StreamSettlement,
@@ -3720,6 +3761,7 @@ class ProxyService:
         error_message = None
         usage = None
         saw_text_delta = False
+        latency_first_token_ms: int | None = None
 
         try:
             if upstream_stream_transport is not None:
@@ -3797,6 +3839,8 @@ class ProxyService:
                 suppress_text_done_events=suppress_text_done_events,
                 saw_text_delta=saw_text_delta,
             ):
+                if latency_first_token_ms is None and event_type in _TEXT_DELTA_EVENT_TYPES:
+                    latency_first_token_ms = int((time.monotonic() - request_started_at) * 1000)
                 yield first
             if terminal_stream_error is not None:
                 raise terminal_stream_error
@@ -3838,6 +3882,8 @@ class ProxyService:
                         usage = event.response.usage if event.response else None
                         if event_type == "response.incomplete":
                             status = "error"
+                if latency_first_token_ms is None and event_type in _TEXT_DELTA_EVENT_TYPES:
+                    latency_first_token_ms = int((time.monotonic() - request_started_at) * 1000)
                 yield line
         except ProxyResponseError as exc:
             error = _parse_openai_error(exc.payload)
@@ -3885,6 +3931,7 @@ class ProxyService:
                 service_tier=service_tier,
                 requested_service_tier=requested_service_tier,
                 actual_service_tier=actual_service_tier,
+                latency_first_token_ms=latency_first_token_ms,
             )
             _maybe_log_proxy_service_tier_trace(
                 "stream",
@@ -3901,6 +3948,7 @@ class ProxyService:
         model: str | None,
         latency_ms: int,
         status: str,
+        latency_first_token_ms: int | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
         input_tokens: int | None = None,
@@ -3931,6 +3979,7 @@ class ProxyService:
                         requested_service_tier=requested_service_tier,
                         actual_service_tier=actual_service_tier,
                         latency_ms=latency_ms,
+                        latency_first_token_ms=latency_first_token_ms,
                         status=status,
                         error_code=error_code,
                         error_message=error_message,
@@ -4301,6 +4350,7 @@ class _WebSocketRequestState:
     reasoning_effort: str | None
     api_key_reservation: ApiKeyUsageReservationData | None
     started_at: float
+    latency_first_token_ms: int | None = None
     request_log_id: str | None = None
     requested_service_tier: str | None = None
     actual_service_tier: str | None = None
@@ -5139,19 +5189,43 @@ def _normalized_http_bridge_instance_ring(settings: object) -> tuple[str, tuple[
                 stripped = entry.strip()
                 if stripped:
                     ring_entries.append(stripped)
-    if instance_id not in ring_entries:
+    if not ring_entries:
         ring_entries.append(instance_id)
     return instance_id, tuple(sorted(set(ring_entries)))
 
 
-def _http_bridge_owner_instance(key: _HTTPBridgeSessionKey, settings: object) -> str | None:
-    instance_id, ring = _normalized_http_bridge_instance_ring(settings)
+async def _active_http_bridge_instance_ring(
+    settings: object,
+    ring_membership: RingMembershipService | None,
+) -> tuple[str, tuple[str, ...]]:
+    instance_id, static_ring = _normalized_http_bridge_instance_ring(settings)
+    if ring_membership is None:
+        return instance_id, static_ring
+    try:
+        active_members = await ring_membership.list_active()
+    except Exception:
+        logger.warning("Bridge ring lookup failed — refusing to fall back to static ring", exc_info=True)
+        raise
+    if not active_members:
+        return instance_id, static_ring
+    normalized_members = tuple(
+        sorted({member.strip() for member in active_members if isinstance(member, str) and member.strip()})
+    )
+    if not normalized_members:
+        return instance_id, static_ring
+    return instance_id, normalized_members
+
+
+async def _http_bridge_owner_instance(
+    key: _HTTPBridgeSessionKey,
+    settings: object,
+    ring_membership: RingMembershipService | None = None,
+) -> str | None:
+    instance_id, ring = await _active_http_bridge_instance_ring(settings, ring_membership)
     if len(ring) <= 1:
         return instance_id
     hash_input = f"{key.affinity_kind}:{key.affinity_key}:{key.api_key_id or ''}"
-    digest = sha256(hash_input.encode("utf-8")).digest()
-    owner_index = int.from_bytes(digest[:8], "big") % len(ring)
-    return ring[owner_index]
+    return select_node(hash_input, ring)
 
 
 def _http_responses_session_bridge_enabled(settings: object) -> bool:

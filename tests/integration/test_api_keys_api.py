@@ -46,10 +46,10 @@ def _make_upstream_model(slug: str, *, supported_in_api: bool = True) -> Upstrea
     )
 
 
-def _populate_test_registry() -> None:
+async def _populate_test_registry() -> None:
     registry = get_model_registry()
     models = [_make_upstream_model(slug) for slug in _TEST_MODELS]
-    registry.update({"plus": models, "pro": models})
+    await registry.update({"plus": models, "pro": models})
 
 
 def _encode_jwt(payload: dict) -> str:
@@ -195,7 +195,7 @@ async def test_api_keys_update_limits(async_client):
 
 @pytest.mark.asyncio
 async def test_api_key_model_restriction_and_models_filter(async_client):
-    _populate_test_registry()
+    await _populate_test_registry()
     model_ids = sorted(_TEST_MODELS)
     assert len(model_ids) >= 2
     allowed_model = model_ids[0]
@@ -251,8 +251,44 @@ async def test_api_key_rejects_enforced_model_outside_allowed_models(async_clien
 
 
 @pytest.mark.asyncio
+async def test_api_key_create_accepts_fast_service_tier_alias(async_client):
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "fast-tier-key",
+            "enforcedServiceTier": "fast",
+        },
+    )
+
+    assert created.status_code == 200
+    assert created.json()["enforcedServiceTier"] == "priority"
+
+
+@pytest.mark.asyncio
+async def test_api_key_update_accepts_fast_service_tier_alias(async_client):
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "fast-tier-update-key",
+        },
+    )
+    assert created.status_code == 200
+    key_id = created.json()["id"]
+
+    updated = await async_client.patch(
+        f"/api/api-keys/{key_id}",
+        json={
+            "enforcedServiceTier": "fast",
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["enforcedServiceTier"] == "priority"
+
+
+@pytest.mark.asyncio
 async def test_api_key_enforces_model_and_reasoning_for_responses(async_client, monkeypatch):
-    _populate_test_registry()
+    await _populate_test_registry()
     model_ids = sorted(_TEST_MODELS)
     forced_model = model_ids[0]
     requested_model = model_ids[1]
@@ -319,14 +355,74 @@ async def test_api_key_enforces_model_and_reasoning_for_responses(async_client, 
         result = await session.execute(select(RequestLog).order_by(RequestLog.requested_at.desc()))
         latest_log = result.scalars().first()
         assert latest_log is not None
-        assert latest_log.model == forced_model
-        assert latest_log.reasoning_effort == "high"
+    assert latest_log.model == forced_model
+    assert latest_log.reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_api_key_enforces_service_tier_for_responses(async_client, monkeypatch):
+    await _populate_test_registry()
+    model_ids = sorted(_TEST_MODELS)
+    forced_model = model_ids[0]
+
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "enforced-service-tier",
+            "allowedModels": [forced_model],
+            "enforcedModel": forced_model,
+            "enforcedServiceTier": "fast",
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    assert created.json()["enforcedServiceTier"] == "priority"
+
+    await _import_account(async_client, "acc_enforced_service_tier", "enforced-service-tier@example.com")
+
+    seen: dict[str, str | None] = {}
+
+    async def fake_stream(payload, _headers, _access_token, _account_id, base_url=None, raise_for_status=False):
+        seen["service_tier"] = payload.service_tier
+        usage = {"input_tokens": 3, "output_tokens": 2}
+        event = {"type": "response.completed", "response": {"id": "resp_enforced_service_tier", "usage": usage}}
+        yield f"data: {json.dumps(event)}\n\n"
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={"Authorization": f"Bearer {key}"},
+        json={
+            "model": forced_model,
+            "instructions": "hi",
+            "input": [],
+            "service_tier": "default",
+            "stream": True,
+        },
+    ) as response:
+        assert response.status_code == 200
+        _ = [line async for line in response.aiter_lines() if line]
+
+    assert seen["service_tier"] == "priority"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/codex/responses/compact", "/v1/responses/compact"])
 async def test_api_key_enforces_model_and_reasoning_for_compact_responses(async_client, monkeypatch, endpoint):
-    _populate_test_registry()
+    await _populate_test_registry()
     model_ids = sorted(_TEST_MODELS)
     forced_model = model_ids[0]
     requested_model = model_ids[1]
@@ -1509,7 +1605,7 @@ async def test_model_scoped_limit_allows_other_models(async_client, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_model_scoped_limit_does_not_block_v1_models(async_client):
-    _populate_test_registry()
+    await _populate_test_registry()
 
     enable = await async_client.put(
         "/api/settings",
@@ -1745,7 +1841,7 @@ async def test_allowed_but_unsupported_model_is_exposed(async_client):
         _make_upstream_model(_TEST_MODELS[0], supported_in_api=True),
         _make_upstream_model(_HIDDEN_MODEL, supported_in_api=False),
     ]
-    registry.update({"plus": models, "pro": models})
+    await registry.update({"plus": models, "pro": models})
 
     enable = await async_client.put(
         "/api/settings",

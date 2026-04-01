@@ -29,18 +29,18 @@ def _make_upstream_model(slug: str, *, supported_in_api: bool = True) -> Upstrea
     )
 
 
-def _populate_test_registry() -> None:
+async def _populate_test_registry() -> None:
     registry = get_model_registry()
     models = [
         _make_upstream_model("gpt-5.2"),
         _make_upstream_model("gpt-5.3-codex"),
     ]
-    registry.update({"plus": models, "pro": models})
+    await registry.update({"plus": models, "pro": models})
 
 
 @pytest.mark.asyncio
 async def test_v1_models_list(async_client):
-    _populate_test_registry()
+    await _populate_test_registry()
     resp = await async_client.get("/v1/models")
     assert resp.status_code == 200
     payload = resp.json()
@@ -75,7 +75,7 @@ async def test_v1_models_includes_supported_in_api_false_models(async_client):
         _make_upstream_model("gpt-5.3-codex"),
         _make_upstream_model("gpt-hidden", supported_in_api=False),
     ]
-    registry.update({"plus": models, "pro": models})
+    await registry.update({"plus": models, "pro": models})
 
     resp = await async_client.get("/v1/models")
     assert resp.status_code == 200
@@ -91,7 +91,7 @@ async def test_backend_codex_models_include_supported_in_api_false_models(async_
         _make_upstream_model("gpt-5.3-codex"),
         _make_upstream_model("gpt-hidden", supported_in_api=False),
     ]
-    registry.update({"plus": models, "pro": models})
+    await registry.update({"plus": models, "pro": models})
 
     resp = await async_client.get("/backend-api/codex/models")
     assert resp.status_code == 200
@@ -107,7 +107,7 @@ async def test_model_sets_are_consistent_across_api_endpoints(async_client):
         _make_upstream_model("gpt-5.3-codex"),
         _make_upstream_model("gpt-hidden", supported_in_api=False),
     ]
-    registry.update({"plus": models, "pro": models})
+    await registry.update({"plus": models, "pro": models})
 
     dashboard = await async_client.get("/api/models")
     v1 = await async_client.get("/v1/models")

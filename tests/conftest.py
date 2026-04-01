@@ -106,3 +106,45 @@ def _reset_codex_version_cache():
     yield
     cache._cached_version = None
     cache._cached_at = 0.0
+
+
+def _reset_global_state() -> None:
+    """Reset global singletons that leak between tests."""
+    try:
+        from app.core.auth.api_key_cache import get_api_key_cache
+
+        get_api_key_cache().clear()
+    except Exception:
+        pass
+    try:
+        from app.core.middleware.firewall_cache import get_firewall_ip_cache as get_firewall_cache
+
+        get_firewall_cache().invalidate_all()
+    except Exception:
+        pass
+    try:
+        from app.modules.proxy.account_cache import get_account_selection_cache
+
+        get_account_selection_cache().invalidate()
+    except Exception:
+        pass
+    try:
+        from app.core.resilience.degradation import set_normal
+
+        set_normal()
+    except Exception:
+        pass
+    try:
+        from app.core.shutdown import set_bridge_drain_active
+
+        set_bridge_drain_active(False)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_hot_path_caches():
+    """Reset T20 hot-path caches between tests to prevent state leakage."""
+    _reset_global_state()
+    yield
+    _reset_global_state()

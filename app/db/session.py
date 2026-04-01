@@ -10,7 +10,7 @@ import anyio
 from anyio import to_thread
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config.settings import get_settings
 from app.db.sqlite_utils import SqliteIntegrityCheckMode, check_sqlite_integrity, sqlite_db_path_from_url
@@ -76,6 +76,9 @@ else:
     )
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+_background_engine: AsyncEngine | None = None
+_background_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 _T = TypeVar("_T")
 
@@ -148,10 +151,54 @@ def _load_sqlite_backup_creator() -> _SqliteBackupCreator:
     return create_sqlite_pre_migration_backup
 
 
+def init_background_db(url: str | None = None) -> None:
+    """Initialize separate DB pool for background tasks (smaller pool).
+
+    Args:
+        url: Database URL. If None, uses settings.database_url.
+    """
+    global _background_engine, _background_session_factory
+    db_url = url or _settings.database_url
+
+    if _is_sqlite_url(db_url):
+        is_sqlite_memory = _is_sqlite_memory_url(db_url)
+        if is_sqlite_memory:
+            # Reuse the main engine for in-memory SQLite — creating a second
+            # engine would open a separate, empty in-memory database with no
+            # schema, causing "no such table" errors in background tasks.
+            _background_engine = engine
+            _background_session_factory = SessionLocal
+            return
+        else:
+            _background_engine = create_async_engine(
+                db_url,
+                echo=False,
+                pool_size=3,
+                max_overflow=2,
+                pool_timeout=_settings.database_pool_timeout_seconds,
+                connect_args={"timeout": _SQLITE_BUSY_TIMEOUT_SECONDS},
+            )
+        _configure_sqlite_engine(_background_engine.sync_engine, enable_wal=not is_sqlite_memory)
+    else:
+        _background_engine = create_async_engine(
+            db_url,
+            echo=False,
+            pool_size=3,
+            max_overflow=2,
+            pool_timeout=_settings.database_pool_timeout_seconds,
+        )
+
+    _background_session_factory = async_sessionmaker(_background_engine, expire_on_commit=False, class_=AsyncSession)
+
+
 @asynccontextmanager
 async def get_background_session() -> AsyncIterator[AsyncSession]:
-    """Session provider for background tasks, schedulers, and auth dependencies."""
-    session = SessionLocal()
+    """Session provider for background tasks, schedulers, and auth dependencies.
+
+    Uses the separate background pool if initialized, otherwise falls back to main pool.
+    """
+    factory = _background_session_factory or SessionLocal
+    session = factory()
     try:
         yield session
     except BaseException:
@@ -207,10 +254,6 @@ async def init_db() -> None:
                     )
                 raise RuntimeError(message)
 
-    if not _settings.database_migrate_on_startup:
-        logger.info("Startup database migration is disabled")
-        return
-
     try:
         inspect_migration_state, run_startup_migrations, check_schema_drift = _load_migration_entrypoints()
     except ModuleNotFoundError as exc:
@@ -221,6 +264,23 @@ async def init_db() -> None:
     except ImportError as exc:
         logger.exception("Failed to import database migration entrypoints from app.db.migrate")
         raise RuntimeError("Database migration entrypoint app.db.migrate is invalid") from exc
+
+    if not _settings.database_migrate_on_startup:
+        migration_state = await to_thread.run_sync(
+            lambda: inspect_migration_state(_settings.database_url),
+        )
+        if migration_state.needs_upgrade:
+            current_revision = migration_state.current_revision or "none"
+            message = (
+                "Startup database migration is disabled but database schema is behind Alembic head "
+                f"(current={current_revision}, head={migration_state.head_revision}). "
+                "Run the dedicated migration job or `python -m app.db.migrate upgrade` before starting the app."
+            )
+            logger.error(message)
+            raise RuntimeError(message)
+
+        logger.info("Startup database migration is disabled and database schema is current")
+        return
 
     if sqlite_path is not None and _settings.database_sqlite_pre_migrate_backup_enabled and sqlite_path.exists():
         migration_state = await to_thread.run_sync(
@@ -269,3 +329,5 @@ async def init_db() -> None:
 
 async def close_db() -> None:
     await engine.dispose()
+    if _background_engine is not None:
+        await _background_engine.dispose()

@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Protocol
 
+from app.core.auth.api_key_cache import get_api_key_cache
+from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
 from app.core.usage.pricing import (
     UsageTokens,
     calculate_cost_from_usage,
@@ -224,11 +226,11 @@ class ApiKeyData:
     allowed_models: list[str] | None
     enforced_model: str | None
     enforced_reasoning_effort: str | None
+    enforced_service_tier: str | None
     expires_at: datetime | None
     is_active: bool
     created_at: datetime
     last_used_at: datetime | None
-    enforced_service_tier: str | None = None
     limits: list[LimitRuleData] = field(default_factory=list)
     usage_summary: "ApiKeyUsageSummaryData | None" = None
 
@@ -373,17 +375,29 @@ class ApiKeysService:
             if row is None:
                 raise ApiKeyNotFoundError(f"API key not found: {key_id}")
 
+        await get_api_key_cache().invalidate(row.key_hash)
+        poller = get_cache_invalidation_poller()
+        if poller is not None:
+            await poller.bump(NAMESPACE_API_KEY)
         return _to_api_key_data(row)
 
     async def delete_key(self, key_id: str) -> None:
+        row = await self._repository.get_by_id(key_id)
+        if row is None:
+            raise ApiKeyNotFoundError(f"API key not found: {key_id}")
         deleted = await self._repository.delete(key_id)
         if not deleted:
             raise ApiKeyNotFoundError(f"API key not found: {key_id}")
+        await get_api_key_cache().invalidate(row.key_hash)
+        poller = get_cache_invalidation_poller()
+        if poller is not None:
+            await poller.bump(NAMESPACE_API_KEY)
 
     async def regenerate_key(self, key_id: str) -> ApiKeyCreatedData:
         row = await self._repository.get_by_id(key_id)
         if row is None:
             raise ApiKeyNotFoundError(f"API key not found: {key_id}")
+        old_key_hash = row.key_hash
         plain_key = _generate_plain_key()
         updated = await self._repository.update(
             key_id,
@@ -392,6 +406,10 @@ class ApiKeysService:
         )
         if updated is None:
             raise ApiKeyNotFoundError(f"API key not found: {key_id}")
+        await get_api_key_cache().invalidate(old_key_hash)
+        poller = get_cache_invalidation_poller()
+        if poller is not None:
+            await poller.bump(NAMESPACE_API_KEY)
         return _to_created_data(_to_api_key_data(updated), plain_key)
 
     async def validate_key(self, plain_key: str) -> ApiKeyData:
@@ -754,6 +772,7 @@ def _normalize_model_slug(value: str | None) -> str | None:
 
 
 _SUPPORTED_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+_SUPPORTED_SERVICE_TIERS = frozenset({"auto", "default", "priority", "flex"})
 
 
 def _normalize_expires_at(value: datetime | None) -> datetime | None:
@@ -785,9 +804,6 @@ def _normalize_reasoning_effort_lenient(value: str | None) -> str | None:
     return None
 
 
-_SUPPORTED_SERVICE_TIERS = frozenset({"auto", "default", "priority", "flex"})
-
-
 def _normalize_service_tier(value: str | None) -> str | None:
     if value is None:
         return None
@@ -797,7 +813,7 @@ def _normalize_service_tier(value: str | None) -> str | None:
     if normalized == "fast":
         normalized = "priority"
     if normalized not in _SUPPORTED_SERVICE_TIERS:
-        options = ", ".join(sorted(_SUPPORTED_SERVICE_TIERS))
+        options = ", ".join(sorted(_SUPPORTED_SERVICE_TIERS | {"fast"}))
         raise ValueError(f"Unsupported enforced service tier '{normalized}'. Expected one of: {options}")
     return normalized
 
@@ -809,7 +825,7 @@ def _normalize_service_tier_lenient(value: str | None) -> str | None:
     if not normalized:
         return None
     if normalized == "fast":
-        normalized = "priority"
+        return "priority"
     if normalized in _SUPPORTED_SERVICE_TIERS:
         return normalized
     return None

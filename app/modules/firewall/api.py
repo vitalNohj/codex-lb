@@ -3,7 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.cache.invalidation import NAMESPACE_FIREWALL, get_cache_invalidation_poller
 from app.core.exceptions import DashboardBadRequestError, DashboardConflictError, DashboardNotFoundError
+from app.core.middleware.firewall_cache import get_firewall_ip_cache
 from app.dependencies import FirewallContext, get_firewall_context
 from app.modules.firewall.schemas import (
     FirewallDeleteResponse,
@@ -44,6 +46,10 @@ async def add_firewall_ip(
         raise DashboardBadRequestError(str(exc), code="invalid_ip") from exc
     except FirewallIpAlreadyExistsError as exc:
         raise DashboardConflictError(str(exc), code="ip_exists") from exc
+    get_firewall_ip_cache().invalidate_all()
+    poller = get_cache_invalidation_poller()
+    if poller is not None:
+        await poller.bump(NAMESPACE_FIREWALL)
     return FirewallIpEntry(ip_address=created.ip_address, created_at=created.created_at)
 
 
@@ -58,4 +64,8 @@ async def delete_firewall_ip(
         raise DashboardBadRequestError(str(exc), code="invalid_ip") from exc
     if not deleted:
         raise DashboardNotFoundError("IP address not found", code="ip_not_found")
+    get_firewall_ip_cache().invalidate_all()
+    poller = get_cache_invalidation_poller()
+    if poller is not None:
+        await poller.bump(NAMESPACE_FIREWALL)
     return FirewallDeleteResponse(status="deleted")

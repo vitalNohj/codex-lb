@@ -56,6 +56,17 @@ dependencies = [
     "zstandard>=0.25.0",
 ]
 
+[project.optional-dependencies]
+metrics = ["prometheus-client>=0.20"]
+tracing = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp>=1.25",
+    "opentelemetry-instrumentation-fastapi>=0.46",
+    "opentelemetry-instrumentation-aiohttp-client>=0.46",
+    "opentelemetry-instrumentation-sqlalchemy>=0.46",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",
@@ -73,10 +84,16 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
+    "e2e: end-to-end flow tests",
     "integration: tests that exercise multiple layers together",
     "unit: fast isolated tests",
 ]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:sqlalchemy",
+    "ignore::DeprecationWarning:aiosqlite",
+    "ignore::ResourceWarning",
+]
 
 [tool.ruff]
 line-length = 120
