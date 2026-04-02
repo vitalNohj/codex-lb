@@ -239,7 +239,9 @@ jobs:
           helm package deploy/helm/codex-lb/ -d .helm-pkg/
 
       - name: Push Helm chart to GHCR
-        run: helm push .helm-pkg/codex-lb-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          helm push .helm-pkg/codex-lb-*.tgz "oci://ghcr.io/${OWNER_LC}/charts"
 
   create-github-release:
     name: Create GitHub Release
