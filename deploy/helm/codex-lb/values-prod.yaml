@@ -1,5 +1,8 @@
 # Production environment — based on the external secrets install mode with HA, observability, and hardened defaults.
 replicaCount: 3
+
+postgresql:
+  enabled: false
 autoscaling:
   enabled: true
   minReplicas: 3
