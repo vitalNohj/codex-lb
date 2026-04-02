@@ -131,7 +131,7 @@ config:
   # @param config.circuitBreakerRecoveryTimeoutSeconds Seconds before half-open state
   circuitBreakerRecoveryTimeoutSeconds: 60
   # @param config.backpressureMaxConcurrentRequests Max concurrent in-flight requests
-  backpressureMaxConcurrentRequests: 500
+  backpressureMaxConcurrentRequests: 200
   # @param config.shutdownDrainTimeoutSeconds Graceful shutdown drain timeout
   shutdownDrainTimeoutSeconds: 30
   # @param config.httpConnectorLimit Global HTTP connection pool limit
@@ -248,7 +248,7 @@ ingress:
     enabled: false
     # @param ingress.nginx.upstreamHashBy nginx upstream-hash-by annotation value. Empty = disabled.
     #        Set to "$http_authorization" for consistent hash routing by API key.
-    upstreamHashBy: ""
+    upstreamHashBy: "$http_authorization"
     # @param ingress.nginx.upstreamHashBySubset Enable subset mode for upstream-hash-by
     upstreamHashBySubset: false
     # @param ingress.nginx.upstreamHashBySubsetSize Subset size when subset mode is enabled
