@@ -320,6 +320,7 @@ jobs:
             echo '```bash'
             echo 'uvx codex-lb'
             echo "docker pull ghcr.io/${GITHUB_REPOSITORY}:${TAG_VERSION}"
+            echo "helm install codex-lb oci://ghcr.io/soju06/charts/codex-lb --version ${TAG_VERSION}"
             echo '```'
           } >> release_notes.md
 
