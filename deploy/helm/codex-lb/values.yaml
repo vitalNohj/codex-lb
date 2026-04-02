@@ -138,8 +138,28 @@ config:
   httpConnectorLimit: 100
   # @param config.httpConnectorLimitPerHost Per-host HTTP connection pool limit
   httpConnectorLimitPerHost: 50
+  # @param config.cacheAffinityMaxAgeSeconds TTL for prompt cache sticky sessions (account affinity)
+  cacheAffinityMaxAgeSeconds: 1800
+  # @param config.promptCacheKeyDerivationEnabled Auto-derive prompt cache keys when client omits them
+  promptCacheKeyDerivationEnabled: true
+  # @param config.sessionBridgeEnabled Enable in-memory upstream WebSocket session reuse
+  sessionBridgeEnabled: true
+  # @param config.sessionBridgeIdleTtlSeconds Idle TTL for general API session bridge sessions
+  sessionBridgeIdleTtlSeconds: 120
+  # @param config.sessionBridgeCodexIdleTtlSeconds Idle TTL for Codex session bridge sessions
+  sessionBridgeCodexIdleTtlSeconds: 900
+  # @param config.sessionBridgeCodexPrewarmEnabled Proactively open upstream WebSocket for Codex sessions
+  sessionBridgeCodexPrewarmEnabled: true
+  # @param config.sessionBridgeMaxSessions Max in-memory bridge sessions per pod
+  sessionBridgeMaxSessions: 256
+  # @param config.sessionBridgeQueueLimit Max pending requests per bridge session
+  sessionBridgeQueueLimit: 8
   # @param config.sessionBridgeInstanceRing Comma-separated pod hostnames for session routing
   sessionBridgeInstanceRing: ""
+  # @param config.stickySessionCleanupEnabled Enable periodic cleanup of stale sticky sessions
+  stickySessionCleanupEnabled: true
+  # @param config.stickySessionCleanupIntervalSeconds Interval between sticky session cleanup runs
+  stickySessionCleanupIntervalSeconds: 300
 
 # @section Authentication parameters
 auth:
