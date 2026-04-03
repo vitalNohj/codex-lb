@@ -36,6 +36,10 @@ spec:
         - name: {{ . }}
         {{- end }}
       {{- end }}
+      {{- with (include "codex-lb.globalNodeSelector" .) }}
+      nodeSelector:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- if .Values.postgresql.enabled }}
       initContainers:
          - name: wait-for-db

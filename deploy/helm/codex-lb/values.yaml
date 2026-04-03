@@ -6,6 +6,8 @@ global:
   imagePullSecrets: []
   # @param global.storageClass Global storage class for PVCs
   storageClass: ""
+  # @param global.nodeSelector Node selector labels applied to ALL pods (deployment, jobs, tests)
+  nodeSelector: {}
 
 # @section Common parameters
 # @param nameOverride Override the chart name
@@ -231,6 +233,21 @@ tolerations: []
 # @param priorityClassName Pod priority class name
 priorityClassName: ""
 
+# @section Service parameters
+service:
+  # @param service.type Kubernetes Service type (ClusterIP, NodePort, LoadBalancer)
+  type: ClusterIP
+  # @param service.port Service port
+  port: 2455
+  # @param service.nodePort NodePort number (only when type is NodePort)
+  nodePort: ""
+  # @param service.loadBalancerIP Static IP for LoadBalancer type
+  loadBalancerIP: ""
+  # @param service.loadBalancerSourceRanges Allowed source ranges for LoadBalancer
+  loadBalancerSourceRanges: []
+  # @param service.annotations Additional annotations for the Service
+  annotations: {}
+
 # @section Network parameters
 networkPolicy:
   # @param networkPolicy.enabled Enable NetworkPolicy with default-deny + whitelist
@@ -372,6 +389,28 @@ externalDatabase:
   user: codexlb
   # @param externalDatabase.existingSecret Existing Secret with key "password" for the external database
   existingSecret: ""
+
+# @section Database initialization parameters
+dbInit:
+  # @param dbInit.enabled Enable pre-install Job to create databases/users on external PostgreSQL
+  enabled: false
+  # @param dbInit.host External PostgreSQL host
+  host: ""
+  # @param dbInit.port External PostgreSQL port
+  port: "5432"
+  # @param dbInit.adminUser Admin username for creating databases/users
+  adminUser: "adminuser"
+  # @param dbInit.adminPassword Admin password (use adminPasswordSecret for production)
+  adminPassword: ""
+  # @param dbInit.adminPasswordSecret Reference to existing Secret for admin password
+  adminPasswordSecret: {}
+  #   name: pg-admin-secret
+  #   key: password
+  # @param dbInit.databases List of databases and users to create
+  databases:
+    - name: codexlb
+      user: codexlb
+      password: changeme
 
 # @section Migration parameters
 migration:
