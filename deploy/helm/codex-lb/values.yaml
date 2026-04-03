@@ -295,6 +295,13 @@ metrics:
   port: 9090
   serviceMonitor:
     # @param metrics.serviceMonitor.enabled Create a ServiceMonitor for Prometheus Operator
+    # Defaults to false because it requires the Prometheus Operator CRDs to be installed.
+    # Enable this when running kube-prometheus-stack or standalone Prometheus Operator.
+    # Without ServiceMonitor, configure prometheus.io annotations for scraping:
+    #   commonAnnotations:
+    #     prometheus.io/scrape: "true"
+    #     prometheus.io/port: "9090"
+    #     prometheus.io/path: "/metrics"
     enabled: false
     # @param metrics.serviceMonitor.interval Metrics scrape interval
     interval: 30s
@@ -306,6 +313,8 @@ metrics:
     relabelings: []
   prometheusRule:
     # @param metrics.prometheusRule.enabled Create PrometheusRule for alerting
+    # Requires Prometheus Operator. Includes alerts for: high error rate, circuit breaker open,
+    # all accounts exhausted, high request latency. See templates/prometheusrule.yaml for details.
     enabled: false
     # @param metrics.prometheusRule.additionalLabels Additional labels for PrometheusRule
     additionalLabels: {}
@@ -342,9 +351,18 @@ postgresql:
       # @param postgresql.primary.persistence.size PostgreSQL PVC size
       size: 8Gi
 externalDatabase:
-  # @param externalDatabase.url Full external database URL (postgresql+asyncpg://...)
+  # @param externalDatabase.url Full external database URL (postgresql+asyncpg://user:pass@host:5432/db?sslmode=require)
+  # For production, use auth.existingSecret instead of passing the URL directly.
+  # When auth.existingSecret is set, create a Secret with key "database-url" containing the full URL
+  # and key "encryption-key" containing a 32-byte Fernet key.
+  #
+  # Example:
+  #   kubectl create secret generic codex-lb-secrets \
+  #     --from-literal=database-url="postgresql+asyncpg://user:pass@host:5432/db?sslmode=require" \
+  #     --from-literal=encryption-key="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+  #   Then set: auth.existingSecret: "codex-lb-secrets"
   url: ""
-  # @param externalDatabase.host External database host (used if url is empty)
+  # @param externalDatabase.host External database host (used to build URL when externalDatabase.url is empty)
   host: ""
   # @param externalDatabase.port External database port
   port: 5432
@@ -352,7 +370,7 @@ externalDatabase:
   database: codexlb
   # @param externalDatabase.user External database username
   user: codexlb
-  # @param externalDatabase.existingSecret Secret containing external DB credentials
+  # @param externalDatabase.existingSecret Existing Secret with key "password" for the external database
   existingSecret: ""
 
 # @section Migration parameters
