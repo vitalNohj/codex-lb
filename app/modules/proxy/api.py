@@ -69,6 +69,8 @@ from app.modules.proxy.request_policy import (
     validate_model_access,
 )
 from app.modules.proxy.schemas import (
+    CodexModelEntry,
+    CodexModelsResponse,
     ModelListItem,
     ModelListResponse,
     ModelMetadata,
@@ -239,11 +241,11 @@ async def v1_responses_websocket(
     )
 
 
-@router.get("/models", response_model=ModelListResponse)
+@router.get("/models", response_model=CodexModelsResponse)
 async def models(
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
-    return await _build_models_response(api_key)
+    return await _build_codex_models_response(api_key)
 
 
 @v1_router.get("/models", response_model=ModelListResponse)
@@ -442,6 +444,31 @@ async def v1_audio_transcriptions(
     )
 
 
+async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=None,
+        request_service_tier=None,
+    )
+
+    allowed_models = _allowed_models_for_api_key(api_key)
+
+    registry = get_model_registry()
+    models = registry.get_models_with_fallback()
+
+    if not models:
+        await _release_reservation(reservation)
+        return JSONResponse(content=CodexModelsResponse(models=[]).model_dump(mode="json"))
+
+    entries: list[CodexModelEntry] = []
+    for slug, model in models.items():
+        if not is_public_model(model, allowed_models):
+            continue
+        entries.append(_to_codex_model_entry(model))
+    await _release_reservation(reservation)
+    return JSONResponse(content=CodexModelsResponse(models=entries).model_dump(mode="json"))
+
+
 async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     reservation = await _enforce_request_limits(
         api_key,
@@ -449,10 +476,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         request_service_tier=None,
     )
 
-    allowed_models = set(api_key.allowed_models) if api_key and api_key.allowed_models else None
-    if api_key and api_key.enforced_model:
-        forced = {api_key.enforced_model}
-        allowed_models = forced if allowed_models is None else (allowed_models & forced)
+    allowed_models = _allowed_models_for_api_key(api_key)
     created = int(time.time())
 
     registry = get_model_registry()
@@ -476,6 +500,73 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         )
     await _release_reservation(reservation)
     return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
+
+
+def _allowed_models_for_api_key(api_key: ApiKeyData | None) -> set[str] | None:
+    allowed_models = set(api_key.allowed_models) if api_key and api_key.allowed_models else None
+    if api_key and api_key.enforced_model:
+        forced = {api_key.enforced_model}
+        return forced if allowed_models is None else (allowed_models & forced)
+    return allowed_models
+
+
+def _to_codex_model_entry(model: UpstreamModel) -> CodexModelEntry:
+    raw = model.raw
+
+    extra: dict[str, JsonValue] = {}
+    skip_keys = {
+        "slug",
+        "display_name",
+        "description",
+        "base_instructions",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+        "supported_in_api",
+        "priority",
+        "minimal_client_version",
+        "supports_reasoning_summaries",
+        "support_verbosity",
+        "default_verbosity",
+        "supports_parallel_tool_calls",
+        "context_window",
+        "input_modalities",
+        "available_in_plans",
+        "prefer_websockets",
+        "visibility",
+    }
+    for key, value in raw.items():
+        if key not in skip_keys and isinstance(value, (bool, int, float, str, type(None), list, Mapping)):
+            extra[key] = value
+
+    return CodexModelEntry(
+        slug=model.slug,
+        display_name=model.display_name,
+        description=model.description,
+        base_instructions=model.base_instructions,
+        default_reasoning_level=model.default_reasoning_level,
+        supported_reasoning_levels=[
+            ReasoningLevelSchema(effort=rl.effort, description=rl.description)
+            for rl in model.supported_reasoning_levels
+        ],
+        supported_in_api=model.supported_in_api,
+        priority=model.priority,
+        minimal_client_version=model.minimal_client_version,
+        supports_reasoning_summaries=model.supports_reasoning_summaries,
+        support_verbosity=model.support_verbosity,
+        default_verbosity=model.default_verbosity,
+        supports_parallel_tool_calls=model.supports_parallel_tool_calls,
+        context_window=model.context_window,
+        input_modalities=list(model.input_modalities),
+        available_in_plans=sorted(model.available_in_plans),
+        prefer_websockets=model.prefer_websockets,
+        visibility=_model_visibility(model),
+        **extra,
+    )
+
+
+def _model_visibility(model: UpstreamModel) -> str:
+    visibility = model.raw.get("visibility")
+    return visibility if isinstance(visibility, str) else "list"
 
 
 def _to_model_metadata(model: UpstreamModel) -> ModelMetadata:
