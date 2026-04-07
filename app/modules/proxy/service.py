@@ -470,6 +470,7 @@ class ProxyService:
                     deadline,
                     request_id=request_id,
                     kind="compact",
+                    api_key=api_key,
                     sticky_key=affinity.key,
                     sticky_kind=affinity.kind,
                     reallocate_sticky=affinity.reallocate_sticky,
@@ -736,6 +737,7 @@ class ProxyService:
                 deadline,
                 request_id=request_id,
                 kind="transcribe",
+                api_key=api_key,
                 prefer_earlier_reset_accounts=prefer_earlier_reset,
                 routing_strategy=routing_strategy,
                 model=None,
@@ -1244,6 +1246,7 @@ class ProxyService:
                 deadline,
                 request_id=request_state.request_log_id or request_state.request_id,
                 kind="websocket",
+                api_key=api_key,
                 sticky_key=sticky_key,
                 sticky_kind=sticky_kind,
                 reallocate_sticky=reallocate_sticky,
@@ -1508,6 +1511,7 @@ class ProxyService:
             capacity_wait_future: asyncio.Future[_HTTPBridgeSession] | None = None
             owns_creation = False
             continuity_error: ProxyResponseError | None = None
+            owner_mismatch_error: ProxyResponseError | None = None
 
             async with self._http_bridge_lock:
                 if incoming_turn_state is not None:
@@ -1562,7 +1566,13 @@ class ProxyService:
                 await self._prune_http_bridge_sessions_locked()
 
                 existing = self._http_bridge_sessions.get(key)
-                if existing is not None and not existing.closed and existing.account.status == AccountStatus.ACTIVE:
+                if (
+                    existing is not None
+                    and not existing.closed
+                    and existing.account.status == AccountStatus.ACTIVE
+                    and _http_bridge_session_allows_api_key(existing, api_key)
+                ):
+                    existing.api_key = api_key
                     existing.request_model = request_model
                     existing.last_used_at = time.monotonic()
                     _log_http_bridge_event(
@@ -1575,6 +1585,13 @@ class ProxyService:
                         model_class=_extract_model_class(existing.request_model) if existing.request_model else None,
                     )
                     return existing
+                if existing is not None and not existing.closed and existing.account.status == AccountStatus.ACTIVE:
+                    old_account_id = existing.account.id
+                    self._http_bridge_sessions.pop(key, None)
+                    self._unregister_http_bridge_turn_states_locked(existing)
+                    existing.closed = True
+                    sessions_to_close.append(existing)
+                    existing = None
 
                 if shutdown_state.is_bridge_drain_active():
                     raise ProxyResponseError(
@@ -1610,7 +1627,7 @@ class ProxyService:
                             )
                             if PROMETHEUS_AVAILABLE and bridge_instance_mismatch_total is not None:
                                 bridge_instance_mismatch_total.labels(outcome="retry").inc()
-                            raise ProxyResponseError(
+                            owner_mismatch_error = ProxyResponseError(
                                 409,
                                 openai_error(
                                     "bridge_instance_mismatch",
@@ -1653,20 +1670,20 @@ class ProxyService:
                     self._http_bridge_sessions.pop(key, None)
                     sessions_to_close.append(existing)
 
-                inflight_future = self._http_bridge_inflight_sessions.get(key)
-                if previous_response_id is not None:
-                    continuity_error = ProxyResponseError(
-                        400,
-                        _http_bridge_previous_response_error_envelope(
-                            previous_response_id,
-                            (
-                                "HTTP bridge continuity was lost. Replay x-codex-turn-state "
-                                "or retry with a stable prompt_cache_key."
+                if owner_mismatch_error is None:
+                    inflight_future = self._http_bridge_inflight_sessions.get(key)
+                    if previous_response_id is not None:
+                        continuity_error = ProxyResponseError(
+                            400,
+                            _http_bridge_previous_response_error_envelope(
+                                previous_response_id,
+                                (
+                                    "HTTP bridge continuity was lost. Replay x-codex-turn-state "
+                                    "or retry with a stable prompt_cache_key."
+                                ),
                             ),
-                        ),
-                    )
-                else:
-                    if inflight_future is None:
+                        )
+                    elif inflight_future is None:
                         while (
                             len(self._http_bridge_sessions) + len(self._http_bridge_inflight_sessions) >= max_sessions
                             and self._http_bridge_sessions
@@ -1726,6 +1743,9 @@ class ProxyService:
             for stale_session in sessions_to_close:
                 await self._close_http_bridge_session(stale_session)
 
+            if owner_mismatch_error is not None:
+                raise owner_mismatch_error
+
             if continuity_error is not None:
                 raise continuity_error
 
@@ -1751,10 +1771,23 @@ class ProxyService:
                     continue
                 if session is None:
                     continue
-                if not session.closed and session.account.status == AccountStatus.ACTIVE:
+                if (
+                    not session.closed
+                    and session.account.status == AccountStatus.ACTIVE
+                    and _http_bridge_session_allows_api_key(session, api_key)
+                ):
+                    session.api_key = api_key
                     session.request_model = request_model
                     session.last_used_at = time.monotonic()
                     return session
+                if not session.closed and session.account.status == AccountStatus.ACTIVE:
+                    old_account_id = session.account.id
+                    async with self._http_bridge_lock:
+                        if self._http_bridge_sessions.get(key) is session:
+                            self._http_bridge_sessions.pop(key, None)
+                        self._unregister_http_bridge_turn_states_locked(session)
+                    session.closed = True
+                    await self._close_http_bridge_session(session)
                 continue
 
             created_session: _HTTPBridgeSession | None = None
@@ -1764,6 +1797,7 @@ class ProxyService:
                     key,
                     headers=headers,
                     affinity=affinity,
+                    api_key=api_key,
                     request_model=request_model,
                     idle_ttl_seconds=effective_idle_ttl_seconds,
                 )
@@ -1923,6 +1957,7 @@ class ProxyService:
         *,
         headers: dict[str, str],
         affinity: _AffinityPolicy,
+        api_key: ApiKeyData | None,
         request_model: str | None,
         idle_ttl_seconds: float,
     ) -> "_HTTPBridgeSession":
@@ -1941,6 +1976,7 @@ class ProxyService:
             deadline,
             request_id=request_state.request_log_id or request_state.request_id,
             kind="http_bridge",
+            api_key=api_key,
             sticky_key=affinity.key,
             sticky_kind=affinity.kind,
             reallocate_sticky=affinity.reallocate_sticky,
@@ -1985,6 +2021,7 @@ class ProxyService:
             key=key,
             headers=connect_headers,
             affinity=affinity,
+            api_key=api_key,
             request_model=request_model,
             account=account,
             upstream=upstream,
@@ -2416,10 +2453,12 @@ class ProxyService:
 
         deadline = _websocket_connect_deadline(request_state, get_settings().proxy_request_budget_seconds)
         settings = await get_settings_cache().get()
+        session.api_key = request_state.api_key
         selection = await self._select_account_with_budget(
             deadline,
             request_id=request_state.request_log_id or request_state.request_id,
             kind="http_bridge",
+            api_key=session.api_key,
             sticky_key=session.affinity.key,
             sticky_kind=session.affinity.kind,
             reallocate_sticky=session.affinity.reallocate_sticky,
@@ -3370,6 +3409,7 @@ class ProxyService:
                         deadline,
                         request_id=request_id,
                         kind="stream",
+                        api_key=api_key,
                         sticky_key=affinity.key,
                         sticky_kind=affinity.kind,
                         reallocate_sticky=affinity.reallocate_sticky,
@@ -4334,6 +4374,7 @@ class ProxyService:
         *,
         request_id: str,
         kind: str,
+        api_key: ApiKeyData | None = None,
         sticky_key: str | None = None,
         sticky_kind: StickySessionKind | None = None,
         reallocate_sticky: bool = False,
@@ -4362,6 +4403,11 @@ class ProxyService:
                     routing_strategy=routing_strategy,
                     model=model,
                     additional_limit_name=additional_limit_name,
+                    account_ids=(
+                        api_key.assigned_account_ids
+                        if api_key is not None and api_key.account_assignment_scope_enabled
+                        else None
+                    ),
                     exclude_account_ids=exclude_account_ids,
                     budget_threshold_pct=settings.sticky_reallocation_budget_threshold_pct,
                 )
@@ -4532,6 +4578,7 @@ class _HTTPBridgeSession:
     queued_request_count: int
     last_used_at: float
     idle_ttl_seconds: float
+    api_key: ApiKeyData | None = None
     codex_session: bool = False
     prewarmed: bool = False
     prewarm_lock: anyio.Lock | None = None
@@ -5163,6 +5210,12 @@ def _preferred_http_bridge_reconnect_turn_state(session: "_HTTPBridgeSession") -
 
 def _http_bridge_turn_state_alias_key(turn_state: str, api_key_id: str | None) -> tuple[str, str | None]:
     return (turn_state, api_key_id)
+
+
+def _http_bridge_session_allows_api_key(session: "_HTTPBridgeSession", api_key: ApiKeyData | None) -> bool:
+    if api_key is None or not api_key.account_assignment_scope_enabled:
+        return True
+    return session.account.id in api_key.assigned_account_ids
 
 
 def _resolve_prompt_cache_key(
