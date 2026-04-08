@@ -6,6 +6,7 @@ import {
   buildDashboardView,
   buildDepletionView,
   buildRemainingItems,
+  sumRemaining,
   type RemainingItem,
 } from "@/features/dashboard/utils";
 import { createDashboardOverview, createDefaultRequestLogs } from "@/test/mocks/factories";
@@ -258,6 +259,36 @@ describe("buildRemainingItems", () => {
     expect(items[2].label).toBe("unique@example.com");
     expect(items[2].labelSuffix).toBe("");
     expect(items[2].isEmail).toBe(true);
+  });
+});
+
+describe("sumRemaining", () => {
+  it("returns 0 for empty array", () => {
+    expect(sumRemaining([])).toBe(0);
+  });
+
+  it("sums positive values", () => {
+    const items = [
+      remainingItem({ accountId: "a", value: 120 }),
+      remainingItem({ accountId: "b", value: 80 }),
+    ];
+    expect(sumRemaining(items)).toBe(200);
+  });
+
+  it("clamps negative values to 0 before summing", () => {
+    const items = [
+      remainingItem({ accountId: "a", value: 100 }),
+      remainingItem({ accountId: "b", value: -30 }),
+    ];
+    expect(sumRemaining(items)).toBe(100);
+  });
+
+  it("returns 0 when all values are negative", () => {
+    const items = [
+      remainingItem({ accountId: "a", value: -10 }),
+      remainingItem({ accountId: "b", value: -20 }),
+    ];
+    expect(sumRemaining(items)).toBe(0);
   });
 });
 
