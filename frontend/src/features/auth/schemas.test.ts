@@ -22,6 +22,7 @@ describe("AuthSessionSchema", () => {
       bootstrapTokenConfigured: false,
       authMode: "trusted_header",
       passwordManagementEnabled: true,
+      passwordSessionActive: false,
     });
   });
 

@@ -11,6 +11,7 @@ export const AuthSessionSchema = z.object({
   bootstrapTokenConfigured: z.boolean().optional().default(false),
   authMode: DashboardAuthModeSchema.default("standard"),
   passwordManagementEnabled: z.boolean().default(true),
+  passwordSessionActive: z.boolean().default(false),
 });
 
 export const LoginRequestSchema = z.object({

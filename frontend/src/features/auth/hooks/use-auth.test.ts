@@ -25,6 +25,7 @@ const sessionBase: AuthSession = {
   bootstrapTokenConfigured: false,
   authMode: "standard",
   passwordManagementEnabled: true,
+  passwordSessionActive: false,
 };
 
 function resetAuthStore(): void {

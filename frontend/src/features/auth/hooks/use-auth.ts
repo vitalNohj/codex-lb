@@ -18,6 +18,7 @@ type AuthState = {
   bootstrapTokenConfigured: boolean;
   authMode: DashboardAuthMode;
   passwordManagementEnabled: boolean;
+  passwordSessionActive: boolean;
   loading: boolean;
   initialized: boolean;
   error: string | null;
@@ -38,6 +39,7 @@ function applySession(set: (next: Partial<AuthState>) => void, session: AuthSess
     bootstrapTokenConfigured: session.bootstrapTokenConfigured ?? false,
     authMode: session.authMode,
     passwordManagementEnabled: session.passwordManagementEnabled,
+    passwordSessionActive: session.passwordSessionActive,
     initialized: true,
     error: null,
   });
@@ -53,6 +55,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   bootstrapTokenConfigured: false,
   authMode: "standard",
   passwordManagementEnabled: true,
+  passwordSessionActive: false,
   loading: false,
   initialized: false,
   error: null,

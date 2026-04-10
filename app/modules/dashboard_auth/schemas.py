@@ -13,6 +13,7 @@ class DashboardAuthSessionResponse(DashboardModel):
     bootstrap_token_configured: bool = False
     auth_mode: DashboardAuthMode = DashboardAuthMode.STANDARD
     password_management_enabled: bool = True
+    password_session_active: bool = False
 
 
 class TotpSetupStartResponse(DashboardModel):

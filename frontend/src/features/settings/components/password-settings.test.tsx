@@ -36,7 +36,7 @@ describe("PasswordSettings", () => {
   });
 
   it("shows change/remove buttons when password is configured", () => {
-    useAuthStore.setState({ passwordRequired: true });
+    useAuthStore.setState({ passwordRequired: true, passwordSessionActive: true });
     render(<PasswordSettings />);
     expect(screen.getByRole("button", { name: "Change" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove" })).toBeInTheDocument();
@@ -78,7 +78,7 @@ describe("PasswordSettings", () => {
 
   it("handles change flow via dialog", async () => {
     const user = userEvent.setup();
-    useAuthStore.setState({ passwordRequired: true });
+    useAuthStore.setState({ passwordRequired: true, passwordSessionActive: true });
     vi.mocked(changePassword).mockResolvedValue({} as never);
 
     render(<PasswordSettings />);
@@ -97,7 +97,7 @@ describe("PasswordSettings", () => {
 
   it("handles remove flow via dialog", async () => {
     const user = userEvent.setup();
-    useAuthStore.setState({ passwordRequired: true });
+    useAuthStore.setState({ passwordRequired: true, passwordSessionActive: true });
     vi.mocked(removePassword).mockResolvedValue({} as never);
 
     render(<PasswordSettings />);
@@ -130,6 +130,21 @@ describe("PasswordSettings", () => {
 
     expect(screen.getByText("No fallback password set.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Set password" })).toBeInTheDocument();
+  });
+
+  it("hides change/remove when proxy-authenticated without password session", () => {
+    useAuthStore.setState({
+      authMode: "trusted_header",
+      passwordRequired: true,
+      passwordManagementEnabled: true,
+      passwordSessionActive: false,
+    });
+    render(<PasswordSettings />);
+
+    expect(screen.getByText("Password is configured as an optional fallback.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Set password" })).not.toBeInTheDocument();
   });
 
   it("hides password actions when password management is disabled", () => {

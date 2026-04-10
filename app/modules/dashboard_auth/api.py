@@ -71,13 +71,22 @@ def _decorate_session_response(
     *,
     request: Request,
     force_authenticated: bool = False,
+    password_session_id: str | None = None,
 ) -> DashboardAuthSessionResponse:
     request_auth = get_dashboard_request_auth(request)
     auth_mode = get_settings().dashboard_auth_mode
+    store = get_dashboard_session_store()
+    sid = password_session_id or request.cookies.get(DASHBOARD_SESSION_COOKIE)
+    session_state = store.get(sid) if sid else None
+    has_pwd = session_state is not None and session_state.password_verified
+    totp_pending = has_pwd and response.totp_required_on_login and not session_state.totp_verified
+    fully_authorized = has_pwd and not totp_pending and response.password_required
+
     if request_auth is None:
-        update = {
+        update: dict[str, object] = {
             "auth_mode": auth_mode,
             "password_management_enabled": password_management_enabled(auth_mode),
+            "password_session_active": fully_authorized,
         }
         if (
             auth_mode == DashboardAuthMode.TRUSTED_HEADER
@@ -90,9 +99,10 @@ def _decorate_session_response(
     return response.model_copy(
         update={
             "authenticated": force_authenticated or response.authenticated,
-            "totp_required_on_login": False,
+            "totp_required_on_login": totp_pending,
             "auth_mode": request_auth.mode,
             "password_management_enabled": password_management_enabled(request_auth.mode),
+            "password_session_active": fully_authorized,
         }
     )
 
@@ -198,7 +208,11 @@ async def setup_password(
 
     await get_settings_cache().invalidate()
     session_id = get_dashboard_session_store().create(password_verified=True, totp_verified=False)
-    response = _decorate_session_response(await context.service.get_session_state(session_id), request=request)
+    response = _decorate_session_response(
+        await context.service.get_session_state(session_id),
+        request=request,
+        password_session_id=session_id,
+    )
     json_response = JSONResponse(status_code=200, content=response.model_dump(by_alias=True))
     _set_session_cookie(json_response, session_id, request)
     return json_response
@@ -244,7 +258,11 @@ async def login_password(
     await limiter.clear_for_key(rate_key, context.session)
 
     session_id = get_dashboard_session_store().create(password_verified=True, totp_verified=False)
-    response = _decorate_session_response(await context.service.get_session_state(session_id), request=request)
+    response = _decorate_session_response(
+        await context.service.get_session_state(session_id),
+        request=request,
+        password_session_id=session_id,
+    )
     json_response = JSONResponse(status_code=200, content=response.model_dump(by_alias=True))
     _set_session_cookie(json_response, session_id, request)
     return json_response
@@ -363,6 +381,7 @@ async def verify_totp(
     payload: TotpVerifyRequest = Body(...),
     context: DashboardAuthContext = Depends(get_dashboard_auth_context),
 ) -> DashboardAuthSessionResponse | JSONResponse:
+    _ensure_password_management_enabled(request)
     limiter = get_totp_rate_limiter()
     rate_key = _session_client_key(request, prefix="totp_verify")
     current_session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
@@ -392,7 +411,11 @@ async def verify_totp(
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
 
     await limiter.clear_for_key(rate_key, context.session)
-    response = _decorate_session_response(await context.service.get_session_state(session_id), request=request)
+    response = _decorate_session_response(
+        await context.service.get_session_state(session_id),
+        request=request,
+        password_session_id=session_id,
+    )
     json_response = JSONResponse(status_code=200, content=response.model_dump(by_alias=True))
     _set_session_cookie(json_response, session_id, request)
     return json_response

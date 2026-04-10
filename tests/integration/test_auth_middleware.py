@@ -196,6 +196,7 @@ async def test_trusted_header_mode_requires_proxy_header_for_open_dashboard(asyn
         "bootstrapTokenConfigured": False,
         "authMode": "trusted_header",
         "passwordManagementEnabled": True,
+        "passwordSessionActive": False,
     }
 
     blocked = await async_client.get("/api/settings")
@@ -266,6 +267,7 @@ async def test_disabled_dashboard_auth_mode_bypasses_guard_and_disables_password
         "bootstrapTokenConfigured": False,
         "authMode": "disabled",
         "passwordManagementEnabled": False,
+        "passwordSessionActive": False,
     }
 
     allowed = await async_client.get("/api/settings")
@@ -292,6 +294,46 @@ async def test_disabled_dashboard_auth_mode_bypasses_guard_and_disables_password
     disable_totp = await async_client.post("/api/dashboard-auth/totp/disable", json={"code": "123456"})
     assert disable_totp.status_code == 400
     assert disable_totp.json()["error"]["code"] == "password_management_disabled"
+
+
+@pytest.mark.asyncio
+async def test_trusted_header_proxy_auth_with_fallback_password_reports_no_active_session(async_client, monkeypatch):
+    """Proxy-authenticated user with configured fallback password must see passwordSessionActive=False."""
+    _set_dashboard_auth_env(
+        monkeypatch,
+        mode=DashboardAuthMode.TRUSTED_HEADER,
+        trust_proxy_headers=True,
+    )
+    proxy_headers = {"Remote-User": "admin@example.com"}
+
+    setup = await async_client.post(
+        "/api/dashboard-auth/password/setup",
+        json={"password": "password123"},
+        headers=proxy_headers,
+    )
+    assert setup.status_code == 200
+    assert setup.json()["passwordSessionActive"] is True
+
+    async_client.cookies.clear()
+
+    session = await async_client.get("/api/dashboard-auth/session", headers=proxy_headers)
+    assert session.status_code == 200
+    body = session.json()
+    assert body["authenticated"] is True
+    assert body["authMode"] == "trusted_header"
+    assert body["passwordRequired"] is True
+    assert body["passwordManagementEnabled"] is True
+    assert body["passwordSessionActive"] is False
+
+    fallback_login = await async_client.post(
+        "/api/dashboard-auth/password/login",
+        json={"password": "password123"},
+    )
+    assert fallback_login.status_code == 200
+    assert fallback_login.json()["passwordSessionActive"] is True
+
+    session_after_login = await async_client.get("/api/dashboard-auth/session", headers=proxy_headers)
+    assert session_after_login.json()["passwordSessionActive"] is True
 
 
 @pytest.mark.asyncio

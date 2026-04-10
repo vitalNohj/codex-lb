@@ -14,6 +14,7 @@ _FORBIDDEN_PROXY_AUTH_HEADERS = frozenset(
         "authorization",
         "connection",
         "content-length",
+        "cookie",
         "forwarded",
         "host",
         "keep-alive",
