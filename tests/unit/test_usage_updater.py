@@ -12,8 +12,9 @@ from app.core.auth.refresh import RefreshError
 from app.core.crypto import TokenEncryptor
 from app.core.usage.models import UsagePayload
 from app.db.models import Account, AccountStatus, UsageHistory
+from app.modules.usage import updater as usage_updater_module
 from app.modules.usage.additional_quota_keys import canonicalize_additional_quota_key
-from app.modules.usage.updater import UsageUpdater, _last_successful_refresh
+from app.modules.usage.updater import UsageUpdater
 
 pytestmark = pytest.mark.unit
 
@@ -21,9 +22,27 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def _clear_refresh_cache():
     """Clear the module-level freshness cache between tests."""
-    _last_successful_refresh.clear()
+    usage_updater_module._clear_usage_refresh_state()
     yield
-    _last_successful_refresh.clear()
+    usage_updater_module._clear_usage_refresh_state()
+
+
+@pytest.mark.asyncio
+async def test_clear_usage_refresh_state_clears_singleflight_cache() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def factory():
+        started.set()
+        await release.wait()
+        return usage_updater_module.AccountRefreshResult(usage_written=False)
+
+    first = asyncio.create_task(usage_updater_module._USAGE_REFRESH_SINGLEFLIGHT.run("acc_singleflight_clear", factory))
+    await started.wait()
+    usage_updater_module._clear_usage_refresh_state()
+    assert usage_updater_module._USAGE_REFRESH_SINGLEFLIGHT._inflight == {}
+    release.set()
+    await first
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,6 +534,86 @@ async def test_usage_updater_deactivates_on_401_deactivated_message_without_code
 
     assert len(accounts_repo.status_updates) == 1
     assert accounts_repo.status_updates[0]["status"] == AccountStatus.DEACTIVATED
+
+
+@pytest.mark.asyncio
+async def test_usage_updater_cools_down_repeated_403_failures(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_AUTH_FAILURE_COOLDOWN_SECONDS", "300")
+    from app.core.clients.usage import UsageFetchError
+    from app.core.config.settings import get_settings
+
+    get_settings.cache_clear()
+
+    fetch_calls = 0
+
+    async def stub_fetch_usage_403(**_: Any) -> UsagePayload:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        raise UsageFetchError(403, "Forbidden")
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stub_fetch_usage_403)
+
+    usage_repo = StubUsageRepository()
+    accounts_repo = StubAccountsRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo=accounts_repo)
+
+    acc = _make_account("acc_403_cooldown", "workspace_403_cooldown", email="forbidden@example.com")
+    accounts_repo.accounts_by_id[acc.id] = acc
+
+    await updater.refresh_accounts([acc], latest_usage={})
+    await updater.refresh_accounts([acc], latest_usage={})
+
+    assert fetch_calls == 1
+    assert len(accounts_repo.status_updates) == 0
+
+
+@pytest.mark.asyncio
+async def test_usage_updater_subset_refresh_does_not_clear_other_account_cooldowns(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_AUTH_FAILURE_COOLDOWN_SECONDS", "300")
+    from app.core.clients.usage import UsageFetchError
+    from app.core.config.settings import get_settings
+
+    get_settings.cache_clear()
+
+    fetch_calls = 0
+
+    async def stub_fetch_usage(*, account_id: str | None, **_: Any) -> UsagePayload:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        if account_id == "workspace_cooled":
+            raise UsageFetchError(403, "Forbidden")
+        return UsagePayload.model_validate({})
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stub_fetch_usage)
+
+    usage_repo = StubUsageRepository()
+    accounts_repo = StubAccountsRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo=accounts_repo)
+
+    cooled = _make_account("acc_cooldown_kept", "workspace_cooled", email="cooled@example.com")
+    imported = _make_account("acc_imported", "workspace_imported", email="imported@example.com")
+    accounts_repo.accounts_by_id[cooled.id] = cooled
+    accounts_repo.accounts_by_id[imported.id] = imported
+
+    await updater.refresh_accounts([cooled], latest_usage={})
+    await updater.refresh_accounts([imported], latest_usage={})
+    await updater.refresh_accounts([cooled], latest_usage={})
+
+    assert fetch_calls == 2
+
+
+def test_mark_usage_refresh_auth_cooldown_ignores_non_auth_status(monkeypatch) -> None:
+    monkeypatch.setattr(
+        usage_updater_module,
+        "get_settings",
+        lambda: type("Settings", (), {"usage_refresh_auth_failure_cooldown_seconds": 300.0})(),
+    )
+
+    usage_updater_module._mark_usage_refresh_auth_cooldown("acc_non_auth", 500)
+
+    assert usage_updater_module._is_usage_refresh_in_cooldown("acc_non_auth") is False
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,10 @@ def _disable_http_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
         log_proxy_request_shape_raw_cache_key=False,
         log_proxy_service_tier_trace=False,
         stream_idle_timeout_seconds=300.0,
+        proxy_token_refresh_limit=32,
+        proxy_upstream_websocket_connect_limit=64,
+        proxy_response_create_limit=64,
+        proxy_compact_response_create_limit=16,
     )
     dashboard_settings = DashboardSettings(
         id=1,

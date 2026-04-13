@@ -109,6 +109,10 @@ def _install_proxy_settings_cache(
         http_responses_session_bridge_queue_limit=8,
         http_responses_session_bridge_prompt_cache_idle_ttl_seconds=3600,
         http_responses_session_bridge_gateway_safe_mode=False,
+        proxy_token_refresh_limit=32,
+        proxy_upstream_websocket_connect_limit=64,
+        proxy_response_create_limit=64,
+        proxy_compact_response_create_limit=16,
     )
     monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_module, "get_settings", lambda: settings)

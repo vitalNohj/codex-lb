@@ -44,6 +44,7 @@ from app.core.openai.models import (
 from app.core.openai.parsing import parse_response_payload
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
+from app.core.resilience.overload import is_local_overload_error_code, merge_retry_after_headers
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
 from app.core.usage.types import UsageWindowRow
@@ -1104,6 +1105,9 @@ def _logged_error_json_response(
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     code, message = _error_details_from_content(content)
+    effective_headers = dict(headers or {})
+    if status_code == 429 and is_local_overload_error_code(code):
+        effective_headers = merge_retry_after_headers(effective_headers)
     log_error_response(
         logger,
         request,
@@ -1112,7 +1116,7 @@ def _logged_error_json_response(
         message,
         category="proxy_error_response",
     )
-    return JSONResponse(status_code=status_code, content=content, headers=headers)
+    return JSONResponse(status_code=status_code, content=content, headers=effective_headers or None)
 
 
 def _error_details_from_content(
