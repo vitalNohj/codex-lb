@@ -366,6 +366,56 @@ class _CreatedThenCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
         await self._messages.put(_FakeUpstreamMessage("close", close_code=1011))
 
 
+class _ErrorOnlyUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
+    async def send_text(self, text: str) -> None:
+        self.sent_text.append(text)
+        await self._messages.put(
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "error",
+                        "status": 400,
+                        "error": {
+                            "type": "invalid_request_error",
+                            "code": "invalid_request_error",
+                            "message": (
+                                "The 'gpt-5.3-codex-spark' model is not supported when using Codex "
+                                "with a ChatGPT account."
+                            ),
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
+
+class _RateLimitErrorUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
+    async def send_text(self, text: str) -> None:
+        self.sent_text.append(text)
+        await self._messages.put(
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "error",
+                        "status": 429,
+                        "error": {
+                            "type": "rate_limit_error",
+                            "code": "rate_limit_exceeded",
+                            "message": "Rate limit reached for gpt-4o on tokens per day",
+                            "plan_type": "team",
+                            "resets_at": 1700000000,
+                            "resets_in_seconds": 3600,
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
+
 class _FailingSendThenCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
     async def send_text(self, text: str) -> None:
         self.sent_text.append(text)
@@ -5726,6 +5776,157 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(async_c
     events = [json.loads(line[6:]) for line in lines]
     assert [event["type"] for event in events] == ["response.created", "response.failed"]
     assert events[-1]["response"]["error"]["code"] == "stream_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_surfaces_upstream_error_event_as_http_400(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_error_norm",
+        "http-bridge-error-norm@example.com",
+    )
+    account = await _get_account(account_id)
+    fake_upstream = _ErrorOnlyUpstreamWebSocket()
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+        api_key=None,
+    ):
+        del (
+            self,
+            deadline,
+            request_id,
+            kind,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset_accounts,
+            routing_strategy,
+            model,
+            exclude_account_ids,
+            additional_limit_name,
+        )
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return target
+
+    async def fake_connect_responses_websocket(
+        headers,
+        access_token,
+        account_id_header,
+        *,
+        base_url=None,
+        session=None,
+    ):
+        del headers, access_token, account_id_header, base_url, session
+        return fake_upstream
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={
+            "model": "gpt-5.3-codex-spark",
+            "instructions": "Return exactly OK.",
+            "input": "hello",
+            "prompt_cache_key": "http-bridge-error-norm-key",
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {
+            "message": "The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account.",
+            "type": "invalid_request_error",
+            "code": "invalid_request_error",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_preserves_rate_limit_metadata_in_429(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_ratelimit",
+        "http-bridge-ratelimit@example.com",
+    )
+    account = await _get_account(account_id)
+    fake_upstream = _RateLimitErrorUpstreamWebSocket()
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+        api_key=None,
+    ):
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        return target
+
+    async def fake_connect_responses_websocket(
+        headers,
+        access_token,
+        account_id_header,
+        *,
+        base_url=None,
+        session=None,
+    ):
+        return fake_upstream
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={
+            "model": "gpt-4o",
+            "instructions": "Return exactly OK.",
+            "input": "hello",
+            "prompt_cache_key": "http-bridge-ratelimit-key",
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 429
+    body = response.json()
+    assert body["error"]["code"] == "rate_limit_exceeded"
+    assert body["error"]["plan_type"] == "team"
+    assert body["error"]["resets_at"] == 1700000000
+    assert body["error"]["resets_in_seconds"] == 3600
 
 
 @pytest.mark.asyncio

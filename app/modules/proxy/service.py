@@ -366,7 +366,7 @@ class ProxyService:
         forwarded_affinity_kind: str | None = None,
         forwarded_affinity_key: str | None = None,
     ) -> AsyncIterator[str]:
-        del propagate_http_errors, suppress_text_done_events
+        del suppress_text_done_events
         request_id = ensure_request_id()
         dashboard_settings = await get_settings_cache().get()
         runtime_config = _http_bridge_runtime_config(dashboard_settings, get_settings())
@@ -602,16 +602,28 @@ class ProxyService:
         try:
             event_queue = request_state.event_queue
             assert event_queue is not None
+            yielded_any = False
             while True:
                 event_block = await event_queue.get()
                 if event_block is None:
                     break
-                if request_state.latency_first_token_ms is None:
-                    block_payload = parse_sse_data_json(event_block)
-                    block_event_type = _event_type_from_payload(None, block_payload)
-                    if block_event_type in _TEXT_DELTA_EVENT_TYPES:
-                        request_state.latency_first_token_ms = int((time.monotonic() - request_state.started_at) * 1000)
+                block_payload = parse_sse_data_json(event_block)
+                block_event_type = _event_type_from_payload(None, block_payload)
+                if request_state.latency_first_token_ms is None and block_event_type in _TEXT_DELTA_EVENT_TYPES:
+                    request_state.latency_first_token_ms = int((time.monotonic() - request_state.started_at) * 1000)
+                if (
+                    not yielded_any
+                    and propagate_http_errors
+                    and block_event_type == "response.failed"
+                    and request_state.error_http_status_override is not None
+                    and request_state.error_http_status_override >= 400
+                ):
+                    raise ProxyResponseError(
+                        request_state.error_http_status_override,
+                        _openai_error_envelope_from_response_failed_payload(block_payload),
+                    )
                 yield event_block
+                yielded_any = True
         finally:
             with anyio.CancelScope(shield=True):
                 await self._detach_http_bridge_request(session, request_state=request_state)
@@ -3597,6 +3609,22 @@ class ProxyService:
                 if terminal_request_state is not None:
                     session.queued_request_count = max(0, session.queued_request_count - 1)
 
+        if event_type == "error":
+            http_status = _http_error_status_from_payload(payload)
+            status_request_state = terminal_request_state or matched_request_state
+            if status_request_state is not None:
+                status_request_state.error_http_status_override = http_status
+            (
+                event_block,
+                payload,
+                event,
+                event_type,
+            ) = _normalize_http_bridge_error_event(
+                event=event,
+                payload=payload,
+                request_state=terminal_request_state or matched_request_state,
+            )
+
         if event_type == "response.created" and release_create_gate and created_request_state is not None:
             _release_websocket_response_create_gate(created_request_state, session.response_create_gate)
 
@@ -5628,6 +5656,7 @@ class _WebSocketRequestState:
     error_message_override: str | None = None
     error_type_override: str | None = None
     error_param_override: str | None = None
+    error_http_status_override: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -5712,6 +5741,123 @@ def _event_type_from_payload(event: OpenAIEvent | None, payload: dict[str, JsonV
     if isinstance(payload_type, str):
         return payload_type
     return None
+
+
+def _http_error_status_from_payload(payload: dict[str, JsonValue] | None) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    if isinstance(status, int):
+        return status
+    return None
+
+
+def _openai_error_envelope_from_response_failed_payload(
+    payload: dict[str, JsonValue] | None,
+) -> OpenAIErrorEnvelope:
+    default_envelope = openai_error("upstream_error", "Upstream error")
+    if not isinstance(payload, dict):
+        return default_envelope
+    response_payload = payload.get("response")
+    if not isinstance(response_payload, dict):
+        return default_envelope
+    error_payload = response_payload.get("error")
+    if not isinstance(error_payload, dict):
+        return default_envelope
+
+    message_value = error_payload.get("message")
+    if isinstance(message_value, str) and message_value.strip():
+        message = message_value.strip()
+    else:
+        message = "Upstream error"
+
+    code_value = error_payload.get("code")
+    code = code_value.strip() if isinstance(code_value, str) and code_value.strip() else "upstream_error"
+
+    type_value = error_payload.get("type")
+    error_type = type_value.strip() if isinstance(type_value, str) and type_value.strip() else "server_error"
+
+    envelope = openai_error(code, message, error_type)
+    param_value = error_payload.get("param")
+    if isinstance(param_value, str) and param_value.strip():
+        envelope["error"]["param"] = param_value.strip()
+    for key in ("plan_type", "resets_at", "resets_in_seconds"):
+        value = error_payload.get(key)
+        if value is not None:
+            envelope["error"][key] = value  # type: ignore[literal-required]
+    return envelope
+
+
+def _normalize_http_bridge_error_event(
+    *,
+    event: OpenAIEvent | None,
+    payload: dict[str, JsonValue] | None,
+    request_state: _WebSocketRequestState | None,
+) -> tuple[str, dict[str, JsonValue] | None, OpenAIEvent | None, str]:
+    error_code_value: str | None = None
+    error_type_value: str | None = None
+    error_message_value: str | None = None
+    error_param_value: str | None = None
+    rate_limit_metadata: dict[str, object] = {}
+
+    if event is not None and event.error is not None:
+        error_code_value = event.error.code
+        error_type_value = event.error.type
+        error_message_value = event.error.message
+        error_param_value = event.error.param
+    elif isinstance(payload, dict):
+        payload_error = payload.get("error")
+        if isinstance(payload_error, dict):
+            code_value = payload_error.get("code")
+            if isinstance(code_value, str):
+                stripped = code_value.strip()
+                if stripped:
+                    error_code_value = stripped
+            type_value = payload_error.get("type")
+            if isinstance(type_value, str):
+                stripped = type_value.strip()
+                if stripped:
+                    error_type_value = stripped
+            message_value = payload_error.get("message")
+            if isinstance(message_value, str):
+                stripped = message_value.strip()
+                if stripped:
+                    error_message_value = stripped
+            param_value = payload_error.get("param")
+            if isinstance(param_value, str):
+                stripped = param_value.strip()
+                if stripped:
+                    error_param_value = stripped
+
+    if isinstance(payload, dict):
+        raw_error = payload.get("error")
+        if isinstance(raw_error, dict):
+            for key in ("plan_type", "resets_at", "resets_in_seconds"):
+                value = raw_error.get(key)
+                if value is not None:
+                    rate_limit_metadata[key] = value
+
+    normalized_error_code = _normalize_error_code(error_code_value, error_type_value) or "upstream_error"
+    normalized_error_type = error_type_value or "server_error"
+    normalized_error_message = error_message_value or "Upstream error"
+
+    normalized_response_id = None
+    if request_state is not None:
+        normalized_response_id = request_state.response_id or request_state.request_id
+
+    normalized_event = response_failed_event(
+        normalized_error_code,
+        normalized_error_message,
+        error_type=normalized_error_type,
+        response_id=normalized_response_id,
+        error_param=error_param_value,
+    )
+    if rate_limit_metadata:
+        normalized_event["response"]["error"].update(rate_limit_metadata)  # type: ignore[typeddict-item]
+    normalized_event_block = format_sse_event(normalized_event)
+    normalized_payload = parse_sse_data_json(normalized_event_block)
+    parsed_event = parse_sse_event(normalized_event_block)
+    return normalized_event_block, normalized_payload, parsed_event, "response.failed"
 
 
 def _websocket_response_id(event: OpenAIEvent | None, payload: dict[str, JsonValue] | None) -> str | None:
