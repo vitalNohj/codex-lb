@@ -348,6 +348,26 @@
         "code",
         "test"
       ]
+    },
+    {
+      "login": "balakumardev",
+      "name": "balakumardev",
+      "avatar_url": "https://avatars.githubusercontent.com/u/45328806?v=4",
+      "profile": "https://github.com/balakumardev",
+      "contributions": [
+        "code",
+        "test"
+      ]
+    },
+    {
+      "login": "ihazgithub",
+      "name": "ihazgithub",
+      "avatar_url": "https://avatars.githubusercontent.com/u/129220128?v=4",
+      "profile": "https://github.com/ihazgithub",
+      "contributions": [
+        "code",
+        "test"
+      ]
     }
   ],
   "contributorsPerLine": 7,
