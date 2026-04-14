@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+from collections.abc import Mapping
 from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -49,7 +50,7 @@ type OptionalStringInput = str | None
 type ModelContextWindowOverridesInput = str | dict[str, int] | None
 
 
-def _validate_context_window_entries(data: dict) -> dict[str, int]:
+def _validate_context_window_entries(data: Mapping[str, object]) -> dict[str, int]:
     result: dict[str, int] = {}
     for k, v in data.items():
         if isinstance(v, bool):
