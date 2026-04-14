@@ -338,6 +338,16 @@
         "code",
         "test"
       ]
+    },
+    {
+      "login": "Kazet111",
+      "name": "Kazet",
+      "avatar_url": "https://avatars.githubusercontent.com/u/21245898?v=4",
+      "profile": "https://github.com/Kazet111",
+      "contributions": [
+        "code",
+        "test"
+      ]
     }
   ],
   "contributorsPerLine": 7,
