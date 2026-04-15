@@ -228,6 +228,7 @@ class Settings(BaseSettings):
     proxy_upstream_websocket_connect_limit: int = Field(default=64, ge=0)
     proxy_response_create_limit: int = Field(default=64, ge=0)
     proxy_compact_response_create_limit: int = Field(default=16, ge=0)
+    proxy_admission_wait_timeout_seconds: float = Field(default=10.0, gt=0)
     proxy_refresh_failure_cooldown_seconds: float = Field(default=5.0, ge=0.0)
     usage_refresh_auth_failure_cooldown_seconds: float = Field(default=300.0, ge=0.0)
 
