@@ -875,7 +875,7 @@ def test_v1_responses_websocket_rejects_invalid_payload_before_connect(app_insta
                         "type": "response.create",
                         "model": "gpt-5.4",
                         "input": "hi",
-                        "store": True,
+                        "truncation": "auto",
                     }
                 )
             )

@@ -243,6 +243,19 @@ def _resolve_upstream_stream_transport(upstream_stream_transport: str) -> str | 
     return upstream_stream_transport
 
 
+def _fingerprint_input_items(items: Sequence[JsonValue]) -> str:
+    """Return a stable SHA-256 fingerprint of an input item list.
+
+    Used by the HTTP bridge trim path to verify that a follow-up request's
+    prefix is byte-identical to the already-stored conversation before
+    dropping it. Serialized with sorted keys and no whitespace so that
+    equivalent payloads produce the same hash even when dict key order
+    differs upstream.
+    """
+    canonical = json.dumps(list(items), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class ProxyService:
     def __init__(self, repo_factory: ProxyRepoFactory) -> None:
         self._repo_factory = repo_factory
@@ -467,6 +480,7 @@ class ProxyService:
             logger.warning("Durable bridge lookup failed; falling back to non-durable request handling", exc_info=True)
             durable_lookup = None
         effective_payload = payload
+        proxy_injected_previous_response_id = False
         if durable_lookup is not None:
             bridge_session_key = _HTTPBridgeSessionKey(
                 durable_lookup.canonical_kind,
@@ -481,6 +495,7 @@ class ProxyService:
                 effective_payload = payload.model_copy(
                     update={"previous_response_id": durable_lookup.latest_response_id}
                 )
+                proxy_injected_previous_response_id = True
                 _log_http_bridge_event(
                     "fresh_reattach_anchor_injected",
                     bridge_session_key,
@@ -638,6 +653,81 @@ class ProxyService:
                         session.last_used_at = time.monotonic()
                 return
         session = session_or_forward
+        # --- Context persistence: trim redundant input items ---
+        # When a previous_response_id is present (either proxy-injected or
+        # client-supplied), the upstream already has the stored conversation.
+        # The CLI still sends the full input history, so we strip items that
+        # are already part of the stored context to avoid duplication and
+        # dramatically reduce per-request input tokens.
+        #
+        # Correctness guard: we only trim when the new request's first N
+        # items are byte-identical to the N items the session has already
+        # forwarded. If the client edited a prior item (for example a
+        # re-sent /edit flow), dropping the prefix would silently let
+        # OpenAI answer against the stale stored context. In that case we
+        # fall back to sending the full input and emit a warning so the
+        # mismatch is observable.
+        has_previous_response_id = (
+            proxy_injected_previous_response_id or effective_payload.previous_response_id is not None
+        )
+        incoming_input = effective_payload.input
+        stored_count = session.last_completed_input_count
+        stored_fingerprint = session.last_completed_input_prefix_fingerprint
+        if (
+            has_previous_response_id
+            and stored_count > 0
+            and stored_fingerprint is not None
+            and isinstance(incoming_input, list)
+            and len(incoming_input) > stored_count
+        ):
+            incoming_input_list = cast(list[JsonValue], incoming_input)
+            incoming_prefix_fingerprint = _fingerprint_input_items(incoming_input_list[:stored_count])
+            if incoming_prefix_fingerprint == stored_fingerprint:
+                original_count = len(incoming_input_list)
+                trimmed_input = incoming_input_list[stored_count:]
+                trimmed_payload = effective_payload.model_copy(update={"input": trimmed_input})
+                request_state, text_data = self._prepare_http_bridge_request(
+                    trimmed_payload,
+                    headers,
+                    api_key=api_key,
+                    api_key_reservation=api_key_reservation,
+                    request_id=request_id,
+                )
+                request_state.input_item_count = original_count
+                # Record the fingerprint of the ORIGINAL full input, not of
+                # the trimmed suffix that actually goes upstream. This is
+                # what the session promotes to last_completed_input_prefix_
+                # fingerprint on response.completed; storing the suffix hash
+                # would make every subsequent trim check mismatch and
+                # silently disable trimming for the rest of the session.
+                request_state.input_full_fingerprint = _fingerprint_input_items(incoming_input_list)
+                request_state.transport = _REQUEST_TRANSPORT_HTTP
+                request_state.request_stage = _http_bridge_request_stage(
+                    headers=headers,
+                    payload=trimmed_payload,
+                    durable_lookup=durable_lookup,
+                )
+                request_state.preferred_account_id = durable_lookup.account_id if durable_lookup is not None else None
+                logger.info(
+                    "store_context_input_trimmed request_id=%s original_items=%s trimmed_to=%s previous_response_id=%s",
+                    request_id,
+                    original_count,
+                    len(trimmed_input),
+                    effective_payload.previous_response_id,
+                )
+            else:
+                # Client edited an already-stored prefix item. Forward the full
+                # input so the upstream sees the correction, even though that
+                # costs extra tokens on this turn.
+                logger.warning(
+                    "store_context_input_trim_skipped_prefix_mismatch request_id=%s "
+                    "incoming_items=%s stored_items=%s previous_response_id=%s",
+                    request_id,
+                    len(incoming_input_list),
+                    stored_count,
+                    effective_payload.previous_response_id,
+                )
+        # --- End context persistence trimming ---
         await self._submit_http_bridge_request(
             session,
             request_state=request_state,
@@ -1731,11 +1821,23 @@ class ProxyService:
         upstream_payload = dict(payload.to_payload())
         upstream_payload.pop("stream", None)
         upstream_payload.pop("background", None)
+        # Note: do NOT force store=True upstream. The ChatGPT backend API
+        # explicitly requires store=false and rejects store=true.
+        # The validator coercion (returning False instead of raising) is
+        # sufficient to accept clients that send store=true.
         if include_type_field:
             upstream_payload["type"] = "response.create"
         if client_metadata:
             upstream_payload["client_metadata"] = client_metadata
         forwarded_service_tier = _normalize_service_tier_value(upstream_payload.get("service_tier"))
+        input_item_count = 0
+        input_full_fingerprint: str | None = None
+        payload_input = payload.input
+        if isinstance(payload_input, list):
+            payload_input_list = cast(list[JsonValue], payload_input)
+            input_item_count = len(payload_input_list)
+            if input_item_count > 0:
+                input_full_fingerprint = _fingerprint_input_items(payload_input_list)
         request_state = _WebSocketRequestState(
             request_id=request_id or f"ws_{uuid4().hex}",
             request_log_id=request_log_id,
@@ -1750,6 +1852,8 @@ class ProxyService:
             transport=transport,
             api_key=api_key,
             previous_response_id=payload.previous_response_id,
+            input_item_count=input_item_count,
+            input_full_fingerprint=input_full_fingerprint,
         )
         text_data = json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
         payload_size = len(text_data.encode("utf-8"))
@@ -3992,6 +4096,12 @@ class ProxyService:
                 )
                 if terminal_request_state is not None:
                     session.queued_request_count = max(0, session.queued_request_count - 1)
+                    # Track input item count for context persistence trimming.
+                    # On the next request, items up to this count are already part
+                    # of the stored conversation and can be stripped.
+                    if event_type == "response.completed" and terminal_request_state.input_item_count > 0:
+                        session.last_completed_input_count = terminal_request_state.input_item_count
+                        session.last_completed_input_prefix_fingerprint = terminal_request_state.input_full_fingerprint
 
         if event_type == "error":
             http_status = _http_error_status_from_payload(payload)
@@ -6137,6 +6247,12 @@ class _WebSocketRequestState:
     error_http_status_override: int | None = None
     response_create_gate_acquired: bool = False
     response_create_admission: AdmissionLease | None = None
+    input_item_count: int = 0
+    # SHA-256 of the canonical JSON of this request's full input list. When
+    # the response completes successfully, this is promoted onto the owning
+    # session as the fingerprint of the already-stored context so the next
+    # request can verify its prefix matches before trimming.
+    input_full_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -6186,6 +6302,14 @@ class _HTTPBridgeSession:
     downstream_turn_state: str | None = None
     downstream_turn_state_aliases: set[str] = field(default_factory=set)
     previous_response_ids: set[str] = field(default_factory=set)
+    last_completed_input_count: int = 0
+    # Fingerprint of the first N already-stored input items, where
+    # N == last_completed_input_count. Used to verify that a follow-up
+    # request's input[:N] is an exact prefix match of what upstream has
+    # already persisted before we silently trim it. Stored as SHA-256 of
+    # the canonical JSON serialization so it scales to long histories
+    # without pinning the full items in memory.
+    last_completed_input_prefix_fingerprint: str | None = None
     durable_session_id: str | None = None
     durable_owner_epoch: int | None = None
     upstream_reader: asyncio.Task[None] | None = None
