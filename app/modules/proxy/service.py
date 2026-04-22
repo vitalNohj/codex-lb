@@ -489,6 +489,7 @@ class ProxyService:
             durable_lookup = None
         effective_payload = payload
         proxy_injected_previous_response_id = False
+        fresh_upstream_request_text: str | None = None
         if durable_lookup is not None:
             bridge_session_key = _HTTPBridgeSessionKey(
                 durable_lookup.canonical_kind,
@@ -513,6 +514,14 @@ class ProxyService:
                     update={"previous_response_id": durable_lookup.latest_response_id}
                 )
                 proxy_injected_previous_response_id = True
+                _fresh_request_state, fresh_upstream_request_text = self._prepare_http_bridge_request(
+                    payload,
+                    headers,
+                    api_key=api_key,
+                    api_key_reservation=api_key_reservation,
+                    request_id=request_id,
+                )
+                del _fresh_request_state
                 _log_http_bridge_event(
                     "fresh_reattach_anchor_injected",
                     bridge_session_key,
@@ -567,6 +576,18 @@ class ProxyService:
                 session_id=request_state.session_id,
                 surface="http_bridge",
             )
+        if proxy_injected_previous_response_id:
+            request_state.proxy_injected_previous_response_id = True
+            request_state.fresh_upstream_request_text = fresh_upstream_request_text or text_data
+            # Durable-anchor injection actually runs when the incoming
+            # payload is *not* a full resend (see the
+            # ``not _http_bridge_payload_looks_like_full_resend(payload)``
+            # guard above), so the captured unanchored text is typically
+            # just a short follow-up. Replaying it as a fresh turn would
+            # drop the conversational context the anchor was pointing at.
+            # Only the trim branch below (which verifies the stored prefix
+            # fingerprint) is allowed to flip this flag to ``True``.
+            request_state.fresh_upstream_request_is_retry_safe = False
         session_or_forward = await self._get_or_create_http_bridge_session(
             bridge_session_key,
             headers=dict(headers),
@@ -732,6 +753,76 @@ class ProxyService:
                             session.last_used_at = time.monotonic()
                 return
         session = session_or_forward
+        # --- Session-level previous_response_id injection ---
+        # If the client didn't send previous_response_id and the durable
+        # lookup didn't inject one, but this bridge session is carrying
+        # Codex-style conversational continuity and has already completed a
+        # request on this logical conversation, inject the session's last
+        # completed response ID so the trim branch below can strip the
+        # already-stored prefix.
+        #
+        # Correctness guards:
+        # - Soft affinity reuse (for example prompt cache / sticky-thread
+        #   sharing) must stay self-contained, so only true Codex
+        #   continuity sessions opt in.
+        # - Injecting an anchor when the incoming payload is a full-resend
+        #   whose prefix cannot be safely trimmed (non-list input, prefix
+        #   mismatch, or shorter-than-stored history) would send both the
+        #   full history *and* the anchor upstream, which duplicates
+        #   context and distorts output/cost. Gate injection so it only
+        #   fires when the trim branch below would actually succeed.
+        incoming_input_preview = effective_payload.input
+        stored_count_preview = session.last_completed_input_count
+        stored_fingerprint_preview = session.last_completed_input_prefix_fingerprint
+        session_anchor_trimmable = (
+            stored_count_preview > 0
+            and stored_fingerprint_preview is not None
+            and isinstance(incoming_input_preview, list)
+            and len(incoming_input_preview) > stored_count_preview
+            and _fingerprint_input_items(cast(list[JsonValue], incoming_input_preview)[:stored_count_preview])
+            == stored_fingerprint_preview
+        )
+        if (
+            session.codex_session
+            and not proxy_injected_previous_response_id
+            and effective_payload.previous_response_id is None
+            and session.last_completed_response_id is not None
+            and session_anchor_trimmable
+        ):
+            fresh_upstream_request_text = text_data
+            effective_payload = effective_payload.model_copy(
+                update={"previous_response_id": session.last_completed_response_id}
+            )
+            proxy_injected_previous_response_id = True
+            request_state, text_data = self._prepare_http_bridge_request(
+                effective_payload,
+                headers,
+                api_key=api_key,
+                api_key_reservation=api_key_reservation,
+                request_id=request_id,
+            )
+            request_state.transport = _REQUEST_TRANSPORT_HTTP
+            request_state.request_stage = _http_bridge_request_stage(
+                headers=headers,
+                payload=effective_payload,
+                durable_lookup=durable_lookup,
+            )
+            request_state.preferred_account_id = durable_lookup.account_id if durable_lookup is not None else None
+            request_state.proxy_injected_previous_response_id = True
+            request_state.fresh_upstream_request_text = fresh_upstream_request_text
+            # Session-level anchor injection may be attached to a payload
+            # that relied on the anchor for context (for example a
+            # single-item follow-up turn whose prior history is only
+            # represented by ``previous_response_id``). Replaying without
+            # the anchor would silently turn it into a fresh turn and drop
+            # conversational context, so opt this path out of fresh-upstream
+            # fresh-turn replay.
+            request_state.fresh_upstream_request_is_retry_safe = False
+            logger.info(
+                "session_anchor_injected request_id=%s response_id=%s",
+                request_id,
+                session.last_completed_response_id,
+            )
         # Trim already-stored prefix when previous_response_id anchors context.
         has_previous_response_id = (
             proxy_injected_previous_response_id or effective_payload.previous_response_id is not None
@@ -771,6 +862,16 @@ class ProxyService:
                 request_state.preferred_account_id = previous_preferred_account_id
                 request_state.input_item_count = original_count
                 request_state.input_full_fingerprint = _fingerprint_input_items(incoming_input_list)
+                if proxy_injected_previous_response_id:
+                    request_state.proxy_injected_previous_response_id = True
+                    request_state.fresh_upstream_request_text = fresh_upstream_request_text
+                    # The trim branch only fires when the untrimmed payload
+                    # is a true full resend whose prefix exactly matches the
+                    # already-stored context, so the unanchored request text
+                    # is a safe fresh-turn replay target regardless of
+                    # whether the anchor came from the durable or
+                    # session-level injection path.
+                    request_state.fresh_upstream_request_is_retry_safe = True
                 logger.info(
                     "store_context_input_trimmed request_id=%s original_items=%s trimmed_to=%s previous_response_id=%s",
                     request_id,
@@ -4655,12 +4756,24 @@ class ProxyService:
         text_data: str,
         send_request: bool = True,
     ) -> bool:
+        retry_text_data = text_data
         if request_state.previous_response_id is not None and send_request:
             # After an ambiguous websocket send failure we cannot prove whether
             # upstream already accepted the continuation. Re-sending the same
             # previous_response_id request can fork continuity with duplicate
             # child responses, so only reconnect-without-resend is allowed.
-            return False
+            # The single exception is proxy-injected anchors on trim-safe
+            # full-resend payloads: dropping the anchor and replaying the
+            # original unanchored request is equivalent to the client's own
+            # retry. Session-level injections do not opt in because their
+            # payload may depend on the anchor for context preservation.
+            if (
+                not request_state.proxy_injected_previous_response_id
+                or not request_state.fresh_upstream_request_text
+                or not request_state.fresh_upstream_request_is_retry_safe
+            ):
+                return False
+            retry_text_data = request_state.fresh_upstream_request_text
         if request_state.replay_count >= 1:
             return False
         request_state.replay_count += 1
@@ -4680,7 +4793,11 @@ class ProxyService:
                 restart_reader=True,
             )
             if send_request:
-                await session.upstream.send_text(text_data)
+                if retry_text_data != text_data:
+                    request_state.previous_response_id = None
+                    request_state.proxy_injected_previous_response_id = False
+                    request_state.request_text = retry_text_data
+                await session.upstream.send_text(retry_text_data)
             session.last_used_at = time.monotonic()
             return True
         except Exception:
@@ -4992,13 +5109,18 @@ class ProxyService:
             )
             event_block = f"data: {rewritten_text}\n\n"
 
-        if (
-            event_type == "response.completed"
-            and terminal_request_state is not None
-            and terminal_request_state.input_item_count > 0
-        ):
-            session.last_completed_input_count = terminal_request_state.input_item_count
-            session.last_completed_input_prefix_fingerprint = terminal_request_state.input_full_fingerprint
+        if event_type == "response.completed" and terminal_request_state is not None:
+            # Record the completed response id regardless of input shape so
+            # subsequent turns (including ones that never populated
+            # input_item_count, e.g. string inputs) can still reuse this
+            # anchor for continuity lookups.
+            if response_id is not None:
+                session.last_completed_response_id = response_id
+            # Prefix trimming is only meaningful for list-shaped inputs, so
+            # keep the input-count / fingerprint update scoped to that path.
+            if terminal_request_state.input_item_count > 0:
+                session.last_completed_input_count = terminal_request_state.input_item_count
+                session.last_completed_input_prefix_fingerprint = terminal_request_state.input_full_fingerprint
 
         if event_type == "error":
             http_status = _http_error_status_from_payload(payload)
@@ -7658,6 +7780,18 @@ class _WebSocketRequestState:
     skip_request_log: bool = False
     previous_response_id: str | None = None
     session_id: str | None = None
+    proxy_injected_previous_response_id: bool = False
+    fresh_upstream_request_text: str | None = None
+    # True only when ``fresh_upstream_request_text`` contains a *safe* pre-
+    # injection form of this request that can be replayed as a fresh turn.
+    # Durable-anchor injection captures the original unanchored full-resend
+    # payload, so dropping the anchor and replaying is equivalent to the
+    # client's own retry. Session-level anchor injection does **not** set
+    # this: the original payload may have omitted history the conversation
+    # depended on (for example a single-item follow-up whose context came
+    # entirely from the injected anchor), and dropping the anchor there
+    # would silently turn a continuation into a context-free fresh turn.
+    fresh_upstream_request_is_retry_safe: bool = False
     request_stage: str = "first_turn"
     preferred_account_id: str | None = None
     error_code_override: str | None = None
@@ -7721,6 +7855,7 @@ class _HTTPBridgeSession:
     downstream_turn_state_aliases: set[str] = field(default_factory=set)
     previous_response_ids: set[str] = field(default_factory=set)
     last_completed_input_count: int = 0
+    last_completed_response_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
     durable_session_id: str | None = None
     durable_owner_epoch: int | None = None
