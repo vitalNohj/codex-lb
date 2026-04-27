@@ -224,6 +224,40 @@ class RequestLogsRepository:
             await _safe_rollback(self._session)
             raise
 
+    async def update_model_for_request(self, request_id: str, model: str) -> int:
+        """Override the ``model`` field of any logs matching ``request_id``.
+
+        Used by route handlers that translate a public request shape (e.g.
+        ``/v1/images/generations``) into an internal Responses request: the
+        first-pass log row stores the internal host model used for routing,
+        and we rewrite it here once the public effective model is known so
+        the dashboard and usage views surface the user-visible model.
+
+        Returns the number of rows that were updated.
+        """
+        resolved_request_id = ensure_request_id(request_id)
+        try:
+            # Fetch the affected rows so we can recompute ``cost_usd``
+            # from the new model. ``add_log`` derives the cost at insert
+            # time from the original (host) model; without recomputing
+            # here, dashboards would mix the public ``gpt-image-*`` model
+            # label with host-model pricing and report inaccurate cost.
+            stmt = select(RequestLog).where(RequestLog.request_id == resolved_request_id)
+            result_rows = await self._session.execute(stmt)
+            logs = list(result_rows.scalars())
+            if not logs:
+                return 0
+            for log in logs:
+                log.model = model
+                log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+            await self._session.commit()
+        except sa_exc.ResourceClosedError:
+            return 0
+        except BaseException:
+            await _safe_rollback(self._session)
+            raise
+        return len(logs)
+
     async def list_recent(
         self,
         limit: int = 50,
