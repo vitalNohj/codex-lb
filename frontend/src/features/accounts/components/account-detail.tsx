@@ -22,6 +22,7 @@ export type AccountDetailProps = {
   onExport: (accountId: string) => void;
   onLimitWarmupChange: (accountId: string, enabled: boolean) => void;
   onExportOpenCodeAuth: (accountId: string) => void;
+  onSecurityWorkAuthorizedChange: (accountId: string, enabled: boolean) => void;
 };
 
 export function AccountDetail({
@@ -36,6 +37,7 @@ export function AccountDetail({
   onExport,
   onLimitWarmupChange,
   onExportOpenCodeAuth,
+  onSecurityWorkAuthorizedChange,
 }: AccountDetailProps) {
   const { data: trends } = useAccountTrends(account?.accountId ?? null);
   const blurred = usePrivacyStore((s) => s.blurred);
@@ -87,6 +89,7 @@ export function AccountDetail({
         onExport={onExport}
         onLimitWarmupChange={onLimitWarmupChange}
         onExportOpenCodeAuth={onExportOpenCodeAuth}
+        onSecurityWorkAuthorizedChange={onSecurityWorkAuthorizedChange}
       />
     </div>
   );
