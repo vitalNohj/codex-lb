@@ -2565,6 +2565,7 @@ def test_backend_responses_websocket_connect_failure_masks_previous_response_not
         sticky_max_age_seconds,
         exclude_account_ids,
         preferred_account_id,
+        require_security_work_authorized,
         require_preferred_account,
         defer_no_account_error,
     ):
@@ -2583,6 +2584,7 @@ def test_backend_responses_websocket_connect_failure_masks_previous_response_not
             sticky_max_age_seconds,
             exclude_account_ids,
             preferred_account_id,
+            require_security_work_authorized,
             require_preferred_account,
             defer_no_account_error,
         )
