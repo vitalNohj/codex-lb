@@ -232,6 +232,7 @@ _TEXT_DELTA_EVENT_TYPES = frozenset({"response.output_text.delta", "response.ref
 _TEXT_DONE_CONTENT_PART_TYPES = frozenset({"output_text", "refusal"})
 _REQUEST_TRANSPORT_HTTP = "http"
 _REQUEST_TRANSPORT_WEBSOCKET = "websocket"
+_API_KEY_RESERVATION_HEARTBEAT_SECONDS = 300.0
 _COMPACT_SAME_CONTRACT_RETRY_BUDGET = 1
 _ACCOUNT_RECOVERY_RETRY_CODES = frozenset(
     {
@@ -3074,7 +3075,7 @@ class ProxyService:
                     request_affinity = request_state.affinity_policy
                     text_data = request_state.request_text
                     if text_data is None:
-                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._release_websocket_request_state_reservation(request_state)
                         await self._emit_websocket_terminal_error(
                             websocket,
                             client_send_lock=client_send_lock,
@@ -3088,7 +3089,7 @@ class ProxyService:
                         continue
                     payload = _parse_websocket_payload(text_data)
                     if payload is None:
-                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._release_websocket_request_state_reservation(request_state)
                         await self._emit_websocket_terminal_error(
                             websocket,
                             client_send_lock=client_send_lock,
@@ -3102,6 +3103,11 @@ class ProxyService:
                         continue
                     async with pending_lock:
                         pending_requests.append(request_state)
+                    self._start_request_state_api_key_reservation_heartbeat(
+                        request_state,
+                        api_key=request_state.api_key or api_key,
+                        surface="websocket",
+                    )
                     request_state_registered = True
                 else:
                     downstream_idle_timeout_seconds = runtime_settings.proxy_downstream_websocket_idle_timeout_seconds
@@ -3168,8 +3174,8 @@ class ProxyService:
                                     pending_lock=pending_lock,
                                     codex_session_affinity=codex_session_affinity,
                                 ):
-                                    await self._release_websocket_reservation(
-                                        prepared_request.request_state.api_key_reservation
+                                    await self._release_websocket_request_state_reservation(
+                                        prepared_request.request_state
                                     )
                                     wait_started_at = time.monotonic()
                                     waited_for_anchor = await _wait_for_websocket_continuity_gap(
@@ -3284,7 +3290,7 @@ class ProxyService:
                         )
                         error_message = error.message if error and error.message else "Upstream error"
                         error_type = error.type if error and error.type else "server_error"
-                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._release_websocket_request_state_reservation(request_state)
                         await self._write_websocket_connect_failure(
                             account_id=None,
                             api_key=api_key,
@@ -3317,7 +3323,7 @@ class ProxyService:
                         request_state.request_log_id or request_state.request_id,
                         request_state.input_item_count,
                     )
-                    await self._release_websocket_reservation(request_state.api_key_reservation)
+                    await self._release_websocket_request_state_reservation(request_state)
                     await self._emit_websocket_terminal_error(
                         websocket,
                         client_send_lock=client_send_lock,
@@ -3334,6 +3340,11 @@ class ProxyService:
 
                 if request_state is not None and not request_state_registered:
                     try:
+                        self._start_request_state_api_key_reservation_heartbeat(
+                            request_state,
+                            api_key=request_state.api_key or api_key,
+                            surface="websocket",
+                        )
                         await self._acquire_request_state_response_create_admission(
                             request_state,
                             response_create_gate=response_create_gate,
@@ -3349,7 +3360,7 @@ class ProxyService:
                         )
                         error_message = error.message if error and error.message else "Upstream error"
                         error_type = error.type if error and error.type else "server_error"
-                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._release_websocket_request_state_reservation(request_state)
                         await self._write_websocket_connect_failure(
                             account_id=account.id if account else None,
                             api_key=api_key,
@@ -3369,7 +3380,7 @@ class ProxyService:
                         _release_websocket_response_create_gate(request_state, response_create_gate)
                         continue
                     except asyncio.CancelledError:
-                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._release_websocket_request_state_reservation(request_state)
                         if request_state_registered:
                             async with pending_lock:
                                 if request_state in pending_requests:
@@ -3377,7 +3388,7 @@ class ProxyService:
                         _release_websocket_response_create_gate(request_state, response_create_gate)
                         raise
                     except Exception:
-                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._release_websocket_request_state_reservation(request_state)
                         if request_state_registered:
                             async with pending_lock:
                                 if request_state in pending_requests:
@@ -3425,6 +3436,7 @@ class ProxyService:
                         websocket=websocket,
                     )
                     if upstream is None or account is None:
+                        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
                         if request_state_registered:
                             async with pending_lock:
                                 if request_state in pending_requests:
@@ -3517,7 +3529,7 @@ class ProxyService:
                 except Exception:
                     logger.debug("Failed to close upstream websocket", exc_info=True)
             if replay_request_state is not None:
-                await self._release_websocket_reservation(replay_request_state.api_key_reservation)
+                await self._release_websocket_request_state_reservation(replay_request_state)
                 replay_request_state.api_key_reservation = None
                 _release_websocket_response_create_gate(replay_request_state, response_create_gate)
             client_disconnected = downstream_activity.disconnected
@@ -5891,6 +5903,11 @@ class ProxyService:
                 )
             session.queued_request_count += 1
         try:
+            self._start_request_state_api_key_reservation_heartbeat(
+                request_state,
+                api_key=request_state.api_key,
+                surface="http_bridge",
+            )
             await self._acquire_request_state_response_create_admission(
                 request_state,
                 response_create_gate=session.response_create_gate,
@@ -6071,6 +6088,7 @@ class ProxyService:
             if request_enqueued and request_state in session.pending_requests:
                 session.pending_requests.remove(request_state)
             session.queued_request_count = max(0, session.queued_request_count - 1)
+        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
         if gate_acquired:
             _release_websocket_response_create_gate(request_state, session.response_create_gate)
 
@@ -6089,8 +6107,9 @@ class ProxyService:
         request_state.event_queue = None
         if not removed:
             return False
+        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
         _release_websocket_response_create_gate(request_state, session.response_create_gate)
-        await self._release_websocket_reservation(request_state.api_key_reservation)
+        await self._release_websocket_request_state_reservation(request_state)
         request_state.api_key_reservation = None
         await self._retire_http_bridge_after_drain_if_ready(session)
         return True
@@ -6635,6 +6654,18 @@ class ProxyService:
         if status_request_state is None and is_previous_response_not_found_event:
             session.upstream_control.reconnect_requested = True
             return
+
+        if status_request_state is not None and event_type not in {
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+            "error",
+        }:
+            await self._maybe_touch_request_state_api_key_reservation(
+                status_request_state,
+                api_key=status_request_state.api_key,
+                surface="http_bridge",
+            )
 
         if (
             event_type == "response.completed"
@@ -7525,6 +7556,13 @@ class ProxyService:
                 upstream_control.suppress_downstream_event = True
             return text
 
+        if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
+            await self._maybe_touch_request_state_api_key_reservation(
+                request_state,
+                api_key=request_state.api_key or api_key,
+                surface="websocket",
+            )
+
         retry_is_previous_response_not_found = is_previous_response_not_found_event
         retry_error_code = _websocket_precreated_retry_error_code(
             request_state,
@@ -7791,6 +7829,7 @@ class ProxyService:
             and error_message == "Upstream websocket closed before response.completed"
         ):
             settlement.account_health_error = False
+        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
         _release_websocket_response_create_gate(request_state, response_create_gate)
         await self._settle_stream_api_key_usage(
             api_key,
@@ -7891,7 +7930,7 @@ class ProxyService:
             error_code=error_code,
             error_message=error_message,
         )
-        await self._release_websocket_reservation(request_state.api_key_reservation)
+        await self._release_websocket_request_state_reservation(request_state)
         await self._write_websocket_connect_failure(
             account_id=account_id,
             api_key=api_key,
@@ -7982,6 +8021,7 @@ class ProxyService:
 
         last_index = len(remaining) - 1
         for index, request_state in enumerate(remaining):
+            self._cancel_request_state_api_key_reservation_heartbeat(request_state)
             request_error_code = request_state.error_code_override or error_code
             request_error_message = request_state.error_message_override or error_message
             request_error_type = request_state.error_type_override or "server_error"
@@ -8019,7 +8059,7 @@ class ProxyService:
                     error_param=request_error_param,
                     downstream_activity=downstream_activity,
                 )
-            await self._release_websocket_reservation(request_state.api_key_reservation)
+            await self._release_websocket_request_state_reservation(request_state)
             if account_id_value is None or request_state.skip_request_log:
                 continue
             latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
@@ -8142,6 +8182,129 @@ class ProxyService:
             async with self._repo_factory() as repos:
                 service = ApiKeysService(repos.api_keys)
                 await service.release_usage_reservation(reservation.reservation_id)
+
+    async def _release_websocket_request_state_reservation(
+        self,
+        request_state: "_WebSocketRequestState",
+    ) -> None:
+        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
+        await self._release_websocket_reservation(request_state.api_key_reservation)
+
+    async def _maybe_touch_api_key_reservation(
+        self,
+        *,
+        api_key: ApiKeyData | None,
+        reservation: ApiKeyUsageReservationData | None,
+        last_touch_at: float,
+        request_id: str,
+        surface: str,
+    ) -> float:
+        if reservation is None:
+            return last_touch_at
+
+        now = time.monotonic()
+        if now < last_touch_at + _API_KEY_RESERVATION_HEARTBEAT_SECONDS:
+            return last_touch_at
+
+        with anyio.CancelScope(shield=True):
+            try:
+                async with self._repo_factory() as repos:
+                    service = ApiKeysService(repos.api_keys)
+                    touched = await service.touch_usage_reservation(reservation.reservation_id)
+                    if not touched:
+                        return last_touch_at
+            except Exception:
+                logger.warning(
+                    "Failed to touch %s API key reservation key_id=%s request_id=%s",
+                    surface,
+                    api_key.id if api_key is not None else None,
+                    request_id,
+                    exc_info=True,
+                )
+                return last_touch_at
+        return now
+
+    async def _run_api_key_reservation_heartbeat(
+        self,
+        *,
+        api_key: ApiKeyData | None,
+        reservation: ApiKeyUsageReservationData | None,
+        touch_state: "_ApiKeyReservationTouchState",
+        request_id: str,
+        surface: str,
+        stop_event: asyncio.Event,
+    ) -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=_API_KEY_RESERVATION_HEARTBEAT_SECONDS)
+                return
+            except TimeoutError:
+                touch_state.last_touch_at = await self._maybe_touch_api_key_reservation(
+                    api_key=api_key,
+                    reservation=reservation,
+                    last_touch_at=touch_state.last_touch_at,
+                    request_id=request_id,
+                    surface=surface,
+                )
+
+    @staticmethod
+    def _cancel_api_key_reservation_heartbeat_task(task: asyncio.Task[None]) -> None:
+        task.add_done_callback(_consume_api_key_reservation_heartbeat_result)
+        task.cancel()
+
+    def _start_request_state_api_key_reservation_heartbeat(
+        self,
+        request_state: "_WebSocketRequestState",
+        *,
+        api_key: ApiKeyData | None,
+        surface: str,
+    ) -> None:
+        if request_state.api_key_reservation is None:
+            return
+        if request_state.api_key_reservation_heartbeat_task is not None:
+            return
+        stop_event = asyncio.Event()
+        request_state.api_key_reservation_heartbeat_stop = stop_event
+        request_state.api_key_reservation_heartbeat_task = asyncio.create_task(
+            self._run_api_key_reservation_heartbeat(
+                api_key=api_key,
+                reservation=request_state.api_key_reservation,
+                touch_state=_ApiKeyReservationTouchState(
+                    last_touch_at=request_state.api_key_reservation_last_touch_at,
+                ),
+                request_id=request_state.response_id or request_state.request_log_id or request_state.request_id,
+                surface=surface,
+                stop_event=stop_event,
+            )
+        )
+
+    def _cancel_request_state_api_key_reservation_heartbeat(
+        self,
+        request_state: "_WebSocketRequestState",
+    ) -> None:
+        task = request_state.api_key_reservation_heartbeat_task
+        stop_event = request_state.api_key_reservation_heartbeat_stop
+        request_state.api_key_reservation_heartbeat_task = None
+        request_state.api_key_reservation_heartbeat_stop = None
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None and not task.done():
+            self._cancel_api_key_reservation_heartbeat_task(task)
+
+    async def _maybe_touch_request_state_api_key_reservation(
+        self,
+        request_state: "_WebSocketRequestState",
+        *,
+        api_key: ApiKeyData | None,
+        surface: str,
+    ) -> None:
+        request_state.api_key_reservation_last_touch_at = await self._maybe_touch_api_key_reservation(
+            api_key=api_key,
+            reservation=request_state.api_key_reservation,
+            last_touch_at=request_state.api_key_reservation_last_touch_at,
+            request_id=request_state.response_id or request_state.request_id,
+            surface=surface,
+        )
 
     async def _settle_compact_api_key_usage(
         self,
@@ -8757,6 +8920,7 @@ class ProxyService:
                                     transient_retries < _MAX_TRANSIENT_SAME_ACCOUNT_RETRIES - 1 or allow_retry_flag
                                 ),
                                 api_key=api_key,
+                                api_key_reservation=api_key_reservation,
                                 settlement=settlement,
                                 suppress_text_done_events=suppress_text_done_events,
                                 upstream_stream_transport=upstream_stream_transport,
@@ -9026,6 +9190,7 @@ class ProxyService:
                                 False,
                                 request_started_at=start,
                                 api_key=api_key,
+                                api_key_reservation=api_key_reservation,
                                 settlement=settlement,
                                 suppress_text_done_events=suppress_text_done_events,
                                 upstream_stream_transport=upstream_stream_transport,
@@ -9169,6 +9334,7 @@ class ProxyService:
         request_started_at: float,
         allow_transient_retry: bool = False,
         api_key: ApiKeyData | None,
+        api_key_reservation: ApiKeyUsageReservationData | None,
         settlement: _StreamSettlement,
         suppress_text_done_events: bool,
         upstream_stream_transport: str | None,
@@ -9197,6 +9363,20 @@ class ProxyService:
             tool_call_dedupe = _WebSocketUpstreamControl()
         suppressed_duplicate_tool_call = False
         response_create_lease = AdmissionLease(None)
+        api_key_reservation_touch_state = _ApiKeyReservationTouchState(last_touch_at=start)
+        api_key_reservation_heartbeat_stop = asyncio.Event()
+        api_key_reservation_heartbeat_task: asyncio.Task[None] | None = None
+        if api_key_reservation is not None:
+            api_key_reservation_heartbeat_task = asyncio.create_task(
+                self._run_api_key_reservation_heartbeat(
+                    api_key=api_key,
+                    reservation=api_key_reservation,
+                    touch_state=api_key_reservation_touch_state,
+                    request_id=request_id,
+                    surface="stream",
+                    stop_event=api_key_reservation_heartbeat_stop,
+                )
+            )
 
         try:
             response_create_lease = await self._get_work_admission().acquire_response_create()
@@ -9258,6 +9438,14 @@ class ProxyService:
             first_payload = parse_sse_data_json(first)
             event = parse_sse_event(first)
             event_type = _event_type_from_payload(event, first_payload)
+            if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
+                api_key_reservation_touch_state.last_touch_at = await self._maybe_touch_api_key_reservation(
+                    api_key=api_key,
+                    reservation=api_key_reservation,
+                    last_touch_at=api_key_reservation_touch_state.last_touch_at,
+                    request_id=request_id,
+                    surface="stream",
+                )
             event_service_tier = _service_tier_from_event_payload(first_payload)
             if event_service_tier is not None:
                 actual_service_tier = event_service_tier
@@ -9386,6 +9574,14 @@ class ProxyService:
                         response_id=response_id,
                         error_code="upstream_error",
                         error_message=message,
+                    )
+                if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
+                    api_key_reservation_touch_state.last_touch_at = await self._maybe_touch_api_key_reservation(
+                        api_key=api_key,
+                        reservation=api_key_reservation,
+                        last_touch_at=api_key_reservation_touch_state.last_touch_at,
+                        request_id=request_id,
+                        surface="stream",
                     )
                 event_service_tier = _service_tier_from_event_payload(event_payload)
                 if event_service_tier is not None:
@@ -9539,6 +9735,9 @@ class ProxyService:
             settlement.account_health_error = _should_penalize_stream_error(error_code)
             raise
         finally:
+            api_key_reservation_heartbeat_stop.set()
+            if api_key_reservation_heartbeat_task is not None:
+                self._cancel_api_key_reservation_heartbeat_task(api_key_reservation_heartbeat_task)
             response_create_lease.release()
             input_tokens = usage.input_tokens if usage else None
             output_tokens = usage.output_tokens if usage else None
@@ -10096,6 +10295,11 @@ class _TerminalStreamError(Exception):
 
 
 @dataclass
+class _ApiKeyReservationTouchState:
+    last_touch_at: float
+
+
+@dataclass
 class _StreamSettlement:
     """Populated by _stream_once(), consumed by _stream_with_retry() for reservation settlement."""
 
@@ -10124,6 +10328,15 @@ def _stream_settlement_error_payload(settlement: _StreamSettlement) -> UpstreamE
     else:
         payload["message"] = "Upstream error"
     return payload
+
+
+def _consume_api_key_reservation_heartbeat_result(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.warning("API key reservation heartbeat task failed during cancellation", exc_info=True)
 
 
 def _should_penalize_stream_error(code: str | None) -> bool:
@@ -10224,6 +10437,9 @@ class _WebSocketRequestState:
     seen_tool_call_keys: dict[tuple[str, str, str | None, str | None, str], None] = field(default_factory=dict)
     input_item_count: int = 0
     input_full_fingerprint: str | None = None
+    api_key_reservation_last_touch_at: float = field(default_factory=time.monotonic)
+    api_key_reservation_heartbeat_stop: asyncio.Event | None = None
+    api_key_reservation_heartbeat_task: asyncio.Task[None] | None = None
     downstream_visible: bool = False
 
 
