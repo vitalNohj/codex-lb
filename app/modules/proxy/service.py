@@ -815,29 +815,96 @@ class ProxyService:
             # Only the trim branch below (which verifies the stored prefix
             # fingerprint) is allowed to flip this flag to ``True``.
             request_state.fresh_upstream_request_is_retry_safe = False
-        session_or_forward = await self._get_or_create_http_bridge_session(
-            bridge_session_key,
-            headers=dict(headers),
-            affinity=affinity,
-            api_key=api_key,
-            request_model=effective_payload.model,
-            idle_ttl_seconds=_effective_http_bridge_idle_ttl_seconds(
+        try:
+            session_or_forward = await self._get_or_create_http_bridge_session(
+                bridge_session_key,
+                headers=dict(headers),
                 affinity=affinity,
-                idle_ttl_seconds=idle_ttl_seconds,
-                codex_idle_ttl_seconds=codex_idle_ttl_seconds,
-                prompt_cache_idle_ttl_seconds=prompt_cache_idle_ttl_seconds,
-            ),
-            max_sessions=max_sessions,
-            previous_response_id=request_state.previous_response_id,
-            gateway_safe_mode=runtime_config.gateway_safe_mode,
-            allow_forward_to_owner=True,
-            forwarded_request=forwarded_request,
-            forwarded_affinity_kind=forwarded_affinity_kind,
-            forwarded_affinity_key=forwarded_affinity_key,
-            durable_lookup=durable_lookup,
-            request_stage=request_state.request_stage,
-            preferred_account_id=request_state.preferred_account_id,
-        )
+                api_key=api_key,
+                request_model=effective_payload.model,
+                idle_ttl_seconds=_effective_http_bridge_idle_ttl_seconds(
+                    affinity=affinity,
+                    idle_ttl_seconds=idle_ttl_seconds,
+                    codex_idle_ttl_seconds=codex_idle_ttl_seconds,
+                    prompt_cache_idle_ttl_seconds=prompt_cache_idle_ttl_seconds,
+                ),
+                max_sessions=max_sessions,
+                previous_response_id=request_state.previous_response_id,
+                gateway_safe_mode=runtime_config.gateway_safe_mode,
+                allow_forward_to_owner=True,
+                forwarded_request=forwarded_request,
+                forwarded_affinity_kind=forwarded_affinity_kind,
+                forwarded_affinity_key=forwarded_affinity_key,
+                durable_lookup=durable_lookup,
+                request_stage=request_state.request_stage,
+                preferred_account_id=request_state.preferred_account_id,
+            )
+        except ProxyResponseError as exc:
+            if not (
+                _http_bridge_is_previous_response_owner_unavailable(exc)
+                and proxy_injected_previous_response_id
+                and fresh_upstream_request_text is not None
+                and durable_full_resend_anchor_count is not None
+                and durable_full_resend_anchor_fingerprint is not None
+            ):
+                raise
+            _log_http_bridge_event(
+                "owner_unavailable_fresh_resend",
+                bridge_session_key,
+                account_id=request_state.preferred_account_id,
+                model=payload.model,
+                detail="outcome=fresh_full_resend_without_anchor",
+                cache_key_family=bridge_session_key.affinity_kind,
+                model_class=_extract_model_class(payload.model) if payload.model else None,
+            )
+            request_state, text_data = self._prepare_http_bridge_request(
+                payload,
+                headers,
+                api_key=api_key,
+                api_key_reservation=api_key_reservation,
+                request_id=request_id,
+            )
+            if downstream_turn_state is not None:
+                request_state.session_id = _normalize_session_id(downstream_turn_state)
+            request_state.transport = _REQUEST_TRANSPORT_HTTP
+            request_state.request_stage = _http_bridge_request_stage(
+                headers=headers,
+                payload=payload,
+                durable_lookup=None,
+            )
+            request_state.preferred_account_id = rewritten_file_account_id
+            if request_state.preferred_account_id is None:
+                request_state.preferred_account_id = await self._resolve_file_account_for_responses(payload, headers)
+            effective_payload = payload
+            untrimmed_effective_payload = payload
+            proxy_injected_previous_response_id = False
+            previous_response_trimmed_input_count = None
+            previous_response_trimmed_input_fingerprint = None
+            durable_full_resend_anchor_count = None
+            durable_full_resend_anchor_fingerprint = None
+            session_or_forward = await self._get_or_create_http_bridge_session(
+                bridge_session_key,
+                headers=dict(headers),
+                affinity=affinity,
+                api_key=api_key,
+                request_model=payload.model,
+                idle_ttl_seconds=_effective_http_bridge_idle_ttl_seconds(
+                    affinity=affinity,
+                    idle_ttl_seconds=idle_ttl_seconds,
+                    codex_idle_ttl_seconds=codex_idle_ttl_seconds,
+                    prompt_cache_idle_ttl_seconds=prompt_cache_idle_ttl_seconds,
+                ),
+                max_sessions=max_sessions,
+                previous_response_id=None,
+                gateway_safe_mode=runtime_config.gateway_safe_mode,
+                allow_forward_to_owner=True,
+                forwarded_request=forwarded_request,
+                forwarded_affinity_kind=forwarded_affinity_kind,
+                forwarded_affinity_key=forwarded_affinity_key,
+                durable_lookup=None,
+                request_stage=request_state.request_stage,
+                preferred_account_id=request_state.preferred_account_id,
+            )
         if isinstance(session_or_forward, _HTTPBridgeOwnerForward):
             forwarded_any = False
             try:
@@ -3607,6 +3674,32 @@ class ProxyService:
                     "input": original_input_items[session_anchor.stored_input_item_count :],
                 }
             )
+        if (
+            continuity_state is not None
+            and responses_payload.previous_response_id is not None
+            and responses_payload.previous_response_id == continuity_state.last_completed_response_id
+            and continuity_state.last_pending_function_call_ids
+            and isinstance(responses_payload.input, list)
+        ):
+            input_items = cast(list[JsonValue], responses_payload.input)
+            missing_call_ids = _missing_function_call_outputs_for_previous_response(
+                input_items,
+                pending_call_ids=continuity_state.last_pending_function_call_ids,
+            )
+            if missing_call_ids:
+                responses_payload = responses_payload.model_copy(
+                    update={
+                        "input": _inject_missing_interrupted_function_call_outputs(
+                            input_items,
+                            missing_call_ids=missing_call_ids,
+                        )
+                    }
+                )
+                logger.warning(
+                    "websocket_interrupted_tool_outputs_injected previous_response_id=%s missing_call_count=%s",
+                    responses_payload.previous_response_id,
+                    len(missing_call_ids),
+                )
         reservation = await self._reserve_websocket_api_key_usage(
             refreshed_api_key,
             request_model=responses_payload.model,
@@ -6332,7 +6425,7 @@ class ProxyService:
                 return False
             if request_state.replay_count >= 1:
                 return False
-            if request_state.response_event_count > 0:
+            if request_state.response_event_count > 0 or request_state.downstream_visible:
                 return False
             close_classification = _classify_upstream_close(
                 session.last_upstream_close_code,
@@ -6578,6 +6671,12 @@ class ProxyService:
                 if actual_service_tier is not None:
                     matched_request_state.actual_service_tier = actual_service_tier
                     matched_request_state.service_tier = actual_service_tier
+                completed_function_call_id = _response_output_item_done_function_call_id(payload)
+                if (
+                    completed_function_call_id is not None
+                    and completed_function_call_id not in matched_request_state.pending_function_call_ids
+                ):
+                    matched_request_state.pending_function_call_ids.append(completed_function_call_id)
                 if mark_duplicate_tool_call_downstream_event(
                     payload,
                     seen_tool_call_keys=matched_request_state.seen_tool_call_keys,
@@ -6586,6 +6685,8 @@ class ProxyService:
                 ):
                     matched_request_state.suppressed_duplicate_tool_call = True
                     return
+                if event_type in _TEXT_DELTA_EVENT_TYPES:
+                    matched_request_state.downstream_visible = True
                 if payload is not None:
                     event_block = format_sse_event(payload)
 
@@ -7474,6 +7575,12 @@ class ProxyService:
                 if actual_service_tier is not None:
                     request_state.actual_service_tier = actual_service_tier
                     request_state.service_tier = actual_service_tier
+                completed_function_call_id = _response_output_item_done_function_call_id(payload)
+                if (
+                    completed_function_call_id is not None
+                    and completed_function_call_id not in request_state.pending_function_call_ids
+                ):
+                    request_state.pending_function_call_ids.append(completed_function_call_id)
                 if mark_duplicate_tool_call_downstream_event(
                     payload,
                     seen_tool_call_keys=request_state.seen_tool_call_keys,
@@ -7598,7 +7705,7 @@ class ProxyService:
         _record_response_event(request_state, event_type)
 
         if request_state is None:
-            if is_previous_response_not_found_event and not pending_requests:
+            if is_previous_response_not_found_event:
                 upstream_control.reconnect_requested = True
                 downstream_text = json.dumps(
                     cast(
@@ -8653,6 +8760,12 @@ class ProxyService:
         deadline = start + base_settings.proxy_request_budget_seconds
         prefer_earlier_reset = settings.prefer_earlier_reset_accounts
         upstream_stream_transport = _resolve_upstream_stream_transport(settings.upstream_stream_transport)
+        if request_transport == _REQUEST_TRANSPORT_HTTP and upstream_stream_transport == "websocket":
+            # HTTP/SSE clients can retry a half-rendered turn after an upstream
+            # websocket close, making the same visible message restart. Keep
+            # native websocket clients on their dedicated path, but use upstream
+            # HTTP/SSE for downstream HTTP streams.
+            upstream_stream_transport = "http"
         if rewritten_file_account_id is None:
             self._raise_for_unsupported_input_image_references(payload)
             rewritten_file_account_id = await self._resolve_file_account_for_responses(payload, headers)
@@ -10506,6 +10619,7 @@ class _WebSocketRequestState:
     affinity_policy: _AffinityPolicy = field(default_factory=_AffinityPolicy)
     suppressed_downstream_tool_call: bool = False
     suppressed_duplicate_tool_call: bool = False
+    pending_function_call_ids: list[str] = field(default_factory=list)
     seen_tool_call_keys: dict[tuple[str, str, str | None, str | None, str], None] = field(default_factory=dict)
     input_item_count: int = 0
     input_full_fingerprint: str | None = None
@@ -10579,6 +10693,7 @@ class _WebSocketContinuityState:
     last_completed_input_count: int = 0
     last_completed_response_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
+    last_pending_function_call_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -10680,10 +10795,12 @@ def _record_websocket_continuity_completion(
         continuity_state.last_completed_response_id = None
         continuity_state.last_completed_input_count = 0
         continuity_state.last_completed_input_prefix_fingerprint = None
+        continuity_state.last_pending_function_call_ids = []
         return
     continuity_state.last_completed_response_id = response_id
     continuity_state.last_completed_input_count = request_state.input_item_count
     continuity_state.last_completed_input_prefix_fingerprint = request_state.input_full_fingerprint
+    continuity_state.last_pending_function_call_ids = list(request_state.pending_function_call_ids)
 
 
 async def _wait_for_websocket_continuity_gap(
@@ -10727,6 +10844,61 @@ def _http_error_status_from_payload(payload: dict[str, JsonValue] | None) -> int
     if isinstance(status, int):
         return status
     return None
+
+
+def _function_call_output_call_ids(input_items: list[JsonValue]) -> set[str]:
+    call_ids: set[str] = set()
+    for item in input_items:
+        if not isinstance(item, dict) or _websocket_input_item_type(item) != "function_call_output":
+            continue
+        call_id = item.get("call_id")
+        if isinstance(call_id, str) and call_id:
+            call_ids.add(call_id)
+    return call_ids
+
+
+def _missing_function_call_outputs_for_previous_response(
+    input_items: list[JsonValue],
+    *,
+    pending_call_ids: list[str],
+) -> list[str]:
+    if not pending_call_ids:
+        return []
+    present_call_ids = _function_call_output_call_ids(input_items)
+    return [call_id for call_id in pending_call_ids if call_id not in present_call_ids]
+
+
+def _synthetic_interrupted_function_call_output(call_id: str) -> dict[str, JsonValue]:
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": (
+            "Tool call was not executed because the previous turn was interrupted before tool output was available."
+        ),
+    }
+
+
+def _inject_missing_interrupted_function_call_outputs(
+    input_items: list[JsonValue],
+    *,
+    missing_call_ids: list[str],
+) -> list[JsonValue]:
+    if not missing_call_ids:
+        return input_items
+    return [
+        *[_synthetic_interrupted_function_call_output(call_id) for call_id in missing_call_ids],
+        *input_items,
+    ]
+
+
+def _response_output_item_done_function_call_id(payload: dict[str, JsonValue] | None) -> str | None:
+    if not isinstance(payload, dict) or payload.get("type") != "response.output_item.done":
+        return None
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "function_call":
+        return None
+    call_id = item.get("call_id")
+    return call_id if isinstance(call_id, str) and call_id else None
 
 
 def _openai_error_envelope_from_response_failed_payload(
@@ -13457,6 +13629,21 @@ def _http_bridge_should_attempt_local_previous_response_recovery(exc: ProxyRespo
     message_value = error.get("message")
     message = message_value.strip() if isinstance(message_value, str) and message_value.strip() else None
     return _is_previous_response_not_found_error(code=code, param=param, message=message)
+
+
+def _http_bridge_is_previous_response_owner_unavailable(exc: ProxyResponseError) -> bool:
+    if exc.status_code != 502:
+        return False
+    payload = exc.payload
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    return (
+        error.get("code") == "upstream_unavailable"
+        and error.get("message") == "Previous response owner account is unavailable; retry later."
+    )
 
 
 def _http_bridge_is_context_overflow_error(exc: ProxyResponseError) -> bool:
