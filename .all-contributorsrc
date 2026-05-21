@@ -520,6 +520,18 @@
         "code",
         "test"
       ]
+    },
+    {
+      "login": "Lotfree618",
+      "name": "Lotfree",
+      "avatar_url": "https://avatars.githubusercontent.com/u/91266981?v=4",
+      "profile": "https://github.com/Lotfree618",
+      "contributions": [
+        "code",
+        "test",
+        "doc",
+        "bug"
+      ]
     }
   ],
   "contributorsPerLine": 7,
