@@ -64,10 +64,15 @@ from app.core.config.settings import DEFAULT_HOME_DIR, Settings, get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import (
+    PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
     OpenAIErrorDetail,
     OpenAIErrorEnvelope,
     ResponseFailedEvent,
+    is_previous_response_not_found_error,
+    is_previous_response_not_found_message,
     openai_error,
+    previous_response_id_from_not_found_message,
+    previous_response_stream_incomplete_error,
     response_failed_event,
 )
 from app.core.exceptions import AppError, ProxyAuthError, ProxyRateLimitError
@@ -3327,10 +3332,24 @@ class ProxyService:
                                 request_affinity = prepared_request.affinity_policy
                                 text_data = prepared_request.text_data
                             except ProxyResponseError as exc:
+                                (
+                                    status_code,
+                                    error_payload,
+                                    _error_code,
+                                    _error_message,
+                                ) = _sanitize_websocket_previous_response_error(
+                                    previous_response_id=_previous_response_id_from_payload(payload),
+                                    session_id=_owner_lookup_session_id_from_headers(headers),
+                                    status_code=exc.status_code,
+                                    payload=exc.payload,
+                                    error_code="upstream_error",
+                                    error_message="Upstream error",
+                                    surface="websocket_connect",
+                                )
                                 async with client_send_lock:
                                     await websocket.send_text(
                                         _serialize_websocket_error_event(
-                                            _wrapped_websocket_error_event(exc.status_code, exc.payload)
+                                            _wrapped_websocket_error_event(status_code, error_payload)
                                         )
                                     )
                                 continue
@@ -8405,6 +8424,18 @@ class ProxyService:
             request_error_message = request_state.error_message_override or error_message
             request_error_type = request_state.error_type_override or "server_error"
             request_error_param = request_state.error_param_override
+            (
+                request_error_code,
+                request_error_message,
+                request_error_type,
+                request_error_param,
+            ) = _sanitize_websocket_terminal_error_fields(
+                request_state=request_state,
+                error_code=request_error_code,
+                error_message=request_error_message,
+                error_type=request_error_type,
+                error_param=request_error_param,
+            )
             if index == last_index:
                 _maybe_dump_oversized_response_create_request(
                     request_state,
@@ -8472,6 +8503,13 @@ class ProxyService:
         error_param: str | None = None,
         downstream_activity: _DownstreamWebSocketActivity | None = None,
     ) -> None:
+        error_code, error_message, error_type, error_param = _sanitize_websocket_terminal_error_fields(
+            request_state=request_state,
+            error_code=error_code,
+            error_message=error_message,
+            error_type=error_type,
+            error_param=error_param,
+        )
         event = response_failed_event(
             error_code,
             error_message,
@@ -11364,25 +11402,11 @@ def _websocket_event_error_message(event_type: str | None, payload: dict[str, Js
 
 
 def _is_previous_response_not_found_message(message: str | None) -> bool:
-    if message is None:
-        return False
-    normalized = " ".join(message.lower().split())
-    return "previous response" in normalized and "not found" in normalized
+    return is_previous_response_not_found_message(message)
 
 
 def _previous_response_id_from_not_found_message(message: str | None) -> str | None:
-    if message is None:
-        return None
-    normalized = " ".join(message.split())
-    match = re.search(
-        r"""previous\s+response\s+with\s+id\s+['"](?P<response_id>[^'"]+)['"]\s+not\s+found""",
-        normalized,
-        re.IGNORECASE,
-    )
-    if match is None:
-        return None
-    response_id = match.group("response_id").strip()
-    return response_id or None
+    return previous_response_id_from_not_found_message(message)
 
 
 def _message_mentions_previous_response_id(message: str | None, previous_response_id: str | None) -> bool:
@@ -11555,11 +11579,7 @@ def _is_previous_response_not_found_error(
     param: str | None,
     message: str | None,
 ) -> bool:
-    if code == "previous_response_not_found":
-        return True
-    if code != "invalid_request_error" or param != "previous_response_id":
-        return False
-    return _is_previous_response_not_found_message(message)
+    return is_previous_response_not_found_error(code=code, param=param, message=message)
 
 
 def _compact_previous_response_not_found_error(exc: ProxyResponseError) -> ProxyResponseError | None:
@@ -11575,11 +11595,7 @@ def _compact_previous_response_not_found_error(exc: ProxyResponseError) -> Proxy
         return None
     return ProxyResponseError(
         502,
-        openai_error(
-            "stream_incomplete",
-            "Upstream websocket closed before response.completed",
-            error_type="server_error",
-        ),
+        previous_response_stream_incomplete_error(),
         failure_phase=exc.failure_phase,
         retryable_same_contract=False,
         failure_detail="previous_response_not_found",
@@ -11694,7 +11710,7 @@ def _rewrite_websocket_continuity_corruption_event(
     )
     rewritten_event_payload = response_failed_event(
         "stream_incomplete",
-        "Upstream websocket closed before response.completed",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
         error_type="server_error",
         response_id=request_state.response_id or request_state.request_id,
     )
@@ -11756,9 +11772,29 @@ def _sanitize_websocket_connect_failure(
     error_code: str,
     error_message: str,
 ) -> tuple[int, OpenAIErrorEnvelope, str, str]:
-    if request_state.previous_response_id is None:
-        return status_code, payload, error_code, error_message
+    return _sanitize_websocket_previous_response_error(
+        previous_response_id=request_state.previous_response_id,
+        session_id=request_state.session_id,
+        status_code=status_code,
+        payload=payload,
+        error_code=error_code,
+        error_message=error_message,
+        surface="websocket_connect",
+    )
 
+
+def _sanitize_websocket_previous_response_error(
+    *,
+    previous_response_id: str | None,
+    session_id: str | None,
+    status_code: int,
+    payload: OpenAIErrorEnvelope,
+    error_code: str,
+    error_message: str,
+    surface: str,
+) -> tuple[int, OpenAIErrorEnvelope, str, str]:
+    if previous_response_id is None:
+        return status_code, payload, error_code, error_message
     parsed_error = _parse_openai_error(payload)
     normalized_code = _normalize_error_code(
         parsed_error.code if parsed_error else error_code,
@@ -11781,12 +11817,12 @@ def _sanitize_websocket_connect_failure(
     if not should_rewrite:
         return status_code, payload, error_code, error_message
 
-    rewritten_message = "Upstream websocket closed before response.completed"
+    rewritten_message = PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE
     _record_continuity_fail_closed(
-        surface="websocket_connect",
+        surface=surface,
         reason=reason,
-        previous_response_id=request_state.previous_response_id,
-        session_id=request_state.session_id,
+        previous_response_id=previous_response_id,
+        session_id=session_id,
         upstream_error_code=normalized_code,
     )
     return (
@@ -11799,6 +11835,45 @@ def _sanitize_websocket_connect_failure(
         "stream_incomplete",
         rewritten_message,
     )
+
+
+def _sanitize_websocket_terminal_error_fields(
+    *,
+    request_state: _WebSocketRequestState,
+    error_code: str,
+    error_message: str,
+    error_type: str,
+    error_param: str | None,
+) -> tuple[str, str, str, str | None]:
+    normalized_code = _normalize_error_code(error_code, error_type)
+    if not _is_previous_response_not_found_error(
+        code=normalized_code,
+        param=error_param,
+        message=error_message,
+    ):
+        return error_code, error_message, error_type, error_param
+    _record_continuity_fail_closed(
+        surface="websocket_terminal",
+        reason="previous_response_not_found",
+        previous_response_id=request_state.previous_response_id,
+        session_id=request_state.session_id,
+        upstream_error_code=normalized_code,
+    )
+    return (
+        "stream_incomplete",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+        "server_error",
+        None,
+    )
+
+
+def _previous_response_id_from_payload(payload: Mapping[str, JsonValue] | None) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    previous_response_id = payload.get("previous_response_id")
+    if isinstance(previous_response_id, str) and previous_response_id.strip():
+        return previous_response_id.strip()
+    return None
 
 
 def _rewrite_previous_response_stream_error(
@@ -11825,7 +11900,7 @@ def _rewrite_previous_response_stream_error(
         )
         return (
             "stream_incomplete",
-            "Upstream websocket closed before response.completed",
+            PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
             None,
         )
     if _is_missing_tool_output_error(
@@ -11841,7 +11916,7 @@ def _rewrite_previous_response_stream_error(
         )
         return (
             "stream_incomplete",
-            "Upstream websocket closed before response.completed",
+            PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
             None,
         )
     normalized_code = _normalize_error_code(error_code, error_type)
@@ -12724,6 +12799,20 @@ def _wrapped_websocket_error_event(
     status_code: int,
     payload: OpenAIErrorEnvelope,
 ) -> dict[str, JsonValue]:
+    error = payload["error"]
+    error_code = _normalize_error_code(
+        error.get("code"),
+        error.get("type"),
+    )
+    error_param = error.get("param")
+    error_message = error.get("message")
+    if _is_previous_response_not_found_error(
+        code=error_code,
+        param=error_param,
+        message=error_message,
+    ):
+        status_code = 502
+        payload = previous_response_stream_incomplete_error()
     error_payload = cast(JsonValue, dict(payload["error"]))
     event: dict[str, JsonValue] = {
         "type": "error",
@@ -13800,11 +13889,7 @@ def _http_bridge_previous_response_error_envelope(
 
 
 def _http_bridge_continuity_lost_error_envelope() -> OpenAIErrorEnvelope:
-    return openai_error(
-        "stream_incomplete",
-        "Upstream websocket closed before response.completed",
-        error_type="server_error",
-    )
+    return previous_response_stream_incomplete_error()
 
 
 def _http_bridge_owner_lookup_unavailable_error_envelope() -> OpenAIErrorEnvelope:
