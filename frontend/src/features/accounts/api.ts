@@ -2,6 +2,8 @@ import { del, get, post, put } from "@/lib/api-client";
 
 import {
   AccountActionResponseSchema,
+  AccountAliasRequestSchema,
+  AccountAliasResponseSchema,
   AccountExportResponseSchema,
   AccountImportResponseSchema,
   AccountLimitWarmupUpdateRequestSchema,
@@ -44,6 +46,15 @@ export function reactivateAccount(accountId: string) {
   return post(
     `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/reactivate`,
     AccountActionResponseSchema,
+  );
+}
+
+export function setAccountAlias(accountId: string, alias: string | null) {
+  const validated = AccountAliasRequestSchema.parse({ alias });
+  return put(
+    `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/alias`,
+    AccountAliasResponseSchema,
+    { body: validated },
   );
 }
 

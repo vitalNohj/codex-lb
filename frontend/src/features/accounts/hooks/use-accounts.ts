@@ -9,6 +9,7 @@ import {
   listAccounts,
   pauseAccount,
   reactivateAccount,
+  setAccountAlias,
   updateAccountLimitWarmup,
 } from "@/features/accounts/api";
 
@@ -58,6 +59,18 @@ export function useAccountMutations() {
     },
   });
 
+  const setAliasMutation = useMutation({
+    mutationFn: ({ accountId, alias }: { accountId: string; alias: string | null }) =>
+      setAccountAlias(accountId, alias),
+    onSuccess: () => {
+      toast.success("Account alias updated");
+      invalidateAccountRelatedQueries(queryClient);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Alias update failed");
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: deleteAccount,
     onSuccess: () => {
@@ -100,7 +113,15 @@ export function useAccountMutations() {
     },
   });
 
-  return { importMutation, pauseMutation, resumeMutation, deleteMutation, exportMutation, limitWarmupMutation };
+  return {
+    importMutation,
+    pauseMutation,
+    resumeMutation,
+    setAliasMutation,
+    deleteMutation,
+    exportMutation,
+    limitWarmupMutation,
+  };
 }
 
 export function useAccountTrends(accountId: string | null) {
