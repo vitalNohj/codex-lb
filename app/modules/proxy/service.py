@@ -2004,7 +2004,7 @@ class ProxyService:
                 account = selection.account
                 if not account:
                     if last_exc is not None:
-                        raise last_exc
+                        break
                     log_error_code = selection.error_code or "no_accounts"
                     log_error_message = selection.error_message or "No active accounts available"
                     raise ProxyResponseError(
@@ -2074,14 +2074,20 @@ class ProxyService:
                             raise compact_continuity_error from exc
                         if exc.status_code == 401:
                             if refresh_retry_used:
-                                await self._settle_compact_api_key_usage(
-                                    api_key=api_key,
-                                    api_key_reservation=api_key_reservation,
-                                    response=None,
-                                    request_service_tier=request_service_tier,
-                                )
-                                await self._handle_proxy_error(account, exc)
-                                raise
+                                try:
+                                    await self._handle_proxy_error(account, exc)
+                                except Exception:
+                                    await self._settle_compact_api_key_usage(
+                                        api_key=api_key,
+                                        api_key_reservation=api_key_reservation,
+                                        response=None,
+                                        request_service_tier=request_service_tier,
+                                    )
+                                    raise
+                                last_exc = exc
+                                excluded_account_ids.add(account.id)
+                                transient_exhausted = True
+                                break
                             try:
                                 remaining_budget = _remaining_budget_seconds(deadline)
                                 if remaining_budget <= 0:
@@ -2403,6 +2409,36 @@ class ProxyService:
                             return response
                         except ProxyResponseError as retry_exc:
                             await self._handle_proxy_error(account, retry_exc)
+                            if retry_exc.status_code == 401:
+                                selection = await self._select_account_with_budget_compatible(
+                                    deadline,
+                                    request_id=request_id,
+                                    kind=request_kind,
+                                    api_key=api_key,
+                                    sticky_key=affinity.key,
+                                    sticky_kind=affinity.kind,
+                                    reallocate_sticky=affinity.reallocate_sticky,
+                                    sticky_max_age_seconds=affinity.max_age_seconds,
+                                    prefer_earlier_reset_accounts=settings.prefer_earlier_reset_accounts,
+                                    routing_strategy=routing_strategy,
+                                    model=selection_model,
+                                    exclude_account_ids={account.id},
+                                )
+                                if selection.account is not None:
+                                    account = selection.account
+                                    account_id_value = account.id
+                                    account = await self._ensure_fresh_with_budget_or_auth_error(
+                                        account,
+                                        timeout_seconds=_remaining_budget_seconds(deadline),
+                                    )
+                                    try:
+                                        response = await _call_goal(account)
+                                        await self._load_balancer.record_success(account)
+                                        log_status = "success"
+                                        return response
+                                    except ProxyResponseError as failover_exc:
+                                        await self._handle_proxy_error(account, failover_exc)
+                                        raise
                             raise
                     except RefreshError as refresh_exc:
                         if refresh_exc.is_permanent:
@@ -2584,6 +2620,36 @@ class ProxyService:
                             return response
                         except ProxyResponseError as retry_exc:
                             await self._handle_proxy_error(account, retry_exc)
+                            if retry_exc.status_code == 401:
+                                selection = await self._select_account_with_budget_compatible(
+                                    deadline,
+                                    request_id=request_id,
+                                    kind=request_kind,
+                                    api_key=api_key,
+                                    sticky_key=affinity.key,
+                                    sticky_kind=affinity.kind,
+                                    reallocate_sticky=affinity.reallocate_sticky,
+                                    sticky_max_age_seconds=affinity.max_age_seconds,
+                                    prefer_earlier_reset_accounts=settings.prefer_earlier_reset_accounts,
+                                    routing_strategy=routing_strategy,
+                                    model=selection_model,
+                                    exclude_account_ids={account.id},
+                                )
+                                if selection.account is not None:
+                                    account = selection.account
+                                    account_id_value = account.id
+                                    account = await self._ensure_fresh_with_budget_or_auth_error(
+                                        account,
+                                        timeout_seconds=_remaining_budget_seconds(deadline),
+                                    )
+                                    try:
+                                        response = await _call_control(account)
+                                        await self._load_balancer.record_success(account)
+                                        log_status = "success"
+                                        return response
+                                    except ProxyResponseError as failover_exc:
+                                        await self._handle_proxy_error(account, failover_exc)
+                                        raise
                             raise
                     except RefreshError as refresh_exc:
                         if refresh_exc.is_permanent:
@@ -2759,8 +2825,34 @@ class ProxyService:
                     await self._load_balancer.record_success(account)
                     log_status = "success"
                     return result
-                except ProxyResponseError as exc:
-                    await self._handle_proxy_error(account, exc)
+                except ProxyResponseError as retry_exc:
+                    await self._handle_proxy_error(account, retry_exc)
+                    if retry_exc.status_code == 401:
+                        selection = await self._select_account_with_budget_compatible(
+                            deadline,
+                            request_id=request_id,
+                            kind="transcribe",
+                            api_key=api_key,
+                            prefer_earlier_reset_accounts=prefer_earlier_reset,
+                            routing_strategy=routing_strategy,
+                            model=None,
+                            exclude_account_ids={account.id},
+                        )
+                        if selection.account is not None:
+                            account = selection.account
+                            account_id_value = account.id
+                            account = await self._ensure_fresh_with_budget_or_auth_error(
+                                account,
+                                timeout_seconds=_remaining_budget_seconds(deadline),
+                            )
+                            try:
+                                result = await _call_transcribe(account)
+                                await self._load_balancer.record_success(account)
+                                log_status = "success"
+                                return result
+                            except ProxyResponseError as failover_exc:
+                                await self._handle_proxy_error(account, failover_exc)
+                                raise
                     raise
         except ProxyResponseError as exc:
             error = _parse_openai_error(exc.payload)
@@ -3185,6 +3277,33 @@ class ProxyService:
                     return result, account_id_value
                 except ProxyResponseError as retry_exc:
                     await self._handle_proxy_error(account, retry_exc)
+                    if retry_exc.status_code == 401:
+                        selection = await self._select_account_with_budget_compatible(
+                            deadline,
+                            request_id=request_id,
+                            kind=kind,
+                            api_key=api_key,
+                            prefer_earlier_reset_accounts=prefer_earlier_reset,
+                            routing_strategy=routing_strategy,
+                            model=None,
+                            preferred_account_id=preferred_account_id,
+                            exclude_account_ids={account.id},
+                        )
+                        if selection.account is not None:
+                            account = selection.account
+                            account_id_value = account.id
+                            account = await self._ensure_fresh_with_budget_or_auth_error(
+                                account,
+                                timeout_seconds=_remaining_budget_seconds(deadline),
+                            )
+                            try:
+                                result = await _call(account)
+                                await self._load_balancer.record_success(account)
+                                log_status = "success"
+                                return result, account_id_value
+                            except ProxyResponseError as failover_exc:
+                                await self._handle_proxy_error(account, failover_exc)
+                                raise
                     raise
         except ProxyResponseError as exc:
             error = _parse_openai_error(exc.payload)
@@ -4604,11 +4723,14 @@ class ProxyService:
     ) -> str:
         classified = await self._handle_websocket_connect_error(account, exc)
         failure_class = classified["failure_class"] if isinstance(classified, dict) else "non_retryable"
-        if deterministic_failover_enabled:
+        candidates_remaining = max_attempts - attempt
+        if exc.status_code == 401 and candidates_remaining > 0:
+            action = "failover_next"
+        elif deterministic_failover_enabled:
             action = failover_decision(
                 failure_class=failure_class,
                 downstream_visible=False,
-                candidates_remaining=max_attempts - attempt,
+                candidates_remaining=candidates_remaining,
             )
         else:
             action = "surface"
@@ -6153,6 +6275,43 @@ class ProxyService:
                     selected_account_id=account.id,
                 )
                 break
+            except ProxyResponseError as exc:
+                if exc.status_code != 401 or _remaining_budget_seconds(deadline) <= 0:
+                    raise
+                try:
+                    account = await self._ensure_fresh_with_budget(
+                        account,
+                        force=True,
+                        timeout_seconds=_remaining_budget_seconds(deadline),
+                    )
+                    connect_headers = _headers_with_turn_state(headers, _sticky_key_from_turn_state_header(headers))
+                    upstream = await self._open_upstream_websocket_with_budget(
+                        account,
+                        connect_headers,
+                        timeout_seconds=_remaining_budget_seconds(deadline),
+                    )
+                    _record_same_account_takeover(
+                        preferred_account_id=preferred_account_id,
+                        selected_account_id=account.id,
+                    )
+                    break
+                except ProxyResponseError as retry_exc:
+                    if retry_exc.status_code != 401:
+                        raise
+                    await self._handle_proxy_error(account, retry_exc)
+                    if require_preferred_account and selected_is_preferred:
+                        raise
+                    excluded_account_ids.add(account.id)
+                    preferred_candidate_id = None
+                    continue
+                except RefreshError as refresh_exc:
+                    if refresh_exc.is_permanent:
+                        await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+                    if require_preferred_account and selected_is_preferred:
+                        raise
+                    excluded_account_ids.add(account.id)
+                    preferred_candidate_id = None
+                    continue
             except RefreshError as exc:
                 if exc.is_permanent:
                     await self._load_balancer.mark_permanent_failure(account, exc.code)
@@ -6876,6 +7035,42 @@ class ProxyService:
                     selected_account_id=account.id,
                 )
                 break
+            except ProxyResponseError as exc:
+                if exc.status_code != 401 or _remaining_budget_seconds(deadline) <= 0:
+                    raise
+                try:
+                    account = await self._ensure_fresh_with_budget(
+                        account,
+                        force=True,
+                        timeout_seconds=_remaining_budget_seconds(deadline),
+                    )
+                    connect_headers = _headers_with_turn_state(
+                        session.headers,
+                        _preferred_http_bridge_reconnect_turn_state(session),
+                    )
+                    upstream = await self._open_upstream_websocket_with_budget(
+                        account,
+                        connect_headers,
+                        timeout_seconds=_remaining_budget_seconds(deadline),
+                    )
+                    _record_same_account_takeover(
+                        preferred_account_id=session.account.id,
+                        selected_account_id=account.id,
+                    )
+                    break
+                except ProxyResponseError as retry_exc:
+                    if retry_exc.status_code != 401:
+                        raise
+                    await self._handle_proxy_error(account, retry_exc)
+                    excluded_account_ids.add(account.id)
+                    preferred_candidate_id = None
+                    continue
+                except RefreshError as refresh_exc:
+                    if refresh_exc.is_permanent:
+                        await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+                    excluded_account_ids.add(account.id)
+                    preferred_candidate_id = None
+                    continue
             except RefreshError as exc:
                 if exc.is_permanent:
                     await self._load_balancer.mark_permanent_failure(account, exc.code)
@@ -9764,6 +9959,100 @@ class ProxyService:
                                 tool_call_dedupe=tool_call_dedupe,
                             ):
                                 yield line
+                        except ProxyResponseError as retry_exc:
+                            if settlement.downstream_visible:
+                                failed_response_id = settlement.response_id or request_id
+                                error = _parse_openai_error(retry_exc.payload)
+                                error_code = _normalize_error_code(
+                                    error.code if error else None,
+                                    error.type if error else None,
+                                )
+                                error_message = error.message if error else "Upstream error"
+                                event = response_failed_event(
+                                    error_code or "upstream_error",
+                                    error_message or "Upstream error",
+                                    error_type=(error.type if error else None) or "server_error",
+                                    response_id=failed_response_id,
+                                    error_param=error.param if error else None,
+                                )
+                                _apply_error_metadata(event["response"]["error"], error)
+                                logger.warning(
+                                    "Surfacing post-refresh stream failure without replay "
+                                    "request_id=%s account_id=%s code=%s",
+                                    request_id,
+                                    account.id,
+                                    error_code,
+                                )
+                                yield format_sse_event(event)
+                                settlement.record_success = False
+                                settlement.error_code = error_code
+                                settlement.error_message = error_message
+                                settlement.error = _upstream_error_from_openai(error)
+                                settlement.account_health_error = _should_penalize_stream_error(error_code)
+                                if settlement.account_health_error:
+                                    await self._handle_stream_error(
+                                        account,
+                                        _stream_settlement_error_payload(settlement),
+                                        settlement.error_code or "upstream_error",
+                                        http_status=retry_exc.status_code,
+                                    )
+                                settled = await self._settle_stream_api_key_usage(
+                                    api_key,
+                                    api_key_reservation,
+                                    settlement,
+                                    request_id,
+                                )
+                                return
+                            error = _parse_openai_error(retry_exc.payload)
+                            error_code = _normalize_error_code(
+                                error.code if error else None,
+                                error.type if error else None,
+                            )
+                            if _is_account_neutral_error_code(error_code):
+                                raise
+                            classified = await self._handle_stream_error(
+                                account,
+                                _upstream_error_from_openai(error),
+                                error_code,
+                                http_status=retry_exc.status_code,
+                            )
+                            candidates_remaining = max_attempts - attempt - 1
+                            if retry_exc.status_code == 401 and candidates_remaining > 0:
+                                action = "failover_next"
+                            elif getattr(base_settings, "deterministic_failover_enabled", True):
+                                action = failover_decision(
+                                    failure_class=classified["failure_class"],
+                                    downstream_visible=False,
+                                    candidates_remaining=candidates_remaining,
+                                )
+                            else:
+                                action = "surface"
+                            logger.info(
+                                "Failover decision request_id=%s transport=stream account_id=%s "
+                                "attempt=%d phase=post_refresh failure_class=%s action=%s",
+                                request_id,
+                                account.id,
+                                attempt + 1,
+                                classified["failure_class"],
+                                action,
+                            )
+                            if action == "failover_next":
+                                last_transient_exc = retry_exc
+                                excluded_account_ids.add(account.id)
+                                continue
+                            if propagate_http_errors:
+                                raise
+                            error_message = error.message if error else None
+                            event = response_failed_event(
+                                error_code or "upstream_error",
+                                error_message or "Upstream error",
+                                error_type=(error.type if error else None) or "server_error",
+                                response_id=request_id,
+                                error_param=error.param if error else None,
+                            )
+                            _apply_error_metadata(event["response"]["error"], error)
+                            yield format_sse_event(event)
+                            return
                         finally:
                             pop_stream_timeout_overrides(stream_timeout_tokens)
                         if settlement.account_health_error:
@@ -10705,6 +10994,29 @@ class ProxyService:
         if "timeout_seconds" in parameters:
             return await self._ensure_fresh(account, force=force, timeout_seconds=timeout_seconds)
         return await self._ensure_fresh(account, force=force)
+
+    async def _ensure_fresh_with_budget_or_auth_error(
+        self,
+        account: Account,
+        *,
+        timeout_seconds: float | None = None,
+        error_type: str = "invalid_request_error",
+    ) -> Account:
+        try:
+            return await self._ensure_fresh_with_budget(account, timeout_seconds=timeout_seconds)
+        except RefreshError as refresh_exc:
+            if refresh_exc.is_permanent:
+                await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+            raise ProxyResponseError(
+                401,
+                openai_error(
+                    "invalid_api_key",
+                    refresh_exc.message,
+                    error_type=error_type,
+                ),
+            ) from refresh_exc
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            _raise_proxy_unavailable(str(exc) or "Request to upstream timed out")
 
     async def _select_account_with_budget(
         self,
