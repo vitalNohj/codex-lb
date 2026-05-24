@@ -27,6 +27,7 @@ export function AccountsPage() {
     importMutation,
     pauseMutation,
     resumeMutation,
+    setAliasMutation,
     deleteMutation,
     exportMutation,
     limitWarmupMutation,
@@ -71,6 +72,7 @@ export function AccountsPage() {
     importMutation.isPending ||
     pauseMutation.isPending ||
     resumeMutation.isPending ||
+    setAliasMutation.isPending ||
     deleteMutation.isPending ||
     exportMutation.isPending ||
     limitWarmupMutation.isPending;
@@ -79,6 +81,7 @@ export function AccountsPage() {
     getErrorMessageOrNull(importMutation.error) ||
     getErrorMessageOrNull(pauseMutation.error) ||
     getErrorMessageOrNull(resumeMutation.error) ||
+    getErrorMessageOrNull(setAliasMutation.error) ||
     getErrorMessageOrNull(deleteMutation.error) ||
     getErrorMessageOrNull(exportMutation.error) ||
     getErrorMessageOrNull(limitWarmupMutation.error);
@@ -115,6 +118,7 @@ export function AccountsPage() {
             busy={mutationBusy}
             onPause={(accountId) => void pauseMutation.mutateAsync(accountId)}
             onResume={(accountId) => void resumeMutation.mutateAsync(accountId)}
+            onSetAlias={(accountId, alias) => setAliasMutation.mutateAsync({ accountId, alias })}
             onDelete={(accountId) => deleteDialog.show(accountId)}
             onReauth={() => oauthDialog.show()}
             onExport={(accountId) => void exportMutation.mutateAsync(accountId)}

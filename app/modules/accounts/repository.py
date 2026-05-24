@@ -210,6 +210,13 @@ class AccountsRepository:
         await self._session.commit()
         return result.scalar_one_or_none() is not None
 
+    async def update_alias(self, account_id: str, alias: str | None) -> bool:
+        result = await self._session.execute(
+            update(Account).where(Account.id == account_id).values(alias=alias).returning(Account.id)
+        )
+        await self._session.commit()
+        return result.scalar_one_or_none() is not None
+
     async def update_limit_warmup_enabled(self, account_id: str, enabled: bool) -> bool:
         result = await self._session.execute(
             update(Account).where(Account.id == account_id).values(limit_warmup_enabled=enabled).returning(Account.id)
