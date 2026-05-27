@@ -3651,6 +3651,7 @@ class ProxyService:
                         )
                         error_message = error.message if error and error.message else "Upstream error"
                         error_type = error.type if error and error.type else "server_error"
+                        error_param = error.param if error else None
                         await self._release_websocket_request_state_reservation(request_state)
                         await self._write_websocket_connect_failure(
                             account_id=None,
@@ -3666,6 +3667,7 @@ class ProxyService:
                             error_code=error_code or "upstream_error",
                             error_message=error_message,
                             error_type=error_type,
+                            error_param=error_param,
                             downstream_activity=downstream_activity,
                         )
                         request_state = None
@@ -3721,6 +3723,7 @@ class ProxyService:
                         )
                         error_message = error.message if error and error.message else "Upstream error"
                         error_type = error.type if error and error.type else "server_error"
+                        error_param = error.param if error else None
                         await self._release_websocket_request_state_reservation(request_state)
                         await self._write_websocket_connect_failure(
                             account_id=account.id if account else None,
@@ -3736,6 +3739,7 @@ class ProxyService:
                             error_code=error_code or "upstream_error",
                             error_message=error_message,
                             error_type=error_type,
+                            error_param=error_param,
                             downstream_activity=downstream_activity,
                         )
                         _release_websocket_response_create_gate(request_state, response_create_gate)
@@ -11447,19 +11451,17 @@ def _websocket_request_can_replay_before_visible_output(request_state: "_WebSock
         return False
     if request_state.downstream_visible:
         return False
+    has_retry_safe_fresh_payload = (
+        request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text is not None
+    )
     precreated_pending = request_state.response_id is None and request_state.awaiting_response_created
+    if precreated_pending and request_state.previous_response_id is not None and not has_retry_safe_fresh_payload:
+        return False
     created_only_pending = (
         request_state.response_id is not None
         and not request_state.awaiting_response_created
         and request_state.response_event_count <= 1
-        and (
-            request_state.previous_response_id is None
-            or (
-                request_state.proxy_injected_previous_response_id
-                and request_state.fresh_upstream_request_is_retry_safe
-                and bool(request_state.fresh_upstream_request_text)
-            )
-        )
+        and (request_state.previous_response_id is None or has_retry_safe_fresh_payload)
     )
     if precreated_pending and request_state.response_event_count > 0:
         return False
@@ -11472,11 +11474,7 @@ def _prepare_websocket_request_state_for_visible_output_replay(
     downstream_response_id = None
     if request_state.response_id is not None and not request_state.awaiting_response_created:
         downstream_response_id = request_state.response_id
-    if (
-        request_state.proxy_injected_previous_response_id
-        and request_state.fresh_upstream_request_is_retry_safe
-        and request_state.fresh_upstream_request_text
-    ):
+    if request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text:
         request_state.request_text = request_state.fresh_upstream_request_text
         request_state.previous_response_id = None
         request_state.proxy_injected_previous_response_id = False
