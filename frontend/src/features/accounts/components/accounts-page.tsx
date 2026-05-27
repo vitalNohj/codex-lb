@@ -10,10 +10,12 @@ import { AccountDetail } from "@/features/accounts/components/account-detail";
 import { AccountList } from "@/features/accounts/components/account-list";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
 import { ImportDialog } from "@/features/accounts/components/import-dialog";
+import { OpenCodeAuthExportDialog } from "@/features/accounts/components/opencode-auth-export-dialog";
 import { useAccounts } from "@/features/accounts/hooks/use-accounts";
 import { sortAccountsForDisplay } from "@/features/accounts/sorting";
 import { useOauth } from "@/features/accounts/hooks/use-oauth";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
+import type { AccountOpenCodeAuthExportResponse } from "@/features/accounts/schemas";
 import { buildDuplicateAccountIdSet } from "@/utils/account-identifiers";
 import { getErrorMessageOrNull } from "@/utils/errors";
 
@@ -34,12 +36,14 @@ export function AccountsPage() {
     deleteMutation,
     exportMutation,
     limitWarmupMutation,
+    exportOpenCodeAuthMutation,
   } = useAccounts();
   const oauth = useOauth();
 
   const importDialog = useDialogState();
   const oauthDialog = useDialogState();
   const deleteDialog = useDialogState<string>();
+  const exportDialog = useDialogState<AccountOpenCodeAuthExportResponse>();
   const [deleteHistory, setDeleteHistory] = useState(false);
 
   const accounts = useMemo(
@@ -96,7 +100,8 @@ export function AccountsPage() {
     setAliasMutation.isPending ||
     deleteMutation.isPending ||
     exportMutation.isPending ||
-    limitWarmupMutation.isPending;
+    limitWarmupMutation.isPending ||
+    exportOpenCodeAuthMutation.isPending;
 
   const mutationError =
     getErrorMessageOrNull(importMutation.error) ||
@@ -105,7 +110,8 @@ export function AccountsPage() {
     getErrorMessageOrNull(setAliasMutation.error) ||
     getErrorMessageOrNull(deleteMutation.error) ||
     getErrorMessageOrNull(exportMutation.error) ||
-    getErrorMessageOrNull(limitWarmupMutation.error);
+    getErrorMessageOrNull(limitWarmupMutation.error) ||
+    getErrorMessageOrNull(exportOpenCodeAuthMutation.error);
 
   return (
     <div className="animate-fade-in-up space-y-6">
@@ -151,6 +157,12 @@ export function AccountsPage() {
             onDelete={(accountId) => deleteDialog.show(accountId)}
             onReauth={() => oauthDialog.show()}
             onExport={(accountId) => void exportMutation.mutateAsync(accountId)}
+            onExportOpenCodeAuth={(accountId) => {
+              void exportOpenCodeAuthMutation
+                .mutateAsync(accountId)
+                .then((result) => exportDialog.show(result))
+                .catch(() => null);
+            }}
             onLimitWarmupChange={(accountId, enabled) =>
               void limitWarmupMutation.mutateAsync({ accountId, enabled })
             }
@@ -186,6 +198,12 @@ export function AccountsPage() {
           onReset={oauth.reset}
         />
       </Suspense>
+
+      <OpenCodeAuthExportDialog
+        open={exportDialog.open}
+        exportData={exportDialog.data}
+        onOpenChange={exportDialog.onOpenChange}
+      />
 
       <ConfirmDialog
         open={deleteDialog.open}
