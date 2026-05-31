@@ -4,6 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
 
 const ISO = "2026-01-01T12:00:00+00:00";
+const NULL_FAILURE_METADATA = {
+  failurePhase: null,
+  failureDetail: null,
+  failureExceptionType: null,
+  upstreamStatusCode: null,
+  upstreamErrorCode: null,
+  bridgeStage: null,
+};
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -83,6 +91,7 @@ describe("RecentRequestsTable", () => {
              status: "rate_limit",
              errorCode: "rate_limit_exceeded",
              errorMessage: longError,
+            ...NULL_FAILURE_METADATA,
              tokens: 1200,
              inputTokens: 1000,
              outputTokens: 200,
@@ -162,6 +171,7 @@ describe("RecentRequestsTable", () => {
              status: "ok",
              errorCode: null,
              errorMessage: null,
+            ...NULL_FAILURE_METADATA,
              tokens: 1,
              inputTokens: 1,
              outputTokens: 0,
@@ -202,6 +212,7 @@ describe("RecentRequestsTable", () => {
              status: "error",
              errorCode: "upstream_error",
              errorMessage: null,
+            ...NULL_FAILURE_METADATA,
              tokens: 1,
              inputTokens: 1,
              outputTokens: 0,
@@ -243,6 +254,7 @@ describe("RecentRequestsTable", () => {
             status: "ok",
             errorCode: null,
             errorMessage: null,
+            ...NULL_FAILURE_METADATA,
             tokens: 1400,
             inputTokens: 1000,
             outputTokens: 400,
@@ -293,6 +305,7 @@ describe("RecentRequestsTable", () => {
             status: "error",
             errorCode: "upstream_error",
             errorMessage: "boom",
+            ...NULL_FAILURE_METADATA,
             tokens: 1,
             inputTokens: 1,
             outputTokens: 0,
@@ -338,6 +351,7 @@ describe("RecentRequestsTable", () => {
             status: "ok",
             errorCode: null,
             errorMessage: null,
+            ...NULL_FAILURE_METADATA,
             tokens: 700,
             inputTokens: 700,
             outputTokens: null,
@@ -388,6 +402,7 @@ describe("RecentRequestsTable", () => {
             status: "ok",
             errorCode: null,
             errorMessage: null,
+            ...NULL_FAILURE_METADATA,
             tokens: null,
             inputTokens: 1000,
             outputTokens: null,
@@ -438,6 +453,7 @@ describe("RecentRequestsTable", () => {
             status: "ok",
             errorCode: null,
             errorMessage: null,
+            ...NULL_FAILURE_METADATA,
             tokens: 1500,
             inputTokens: 1000,
             outputTokens: 500,
