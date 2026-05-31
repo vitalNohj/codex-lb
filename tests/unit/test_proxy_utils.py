@@ -5998,6 +5998,136 @@ async def test_http_bridge_retries_security_work_warning_on_authorized_account(m
 
 
 @pytest.mark.asyncio
+async def test_http_bridge_keeps_previous_response_pinned_security_work_error(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_bridge_security_previous_pinned")
+    reconnect = AsyncMock()
+    monkeypatch.setattr(service, "_reconnect_http_bridge_session", reconnect)
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="bridge_req_security_previous_pinned",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        transport="http",
+        request_text='{"type":"response.create","previous_response_id":"resp_anchor","input":"tail"}',
+        previous_response_id="resp_anchor",
+        preferred_account_id=account.id,
+        fresh_upstream_request_text='{"type":"response.create","input":"full resend"}',
+        fresh_upstream_request_is_retry_safe=True,
+    )
+    session = proxy_service._HTTPBridgeSession(
+        key=proxy_service._HTTPBridgeSessionKey("turn_state_header", "turn-security-previous", None),
+        headers={},
+        affinity=proxy_service._AffinityPolicy(),
+        request_model="gpt-5.1",
+        account=account,
+        upstream=cast(proxy_service.UpstreamResponsesWebSocket, AsyncMock()),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque([request_state]),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=1,
+        last_used_at=1.0,
+        idle_ttl_seconds=300.0,
+    )
+    cyber_message = (
+        "This chat was flagged for possible cybersecurity risk. "
+        "To get authorized for security work, join the Trusted Access for Cyber program. "
+        "https://chatgpt.com/cyber"
+    )
+    text = json.dumps(
+        {
+            "type": "response.failed",
+            "response": {
+                "id": "resp_security_previous_pinned",
+                "status": "failed",
+                "error": {
+                    "code": "invalid_request_error",
+                    "type": "invalid_request_error",
+                    "message": cyber_message,
+                },
+            },
+        },
+        separators=(",", ":"),
+    )
+
+    await service._process_http_bridge_upstream_text(session, text)
+
+    reconnect.assert_not_awaited()
+    assert request_state.replay_count == 0
+    assert request_state.previous_response_id == "resp_anchor"
+    warning_block = await request_state.event_queue.get()
+    assert warning_block is not None
+    warning = json.loads(warning_block.split("data: ", 1)[1])
+    assert warning["warning"]["action"] == "forward_original_security_work_error"
+
+
+@pytest.mark.asyncio
+async def test_websocket_keeps_previous_response_pinned_security_work_error(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    handle_stream_error = AsyncMock()
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    account = _make_account("acc_ws_security_previous_pinned")
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_security_previous_pinned",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        awaiting_response_created=True,
+        request_text='{"type":"response.create","previous_response_id":"resp_anchor","input":"tail"}',
+        previous_response_id="resp_anchor",
+        preferred_account_id=account.id,
+        fresh_upstream_request_text='{"type":"response.create","input":"full resend"}',
+        fresh_upstream_request_is_retry_safe=True,
+    )
+    pending_requests = deque([request_state])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    cyber_message = (
+        "This chat was flagged for possible cybersecurity risk. "
+        "To get authorized for security work, join the Trusted Access for Cyber program. "
+        "https://chatgpt.com/cyber"
+    )
+    payload = {
+        "type": "response.failed",
+        "response": {
+            "status": "failed",
+            "error": {
+                "code": "invalid_request_error",
+                "type": "invalid_request_error",
+                "message": cyber_message,
+            },
+        },
+    }
+
+    downstream_text = await service._process_upstream_websocket_text(
+        json.dumps(payload, separators=(",", ":")),
+        account=account,
+        account_id_value=account.id,
+        pending_requests=pending_requests,
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=upstream_control,
+        response_create_gate=asyncio.Semaphore(1),
+    )
+
+    assert '"type":"response.failed"' in downstream_text
+    assert upstream_control.reconnect_requested is False
+    assert upstream_control.suppress_downstream_event is False
+    assert request_state.replay_count == 0
+    assert request_state.previous_response_id == "resp_anchor"
+    handle_stream_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_http_bridge_reports_missing_security_work_pool_before_original_warning(monkeypatch):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
