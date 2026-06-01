@@ -11229,6 +11229,8 @@ class ProxyService:
                         sticky_max_age_seconds=sticky_max_age_seconds,
                         prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
                         routing_strategy=routing_strategy,
+                        relative_availability_power=_relative_availability_power(settings),
+                        relative_availability_top_k=_relative_availability_top_k(settings),
                         model=model,
                         additional_limit_name=additional_limit_name,
                         account_ids={preferred_account_id},
@@ -11250,6 +11252,8 @@ class ProxyService:
                     sticky_max_age_seconds=sticky_max_age_seconds,
                     prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
                     routing_strategy=routing_strategy,
+                    relative_availability_power=_relative_availability_power(settings),
+                    relative_availability_top_k=_relative_availability_top_k(settings),
                     model=model,
                     additional_limit_name=additional_limit_name,
                     account_ids=scoped_account_ids,
@@ -13674,7 +13678,21 @@ def _routing_strategy(settings: DashboardSettings) -> RoutingStrategy:
         return "round_robin"
     if value == "usage_weighted":
         return "usage_weighted"
+    if value == "relative_availability":
+        return "relative_availability"
     return "capacity_weighted"
+
+
+def _relative_availability_power(settings: DashboardSettings) -> float:
+    raw_value = getattr(settings, "relative_availability_power", None)
+    value = float(raw_value) if raw_value is not None else 2.0
+    return value if value > 0.0 else 2.0
+
+
+def _relative_availability_top_k(settings: DashboardSettings) -> int:
+    raw_value = getattr(settings, "relative_availability_top_k", None)
+    value = int(raw_value) if raw_value is not None else 5
+    return min(max(value, 1), 20)
 
 
 def _parse_websocket_payload(text: str) -> dict[str, JsonValue] | None:
