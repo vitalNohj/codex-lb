@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,13 +13,13 @@ from pydantic import ValidationError
 from app.core.auth import OpenAIAuthClaims, extract_id_token_claims
 from app.core.auth.models import OAuthTokenPayload
 from app.core.balancer import PERMANENT_FAILURE_CODES
+from app.core.clients.account_http import lease_account_http_session
 from app.core.clients.codex import (
     CodexClient,
     CodexTransportError,
     create_codex_session,
     require_route_or_direct_egress_opt_in,
 )
-from app.core.clients.http import lease_http_session
 from app.core.config.settings import get_settings
 from app.core.types import JsonObject
 from app.core.upstream_proxy import ResolvedUpstreamRoute
@@ -26,6 +27,11 @@ from app.core.utils.request_id import get_request_id
 from app.core.utils.time import to_utc_naive, utcnow
 
 TOKEN_REFRESH_INTERVAL_DAYS = 8
+# Salt the per-account jitter so the SHA-256 input cannot collide with
+# any other use of ``account_id`` we might add later (e.g. a separate
+# scheduling axis). The actual value is irrelevant; only its stability
+# matters.
+_TOKEN_REFRESH_JITTER_SALT = b"codex-lb:token-refresh-jitter:v1"
 
 logger = logging.getLogger(__name__)
 _TOKEN_REFRESH_TIMEOUT_OVERRIDE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
@@ -62,11 +68,74 @@ class RefreshError(Exception):
         self.upstream_proxy_fail_closed_reason = upstream_proxy_fail_closed_reason
 
 
-def should_refresh(last_refresh: datetime, now: datetime | None = None) -> bool:
+def should_refresh(
+    last_refresh: datetime,
+    now: datetime | None = None,
+    *,
+    account_id: str | None = None,
+) -> bool:
+    """Return ``True`` when the access token should be refreshed.
+
+    The effective interval is
+    ``interval_days - jitter_offset``, where the offset is a stable
+    deterministic function of ``account_id``. Two accounts onboarded on
+    the same day therefore land on different refresh points before the
+    configured max age, which keeps upstream OAuth from observing a
+    clustered "fleet refresh" pattern against the same ``oauth_client_id``.
+
+    When ``account_id`` is omitted (legacy / defensive callers, tests
+    that do not care about the specific account) the un-jittered
+    interval is used.
+    """
+
+    settings = get_settings()
     current = to_utc_naive(now) if now is not None else utcnow()
     last = to_utc_naive(last_refresh)
-    interval_days = get_settings().token_refresh_interval_days or TOKEN_REFRESH_INTERVAL_DAYS
-    return current - last > timedelta(days=interval_days)
+    interval_days = settings.token_refresh_interval_days or TOKEN_REFRESH_INTERVAL_DAYS
+    base = timedelta(days=interval_days)
+    if account_id:
+        jitter_hours = float(settings.account_token_refresh_jitter_hours)
+        offset_seconds = _refresh_jitter_offset_seconds(account_id, jitter_hours)
+        effective = base - timedelta(seconds=offset_seconds)
+    else:
+        effective = base
+    # Defense in depth against a misconfigured ``jitter_hours`` (the
+    # setting is bounded ``le=96`` against an 8-day default base, but
+    # operators running custom ``token_refresh_interval_days`` values
+    # could still produce a negative effective duration). A negative
+    # ``effective`` would make ``current - last > effective`` always
+    # True, triggering an OAuth refresh on every request. Floor at
+    # one hour so a misconfiguration degrades to "refresh hourly"
+    # rather than a refresh storm.
+    if effective < timedelta(hours=1):
+        effective = timedelta(hours=1)
+    return current - last > effective
+
+
+def _refresh_jitter_offset_seconds(account_id: str, jitter_hours: float) -> float:
+    """Return a stable offset in ``[0, jitter_hours*3600]``.
+
+    The offset is derived from ``SHA-256(salt || account_id)`` so it is:
+
+    - Stable across calls for the same ``account_id``
+    - Independent across distinct ``account_id``s (no observable
+      correlation)
+    - Independent of ``last_refresh`` so the next-refresh day is
+      predictable per account, which looks like a normal device
+      schedule rather than "every cycle is at a new random time".
+
+    A zero or negative ``jitter_hours`` disables the offset entirely.
+    """
+
+    if jitter_hours <= 0.0:
+        return 0.0
+    digest = hashlib.sha256(_TOKEN_REFRESH_JITTER_SALT + account_id.encode("utf-8")).digest()
+    # Take 8 bytes of the digest as an unsigned int and map it onto the
+    # full offset window.
+    raw = int.from_bytes(digest[:8], byteorder="big", signed=False)
+    full_window_seconds = jitter_hours * 3600.0
+    fraction = (raw % 1_000_000_007) / 1_000_000_007  # [0, 1)
+    return fraction * full_window_seconds
 
 
 def classify_refresh_error(code: str | None) -> bool:
@@ -78,6 +147,7 @@ def classify_refresh_error(code: str | None) -> bool:
 async def refresh_access_token(
     refresh_token: str,
     *,
+    account_id: str | None = None,
     session: aiohttp.ClientSession | None = None,
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
@@ -116,8 +186,8 @@ async def refresh_access_token(
                     timeout=_effective_token_refresh_timeout(settings.token_refresh_timeout_seconds),
                 )
                 data = await _safe_codex_json(resp)
-                status = int(getattr(resp, "status_code", getattr(resp, "status", 0)))
                 payload_data = _validate_token_payload(data)
+                status = int(getattr(resp, "status_code", getattr(resp, "status", 0)))
                 if status >= 400:
                     logger.warning("Token refresh failed request_id=%s status=%s", get_request_id(), status)
                     raise _refresh_error_from_payload(payload_data, status)
@@ -125,20 +195,33 @@ async def refresh_access_token(
                 if owns_codex_client:
                     await active_codex_client.close()
         else:
-            async with lease_http_session(session) as client_session:
+            async with lease_account_http_session(account_id or "", session) as client_session:
                 async with client_session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
                     data = await _safe_json(resp)
-                    payload_data = _validate_token_payload(data)
-                    if resp.status >= 400:
+                    try:
+                        payload_data = OAuthTokenPayload.model_validate(data)
+                    except ValidationError as exc:
                         logger.warning(
-                            "Token refresh failed request_id=%s status=%s",
+                            "Token refresh response invalid request_id=%s",
+                            get_request_id(),
+                        )
+                        raise RefreshError("invalid_response", "Refresh response invalid", False) from exc
+                    if resp.status >= 400:
+                        code = _extract_error_code(payload_data)
+                        message = _extract_error_message(payload_data)
+                        logger.warning(
+                            "Token refresh failed account_id=%s request_id=%s status=%s code=%s message=%s",
+                            account_id,
                             get_request_id(),
                             resp.status,
+                            code,
+                            message,
                         )
                         raise _refresh_error_from_payload(payload_data, resp.status)
     except RefreshError:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError, CodexTransportError) as exc:
+        # Catch-all for transport / read errors.
         message = str(exc) or exc.__class__.__name__
         raise RefreshError(
             "transport_error",
@@ -152,7 +235,14 @@ async def refresh_access_token(
 
     claims = extract_id_token_claims(payload_data.id_token)
     auth_claims = claims.auth or OpenAIAuthClaims()
-    account_id = auth_claims.chatgpt_account_id or claims.chatgpt_account_id
+    # Local rename: the function parameter ``account_id`` carries the
+    # codex-lb-side account id (used above to resolve the per-account
+    # SOCKS5 session). The JWT claim carries the upstream OpenAI
+    # ChatGPT account id, which is what ``TokenRefreshResult.account_id``
+    # has historically returned. Keep the names distinct so any future
+    # logic added below this point can't accidentally pick the wrong
+    # one.
+    upstream_account_id = auth_claims.chatgpt_account_id or claims.chatgpt_account_id
     plan_type = auth_claims.chatgpt_plan_type or claims.chatgpt_plan_type
     email = claims.email
 
@@ -160,7 +250,7 @@ async def refresh_access_token(
         access_token=payload_data.access_token,
         refresh_token=payload_data.refresh_token,
         id_token=payload_data.id_token,
-        account_id=account_id,
+        account_id=upstream_account_id,
         plan_type=plan_type,
         email=email,
     )
