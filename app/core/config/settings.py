@@ -10,12 +10,15 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
+from dotenv import dotenv_values
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.auth.dashboard_mode import DashboardAuthMode, normalize_dashboard_auth_proxy_header
+from app.core.utils.proxy_env import outbound_proxy_env_configured
 
 BASE_DIR = Path(__file__).resolve().parents[3]
+ENV_FILES = (BASE_DIR / ".env", BASE_DIR / ".env.local")
 
 DOCKER_DATA_DIR = Path("/var/lib/codex-lb")
 DOCKER_CALLBACK_HOST = "0.0.0.0"
@@ -46,6 +49,18 @@ def _default_oauth_callback_host() -> str:
 def _default_http_bridge_instance_id() -> str:
     hostname = socket.gethostname().strip()
     return hostname or "codex-lb"
+
+
+def _default_upstream_websocket_trust_env() -> bool:
+    return outbound_proxy_env_configured(_configured_outbound_proxy_env())
+
+
+def _configured_outbound_proxy_env() -> dict[str, str | None]:
+    environ: dict[str, str | None] = {}
+    for env_file in ENV_FILES:
+        environ.update(dotenv_values(env_file))
+    environ.update(os.environ)
+    return environ
 
 
 DEFAULT_HOME_DIR = _default_home_dir()
@@ -120,7 +135,7 @@ def _normalize_cidr_list(value: StringListInput, *, field_name: str, invalid_lab
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CODEX_LB_",
-        env_file=(BASE_DIR / ".env", BASE_DIR / ".env.local"),
+        env_file=ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -142,7 +157,7 @@ class Settings(BaseSettings):
     upstream_stream_transport: Literal["http", "websocket", "auto"] = "auto"
     upstream_connect_timeout_seconds: float = 8.0
     upstream_compact_timeout_seconds: float | None = None
-    upstream_websocket_trust_env: bool = False
+    upstream_websocket_trust_env: bool = Field(default_factory=_default_upstream_websocket_trust_env)
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)
@@ -224,6 +239,10 @@ class Settings(BaseSettings):
     )
     firewall_ip_cache_ttl_seconds: int = Field(default=30, gt=0)
     dashboard_auth_mode: DashboardAuthMode = DashboardAuthMode.STANDARD
+
+    def upstream_websocket_proxy_env(self) -> Mapping[str, str | None]:
+        return _configured_outbound_proxy_env()
+
     dashboard_auth_proxy_header: str = "Remote-User"
 
     # --- Multi-replica & production settings ---
