@@ -12,11 +12,14 @@ from typing import Protocol, TypeAlias
 from app.core.auth import DEFAULT_PLAN, OpenAIAuthClaims, extract_id_token_claims
 from app.core.auth.refresh import RefreshError, TokenRefreshResult, refresh_access_token, should_refresh
 from app.core.balancer import PERMANENT_FAILURE_CODES
+from app.core.clients.account_http import invalidate_account_client
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
+from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
+from app.modules.proxy.account_cache import get_account_selection_cache
 
 
 class AccountsRepositoryPort(Protocol):
@@ -153,7 +156,7 @@ class AuthManager:
         self._refresh_repo_factory = refresh_repo_factory
 
     async def ensure_fresh(self, account: Account, *, force: bool = False) -> Account:
-        if force or should_refresh(account.last_refresh):
+        if force or should_refresh(account.last_refresh, account_id=account.id):
             account = await _REFRESH_SINGLEFLIGHT.run(
                 _refresh_singleflight_key(self._encryptor, account),
                 lambda: self._run_refresh(account),
@@ -186,7 +189,7 @@ class AuthManager:
     async def refresh_account(self, account: Account) -> Account:
         refresh_token = self._encryptor.decrypt(account.refresh_token_encrypted)
         try:
-            result = await self._refresh_tokens(refresh_token)
+            result = await self._refresh_tokens(refresh_token, account_id=account.id)
         except RefreshError as exc:
             if exc.is_permanent:
                 latest = await self._repo.get_by_id(account.id)
@@ -197,7 +200,20 @@ class AuthManager:
                 ):
                     return latest
                 reason = PERMANENT_FAILURE_CODES.get(exc.code, exc.message)
-                await self._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
+                logger.warning(
+                    (
+                        "Deactivating account after permanent token refresh failure "
+                        "account_id=%s code=%s reason=%s request_id=%s"
+                    ),
+                    account.id,
+                    exc.code,
+                    reason,
+                    get_request_id(),
+                )
+                updated = await self._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
+                if updated:
+                    await invalidate_account_client(account.id)
+                    get_account_selection_cache().invalidate()
                 account.status = AccountStatus.DEACTIVATED
                 account.deactivation_reason = reason
             raise
@@ -230,12 +246,17 @@ class AuthManager:
         )
         return account
 
-    async def _refresh_tokens(self, refresh_token: str) -> TokenRefreshResult:
+    async def _refresh_tokens(
+        self,
+        refresh_token: str,
+        *,
+        account_id: str | None = None,
+    ) -> TokenRefreshResult:
         refresh_lease: RefreshAdmissionLeasePort | None = None
         if self._acquire_refresh_admission is not None:
             refresh_lease = await self._acquire_refresh_admission()
         try:
-            return await refresh_access_token(refresh_token)
+            return await refresh_access_token(refresh_token, account_id=account_id)
         finally:
             if refresh_lease is not None:
                 refresh_lease.release()

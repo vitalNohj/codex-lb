@@ -4,6 +4,7 @@ import { isEmailLabel } from "@/components/blur-email";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { AccountAliasForm } from "@/features/accounts/components/account-alias-form";
 import { AccountActions } from "@/features/accounts/components/account-actions";
+import { AccountProxySection } from "@/features/accounts/components/account-proxy-section";
 import { AccountTokenInfo } from "@/features/accounts/components/account-token-info";
 import { AccountUsagePanel } from "@/features/accounts/components/account-usage-panel";
 import type { AccountSummary } from "@/features/accounts/schemas";
@@ -18,7 +19,7 @@ export type AccountDetailProps = {
   onResume: (accountId: string) => void;
   onSetAlias: (accountId: string, alias: string | null) => Promise<unknown>;
   onDelete: (accountId: string) => void;
-  onReauth: () => void;
+  onReauth: (accountId: string) => void;
   onExport: (accountId: string) => void;
   onLimitWarmupChange: (accountId: string, enabled: boolean) => void;
   onExportOpenCodeAuth: (accountId: string) => void;
@@ -77,13 +78,14 @@ export function AccountDetail({
       <AccountAliasForm account={account} busy={busy} onSetAlias={onSetAlias} />
       <AccountUsagePanel account={account} trends={trends} />
       <AccountTokenInfo account={account} />
+      <AccountProxySection account={account} />
       <AccountActions
         account={account}
         busy={busy}
         onPause={onPause}
         onResume={onResume}
         onDelete={onDelete}
-        onReauth={onReauth}
+        onReauth={() => onReauth(account.accountId)}
         onExport={onExport}
         onLimitWarmupChange={onLimitWarmupChange}
         onExportOpenCodeAuth={onExportOpenCodeAuth}
