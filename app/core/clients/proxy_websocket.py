@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Mapping, Protocol, cast
 from urllib.parse import urlparse, urlunparse
 
 from curl_cffi.const import CurlWsFlag
@@ -123,12 +123,14 @@ class CodexResponsesWebSocket:
         codex_client: CodexClient | None = None,
         owns_codex_client: bool = False,
         endpoint_id: str | None = None,
+        response_headers: Mapping[str, str] | None = None,
     ) -> None:
         self._websocket = websocket
         self._context = context
         self._codex_client = codex_client
         self._owns_codex_client = owns_codex_client
         self._endpoint_id = endpoint_id
+        self._response_headers = _normalize_response_headers(response_headers)
 
     async def send_text(self, text: str) -> None:
         try:
@@ -172,8 +174,7 @@ class CodexResponsesWebSocket:
                 await self._codex_client.close()
 
     def response_header(self, name: str) -> str | None:
-        del name
-        return None
+        return self._response_headers.get(name.lower())
 
 
 class ArchivingResponsesWebSocket:
@@ -394,6 +395,7 @@ async def connect_responses_websocket(
                 codex_client=active_codex_client,
                 owns_codex_client=owns_codex_client,
                 endpoint_id=endpoint_id,
+                response_headers=_codex_websocket_response_headers(websocket, context),
             ),
             url=url,
             headers=upstream_headers,
@@ -468,6 +470,35 @@ def _close_code_from_exception(exc: ConnectionClosedOK | ConnectionClosedError) 
     if exc.sent is not None:
         return int(exc.sent.code)
     return None
+
+
+def _codex_websocket_response_headers(websocket: object, context: object | None) -> Mapping[str, str]:
+    for source in (websocket, context):
+        headers = _response_headers_from_source(source)
+        if headers:
+            return headers
+    return {}
+
+
+def _response_headers_from_source(source: object | None) -> Mapping[str, str]:
+    if source is None:
+        return {}
+    for attr in ("response", "handshake_response"):
+        response = getattr(source, attr, None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            return _normalize_response_headers(headers)
+    for attr in ("headers", "response_headers"):
+        headers = getattr(source, attr, None)
+        if headers:
+            return _normalize_response_headers(headers)
+    return {}
+
+
+def _normalize_response_headers(headers: Mapping[str, object] | None) -> dict[str, str]:
+    if headers is None:
+        return {}
+    return {str(key).lower(): str(value) for key, value in headers.items()}
 
 
 def _handshake_error_payload(
