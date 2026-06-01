@@ -138,11 +138,9 @@ responses_websockets_v2 = true
 
 These flags are experimental and do not replace `wire_api = "responses"`.
 
-Upstream websocket handshakes automatically honor standard proxy environment variables when they are
-present. `wss://` handshakes check `wss_proxy`, `socks_proxy`, `https_proxy`, and `all_proxy`;
-plain `ws://` handshakes also check `ws_proxy` and `http_proxy`. Set
-`CODEX_LB_UPSTREAM_WEBSOCKET_TRUST_ENV=false` only when websocket handshakes must bypass those
-environment proxies and connect directly.
+If upstream websocket handshakes must use environment proxies in your deployment, set
+`CODEX_LB_UPSTREAM_WEBSOCKET_TRUST_ENV=true`. By default websocket handshakes connect directly to
+match Codex CLI's native transport.
 
 **With [API key auth](#api-key-authentication):**
 
