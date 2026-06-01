@@ -354,7 +354,6 @@ async def connect_responses_websocket(
                     route=route,
                     headers=upstream_headers,
                     timeout=settings.upstream_connect_timeout_seconds,
-                    max_message_size=settings.max_sse_event_bytes,
                 )
                 context = result.context
                 websocket = result.websocket
@@ -367,7 +366,6 @@ async def connect_responses_websocket(
                     route=route,
                     headers=upstream_headers,
                     timeout=settings.upstream_connect_timeout_seconds,
-                    max_message_size=settings.max_sse_event_bytes,
                 )
                 websocket = await context.__aenter__() if hasattr(context, "__aenter__") else context
                 if not hasattr(context, "__aenter__"):
