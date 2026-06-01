@@ -11,6 +11,7 @@ import pytest
 
 from app.core.auth.refresh import RefreshError, TokenRefreshResult
 from app.core.crypto import TokenEncryptor
+from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.modules.accounts import auth_manager as auth_manager_module
@@ -204,7 +205,7 @@ async def test_refresh_account_preserves_plan_type_when_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_account_does_not_overwrite_workspace_fields_when_already_set(monkeypatch):
-    async def _fake_refresh(_: str) -> TokenRefreshResult:
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
         return TokenRefreshResult(
             access_token="new-access",
             refresh_token="new-refresh",
@@ -250,7 +251,7 @@ async def test_refresh_account_does_not_overwrite_workspace_fields_when_already_
 
 @pytest.mark.asyncio
 async def test_refresh_account_updates_same_workspace_display_metadata(monkeypatch):
-    async def _fake_refresh(_: str) -> TokenRefreshResult:
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
         return TokenRefreshResult(
             access_token="new-access",
             refresh_token="new-refresh",
@@ -296,7 +297,7 @@ async def test_refresh_account_updates_same_workspace_display_metadata(monkeypat
 
 @pytest.mark.asyncio
 async def test_refresh_account_populates_workspace_when_missing(monkeypatch):
-    async def _fake_refresh(_: str) -> TokenRefreshResult:
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
         return TokenRefreshResult(
             access_token="new-access",
             refresh_token="new-refresh",
@@ -342,7 +343,7 @@ async def test_refresh_account_populates_workspace_when_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_account_does_not_promote_unknown_workspace_into_taken_slot(monkeypatch):
-    async def _fake_refresh(_: str) -> TokenRefreshResult:
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
         return TokenRefreshResult(
             access_token="new-access",
             refresh_token="new-refresh",
@@ -386,6 +387,48 @@ async def test_refresh_account_does_not_promote_unknown_workspace_into_taken_slo
     assert repo.tokens_payload["workspace_id"] is None
     assert repo.tokens_payload["workspace_label"] is None
     assert repo.tokens_payload["seat_type"] is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_account_converts_upstream_route_failure_to_refresh_error(monkeypatch):
+    @asynccontextmanager
+    async def fake_background_session() -> AsyncIterator[object]:
+        yield object()
+
+    async def fail_resolve_route(*_args: object, **_kwargs: object) -> None:
+        raise UpstreamProxyRouteError("pool_unavailable", account_id="acc_route")
+
+    async def unexpected_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        raise AssertionError("refresh_access_token should not run when route resolution fails")
+
+    monkeypatch.setattr(auth_manager_module, "get_background_session", fake_background_session)
+    monkeypatch.setattr(auth_manager_module, "resolve_upstream_route", fail_resolve_route)
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", unexpected_refresh)
+
+    encryptor = TokenEncryptor()
+    account = Account(
+        id="acc_route",
+        email="user@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-old"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-old"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=utcnow(),
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+    repo = _DummyRepo()
+    manager = AuthManager(cast(AccountsRepositoryPort, repo))
+
+    with pytest.raises(RefreshError) as exc_info:
+        await manager.refresh_account(account)
+
+    assert exc_info.value.code == "upstream_proxy_unavailable"
+    assert exc_info.value.message == "Upstream proxy route unavailable: pool_unavailable"
+    assert exc_info.value.is_permanent is False
+    assert exc_info.value.transport_error is True
+    assert repo.status_payload is None
+    assert repo.tokens_payload is None
 
 
 @pytest.mark.asyncio

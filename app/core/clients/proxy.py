@@ -1485,7 +1485,6 @@ async def _stream_responses_via_websocket(
                     route=route,
                     headers=headers,
                     timeout=connect_timeout_seconds,
-                    max_message_size=max_event_bytes,
                 )
                 websocket = result.websocket
                 websocket_context = result.context
@@ -1497,7 +1496,6 @@ async def _stream_responses_via_websocket(
                     route=route,
                     headers=headers,
                     timeout=connect_timeout_seconds,
-                    max_message_size=max_event_bytes,
                 )
                 websocket = (
                     await websocket_context.__aenter__()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from websockets.asyncio.server import serve as websocket_serve
@@ -12,8 +12,10 @@ from websockets.exceptions import InvalidHandshake, InvalidProxy, InvalidStatus
 from websockets.http11 import Response
 
 import app.core.clients.proxy_websocket as proxy_websocket_module
+from app.core.clients.codex import CodexWebSocketResult
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import connect_responses_websocket
+from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 
 
 def _proxy_error_code(exc: ProxyResponseError) -> str | None:
@@ -101,6 +103,47 @@ async def _local_proxy_tunnel_handler(
                 await target_writer.wait_closed()
 
 
+class _FakeCodexWebSocket:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def send_str(self, data: str) -> None:
+        del data
+
+    async def send_bytes(self, data: bytes) -> None:
+        del data
+
+    async def recv(self) -> tuple[bytes, int]:
+        return b'{"type":"response.completed"}', 1
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeCodexClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.websocket = _FakeCodexWebSocket()
+
+    async def open_ws_with_route_metadata(
+        self,
+        url: str,
+        *,
+        route: ResolvedUpstreamRoute,
+        **kwargs: object,
+    ) -> CodexWebSocketResult:
+        self.calls.append({"url": url, "route": route, **kwargs})
+        return CodexWebSocketResult(
+            websocket=self.websocket,
+            context=None,
+            route=route,
+            fallback_used=False,
+        )
+
+    async def close(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_connect_responses_websocket_uses_websockets_transport(monkeypatch):
     fake_connection = _FakeConnection()
@@ -157,6 +200,47 @@ async def test_connect_responses_websocket_uses_websockets_transport(monkeypatch
     assert "Cookie" not in additional_headers
     assert "User-Agent" not in additional_headers
     assert "Origin" not in additional_headers
+
+
+@pytest.mark.asyncio
+async def test_connect_responses_websocket_routed_codex_call_omits_unsupported_size_kwarg(monkeypatch):
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="pool_1",
+        endpoint=ResolvedProxyEndpoint("ep_1", "http", "proxy.test", 8080),
+    )
+    codex_client = _FakeCodexClient()
+    monkeypatch.setattr(
+        proxy_websocket_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            upstream_base_url="https://chatgpt.com/backend-api",
+            upstream_connect_timeout_seconds=7.0,
+            max_sse_event_bytes=4321,
+            upstream_websocket_trust_env=False,
+        ),
+    )
+
+    websocket = await connect_responses_websocket(
+        {
+            "openai-beta": "responses_websockets=2026-02-06",
+            "User-Agent": "Codex CLI Test",
+            "Origin": "https://chatgpt.com",
+        },
+        "access-token",
+        "account-123",
+        route=route,
+        codex_client=cast(Any, codex_client),
+    )
+    await websocket.close()
+
+    assert codex_client.calls
+    call = codex_client.calls[0]
+    assert call["url"] == "wss://chatgpt.com/backend-api/codex/responses"
+    assert call["route"] is route
+    assert call["timeout"] == 7.0
+    assert "max_message_size" not in call
+    assert "max_size" not in call
 
 
 @pytest.mark.asyncio

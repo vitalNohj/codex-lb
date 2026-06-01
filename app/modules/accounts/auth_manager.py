@@ -15,7 +15,7 @@ from app.core.balancer import PERMANENT_FAILURE_CODES
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
-from app.core.upstream_proxy import resolve_upstream_route
+from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.db.session import get_background_session
@@ -287,13 +287,21 @@ class AuthManager:
             refresh_lease = await self._acquire_refresh_admission()
         try:
             async with get_background_session() as session:
-                route = await resolve_upstream_route(
-                    session,
-                    account_id=account.id,
-                    operation="token_refresh",
-                    scope="account",
-                    encryptor=self._encryptor,
-                )
+                try:
+                    route = await resolve_upstream_route(
+                        session,
+                        account_id=account.id,
+                        operation="token_refresh",
+                        scope="account",
+                        encryptor=self._encryptor,
+                    )
+                except UpstreamProxyRouteError as exc:
+                    raise RefreshError(
+                        "upstream_proxy_unavailable",
+                        f"Upstream proxy route unavailable: {exc.reason}",
+                        False,
+                        transport_error=True,
+                    ) from exc
             return await refresh_access_token(
                 refresh_token,
                 route=route,

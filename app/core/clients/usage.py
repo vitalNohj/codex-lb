@@ -78,42 +78,14 @@ async def fetch_usage(
 
     try:
         if route is not None:
-            owns_codex_client = codex_client is None
-            active_codex_client = codex_client or CodexClient(create_codex_session())
-            try:
-                resp = await active_codex_client.request(
-                    "GET",
-                    url,
-                    route=route,
-                    headers=headers,
-                    timeout=timeout_seconds or settings.usage_fetch_timeout_seconds,
-                )
-            finally:
-                if owns_codex_client:
-                    close = getattr(active_codex_client, "close", None)
-                    if callable(close):
-                        await close()
-            data = await _safe_codex_json(resp)
-            status = _codex_response_status(resp)
-            if status >= 400:
-                code = _extract_error_code(data)
-                message = _extract_error_message(data) or f"Usage fetch failed ({status})"
-                logger.warning(
-                    "Usage fetch failed request_id=%s status=%s code=%s message=%s",
-                    get_request_id(),
-                    status,
-                    code,
-                    message,
-                )
-                raise UsageFetchError(status, message, code=code)
-            try:
-                return UsagePayload.model_validate(data)
-            except ValidationError as exc:
-                logger.warning(
-                    "Usage fetch invalid payload request_id=%s",
-                    get_request_id(),
-                )
-                raise UsageFetchError(502, "Invalid usage payload") from exc
+            return await _fetch_usage_via_codex(
+                url=url,
+                route=route,
+                headers=headers,
+                timeout_seconds=timeout_seconds or settings.usage_fetch_timeout_seconds,
+                retries=retries,
+                codex_client=codex_client,
+            )
         async with lease_retry_client(client) as retry_client:
             async with retry_client.request(
                 "GET",
@@ -149,6 +121,70 @@ async def fetch_usage(
             exc,
         )
         raise UsageFetchError(0, f"Usage fetch failed: {exc}") from exc
+
+
+async def _fetch_usage_via_codex(
+    *,
+    url: str,
+    route: ResolvedUpstreamRoute,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    retries: int,
+    codex_client: CodexClient | None,
+) -> UsagePayload:
+    attempts = max(1, retries + 1)
+    owns_codex_client = codex_client is None
+    active_codex_client = codex_client or CodexClient(create_codex_session())
+    try:
+        for attempt in range(attempts):
+            try:
+                resp = await active_codex_client.request(
+                    "GET",
+                    url,
+                    route=route,
+                    headers=headers,
+                    timeout=timeout_seconds,
+                )
+            except CodexTransportError:
+                if attempt < attempts - 1:
+                    await asyncio.sleep(_retry_delay_seconds(attempt))
+                    continue
+                raise
+
+            data = await _safe_codex_json(resp)
+            status = _codex_response_status(resp)
+            if status in RETRYABLE_STATUS and attempt < attempts - 1:
+                await asyncio.sleep(_retry_delay_seconds(attempt))
+                continue
+            return _usage_payload_or_raise(data, status)
+    finally:
+        if owns_codex_client:
+            close = getattr(active_codex_client, "close", None)
+            if callable(close):
+                await close()
+    raise RuntimeError("unreachable usage retry state")
+
+
+def _usage_payload_or_raise(data: JsonObject, status: int) -> UsagePayload:
+    if status >= 400:
+        code = _extract_error_code(data)
+        message = _extract_error_message(data) or f"Usage fetch failed ({status})"
+        logger.warning(
+            "Usage fetch failed request_id=%s status=%s code=%s message=%s",
+            get_request_id(),
+            status,
+            code,
+            message,
+        )
+        raise UsageFetchError(status, message, code=code)
+    try:
+        return UsagePayload.model_validate(data)
+    except ValidationError as exc:
+        logger.warning(
+            "Usage fetch invalid payload request_id=%s",
+            get_request_id(),
+        )
+        raise UsageFetchError(502, "Invalid usage payload") from exc
 
 
 def _codex_response_status(response: object) -> int:
@@ -231,3 +267,7 @@ def _retry_options(attempts: int) -> ExponentialRetry:
         exceptions={aiohttp.ClientError, asyncio.TimeoutError},
         retry_all_server_errors=False,
     )
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    return min(RETRY_MAX_TIMEOUT, RETRY_START_TIMEOUT * (2.0**attempt))
