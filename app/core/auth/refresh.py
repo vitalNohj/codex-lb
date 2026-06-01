@@ -45,12 +45,21 @@ class TokenRefreshResult:
 
 
 class RefreshError(Exception):
-    def __init__(self, code: str, message: str, is_permanent: bool, *, transport_error: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        is_permanent: bool,
+        *,
+        transport_error: bool = False,
+        upstream_proxy_fail_closed_reason: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.is_permanent = is_permanent
         self.transport_error = transport_error
+        self.upstream_proxy_fail_closed_reason = upstream_proxy_fail_closed_reason
 
 
 def should_refresh(last_refresh: datetime, now: datetime | None = None) -> bool:

@@ -9,7 +9,7 @@ from websockets.exceptions import InvalidHandshake, InvalidProxy, InvalidStatus
 from websockets.http11 import Response
 
 import app.core.clients.proxy_websocket as proxy_websocket_module
-from app.core.clients.codex import CodexWebSocketResult
+from app.core.clients.codex import CodexTransportError, CodexWebSocketResult
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import connect_responses_websocket
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
@@ -90,6 +90,24 @@ class _FakeCodexClient:
 
     async def close(self) -> None:
         return None
+
+
+class _FailingCodexClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def open_ws_with_route_metadata(
+        self,
+        url: str,
+        *,
+        route: ResolvedUpstreamRoute,
+        **kwargs: object,
+    ) -> CodexWebSocketResult:
+        del url, route, kwargs
+        raise CodexTransportError("Codex upstream websocket failed via proxy endpoint ep_1: OSError")
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -189,6 +207,38 @@ async def test_connect_responses_websocket_routed_codex_call_preserves_size_limi
     assert call["timeout"] == 7.0
     assert call["max_message_size"] == 4321
     assert "max_size" not in call
+
+
+@pytest.mark.asyncio
+async def test_connect_responses_websocket_routed_transport_error_maps_proxy_error(monkeypatch):
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="pool_1",
+        endpoint=ResolvedProxyEndpoint("ep_1", "http", "proxy.test", 8080),
+    )
+    monkeypatch.setattr(
+        proxy_websocket_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            upstream_base_url="https://chatgpt.com/backend-api",
+            upstream_connect_timeout_seconds=7.0,
+            max_sse_event_bytes=4321,
+            upstream_websocket_trust_env=False,
+        ),
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await connect_responses_websocket(
+            {"openai-beta": "responses_websockets=2026-02-06"},
+            "access-token",
+            "account-123",
+            route=route,
+            codex_client=cast(Any, _FailingCodexClient()),
+        )
+
+    assert exc_info.value.status_code == 502
+    assert _proxy_error_code(exc_info.value) == "upstream_unavailable"
+    assert "ep_1" in (_proxy_error_message(exc_info.value) or "")
 
 
 @pytest.mark.asyncio

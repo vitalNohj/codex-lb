@@ -21,6 +21,7 @@ from websockets.typing import Origin
 
 from app.core.clients.codex import (
     CodexClient,
+    CodexTransportError,
     codex_transport_error_message,
     create_codex_session,
     require_route_or_direct_egress_opt_in,
@@ -373,6 +374,13 @@ async def connect_responses_websocket(
                 if not hasattr(context, "__aenter__"):
                     context = None
                 endpoint_id = route.endpoint_id
+        except CodexTransportError as exc:
+            if owns_codex_client:
+                await active_codex_client.close()
+            raise ProxyResponseError(
+                502,
+                openai_error("upstream_unavailable", str(exc), error_type="server_error"),
+            ) from exc
         except Exception:
             if owns_codex_client:
                 await active_codex_client.close()

@@ -253,6 +253,7 @@ class AuthManager:
                         f"Upstream proxy route unavailable: {exc.reason}",
                         False,
                         transport_error=True,
+                        upstream_proxy_fail_closed_reason=exc.reason,
                     ) from exc
             return await _call_with_supported_optional_kwargs(
                 refresh_access_token,

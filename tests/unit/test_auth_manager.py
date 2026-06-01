@@ -223,6 +223,7 @@ async def test_refresh_account_converts_upstream_route_failure_to_refresh_error(
     assert exc_info.value.message == "Upstream proxy route unavailable: pool_unavailable"
     assert exc_info.value.is_permanent is False
     assert exc_info.value.transport_error is True
+    assert exc_info.value.upstream_proxy_fail_closed_reason == "pool_unavailable"
     assert repo.status_payload is None
     assert repo.tokens_payload is None
 

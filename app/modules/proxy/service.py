@@ -10432,6 +10432,28 @@ class ProxyService:
                         return
                     try:
                         account = await self._ensure_fresh_with_budget(account, timeout_seconds=remaining_budget)
+                    except UpstreamProxyRouteError as exc:
+                        message = f"Upstream proxy route unavailable: {exc.reason}"
+                        await self._write_stream_preflight_error(
+                            account_id=account.id,
+                            api_key=api_key,
+                            request_id=request_id,
+                            model=payload.model,
+                            start=start,
+                            error_code="upstream_proxy_unavailable",
+                            error_message=message,
+                            reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                            service_tier=payload.service_tier,
+                            transport=request_transport,
+                            upstream_proxy_fail_closed_reason=exc.reason,
+                        )
+                        event = response_failed_event(
+                            "upstream_proxy_unavailable",
+                            message,
+                            response_id=request_id,
+                        )
+                        yield format_sse_event(event)
+                        return
                     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         logger.warning(
                             "Stream refresh/connect failed request_id=%s attempt=%s account_id=%s",
@@ -11702,6 +11724,7 @@ class ProxyService:
         reasoning_effort: str | None,
         service_tier: str | None,
         transport: str = _REQUEST_TRANSPORT_HTTP,
+        upstream_proxy_fail_closed_reason: str | None = None,
     ) -> None:
         await self._write_request_log(
             account_id=account_id,
@@ -11716,6 +11739,7 @@ class ProxyService:
             transport=transport,
             service_tier=service_tier,
             requested_service_tier=service_tier,
+            upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
         )
 
     async def _refresh_usage(self, repos: ProxyRepositories, accounts: list[Account]) -> None:
@@ -11906,7 +11930,13 @@ class ProxyService:
         force: bool = False,
         timeout_seconds: float | None = None,
     ) -> Account:
-        return await self._ensure_fresh(account, force=force, timeout_seconds=timeout_seconds)
+        try:
+            return await self._ensure_fresh(account, force=force, timeout_seconds=timeout_seconds)
+        except RefreshError as exc:
+            reason = _refresh_upstream_proxy_fail_closed_reason(exc)
+            if reason is not None:
+                raise UpstreamProxyRouteError(reason, account_id=account.id) from exc
+            raise
 
     async def _ensure_fresh_with_budget_or_auth_error(
         self,
@@ -12210,6 +12240,19 @@ def _should_retry_transient_stream_error(code: str | None, message: str | None) 
 
 def _is_account_neutral_error_code(code: str | None) -> bool:
     return is_local_overload_error_code(code) or code == "proxy_unavailable"
+
+
+def _refresh_upstream_proxy_fail_closed_reason(exc: RefreshError) -> str | None:
+    if exc.code != "upstream_proxy_unavailable":
+        return None
+    reason = exc.upstream_proxy_fail_closed_reason
+    if reason:
+        return reason
+    marker = "Upstream proxy route unavailable:"
+    if exc.message.startswith(marker):
+        parsed = exc.message.removeprefix(marker).strip()
+        return parsed or "unavailable"
+    return "unavailable"
 
 
 def _is_local_account_cap_code(code: str | None) -> bool:
