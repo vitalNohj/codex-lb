@@ -93,6 +93,7 @@ const SettingsPayloadSchema = z
 		totpRequiredOnLogin: z.boolean().optional(),
 		totpConfigured: z.boolean().optional(),
 		apiKeyAuthEnabled: z.boolean().optional(),
+		hideUpstreamQuotaFromApiKeys: z.boolean().optional(),
 	})
 	.passthrough();
 

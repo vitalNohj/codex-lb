@@ -21,6 +21,7 @@ describe("DashboardSettingsSchema", () => {
       totpRequiredOnLogin: true,
       totpConfigured: false,
       apiKeyAuthEnabled: true,
+      hideUpstreamQuotaFromApiKeys: false,
       limitWarmupEnabled: false,
       limitWarmupWindows: "both",
       limitWarmupModel: "auto",
@@ -39,6 +40,7 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.warmupModel).toBe("gpt-5.4-mini");
     expect(parsed.importWithoutOverwrite).toBe(true);
     expect(parsed.apiKeyAuthEnabled).toBe(true);
+    expect(parsed.hideUpstreamQuotaFromApiKeys).toBe(false);
     expect(parsed.limitWarmupEnabled).toBe(false);
     expect(parsed.limitWarmupWindows).toBe("both");
   });
@@ -51,6 +53,7 @@ describe("DashboardSettingsSchema", () => {
       totpRequiredOnLogin: false,
       totpConfigured: false,
       apiKeyAuthEnabled: true,
+      hideUpstreamQuotaFromApiKeys: false,
     });
 
     expect(parsed.upstreamStreamTransport).toBe("default");
@@ -80,6 +83,7 @@ describe("SettingsUpdateRequestSchema", () => {
       importWithoutOverwrite: true,
       totpRequiredOnLogin: true,
       apiKeyAuthEnabled: false,
+      hideUpstreamQuotaFromApiKeys: true,
       limitWarmupEnabled: true,
       limitWarmupWindows: "primary",
       limitWarmupModel: "gpt-5.1-codex-mini",
@@ -98,6 +102,7 @@ describe("SettingsUpdateRequestSchema", () => {
     expect(parsed.relativeAvailabilityTopK).toBe(7);
     expect(parsed.totpRequiredOnLogin).toBe(true);
     expect(parsed.apiKeyAuthEnabled).toBe(false);
+    expect(parsed.hideUpstreamQuotaFromApiKeys).toBe(true);
     expect(parsed.limitWarmupEnabled).toBe(true);
     expect(parsed.limitWarmupWindows).toBe("primary");
   });
@@ -122,6 +127,7 @@ describe("SettingsUpdateRequestSchema", () => {
     expect(parsed.importWithoutOverwrite).toBeUndefined();
     expect(parsed.totpRequiredOnLogin).toBeUndefined();
     expect(parsed.apiKeyAuthEnabled).toBeUndefined();
+    expect(parsed.hideUpstreamQuotaFromApiKeys).toBeUndefined();
     expect(parsed.relativeAvailabilityPower).toBeUndefined();
     expect(parsed.relativeAvailabilityTopK).toBeUndefined();
     expect(parsed.openaiCacheAffinityMaxAgeSeconds).toBeUndefined();

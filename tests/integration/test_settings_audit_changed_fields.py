@@ -63,6 +63,7 @@ def _default_put_body() -> dict[str, Any]:
         ),
         ("importWithoutOverwrite", False, "import_without_overwrite"),
         ("apiKeyAuthEnabled", True, "api_key_auth_enabled"),
+        ("hideUpstreamQuotaFromApiKeys", True, "hide_upstream_quota_from_api_keys"),
     ],
 )
 @pytest.mark.asyncio

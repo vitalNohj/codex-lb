@@ -28,6 +28,7 @@ const BASE_SETTINGS: DashboardSettings = {
   totpRequiredOnLogin: false,
   totpConfigured: false,
   apiKeyAuthEnabled: true,
+  hideUpstreamQuotaFromApiKeys: false,
   ...LIMIT_WARMUP_DEFAULTS,
 };
 

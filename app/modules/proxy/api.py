@@ -683,13 +683,15 @@ async def v1_usage(
     if usage is None:
         raise ProxyAuthError("Invalid API key")
 
+    hide_upstream_limits = await _hide_upstream_quota_for_api_key_clients(api_key)
+
     return V1UsageResponse(
         request_count=usage.request_count,
         total_tokens=usage.total_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         total_cost_usd=usage.total_cost_usd,
         limits=[_to_v1_usage_limit_response(limit) for limit in usage.limits],
-        upstream_limits=_ordered_aggregate_limits(aggregate_limits),
+        upstream_limits=[] if hide_upstream_limits else _ordered_aggregate_limits(aggregate_limits),
     )
 
 
@@ -826,6 +828,22 @@ async def _build_codex_usage_payload_for_api_key(api_key: ApiKeyData) -> RateLim
         ),
         credits=_codex_usage_credit_snapshot(primary_credit_limit, secondary_credit_limit),
     )
+
+
+async def _hide_upstream_quota_for_api_key_clients(api_key: ApiKeyData | None) -> bool:
+    if api_key is None:
+        return False
+    settings = await get_settings_cache().get()
+    return bool(getattr(settings, "hide_upstream_quota_from_api_keys", False))
+
+
+async def _rate_limit_headers_for_request(
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> dict[str, str]:
+    if await _hide_upstream_quota_for_api_key_clients(api_key):
+        return {}
+    return await context.service.rate_limit_headers()
 
 
 def _select_codex_usage_limit(
@@ -1326,7 +1344,7 @@ async def _proxy_images_generation_request(
         # Re-raise so the global handler maps to 403.
         raise
 
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     reservation = await _enforce_request_limits(
         api_key,
         request_model=effective_model,
@@ -1522,7 +1540,7 @@ async def _proxy_images_edit_request(
 
     validate_model_access(api_key, effective_model)
 
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     reservation = await _enforce_request_limits(
         api_key,
         request_model=effective_model,
@@ -1922,7 +1940,7 @@ async def v1_chat_completions(
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
 
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     try:
         responses_shaped_payload = not payload.messages and payload.input is not None
         if not responses_shaped_payload:
@@ -2067,7 +2085,9 @@ async def _stream_responses(
         )
     )
 
-    rate_limit_headers = await context.service.rate_limit_headers() if include_rate_limit_headers else {}
+    rate_limit_headers = (
+        await _rate_limit_headers_for_request(context, api_key) if include_rate_limit_headers else {}
+    )
     bridge_active = prefer_http_bridge and proxy_service_module.get_settings().http_responses_session_bridge_enabled
     effective_headers = forwarded_headers or request.headers
     downstream_turn_state = (
@@ -2180,7 +2200,7 @@ async def _collect_responses(
         request_usage_budget=estimate_api_key_request_usage(payload),
     )
 
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     bridge_active = prefer_http_bridge and proxy_service_module.get_settings().http_responses_session_bridge_enabled
     downstream_turn_state = (
         proxy_affinity_module.ensure_http_downstream_turn_state(request.headers) if bridge_active else None
@@ -2303,7 +2323,7 @@ async def _compact_responses(
         request_usage_budget=estimate_api_key_request_usage(payload),
     )
 
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     try:
         result = await context.service.compact_responses(
             payload,
@@ -2358,7 +2378,7 @@ async def _transcribe_request(
         request_model=_TRANSCRIPTION_MODEL,
         request_service_tier=None,
     )
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     try:
         audio_bytes = await file.read()
         result = await context.service.transcribe(
