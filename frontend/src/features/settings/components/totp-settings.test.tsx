@@ -24,6 +24,7 @@ const LIMIT_WARMUP_DEFAULTS = {
   limitWarmupPrompt: "Say OK.",
   limitWarmupCooldownSeconds: 3600,
   limitWarmupMinAvailablePercent: 100,
+  limitWarmupStaggeredIdleEnabled: false,
 };
 const ADDITIONAL_QUOTA_DEFAULTS = {
   additionalQuotaRoutingPolicies: {},

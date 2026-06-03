@@ -41,6 +41,7 @@ class DashboardSettingsData:
     limit_warmup_prompt: str
     limit_warmup_cooldown_seconds: int
     limit_warmup_min_available_percent: float
+    limit_warmup_staggered_idle_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ class DashboardSettingsUpdateData:
     limit_warmup_prompt: str
     limit_warmup_cooldown_seconds: int
     limit_warmup_min_available_percent: float
+    limit_warmup_staggered_idle_enabled: bool
 
 
 class SettingsService:
@@ -115,6 +117,7 @@ class SettingsService:
             limit_warmup_prompt=row.limit_warmup_prompt,
             limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
             limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
+            limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
         )
 
     async def update_settings(self, payload: DashboardSettingsUpdateData) -> DashboardSettingsData:
@@ -154,6 +157,7 @@ class SettingsService:
             limit_warmup_prompt=payload.limit_warmup_prompt,
             limit_warmup_cooldown_seconds=payload.limit_warmup_cooldown_seconds,
             limit_warmup_min_available_percent=payload.limit_warmup_min_available_percent,
+            limit_warmup_staggered_idle_enabled=payload.limit_warmup_staggered_idle_enabled,
         )
         return DashboardSettingsData(
             sticky_threads_enabled=row.sticky_threads_enabled,
@@ -189,6 +193,7 @@ class SettingsService:
             limit_warmup_prompt=row.limit_warmup_prompt,
             limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
             limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
+            limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
         )
 
 

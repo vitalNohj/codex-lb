@@ -90,6 +90,7 @@ export const DashboardSettingsSchema = z
       .max(100)
       .optional()
       .default(100),
+    limitWarmupStaggeredIdleEnabled: z.boolean().optional().default(false),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -113,7 +114,6 @@ export const DashboardSettingsSchema = z
       __stickyReallocationSecondaryBudgetThresholdPctProvided: secondaryProvided,
     };
   });
-
 
 export const SettingsUpdateRequestSchema = z.object({
   stickyThreadsEnabled: z.boolean().optional(),
@@ -144,6 +144,7 @@ export const SettingsUpdateRequestSchema = z.object({
   limitWarmupPrompt: LimitWarmupPromptSchema.optional(),
   limitWarmupCooldownSeconds: z.number().int().min(60).optional(),
   limitWarmupMinAvailablePercent: z.number().positive().max(100).optional(),
+  limitWarmupStaggeredIdleEnabled: z.boolean().optional(),
 });
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;

@@ -26,6 +26,7 @@ const LIMIT_WARMUP_DEFAULTS = {
   limitWarmupPrompt: "Say OK.",
   limitWarmupCooldownSeconds: 3600,
   limitWarmupMinAvailablePercent: 100,
+  limitWarmupStaggeredIdleEnabled: false,
 };
 
 const BASE_SETTINGS: DashboardSettings = {
@@ -445,6 +446,7 @@ describe("RoutingSettings", () => {
     render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByRole("switch", { name: "Enable limit warm-up" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable staggered idle warm-up" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Prefer earlier reset accounts" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Reset preference window" })).toBeInTheDocument();
     expect(screen.getByLabelText("Warmup model")).toHaveAttribute("maxLength", "128");
@@ -510,5 +512,23 @@ describe("RoutingSettings", () => {
     );
 
     expect(screen.getAllByText("Fill first").length).toBeGreaterThan(0);
+  });
+
+  it("saves staggered idle warm-up when limit warm-up is enabled", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <RoutingSettings
+        settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true }}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    await user.click(screen.getByRole("switch", { name: "Enable staggered idle warm-up" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      limitWarmupStaggeredIdleEnabled: true,
+    });
   });
 });
