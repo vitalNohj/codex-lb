@@ -25,6 +25,7 @@ from app.core.balancer import (
     select_account,
 )
 from app.core.balancer.types import UpstreamError
+from app.core.config import settings as config_settings
 from app.core.config.settings import get_settings
 from app.core.metrics.prometheus import (
     PROMETHEUS_AVAILABLE,
@@ -68,6 +69,8 @@ _RECOVERABLE_STATUSES = frozenset(
         AccountStatus.QUOTA_EXCEEDED,
     }
 )
+
+_DEFAULT_USAGE_REFRESH_INTERVAL_SECONDS = 60
 
 NO_PLAN_SUPPORT_FOR_MODEL = "no_plan_support_for_model"
 ADDITIONAL_QUOTA_DATA_UNAVAILABLE = "additional_quota_data_unavailable"
@@ -1646,9 +1649,14 @@ def _usage_entry_is_recent_enough(recorded_at: datetime | None) -> bool:
     current_time = utcnow()
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=timezone.utc)
-    interval_seconds = max(get_settings().usage_refresh_interval_seconds * 2, 180)
+    interval_seconds = max(_usage_refresh_interval_seconds() * 2, 180)
     recorded_time = recorded_at if recorded_at.tzinfo is not None else recorded_at.replace(tzinfo=timezone.utc)
     return recorded_time >= current_time - timedelta(seconds=interval_seconds)
+
+
+def _usage_refresh_interval_seconds() -> int:
+    settings = config_settings.get_settings()
+    return int(getattr(settings, "usage_refresh_interval_seconds", _DEFAULT_USAGE_REFRESH_INTERVAL_SECONDS))
 
 
 def _filter_accounts_for_model(accounts: list[Account], model: str) -> list[Account]:
@@ -1738,10 +1746,8 @@ async def _latest_additional_by_key(
 
 
 def _additional_usage_fresh_since(now: datetime | None = None) -> datetime:
-    from app.core.config.settings import get_settings  # noqa: PLC0415
-
     current_time = now or utcnow()
-    interval_seconds = max(get_settings().usage_refresh_interval_seconds * 2, 180)
+    interval_seconds = max(_usage_refresh_interval_seconds() * 2, 180)
     return current_time - timedelta(seconds=interval_seconds)
 
 
