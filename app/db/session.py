@@ -157,7 +157,12 @@ def _startup_sqlite_check_mode(raw_mode: str) -> SqliteIntegrityCheckMode | None
 
 
 async def _shielded(awaitable: Awaitable[object]) -> None:
-    await asyncio.shield(awaitable)
+    task = asyncio.ensure_future(awaitable)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 async def _safe_rollback(session: AsyncSession) -> None:
