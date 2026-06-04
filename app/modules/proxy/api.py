@@ -1702,7 +1702,6 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
 
     entries: list[CodexModelEntry] = []
     data: list[ModelListItem] = []
-    created = int(time.time())
     for slug, model in models.items():
         if not model.supported_in_api:
             continue
@@ -1712,7 +1711,7 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
             entry = _to_codex_model_entry(model)
             entries.append(entry)
             if entry.visibility == "list":
-                data.append(_to_model_list_item(slug, model, created=created))
+                data.append(_to_model_list_item(slug, model, created=_model_list_created_at(model)))
             continue
         entry = _to_codex_model_entry(
             model,
@@ -1720,7 +1719,7 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
         )
         entries.append(entry)
         if entry.visibility == "list":
-            data.append(_to_model_list_item(slug, model, created=created))
+            data.append(_to_model_list_item(slug, model, created=_model_list_created_at(model)))
     await _release_reservation(reservation)
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
@@ -1800,6 +1799,16 @@ def _to_model_list_item(slug: str, model: UpstreamModel, *, created: int) -> Mod
             "supportsVision": _v1_supports_vision(model),
         }
     )
+
+
+def _model_list_created_at(model: UpstreamModel) -> int:
+    for key in ("created", "created_at", "createdAt"):
+        raw_value = model.raw.get(key)
+        if isinstance(raw_value, int):
+            return raw_value
+        if isinstance(raw_value, float):
+            return int(raw_value)
+    return 0
 
 
 def _codex_model_visibility_allowed_models(api_key: ApiKeyData | None) -> set[str] | None:
