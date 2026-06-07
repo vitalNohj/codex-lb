@@ -770,6 +770,109 @@ async def test_accounts_list_request_usage_uses_persisted_cost(async_client, db_
 
 
 @pytest.mark.asyncio
+async def test_accounts_list_request_usage_deduplicates_request_id_rows(async_client, db_setup):
+    requested_at = utcnow()
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+
+        await accounts_repo.upsert(_make_account("acc_replayed", "replayed@example.com"))
+
+        first_attempt = await logs_repo.add_log(
+            account_id="acc_replayed",
+            request_id="req_repeat_1",
+            model="gpt-5.1-codex",
+            input_tokens=50_000,
+            output_tokens=20_000,
+            cached_input_tokens=10_000,
+            latency_ms=180,
+            status="success",
+            error_code=None,
+            requested_at=requested_at,
+        )
+        second_attempt = await logs_repo.add_log(
+            account_id="acc_replayed",
+            request_id="req_repeat_1",
+            model="gpt-5.1-codex",
+            input_tokens=5_000,
+            output_tokens=1_000,
+            cached_input_tokens=0,
+            latency_ms=140,
+            status="success",
+            error_code=None,
+            requested_at=requested_at,
+        )
+        await session.execute(update(RequestLog).where(RequestLog.id == first_attempt.id).values(cost_usd=5.0))
+        await session.execute(update(RequestLog).where(RequestLog.id == second_attempt.id).values(cost_usd=2.0))
+        await session.commit()
+
+    response = await async_client.get("/api/accounts")
+    assert response.status_code == 200
+    payload = response.json()
+    accounts = {item["accountId"]: item for item in payload["accounts"]}
+
+    request_usage = accounts["acc_replayed"]["requestUsage"]
+    assert request_usage is not None
+    assert request_usage["requestCount"] == 1
+    assert request_usage["totalTokens"] == 6_000
+    assert request_usage["cachedInputTokens"] == 0
+    assert request_usage["totalCostUsd"] == pytest.approx(2.0, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_accounts_list_request_usage_counts_repeated_request_id_by_requested_at(async_client, db_setup):
+    requested_at = utcnow()
+    repeated_request_time = requested_at + timedelta(seconds=30)
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+
+        await accounts_repo.upsert(_make_account("acc_replayed_time", "replayed-time@example.com"))
+
+        newer_attempt = await logs_repo.add_log(
+            account_id="acc_replayed_time",
+            request_id="req_repeat_time",
+            model="gpt-5.1-codex",
+            input_tokens=8_000,
+            output_tokens=2_000,
+            cached_input_tokens=1_000,
+            latency_ms=180,
+            status="success",
+            error_code=None,
+            requested_at=repeated_request_time,
+        )
+        older_backfill = await logs_repo.add_log(
+            account_id="acc_replayed_time",
+            request_id="req_repeat_time",
+            model="gpt-5.1-codex",
+            input_tokens=50_000,
+            output_tokens=20_000,
+            cached_input_tokens=10_000,
+            latency_ms=140,
+            status="success",
+            error_code=None,
+            requested_at=requested_at,
+        )
+        await session.execute(update(RequestLog).where(RequestLog.id == newer_attempt.id).values(cost_usd=3.0))
+        await session.execute(update(RequestLog).where(RequestLog.id == older_backfill.id).values(cost_usd=9.0))
+        await session.commit()
+
+    response = await async_client.get("/api/accounts")
+    assert response.status_code == 200
+    payload = response.json()
+    accounts = {item["accountId"]: item for item in payload["accounts"]}
+
+    request_usage = accounts["acc_replayed_time"]["requestUsage"]
+    assert request_usage is not None
+    assert request_usage["requestCount"] == 2
+    assert request_usage["totalTokens"] == 80_000
+    assert request_usage["cachedInputTokens"] == 11_000
+    assert request_usage["totalCostUsd"] == pytest.approx(12.0, abs=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_accounts_list_maps_weekly_only_primary_to_secondary(async_client, db_setup):
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
