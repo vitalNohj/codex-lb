@@ -1007,6 +1007,7 @@ async def test_opportunistic_admission_honors_stream_account_cap(monkeypatch):
                 accounts=[account],
                 latest_primary={},
                 latest_secondary={},
+                latest_monthly={},
             )
         ),
     )
