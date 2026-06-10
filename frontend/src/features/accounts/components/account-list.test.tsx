@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountList } from "@/features/accounts/components/account-list";
+import { AccountSummarySchema, type AccountSummary } from "@/features/accounts/schemas";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
+
+function accountList(values: unknown[]): AccountSummary[] {
+  return values.map((value) => AccountSummarySchema.parse(value));
+}
 
 describe("AccountList", () => {
   beforeEach(() => {
@@ -23,7 +28,7 @@ describe("AccountList", () => {
 
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-1",
             email: "primary@example.com",
@@ -42,7 +47,7 @@ describe("AccountList", () => {
             limitWarmupEnabled: false,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId="acc-1"
         onSelect={onSelect}
         onOpenImport={() => {}}
@@ -69,7 +74,7 @@ describe("AccountList", () => {
 
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-hidden-early",
             email: "hidden-early@example.com",
@@ -104,7 +109,7 @@ describe("AccountList", () => {
             windowMinutesSecondary: 10_080,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -122,7 +127,7 @@ describe("AccountList", () => {
   it("ignores elapsed reset timestamps when sorting", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-stale",
             email: "stale@example.com",
@@ -157,7 +162,7 @@ describe("AccountList", () => {
             windowMinutesSecondary: 10_080,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -173,7 +178,7 @@ describe("AccountList", () => {
   it("sorts legacy primary quota rows by their reset timestamp", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-late",
             email: "late@example.com",
@@ -208,7 +213,7 @@ describe("AccountList", () => {
             windowMinutesSecondary: null,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -224,7 +229,7 @@ describe("AccountList", () => {
   it("sorts accounts by name", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-z",
             email: "z@example.com",
@@ -245,7 +250,7 @@ describe("AccountList", () => {
             resetAtPrimary: "2026-01-01T12:10:00.000Z",
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -264,7 +269,7 @@ describe("AccountList", () => {
   it("supports reverse name sorting", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-b",
             email: "b@example.com",
@@ -285,7 +290,7 @@ describe("AccountList", () => {
             resetAtPrimary: "2026-01-01T12:20:00.000Z",
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -304,7 +309,7 @@ describe("AccountList", () => {
   it("can sort by latest reset first", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-a",
             email: "a@example.com",
@@ -325,7 +330,7 @@ describe("AccountList", () => {
             resetAtPrimary: "2026-01-01T12:40:00.000Z",
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -344,7 +349,7 @@ describe("AccountList", () => {
   it("keeps unknown resets last when sorting by latest reset", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-unknown",
             email: "unknown@example.com",
@@ -384,7 +389,7 @@ describe("AccountList", () => {
             resetAtPrimary: "2026-01-01T12:10:00.000Z",
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -407,7 +412,7 @@ describe("AccountList", () => {
 
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-1",
             email: "primary@example.com",
@@ -417,7 +422,7 @@ describe("AccountList", () => {
             limitWarmupEnabled: false,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -437,7 +442,7 @@ describe("AccountList", () => {
 
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "acc-active",
             email: "active@example.com",
@@ -456,7 +461,7 @@ describe("AccountList", () => {
             limitWarmupEnabled: false,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}
@@ -474,7 +479,7 @@ describe("AccountList", () => {
   it("uses the backend duplicate indicator instead of recomputing by email", () => {
     render(
       <AccountList
-        accounts={[
+        accounts={accountList([
           {
             accountId: "d48f0bfc-8ea6-48a7-8d76-d0e5ef1816c5_6f12b5d5",
             email: "dup@example.com",
@@ -504,7 +509,7 @@ describe("AccountList", () => {
             limitWarmupEnabled: false,
             additionalQuotas: [],
           },
-        ]}
+        ])}
         selectedAccountId={null}
         onSelect={() => {}}
         onOpenImport={() => {}}

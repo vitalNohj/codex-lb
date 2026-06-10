@@ -92,6 +92,7 @@ describe("RecentRequestsTable", () => {
              status: "active",
              limitWarmupEnabled: false,
              additionalQuotas: [],
+             sidecarAuths: [],
            },
          ]}
         requests={[

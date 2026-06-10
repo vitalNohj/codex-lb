@@ -249,10 +249,10 @@ function formatMiniQuotaResetLabel(resetAt: string | null): string {
 
 function formatSidecarQuotaLabel(account: AccountSummary): string {
   const status = normalizeStatus(account.status);
-  if (status === "quota_exceeded") {
+  if (status === "exceeded") {
     return `Exhausted — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
   }
-  if (status === "rate_limited") {
+  if (status === "limited") {
     return `Limited — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
   }
   if (status === "active") {
