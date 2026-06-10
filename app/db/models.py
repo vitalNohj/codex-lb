@@ -602,6 +602,15 @@ class DashboardSettings(Base):
     claude_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     claude_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     claude_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claude_sidecar_management_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    claude_sidecar_quota_poll_interval_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=60.0,
+        server_default=text("60.0"),
+        nullable=False,
+    )
+    claude_sidecar_quota_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claude_sidecar_quota_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     warmup_model: Mapped[str] = mapped_column(
         String,
         default="gpt-5.4-mini",

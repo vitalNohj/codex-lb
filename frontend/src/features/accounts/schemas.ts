@@ -62,6 +62,17 @@ export const AccountAdditionalQuotaSchema = z.object({
   secondaryWindow: AccountAdditionalWindowSchema.nullable().optional(),
 });
 
+export const SidecarAuthAccountSchema = z.object({
+  name: z.string(),
+  email: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  quotaExceeded: z.boolean().default(false),
+  nextRecoverAt: z.string().datetime({ offset: true }).nullable().optional(),
+  modelsExceeded: z.array(z.string()).default([]),
+  success: z.number().int().nonnegative().default(0),
+  failed: z.number().int().nonnegative().default(0),
+});
+
 export const AccountSummarySchema = z.object({
   accountId: z.string(),
   email: z.string(),
@@ -81,6 +92,7 @@ export const AccountSummarySchema = z.object({
   windowMinutesPrimary: z.number().nullable().optional(),
   windowMinutesSecondary: z.number().nullable().optional(),
   windowMinutesMonthly: z.number().nullable().optional(),
+  lastRefreshAt: z.string().datetime({ offset: true }).nullable().optional(),
   capacityCreditsPrimary: z.number().nullable().optional(),
   remainingCreditsPrimary: z.number().nullable().optional(),
   capacityCreditsSecondary: z.number().nullable().optional(),
@@ -104,6 +116,7 @@ export const AccountSummarySchema = z.object({
   modelCount: z.number().int().nonnegative().nullable().optional(),
   baseUrl: z.string().nullable().optional(),
   lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  sidecarAuths: z.array(SidecarAuthAccountSchema).default([]),
   isEmailDuplicate: z.boolean().optional(),
 });
 
@@ -315,6 +328,7 @@ export type AccountAdditionalWindow = z.infer<
 export type AccountAdditionalQuota = z.infer<
   typeof AccountAdditionalQuotaSchema
 >;
+export type SidecarAuthAccount = z.infer<typeof SidecarAuthAccountSchema>;
 export type AccountProbeResponse = z.infer<typeof AccountProbeResponseSchema>;
 export type AccountTrendsResponse = z.infer<typeof AccountTrendsResponseSchema>;
 export type OpenCodeAuthJson = z.infer<typeof OpenCodeAuthJsonSchema>;

@@ -14,15 +14,15 @@
           "code review loop",
           "review PR",
           "pr review",
-          "코드 리뷰",
-          "리뷰 루프",
-          "적대적 리뷰",
+          "\ucf54\ub4dc \ub9ac\ubdf0",
+          "\ub9ac\ubdf0 \ub8e8\ud504",
+          "\uc801\ub300\uc801 \ub9ac\ubdf0",
           "deep review"
         ],
         "intentPatterns": [
           "(review|check|audit).*(PR|pull request|branch|changes|code)",
           "(codex|adversarial).*(review|check|audit)",
-          "(리뷰|검토|감사).*(PR|브랜치|변경|코드)"
+          "(\ub9ac\ubdf0|\uac80\ud1a0|\uac10\uc0ac).*(PR|\ube0c\ub79c\uce58|\ubcc0\uacbd|\ucf54\ub4dc)"
         ]
       },
       "fileTriggers": {
@@ -39,25 +39,18 @@
       "promptTriggers": {
         "keywords": [
           "convention",
-          "컨벤션",
+          "\ucee8\ubca4\uc158",
           "code architecture",
-          "코드 아키텍처",
+          "\ucf54\ub4dc \uc544\ud0a4\ud14d\ucc98",
           "coding standard"
         ],
         "intentPatterns": [
-          "(implement|build|create|구현|생성).*(module|feature|모듈|기능)",
-          "(convention|컨벤션|architecture|아키텍처).*(guide|reference|참조)"
+          "(implement|build|create|\uad6c\ud604|\uc0dd\uc131).*(module|feature|\ubaa8\ub4c8|\uae30\ub2a5)",
+          "(convention|\ucee8\ubca4\uc158|architecture|\uc544\ud0a4\ud14d\ucc98).*(guide|reference|\ucc38\uc870)"
         ]
       },
       "fileTriggers": {
-        "pathPatterns": [
-          "**/app/modules/**/*.py",
-          "**/app/core/**/*.py",
-          "**/app/db/**/*.py",
-          "**/app/dependencies.py",
-          "**/app/main.py",
-          "**/tests/**/*.py"
-        ],
+        "pathPatterns": [],
         "pathExclusions": [
           "**/__pycache__/**"
         ]
@@ -66,7 +59,7 @@
         "sessionSkillUsed": true,
         "envOverride": "SKIP_CONVENTION_GUARD"
       },
-      "blockMessage": "BLOCKED: Run /project-conventions first.\nYou must review project conventions before editing code.\n\n→ Skill tool: 'project-conventions'\n→ Bypass: SKIP_CONVENTION_GUARD=1"
+      "blockMessage": "BLOCKED: Run /project-conventions first.\nYou must review project conventions before editing code.\n\n\u2192 Skill tool: 'project-conventions'\n\u2192 Bypass: SKIP_CONVENTION_GUARD=1"
     }
   }
 }

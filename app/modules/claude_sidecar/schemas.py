@@ -5,9 +5,13 @@ from typing import Literal
 
 from pydantic import Field
 
+from app.modules.accounts.schemas import SidecarAuthAccount
 from app.modules.shared.schemas import DashboardModel
 
 ClaudeSidecarStatus = Literal["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]
+ClaudeSidecarQuotaStatus = Literal[
+    "healthy", "unauthorized", "unreachable", "error", "unknown", "disabled", "not_configured"
+]
 
 
 class ClaudeSidecarModelSummary(DashboardModel):
@@ -32,3 +36,10 @@ class ClaudeSidecarTestResponse(ClaudeSidecarStatusResponse):
 
 class ClaudeSidecarModelsResponse(DashboardModel):
     models: list[ClaudeSidecarModelSummary] = Field(default_factory=list)
+
+
+class ClaudeSidecarQuotaResponse(DashboardModel):
+    status: ClaudeSidecarQuotaStatus
+    message: str | None = None
+    checked_at: datetime | None = None
+    accounts: list[SidecarAuthAccount] = Field(default_factory=list)

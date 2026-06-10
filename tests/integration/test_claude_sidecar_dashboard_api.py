@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError, SidecarModel
+from app.db.session import SessionLocal
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarModelQuota,
+    SidecarQuotaSnapshot,
+    snapshot_to_json,
+)
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -95,3 +105,94 @@ async def test_sidecar_test_connection_records_healthy_and_lists_models(async_cl
     response = await async_client.get("/api/claude-sidecar/models")
     assert response.status_code == 200
     assert response.json()["models"] == [{"id": "claude-sonnet", "created": 123, "ownedBy": "anthropic"}]
+
+
+@pytest.mark.asyncio
+async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapshot(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": False,
+            "claudeSidecarClearApiKey": True,
+            "claudeSidecarClearManagementKey": True,
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    assert response.json()["status"] == "disabled"
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    assert response.json()["status"] == "not_configured"
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    assert response.json()["status"] == "unknown"
+
+    checked_at = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-1",
+                auth_index="0",
+                email="claude@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=True,
+                next_recover_at=datetime(2026, 6, 10, 17, 0, 0, tzinfo=timezone.utc),
+                model_states=(
+                    SidecarModelQuota(
+                        model="claude-opus-4",
+                        quota_exceeded=True,
+                        next_recover_at=datetime(2026, 6, 10, 17, 0, 0, tzinfo=timezone.utc),
+                    ),
+                ),
+                success=4,
+                failed=1,
+                last_refresh=None,
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "healthy"
+    assert payload["checkedAt"] == "2026-06-10T12:00:00Z"
+    assert len(payload["accounts"]) == 1
+    account = payload["accounts"][0]
+    assert account["email"] == "claude@example.com"
+    assert account["quotaExceeded"] is True
+    assert account["modelsExceeded"] == ["claude-opus-4"]
+    assert account["nextRecoverAt"] == "2026-06-10T17:00:00Z"

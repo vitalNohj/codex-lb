@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from app.core.auth import DEFAULT_EMAIL, generate_unique_account_id, parse_auth_json
 from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarModelQuota,
+    SidecarQuotaSnapshot,
+    snapshot_to_json,
+)
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -439,3 +447,139 @@ async def test_accounts_list_includes_read_only_claude_sidecar_synthetic_account
 
     pause = await async_client.post("/api/accounts/claude-sidecar/pause")
     assert pause.status_code == 404
+
+
+async def _seed_quota_snapshot(snapshot: SidecarQuotaSnapshot) -> None:
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=snapshot.checked_at.replace(tzinfo=None),
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_accounts_list_sidecar_quota_some_exceeded_sets_rate_limited(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    checked_at = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    next_recover = datetime(2026, 6, 10, 17, 0, 0, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-1",
+                auth_index="0",
+                email="ok@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=10,
+                failed=0,
+                last_refresh=None,
+            ),
+            SidecarAuthQuota(
+                name="claude-2",
+                auth_index="1",
+                email="exceeded@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=True,
+                next_recover_at=next_recover,
+                model_states=(
+                    SidecarModelQuota(
+                        model="claude-opus-4",
+                        quota_exceeded=True,
+                        next_recover_at=next_recover,
+                    ),
+                ),
+                success=5,
+                failed=3,
+                last_refresh=None,
+            ),
+        ),
+    )
+    await _seed_quota_snapshot(snapshot)
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    sidecar = next(
+        (account for account in accounts.json()["accounts"] if account["accountId"] == "claude-sidecar"),
+        None,
+    )
+    assert sidecar is not None
+    assert sidecar["status"] == "rate_limited"
+    assert sidecar["resetAtPrimary"] == "2026-06-10T17:00:00Z"
+    assert sidecar["lastRefreshAt"] == "2026-06-10T12:00:00Z"
+    assert len(sidecar["sidecarAuths"]) == 2
+    exceeded = next(entry for entry in sidecar["sidecarAuths"] if entry["email"] == "exceeded@example.com")
+    assert exceeded["quotaExceeded"] is True
+    assert exceeded["nextRecoverAt"] == "2026-06-10T17:00:00Z"
+    assert exceeded["modelsExceeded"] == ["claude-opus-4"]
+    assert exceeded["failed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_accounts_list_sidecar_quota_all_exceeded_sets_quota_exceeded(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    checked_at = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    next_recover = datetime(2026, 6, 10, 13, 0, 0, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-only",
+                auth_index="0",
+                email="only@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=True,
+                next_recover_at=next_recover,
+                model_states=(),
+                success=2,
+                failed=1,
+                last_refresh=None,
+            ),
+        ),
+    )
+    await _seed_quota_snapshot(snapshot)
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    sidecar = next(
+        (account for account in accounts.json()["accounts"] if account["accountId"] == "claude-sidecar"),
+        None,
+    )
+    assert sidecar is not None
+    assert sidecar["status"] == "quota_exceeded"
+    assert sidecar["resetAtPrimary"] == "2026-06-10T13:00:00Z"

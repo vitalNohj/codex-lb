@@ -55,6 +55,8 @@ class DashboardSettingsData:
     claude_sidecar_last_health_message: str | None
     claude_sidecar_last_checked_at: datetime | None
     claude_sidecar_last_model_count: int | None
+    claude_sidecar_management_key_configured: bool
+    claude_sidecar_quota_poll_interval_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +98,9 @@ class DashboardSettingsUpdateData:
     claude_sidecar_connect_timeout_seconds: float
     claude_sidecar_request_timeout_seconds: float
     claude_sidecar_models_cache_ttl_seconds: float
+    claude_sidecar_management_key: str | None
+    claude_sidecar_clear_management_key: bool
+    claude_sidecar_quota_poll_interval_seconds: float
 
 
 class SettingsService:
@@ -117,6 +122,14 @@ class SettingsService:
         elif payload.claude_sidecar_api_key is not None:
             api_key_value = payload.claude_sidecar_api_key.strip()
             api_key_encrypted = self._encryptor.encrypt(api_key_value) if api_key_value else None
+        management_key_encrypted = current.claude_sidecar_management_key_encrypted
+        if payload.claude_sidecar_clear_management_key:
+            management_key_encrypted = None
+        elif payload.claude_sidecar_management_key is not None:
+            management_key_value = payload.claude_sidecar_management_key.strip()
+            management_key_encrypted = (
+                self._encryptor.encrypt(management_key_value) if management_key_value else None
+            )
         row = await self._repository.update(
             sticky_threads_enabled=payload.sticky_threads_enabled,
             upstream_stream_transport=payload.upstream_stream_transport,
@@ -158,10 +171,17 @@ class SettingsService:
             claude_sidecar_connect_timeout_seconds=payload.claude_sidecar_connect_timeout_seconds,
             claude_sidecar_request_timeout_seconds=payload.claude_sidecar_request_timeout_seconds,
             claude_sidecar_models_cache_ttl_seconds=payload.claude_sidecar_models_cache_ttl_seconds,
+            claude_sidecar_management_key_encrypted=management_key_encrypted,
+            claude_sidecar_quota_poll_interval_seconds=payload.claude_sidecar_quota_poll_interval_seconds,
         )
         return self._to_data(row)
 
     def decrypt_claude_sidecar_api_key(self, encrypted: bytes | None) -> str | None:
+        if encrypted is None:
+            return None
+        return self._encryptor.decrypt(encrypted)
+
+    def decrypt_claude_sidecar_management_key(self, encrypted: bytes | None) -> str | None:
         if encrypted is None:
             return None
         return self._encryptor.decrypt(encrypted)
@@ -213,6 +233,8 @@ class SettingsService:
             claude_sidecar_last_health_message=row.claude_sidecar_last_health_message,
             claude_sidecar_last_checked_at=row.claude_sidecar_last_checked_at,
             claude_sidecar_last_model_count=row.claude_sidecar_last_model_count,
+            claude_sidecar_management_key_configured=row.claude_sidecar_management_key_encrypted is not None,
+            claude_sidecar_quota_poll_interval_seconds=row.claude_sidecar_quota_poll_interval_seconds,
         )
 
 

@@ -70,6 +70,17 @@ class AccountAdditionalQuota(DashboardModel):
     secondary_window: AccountAdditionalWindow | None = None
 
 
+class SidecarAuthAccount(DashboardModel):
+    name: str
+    email: str | None = None
+    status: str | None = None
+    quota_exceeded: bool = False
+    next_recover_at: datetime | None = None
+    models_exceeded: list[str] = Field(default_factory=list)
+    success: int = 0
+    failed: int = 0
+
+
 class AccountSummary(DashboardModel):
     account_id: str
     email: str
@@ -114,6 +125,7 @@ class AccountSummary(DashboardModel):
     model_count: int | None = None
     base_url: str | None = None
     last_checked_at: datetime | None = None
+    sidecar_auths: list[SidecarAuthAccount] = Field(default_factory=list)
     # True when another account row in the same response shares this real email,
     # ChatGPT account identity, and workspace slot.
     # Operators see this after a token-invalidation cascade where re-adding

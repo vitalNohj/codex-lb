@@ -3,6 +3,7 @@ import {
   AccountProxyBindingRequestSchema,
   AccountProxyBindingSchema,
   ClaudeSidecarModelsResponseSchema,
+  ClaudeSidecarQuotaResponseSchema,
   ClaudeSidecarStatusResponseSchema,
   ClaudeSidecarTestResponseSchema,
   DashboardSettingsSchema,
@@ -72,4 +73,8 @@ export function testClaudeSidecarConnection() {
 
 export function listClaudeSidecarModels() {
   return get(`${CLAUDE_SIDECAR_PATH}/models`, ClaudeSidecarModelsResponseSchema);
+}
+
+export function getClaudeSidecarQuota() {
+  return get(`${CLAUDE_SIDECAR_PATH}/quota`, ClaudeSidecarQuotaResponseSchema);
 }

@@ -97,4 +97,43 @@ describe("AccountCard", () => {
     expect(screen.getByText("Re-auth required")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Re-auth" })).toBeInTheDocument();
   });
+
+  it("renders synthetic claude sidecar account without warmup or credits", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "Claude via CLIProxyAPI",
+      planType: "claude",
+      status: "rate_limited",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "claude",
+      healthStatus: "healthy",
+      baseUrl: "http://127.0.0.1:8317",
+      modelCount: 4,
+      resetAtPrimary: "2026-06-10T17:00:00+00:00",
+      usage: null,
+      capacityCreditsPrimary: null,
+      remainingCreditsPrimary: null,
+      capacityCreditsSecondary: null,
+      remainingCreditsSecondary: null,
+      creditsHas: null,
+      creditsBalance: null,
+      requestUsage: {
+        requestCount: 12,
+        totalTokens: 5000,
+        cachedInputTokens: 0,
+        totalCostUsd: 0,
+      },
+    });
+
+    render(<AccountCard account={account} />);
+
+    expect(screen.getByText("Claude via CLIProxyAPI")).toBeInTheDocument();
+    expect(screen.getByText("CLIProxyAPI")).toBeInTheDocument();
+    expect(screen.getByText(/Limited — resets/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Warm-up/i })).toBeNull();
+    expect(screen.queryByText("Credits:")).toBeNull();
+  });
 });

@@ -6,6 +6,7 @@ from app.core.auth.dependencies import set_dashboard_error_format, validate_dash
 from app.dependencies import ClaudeSidecarContext, get_claude_sidecar_context
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
+    ClaudeSidecarQuotaResponse,
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
 )
@@ -36,3 +37,10 @@ async def list_models(
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
 ) -> ClaudeSidecarModelsResponse:
     return await context.service.list_models()
+
+
+@router.get("/quota", response_model=ClaudeSidecarQuotaResponse)
+async def get_quota(
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarQuotaResponse:
+    return await context.service.get_quota()

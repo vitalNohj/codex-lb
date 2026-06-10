@@ -135,6 +135,44 @@ async def test_transport_error_becomes_unavailable(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_auth_files_uses_management_key_and_parses_files(monkeypatch) -> None:
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            '{"files":[{"provider":"claude","email":"a@example.com"},{"provider":"openai","email":"b@example.com"}]}',
+        )
+    )
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(api_key="api", management_key="mgmt"))
+
+    files = await client.list_auth_files()
+
+    assert session.last_headers["Authorization"] == "Bearer mgmt"
+    assert [entry["email"] for entry in files] == ["a@example.com", "b@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_list_auth_files_returns_error_for_unauthorized(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(401, '{"error":{"message":"bad key"}}'))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="bad"))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.list_auth_files()
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_auth_files_transport_failure_unavailable(monkeypatch) -> None:
+    session = _FakeSession(get_response=OSError("boom"))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarUnavailableError):
+        await client.list_auth_files()
+
+
+@pytest.mark.asyncio
 async def test_models_cache_serves_last_good_after_refresh_failure(monkeypatch) -> None:
     client = ClaudeSidecarClient(_config(models_cache_ttl_seconds=0))
     calls = 0

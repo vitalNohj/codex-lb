@@ -17,7 +17,7 @@ import type {
 import { useAccountTrends } from "@/features/accounts/hooks/use-accounts";
 import type { AccountProxyBindingRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
-import { formatDateTimeInline, formatSlug } from "@/utils/formatters";
+import { formatDateTimeInline, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
 
 export type AccountDetailProps = {
   account: AccountSummary | null;
@@ -159,6 +159,7 @@ export function AccountDetail({
 
 function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
   const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
+  const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
   return (
     <div
       key={account.accountId}
@@ -179,10 +180,49 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
 
       <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-2">
         <SyntheticField label="Status" value={formatSlug(account.healthStatus ?? account.status)} />
+        <SyntheticField label="Quota" value={formatSidecarQuotaLabel(account)} />
         <SyntheticField label="Models" value={account.modelCount == null ? "--" : String(account.modelCount)} />
         <SyntheticField label="Base URL" value={account.baseUrl ?? "--"} mono />
         <SyntheticField label="Last check" value={lastChecked ?? "Never"} />
+        <SyntheticField label="Last quota check" value={lastQuotaCheck ?? "Never"} />
       </div>
+
+      {account.sidecarAuths && account.sidecarAuths.length > 0 ? (
+        <div className="space-y-1 rounded-lg border bg-card/40 p-3 text-sm">
+          <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            Sidecar accounts
+          </div>
+          <ul className="divide-y">
+            {account.sidecarAuths.map((auth, idx) => (
+              <li key={`${auth.name}-${idx}`} className="flex items-center justify-between gap-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={`inline-block h-2 w-2 rounded-full ${
+                      auth.quotaExceeded ? "bg-amber-500" : "bg-emerald-500"
+                    }`}
+                  />
+                  <div className="min-w-0 leading-tight">
+                    <div className="truncate text-sm font-medium">{auth.email ?? auth.name}</div>
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      {auth.quotaExceeded
+                        ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
+                        : "Ready"}
+                      {auth.modelsExceeded && auth.modelsExceeded.length > 0
+                        ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
+                        : ""}
+                    </div>
+                  </div>
+                </div>
+                <div className="shrink-0 text-right text-[11px] text-muted-foreground">
+                  <div>OK {auth.success}</div>
+                  <div>Failed {auth.failed}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {account.healthMessage ? (
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -209,4 +249,18 @@ function SyntheticField({ label, value, mono = false }: { label: string; value: 
       <div className={`break-all text-sm ${mono ? "font-mono" : ""}`}>{value}</div>
     </div>
   );
+}
+
+function formatSidecarQuotaLabel(account: AccountSummary): string {
+  const status = account.status;
+  if (status === "quota_exceeded") {
+    return `Exhausted — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
+  }
+  if (status === "rate_limited") {
+    return `Limited — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
+  }
+  if (status === "active") {
+    return "OK";
+  }
+  return "--";
 }

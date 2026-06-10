@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
-import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
+import { useClaudeSidecar, useClaudeSidecarQuota } from "@/features/settings/hooks/use-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { formatDateTimeInline, formatSlug } from "@/utils/formatters";
 
@@ -21,6 +21,7 @@ const DEFAULT_PREFIXES = ["claude"];
 const DEFAULT_CONNECT_TIMEOUT_SECONDS = 8;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS = 600;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
+const DEFAULT_QUOTA_POLL_INTERVAL_SECONDS = 60;
 
 function parsePrefixes(value: string): string[] {
   return Array.from(new Set(value.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)));
@@ -28,24 +29,30 @@ function parsePrefixes(value: string): string[] {
 
 export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarSettingsProps) {
   const { statusQuery, modelsQuery, testMutation } = useClaudeSidecar();
+  const { quotaQuery } = useClaudeSidecarQuota();
   const sidecarEnabled = settings.claudeSidecarEnabled ?? false;
   const sidecarBaseUrl = settings.claudeSidecarBaseUrl ?? DEFAULT_BASE_URL;
   const sidecarApiKeyConfigured = settings.claudeSidecarApiKeyConfigured ?? false;
+  const sidecarManagementKeyConfigured = settings.claudeSidecarManagementKeyConfigured ?? false;
   const sidecarPrefixes = settings.claudeSidecarModelPrefixes ?? DEFAULT_PREFIXES;
   const sidecarConnectTimeout = settings.claudeSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS;
   const sidecarRequestTimeout = settings.claudeSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS;
   const sidecarCacheTtl = settings.claudeSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS;
+  const sidecarPollInterval = settings.claudeSidecarQuotaPollIntervalSeconds ?? DEFAULT_QUOTA_POLL_INTERVAL_SECONDS;
   const [baseUrl, setBaseUrl] = useState(sidecarBaseUrl);
   const [apiKey, setApiKey] = useState("");
+  const [managementKey, setManagementKey] = useState("");
   const [prefixes, setPrefixes] = useState(sidecarPrefixes.join(", "));
   const [connectTimeout, setConnectTimeout] = useState(String(sidecarConnectTimeout));
   const [requestTimeout, setRequestTimeout] = useState(String(sidecarRequestTimeout));
   const [cacheTtl, setCacheTtl] = useState(String(sidecarCacheTtl));
+  const [pollInterval, setPollInterval] = useState(String(sidecarPollInterval));
 
   const parsedPrefixes = useMemo(() => parsePrefixes(prefixes), [prefixes]);
   const parsedConnectTimeout = Number(connectTimeout);
   const parsedRequestTimeout = Number(requestTimeout);
   const parsedCacheTtl = Number(cacheTtl);
+  const parsedPollInterval = Number(pollInterval);
   const formValid =
     baseUrl.trim().length > 0 &&
     parsedPrefixes.length > 0 &&
@@ -54,12 +61,16 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
     Number.isFinite(parsedRequestTimeout) &&
     parsedRequestTimeout > 0 &&
     Number.isFinite(parsedCacheTtl) &&
-    parsedCacheTtl >= 0;
+    parsedCacheTtl >= 0 &&
+    Number.isFinite(parsedPollInterval) &&
+    parsedPollInterval > 0;
   const currentStatus = statusQuery.data?.status ?? settings.claudeSidecarLastHealthStatus ?? "disabled";
   const currentMessage = statusQuery.data?.message ?? settings.claudeSidecarLastHealthMessage;
   const lastChecked = statusQuery.data?.lastCheckedAt ?? settings.claudeSidecarLastCheckedAt;
   const modelCount = statusQuery.data?.modelCount ?? settings.claudeSidecarLastModelCount;
   const modelRows = modelsQuery.data?.models ?? [];
+  const quota = quotaQuery.data;
+  const exceededCount = quota?.accounts.filter((acct) => acct.quotaExceeded).length ?? 0;
 
   const save = (patch: Partial<SettingsUpdateRequest>) =>
     onSave(buildSettingsUpdateRequest(settings, patch));
@@ -70,12 +81,17 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
       claudeSidecarConnectTimeoutSeconds: parsedConnectTimeout,
       claudeSidecarRequestTimeoutSeconds: parsedRequestTimeout,
       claudeSidecarModelsCacheTtlSeconds: parsedCacheTtl,
+      claudeSidecarQuotaPollIntervalSeconds: parsedPollInterval,
     };
     if (apiKey.trim()) {
       payload.claudeSidecarApiKey = apiKey.trim();
     }
+    if (managementKey.trim()) {
+      payload.claudeSidecarManagementKey = managementKey.trim();
+    }
     await save(payload);
     setApiKey("");
+    setManagementKey("");
   };
 
   return (
@@ -156,6 +172,74 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
                 Clear API key
               </Button>
             </div>
+          </div>
+
+          <div className="space-y-3 p-3">
+            <div>
+              <p className="text-sm font-medium">Quota polling</p>
+              <p className="text-xs text-muted-foreground">
+                Codex-LB polls CLIProxyAPI's Management API to surface Claude rate-limit and quota state on the dashboard.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[1fr_14rem]">
+              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-management-key">
+                Management key
+                <Input
+                  id="claude-sidecar-management-key"
+                  type="password"
+                  value={managementKey}
+                  disabled={busy}
+                  onChange={(event) => setManagementKey(event.target.value)}
+                  placeholder={sidecarManagementKeyConfigured ? "Configured" : "Not configured"}
+                  className="h-8 text-xs"
+                />
+                <span className="block font-normal text-muted-foreground">
+                  Must match `remote-management.secret-key` in CLIProxyAPI's config.
+                </span>
+              </label>
+              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-poll-interval">
+                Poll interval (seconds)
+                <Input
+                  id="claude-sidecar-poll-interval"
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={pollInterval}
+                  disabled={busy}
+                  onChange={(event) => setPollInterval(event.target.value)}
+                  className="h-8 text-xs"
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={busy || !sidecarManagementKeyConfigured}
+                onClick={() => void save({ claudeSidecarClearManagementKey: true })}
+              >
+                Clear management key
+              </Button>
+            </div>
+            {quota ? (
+              <div className="rounded-md border bg-muted/10 p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">Quota status</span>
+                  <Badge variant="outline" className="text-[11px]">{formatSlug(quota.status)}</Badge>
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  {quota.checkedAt ? `Checked ${formatDateTimeInline(quota.checkedAt)}` : "Never checked"}
+                  {quota.accounts.length > 0
+                    ? ` | ${quota.accounts.length} auth${quota.accounts.length === 1 ? "" : "s"} | ${exceededCount} exhausted`
+                    : ""}
+                </div>
+                {quota.message ? (
+                  <div className="mt-1 text-muted-foreground">{quota.message}</div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 

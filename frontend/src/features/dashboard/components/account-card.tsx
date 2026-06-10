@@ -1,6 +1,7 @@
-import { Clock, ExternalLink, Play, RotateCcw, Zap } from "lucide-react";
+import { Bot, Clock, ExternalLink, Play, RotateCcw, Zap } from "lucide-react";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { cn } from "@/lib/utils";
@@ -66,6 +67,9 @@ function QuotaBar({
 }
 
 export function AccountCard({ account, showAccountId = false, onAction }: AccountCardProps) {
+  if (account.synthetic) {
+    return <SyntheticAccountCard account={account} onAction={onAction} />;
+  }
   const blurred = usePrivacyStore((s) => s.blurred);
   const status = normalizeStatus(account.status);
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
@@ -209,4 +213,95 @@ export function AccountCard({ account, showAccountId = false, onAction }: Accoun
       </div>
     </div>
   );
+}
+
+function SyntheticAccountCard({
+  account,
+  onAction,
+}: {
+  account: AccountSummary;
+  onAction?: (account: AccountSummary, action: AccountAction) => void;
+}) {
+  const status = normalizeStatus(account.status);
+  const requestCount = account.requestUsage?.requestCount ?? null;
+  const totalTokens = account.requestUsage?.totalTokens ?? null;
+  return (
+    <div className="card-hover rounded-xl border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold leading-tight">
+            {account.displayName}
+          </p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {formatSlug(account.provider ?? "claude")} | {account.baseUrl ?? "CLIProxyAPI"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge
+            variant="outline"
+            className="gap-1 border-violet-300 bg-violet-50 px-1.5 text-[11px] text-violet-700"
+          >
+            <Bot className="h-3 w-3" aria-hidden="true" />
+            CLIProxyAPI
+          </Badge>
+          <StatusBadge status={status} />
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-2">
+          <span>Health</span>
+          <span className="truncate font-medium text-foreground">
+            {formatSlug(account.healthStatus ?? account.status)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span>Quota</span>
+          <span className="truncate font-medium text-foreground">
+            {formatSidecarQuotaLabel(account)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span>Models</span>
+          <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
+        </div>
+        {requestCount !== null ? (
+          <div className="flex items-center justify-between gap-2">
+            <span>Requests</span>
+            <span className="font-medium tabular-nums text-foreground">
+              {requestCount}
+              {totalTokens != null && totalTokens > 0 ? ` | ${totalTokens.toLocaleString()} tok` : ""}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+          onClick={() => onAction?.(account, "details")}
+        >
+          <ExternalLink className="h-3 w-3" />
+          Details
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function formatSidecarQuotaLabel(account: AccountSummary): string {
+  const status = account.status;
+  if (status === "quota_exceeded") {
+    return `Exhausted — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
+  }
+  if (status === "rate_limited") {
+    return `Limited — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
+  }
+  if (status === "active") {
+    return "OK";
+  }
+  return "--";
 }

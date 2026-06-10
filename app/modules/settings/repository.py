@@ -25,6 +25,7 @@ class SettingsRepository:
 
         static_settings = get_settings()
         sidecar_api_key = static_settings.claude_sidecar_api_key.strip()
+        sidecar_management_key = static_settings.claude_sidecar_management_key.strip()
         row = DashboardSettings(
             id=_SETTINGS_ID,
             sticky_threads_enabled=True,
@@ -68,6 +69,10 @@ class SettingsRepository:
             claude_sidecar_connect_timeout_seconds=static_settings.claude_sidecar_connect_timeout_seconds,
             claude_sidecar_request_timeout_seconds=static_settings.claude_sidecar_request_timeout_seconds,
             claude_sidecar_models_cache_ttl_seconds=static_settings.claude_sidecar_models_cache_ttl_seconds,
+            claude_sidecar_management_key_encrypted=(
+                TokenEncryptor().encrypt(sidecar_management_key) if sidecar_management_key else None
+            ),
+            claude_sidecar_quota_poll_interval_seconds=static_settings.claude_sidecar_quota_poll_interval_seconds,
         )
         self._session.add(row)
         try:
@@ -124,6 +129,10 @@ class SettingsRepository:
         claude_sidecar_last_health_message: str | None | object = _UNSET,
         claude_sidecar_last_checked_at: datetime | None | object = _UNSET,
         claude_sidecar_last_model_count: int | None | object = _UNSET,
+        claude_sidecar_management_key_encrypted: bytes | None | object = _UNSET,
+        claude_sidecar_quota_poll_interval_seconds: float | None = None,
+        claude_sidecar_quota_state_json: str | None | object = _UNSET,
+        claude_sidecar_quota_checked_at: datetime | None | object = _UNSET,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
@@ -210,6 +219,14 @@ class SettingsRepository:
             settings.claude_sidecar_last_checked_at = claude_sidecar_last_checked_at
         if claude_sidecar_last_model_count is not _UNSET:
             settings.claude_sidecar_last_model_count = claude_sidecar_last_model_count
+        if claude_sidecar_management_key_encrypted is not _UNSET:
+            settings.claude_sidecar_management_key_encrypted = claude_sidecar_management_key_encrypted
+        if claude_sidecar_quota_poll_interval_seconds is not None:
+            settings.claude_sidecar_quota_poll_interval_seconds = claude_sidecar_quota_poll_interval_seconds
+        if claude_sidecar_quota_state_json is not _UNSET:
+            settings.claude_sidecar_quota_state_json = claude_sidecar_quota_state_json
+        if claude_sidecar_quota_checked_at is not _UNSET:
+            settings.claude_sidecar_quota_checked_at = claude_sidecar_quota_checked_at
         await self.commit_refresh(settings)
         return settings
 

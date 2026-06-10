@@ -100,6 +100,8 @@ class DashboardSettingsResponse(DashboardModel):
     claude_sidecar_last_health_message: str | None = None
     claude_sidecar_last_checked_at: datetime | None = None
     claude_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    claude_sidecar_management_key_configured: bool = False
+    claude_sidecar_quota_poll_interval_seconds: float = Field(default=60.0, gt=0)
 
 
 
@@ -147,6 +149,9 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     claude_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     claude_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     claude_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    claude_sidecar_management_key: str | None = Field(default=None, max_length=4096)
+    claude_sidecar_clear_management_key: bool | None = None
+    claude_sidecar_quota_poll_interval_seconds: float | None = Field(default=None, gt=0)
 
     @field_validator("warmup_model")
     @classmethod
@@ -177,6 +182,13 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator("claude_sidecar_api_key")
     @classmethod
     def _normalize_sidecar_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("claude_sidecar_management_key")
+    @classmethod
+    def _normalize_sidecar_management_key(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip()

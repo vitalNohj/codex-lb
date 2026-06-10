@@ -528,6 +528,34 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_api_key(a
 
 
 @pytest.mark.asyncio
+async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_management_key(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarManagementKey": " mgmt-supersecret ",
+            "claudeSidecarQuotaPollIntervalSeconds": 90,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claudeSidecarManagementKeyConfigured"] is True
+    assert payload["claudeSidecarQuotaPollIntervalSeconds"] == 90.0
+    assert "mgmt-supersecret" not in response.text
+
+    response = await async_client.put("/api/settings", json={"claudeSidecarEnabled": True})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claudeSidecarManagementKeyConfigured"] is True
+    assert payload["claudeSidecarQuotaPollIntervalSeconds"] == 90.0
+    assert "mgmt-supersecret" not in response.text
+
+    response = await async_client.put("/api/settings", json={"claudeSidecarClearManagementKey": True})
+    assert response.status_code == 200
+    assert response.json()["claudeSidecarManagementKeyConfigured"] is False
+
+
+@pytest.mark.asyncio
 async def test_settings_api_rejects_invalid_sidecar_inputs(async_client):
     response = await async_client.put("/api/settings", json={"claudeSidecarBaseUrl": "not-a-url"})
     assert response.status_code == 422

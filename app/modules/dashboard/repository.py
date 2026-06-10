@@ -92,3 +92,6 @@ class DashboardRepository:
 
     async def get_settings(self) -> DashboardSettings:
         return await self._settings_repo.get_or_create()
+
+    async def request_usage_summary_for_source(self, source: str):
+        return await self._accounts_repo.request_usage_summary_for_source(source)

@@ -44,6 +44,8 @@ const BASE_SETTINGS: DashboardSettings = {
   claudeSidecarLastHealthMessage: "Claude sidecar reachable",
   claudeSidecarLastCheckedAt: "2026-01-01T00:00:00Z",
   claudeSidecarLastModelCount: 1,
+  claudeSidecarManagementKeyConfigured: false,
+  claudeSidecarQuotaPollIntervalSeconds: 60,
 };
 
 function renderWithQueryClient(ui: React.ReactElement) {
@@ -90,5 +92,46 @@ describe("ClaudeSidecarSettings", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Test connection" })).toBeInTheDocument());
+  });
+
+  it("saves the management key when provided", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.type(screen.getByLabelText(/Management key/), "mgmt-secret");
+    await user.click(screen.getByRole("button", { name: "Save sidecar" }));
+
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claudeSidecarManagementKey: "mgmt-secret" }),
+    );
+  });
+
+  it("clears the management key when configured", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Clear management key" }));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claudeSidecarClearManagementKey: true }),
+    );
+  });
+
+  it("shows placeholder when management key is configured", () => {
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/Management key/)).toHaveAttribute("placeholder", "Configured");
   });
 });

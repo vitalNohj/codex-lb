@@ -9,6 +9,8 @@ from app.core.usage.types import UsageWindowRow
 from app.core.utils.time import utcnow
 from app.db.models import UsageHistory
 from app.modules.accounts.mappers import build_account_summaries
+from app.modules.accounts.schemas import AccountRequestUsage
+from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.dashboard.builders import (
     build_dashboard_overview_summary,
     build_overview_timeframe,
@@ -82,6 +84,10 @@ class DashboardService:
             reverse=True,
         )
 
+        synthetic_sidecar = await self._build_claude_sidecar_summary()
+        if synthetic_sidecar is not None:
+            account_summaries.append(synthetic_sidecar)
+
         primary_rows_raw = _rows_from_latest(primary_usage)
         secondary_rows_raw = _rows_from_latest(secondary_usage)
         primary_rows, secondary_rows = usage_core.normalize_weekly_only_rows(
@@ -146,6 +152,17 @@ class DashboardService:
             windows=windows,
             trends=trends,
         )
+
+    async def _build_claude_sidecar_summary(self):
+        settings = await self._repo.get_settings()
+        usage_summary = await self._repo.request_usage_summary_for_source("claude_sidecar")
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
+        )
+        return build_claude_sidecar_summary(settings, request_usage)
 
     async def get_projections(self) -> DashboardProjectionsResponse:
         now = utcnow()

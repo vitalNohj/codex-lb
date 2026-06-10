@@ -88,6 +88,13 @@ describe("ImportSettings", () => {
       limitWarmupCooldownSeconds: settings.limitWarmupCooldownSeconds,
       limitWarmupMinAvailablePercent: settings.limitWarmupMinAvailablePercent,
       weeklyPaceWorkingDays: settings.weeklyPaceWorkingDays,
+      claudeSidecarEnabled: settings.claudeSidecarEnabled,
+      claudeSidecarBaseUrl: settings.claudeSidecarBaseUrl,
+      claudeSidecarModelPrefixes: settings.claudeSidecarModelPrefixes,
+      claudeSidecarConnectTimeoutSeconds: settings.claudeSidecarConnectTimeoutSeconds,
+      claudeSidecarRequestTimeoutSeconds: settings.claudeSidecarRequestTimeoutSeconds,
+      claudeSidecarModelsCacheTtlSeconds: settings.claudeSidecarModelsCacheTtlSeconds,
+      claudeSidecarQuotaPollIntervalSeconds: settings.claudeSidecarQuotaPollIntervalSeconds,
     });
   });
 

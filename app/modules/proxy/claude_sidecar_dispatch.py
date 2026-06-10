@@ -61,7 +61,10 @@ async def load_sidecar_config() -> ClaudeSidecarConfig | None:
 
 
 def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarConfig:
-    api_key = _decrypt_sidecar_api_key(settings.claude_sidecar_api_key_encrypted)
+    api_key = _decrypt_sidecar_secret(settings.claude_sidecar_api_key_encrypted, label="API key")
+    management_key = _decrypt_sidecar_secret(
+        settings.claude_sidecar_management_key_encrypted, label="management key"
+    )
     return ClaudeSidecarConfig(
         enabled=bool(settings.claude_sidecar_enabled),
         base_url=settings.claude_sidecar_base_url.rstrip("/"),
@@ -70,16 +73,17 @@ def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarCo
         connect_timeout_seconds=settings.claude_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.claude_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
+        management_key=management_key,
     )
 
 
-def _decrypt_sidecar_api_key(encrypted: bytes | None) -> str | None:
+def _decrypt_sidecar_secret(encrypted: bytes | None, *, label: str) -> str | None:
     if not encrypted:
         return None
     try:
         return TokenEncryptor().decrypt(encrypted)
     except Exception:
-        logger.warning("failed to decrypt Claude sidecar API key", exc_info=True)
+        logger.warning("failed to decrypt Claude sidecar %s", label, exc_info=True)
         return None
 
 

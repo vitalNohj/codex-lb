@@ -27,6 +27,7 @@ class ClaudeSidecarConfig:
     connect_timeout_seconds: float
     request_timeout_seconds: float
     models_cache_ttl_seconds: float
+    management_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,16 @@ class ClaudeSidecarClient:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
+    def _management_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "codex-lb/claude-sidecar-management",
+        }
+        management_key = (self._config.management_key or "").strip()
+        if management_key:
+            headers["Authorization"] = f"Bearer {management_key}"
+        return headers
+
     def _timeout(self) -> aiohttp.ClientTimeout:
         return aiohttp.ClientTimeout(
             total=self._config.request_timeout_seconds,
@@ -120,6 +131,30 @@ class ClaudeSidecarClient:
                 )
             )
         return models
+
+    async def list_auth_files(self) -> list[Mapping[str, JsonValue]]:
+        url = f"{self.base_url}/v0/management/auth-files"
+        try:
+            async with lease_http_session() as session:
+                async with session.get(url, headers=self._management_headers(), timeout=self._timeout()) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, "fetch Claude sidecar auth files")) from exc
+
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, "Invalid response format from Claude sidecar management API", body=data)
+        raw_files = data.get("files")
+        if not isinstance(raw_files, list):
+            raise ClaudeSidecarError(502, "Missing 'files' key in Claude sidecar management response", body=data)
+        files: list[Mapping[str, JsonValue]] = []
+        for entry in raw_files:
+            if is_json_mapping(entry):
+                files.append(cast(Mapping[str, JsonValue], entry))
+        return files
 
     async def list_models_cached(self) -> list[SidecarModel]:
         now = time.monotonic()

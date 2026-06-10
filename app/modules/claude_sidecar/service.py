@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
+from app.modules.accounts.schemas import SidecarAuthAccount
+from app.modules.claude_sidecar.quota import SidecarAuthQuota, snapshot_from_json
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
     ClaudeSidecarModelSummary,
+    ClaudeSidecarQuotaResponse,
     ClaudeSidecarStatus,
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
@@ -82,6 +85,29 @@ class ClaudeSidecarService:
             models=_model_summaries(models),
         )
 
+    async def get_quota(self) -> ClaudeSidecarQuotaResponse:
+        settings = await self._settings_repository.get_or_create()
+        if not settings.claude_sidecar_enabled:
+            return ClaudeSidecarQuotaResponse(status="disabled", message="Claude sidecar is disabled")
+        if not settings.claude_sidecar_management_key_encrypted:
+            return ClaudeSidecarQuotaResponse(
+                status="not_configured",
+                message="Claude sidecar management key is not configured",
+            )
+        snapshot = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        if snapshot is None:
+            return ClaudeSidecarQuotaResponse(
+                status="unknown",
+                message="Claude sidecar quota has not been polled yet",
+                checked_at=settings.claude_sidecar_quota_checked_at,
+            )
+        return ClaudeSidecarQuotaResponse(
+            status=snapshot.status,
+            message=snapshot.message,
+            checked_at=snapshot.checked_at,
+            accounts=[_to_auth_account(auth) for auth in snapshot.accounts],
+        )
+
     async def list_models(self) -> ClaudeSidecarModelsResponse:
         settings = await self._settings_repository.get_or_create()
         status, _message = _classify_static_status(settings)
@@ -144,3 +170,16 @@ def _model_summaries(models) -> list[ClaudeSidecarModelSummary]:
 
 def _sanitize_message(message: str) -> str:
     return message.replace("Bearer ", "Bearer [redacted]")
+
+
+def _to_auth_account(auth: SidecarAuthQuota) -> SidecarAuthAccount:
+    return SidecarAuthAccount(
+        name=auth.name,
+        email=auth.email,
+        status=auth.status,
+        quota_exceeded=auth.quota_exceeded,
+        next_recover_at=auth.next_recover_at,
+        models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],
+        success=auth.success,
+        failed=auth.failed,
+    )
