@@ -406,3 +406,36 @@ async def test_list_accounts_flags_email_duplicates(async_client):
     assert accounts_by_id["placeholder-b"]["isEmailDuplicate"] is False
     assert accounts_by_id["blank-a"]["isEmailDuplicate"] is False
     assert accounts_by_id["blank-b"]["isEmailDuplicate"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_accounts_list_includes_read_only_claude_sidecar_synthetic_account(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+        },
+    )
+    assert response.status_code == 200
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    sidecar = next(
+        (account for account in accounts.json()["accounts"] if account["accountId"] == "claude-sidecar"),
+        None,
+    )
+    assert sidecar is not None
+    assert sidecar["displayName"] == "Claude via CLIProxyAPI"
+    assert sidecar["email"] == "cliproxyapi.local"
+    assert sidecar["kind"] == "sidecar"
+    assert sidecar["provider"] == "claude"
+    assert sidecar["readOnly"] is True
+    assert sidecar["synthetic"] is True
+    assert sidecar["healthStatus"] == "unknown"
+    assert sidecar["baseUrl"] == "http://127.0.0.1:8317"
+    assert sidecar["requestUsage"]["requestCount"] == 0
+
+    pause = await async_client.post("/api/accounts/claude-sidecar/pause")
+    assert pause.status_code == 404

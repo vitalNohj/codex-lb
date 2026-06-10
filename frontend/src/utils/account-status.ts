@@ -51,10 +51,10 @@ function isHardBlockedStatus(status: string): boolean {
   return normalized === "paused" || normalized === "reauth" || normalized === "deactivated";
 }
 
-export function isAccountAssignmentSelectable(status: string): boolean {
-  return !isHardBlockedStatus(status);
+export function isAccountAssignmentSelectable(status: string, synthetic = false): boolean {
+  return !synthetic && !isHardBlockedStatus(status);
 }
 
-export function isSingleAccountRoutingSelectable(status: string): boolean {
-  return !isHardBlockedStatus(status);
+export function isSingleAccountRoutingSelectable(status: string, synthetic = false): boolean {
+  return !synthetic && !isHardBlockedStatus(status);
 }

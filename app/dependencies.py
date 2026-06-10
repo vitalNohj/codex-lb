@@ -16,6 +16,7 @@ from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeysService
 from app.modules.audit.repository import AuditRepository
 from app.modules.audit.service import AuditLogsService
+from app.modules.claude_sidecar.service import ClaudeSidecarService
 from app.modules.dashboard.repository import DashboardRepository
 from app.modules.dashboard.service import DashboardService
 from app.modules.dashboard_auth.repository import DashboardAuthRepository
@@ -109,6 +110,13 @@ class SettingsContext:
 
 
 @dataclass(slots=True)
+class ClaudeSidecarContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: ClaudeSidecarService
+
+
+@dataclass(slots=True)
 class DashboardContext:
     session: AsyncSession
     repository: DashboardRepository
@@ -144,12 +152,14 @@ def get_accounts_context(
     usage_repository = UsageRepository(session)
     additional_usage_repository = AdditionalUsageRepository(session)
     limit_warmup_repository = LimitWarmupRepository(session)
+    settings_repository = SettingsRepository(session)
     service = AccountsService(
         repository,
         usage_repository,
         additional_usage_repository,
         limit_warmup_repository,
         auth_manager=AuthManager(repository, refresh_repo_factory=_accounts_repo_context),
+        settings_repo=settings_repository,
     )
     return AccountsContext(
         session=session,
@@ -268,6 +278,14 @@ def get_settings_context(
     repository = SettingsRepository(session)
     service = SettingsService(repository)
     return SettingsContext(session=session, repository=repository, service=service)
+
+
+def get_claude_sidecar_context(
+    session: AsyncSession = Depends(get_session),
+) -> ClaudeSidecarContext:
+    settings_repository = SettingsRepository(session)
+    service = ClaudeSidecarService(settings_repository)
+    return ClaudeSidecarContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_dashboard_context(

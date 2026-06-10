@@ -2,6 +2,9 @@ import { get, post, put } from "@/lib/api-client";
 import {
   AccountProxyBindingRequestSchema,
   AccountProxyBindingSchema,
+  ClaudeSidecarModelsResponseSchema,
+  ClaudeSidecarStatusResponseSchema,
+  ClaudeSidecarTestResponseSchema,
   DashboardSettingsSchema,
   SettingsUpdateRequestSchema,
   UpstreamProxyAdminSchema,
@@ -14,6 +17,7 @@ import {
 
 const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
+const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -56,4 +60,16 @@ export function putAccountProxyBinding(accountId: string, payload: unknown) {
   return put(`${UPSTREAM_PROXY_PATH}/accounts/${encodeURIComponent(accountId)}/binding`, AccountProxyBindingSchema, {
     body: validated,
   });
+}
+
+export function getClaudeSidecarStatus() {
+  return get(`${CLAUDE_SIDECAR_PATH}/status`, ClaudeSidecarStatusResponseSchema);
+}
+
+export function testClaudeSidecarConnection() {
+  return post(`${CLAUDE_SIDECAR_PATH}/test`, ClaudeSidecarTestResponseSchema);
+}
+
+export function listClaudeSidecarModels() {
+  return get(`${CLAUDE_SIDECAR_PATH}/models`, ClaudeSidecarModelsResponseSchema);
 }

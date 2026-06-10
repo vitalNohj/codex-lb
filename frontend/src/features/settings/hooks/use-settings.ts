@@ -5,9 +5,12 @@ import {
   addUpstreamProxyPoolMember,
   createUpstreamProxyEndpoint,
   createUpstreamProxyPool,
+  getClaudeSidecarStatus,
   getSettings,
+  listClaudeSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
+  testClaudeSidecarConnection,
   updateSettings,
 } from "@/features/settings/api";
 import type { SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -110,4 +113,30 @@ export function useUpstreamProxyAdmin() {
     addPoolMemberMutation,
     accountBindingMutation,
   };
+}
+
+export function useClaudeSidecar() {
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ["settings", "claude-sidecar", "status"],
+    queryFn: getClaudeSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "claude-sidecar", "models"],
+    queryFn: listClaudeSidecarModels,
+  });
+  const testMutation = useMutation({
+    mutationFn: testClaudeSidecarConnection,
+    onSuccess: () => {
+      toast.success("Claude sidecar tested");
+      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Claude sidecar test failed");
+    },
+  });
+  return { statusQuery, modelsQuery, testMutation };
 }

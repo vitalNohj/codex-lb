@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 
+from app.core.crypto import TokenEncryptor
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
     canonicalize_additional_quota_key,
@@ -42,6 +44,17 @@ class DashboardSettingsData:
     limit_warmup_cooldown_seconds: int
     limit_warmup_min_available_percent: float
     weekly_pace_working_days: str
+    claude_sidecar_enabled: bool
+    claude_sidecar_base_url: str
+    claude_sidecar_api_key_configured: bool
+    claude_sidecar_model_prefixes: list[str]
+    claude_sidecar_connect_timeout_seconds: float
+    claude_sidecar_request_timeout_seconds: float
+    claude_sidecar_models_cache_ttl_seconds: float
+    claude_sidecar_last_health_status: str | None
+    claude_sidecar_last_health_message: str | None
+    claude_sidecar_last_checked_at: datetime | None
+    claude_sidecar_last_model_count: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,55 +88,35 @@ class DashboardSettingsUpdateData:
     limit_warmup_cooldown_seconds: int
     limit_warmup_min_available_percent: float
     weekly_pace_working_days: str
+    claude_sidecar_enabled: bool
+    claude_sidecar_base_url: str
+    claude_sidecar_api_key: str | None
+    claude_sidecar_clear_api_key: bool
+    claude_sidecar_model_prefixes: list[str]
+    claude_sidecar_connect_timeout_seconds: float
+    claude_sidecar_request_timeout_seconds: float
+    claude_sidecar_models_cache_ttl_seconds: float
 
 
 class SettingsService:
     def __init__(self, repository: SettingsRepository) -> None:
         self._repository = repository
+        self._encryptor = TokenEncryptor()
 
     async def get_settings(self) -> DashboardSettingsData:
         row = await self._repository.get_or_create()
-        return DashboardSettingsData(
-            sticky_threads_enabled=row.sticky_threads_enabled,
-            upstream_stream_transport=row.upstream_stream_transport,
-            upstream_proxy_routing_enabled=row.upstream_proxy_routing_enabled,
-            upstream_proxy_default_pool_id=row.upstream_proxy_default_pool_id,
-            prefer_earlier_reset_accounts=row.prefer_earlier_reset_accounts,
-            prefer_earlier_reset_window=row.prefer_earlier_reset_window,
-            routing_strategy=row.routing_strategy,
-            relative_availability_power=row.relative_availability_power,
-            relative_availability_top_k=row.relative_availability_top_k,
-            single_account_id=row.single_account_id,
-            openai_cache_affinity_max_age_seconds=row.openai_cache_affinity_max_age_seconds,
-            dashboard_session_ttl_seconds=row.dashboard_session_ttl_seconds,
-            http_responses_session_bridge_prompt_cache_idle_ttl_seconds=(
-                row.http_responses_session_bridge_prompt_cache_idle_ttl_seconds
-            ),
-            http_responses_session_bridge_gateway_safe_mode=row.http_responses_session_bridge_gateway_safe_mode,
-            sticky_reallocation_budget_threshold_pct=row.sticky_reallocation_budget_threshold_pct,
-            sticky_reallocation_primary_budget_threshold_pct=row.sticky_reallocation_primary_budget_threshold_pct,
-            sticky_reallocation_secondary_budget_threshold_pct=row.sticky_reallocation_secondary_budget_threshold_pct,
-            additional_quota_routing_policies=_parse_additional_quota_routing_policies(
-                row.additional_quota_routing_policies_json
-            ),
-            warmup_model=row.warmup_model,
-            import_without_overwrite=row.import_without_overwrite,
-            totp_required_on_login=row.totp_required_on_login,
-            totp_configured=row.totp_secret_encrypted is not None,
-            api_key_auth_enabled=row.api_key_auth_enabled,
-            limit_warmup_enabled=row.limit_warmup_enabled,
-            limit_warmup_windows=row.limit_warmup_windows,
-            limit_warmup_model=row.limit_warmup_model,
-            limit_warmup_prompt=row.limit_warmup_prompt,
-            limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
-            limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
-            weekly_pace_working_days=row.weekly_pace_working_days,
-        )
+        return self._to_data(row)
 
     async def update_settings(self, payload: DashboardSettingsUpdateData) -> DashboardSettingsData:
         current = await self._repository.get_or_create()
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
+        api_key_encrypted = current.claude_sidecar_api_key_encrypted
+        if payload.claude_sidecar_clear_api_key:
+            api_key_encrypted = None
+        elif payload.claude_sidecar_api_key is not None:
+            api_key_value = payload.claude_sidecar_api_key.strip()
+            api_key_encrypted = self._encryptor.encrypt(api_key_value) if api_key_value else None
         row = await self._repository.update(
             sticky_threads_enabled=payload.sticky_threads_enabled,
             upstream_stream_transport=payload.upstream_stream_transport,
@@ -158,7 +151,22 @@ class SettingsService:
             limit_warmup_cooldown_seconds=payload.limit_warmup_cooldown_seconds,
             limit_warmup_min_available_percent=payload.limit_warmup_min_available_percent,
             weekly_pace_working_days=payload.weekly_pace_working_days,
+            claude_sidecar_enabled=payload.claude_sidecar_enabled,
+            claude_sidecar_base_url=payload.claude_sidecar_base_url,
+            claude_sidecar_api_key_encrypted=api_key_encrypted,
+            claude_sidecar_model_prefixes_json=_dump_claude_sidecar_model_prefixes(payload.claude_sidecar_model_prefixes),
+            claude_sidecar_connect_timeout_seconds=payload.claude_sidecar_connect_timeout_seconds,
+            claude_sidecar_request_timeout_seconds=payload.claude_sidecar_request_timeout_seconds,
+            claude_sidecar_models_cache_ttl_seconds=payload.claude_sidecar_models_cache_ttl_seconds,
         )
+        return self._to_data(row)
+
+    def decrypt_claude_sidecar_api_key(self, encrypted: bytes | None) -> str | None:
+        if encrypted is None:
+            return None
+        return self._encryptor.decrypt(encrypted)
+
+    def _to_data(self, row) -> DashboardSettingsData:
         return DashboardSettingsData(
             sticky_threads_enabled=row.sticky_threads_enabled,
             upstream_stream_transport=row.upstream_stream_transport,
@@ -194,10 +202,22 @@ class SettingsService:
             limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
             limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
             weekly_pace_working_days=row.weekly_pace_working_days,
+            claude_sidecar_enabled=row.claude_sidecar_enabled,
+            claude_sidecar_base_url=row.claude_sidecar_base_url,
+            claude_sidecar_api_key_configured=row.claude_sidecar_api_key_encrypted is not None,
+            claude_sidecar_model_prefixes=_parse_claude_sidecar_model_prefixes(row.claude_sidecar_model_prefixes_json),
+            claude_sidecar_connect_timeout_seconds=row.claude_sidecar_connect_timeout_seconds,
+            claude_sidecar_request_timeout_seconds=row.claude_sidecar_request_timeout_seconds,
+            claude_sidecar_models_cache_ttl_seconds=row.claude_sidecar_models_cache_ttl_seconds,
+            claude_sidecar_last_health_status=row.claude_sidecar_last_health_status,
+            claude_sidecar_last_health_message=row.claude_sidecar_last_health_message,
+            claude_sidecar_last_checked_at=row.claude_sidecar_last_checked_at,
+            claude_sidecar_last_model_count=row.claude_sidecar_last_model_count,
         )
 
 
 _ROUTING_POLICIES = frozenset({"inherit", "normal", "burn_first", "preserve"})
+_DEFAULT_CLAUDE_SIDECAR_PREFIXES = ["claude"]
 
 
 def _normalize_additional_quota_key(raw_quota_key: str) -> str | None:
@@ -239,3 +259,23 @@ def _dump_additional_quota_routing_policies(policies: dict[str, str]) -> str:
         if normalized_quota_key is not None and normalized_policy in _ROUTING_POLICIES:
             normalized[normalized_quota_key] = normalized_policy
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def _parse_claude_sidecar_model_prefixes(raw: str | None) -> list[str]:
+    if not raw:
+        return list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+    if not isinstance(parsed, list):
+        return list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+    prefixes = [entry.strip() for entry in parsed if isinstance(entry, str) and entry.strip()]
+    return prefixes or list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+
+
+def _dump_claude_sidecar_model_prefixes(prefixes: list[str]) -> str:
+    normalized = list(dict.fromkeys(prefix.strip().lower() for prefix in prefixes if prefix.strip()))
+    if not normalized:
+        raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
+    return json.dumps(normalized, separators=(",", ":"))

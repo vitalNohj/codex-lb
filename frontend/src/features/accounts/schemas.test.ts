@@ -58,6 +58,29 @@ describe("AccountSummarySchema", () => {
     expect(parsed.requestUsage?.totalCostUsd).toBe(0.02);
   });
 
+  it("parses synthetic sidecar account fields", () => {
+    const parsed = AccountSummarySchema.parse({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "Claude via CLIProxyAPI",
+      planType: "claude",
+      status: "paused",
+      kind: "sidecar",
+      provider: "claude",
+      readOnly: true,
+      synthetic: true,
+      healthStatus: "unreachable",
+      healthMessage: "connection refused",
+      modelCount: 0,
+      baseUrl: "http://127.0.0.1:8317",
+      lastCheckedAt: ISO,
+    });
+
+    expect(parsed.synthetic).toBe(true);
+    expect(parsed.readOnly).toBe(true);
+    expect(parsed.healthStatus).toBe("unreachable");
+  });
+
   it("parses manual routing policy", () => {
     const parsed = AccountSummarySchema.parse({
       accountId: "acc-1",

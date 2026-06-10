@@ -152,7 +152,7 @@ export function RoutingSettings({
     relativeAvailabilityTopKValid && parsedRelativeAvailabilityTopK !== settings.relativeAvailabilityTopK;
 
   const relativeAvailabilitySelected = settings.routingStrategy === "relative_availability";
-  const selectableAccounts = accounts.filter((account) => isSingleAccountRoutingSelectable(account.status));
+  const selectableAccounts = accounts.filter((account) => isSingleAccountRoutingSelectable(account.status, account.synthetic === true));
   const selectedAccount = accounts.find((account) => account.accountId === settings.singleAccountId);
   const blockedSelectedAccount =
     selectedAccount !== undefined && !isSingleAccountRoutingSelectable(selectedAccount.status) ? selectedAccount : null;

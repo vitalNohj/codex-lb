@@ -132,6 +132,17 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         limit_warmup_cooldown_seconds=settings.limit_warmup_cooldown_seconds,
         limit_warmup_min_available_percent=settings.limit_warmup_min_available_percent,
         weekly_pace_working_days=settings.weekly_pace_working_days,
+        claude_sidecar_enabled=settings.claude_sidecar_enabled,
+        claude_sidecar_base_url=settings.claude_sidecar_base_url,
+        claude_sidecar_api_key_configured=settings.claude_sidecar_api_key_configured,
+        claude_sidecar_model_prefixes=settings.claude_sidecar_model_prefixes,
+        claude_sidecar_connect_timeout_seconds=settings.claude_sidecar_connect_timeout_seconds,
+        claude_sidecar_request_timeout_seconds=settings.claude_sidecar_request_timeout_seconds,
+        claude_sidecar_models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
+        claude_sidecar_last_health_status=settings.claude_sidecar_last_health_status,
+        claude_sidecar_last_health_message=settings.claude_sidecar_last_health_message,
+        claude_sidecar_last_checked_at=settings.claude_sidecar_last_checked_at,
+        claude_sidecar_last_model_count=settings.claude_sidecar_last_model_count,
     )
 
 
@@ -546,10 +557,43 @@ async def update_settings(
                     if payload.weekly_pace_working_days is not None
                     else current.weekly_pace_working_days
                 ),
+                claude_sidecar_enabled=(
+                    payload.claude_sidecar_enabled
+                    if payload.claude_sidecar_enabled is not None
+                    else current.claude_sidecar_enabled
+                ),
+                claude_sidecar_base_url=payload.claude_sidecar_base_url or current.claude_sidecar_base_url,
+                claude_sidecar_api_key=(
+                    payload.claude_sidecar_api_key
+                    if "claude_sidecar_api_key" in payload.model_fields_set
+                    else None
+                ),
+                claude_sidecar_clear_api_key=payload.claude_sidecar_clear_api_key is True,
+                claude_sidecar_model_prefixes=(
+                    payload.claude_sidecar_model_prefixes
+                    if payload.claude_sidecar_model_prefixes is not None
+                    else current.claude_sidecar_model_prefixes
+                ),
+                claude_sidecar_connect_timeout_seconds=(
+                    payload.claude_sidecar_connect_timeout_seconds
+                    if payload.claude_sidecar_connect_timeout_seconds is not None
+                    else current.claude_sidecar_connect_timeout_seconds
+                ),
+                claude_sidecar_request_timeout_seconds=(
+                    payload.claude_sidecar_request_timeout_seconds
+                    if payload.claude_sidecar_request_timeout_seconds is not None
+                    else current.claude_sidecar_request_timeout_seconds
+                ),
+                claude_sidecar_models_cache_ttl_seconds=(
+                    payload.claude_sidecar_models_cache_ttl_seconds
+                    if payload.claude_sidecar_models_cache_ttl_seconds is not None
+                    else current.claude_sidecar_models_cache_ttl_seconds
+                ),
             )
         )
     except ValueError as exc:
-        raise DashboardBadRequestError(str(exc), code="invalid_totp_config") from exc
+        code = "invalid_totp_config" if "TOTP" in str(exc) else "invalid_settings"
+        raise DashboardBadRequestError(str(exc), code=code) from exc
 
     await get_settings_cache().invalidate()
     changed_fields = [
@@ -584,6 +628,17 @@ async def update_settings(
             "limit_warmup_cooldown_seconds",
             "limit_warmup_min_available_percent",
             "weekly_pace_working_days",
+            "claude_sidecar_enabled",
+            "claude_sidecar_base_url",
+            "claude_sidecar_api_key_configured",
+            "claude_sidecar_model_prefixes",
+            "claude_sidecar_connect_timeout_seconds",
+            "claude_sidecar_request_timeout_seconds",
+            "claude_sidecar_models_cache_ttl_seconds",
+            "claude_sidecar_last_health_status",
+            "claude_sidecar_last_health_message",
+            "claude_sidecar_last_checked_at",
+            "claude_sidecar_last_model_count",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

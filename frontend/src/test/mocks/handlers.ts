@@ -1332,12 +1332,44 @@ export const handlers = [
     return HttpResponse.json({ status: "ok" });
   }),
 
-  http.get("/api/models", () => {
+  http.get("*/api/claude-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "Claude sidecar reachable",
+      baseUrl: "http://127.0.0.1:8317",
+      modelCount: 1,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/claude-sidecar/models", () => {
+    return HttpResponse.json({
+      models: [{ id: "claude-sonnet", created: 123, ownedBy: "anthropic" }],
+    });
+  }),
+
+  http.post("*/api/claude-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "Claude sidecar reachable",
+      baseUrl: "http://127.0.0.1:8317",
+      modelCount: 1,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: [{ id: "claude-sonnet", created: 123, ownedBy: "anthropic" }],
+    });
+  }),
+
+  http.get("*/api/models", () => {
     return HttpResponse.json({
       models: [
         { id: "gpt-5.1", name: "GPT 5.1" },
         { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
         { id: "gpt-4o-mini", name: "GPT 4o Mini" },
+        { id: "claude-sonnet", name: "Claude: claude-sonnet" },
       ],
     });
   }),

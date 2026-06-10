@@ -126,7 +126,7 @@ export function AccountMultiSelect({
   const { accountsQuery } = useAccounts();
   const accounts = useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
   const selectableAccounts = useMemo(
-    () => accounts.filter((account) => isAccountAssignmentSelectable(account.status)),
+    () => accounts.filter((account) => isAccountAssignmentSelectable(account.status, account.synthetic === true)),
     [accounts],
   );
   const [search, setSearch] = useState("");

@@ -1,9 +1,12 @@
-import { User } from "lucide-react";
+import { Bot, Settings as SettingsIcon } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import { isEmailLabel } from "@/components/blur-email";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { AccountAliasForm } from "@/features/accounts/components/account-alias-form";
 import { AccountActions } from "@/features/accounts/components/account-actions";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { AccountProxyBinding } from "@/features/accounts/components/account-proxy-binding";
 import { AccountTokenInfo } from "@/features/accounts/components/account-token-info";
 import { AccountUsagePanel } from "@/features/accounts/components/account-usage-panel";
@@ -14,7 +17,7 @@ import type {
 import { useAccountTrends } from "@/features/accounts/hooks/use-accounts";
 import type { AccountProxyBindingRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
-import { formatSlug } from "@/utils/formatters";
+import { formatDateTimeInline, formatSlug } from "@/utils/formatters";
 
 export type AccountDetailProps = {
   account: AccountSummary | null;
@@ -61,7 +64,7 @@ export function AccountDetail({
     return (
       <div className="flex flex-col items-center justify-center rounded-xl border border-dashed p-12">
         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
-          <User className="h-5 w-5 text-muted-foreground" />
+          <Bot className="h-5 w-5 text-muted-foreground" />
         </div>
         <p className="mt-3 text-sm font-medium text-muted-foreground">
           Select an account
@@ -71,6 +74,10 @@ export function AccountDetail({
         </p>
       </div>
     );
+  }
+
+  if (account.synthetic) {
+    return <SyntheticAccountDetail account={account} busy={busy} />;
   }
 
   const title = account.displayName || account.email;
@@ -146,6 +153,60 @@ export function AccountDetail({
         onRoutingPolicyChange={onRoutingPolicyChange}
         onSecurityWorkAuthorizedChange={onSecurityWorkAuthorizedChange}
       />
+    </div>
+  );
+}
+
+function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
+  const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
+  return (
+    <div
+      key={account.accountId}
+      className="animate-fade-in-up space-y-4 rounded-xl border bg-card p-5"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
+            {account.displayName}
+          </h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">Read-only Claude sidecar account</p>
+        </div>
+        <Badge variant="outline" className="border-violet-300 bg-violet-50 text-violet-700">
+          CLIProxyAPI
+        </Badge>
+      </div>
+
+      <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-2">
+        <SyntheticField label="Status" value={formatSlug(account.healthStatus ?? account.status)} />
+        <SyntheticField label="Models" value={account.modelCount == null ? "--" : String(account.modelCount)} />
+        <SyntheticField label="Base URL" value={account.baseUrl ?? "--"} mono />
+        <SyntheticField label="Last check" value={lastChecked ?? "Never"} />
+      </div>
+
+      {account.healthMessage ? (
+        <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+          {account.healthMessage}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2 border-t pt-4">
+        <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs" disabled={busy}>
+          <Link to="/settings#claude-sidecar">
+            <SettingsIcon className="h-3.5 w-3.5" />
+            Configure
+          </Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SyntheticField({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">{label}</div>
+      <div className={`break-all text-sm ${mono ? "font-mono" : ""}`}>{value}</div>
     </div>
   );
 }

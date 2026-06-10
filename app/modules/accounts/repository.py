@@ -130,6 +130,31 @@ class AccountsRepository:
 
         return summaries
 
+    async def request_usage_summary_for_source(self, source: str) -> AccountRequestUsageSummary:
+        output_tokens_expr = func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)
+        conditions = [
+            RequestLog.request_kind.not_in(("warmup", "limit_warmup")),
+            RequestLog.deleted_at.is_(None),
+            RequestLog.source == source,
+        ]
+        stmt = select(
+            func.count(RequestLog.id).label("request_count"),
+            func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(output_tokens_expr), 0).label("output_tokens"),
+            func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
+            func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
+        ).where(*conditions)
+        row = (await self._session.execute(stmt)).one()
+        input_sum = int(row.input_tokens or 0)
+        output_sum = int(row.output_tokens or 0)
+        cached_sum = max(0, min(int(row.cached_input_tokens or 0), input_sum))
+        return AccountRequestUsageSummary(
+            request_count=int(row.request_count or 0),
+            total_tokens=input_sum + output_sum,
+            cached_input_tokens=cached_sum,
+            total_cost_usd=round(float(row.total_cost_usd or 0.0), 6),
+        )
+
     async def exists_active_chatgpt_account_id(self, chatgpt_account_id: str) -> bool:
         return await self.get_active_by_chatgpt_account_id(chatgpt_account_id) is not None
 
