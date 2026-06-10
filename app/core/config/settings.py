@@ -73,6 +73,24 @@ type OptionalStringInput = str | None
 type ModelContextWindowOverridesInput = str | dict[str, int] | None
 
 
+def _normalize_string_list(value: StringListInput, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        entries = [entry.strip() for entry in value.split(',')]
+        return [entry for entry in entries if entry]
+    if isinstance(value, list):
+        normalized: list[str] = []
+        for entry in value:
+            if not isinstance(entry, str):
+                raise TypeError(f"{field_name} entries must be strings")
+            stripped = entry.strip()
+            if stripped:
+                normalized.append(stripped)
+        return normalized
+    raise TypeError(f"{field_name} must be a list or comma-separated string")
+
+
 def _validate_context_window_entries(data: Mapping[str, object]) -> dict[str, int]:
     result: dict[str, int] = {}
     for k, v in data.items():
@@ -158,6 +176,13 @@ class Settings(BaseSettings):
     upstream_connect_timeout_seconds: float = 8.0
     upstream_compact_timeout_seconds: float | None = None
     upstream_websocket_trust_env: bool = Field(default_factory=_default_upstream_websocket_trust_env)
+    claude_sidecar_enabled: bool = False
+    claude_sidecar_base_url: str = "http://127.0.0.1:8317"
+    claude_sidecar_api_key: str = ""
+    claude_sidecar_model_prefixes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["claude"])
+    claude_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    claude_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    claude_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)
@@ -445,6 +470,24 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("upstream_compact_timeout_seconds must be greater than zero")
         return value
+
+    @field_validator("claude_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _normalize_claude_sidecar_model_prefixes(cls, value: StringListInput) -> list[str]:
+        prefixes = _normalize_string_list(value, field_name="claude_sidecar_model_prefixes")
+        if not prefixes:
+            raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
+        return prefixes
+
+    @field_validator("claude_sidecar_base_url", mode="before")
+    @classmethod
+    def _normalize_claude_sidecar_base_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("claude_sidecar_base_url must be a string")
+        normalized = value.strip().rstrip('/')
+        if not normalized:
+            raise ValueError("claude_sidecar_base_url must not be blank")
+        return normalized
 
     @field_validator("warmup_model", mode="before")
     @classmethod
