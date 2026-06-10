@@ -10,14 +10,21 @@ from typing import cast
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError, get_claude_sidecar_client
-from app.core.config.settings import Settings
+from app.core.clients.claude_sidecar import (
+    ClaudeSidecarClient,
+    ClaudeSidecarConfig,
+    ClaudeSidecarError,
+    ClaudeSidecarUnavailableError,
+)
+from app.core.config.settings_cache import get_settings_cache
+from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
+from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
@@ -33,16 +40,60 @@ class SidecarUsage:
     cached_input_tokens: int = 0
 
 
-def is_sidecar_model(model: str, settings: Settings) -> bool:
-    if not settings.claude_sidecar_enabled:
+def is_sidecar_model(model: str, config: ClaudeSidecarConfig) -> bool:
+    if not config.enabled:
         return False
-    normalized = model.strip().lower()
-    return any(normalized.startswith(prefix.strip().lower()) for prefix in settings.claude_sidecar_model_prefixes)
+    return sidecar_prefix_match(model, config)
 
 
-def sidecar_prefix_match(model: str, settings: Settings) -> bool:
+def sidecar_prefix_match(model: str, config: ClaudeSidecarConfig) -> bool:
     normalized = model.strip().lower()
-    return any(normalized.startswith(prefix.strip().lower()) for prefix in settings.claude_sidecar_model_prefixes)
+    return any(normalized.startswith(prefix.strip().lower()) for prefix in config.model_prefixes)
+
+
+async def load_sidecar_config() -> ClaudeSidecarConfig | None:
+    try:
+        dashboard_settings = await get_settings_cache().get()
+    except Exception:
+        logger.warning("failed to load dashboard settings for Claude sidecar", exc_info=True)
+        return None
+    return sidecar_config_from_settings(dashboard_settings)
+
+
+def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarConfig:
+    api_key = _decrypt_sidecar_api_key(settings.claude_sidecar_api_key_encrypted)
+    return ClaudeSidecarConfig(
+        enabled=bool(settings.claude_sidecar_enabled),
+        base_url=settings.claude_sidecar_base_url.rstrip("/"),
+        api_key=api_key,
+        model_prefixes=tuple(_parse_sidecar_prefixes(settings.claude_sidecar_model_prefixes_json)),
+        connect_timeout_seconds=settings.claude_sidecar_connect_timeout_seconds,
+        request_timeout_seconds=settings.claude_sidecar_request_timeout_seconds,
+        models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
+    )
+
+
+def _decrypt_sidecar_api_key(encrypted: bytes | None) -> str | None:
+    if not encrypted:
+        return None
+    try:
+        return TokenEncryptor().decrypt(encrypted)
+    except Exception:
+        logger.warning("failed to decrypt Claude sidecar API key", exc_info=True)
+        return None
+
+
+def _parse_sidecar_prefixes(raw: str | None) -> list[str]:
+    if not raw:
+        return ["claude"]
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return ["claude"]
+    if not isinstance(parsed, list):
+        return ["claude"]
+    prefixes = [entry.strip().lower() for entry in parsed if isinstance(entry, str) and entry.strip()]
+    return prefixes or ["claude"]
 
 
 def build_sidecar_chat_payload(payload: ChatCompletionsRequest, effective_model: str) -> dict[str, JsonValue]:
@@ -70,6 +121,7 @@ async def proxy_chat_to_sidecar(
     reservation: ApiKeyUsageReservationData | None,
     rate_limit_headers: Mapping[str, str],
     sse_keepalive_interval_seconds: float,
+    client: ClaudeSidecarClient,
 ) -> Response:
     body = build_sidecar_chat_payload(payload, effective_model)
     requested_at = time.monotonic()
@@ -83,6 +135,7 @@ async def proxy_chat_to_sidecar(
                     reservation=reservation,
                     model=effective_model,
                     started_at=requested_at,
+                    client=client,
                 ),
                 sse_keepalive_interval_seconds,
             ),
@@ -91,7 +144,7 @@ async def proxy_chat_to_sidecar(
         )
 
     try:
-        response_body = await get_claude_sidecar_client().chat_completion(body)
+        response_body = await client.chat_completion(body)
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
@@ -151,12 +204,13 @@ async def _sidecar_stream_iterator(
     reservation: ApiKeyUsageReservationData | None,
     model: str,
     started_at: float,
+    client: ClaudeSidecarClient,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
     settled = False
     try:
-        async with get_claude_sidecar_client().stream_chat_completion(payload) as chunks:
+        async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
             async for raw_chunk in chunks:
                 for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):

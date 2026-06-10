@@ -37,6 +37,8 @@ const LimitWarmupModelSchema = z.string().min(1).max(128);
 const LimitWarmupPromptSchema = z.string().min(1).max(512);
 const WeeklyPaceWorkingDaysValueSchema = z.string().regex(/^[0-6](,[0-6])*$/);
 const WeeklyPaceWorkingDaysSchema = WeeklyPaceWorkingDaysValueSchema.default("0,1,2,3,4,5,6");
+const ClaudeSidecarStatusValueSchema = z.enum(["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]);
+const ClaudeSidecarModelPrefixesSchema = z.array(z.string().trim().min(1).max(64)).min(1).max(32);
 
 export const DashboardSettingsSchema = z
   .object({
@@ -93,6 +95,17 @@ export const DashboardSettingsSchema = z
       .optional()
       .default(100),
     weeklyPaceWorkingDays: WeeklyPaceWorkingDaysSchema,
+    claudeSidecarEnabled: z.boolean().optional().default(false),
+    claudeSidecarBaseUrl: z.string().trim().min(1).optional().default("http://127.0.0.1:8317"),
+    claudeSidecarApiKeyConfigured: z.boolean().optional().default(false),
+    claudeSidecarModelPrefixes: ClaudeSidecarModelPrefixesSchema.optional().default(["claude"]),
+    claudeSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
+    claudeSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
+    claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+    claudeSidecarLastHealthStatus: z.string().nullable().optional().default(null),
+    claudeSidecarLastHealthMessage: z.string().nullable().optional().default(null),
+    claudeSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
+    claudeSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -147,6 +160,36 @@ export const SettingsUpdateRequestSchema = z.object({
   limitWarmupCooldownSeconds: z.number().int().min(60).optional(),
   limitWarmupMinAvailablePercent: z.number().positive().max(100).optional(),
   weeklyPaceWorkingDays: WeeklyPaceWorkingDaysValueSchema.optional(),
+  claudeSidecarEnabled: z.boolean().optional(),
+  claudeSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+  claudeSidecarApiKey: z.string().trim().max(4096).optional(),
+  claudeSidecarClearApiKey: z.boolean().optional(),
+  claudeSidecarModelPrefixes: ClaudeSidecarModelPrefixesSchema.optional(),
+  claudeSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+  claudeSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+  claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+});
+
+export const ClaudeSidecarModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+});
+
+export const ClaudeSidecarStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: ClaudeSidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+export const ClaudeSidecarTestResponseSchema = ClaudeSidecarStatusResponseSchema.extend({
+  models: z.array(ClaudeSidecarModelSummarySchema).default([]),
+});
+export const ClaudeSidecarModelsResponseSchema = z.object({
+  models: z.array(ClaudeSidecarModelSummarySchema).default([]),
 });
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;
@@ -162,14 +205,33 @@ type StickyThresholdValues = Pick<
   | "stickyReallocationPrimaryBudgetThresholdPct"
   | "stickyReallocationSecondaryBudgetThresholdPct"
 >;
+type ClaudeSidecarSettingsFields = Pick<
+  ParsedDashboardSettings,
+  | "claudeSidecarEnabled"
+  | "claudeSidecarBaseUrl"
+  | "claudeSidecarApiKeyConfigured"
+  | "claudeSidecarModelPrefixes"
+  | "claudeSidecarConnectTimeoutSeconds"
+  | "claudeSidecarRequestTimeoutSeconds"
+  | "claudeSidecarModelsCacheTtlSeconds"
+  | "claudeSidecarLastHealthStatus"
+  | "claudeSidecarLastHealthMessage"
+  | "claudeSidecarLastCheckedAt"
+  | "claudeSidecarLastModelCount"
+>;
 
 export type DashboardSettings = Omit<
   ParsedDashboardSettings,
-  keyof StickyThresholdPresenceFlags | keyof StickyThresholdValues
+  keyof StickyThresholdPresenceFlags | keyof StickyThresholdValues | keyof ClaudeSidecarSettingsFields
 > &
   Partial<StickyThresholdPresenceFlags> &
-  Partial<StickyThresholdValues>;
+  Partial<StickyThresholdValues> &
+  Partial<ClaudeSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
+export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
+export type ClaudeSidecarStatusResponse = z.infer<typeof ClaudeSidecarStatusResponseSchema>;
+export type ClaudeSidecarTestResponse = z.infer<typeof ClaudeSidecarTestResponseSchema>;
+export type ClaudeSidecarModelsResponse = z.infer<typeof ClaudeSidecarModelsResponseSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({

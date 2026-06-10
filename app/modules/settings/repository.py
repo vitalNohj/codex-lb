@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config.settings import get_settings
+from app.core.crypto import TokenEncryptor
 from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
+_UNSET = object()
 
 
 class SettingsRepository:
@@ -18,6 +23,8 @@ class SettingsRepository:
         if existing is not None:
             return existing
 
+        static_settings = get_settings()
+        sidecar_api_key = static_settings.claude_sidecar_api_key.strip()
         row = DashboardSettings(
             id=_SETTINGS_ID,
             sticky_threads_enabled=True,
@@ -30,9 +37,9 @@ class SettingsRepository:
             relative_availability_power=2.0,
             relative_availability_top_k=5,
             single_account_id=None,
-            openai_cache_affinity_max_age_seconds=get_settings().openai_cache_affinity_max_age_seconds,
+            openai_cache_affinity_max_age_seconds=static_settings.openai_cache_affinity_max_age_seconds,
             dashboard_session_ttl_seconds=43200,
-            warmup_model=get_settings().warmup_model,
+            warmup_model=static_settings.warmup_model,
             import_without_overwrite=True,
             totp_required_on_login=False,
             password_hash=None,
@@ -51,6 +58,16 @@ class SettingsRepository:
             limit_warmup_cooldown_seconds=3600,
             limit_warmup_min_available_percent=100.0,
             weekly_pace_working_days="0,1,2,3,4,5,6",
+            claude_sidecar_enabled=static_settings.claude_sidecar_enabled,
+            claude_sidecar_base_url=static_settings.claude_sidecar_base_url,
+            claude_sidecar_api_key_encrypted=TokenEncryptor().encrypt(sidecar_api_key) if sidecar_api_key else None,
+            claude_sidecar_model_prefixes_json=json.dumps(
+                static_settings.claude_sidecar_model_prefixes,
+                separators=(",", ":"),
+            ),
+            claude_sidecar_connect_timeout_seconds=static_settings.claude_sidecar_connect_timeout_seconds,
+            claude_sidecar_request_timeout_seconds=static_settings.claude_sidecar_request_timeout_seconds,
+            claude_sidecar_models_cache_ttl_seconds=static_settings.claude_sidecar_models_cache_ttl_seconds,
         )
         self._session.add(row)
         try:
@@ -70,7 +87,7 @@ class SettingsRepository:
         sticky_threads_enabled: bool | None = None,
         upstream_stream_transport: str | None = None,
         upstream_proxy_routing_enabled: bool | None = None,
-        upstream_proxy_default_pool_id: str | None = None,
+        upstream_proxy_default_pool_id: str | None | object = _UNSET,
         prefer_earlier_reset_accounts: bool | None = None,
         prefer_earlier_reset_window: str | None = None,
         routing_strategy: str | None = None,
@@ -96,6 +113,17 @@ class SettingsRepository:
         limit_warmup_cooldown_seconds: int | None = None,
         limit_warmup_min_available_percent: float | None = None,
         weekly_pace_working_days: str | None = None,
+        claude_sidecar_enabled: bool | None = None,
+        claude_sidecar_base_url: str | None = None,
+        claude_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        claude_sidecar_model_prefixes_json: str | None = None,
+        claude_sidecar_connect_timeout_seconds: float | None = None,
+        claude_sidecar_request_timeout_seconds: float | None = None,
+        claude_sidecar_models_cache_ttl_seconds: float | None = None,
+        claude_sidecar_last_health_status: str | None | object = _UNSET,
+        claude_sidecar_last_health_message: str | None | object = _UNSET,
+        claude_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        claude_sidecar_last_model_count: int | None | object = _UNSET,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
@@ -104,7 +132,8 @@ class SettingsRepository:
             settings.upstream_stream_transport = upstream_stream_transport
         if upstream_proxy_routing_enabled is not None:
             settings.upstream_proxy_routing_enabled = upstream_proxy_routing_enabled
-        settings.upstream_proxy_default_pool_id = upstream_proxy_default_pool_id or None
+        if upstream_proxy_default_pool_id is not _UNSET:
+            settings.upstream_proxy_default_pool_id = upstream_proxy_default_pool_id or None
         if prefer_earlier_reset_accounts is not None:
             settings.prefer_earlier_reset_accounts = prefer_earlier_reset_accounts
         if prefer_earlier_reset_window is not None:
@@ -157,10 +186,30 @@ class SettingsRepository:
             settings.limit_warmup_cooldown_seconds = limit_warmup_cooldown_seconds
         if limit_warmup_min_available_percent is not None:
             settings.limit_warmup_min_available_percent = limit_warmup_min_available_percent
-        if additional_quota_routing_policies_json is not None:
-            settings.additional_quota_routing_policies_json = additional_quota_routing_policies_json
         if weekly_pace_working_days is not None:
             settings.weekly_pace_working_days = weekly_pace_working_days
+        if claude_sidecar_enabled is not None:
+            settings.claude_sidecar_enabled = claude_sidecar_enabled
+        if claude_sidecar_base_url is not None:
+            settings.claude_sidecar_base_url = claude_sidecar_base_url
+        if claude_sidecar_api_key_encrypted is not _UNSET:
+            settings.claude_sidecar_api_key_encrypted = claude_sidecar_api_key_encrypted
+        if claude_sidecar_model_prefixes_json is not None:
+            settings.claude_sidecar_model_prefixes_json = claude_sidecar_model_prefixes_json
+        if claude_sidecar_connect_timeout_seconds is not None:
+            settings.claude_sidecar_connect_timeout_seconds = claude_sidecar_connect_timeout_seconds
+        if claude_sidecar_request_timeout_seconds is not None:
+            settings.claude_sidecar_request_timeout_seconds = claude_sidecar_request_timeout_seconds
+        if claude_sidecar_models_cache_ttl_seconds is not None:
+            settings.claude_sidecar_models_cache_ttl_seconds = claude_sidecar_models_cache_ttl_seconds
+        if claude_sidecar_last_health_status is not _UNSET:
+            settings.claude_sidecar_last_health_status = claude_sidecar_last_health_status
+        if claude_sidecar_last_health_message is not _UNSET:
+            settings.claude_sidecar_last_health_message = claude_sidecar_last_health_message
+        if claude_sidecar_last_checked_at is not _UNSET:
+            settings.claude_sidecar_last_checked_at = claude_sidecar_last_checked_at
+        if claude_sidecar_last_model_count is not _UNSET:
+            settings.claude_sidecar_last_model_count = claude_sidecar_last_model_count
         await self.commit_refresh(settings)
         return settings
 

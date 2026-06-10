@@ -59,6 +59,31 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.limitWarmupWindows).toBe("both");
   });
 
+  it("parses sidecar settings fields", () => {
+    const parsed = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      preferEarlierResetAccounts: true,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: false,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      claudeSidecarEnabled: true,
+      claudeSidecarBaseUrl: "http://127.0.0.1:8317",
+      claudeSidecarApiKeyConfigured: true,
+      claudeSidecarModelPrefixes: ["claude", "anthropic"],
+      claudeSidecarConnectTimeoutSeconds: 2,
+      claudeSidecarRequestTimeoutSeconds: 60,
+      claudeSidecarModelsCacheTtlSeconds: 5,
+      claudeSidecarLastHealthStatus: "healthy",
+      claudeSidecarLastModelCount: 3,
+    });
+
+    expect(parsed.claudeSidecarEnabled).toBe(true);
+    expect(parsed.claudeSidecarApiKeyConfigured).toBe(true);
+    expect(parsed.claudeSidecarModelPrefixes).toEqual(["claude", "anthropic"]);
+    expect(parsed.claudeSidecarLastModelCount).toBe(3);
+  });
+
   it("parses legacy settings payload and applies defaults for missing routing fields", () => {
     const parsed = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
@@ -176,6 +201,22 @@ describe("SettingsUpdateRequestSchema", () => {
     expect(parsed.apiKeyAuthEnabled).toBe(false);
     expect(parsed.limitWarmupEnabled).toBe(true);
     expect(parsed.limitWarmupWindows).toBe("primary");
+  });
+
+  it("accepts sidecar update fields", () => {
+    const parsed = SettingsUpdateRequestSchema.parse({
+      claudeSidecarEnabled: true,
+      claudeSidecarBaseUrl: "http://127.0.0.1:8317",
+      claudeSidecarApiKey: "secret",
+      claudeSidecarClearApiKey: false,
+      claudeSidecarModelPrefixes: ["claude"],
+      claudeSidecarConnectTimeoutSeconds: 2,
+      claudeSidecarRequestTimeoutSeconds: 60,
+      claudeSidecarModelsCacheTtlSeconds: 5,
+    });
+
+    expect(parsed.claudeSidecarApiKey).toBe("secret");
+    expect(parsed.claudeSidecarModelPrefixes).toEqual(["claude"]);
   });
 
   it("accepts long session lifetimes above 30 days", () => {

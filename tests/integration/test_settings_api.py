@@ -487,3 +487,53 @@ async def test_account_proxy_binding_rejects_missing_targets(async_client):
     )
     assert missing_pool.status_code == 400
     assert missing_pool.json()["error"]["code"] == "proxy_pool_not_found"
+
+
+
+@pytest.mark.asyncio
+async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_api_key(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarBaseUrl": "http://127.0.0.1:8317/",
+            "claudeSidecarApiKey": " sidecar-secret ",
+            "claudeSidecarModelPrefixes": ["Claude", "anthropic"],
+            "claudeSidecarConnectTimeoutSeconds": 2.5,
+            "claudeSidecarRequestTimeoutSeconds": 45,
+            "claudeSidecarModelsCacheTtlSeconds": 10,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claudeSidecarEnabled"] is True
+    assert payload["claudeSidecarBaseUrl"] == "http://127.0.0.1:8317"
+    assert payload["claudeSidecarApiKeyConfigured"] is True
+    assert "sidecar-secret" not in response.text
+    assert payload["claudeSidecarModelPrefixes"] == ["claude", "anthropic"]
+    assert payload["claudeSidecarConnectTimeoutSeconds"] == 2.5
+    assert payload["claudeSidecarRequestTimeoutSeconds"] == 45.0
+    assert payload["claudeSidecarModelsCacheTtlSeconds"] == 10.0
+
+    response = await async_client.put("/api/settings", json={"claudeSidecarEnabled": False})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claudeSidecarEnabled"] is False
+    assert payload["claudeSidecarApiKeyConfigured"] is True
+    assert "sidecar-secret" not in response.text
+
+    response = await async_client.put("/api/settings", json={"claudeSidecarClearApiKey": True})
+    assert response.status_code == 200
+    assert response.json()["claudeSidecarApiKeyConfigured"] is False
+
+
+@pytest.mark.asyncio
+async def test_settings_api_rejects_invalid_sidecar_inputs(async_client):
+    response = await async_client.put("/api/settings", json={"claudeSidecarBaseUrl": "not-a-url"})
+    assert response.status_code == 422
+
+    response = await async_client.put("/api/settings", json={"claudeSidecarModelPrefixes": []})
+    assert response.status_code == 422
+
+    response = await async_client.put("/api/settings", json={"claudeSidecarConnectTimeoutSeconds": 0})
+    assert response.status_code == 422

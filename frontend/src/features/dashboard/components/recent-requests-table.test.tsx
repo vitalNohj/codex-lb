@@ -166,6 +166,53 @@ describe("RecentRequestsTable", () => {
     expect(writeText).toHaveBeenCalledWith(longError);
   });
 
+
+  it("labels claude sidecar rows with null account id", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: "Claude Key",
+            apiKeyId: "key-claude",
+            requestId: "req-sidecar",
+            requestKind: "normal",
+            model: "claude-sonnet",
+            source: "claude_sidecar",
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 15,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            costUsd: 0,
+            costBreakdown: null,
+            latencyMs: 50,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("Claude sidecar").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Sidecar HTTP").length).toBeGreaterThan(0);
+    const dialog = openRequestDetails();
+    expect(within(dialog).getByText("Source")).toBeInTheDocument();
+    expect(within(dialog).getAllByText("Claude sidecar").length).toBeGreaterThan(0);
+    expect(within(dialog).getByText("Sidecar HTTP")).toBeInTheDocument();
+  });
+
   it("renders empty state", () => {
     render(<RecentRequestsTable {...PAGINATION_PROPS} total={0} accounts={[]} requests={[]} />);
     expect(screen.getByText("No request logs match the current filters.")).toBeInTheDocument();

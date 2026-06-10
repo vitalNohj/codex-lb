@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.config.settings import Settings
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SseUsageDecoder,
@@ -11,9 +11,21 @@ from app.modules.proxy.claude_sidecar_dispatch import (
 )
 
 
+def _config(*, enabled: bool = True, prefixes: tuple[str, ...] = ("claude", "anthropic")) -> ClaudeSidecarConfig:
+    return ClaudeSidecarConfig(
+        enabled=enabled,
+        base_url="http://127.0.0.1:8317",
+        api_key="key",
+        model_prefixes=prefixes,
+        connect_timeout_seconds=8.0,
+        request_timeout_seconds=600.0,
+        models_cache_ttl_seconds=60.0,
+    )
+
+
 def test_is_sidecar_model_respects_enabled_prefix_and_case() -> None:
-    enabled = Settings(claude_sidecar_enabled=True, claude_sidecar_model_prefixes="claude,anthropic")
-    disabled = Settings(claude_sidecar_enabled=False)
+    enabled = _config()
+    disabled = _config(enabled=False)
 
     assert is_sidecar_model("claude-sonnet-4-5", enabled) is True
     assert is_sidecar_model("Claude-Sonnet-4-5", enabled) is True

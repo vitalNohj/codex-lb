@@ -95,6 +95,15 @@ export const AccountSummarySchema = z.object({
   additionalQuotas: z.array(AccountAdditionalQuotaSchema).default([]),
   limitWarmupEnabled: z.boolean().default(false),
   limitWarmup: AccountLimitWarmupStatusSchema.nullable().optional(),
+  kind: z.string().nullable().optional(),
+  provider: z.string().nullable().optional(),
+  readOnly: z.boolean().optional(),
+  synthetic: z.boolean().optional(),
+  healthStatus: z.string().nullable().optional(),
+  healthMessage: z.string().nullable().optional(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  baseUrl: z.string().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
   isEmailDuplicate: z.boolean().optional(),
 });
 

@@ -103,7 +103,12 @@ export function ModelMultiSelect({
               onCheckedChange={() => toggle(model.id)}
               onSelect={(e) => e.preventDefault()}
             >
-              {model.id}
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate">{model.name || model.id}</span>
+                {model.name && model.name !== model.id ? (
+                  <span className="truncate font-mono text-[10px] text-muted-foreground">{model.id}</span>
+                ) : null}
+              </span>
             </DropdownMenuCheckboxItem>
           ))}
           {filtered.length === 0 ? (

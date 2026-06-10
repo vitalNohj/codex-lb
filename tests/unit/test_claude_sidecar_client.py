@@ -2,10 +2,29 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
-from app.core.config.settings import Settings
+from app.core.clients.claude_sidecar import (
+    ClaudeSidecarClient,
+    ClaudeSidecarConfig,
+    ClaudeSidecarError,
+    ClaudeSidecarUnavailableError,
+)
 
 pytestmark = pytest.mark.unit
+
+
+
+def _config(**overrides) -> ClaudeSidecarConfig:
+    values = {
+        "enabled": True,
+        "base_url": "http://127.0.0.1:8317",
+        "api_key": None,
+        "model_prefixes": ("claude",),
+        "connect_timeout_seconds": 8.0,
+        "request_timeout_seconds": 600.0,
+        "models_cache_ttl_seconds": 60.0,
+    }
+    values.update(overrides)
+    return ClaudeSidecarConfig(**values)
 
 
 class _FakeContent:
@@ -81,7 +100,7 @@ async def test_list_models_sends_bearer_key_and_parses_models(monkeypatch) -> No
         )
     )
     monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
-    client = ClaudeSidecarClient(Settings(claude_sidecar_api_key="sidecar-key"))
+    client = ClaudeSidecarClient(_config(api_key="sidecar-key"))
 
     models = await client.list_models()
 
@@ -96,7 +115,7 @@ async def test_chat_completion_relays_error_envelope(monkeypatch) -> None:
         post_response=_FakeResponse(401, '{"error":{"message":"expired","type":"authentication_error"}}')
     )
     monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
-    client = ClaudeSidecarClient(Settings())
+    client = ClaudeSidecarClient(_config())
 
     with pytest.raises(ClaudeSidecarError) as exc_info:
         await client.chat_completion({"model": "claude-sonnet", "messages": []})
@@ -109,7 +128,7 @@ async def test_chat_completion_relays_error_envelope(monkeypatch) -> None:
 async def test_transport_error_becomes_unavailable(monkeypatch) -> None:
     session = _FakeSession(get_response=OSError("boom"))
     monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
-    client = ClaudeSidecarClient(Settings())
+    client = ClaudeSidecarClient(_config())
 
     with pytest.raises(ClaudeSidecarUnavailableError):
         await client.list_models()
@@ -117,7 +136,7 @@ async def test_transport_error_becomes_unavailable(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_models_cache_serves_last_good_after_refresh_failure(monkeypatch) -> None:
-    client = ClaudeSidecarClient(Settings(claude_sidecar_models_cache_ttl_seconds=0))
+    client = ClaudeSidecarClient(_config(models_cache_ttl_seconds=0))
     calls = 0
 
     async def list_models():

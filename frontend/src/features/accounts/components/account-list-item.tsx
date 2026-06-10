@@ -1,4 +1,4 @@
-import { Flame, Shield, ShieldCheck } from "lucide-react";
+import { Bot, Flame, Shield, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -43,7 +43,9 @@ export function AccountListItem({
     : null;
   const workspaceLabel = account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
-  const slotSubtitle = `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;
+  const slotSubtitle = account.synthetic
+    ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? "CLIProxyAPI"}`
+    : `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;
   const idSuffix = showAccountId ? ` | ID ${formatCompactAccountId(account.accountId)}` : "";
   const primary = account.usage?.primaryRemainingPercent ?? null;
   const secondary = account.usage?.secondaryRemainingPercent ?? null;
@@ -67,7 +69,7 @@ export function AccountListItem({
   const showSecondaryRow =
     !monthlyOnly && hasSecondaryWindow && (quotaDisplay !== "5h" || !hasPrimaryWindow);
   const visibleQuotaRows = Number(showPrimaryRow) + Number(showSecondaryRow) + Number(showMonthlyRow);
-  const showRoutingPolicy = status !== "reauth" && status !== "deactivated";
+  const showRoutingPolicy = !account.synthetic && status !== "reauth" && status !== "deactivated";
   const warmupLabel = account.limitWarmupEnabled ? "Warm-up on" : "Warm-up off";
   const warmupMeta = account.limitWarmup
     ? `${formatSlug(account.limitWarmup.status)} | ${formatSlug(account.limitWarmup.model)} | ${formatDateTimeInline(account.limitWarmup.completedAt ?? account.limitWarmup.attemptedAt)}`
@@ -95,6 +97,15 @@ export function AccountListItem({
             {emailSubtitle ? <><span className={blurred ? "privacy-blur" : undefined}>{emailSubtitle}</span> | {slotSubtitle}{idSuffix}</> : <>{slotSubtitle}{idSuffix}</>}
           </p>
         </div>
+        {account.synthetic ? (
+          <Badge
+            variant="outline"
+            className="shrink-0 gap-1 border-violet-300 bg-violet-50 px-1.5 text-[11px] text-violet-700"
+          >
+            <Bot className="h-3 w-3" aria-hidden="true" />
+            CLIProxyAPI
+          </Badge>
+        ) : null}
         {showRoutingPolicy ? (
           <RoutingPolicyBadge
             policy={account.routingPolicy as AccountRoutingPolicy | undefined}
@@ -108,6 +119,18 @@ export function AccountListItem({
         ) : null}
         <StatusBadge status={status} />
       </div>
+      {account.synthetic ? (
+        <div className="mt-2 grid gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-2">
+            <span>Health</span>
+            <span className="truncate font-medium text-foreground">{formatSlug(account.healthStatus ?? account.status)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span>Models</span>
+            <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
+          </div>
+        </div>
+      ) : (
       <div
         className={cn(
           "mt-2 grid gap-2",
@@ -136,10 +159,13 @@ export function AccountListItem({
           />
         ) : null}
       </div>
+      )}
+      {account.synthetic ? null : (
       <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
         <span>{warmupLabel}</span>
         <span className="truncate">{warmupMeta}</span>
       </div>
+      )}
     </button>
   );
 }

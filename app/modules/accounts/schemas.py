@@ -105,6 +105,15 @@ class AccountSummary(DashboardModel):
     auth: AccountAuthStatus | None = None
     limit_warmup_enabled: bool = False
     limit_warmup: AccountLimitWarmupStatus | None = None
+    kind: str | None = None
+    provider: str | None = None
+    read_only: bool = False
+    synthetic: bool = False
+    health_status: str | None = None
+    health_message: str | None = None
+    model_count: int | None = None
+    base_url: str | None = None
+    last_checked_at: datetime | None = None
     # True when another account row in the same response shares this real email,
     # ChatGPT account identity, and workspace slot.
     # Operators see this after a token-invalidation cascade where re-adding

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import select
 
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
 from app.db.models import ApiKeyUsageReservation, RequestLog
@@ -104,8 +105,21 @@ async def sidecar_enabled(monkeypatch):
 @pytest.fixture
 async def fake_sidecar(monkeypatch):
     client = _FakeSidecarClient()
-    monkeypatch.setattr("app.modules.proxy.api.get_claude_sidecar_client", lambda: client)
-    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.get_claude_sidecar_client", lambda: client)
+    config = ClaudeSidecarConfig(
+        enabled=True,
+        base_url="http://127.0.0.1:8317",
+        api_key="sidecar-key",
+        model_prefixes=("claude",),
+        connect_timeout_seconds=8.0,
+        request_timeout_seconds=600.0,
+        models_cache_ttl_seconds=60.0,
+    )
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+    monkeypatch.setattr("app.modules.proxy.api.ClaudeSidecarClient", lambda _config: client)
     return client
 
 

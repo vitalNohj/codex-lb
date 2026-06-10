@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.dependencies import DashboardContext, get_dashboard_context
 from app.modules.dashboard.schemas import (
@@ -10,6 +13,9 @@ from app.modules.dashboard.schemas import (
     DashboardOverviewTimeframeKey,
     DashboardProjectionsResponse,
 )
+from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api",
@@ -37,11 +43,22 @@ async def get_projections(
 async def list_models() -> dict:
     registry = get_model_registry()
     models_by_slug = registry.get_models_with_fallback()
-    if not models_by_slug:
-        return {"models": []}
     models = [
         {"id": slug, "name": model.display_name or slug}
         for slug, model in models_by_slug.items()
         if is_public_model(model, None)
     ]
+    seen_model_ids = {str(model["id"]) for model in models}
+    sidecar_config = await load_sidecar_config()
+    if sidecar_config is not None and sidecar_config.enabled:
+        try:
+            sidecar_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
+        except Exception:
+            logger.warning("failed to append Claude sidecar models to dashboard model list", exc_info=True)
+            sidecar_models = []
+        for sidecar_model in sidecar_models:
+            if sidecar_model.id in seen_model_ids:
+                continue
+            seen_model_ids.add(sidecar_model.id)
+            models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}"})
     return {"models": models}

@@ -36,7 +36,7 @@ from app.core.auth.dependencies import (
     validate_proxy_api_key_authorization,
     validate_usage_api_key,
 )
-from app.core.clients.claude_sidecar import get_claude_sidecar_client
+from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
@@ -106,7 +106,7 @@ from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, proxy_chat_to_sidecar
+from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, load_sidecar_config, proxy_chat_to_sidecar
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.request_policy import (
@@ -1772,9 +1772,9 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
             )
         )
 
-    settings = get_settings()
-    if settings.claude_sidecar_enabled:
-        for sidecar_model in await get_claude_sidecar_client().list_models_cached():
+    sidecar_config = await load_sidecar_config()
+    if sidecar_config is not None and sidecar_config.enabled:
+        for sidecar_model in await ClaudeSidecarClient(sidecar_config).list_models_cached():
             slug = sidecar_model.id
             if slug in seen_model_ids:
                 continue
@@ -1971,7 +1971,8 @@ async def v1_chat_completions(
     validate_model_access(api_key, effective_model)
 
     rate_limit_headers = await context.service.rate_limit_headers()
-    if is_sidecar_model(effective_model, settings):
+    sidecar_config = await load_sidecar_config()
+    if sidecar_config is not None and is_sidecar_model(effective_model, sidecar_config):
         reservation = await _enforce_request_limits(
             api_key,
             request_model=effective_model,
@@ -1986,6 +1987,7 @@ async def v1_chat_completions(
             reservation=reservation,
             rate_limit_headers=rate_limit_headers,
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+            client=ClaudeSidecarClient(sidecar_config),
         )
 
     try:

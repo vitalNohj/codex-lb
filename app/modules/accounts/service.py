@@ -48,6 +48,7 @@ from app.modules.accounts.schemas import (
 )
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.proxy.account_cache import get_account_selection_cache
+from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
     get_additional_display_label_for_quota_key,
     get_additional_quota_routing_policy,
@@ -89,6 +90,7 @@ class AccountsService:
         additional_usage_repo: AdditionalUsageRepository | AdditionalUsageRepositoryPort | None = None,
         limit_warmup_repo: LimitWarmupRepository | None = None,
         auth_manager: AuthManager | None = None,
+        settings_repo: SettingsRepository | None = None,
     ) -> None:
         self._repo = repo
         self._usage_repo = usage_repo
@@ -97,17 +99,16 @@ class AccountsService:
         self._usage_updater = UsageUpdater(usage_repo, repo, additional_usage_repo) if usage_repo else None
         self._encryptor = TokenEncryptor()
         self._auth_manager = auth_manager
+        self._settings_repo = settings_repo
 
     async def list_accounts(self) -> list[AccountSummary]:
         accounts = await self._repo.list_accounts()
-        if not accounts:
-            return []
         account_ids = [account.id for account in accounts]
         account_id_set = set(account_ids)
         primary_usage = await self._usage_repo.latest_by_account(window="primary") if self._usage_repo else {}
         secondary_usage = await self._usage_repo.latest_by_account(window="secondary") if self._usage_repo else {}
         monthly_usage = await self._usage_repo.latest_by_account(window="monthly") if self._usage_repo else {}
-        request_usage_rows = await self._repo.list_request_usage_summary_by_account(account_ids)
+        request_usage_rows = await self._repo.list_request_usage_summary_by_account(account_ids) if account_ids else {}
         limit_warmups_by_account = (
             await self._limit_warmup_repo.latest_by_account(account_ids) if self._limit_warmup_repo else {}
         )
@@ -164,7 +165,7 @@ class AccountsService:
         for account_quota_list in additional_quotas_by_account.values():
             account_quota_list.sort(key=lambda quota: quota.display_label or quota.quota_key or quota.limit_name)
 
-        return build_account_summaries(
+        summaries = build_account_summaries(
             accounts=accounts,
             primary_usage=primary_usage,
             secondary_usage=secondary_usage,
@@ -173,6 +174,57 @@ class AccountsService:
             additional_quotas_by_account=additional_quotas_by_account,
             limit_warmups_by_account=limit_warmups_by_account,
             encryptor=self._encryptor,
+        )
+        synthetic = await self._claude_sidecar_account_summary()
+        if synthetic is not None:
+            summaries.append(synthetic)
+        return summaries
+
+    async def _claude_sidecar_account_summary(self) -> AccountSummary | None:
+        if self._settings_repo is None:
+            return None
+        settings = await self._settings_repo.get_or_create()
+        configured = settings.claude_sidecar_api_key_encrypted is not None or bool(settings.claude_sidecar_base_url)
+        if not configured and not settings.claude_sidecar_enabled:
+            return None
+        usage_summary = await self._repo.request_usage_summary_for_source("claude_sidecar")
+        health_status = settings.claude_sidecar_last_health_status or (
+            "disabled" if not settings.claude_sidecar_enabled else "missing_api_key"
+            if settings.claude_sidecar_api_key_encrypted is None
+            else "unknown"
+        )
+        account_status = "active" if health_status == "healthy" else "paused"
+        return AccountSummary(
+            account_id="claude-sidecar",
+            email="cliproxyapi.local",
+            alias=None,
+            display_name="Claude via CLIProxyAPI",
+            workspace_id=None,
+            workspace_label="External sidecar",
+            seat_type="sidecar",
+            plan_type="claude",
+            routing_policy="normal",
+            status=account_status,
+            security_work_authorized=False,
+            usage=None,
+            request_usage=AccountRequestUsage(
+                request_count=usage_summary.request_count,
+                total_tokens=usage_summary.total_tokens,
+                cached_input_tokens=usage_summary.cached_input_tokens,
+                total_cost_usd=usage_summary.total_cost_usd,
+            ),
+            additional_quotas=[],
+            auth=None,
+            limit_warmup_enabled=False,
+            kind="sidecar",
+            provider="claude",
+            read_only=True,
+            synthetic=True,
+            health_status=health_status,
+            health_message=settings.claude_sidecar_last_health_message,
+            model_count=settings.claude_sidecar_last_model_count,
+            base_url=settings.claude_sidecar_base_url,
+            last_checked_at=settings.claude_sidecar_last_checked_at,
         )
 
     async def get_account_trends(self, account_id: str) -> AccountTrendsResponse | None:

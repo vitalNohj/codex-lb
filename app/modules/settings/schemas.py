@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from urllib.parse import urlparse
+
 from pydantic import Field, field_validator
 
 from app.modules.shared.schemas import DashboardModel
@@ -20,6 +23,29 @@ def _normalize_weekly_pace_working_days(value: str | None) -> str | None:
     if any(day < 0 or day > 6 for day in days):
         raise ValueError("weekly_pace_working_days must use 0-6 weekday numbers")
     return ",".join(str(day) for day in days)
+
+
+def _normalize_claude_sidecar_base_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("claude_sidecar_base_url must not be blank")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("claude_sidecar_base_url must be an http(s) URL")
+    return normalized
+
+
+def _normalize_claude_sidecar_model_prefixes(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    prefixes = list(dict.fromkeys(prefix.strip().lower() for prefix in value if prefix.strip()))
+    if not prefixes:
+        raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
+    if any(len(prefix) > 64 for prefix in prefixes):
+        raise ValueError("claude_sidecar_model_prefixes entries must be 64 characters or fewer")
+    return prefixes
 
 
 class AdditionalQuotaPolicy(DashboardModel):
@@ -63,6 +89,18 @@ class DashboardSettingsResponse(DashboardModel):
     weekly_pace_working_days: str = _DEFAULT_WEEKLY_PACE_WORKING_DAYS
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
     additional_quota_policies: list[AdditionalQuotaPolicy] = Field(default_factory=list)
+    claude_sidecar_enabled: bool = False
+    claude_sidecar_base_url: str = Field(default="http://127.0.0.1:8317", min_length=1)
+    claude_sidecar_api_key_configured: bool = False
+    claude_sidecar_model_prefixes: list[str] = Field(default_factory=lambda: ["claude"], min_length=1)
+    claude_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    claude_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    claude_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    claude_sidecar_last_health_status: str | None = None
+    claude_sidecar_last_health_message: str | None = None
+    claude_sidecar_last_checked_at: datetime | None = None
+    claude_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+
 
 
 class DashboardSettingsUpdateRequest(DashboardModel):
@@ -101,6 +139,14 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     limit_warmup_cooldown_seconds: int | None = Field(default=None, ge=60)
     limit_warmup_min_available_percent: float | None = Field(default=None, gt=0.0, le=100.0)
     weekly_pace_working_days: str | None = None
+    claude_sidecar_enabled: bool | None = None
+    claude_sidecar_base_url: str | None = Field(default=None, max_length=2048)
+    claude_sidecar_api_key: str | None = Field(default=None, max_length=4096)
+    claude_sidecar_clear_api_key: bool | None = None
+    claude_sidecar_model_prefixes: list[str] | None = Field(default=None, min_length=1, max_length=32)
+    claude_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    claude_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
+    claude_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
 
     @field_validator("warmup_model")
     @classmethod
@@ -116,6 +162,24 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @classmethod
     def _normalize_weekly_pace_days(cls, value: str | None) -> str | None:
         return _normalize_weekly_pace_working_days(value)
+
+
+    @field_validator("claude_sidecar_base_url")
+    @classmethod
+    def _normalize_sidecar_base_url(cls, value: str | None) -> str | None:
+        return _normalize_claude_sidecar_base_url(value)
+
+    @field_validator("claude_sidecar_model_prefixes")
+    @classmethod
+    def _normalize_sidecar_prefixes(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_claude_sidecar_model_prefixes(value)
+
+    @field_validator("claude_sidecar_api_key")
+    @classmethod
+    def _normalize_sidecar_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
 
 
 class RuntimeConnectAddressResponse(DashboardModel):

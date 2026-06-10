@@ -12,11 +12,21 @@ from typing import cast
 import aiohttp
 
 from app.core.clients.http import lease_http_session
-from app.core.config.settings import Settings, get_settings
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeSidecarConfig:
+    enabled: bool
+    base_url: str
+    api_key: str | None
+    model_prefixes: tuple[str, ...]
+    connect_timeout_seconds: float
+    request_timeout_seconds: float
+    models_cache_ttl_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,14 +51,18 @@ class ClaudeSidecarUnavailableError(ClaudeSidecarError):
 
 
 class ClaudeSidecarClient:
-    def __init__(self, settings: Settings | None = None) -> None:
-        self._settings = settings or get_settings()
+    def __init__(self, config: ClaudeSidecarConfig) -> None:
+        self._config = config
         self._models_cache: list[SidecarModel] | None = None
         self._models_cache_fetched_at: float = 0.0
 
     @property
+    def config(self) -> ClaudeSidecarConfig:
+        return self._config
+
+    @property
     def base_url(self) -> str:
-        return self._settings.claude_sidecar_base_url.rstrip("/")
+        return self._config.base_url.rstrip("/")
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -56,16 +70,16 @@ class ClaudeSidecarClient:
             "Content-Type": "application/json",
             "User-Agent": "codex-lb/claude-sidecar",
         }
-        api_key = self._settings.claude_sidecar_api_key.strip()
+        api_key = (self._config.api_key or "").strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
     def _timeout(self) -> aiohttp.ClientTimeout:
         return aiohttp.ClientTimeout(
-            total=self._settings.claude_sidecar_request_timeout_seconds,
-            connect=self._settings.claude_sidecar_connect_timeout_seconds,
-            sock_connect=self._settings.claude_sidecar_connect_timeout_seconds,
+            total=self._config.request_timeout_seconds,
+            connect=self._config.connect_timeout_seconds,
+            sock_connect=self._config.connect_timeout_seconds,
         )
 
     async def list_models(self) -> list[SidecarModel]:
@@ -109,7 +123,7 @@ class ClaudeSidecarClient:
 
     async def list_models_cached(self) -> list[SidecarModel]:
         now = time.monotonic()
-        ttl = self._settings.claude_sidecar_models_cache_ttl_seconds
+        ttl = self._config.models_cache_ttl_seconds
         if self._models_cache is not None and ttl > 0 and now - self._models_cache_fetched_at < ttl:
             return list(self._models_cache)
         try:
@@ -164,10 +178,6 @@ class ClaudeSidecarClient:
             raise ClaudeSidecarUnavailableError(_transport_message(exc, "stream Claude sidecar")) from exc
 
 
-def get_claude_sidecar_client() -> ClaudeSidecarClient:
-    return _claude_sidecar_client
-
-
 async def _read_response_json(resp: aiohttp.ClientResponse) -> JsonValue:
     text = await resp.text()
     if not text:
@@ -196,6 +206,3 @@ def _error_from_status(status_code: int, body: JsonValue) -> ClaudeSidecarError:
 def _transport_message(exc: BaseException, action: str) -> str:
     detail = str(exc) or exc.__class__.__name__
     return f"Failed to {action}: {detail}"
-
-
-_claude_sidecar_client = ClaudeSidecarClient()

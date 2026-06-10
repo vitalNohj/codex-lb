@@ -7,6 +7,16 @@ import { renderWithProviders } from "@/test/utils";
 import { ModelMultiSelect } from "./model-multi-select";
 
 describe("ModelMultiSelect", () => {
+  it("shows sidecar model display names from API", async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    renderWithProviders(<ModelMultiSelect value={[]} onChange={onChange} />);
+
+    await user.click(screen.getByRole("button"));
+    expect(await screen.findByText("Claude: claude-sonnet")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet")).toBeInTheDocument();
+  });
+
   it("shows placeholder when no models selected", async () => {
     renderWithProviders(
       <ModelMultiSelect value={[]} onChange={vi.fn()} />,
