@@ -126,6 +126,12 @@ export function AccountListItem({
             <span className="truncate font-medium text-foreground">{formatSlug(account.healthStatus ?? account.status)}</span>
           </div>
           <div className="flex items-center justify-between gap-2">
+            <span>Quota</span>
+            <span className="truncate font-medium text-foreground">
+              {formatSidecarQuotaLabel(account)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <span>Models</span>
             <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
           </div>
@@ -239,4 +245,18 @@ function MiniQuotaRow({
 function formatMiniQuotaResetLabel(resetAt: string | null): string {
   const label = formatQuotaResetLabel(resetAt);
   return label.startsWith("Reset ") ? label : `Reset ${label}`;
+}
+
+function formatSidecarQuotaLabel(account: AccountSummary): string {
+  const status = normalizeStatus(account.status);
+  if (status === "quota_exceeded") {
+    return `Exhausted — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
+  }
+  if (status === "rate_limited") {
+    return `Limited — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
+  }
+  if (status === "active") {
+    return "OK";
+  }
+  return "--";
 }

@@ -5,6 +5,7 @@ import {
   addUpstreamProxyPoolMember,
   createUpstreamProxyEndpoint,
   createUpstreamProxyPool,
+  getClaudeSidecarQuota,
   getClaudeSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
@@ -139,4 +140,13 @@ export function useClaudeSidecar() {
     },
   });
   return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useClaudeSidecarQuota() {
+  const quotaQuery = useQuery({
+    queryKey: ["settings", "claude-sidecar", "quota"],
+    queryFn: getClaudeSidecarQuota,
+    refetchInterval: 60_000,
+  });
+  return { quotaQuery };
 }

@@ -79,6 +79,52 @@ describe("AccountSummarySchema", () => {
     expect(parsed.synthetic).toBe(true);
     expect(parsed.readOnly).toBe(true);
     expect(parsed.healthStatus).toBe("unreachable");
+    expect(parsed.sidecarAuths).toEqual([]);
+  });
+
+  it("parses synthetic sidecar account with rate-limited quota", () => {
+    const parsed = AccountSummarySchema.parse({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "Claude via CLIProxyAPI",
+      planType: "claude",
+      status: "rate_limited",
+      kind: "sidecar",
+      provider: "claude",
+      readOnly: true,
+      synthetic: true,
+      healthStatus: "healthy",
+      baseUrl: "http://127.0.0.1:8317",
+      resetAtPrimary: ISO,
+      lastRefreshAt: ISO,
+      sidecarAuths: [
+        {
+          name: "claude-1",
+          email: "ok@example.com",
+          status: "active",
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 10,
+          failed: 0,
+        },
+        {
+          name: "claude-2",
+          email: "exceeded@example.com",
+          status: "active",
+          quotaExceeded: true,
+          nextRecoverAt: ISO,
+          modelsExceeded: ["claude-opus-4"],
+          success: 5,
+          failed: 3,
+        },
+      ],
+    });
+
+    expect(parsed.status).toBe("rate_limited");
+    expect(parsed.sidecarAuths).toHaveLength(2);
+    expect(parsed.sidecarAuths[1].quotaExceeded).toBe(true);
+    expect(parsed.sidecarAuths[1].modelsExceeded).toEqual(["claude-opus-4"]);
+    expect(parsed.resetAtPrimary).toBe(ISO);
   });
 
   it("parses manual routing policy", () => {

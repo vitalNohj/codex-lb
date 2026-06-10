@@ -39,6 +39,7 @@ export function buildSettingsUpdateRequest(
     claudeSidecarConnectTimeoutSeconds: settings.claudeSidecarConnectTimeoutSeconds,
     claudeSidecarRequestTimeoutSeconds: settings.claudeSidecarRequestTimeoutSeconds,
     claudeSidecarModelsCacheTtlSeconds: settings.claudeSidecarModelsCacheTtlSeconds,
+    claudeSidecarQuotaPollIntervalSeconds: settings.claudeSidecarQuotaPollIntervalSeconds,
     ...patch,
   };
   if (

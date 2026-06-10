@@ -150,6 +150,33 @@ async def test_dashboard_overview_combines_data(async_client, db_setup):
 
 
 @pytest.mark.asyncio
+async def test_dashboard_overview_includes_claude_sidecar_synthetic_account(async_client, db_setup):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+        },
+    )
+    assert response.status_code == 200
+
+    overview = await async_client.get("/api/dashboard/overview")
+    assert overview.status_code == 200
+    payload = overview.json()
+    sidecar = next(
+        (account for account in payload["accounts"] if account["accountId"] == "claude-sidecar"),
+        None,
+    )
+    assert sidecar is not None
+    assert sidecar["synthetic"] is True
+    assert sidecar["readOnly"] is True
+    assert sidecar["kind"] == "sidecar"
+    assert sidecar["provider"] == "claude"
+    # Real account aggregates should not be polluted by the synthetic entry.
+    assert payload["summary"]["primaryWindow"]["capacityCredits"] in (None, 0, pytest.approx(0.0))
+
+
+@pytest.mark.asyncio
 async def test_dashboard_overview_metrics_keep_soft_deleted_request_logs(async_client, db_setup):
     now = utcnow().replace(microsecond=0)
 
@@ -176,7 +203,8 @@ async def test_dashboard_overview_metrics_keep_soft_deleted_request_logs(async_c
     assert overview.status_code == 200
     payload = overview.json()
 
-    assert payload["accounts"] == []
+    non_synthetic = [account for account in payload["accounts"] if not account.get("synthetic")]
+    assert non_synthetic == []
     assert payload["summary"]["metrics"]["requests"] == 1
     assert payload["summary"]["metrics"]["tokens"] == 50
     request_values = [point["v"] for point in payload["trends"]["requests"]]

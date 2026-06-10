@@ -106,6 +106,8 @@ export const DashboardSettingsSchema = z
     claudeSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     claudeSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     claudeSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    claudeSidecarManagementKeyConfigured: z.boolean().optional().default(false),
+    claudeSidecarQuotaPollIntervalSeconds: z.number().positive().optional().default(60),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -168,6 +170,9 @@ export const SettingsUpdateRequestSchema = z.object({
   claudeSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   claudeSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  claudeSidecarManagementKey: z.string().trim().max(4096).optional(),
+  claudeSidecarClearManagementKey: z.boolean().optional(),
+  claudeSidecarQuotaPollIntervalSeconds: z.number().positive().optional(),
 });
 
 export const ClaudeSidecarModelSummarySchema = z.object({
@@ -190,6 +195,34 @@ export const ClaudeSidecarTestResponseSchema = ClaudeSidecarStatusResponseSchema
 });
 export const ClaudeSidecarModelsResponseSchema = z.object({
   models: z.array(ClaudeSidecarModelSummarySchema).default([]),
+});
+
+const ClaudeSidecarQuotaStatusSchema = z.enum([
+  "healthy",
+  "unauthorized",
+  "unreachable",
+  "error",
+  "unknown",
+  "disabled",
+  "not_configured",
+]);
+
+export const ClaudeSidecarQuotaAuthSchema = z.object({
+  name: z.string(),
+  email: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  quotaExceeded: z.boolean().default(false),
+  nextRecoverAt: z.string().datetime({ offset: true }).nullable().optional(),
+  modelsExceeded: z.array(z.string()).default([]),
+  success: z.number().int().nonnegative().default(0),
+  failed: z.number().int().nonnegative().default(0),
+});
+
+export const ClaudeSidecarQuotaResponseSchema = z.object({
+  status: ClaudeSidecarQuotaStatusSchema,
+  message: z.string().nullable().optional(),
+  checkedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  accounts: z.array(ClaudeSidecarQuotaAuthSchema).default([]),
 });
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;
@@ -218,6 +251,8 @@ type ClaudeSidecarSettingsFields = Pick<
   | "claudeSidecarLastHealthMessage"
   | "claudeSidecarLastCheckedAt"
   | "claudeSidecarLastModelCount"
+  | "claudeSidecarManagementKeyConfigured"
+  | "claudeSidecarQuotaPollIntervalSeconds"
 >;
 
 export type DashboardSettings = Omit<
@@ -232,6 +267,8 @@ export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummary
 export type ClaudeSidecarStatusResponse = z.infer<typeof ClaudeSidecarStatusResponseSchema>;
 export type ClaudeSidecarTestResponse = z.infer<typeof ClaudeSidecarTestResponseSchema>;
 export type ClaudeSidecarModelsResponse = z.infer<typeof ClaudeSidecarModelsResponseSchema>;
+export type ClaudeSidecarQuotaResponse = z.infer<typeof ClaudeSidecarQuotaResponseSchema>;
+export type ClaudeSidecarQuotaAuth = z.infer<typeof ClaudeSidecarQuotaAuthSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({

@@ -1363,6 +1363,15 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/claude-sidecar/quota", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      checkedAt: "2026-01-01T00:00:00Z",
+      accounts: [],
+    });
+  }),
+
   http.get("*/api/models", () => {
     return HttpResponse.json({
       models: [

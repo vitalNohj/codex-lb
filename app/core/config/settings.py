@@ -183,6 +183,8 @@ class Settings(BaseSettings):
     claude_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     claude_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     claude_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    claude_sidecar_management_key: str = ""
+    claude_sidecar_quota_poll_interval_seconds: float = Field(default=60.0, gt=0)
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)

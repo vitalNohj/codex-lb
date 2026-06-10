@@ -143,6 +143,8 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         claude_sidecar_last_health_message=settings.claude_sidecar_last_health_message,
         claude_sidecar_last_checked_at=settings.claude_sidecar_last_checked_at,
         claude_sidecar_last_model_count=settings.claude_sidecar_last_model_count,
+        claude_sidecar_management_key_configured=settings.claude_sidecar_management_key_configured,
+        claude_sidecar_quota_poll_interval_seconds=settings.claude_sidecar_quota_poll_interval_seconds,
     )
 
 
@@ -589,6 +591,17 @@ async def update_settings(
                     if payload.claude_sidecar_models_cache_ttl_seconds is not None
                     else current.claude_sidecar_models_cache_ttl_seconds
                 ),
+                claude_sidecar_management_key=(
+                    payload.claude_sidecar_management_key
+                    if "claude_sidecar_management_key" in payload.model_fields_set
+                    else None
+                ),
+                claude_sidecar_clear_management_key=payload.claude_sidecar_clear_management_key is True,
+                claude_sidecar_quota_poll_interval_seconds=(
+                    payload.claude_sidecar_quota_poll_interval_seconds
+                    if payload.claude_sidecar_quota_poll_interval_seconds is not None
+                    else current.claude_sidecar_quota_poll_interval_seconds
+                ),
             )
         )
     except ValueError as exc:
@@ -639,6 +652,8 @@ async def update_settings(
             "claude_sidecar_last_health_message",
             "claude_sidecar_last_checked_at",
             "claude_sidecar_last_model_count",
+            "claude_sidecar_management_key_configured",
+            "claude_sidecar_quota_poll_interval_seconds",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

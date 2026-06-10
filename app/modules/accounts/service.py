@@ -46,6 +46,7 @@ from app.modules.accounts.schemas import (
     OpenCodeAuthJson,
     OpenCodeOAuthAuth,
 )
+from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.settings.repository import SettingsRepository
@@ -184,48 +185,14 @@ class AccountsService:
         if self._settings_repo is None:
             return None
         settings = await self._settings_repo.get_or_create()
-        configured = settings.claude_sidecar_api_key_encrypted is not None or bool(settings.claude_sidecar_base_url)
-        if not configured and not settings.claude_sidecar_enabled:
-            return None
         usage_summary = await self._repo.request_usage_summary_for_source("claude_sidecar")
-        health_status = settings.claude_sidecar_last_health_status or (
-            "disabled" if not settings.claude_sidecar_enabled else "missing_api_key"
-            if settings.claude_sidecar_api_key_encrypted is None
-            else "unknown"
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
         )
-        account_status = "active" if health_status == "healthy" else "paused"
-        return AccountSummary(
-            account_id="claude-sidecar",
-            email="cliproxyapi.local",
-            alias=None,
-            display_name="Claude via CLIProxyAPI",
-            workspace_id=None,
-            workspace_label="External sidecar",
-            seat_type="sidecar",
-            plan_type="claude",
-            routing_policy="normal",
-            status=account_status,
-            security_work_authorized=False,
-            usage=None,
-            request_usage=AccountRequestUsage(
-                request_count=usage_summary.request_count,
-                total_tokens=usage_summary.total_tokens,
-                cached_input_tokens=usage_summary.cached_input_tokens,
-                total_cost_usd=usage_summary.total_cost_usd,
-            ),
-            additional_quotas=[],
-            auth=None,
-            limit_warmup_enabled=False,
-            kind="sidecar",
-            provider="claude",
-            read_only=True,
-            synthetic=True,
-            health_status=health_status,
-            health_message=settings.claude_sidecar_last_health_message,
-            model_count=settings.claude_sidecar_last_model_count,
-            base_url=settings.claude_sidecar_base_url,
-            last_checked_at=settings.claude_sidecar_last_checked_at,
-        )
+        return build_claude_sidecar_summary(settings, request_usage)
 
     async def get_account_trends(self, account_id: str) -> AccountTrendsResponse | None:
         account = await self._repo.get_by_id(account_id)

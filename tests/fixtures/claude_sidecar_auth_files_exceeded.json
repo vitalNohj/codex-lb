@@ -1,0 +1,57 @@
+{
+    "files": [
+        {
+            "account": "exceeded@example.com",
+            "account_type": "oauth",
+            "auth_index": "ffaa11bb22cc3344",
+            "created_at": "2026-06-10T21:21:55.198308875Z",
+            "disabled": false,
+            "email": "exceeded@example.com",
+            "failed": 3,
+            "id": "claude-exceeded@example.com.json",
+            "label": "exceeded@example.com",
+            "modtime": "2026-06-10T21:21:55.198308875Z",
+            "name": "claude-exceeded@example.com.json",
+            "path": "/home/nohj/.cli-proxy-api/claude-exceeded@example.com.json",
+            "provider": "claude",
+            "quota": {
+                "exceeded": true,
+                "next_recover_at": "2026-06-10T23:30:00Z"
+            },
+            "model_states": {
+                "claude-sonnet-4-5-20250929": {
+                    "exceeded": true,
+                    "next_recover_at": "2026-06-10T23:30:00Z"
+                },
+                "claude-opus-4-1": {
+                    "exceeded": false,
+                    "next_recover_at": null
+                }
+            },
+            "runtime_only": false,
+            "size": 403,
+            "source": "file",
+            "status": "rate_limited",
+            "status_message": "Quota exceeded",
+            "success": 12,
+            "type": "claude",
+            "unavailable": false,
+            "updated_at": "2026-06-10T22:26:13.233038158Z"
+        },
+        {
+            "account": "non-claude@example.com",
+            "account_type": "oauth",
+            "auth_index": "deadbeefcafebabe",
+            "disabled": false,
+            "email": "non-claude@example.com",
+            "id": "openai-non-claude.json",
+            "name": "openai-non-claude.json",
+            "provider": "openai",
+            "status": "active",
+            "success": 0,
+            "failed": 0,
+            "type": "openai",
+            "unavailable": false
+        }
+    ]
+}
