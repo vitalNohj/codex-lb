@@ -1,0 +1,15 @@
+[Unit]
+Description=codex-lb local service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nohj/personal/codex-lb
+ExecStart=/home/nohj/.local/bin/uv run codex-lb --host 0.0.0.0 --port 2455
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

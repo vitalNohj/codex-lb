@@ -36,6 +36,7 @@ from app.core.auth.dependencies import (
     validate_proxy_api_key_authorization,
     validate_usage_api_key,
 )
+from app.core.clients.claude_sidecar import get_claude_sidecar_client
 from app.core.clients.files import FileProxyError
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
@@ -105,6 +106,7 @@ from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
+from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, proxy_chat_to_sidecar
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.request_policy import (
@@ -1741,14 +1743,12 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     registry = get_model_registry()
     models = registry.get_models_with_fallback()
 
-    if not models:
-        await _release_reservation(reservation)
-        return JSONResponse(content=ModelListResponse(data=[]).model_dump(mode="json"))
-
     items: list[ModelListItem] = []
+    seen_model_ids: set[str] = set()
     for slug, model in models.items():
         if not is_public_model(model, allowed_models):
             continue
+        seen_model_ids.add(slug)
         items.append(
             ModelListItem.model_validate(
                 {
@@ -1771,6 +1771,26 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                 }
             )
         )
+
+    settings = get_settings()
+    if settings.claude_sidecar_enabled:
+        for sidecar_model in await get_claude_sidecar_client().list_models_cached():
+            slug = sidecar_model.id
+            if slug in seen_model_ids:
+                continue
+            if allowed_models is not None and slug not in allowed_models:
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": sidecar_model.created or created,
+                        "owned_by": "anthropic",
+                        "api_types": ["chat_completions"],
+                    }
+                )
+            )
     await _release_reservation(reservation)
     return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
 
@@ -1945,11 +1965,29 @@ async def v1_chat_completions(
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    settings = get_settings()
     cursor_compat_client = _is_cursor_compat_client(request, api_key)
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
 
     rate_limit_headers = await context.service.rate_limit_headers()
+    if is_sidecar_model(effective_model, settings):
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=payload.service_tier,
+            request_usage_budget=None,
+        )
+        return await proxy_chat_to_sidecar(
+            request,
+            payload,
+            effective_model=effective_model,
+            api_key=api_key,
+            reservation=reservation,
+            rate_limit_headers=rate_limit_headers,
+            sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+        )
+
     try:
         responses_shaped_payload = not payload.messages and payload.input is not None
         if not responses_shaped_payload:

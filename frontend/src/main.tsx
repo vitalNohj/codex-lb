@@ -18,7 +18,7 @@ useDashboardPreferencesStore.getState().initializePreferences();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename="/codex">
         <App />
       </BrowserRouter>
     </QueryClientProvider>

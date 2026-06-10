@@ -7,6 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
 const proxyTarget = process.env.API_PROXY_TARGET || "http://localhost:2455";
+const publicBasePath = "/codex/";
 const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version?: string };
 const appVersion = packageJson.version ?? "0.0.0";
 const manualChunkPackages: Record<string, string[]> = {
@@ -31,6 +32,7 @@ function manualChunks(id: string): string | undefined {
 }
 
 export default defineConfig({
+  base: publicBasePath,
   plugins: [react(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
@@ -42,6 +44,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      "/codex": {
+        target: proxyTarget,
+        changeOrigin: true,
+        rewrite: (requestPath) => requestPath.replace(/^\/codex/, ""),
+      },
       "/api": proxyTarget,
       "/v1": proxyTarget,
       "/backend-api": proxyTarget,
