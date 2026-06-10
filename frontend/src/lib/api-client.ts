@@ -13,6 +13,7 @@ type RequestOptions = {
 
 const JSON_CONTENT_TYPE = "application/json";
 const EMPTY_RESPONSE_STATUS = new Set([204, 205]);
+const PUBLIC_BASE_PATH = "/codex";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -85,6 +86,16 @@ async function readJsonPayload(response: Response): Promise<unknown> {
   }
 }
 
+function prefixPublicBasePath(url: string): string {
+  if (!url.startsWith("/") || url.startsWith("//")) {
+    return url;
+  }
+  if (url === PUBLIC_BASE_PATH || url.startsWith(`${PUBLIC_BASE_PATH}/`)) {
+    return url;
+  }
+  return `${PUBLIC_BASE_PATH}${url}`;
+}
+
 function parseApiErrorPayload(payload: unknown): {
   code: string;
   message: string;
@@ -132,6 +143,7 @@ async function request<T>(
   schema: ZodType<T> | null,
   options?: RequestOptions,
 ): Promise<T | void> {
+  const requestUrl = prefixPublicBasePath(url);
   const requestBody = buildRequestBody(options?.body);
   const headers = new Headers(options?.headers);
   if (requestBody.contentType && !headers.has("Content-Type")) {
@@ -143,7 +155,7 @@ async function request<T>(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(requestUrl, {
       method,
       body: requestBody.body,
       headers,
@@ -183,7 +195,7 @@ async function request<T>(
   const parsed = schema.safeParse(payload);
   if (!parsed.success) {
     if (import.meta.env.DEV) {
-      console.error(`Zod schema mismatch for ${method} ${url}`, parsed.error.format(), payload);
+      console.error(`Zod schema mismatch for ${method} ${requestUrl}`, parsed.error.format(), payload);
     }
     throw new ApiError({
       status: response.status,

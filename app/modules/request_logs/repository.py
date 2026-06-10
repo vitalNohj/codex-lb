@@ -221,6 +221,7 @@ class RequestLogsRepository:
                 model=model,
                 plan_type=resolved_plan_type,
                 transport=transport,
+                source=source,
                 service_tier=service_tier,
                 requested_service_tier=requested_service_tier,
                 actual_service_tier=actual_service_tier,
