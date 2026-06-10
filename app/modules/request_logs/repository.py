@@ -234,6 +234,7 @@ class RequestLogsRepository:
                 request_kind=request_kind,
                 useragent=resolved_useragent,
                 useragent_group=resolved_useragent_group,
+                source=source,
                 service_tier=service_tier,
                 requested_service_tier=requested_service_tier,
                 actual_service_tier=actual_service_tier,
