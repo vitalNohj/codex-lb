@@ -581,4 +581,35 @@ describe("AccountList", () => {
     expect(screen.getByText("5h estimated")).toBeInTheDocument();
     expect(screen.getByText("Weekly estimated")).toBeInTheDocument();
   });
+
+  it("renders placeholder quota rows for synthetic sidecar accounts without usage yet", () => {
+    render(
+      <AccountList
+        accounts={accountList([
+          {
+            accountId: "claude-sidecar",
+            email: "cliproxyapi.local",
+            displayName: "Claude via CLIProxyAPI",
+            planType: "claude",
+            status: "active",
+            synthetic: true,
+            readOnly: true,
+            kind: "sidecar",
+            provider: "claude",
+            baseUrl: "http://127.0.0.1:8317",
+            limitWarmupEnabled: false,
+            usage: null,
+            additionalQuotas: [],
+          },
+        ])}
+        selectedAccountId={null}
+        onSelect={() => {}}
+        onOpenImport={() => {}}
+        onOpenOauth={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("5h unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Weekly unavailable")).toBeInTheDocument();
+  });
 });

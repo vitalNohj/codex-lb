@@ -63,6 +63,8 @@ Persisted records MUST include timestamp, request ID or generated idempotency ke
 
 Codex-lb MUST calculate estimated Claude 5-hour and weekly usage percentages from persisted usage queue records and configured per-auth plan budgets. The estimate MUST use each auth's `total_tokens` values within the active 5-hour and weekly windows. If `total_tokens` is missing in a raw queue record, codex-lb MUST calculate it from input, output, reasoning, and cached token counts before persisting or estimating.
 
+When the latest quota snapshot includes official OAuth usage percentages for an auth, codex-lb MUST prefer those percentages and reset timestamps over usage-queue-derived estimates for that auth. Usage-queue token totals MAY still be exposed for diagnostic context, but OAuth usage MUST set the source/confidence for that auth.
+
 For each configured auth, codex-lb MUST calculate:
 
 - active 5-hour window start and reset time
@@ -71,7 +73,7 @@ For each configured auth, codex-lb MUST calculate:
 - weekly used tokens and configured token budget
 - 5-hour remaining percent
 - weekly remaining percent
-- confidence/status indicating the value is an estimate
+- confidence/status indicating whether the value came from OAuth usage, local estimates, or is unknown
 
 When an auth has persisted usage but no configured plan budget, codex-lb MUST expose token totals but MUST leave percentage fields null. When CLIProxyAPI reports an auth as quota exceeded, codex-lb MUST clamp the relevant remaining estimate to `0` and preserve CLIProxyAPI's recovery time when present.
 
@@ -99,11 +101,20 @@ When an auth has persisted usage but no configured plan budget, codex-lb MUST ex
 - **THEN** the account status reflects the hard quota state
 - **AND** the affected remaining percent is clamped to 0
 
+#### Scenario: OAuth usage wins over local estimate
+
+- **GIVEN** the latest Claude auth snapshot includes OAuth usage with 57% 5-hour remaining and 82% weekly remaining
+- **AND** codex-lb has persisted usage queue records that would otherwise estimate different percentages
+- **WHEN** codex-lb builds the synthetic account
+- **THEN** the matching `sidecar_auths` entry uses the OAuth remaining percentages and reset times
+- **AND** the source/confidence indicates OAuth usage
+- **AND** the aggregate synthetic account usage is populated from the OAuth percentages when no plan budgets are configured
+
 ### Requirement: Background quota poller refreshes the snapshot
 
 A background scheduler MUST poll CLIProxyAPI's `GET /v0/management/auth-files` endpoint with the configured Management Bearer key. The poller MUST run only while Claude sidecar routing is enabled AND a Management API key is configured. The poller MUST run on a single leader instance, MUST sleep for the configured `claude_sidecar_quota_poll_interval_seconds` between polls, and MUST never raise an exception out of its loop.
 
-On every successful poll, the service MUST store a normalized snapshot (per-auth records plus a timestamp) on `dashboard_settings` (`claude_sidecar_quota_state_json` and `claude_sidecar_quota_checked_at`) and MUST invalidate the cached settings so other services see the new snapshot. The snapshot status MUST be classified as one of:
+On every successful poll, the service MUST store a normalized snapshot (per-auth records plus a timestamp) on `dashboard_settings` (`claude_sidecar_quota_state_json` and `claude_sidecar_quota_checked_at`) and MUST invalidate the cached settings so other services see the new snapshot. When a Claude auth-file entry includes a readable local file path containing a top-level `access_token`, the poller SHOULD query Anthropic's OAuth usage endpoint and store normalized remaining percentages plus reset timestamps on that auth's snapshot. The poller MUST NOT store the access token. OAuth usage failures MUST NOT prevent storing hard auth-files status. The snapshot status MUST be classified as one of:
 
 - `healthy` when the Management API returns a parseable response.
 - `unauthorized` when the Management API returns HTTP 401 or 403.
@@ -117,6 +128,15 @@ On every successful poll, the service MUST store a normalized snapshot (per-auth
 - **WHEN** the poller runs
 - **THEN** `dashboard_settings.claude_sidecar_quota_state_json` contains a snapshot with `status="healthy"` and one account
 - **AND** `dashboard_settings.claude_sidecar_quota_checked_at` is set to the poll time
+
+#### Scenario: Poll enriches readable OAuth usage
+
+- **GIVEN** the sidecar is enabled and a Management API key is configured
+- **AND** CLIProxyAPI returns a Claude auth-file entry with a local path containing a top-level OAuth `access_token`
+- **AND** Anthropic's OAuth usage endpoint returns five-hour and seven-day utilization buckets
+- **WHEN** the poller runs
+- **THEN** the stored auth snapshot includes normalized 5-hour and weekly remaining percentages and reset timestamps
+- **AND** the stored snapshot does not include the OAuth access token
 
 #### Scenario: Poll classifies unauthorized
 
@@ -144,9 +164,9 @@ When a quota snapshot is stored, the synthetic `claude-sidecar` account returned
   - `active` when no Claude auth reports `quota.exceeded=true` and the sidecar is otherwise healthy.
 - `reset_at_primary` MUST be the earliest non-null `next_recover_at` value among exceeded auths, or `null` if no auth is exceeded.
 - `last_refresh_at` MUST be the snapshot's `checked_at` timestamp.
-- A new field `sidecar_auths` (list) MUST include one entry per Claude auth with `name`, `email`, `auth_index`, `status`, `quota_exceeded`, `next_recover_at`, `models_exceeded`, `success`, `failed`, plan metadata, token budgets, used tokens, estimated remaining percentages, estimate reset times, and estimate confidence when available.
-- When plan budgets are configured, the synthetic account MUST populate standard `usage.primary_remaining_percent` and `usage.secondary_remaining_percent` with aggregate estimated 5-hour and weekly remaining percentages across configured Claude auths.
-- The synthetic account MUST set `window_minutes_primary=300` for the 5-hour estimate and `window_minutes_secondary=10080` for the weekly estimate when those estimates are present.
+- A new field `sidecar_auths` (list) MUST include one entry per Claude auth with `name`, `email`, `auth_index`, `status`, `quota_exceeded`, `next_recover_at`, `models_exceeded`, `success`, `failed`, plan metadata, token budgets, used tokens, remaining percentages, reset times, usage source, and confidence when available.
+- When OAuth usage or plan-budget estimates are available, the synthetic account MUST populate standard `usage.primary_remaining_percent` and `usage.secondary_remaining_percent` with aggregate 5-hour and weekly remaining percentages across Claude auths.
+- The synthetic account MUST set `window_minutes_primary=300` for the 5-hour usage value and `window_minutes_secondary=10080` for the weekly usage value when those values are present.
 
 The synthetic account MUST remain read-only and MUST NOT be written to the `accounts` table.
 
@@ -165,10 +185,9 @@ The synthetic account MUST remain read-only and MUST NOT be written to the `acco
 - **THEN** the synthetic account `status` is `quota_exceeded`
 - **AND** `reset_at_primary` equals the auth's `next_recover_at`
 
-#### Scenario: Synthetic account exposes estimated usage
+#### Scenario: Synthetic account exposes usage values
 
-- **GIVEN** a stored snapshot has one Claude auth with configured plan budgets
-- **AND** persisted usage queue records exist for the auth
+- **GIVEN** a stored snapshot has one Claude auth with OAuth usage or configured plan-budget estimates
 - **WHEN** an authenticated dashboard operator calls `GET /api/accounts`
 - **THEN** the synthetic account has non-null `usage.primary_remaining_percent`
 - **AND** the synthetic account has non-null `usage.secondary_remaining_percent`
@@ -178,7 +197,7 @@ The synthetic account MUST remain read-only and MUST NOT be written to the `acco
 
 `GET /api/dashboard/overview` MUST append the synthetic `claude-sidecar` account to its `accounts` list when the sidecar is configured or enabled. The synthetic account MUST be appended after Codex accounts are sorted so it always lands last and MUST NOT be included in Codex aggregate calculations such as average usage.
 
-When the synthetic account has estimated usage percentages, dashboard aggregate calculations such as usage donuts, weekly credit pace, and Codex account remaining totals MUST still exclude the synthetic account.
+When the synthetic account has usage percentages, dashboard aggregate calculations such as usage donuts, weekly credit pace, and Codex account remaining totals MUST still exclude the synthetic account.
 
 #### Scenario: Synthetic account appears in overview when configured
 
@@ -198,12 +217,12 @@ The dashboard MUST provide an authenticated `GET /api/claude-sidecar/quota` endp
 - **THEN** the response has `status="healthy"` and `checked_at` set
 - **AND** the response `accounts` array contains the auth's `email`, `quota_exceeded=false`, and `next_recover_at=null`
 
-#### Scenario: Quota endpoint returns per-auth estimates
+#### Scenario: Quota endpoint returns per-auth usage values
 
 - **GIVEN** a stored snapshot exists with one healthy Claude auth
-- **AND** persisted usage queue records and plan budgets exist for that auth
+- **AND** OAuth usage or persisted usage queue records and plan budgets exist for that auth
 - **WHEN** an authenticated dashboard operator calls `GET /api/claude-sidecar/quota`
-- **THEN** the response account includes the auth's used token counts, token budgets, estimated remaining percentages, reset times, and estimate confidence
+- **THEN** the response account includes the auth's used token counts when available, token budgets when configured, remaining percentages, reset times, usage source, and confidence
 
 #### Scenario: Quota endpoint when no snapshot exists
 

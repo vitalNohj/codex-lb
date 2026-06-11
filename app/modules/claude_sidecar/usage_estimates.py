@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot
+from app.modules.claude_sidecar.quota import SidecarOAuthUsage, SidecarQuotaSnapshot
 from app.modules.settings.service import ClaudeSidecarAuthPlanData
 
 PRIMARY_WINDOW = timedelta(hours=5)
@@ -89,6 +89,7 @@ def build_claude_usage_estimates(
 
     plans_by_key = {_plan_key(plan): plan for plan in plans if _plan_key(plan) is not None}
     auths_by_key: dict[str, tuple[str | None, str | None]] = {}
+    oauth_usage_by_key: dict[str, SidecarOAuthUsage] = {}
     exceeded_keys: set[str] = set()
     recover_at_by_key: dict[str, datetime] = {}
     if snapshot is not None:
@@ -97,6 +98,8 @@ def build_claude_usage_estimates(
             if key is None:
                 continue
             auths_by_key[key] = (auth.auth_index, auth.email)
+            if auth.oauth_usage is not None:
+                oauth_usage_by_key[key] = auth.oauth_usage
             if auth.quota_exceeded:
                 exceeded_keys.add(key)
                 if auth.next_recover_at is not None:
@@ -118,18 +121,33 @@ def build_claude_usage_estimates(
         secondary_used = _used_tokens(auth_events, secondary_start, secondary_reset)
         primary_remaining = _remaining_percent(primary_used, primary_budget)
         secondary_remaining = _remaining_percent(secondary_used, secondary_budget)
+        usage_source = "usage_queue"
+        oauth_usage = oauth_usage_by_key.get(key)
+        if oauth_usage is not None:
+            usage_source = "oauth_usage"
+            if oauth_usage.five_hour is not None:
+                primary_remaining = oauth_usage.five_hour.remaining_percent
+                primary_reset = oauth_usage.five_hour.resets_at
+            if oauth_usage.seven_day is not None:
+                secondary_remaining = oauth_usage.seven_day.remaining_percent
+                secondary_reset = oauth_usage.seven_day.resets_at
         if key in exceeded_keys:
             primary_remaining = 0.0
             if key in recover_at_by_key:
                 primary_reset = recover_at_by_key[key]
-        confidence = "estimated" if primary_budget or secondary_budget else "unknown"
+        if oauth_usage is not None:
+            confidence = "oauth"
+        elif primary_budget or secondary_budget:
+            confidence = "estimated"
+        else:
+            confidence = "unknown"
         estimates.append(
             ClaudeAuthUsageEstimate(
                 auth_index=auth_index,
                 email=email,
                 source=source,
                 plan_type=plan_type,
-                usage_source="usage_queue",
+                usage_source=usage_source,
                 primary_remaining_percent=primary_remaining,
                 secondary_remaining_percent=secondary_remaining,
                 primary_used_tokens=primary_used,
@@ -198,9 +216,15 @@ def _aggregate(estimates: Sequence[ClaudeAuthUsageEstimate]) -> ClaudeAggregateU
     primary_used = sum(estimate.primary_used_tokens for estimate in estimates if estimate.primary_token_budget)
     secondary_used = sum(estimate.secondary_used_tokens for estimate in estimates if estimate.secondary_token_budget)
     return ClaudeAggregateUsageEstimate(
-        primary_remaining_percent=_remaining_percent(primary_used, primary_budget) if primary_budget else None,
+        primary_remaining_percent=(
+            _remaining_percent(primary_used, primary_budget)
+            if primary_budget
+            else _average_percent(estimate.primary_remaining_percent for estimate in estimates)
+        ),
         secondary_remaining_percent=(
-            _remaining_percent(secondary_used, secondary_budget) if secondary_budget else None
+            _remaining_percent(secondary_used, secondary_budget)
+            if secondary_budget
+            else _average_percent(estimate.secondary_remaining_percent for estimate in estimates)
         ),
         primary_used_tokens=primary_used,
         secondary_used_tokens=secondary_used,
@@ -208,8 +232,27 @@ def _aggregate(estimates: Sequence[ClaudeAuthUsageEstimate]) -> ClaudeAggregateU
         secondary_token_budget=secondary_budget or None,
         reset_at_primary=_earliest(estimate.reset_at_primary for estimate in estimates),
         reset_at_secondary=_earliest(estimate.reset_at_secondary for estimate in estimates),
-        confidence="estimated" if primary_budget or secondary_budget else "unknown",
+        confidence=_aggregate_confidence(estimates, primary_budget, secondary_budget),
     )
+
+
+def _average_percent(values) -> float | None:
+    candidates = [float(value) for value in values if value is not None]
+    if not candidates:
+        return None
+    return sum(candidates) / len(candidates)
+
+
+def _aggregate_confidence(
+    estimates: Sequence[ClaudeAuthUsageEstimate],
+    primary_budget: int,
+    secondary_budget: int,
+) -> str:
+    if any(estimate.confidence == "oauth" for estimate in estimates):
+        return "oauth"
+    if primary_budget or secondary_budget:
+        return "estimated"
+    return "unknown"
 
 
 def _event_key(event: UsageEventLike) -> str | None:

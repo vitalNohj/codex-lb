@@ -227,7 +227,11 @@ function SyntheticAccountCard({
   const totalTokens = account.requestUsage?.totalTokens ?? null;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
   const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
-  const hasEstimatedUsage = primaryRemaining !== null || secondaryRemaining !== null;
+  const usageSourceLabel = account.sidecarAuths?.some((auth) => auth.usageSource === "oauth_usage")
+    ? "OAuth"
+    : primaryRemaining !== null || secondaryRemaining !== null
+      ? "Estimated"
+      : "Unavailable";
   return (
     <div className="card-hover rounded-xl border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
@@ -251,26 +255,24 @@ function SyntheticAccountCard({
         </div>
       </div>
 
-      {hasEstimatedUsage ? (
-        <div className="mt-3 space-y-2 rounded-lg border bg-muted/20 p-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium">Claude usage</span>
-            <Badge variant="outline" className="text-[11px]">Estimated</Badge>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <QuotaBar
-              label="5h"
-              percent={primaryRemaining}
-              resetLabel={formatQuotaResetLabel(account.resetAtPrimary ?? null)}
-            />
-            <QuotaBar
-              label="Weekly"
-              percent={secondaryRemaining}
-              resetLabel={formatQuotaResetLabel(account.resetAtSecondary ?? null)}
-            />
-          </div>
+      <div className="mt-3 space-y-2 rounded-lg border bg-muted/20 p-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium">Claude usage</span>
+          <Badge variant="outline" className="text-[11px]">{usageSourceLabel}</Badge>
         </div>
-      ) : null}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <QuotaBar
+            label="5h"
+            percent={primaryRemaining}
+            resetLabel={formatQuotaResetLabel(account.resetAtPrimary ?? null)}
+          />
+          <QuotaBar
+            label="Weekly"
+            percent={secondaryRemaining}
+            resetLabel={formatQuotaResetLabel(account.resetAtSecondary ?? null)}
+          />
+        </div>
+      </div>
 
       <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
         <div className="flex items-center justify-between gap-2">

@@ -132,6 +132,10 @@ describe("AccountCard", () => {
 
     expect(screen.getByText("Claude via CLIProxyAPI")).toBeInTheDocument();
     expect(screen.getByText("CLIProxyAPI")).toBeInTheDocument();
+    expect(screen.getByText("Claude usage")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText("5h")).toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
     expect(screen.getByText(/Limited — resets/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Warm-up/i })).toBeNull();
     expect(screen.queryByText("Credits:")).toBeNull();

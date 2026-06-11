@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import importlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Protocol, cast
 
@@ -16,7 +16,13 @@ from app.core.clients.claude_sidecar import (
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.db.session import get_background_session
+from app.modules.claude_sidecar.oauth_usage import (
+    ClaudeOAuthUsageError,
+    fetch_claude_oauth_usage,
+    load_claude_oauth_credential,
+)
 from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
     SidecarQuotaSnapshot,
     parse_auth_files,
     snapshot_to_json,
@@ -145,13 +151,31 @@ async def _classify_poll_result(client: ClaudeSidecarClient) -> SidecarQuotaSnap
             accounts=(),
         )
 
-    accounts = parse_auth_files(raw_files)
+    accounts = await _attach_oauth_usage(parse_auth_files(raw_files))
     return SidecarQuotaSnapshot(
         checked_at=now,
         status="healthy",
         message=None,
         accounts=tuple(accounts),
     )
+
+
+async def _attach_oauth_usage(accounts: list[SidecarAuthQuota]) -> list[SidecarAuthQuota]:
+    enriched: list[SidecarAuthQuota] = []
+    for account in accounts:
+        usage = None
+        credential = await load_claude_oauth_credential(account.credential_path)
+        if credential is not None:
+            try:
+                usage = await fetch_claude_oauth_usage(credential)
+            except ClaudeOAuthUsageError as exc:
+                logger.debug(
+                    "failed to fetch Claude OAuth usage for %s: %s",
+                    account.email or account.auth_index or account.name,
+                    exc,
+                )
+        enriched.append(replace(account, oauth_usage=usage))
+    return enriched
 
 
 def build_claude_sidecar_quota_poller() -> ClaudeSidecarQuotaPoller:

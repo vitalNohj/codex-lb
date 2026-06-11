@@ -23,6 +23,18 @@ class SidecarModelQuota:
 
 
 @dataclass(frozen=True, slots=True)
+class SidecarOAuthUsageBucket:
+    remaining_percent: float | None
+    resets_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class SidecarOAuthUsage:
+    five_hour: SidecarOAuthUsageBucket | None
+    seven_day: SidecarOAuthUsageBucket | None
+
+
+@dataclass(frozen=True, slots=True)
 class SidecarAuthQuota:
     name: str
     auth_index: str | None
@@ -37,6 +49,8 @@ class SidecarAuthQuota:
     success: int
     failed: int
     last_refresh: datetime | None
+    credential_path: str | None = None
+    oauth_usage: SidecarOAuthUsage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +99,7 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         name=name,
         auth_index=_str(entry.get("auth_index")),
         email=_str(entry.get("email")) or _str(entry.get("account")),
+        credential_path=_str(entry.get("path")),
         status=_str(entry.get("status")),
         status_message=_str(entry.get("status_message")),
         disabled=bool(entry.get("disabled")),
@@ -169,6 +184,54 @@ def _int(value: JsonValue) -> int | None:
     return None
 
 
+def _float(value: JsonValue) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _oauth_usage_to_json(usage: SidecarOAuthUsage | None) -> dict[str, JsonValue] | None:
+    if usage is None:
+        return None
+    return {
+        "five_hour": _oauth_bucket_to_json(usage.five_hour),
+        "seven_day": _oauth_bucket_to_json(usage.seven_day),
+    }
+
+
+def _oauth_bucket_to_json(bucket: SidecarOAuthUsageBucket | None) -> dict[str, JsonValue] | None:
+    if bucket is None:
+        return None
+    return {
+        "remaining_percent": bucket.remaining_percent,
+        "resets_at": bucket.resets_at.isoformat() if bucket.resets_at else None,
+    }
+
+
+def _oauth_usage_from_json(raw: JsonValue) -> SidecarOAuthUsage | None:
+    if not is_json_mapping(raw):
+        return None
+    return SidecarOAuthUsage(
+        five_hour=_oauth_bucket_from_json(raw.get("five_hour")),
+        seven_day=_oauth_bucket_from_json(raw.get("seven_day")),
+    )
+
+
+def _oauth_bucket_from_json(raw: JsonValue) -> SidecarOAuthUsageBucket | None:
+    if not is_json_mapping(raw):
+        return None
+    remaining_percent = _float(raw.get("remaining_percent"))
+    resets_at = _parse_datetime(raw.get("resets_at"))
+    if remaining_percent is None and resets_at is None:
+        return None
+    return SidecarOAuthUsageBucket(
+        remaining_percent=remaining_percent,
+        resets_at=resets_at,
+    )
+
+
 def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
     payload: dict[str, JsonValue] = {
         "checked_at": snapshot.checked_at.isoformat(),
@@ -179,6 +242,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "name": account.name,
                 "auth_index": account.auth_index,
                 "email": account.email,
+                "credential_path": account.credential_path,
                 "status": account.status,
                 "status_message": account.status_message,
                 "disabled": account.disabled,
@@ -198,6 +262,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "success": account.success,
                 "failed": account.failed,
                 "last_refresh": account.last_refresh.isoformat() if account.last_refresh else None,
+                "oauth_usage": _oauth_usage_to_json(account.oauth_usage),
             }
             for account in snapshot.accounts
         ],
@@ -248,6 +313,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     name=_str(entry.get("name")) or "",
                     auth_index=_str(entry.get("auth_index")),
                     email=_str(entry.get("email")),
+                    credential_path=_str(entry.get("credential_path")),
                     status=_str(entry.get("status")),
                     status_message=_str(entry.get("status_message")),
                     disabled=bool(entry.get("disabled")),
@@ -258,6 +324,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     success=_int(entry.get("success")) or 0,
                     failed=_int(entry.get("failed")) or 0,
                     last_refresh=_parse_datetime(entry.get("last_refresh")),
+                    oauth_usage=_oauth_usage_from_json(entry.get("oauth_usage")),
                 )
             )
     message_field = parsed.get("message")
