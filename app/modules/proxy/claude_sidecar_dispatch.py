@@ -29,6 +29,11 @@ from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
+from app.modules.proxy.sidecar_tool_mapper import (
+    SidecarSseToolNameRewriter,
+    map_sidecar_chat_tool_names,
+    reverse_sidecar_tool_names_in_response,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -46,6 +51,12 @@ class SidecarUsage:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SidecarChatPayload:
+    body: dict[str, JsonValue]
+    reverse_tool_names: dict[str, str]
 
 
 def is_sidecar_model(model: str, config: ClaudeSidecarConfig) -> bool:
@@ -158,11 +169,12 @@ def build_sidecar_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
     config: ClaudeSidecarConfig,
-) -> dict[str, JsonValue]:
+) -> SidecarChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     body["model"] = sidecar_wire_model(effective_model, config)
     sanitize_sidecar_chat_tool_ids(body)
-    return body
+    tool_map = map_sidecar_chat_tool_names(body)
+    return SidecarChatPayload(body=body, reverse_tool_names=tool_map.reverse_tool_names)
 
 
 def _sanitize_sidecar_tool_id(tool_id: str, *, cache: dict[str, str], used: set[str]) -> str:
@@ -280,14 +292,15 @@ async def proxy_chat_to_sidecar(
     sse_keepalive_interval_seconds: float,
     client: ClaudeSidecarClient,
 ) -> Response:
-    body = build_sidecar_chat_payload(payload, effective_model, client.config)
+    sidecar_payload = build_sidecar_chat_payload(payload, effective_model, client.config)
     requested_at = time.monotonic()
     if payload.stream:
-        ensure_stream_usage_requested(body)
+        ensure_stream_usage_requested(sidecar_payload.body)
         return StreamingResponse(
             inject_sse_keepalives(
                 _sidecar_stream_iterator(
-                    body,
+                    sidecar_payload.body,
+                    reverse_tool_names=sidecar_payload.reverse_tool_names,
                     api_key=api_key,
                     reservation=reservation,
                     model=effective_model,
@@ -301,7 +314,7 @@ async def proxy_chat_to_sidecar(
         )
 
     try:
-        response_body = await client.chat_completion(body)
+        response_body = await client.chat_completion(sidecar_payload.body)
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
@@ -351,12 +364,17 @@ async def proxy_chat_to_sidecar(
         status="success",
         usage=usage,
     )
-    return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
+    relay_body = reverse_sidecar_tool_names_in_response(
+        response_body,
+        sidecar_payload.reverse_tool_names,
+    )
+    return JSONResponse(content=relay_body, status_code=200, headers=dict(rate_limit_headers))
 
 
 async def _sidecar_stream_iterator(
     payload: Mapping[str, JsonValue],
     *,
+    reverse_tool_names: dict[str, str],
     api_key: ApiKeyData | None,
     reservation: ApiKeyUsageReservationData | None,
     model: str,
@@ -369,6 +387,7 @@ async def _sidecar_stream_iterator(
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
+            tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
             async for raw_chunk in chunks:
                 for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
                     if event == "[DONE]":
@@ -377,7 +396,10 @@ async def _sidecar_stream_iterator(
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
-                yield raw_chunk
+                for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
+                    yield rewritten_chunk
+            for rewritten_chunk in tool_name_rewriter.flush():
+                yield rewritten_chunk
             for event in decoder.flush():
                 if event == "[DONE]":
                     completed = True
