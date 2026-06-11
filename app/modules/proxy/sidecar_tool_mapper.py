@@ -264,9 +264,13 @@ def _map_tools_array(
             used_names=used_names,
             reverse_tool_names=reverse_tool_names,
             forward_tool_names=forward_tool_names,
-            allow_unknown=False,
+            allow_unknown=True,
         )
         if wire_name is None:
+            mapped_tools.append(tool)
+            continue
+        if wire_name == original_name:
+            mapped_tools.append(tool)
             continue
         mapped_tools.append(_write_tool_definition_name(tool_dict, wire_name))
     return mapped_tools
@@ -464,11 +468,16 @@ def _reverse_tool_calls_in_container(
     for tool_call in tool_calls:
         if not is_json_mapping(tool_call):
             continue
-        function = cast(dict[str, JsonValue], tool_call).get("function")
-        if not is_json_mapping(function):
-            continue
-        name = function.get("name")
-        if isinstance(name, str):
-            client_name = reverse_tool_names.get(name)
+        tool_call_dict = cast(dict[str, JsonValue], tool_call)
+        function = tool_call_dict.get("function")
+        if is_json_mapping(function):
+            name = function.get("name")
+            if isinstance(name, str):
+                client_name = reverse_tool_names.get(name)
+                if client_name is not None:
+                    function["name"] = client_name
+        top_level_name = tool_call_dict.get("name")
+        if isinstance(top_level_name, str):
+            client_name = reverse_tool_names.get(top_level_name)
             if client_name is not None:
-                function["name"] = client_name
+                tool_call_dict["name"] = client_name
