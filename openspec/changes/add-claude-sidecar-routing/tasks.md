@@ -29,6 +29,7 @@
 - [x] 5.6 Strip configured custom Claude sidecar alias prefixes from the forwarded sidecar payload while preserving the client-requested effective model for policy and logs.
 - [x] 5.7 Sanitize sidecar tool-use and tool-call IDs to Claude-compatible `[A-Za-z0-9_-]+` values before forwarding.
 - [x] 5.8 Map Cursor-native tool names to Claude Code-compatible names before sidecar forwarding and restore client tool names in sidecar responses.
+- [x] 5.9 Apply Cursor usage fallback and context-limit compaction behavior on the sidecar chat-completions path.
 
 ## 6. Model catalog
 

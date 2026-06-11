@@ -29,6 +29,14 @@ from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
+from app.modules.proxy.cursor_chat_compat import (
+    SidecarSseCursorUsageRewriter,
+    apply_cursor_usage_fallback_to_response,
+    cursor_context_limit_usage_completion,
+    cursor_context_limit_usage_sse_chunks,
+    is_context_length_error,
+    is_context_length_error_envelope,
+)
 from app.modules.proxy.sidecar_tool_mapper import (
     SidecarSseToolNameRewriter,
     map_sidecar_chat_tool_names,
@@ -291,6 +299,7 @@ async def proxy_chat_to_sidecar(
     rate_limit_headers: Mapping[str, str],
     sse_keepalive_interval_seconds: float,
     client: ClaudeSidecarClient,
+    cursor_compat: bool = False,
 ) -> Response:
     sidecar_payload = build_sidecar_chat_payload(payload, effective_model, client.config)
     requested_at = time.monotonic()
@@ -306,6 +315,9 @@ async def proxy_chat_to_sidecar(
                     model=effective_model,
                     started_at=requested_at,
                     client=client,
+                    request_payload=payload,
+                    cursor_compat=cursor_compat,
+                    rate_limit_headers=rate_limit_headers,
                 ),
                 sse_keepalive_interval_seconds,
             ),
@@ -335,6 +347,12 @@ async def proxy_chat_to_sidecar(
             headers=dict(rate_limit_headers),
         )
     except ClaudeSidecarError as exc:
+        if cursor_compat and _is_sidecar_context_length_error(exc):
+            await _release_sidecar_reservation(reservation, api_key=api_key)
+            return cursor_context_limit_usage_completion(
+                payload,
+                headers=dict(rate_limit_headers),
+            )
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
             api_key=api_key,
@@ -368,6 +386,12 @@ async def proxy_chat_to_sidecar(
         response_body,
         sidecar_payload.reverse_tool_names,
     )
+    if cursor_compat and is_json_mapping(relay_body):
+        relay_body = apply_cursor_usage_fallback_to_response(
+            cast(dict[str, JsonValue], relay_body),
+            payload,
+            source="sidecar_non_stream",
+        )
     return JSONResponse(content=relay_body, status_code=200, headers=dict(rate_limit_headers))
 
 
@@ -380,6 +404,9 @@ async def _sidecar_stream_iterator(
     model: str,
     started_at: float,
     client: ClaudeSidecarClient,
+    request_payload: ChatCompletionsRequest,
+    cursor_compat: bool,
+    rate_limit_headers: Mapping[str, str],
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -388,6 +415,9 @@ async def _sidecar_stream_iterator(
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
             tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
+            usage_rewriter = (
+                SidecarSseCursorUsageRewriter(request_payload) if cursor_compat else None
+            )
             async for raw_chunk in chunks:
                 for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
                     if event == "[DONE]":
@@ -396,8 +426,16 @@ async def _sidecar_stream_iterator(
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
-                for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
-                    yield rewritten_chunk
+                outgoing_chunks = [raw_chunk]
+                if usage_rewriter is not None:
+                    outgoing_chunks = usage_rewriter.feed(raw_chunk)
+                for intermediate_chunk in outgoing_chunks:
+                    for rewritten_chunk in tool_name_rewriter.feed(intermediate_chunk):
+                        yield rewritten_chunk
+            if usage_rewriter is not None:
+                for rewritten_chunk in usage_rewriter.flush():
+                    for tool_chunk in tool_name_rewriter.feed(rewritten_chunk):
+                        yield tool_chunk
             for rewritten_chunk in tool_name_rewriter.flush():
                 yield rewritten_chunk
             for event in decoder.flush():
@@ -427,6 +465,13 @@ async def _sidecar_stream_iterator(
         )
         yield b"data: [DONE]\n\n"
     except ClaudeSidecarError as exc:
+        if cursor_compat and _is_sidecar_context_length_error(exc):
+            await _release_sidecar_reservation(reservation, api_key=api_key)
+            settled = True
+            completed = True
+            for chunk in cursor_context_limit_usage_sse_chunks(request_payload):
+                yield chunk
+            return
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
             api_key=api_key,
@@ -556,6 +601,12 @@ def _int_field(payload: Mapping[str, JsonValue], key: str) -> int | None:
     if isinstance(value, float):
         return int(value)
     return None
+
+
+def _is_sidecar_context_length_error(exc: ClaudeSidecarError) -> bool:
+    if is_json_mapping(exc.body) and is_context_length_error_envelope(exc.body):
+        return True
+    return is_context_length_error(code=None, message=exc.message)
 
 
 def _openai_error_content(exc: ClaudeSidecarError) -> OpenAIErrorEnvelope:

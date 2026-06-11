@@ -77,6 +77,31 @@ def test_reverse_sidecar_tool_names_in_response_restores_client_tool_names() -> 
     assert rewritten["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "Shell"
 
 
+def test_map_sidecar_chat_tool_names_maps_cursor_mcp_tools_and_tool_choice() -> None:
+    body = {
+        "tools": [
+            {"type": "function", "function": {"name": "CallMcpTool", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "FetchMcpResource", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "GenerateImage", "parameters": {"type": "object"}}},
+        ],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "CallMcpTool"},
+        },
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["Task", "Read", "Skill"]
+    assert body["tool_choice"]["function"]["name"] == "Task"
+    assert result.reverse_tool_names == {
+        "Task": "CallMcpTool",
+        "Read": "FetchMcpResource",
+        "Skill": "GenerateImage",
+    }
+
+
 def test_sidecar_sse_tool_name_rewriter_rewrites_stream_chunks() -> None:
     reverse = {"Bash": "Shell"}
     rewriter = SidecarSseToolNameRewriter(reverse)
