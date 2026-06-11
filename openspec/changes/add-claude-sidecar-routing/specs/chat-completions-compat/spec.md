@@ -2,9 +2,9 @@
 
 ### Requirement: Route Claude model chat completions to a configured sidecar
 
-When Claude sidecar routing is enabled, the service MUST route `POST /v1/chat/completions` requests whose effective model starts with a configured Claude sidecar prefix to the configured CLIProxyAPI sidecar instead of mapping the request into the internal Responses API flow. Prefix matching MUST be case-insensitive and MUST run after API-key enforced-model resolution and model-access validation.
+When Claude sidecar routing is enabled, the service MUST route `POST /v1/chat/completions` requests whose effective model starts with a configured Claude sidecar prefix to the configured CLIProxyAPI sidecar instead of mapping the request into the internal Responses API flow. Prefix matching MUST be case-insensitive and MUST run after API-key enforced-model resolution and model-access validation. Configured custom alias prefixes ending in `-` or `_` MUST match either separator form for the same prefix stem.
 
-The service MUST forward the OpenAI-compatible chat-completions JSON payload to the sidecar with the effective model name and MUST relay the sidecar's OpenAI-compatible response to the downstream client. For sidecar requests, the service MUST NOT consult Codex account selection, sticky sessions, websocket continuity, ChatGPT upstream model registry behavior, or ChatGPT upstream transport selection.
+The service MUST forward the OpenAI-compatible chat-completions JSON payload to the sidecar with the effective model name, except that configured custom alias prefixes ending in `-` or `_` MUST be stripped from the model in the forwarded sidecar payload. For sidecar requests, API-key validation, request-limit reservations, and request logs MUST continue to use the effective model requested by the client. The service MUST relay the sidecar's OpenAI-compatible response to the downstream client. For sidecar requests, the service MUST NOT consult Codex account selection, sticky sessions, websocket continuity, ChatGPT upstream model registry behavior, or ChatGPT upstream transport selection.
 
 #### Scenario: Claude custom model routes to sidecar
 
@@ -14,6 +14,15 @@ The service MUST forward the OpenAI-compatible chat-completions JSON payload to 
 - **THEN** the service forwards the request to the sidecar `/v1/chat/completions`
 - **AND** the forwarded payload includes `model: "claude-sonnet-4-5-20250929"`
 - **AND** no ChatGPT account is selected for the request
+
+#### Scenario: Custom-prefixed Claude alias strips before sidecar forwarding
+
+- **GIVEN** `claude_sidecar_enabled=true`
+- **AND** the sidecar model prefix list includes `cp-`
+- **WHEN** a client sends `POST /v1/chat/completions` with `model: "cp_claude-fable-5"`
+- **THEN** the service forwards the request to the sidecar `/v1/chat/completions`
+- **AND** the forwarded payload includes `model: "claude-fable-5"`
+- **AND** request-limit and request-log records use the effective model `"cp_claude-fable-5"`
 
 #### Scenario: Enforced model controls sidecar dispatch
 

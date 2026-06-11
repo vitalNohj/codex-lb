@@ -47,8 +47,39 @@ def is_sidecar_model(model: str, config: ClaudeSidecarConfig) -> bool:
 
 
 def sidecar_prefix_match(model: str, config: ClaudeSidecarConfig) -> bool:
+    return _matching_sidecar_prefix(model, config) is not None
+
+
+def sidecar_wire_model(model: str, config: ClaudeSidecarConfig) -> str:
+    normalized_model = model.strip()
+    prefix = _matching_sidecar_prefix(normalized_model, config)
+    if prefix is None or not _is_custom_alias_prefix(prefix):
+        return normalized_model
+    return normalized_model[len(prefix) :].strip() or normalized_model
+
+
+def _matching_sidecar_prefix(model: str, config: ClaudeSidecarConfig) -> str | None:
     normalized = model.strip().lower()
-    return any(normalized.startswith(prefix.strip().lower()) for prefix in config.model_prefixes)
+    for prefix in config.model_prefixes:
+        for candidate in _sidecar_prefix_variants(prefix):
+            if normalized.startswith(candidate):
+                return candidate
+    return None
+
+
+def _sidecar_prefix_variants(prefix: str) -> tuple[str, ...]:
+    normalized = prefix.strip().lower()
+    if not normalized:
+        return ()
+    if normalized.endswith("-"):
+        return (normalized, f"{normalized[:-1]}_")
+    if normalized.endswith("_"):
+        return (normalized, f"{normalized[:-1]}-")
+    return (normalized,)
+
+
+def _is_custom_alias_prefix(prefix: str) -> bool:
+    return prefix.endswith(("-", "_"))
 
 
 async def load_sidecar_config() -> ClaudeSidecarConfig | None:
@@ -100,9 +131,13 @@ def _parse_sidecar_prefixes(raw: str | None) -> list[str]:
     return prefixes or ["claude"]
 
 
-def build_sidecar_chat_payload(payload: ChatCompletionsRequest, effective_model: str) -> dict[str, JsonValue]:
+def build_sidecar_chat_payload(
+    payload: ChatCompletionsRequest,
+    effective_model: str,
+    config: ClaudeSidecarConfig,
+) -> dict[str, JsonValue]:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
-    body["model"] = effective_model
+    body["model"] = sidecar_wire_model(effective_model, config)
     return body
 
 
@@ -127,7 +162,7 @@ async def proxy_chat_to_sidecar(
     sse_keepalive_interval_seconds: float,
     client: ClaudeSidecarClient,
 ) -> Response:
-    body = build_sidecar_chat_payload(payload, effective_model)
+    body = build_sidecar_chat_payload(payload, effective_model, client.config)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(body)

@@ -8,6 +8,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     ensure_stream_usage_requested,
     extract_usage,
     is_sidecar_model,
+    sidecar_wire_model,
 )
 
 
@@ -34,6 +35,22 @@ def test_is_sidecar_model_respects_enabled_prefix_and_case() -> None:
     assert is_sidecar_model("claude-sonnet-4-5", disabled) is False
 
 
+def test_is_sidecar_model_treats_dash_and_underscore_alias_prefixes_as_equivalent() -> None:
+    enabled = _config(prefixes=("cp-",))
+
+    assert is_sidecar_model("cp-claude-fable-5", enabled) is True
+    assert is_sidecar_model("cp_claude-fable-5", enabled) is True
+
+
+def test_sidecar_wire_model_strips_custom_alias_prefix_only() -> None:
+    alias_config = _config(prefixes=("cp-",))
+    claude_config = _config(prefixes=("claude",))
+
+    assert sidecar_wire_model("cp-claude-fable-5", alias_config) == "claude-fable-5"
+    assert sidecar_wire_model("cp_claude-fable-5", alias_config) == "claude-fable-5"
+    assert sidecar_wire_model("claude-fable-5", claude_config) == "claude-fable-5"
+
+
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
@@ -45,11 +62,24 @@ def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model()
         }
     )
 
-    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5")
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
 
     assert payload["model"] == "claude-sonnet-4-5"
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
     assert payload["custom_flag"] == "kept"
+
+
+def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cp_claude-fable-5",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "cp_claude-fable-5", _config(prefixes=("cp-",)))
+
+    assert payload["model"] == "claude-fable-5"
 
 
 def test_ensure_stream_usage_requested_sets_or_overrides_include_usage() -> None:
