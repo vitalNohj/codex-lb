@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError, SidecarModel
+from app.db.models import ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -35,11 +36,26 @@ class _FakeSidecarClient:
 
 @pytest.mark.asyncio
 async def test_sidecar_status_reports_disabled_and_missing_api_key(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": False,
+            "claudeSidecarClearApiKey": True,
+        },
+    )
+    assert response.status_code == 200
+
     response = await async_client.get("/api/claude-sidecar/status")
     assert response.status_code == 200
     assert response.json()["status"] == "disabled"
 
-    response = await async_client.put("/api/settings", json={"claudeSidecarEnabled": True})
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarClearApiKey": True,
+        },
+    )
     assert response.status_code == 200
 
     response = await async_client.get("/api/claude-sidecar/status")
@@ -140,6 +156,15 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
         "/api/settings",
         json={
             "claudeSidecarManagementKey": "mgmt-key",
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "0",
+                    "email": "claude@example.com",
+                    "planType": "custom",
+                    "primaryTokenBudget": 100,
+                    "secondaryTokenBudget": 700,
+                }
+            ],
         },
     )
     assert response.status_code == 200
@@ -183,6 +208,25 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
             claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
             claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
         )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="quota-claude-usage-1",
+                timestamp=datetime.now(timezone.utc) - timedelta(minutes=30),
+                auth_index="0",
+                source="claude@example.com",
+                provider="claude",
+                model="claude-sonnet",
+                alias="claude",
+                endpoint="POST /v1/chat/completions",
+                auth_type="oauth",
+                total_tokens=25,
+                input_tokens=10,
+                output_tokens=15,
+                reasoning_tokens=0,
+                cached_tokens=0,
+                failed=False,
+            )
+        )
         await session.commit()
 
     response = await async_client.get("/api/claude-sidecar/quota")
@@ -196,3 +240,10 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
     assert account["quotaExceeded"] is True
     assert account["modelsExceeded"] == ["claude-opus-4"]
     assert account["nextRecoverAt"] == "2026-06-10T17:00:00Z"
+    assert account["authIndex"] == "0"
+    assert account["planType"] == "custom"
+    assert account["primaryRemainingPercent"] == 0.0
+    assert account["secondaryRemainingPercent"] == pytest.approx(96.428571)
+    assert account["primaryUsedTokens"] == 25
+    assert account["primaryTokenBudget"] == 100
+    assert account["confidence"] == "estimated"

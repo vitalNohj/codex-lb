@@ -61,10 +61,12 @@ class _FakeSession:
     ) -> None:
         self.get_response = get_response
         self.post_response = post_response
+        self.last_url = None
         self.last_headers = None
         self.last_json = None
 
-    def get(self, _url: str, *, headers, timeout):
+    def get(self, url: str, *, headers, timeout):
+        self.last_url = url
         self.last_headers = headers
         if isinstance(self.get_response, Exception):
             raise self.get_response
@@ -170,6 +172,56 @@ async def test_list_auth_files_transport_failure_unavailable(monkeypatch) -> Non
 
     with pytest.raises(ClaudeSidecarUnavailableError):
         await client.list_auth_files()
+
+
+@pytest.mark.asyncio
+async def test_pop_usage_queue_uses_management_key_and_count(monkeypatch) -> None:
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            '[{"timestamp":"2026-05-05T12:00:00Z","request_id":"req_1","tokens":{"total_tokens":30}}]',
+        )
+    )
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(api_key="api", management_key="mgmt"))
+
+    records = await client.pop_usage_queue(10)
+
+    assert session.last_headers["Authorization"] == "Bearer mgmt"
+    assert session.last_url == "http://127.0.0.1:8317/v0/management/usage-queue?count=10"
+    assert records[0]["request_id"] == "req_1"
+
+
+@pytest.mark.asyncio
+async def test_pop_usage_queue_returns_error_for_unauthorized(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(401, '{"error":{"message":"bad key"}}'))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="bad"))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.pop_usage_queue(10)
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_pop_usage_queue_rejects_non_array_response(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(200, '{"records":[]}'))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.pop_usage_queue(10)
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_pop_usage_queue_transport_failure_unavailable(monkeypatch) -> None:
+    session = _FakeSession(get_response=OSError("boom"))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarUnavailableError):
+        await client.pop_usage_queue(10)
 
 
 @pytest.mark.asyncio

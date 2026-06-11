@@ -73,6 +73,10 @@ class SettingsRepository:
                 TokenEncryptor().encrypt(sidecar_management_key) if sidecar_management_key else None
             ),
             claude_sidecar_quota_poll_interval_seconds=static_settings.claude_sidecar_quota_poll_interval_seconds,
+            claude_sidecar_auth_plans_json="[]",
+            claude_sidecar_usage_poll_interval_seconds=static_settings.claude_sidecar_usage_poll_interval_seconds,
+            claude_sidecar_usage_queue_batch_size=static_settings.claude_sidecar_usage_queue_batch_size,
+            claude_sidecar_usage_collection_enabled=static_settings.claude_sidecar_usage_collection_enabled,
         )
         self._session.add(row)
         try:
@@ -133,6 +137,10 @@ class SettingsRepository:
         claude_sidecar_quota_poll_interval_seconds: float | None = None,
         claude_sidecar_quota_state_json: str | None | object = _UNSET,
         claude_sidecar_quota_checked_at: datetime | None | object = _UNSET,
+        claude_sidecar_auth_plans_json: str | None = None,
+        claude_sidecar_usage_poll_interval_seconds: float | None = None,
+        claude_sidecar_usage_queue_batch_size: int | None = None,
+        claude_sidecar_usage_collection_enabled: bool | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
@@ -227,6 +235,14 @@ class SettingsRepository:
             settings.claude_sidecar_quota_state_json = claude_sidecar_quota_state_json
         if claude_sidecar_quota_checked_at is not _UNSET:
             settings.claude_sidecar_quota_checked_at = claude_sidecar_quota_checked_at
+        if claude_sidecar_auth_plans_json is not None:
+            settings.claude_sidecar_auth_plans_json = claude_sidecar_auth_plans_json
+        if claude_sidecar_usage_poll_interval_seconds is not None:
+            settings.claude_sidecar_usage_poll_interval_seconds = claude_sidecar_usage_poll_interval_seconds
+        if claude_sidecar_usage_queue_batch_size is not None:
+            settings.claude_sidecar_usage_queue_batch_size = claude_sidecar_usage_queue_batch_size
+        if claude_sidecar_usage_collection_enabled is not None:
+            settings.claude_sidecar_usage_collection_enabled = claude_sidecar_usage_collection_enabled
         await self.commit_refresh(settings)
         return settings
 

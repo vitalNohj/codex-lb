@@ -1,71 +1,65 @@
-## 1. CLIProxyAPI Management API enablement (ops)
+## 1. Existing status-only foundation
 
-- [x] 1.1 Generate a Management API secret and add `remote-management.secret-key` to `~/.cli-proxy-api/config.yaml`.
-- [x] 1.2 Restart `cli-proxy-api.service` and confirm `GET /v0/management/auth-files` returns the Claude entry.
-- [x] 1.3 Capture the live response as `tests/fixtures/claude_sidecar_auth_files.json` for parser tests.
-- [x] 1.4 Verify wrong/missing key returns 401 (unauthorized branch).
+- [x] 1.1 Enable CLIProxyAPI Management API and capture `tests/fixtures/claude_sidecar_auth_files.json`.
+- [x] 1.2 Persist encrypted Management API key and quota poll interval.
+- [x] 1.3 Add `ClaudeSidecarClient.list_auth_files()` and quota snapshot parsing.
+- [x] 1.4 Add `ClaudeSidecarQuotaPoller` and wire it into app lifespan.
+- [x] 1.5 Surface hard Claude sidecar status on accounts, dashboard overview, quota endpoint, and settings UI.
 
-## 2. Database migration
+## 2. OpenSpec usage-estimate scope
 
-- [ ] 2.1 Add `claude_sidecar_management_key_encrypted`, `claude_sidecar_quota_poll_interval_seconds`, `claude_sidecar_quota_state_json`, `claude_sidecar_quota_checked_at` columns to `dashboard_settings`.
-- [ ] 2.2 Add Alembic revision `20260611_000000_add_claude_sidecar_quota_polling` chained off the current head with matching `downgrade()`.
-- [ ] 2.3 Verify single Alembic head and upgrade/downgrade round-trip succeed.
+- [x] 2.1 Update proposal/context/spec to describe `/usage-queue` collection, per-auth plan settings, and estimated 5-hour/weekly percentages.
+- [x] 2.2 Validate `openspec validate add-claude-sidecar-quota-polling --strict`.
 
-## 3. Settings plumbing
+## 3. Database and settings shape
 
-- [ ] 3.1 Add env defaults `claude_sidecar_management_key` and `claude_sidecar_quota_poll_interval_seconds` in `app/core/config/settings.py`.
-- [ ] 3.2 Extend `SettingsRepository.get_or_create()` and `update()` with the new columns (encrypted Management key, interval, snapshot, checked-at).
-- [ ] 3.3 Extend `DashboardSettingsResponse` and `DashboardSettingsUpdateRequest` schemas with `_configured` flag, interval, write-only Management key, and clear flag.
-- [ ] 3.4 Extend `SettingsService` to encrypt/decrypt the Management key and expose the new fields in `SettingsData` / `_to_data`.
-- [ ] 3.5 Wire new fields into `settings/api.py` response builder and PUT merge block (audit-safe; never returns the raw Management key).
-- [ ] 3.6 Add integration test mirroring the existing API-key save/redact/preserve/clear case.
+- [x] 3.1 Add `claude_sidecar_usage_events` model/table with sanitized usage queue fields and indexes.
+- [x] 3.2 Add `claude_sidecar_auth_plans_json`, `claude_sidecar_usage_poll_interval_seconds`, `claude_sidecar_usage_queue_batch_size`, and `claude_sidecar_usage_collection_enabled` to `dashboard_settings`.
+- [x] 3.3 Add an Alembic revision with upgrade and downgrade.
+- [x] 3.4 Extend backend settings repository, schemas, service, and API mapping.
+- [x] 3.5 Add settings tests for per-auth plans and collector controls.
 
-## 4. Management client + quota snapshot module
+## 4. Usage queue client and parser
 
-- [ ] 4.1 Add `management_key` to `ClaudeSidecarConfig` and pass it through `sidecar_config_from_settings()`.
-- [ ] 4.2 Add `ClaudeSidecarClient.list_auth_files()` with error mapping matching `list_models`.
-- [ ] 4.3 Create `app/modules/claude_sidecar/quota.py` with `SidecarAuthQuota`, `SidecarQuotaSnapshot`, `parse_auth_files`, `snapshot_to_json`, `snapshot_from_json`.
-- [ ] 4.4 Add unit tests using `tests/fixtures/claude_sidecar_auth_files.json` covering parser, status, and round-trip.
+- [x] 4.1 Add `ClaudeSidecarClient.pop_usage_queue(count)`.
+- [x] 4.2 Add typed usage queue parser that ignores raw `api_key`.
+- [x] 4.3 Add unit tests for client behavior and parser edge cases.
 
-## 5. Quota poller scheduler
+## 5. Usage collector and repository
 
-- [ ] 5.1 Create `app/modules/claude_sidecar/quota_poller.py` with `ClaudeSidecarQuotaPoller` and factory.
-- [ ] 5.2 Implement `_poll_once` with the documented gating + status classification + snapshot write + cache invalidation.
-- [ ] 5.3 Wire start/stop into `app/main.py` lifespan alongside other schedulers.
-- [ ] 5.4 Add unit tests covering enabled/disabled/unauthorized/unreachable branches.
+- [x] 5.1 Add repository methods to insert usage events, skip duplicates, and query window totals.
+- [x] 5.2 Add single-leader background collector gated on sidecar enabled, Management key, and collection enabled.
+- [x] 5.3 Wire collector start/stop into app lifespan.
+- [x] 5.4 Add unit tests for gating, duplicate handling, bounded drains, and error swallowing.
 
-## 6. Backend account/dashboard/quota surface
+## 6. Estimate math
 
-- [ ] 6.1 Extract `build_claude_sidecar_summary` into `app/modules/accounts/sidecar_summary.py` and call it from `AccountsService`.
-- [ ] 6.2 Enrich the summary with snapshot-driven `status`, `reset_at_primary`, `last_refresh_at`, and `sidecar_auths`.
-- [ ] 6.3 Add `SidecarAuthAccount` to `accounts/schemas.py` and append `sidecar_auths` to `AccountSummary`.
-- [ ] 6.4 Include the synthetic account in `DashboardService.get_overview()` (appended after sorting).
-- [ ] 6.5 Add `ClaudeSidecarQuotaResponse` schema and `GET /api/claude-sidecar/quota` endpoint.
-- [ ] 6.6 Extend integration tests: `/api/accounts` quota mapping (some/all exceeded), `/api/dashboard/overview` synthetic-account inclusion, and `/api/claude-sidecar/quota` shape.
+- [x] 6.1 Add plan presets and custom per-auth budget parsing.
+- [x] 6.2 Calculate active 5-hour and weekly windows from persisted events.
+- [x] 6.3 Calculate per-auth and aggregate remaining percentages from total tokens and budgets.
+- [x] 6.4 Clamp estimates when auth-files reports hard quota exceeded.
+- [x] 6.5 Add unit tests for normal, missing-plan, over-budget, exceeded, and rollover cases.
 
-## 7. Frontend accounts + dashboard
+## 7. Backend API surface
 
-- [ ] 7.1 Add `SidecarAuthAccountSchema` and extend `AccountSummarySchema` with `sidecarAuths`.
-- [ ] 7.2 Extend accounts schema test for `rate_limited` plus `sidecarAuths` parsing.
-- [ ] 7.3 Update `account-list-item.tsx` synthetic branch with a Quota row.
-- [ ] 7.4 Update `account-detail.tsx` `SyntheticAccountDetail` with Quota + Last quota check rows and per-auth list.
-- [ ] 7.5 Add `SyntheticAccountCard` in `dashboard/components/account-card.tsx` and branch on `account.synthetic`.
-- [ ] 7.6 Extend frontend tests (account detail + dashboard card).
+- [x] 7.1 Extend `SidecarAuthAccount` with auth index, plan metadata, token counts, budgets, estimate percentages, reset times, and confidence.
+- [x] 7.2 Populate synthetic account `usage`, window minutes, resets, and per-auth estimate rows.
+- [x] 7.3 Extend `/api/claude-sidecar/quota` with estimate fields.
+- [x] 7.4 Add integration tests for `/api/accounts`, `/api/dashboard/overview`, and `/api/claude-sidecar/quota`.
 
-## 8. Frontend settings
+## 8. Frontend settings and account UI
 
-- [ ] 8.1 Update `settings/schemas.ts` and update-request types with the new Management key fields and poll interval.
-- [ ] 8.2 Update `buildSettingsUpdateRequest` to map the new camelCase fields to snake_case.
-- [ ] 8.3 Add Management key inputs and quota status row in `claude-sidecar-settings.tsx`.
-- [ ] 8.4 Add `useClaudeSidecarQuota()` hook and wire MSW handlers in tests.
-- [ ] 8.5 Extend `claude-sidecar-settings.test.tsx` for save/clear/configured states.
+- [x] 8.1 Extend frontend schemas and settings payload mapping.
+- [x] 8.2 Add per-auth plan/budget controls to Claude sidecar settings.
+- [x] 8.3 Render estimated 5-hour and weekly bars on synthetic dashboard card.
+- [x] 8.4 Render estimated rows on account list and account detail.
+- [x] 8.5 Exclude synthetic usage from dashboard aggregates even when `usage` is populated.
+- [x] 8.6 Update frontend mocks and targeted tests.
 
 ## 9. Verification
 
-- [ ] 9.1 Full backend `uv run pytest -q` green.
-- [ ] 9.2 `uv run ruff check .` clean.
-- [ ] 9.3 `cd frontend && bun run build` clean (no type errors) and `bun run test` green.
-- [ ] 9.4 Live smoke: restart codex-lb, save Management key, observe `/api/claude-sidecar/quota` healthy after one interval.
-- [ ] 9.5 Negative live smoke: stop sidecar → `unreachable`; restart → `healthy`.
-- [ ] 9.6 `uv run openspec validate add-claude-sidecar-quota-polling --strict` passes.
-- [ ] 9.7 Sync delta to main specs and run `uv run openspec validate --specs`.
+- [x] 9.1 Run strict OpenSpec validation.
+- [x] 9.2 Run targeted backend unit and integration tests.
+- [x] 9.3 Run frontend typecheck and targeted Vitest files.
+- [x] 9.4 Run changed-file lint checks.
+- [x] 9.5 Perform live smoke if local services are available.

@@ -223,6 +223,34 @@ class RequestLog(Base):
     )
 
 
+class ClaudeSidecarUsageEvent(Base):
+    __tablename__ = "claude_sidecar_usage_events"
+    __table_args__ = (
+        UniqueConstraint("request_id", name="uq_claude_sidecar_usage_events_request_id"),
+        Index("idx_claude_sidecar_usage_auth_time", "auth_index", "timestamp"),
+        Index("idx_claude_sidecar_usage_time", "timestamp"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    auth_index: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    alias: Mapped[str | None] = mapped_column(String, nullable=True)
+    endpoint: Mapped[str | None] = mapped_column(String, nullable=True)
+    auth_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    failed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
 class ProxyEndpoint(Base):
     __tablename__ = "proxy_endpoints"
 
@@ -611,6 +639,25 @@ class DashboardSettings(Base):
     )
     claude_sidecar_quota_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     claude_sidecar_quota_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claude_sidecar_auth_plans_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claude_sidecar_usage_poll_interval_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=15.0,
+        server_default=text("15.0"),
+        nullable=False,
+    )
+    claude_sidecar_usage_queue_batch_size: Mapped[int] = mapped_column(
+        Integer,
+        default=100,
+        server_default=text("100"),
+        nullable=False,
+    )
+    claude_sidecar_usage_collection_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=true(),
+        nullable=False,
+    )
     warmup_model: Mapped[str] = mapped_column(
         String,
         default="gpt-5.4-mini",

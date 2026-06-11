@@ -39,6 +39,15 @@ const WeeklyPaceWorkingDaysValueSchema = z.string().regex(/^[0-6](,[0-6])*$/);
 const WeeklyPaceWorkingDaysSchema = WeeklyPaceWorkingDaysValueSchema.default("0,1,2,3,4,5,6");
 const ClaudeSidecarStatusValueSchema = z.enum(["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]);
 const ClaudeSidecarModelPrefixesSchema = z.array(z.string().trim().min(1).max(64)).min(1).max(32);
+export const ClaudeSidecarPlanTypeSchema = z.enum(["pro", "max5", "max20", "custom"]);
+export const ClaudeSidecarAuthPlanSchema = z.object({
+  authIndex: z.string().trim().min(1).max(255).nullable().optional(),
+  email: z.string().trim().min(1).max(255).nullable().optional(),
+  source: z.string().trim().min(1).max(255).nullable().optional(),
+  planType: ClaudeSidecarPlanTypeSchema,
+  primaryTokenBudget: z.number().int().positive().nullable().optional(),
+  secondaryTokenBudget: z.number().int().positive().nullable().optional(),
+});
 
 export const DashboardSettingsSchema = z
   .object({
@@ -108,6 +117,10 @@ export const DashboardSettingsSchema = z
     claudeSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     claudeSidecarManagementKeyConfigured: z.boolean().optional().default(false),
     claudeSidecarQuotaPollIntervalSeconds: z.number().positive().optional().default(60),
+    claudeSidecarAuthPlans: z.array(ClaudeSidecarAuthPlanSchema).optional().default([]),
+    claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional().default(15),
+    claudeSidecarUsageQueueBatchSize: z.number().int().positive().optional().default(100),
+    claudeSidecarUsageCollectionEnabled: z.boolean().optional().default(true),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -173,6 +186,10 @@ export const SettingsUpdateRequestSchema = z.object({
   claudeSidecarManagementKey: z.string().trim().max(4096).optional(),
   claudeSidecarClearManagementKey: z.boolean().optional(),
   claudeSidecarQuotaPollIntervalSeconds: z.number().positive().optional(),
+  claudeSidecarAuthPlans: z.array(ClaudeSidecarAuthPlanSchema).optional(),
+  claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional(),
+  claudeSidecarUsageQueueBatchSize: z.number().int().positive().max(1000).optional(),
+  claudeSidecarUsageCollectionEnabled: z.boolean().optional(),
 });
 
 export const ClaudeSidecarModelSummarySchema = z.object({
@@ -209,6 +226,7 @@ const ClaudeSidecarQuotaStatusSchema = z.enum([
 
 export const ClaudeSidecarQuotaAuthSchema = z.object({
   name: z.string(),
+  authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
   quotaExceeded: z.boolean().default(false),
@@ -216,6 +234,17 @@ export const ClaudeSidecarQuotaAuthSchema = z.object({
   modelsExceeded: z.array(z.string()).default([]),
   success: z.number().int().nonnegative().default(0),
   failed: z.number().int().nonnegative().default(0),
+  planType: z.string().nullable().optional(),
+  usageSource: z.string().nullable().optional(),
+  primaryRemainingPercent: z.number().nullable().optional(),
+  secondaryRemainingPercent: z.number().nullable().optional(),
+  primaryUsedTokens: z.number().int().nonnegative().nullable().optional(),
+  secondaryUsedTokens: z.number().int().nonnegative().nullable().optional(),
+  primaryTokenBudget: z.number().int().positive().nullable().optional(),
+  secondaryTokenBudget: z.number().int().positive().nullable().optional(),
+  resetAtPrimary: z.string().datetime({ offset: true }).nullable().optional(),
+  resetAtSecondary: z.string().datetime({ offset: true }).nullable().optional(),
+  confidence: z.string().nullable().optional(),
 });
 
 export const ClaudeSidecarQuotaResponseSchema = z.object({
@@ -253,6 +282,10 @@ type ClaudeSidecarSettingsFields = Pick<
   | "claudeSidecarLastModelCount"
   | "claudeSidecarManagementKeyConfigured"
   | "claudeSidecarQuotaPollIntervalSeconds"
+  | "claudeSidecarAuthPlans"
+  | "claudeSidecarUsagePollIntervalSeconds"
+  | "claudeSidecarUsageQueueBatchSize"
+  | "claudeSidecarUsageCollectionEnabled"
 >;
 
 export type DashboardSettings = Omit<
@@ -269,6 +302,8 @@ export type ClaudeSidecarTestResponse = z.infer<typeof ClaudeSidecarTestResponse
 export type ClaudeSidecarModelsResponse = z.infer<typeof ClaudeSidecarModelsResponseSchema>;
 export type ClaudeSidecarQuotaResponse = z.infer<typeof ClaudeSidecarQuotaResponseSchema>;
 export type ClaudeSidecarQuotaAuth = z.infer<typeof ClaudeSidecarQuotaAuthSchema>;
+export type ClaudeSidecarAuthPlan = z.infer<typeof ClaudeSidecarAuthPlanSchema>;
+export type ClaudeSidecarPlanType = z.infer<typeof ClaudeSidecarPlanTypeSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({

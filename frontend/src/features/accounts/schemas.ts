@@ -64,6 +64,7 @@ export const AccountAdditionalQuotaSchema = z.object({
 
 export const SidecarAuthAccountSchema = z.object({
   name: z.string(),
+  authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
   quotaExceeded: z.boolean().default(false),
@@ -71,6 +72,17 @@ export const SidecarAuthAccountSchema = z.object({
   modelsExceeded: z.array(z.string()).default([]),
   success: z.number().int().nonnegative().default(0),
   failed: z.number().int().nonnegative().default(0),
+  planType: z.string().nullable().optional(),
+  usageSource: z.string().nullable().optional(),
+  primaryRemainingPercent: z.number().nullable().optional(),
+  secondaryRemainingPercent: z.number().nullable().optional(),
+  primaryUsedTokens: z.number().int().nonnegative().nullable().optional(),
+  secondaryUsedTokens: z.number().int().nonnegative().nullable().optional(),
+  primaryTokenBudget: z.number().int().positive().nullable().optional(),
+  secondaryTokenBudget: z.number().int().positive().nullable().optional(),
+  resetAtPrimary: z.string().datetime({ offset: true }).nullable().optional(),
+  resetAtSecondary: z.string().datetime({ offset: true }).nullable().optional(),
+  confidence: z.string().nullable().optional(),
 });
 
 export const AccountSummarySchema = z.object({

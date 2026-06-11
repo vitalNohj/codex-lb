@@ -120,4 +120,40 @@ describe("buildSettingsUpdateRequest", () => {
     expect(payload.stickyReallocationPrimaryBudgetThresholdPct).toBe(80);
     expect(payload.stickyReallocationSecondaryBudgetThresholdPct).toBe(100);
   });
+
+  it("preserves Claude sidecar plan and collector settings", () => {
+    const settings = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      claudeSidecarAuthPlans: [
+        {
+          authIndex: "0",
+          email: "claude@example.com",
+          planType: "custom",
+          primaryTokenBudget: 100,
+          secondaryTokenBudget: 700,
+        },
+      ],
+      claudeSidecarUsagePollIntervalSeconds: 20,
+      claudeSidecarUsageQueueBatchSize: 50,
+      claudeSidecarUsageCollectionEnabled: false,
+    });
+
+    const payload = buildSettingsUpdateRequest(settings, { dashboardSessionTtlSeconds: 7200 });
+
+    expect(payload.claudeSidecarAuthPlans).toEqual([
+      expect.objectContaining({ authIndex: "0", planType: "custom" }),
+    ]);
+    expect(payload.claudeSidecarUsagePollIntervalSeconds).toBe(20);
+    expect(payload.claudeSidecarUsageQueueBatchSize).toBe(50);
+    expect(payload.claudeSidecarUsageCollectionEnabled).toBe(false);
+  });
 });

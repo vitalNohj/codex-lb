@@ -185,6 +185,9 @@ class Settings(BaseSettings):
     claude_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     claude_sidecar_management_key: str = ""
     claude_sidecar_quota_poll_interval_seconds: float = Field(default=60.0, gt=0)
+    claude_sidecar_usage_poll_interval_seconds: float = Field(default=15.0, gt=0)
+    claude_sidecar_usage_queue_batch_size: int = Field(default=100, gt=0)
+    claude_sidecar_usage_collection_enabled: bool = True
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+from dataclasses import asdict
 
 from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy import select
@@ -29,7 +30,7 @@ from app.modules.settings.schemas import (
     UpstreamProxyPoolMemberRequest,
     UpstreamProxyPoolResponse,
 )
-from app.modules.settings.service import DashboardSettingsUpdateData
+from app.modules.settings.service import ClaudeSidecarAuthPlanData, DashboardSettingsUpdateData
 from app.modules.usage.additional_quota_keys import (
     get_additional_quota_routing_policy,
     list_additional_quota_definitions,
@@ -145,6 +146,24 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         claude_sidecar_last_model_count=settings.claude_sidecar_last_model_count,
         claude_sidecar_management_key_configured=settings.claude_sidecar_management_key_configured,
         claude_sidecar_quota_poll_interval_seconds=settings.claude_sidecar_quota_poll_interval_seconds,
+        claude_sidecar_auth_plans=[
+            asdict(plan) if isinstance(plan, ClaudeSidecarAuthPlanData) else plan
+            for plan in settings.claude_sidecar_auth_plans
+        ],
+        claude_sidecar_usage_poll_interval_seconds=settings.claude_sidecar_usage_poll_interval_seconds,
+        claude_sidecar_usage_queue_batch_size=settings.claude_sidecar_usage_queue_batch_size,
+        claude_sidecar_usage_collection_enabled=settings.claude_sidecar_usage_collection_enabled,
+    )
+
+
+def _auth_plan_data(plan) -> ClaudeSidecarAuthPlanData:
+    return ClaudeSidecarAuthPlanData(
+        auth_index=plan.auth_index,
+        email=plan.email,
+        source=plan.source,
+        plan_type=plan.plan_type,
+        primary_token_budget=plan.primary_token_budget,
+        secondary_token_budget=plan.secondary_token_budget,
     )
 
 
@@ -602,6 +621,26 @@ async def update_settings(
                     if payload.claude_sidecar_quota_poll_interval_seconds is not None
                     else current.claude_sidecar_quota_poll_interval_seconds
                 ),
+                claude_sidecar_auth_plans=(
+                    [_auth_plan_data(plan) for plan in payload.claude_sidecar_auth_plans]
+                    if payload.claude_sidecar_auth_plans is not None
+                    else current.claude_sidecar_auth_plans
+                ),
+                claude_sidecar_usage_poll_interval_seconds=(
+                    payload.claude_sidecar_usage_poll_interval_seconds
+                    if payload.claude_sidecar_usage_poll_interval_seconds is not None
+                    else current.claude_sidecar_usage_poll_interval_seconds
+                ),
+                claude_sidecar_usage_queue_batch_size=(
+                    payload.claude_sidecar_usage_queue_batch_size
+                    if payload.claude_sidecar_usage_queue_batch_size is not None
+                    else current.claude_sidecar_usage_queue_batch_size
+                ),
+                claude_sidecar_usage_collection_enabled=(
+                    payload.claude_sidecar_usage_collection_enabled
+                    if payload.claude_sidecar_usage_collection_enabled is not None
+                    else current.claude_sidecar_usage_collection_enabled
+                ),
             )
         )
     except ValueError as exc:
@@ -654,6 +693,10 @@ async def update_settings(
             "claude_sidecar_last_model_count",
             "claude_sidecar_management_key_configured",
             "claude_sidecar_quota_poll_interval_seconds",
+            "claude_sidecar_auth_plans",
+            "claude_sidecar_usage_poll_interval_seconds",
+            "claude_sidecar_usage_queue_batch_size",
+            "claude_sidecar_usage_collection_enabled",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

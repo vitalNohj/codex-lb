@@ -95,6 +95,10 @@ describe("ImportSettings", () => {
       claudeSidecarRequestTimeoutSeconds: settings.claudeSidecarRequestTimeoutSeconds,
       claudeSidecarModelsCacheTtlSeconds: settings.claudeSidecarModelsCacheTtlSeconds,
       claudeSidecarQuotaPollIntervalSeconds: settings.claudeSidecarQuotaPollIntervalSeconds,
+      claudeSidecarAuthPlans: settings.claudeSidecarAuthPlans,
+      claudeSidecarUsagePollIntervalSeconds: settings.claudeSidecarUsagePollIntervalSeconds,
+      claudeSidecarUsageQueueBatchSize: settings.claudeSidecarUsageQueueBatchSize,
+      claudeSidecarUsageCollectionEnabled: settings.claudeSidecarUsageCollectionEnabled,
     });
   });
 

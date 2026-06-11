@@ -14,13 +14,25 @@ from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
 )
+from app.modules.claude_sidecar.usage_estimates import (
+    SECONDARY_WINDOW,
+    ClaudeAuthUsageEstimate,
+    build_claude_usage_estimates,
+)
+from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
+from app.modules.settings.service import parse_claude_sidecar_auth_plans
 
 
 class ClaudeSidecarService:
-    def __init__(self, settings_repository: SettingsRepository) -> None:
+    def __init__(
+        self,
+        settings_repository: SettingsRepository,
+        usage_repository: ClaudeSidecarUsageRepository | None = None,
+    ) -> None:
         self._settings_repository = settings_repository
+        self._usage_repository = usage_repository
 
     async def get_status(self) -> ClaudeSidecarStatusResponse:
         settings = await self._settings_repository.get_or_create()
@@ -101,11 +113,29 @@ class ClaudeSidecarService:
                 message="Claude sidecar quota has not been polled yet",
                 checked_at=settings.claude_sidecar_quota_checked_at,
             )
+        estimates_by_key: dict[str, ClaudeAuthUsageEstimate] = {}
+        if self._usage_repository is not None:
+            now = datetime.now(timezone.utc)
+            events = await self._usage_repository.list_events_since(now - SECONDARY_WINDOW)
+            estimates = build_claude_usage_estimates(
+                events=events,
+                plans=parse_claude_sidecar_auth_plans(settings.claude_sidecar_auth_plans_json),
+                snapshot=snapshot,
+                now=now,
+            )
+            estimates_by_key = {
+                key: estimate
+                for estimate in estimates.accounts
+                if (key := _estimate_key(estimate)) is not None
+            }
         return ClaudeSidecarQuotaResponse(
             status=snapshot.status,
             message=snapshot.message,
             checked_at=snapshot.checked_at,
-            accounts=[_to_auth_account(auth) for auth in snapshot.accounts],
+            accounts=[
+                _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or ""))
+                for auth in snapshot.accounts
+            ],
         )
 
     async def list_models(self) -> ClaudeSidecarModelsResponse:
@@ -172,9 +202,13 @@ def _sanitize_message(message: str) -> str:
     return message.replace("Bearer ", "Bearer [redacted]")
 
 
-def _to_auth_account(auth: SidecarAuthQuota) -> SidecarAuthAccount:
+def _to_auth_account(
+    auth: SidecarAuthQuota,
+    estimate: ClaudeAuthUsageEstimate | None = None,
+) -> SidecarAuthAccount:
     return SidecarAuthAccount(
         name=auth.name,
+        auth_index=auth.auth_index,
         email=auth.email,
         status=auth.status,
         quota_exceeded=auth.quota_exceeded,
@@ -182,4 +216,33 @@ def _to_auth_account(auth: SidecarAuthQuota) -> SidecarAuthAccount:
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],
         success=auth.success,
         failed=auth.failed,
+        plan_type=estimate.plan_type if estimate else None,
+        usage_source=estimate.usage_source if estimate else None,
+        primary_remaining_percent=estimate.primary_remaining_percent if estimate else None,
+        secondary_remaining_percent=estimate.secondary_remaining_percent if estimate else None,
+        primary_used_tokens=estimate.primary_used_tokens if estimate else None,
+        secondary_used_tokens=estimate.secondary_used_tokens if estimate else None,
+        primary_token_budget=estimate.primary_token_budget if estimate else None,
+        secondary_token_budget=estimate.secondary_token_budget if estimate else None,
+        reset_at_primary=estimate.reset_at_primary if estimate else None,
+        reset_at_secondary=estimate.reset_at_secondary if estimate else None,
+        confidence=estimate.confidence if estimate else None,
     )
+
+
+def _auth_key(auth: SidecarAuthQuota) -> str | None:
+    if auth.auth_index:
+        return f"auth:{auth.auth_index}"
+    if auth.email:
+        return f"source:{auth.email.lower()}"
+    return None
+
+
+def _estimate_key(estimate: ClaudeAuthUsageEstimate) -> str | None:
+    if estimate.auth_index:
+        return f"auth:{estimate.auth_index}"
+    if estimate.email:
+        return f"source:{estimate.email.lower()}"
+    if estimate.source:
+        return f"source:{estimate.source.lower()}"
+    return None

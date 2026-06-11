@@ -47,9 +47,13 @@ from app.modules.accounts.schemas import (
     OpenCodeOAuthAuth,
 )
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
+from app.modules.claude_sidecar.quota import snapshot_from_json
+from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
+from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.settings.repository import SettingsRepository
+from app.modules.settings.service import parse_claude_sidecar_auth_plans
 from app.modules.usage.additional_quota_keys import (
     get_additional_display_label_for_quota_key,
     get_additional_quota_routing_policy,
@@ -92,6 +96,7 @@ class AccountsService:
         limit_warmup_repo: LimitWarmupRepository | None = None,
         auth_manager: AuthManager | None = None,
         settings_repo: SettingsRepository | None = None,
+        claude_usage_repo: ClaudeSidecarUsageRepository | None = None,
     ) -> None:
         self._repo = repo
         self._usage_repo = usage_repo
@@ -101,6 +106,7 @@ class AccountsService:
         self._encryptor = TokenEncryptor()
         self._auth_manager = auth_manager
         self._settings_repo = settings_repo
+        self._claude_usage_repo = claude_usage_repo
 
     async def list_accounts(self) -> list[AccountSummary]:
         accounts = await self._repo.list_accounts()
@@ -192,7 +198,17 @@ class AccountsService:
             cached_input_tokens=usage_summary.cached_input_tokens,
             total_cost_usd=usage_summary.total_cost_usd,
         )
-        return build_claude_sidecar_summary(settings, request_usage)
+        estimates = None
+        if self._claude_usage_repo is not None:
+            now = utcnow()
+            events = await self._claude_usage_repo.list_events_since(now - SECONDARY_WINDOW)
+            estimates = build_claude_usage_estimates(
+                events=events,
+                plans=parse_claude_sidecar_auth_plans(settings.claude_sidecar_auth_plans_json),
+                snapshot=snapshot_from_json(settings.claude_sidecar_quota_state_json),
+                now=now,
+            )
+        return build_claude_sidecar_summary(settings, request_usage, estimates)
 
     async def get_account_trends(self, account_id: str) -> AccountTrendsResponse | None:
         account = await self._repo.get_by_id(account_id)

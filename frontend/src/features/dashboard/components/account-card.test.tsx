@@ -136,4 +136,33 @@ describe("AccountCard", () => {
     expect(screen.queryByRole("button", { name: /Warm-up/i })).toBeNull();
     expect(screen.queryByText("Credits:")).toBeNull();
   });
+
+  it("renders estimated quota bars for synthetic claude sidecar account", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "Claude via CLIProxyAPI",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: {
+        primaryRemainingPercent: 75,
+        secondaryRemainingPercent: 96,
+      },
+      resetAtPrimary: "2026-06-10T17:00:00+00:00",
+      resetAtSecondary: "2026-06-17T12:00:00+00:00",
+      windowMinutesPrimary: 300,
+      windowMinutesSecondary: 10080,
+    });
+
+    render(<AccountCard account={account} />);
+
+    expect(screen.getByText("Claude usage")).toBeInTheDocument();
+    expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(screen.getByText("5h")).toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+  });
 });

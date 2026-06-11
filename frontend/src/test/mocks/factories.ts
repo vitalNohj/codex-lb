@@ -445,6 +445,10 @@ export function createDashboardSettings(
 		limitWarmupPrompt: "Say OK.",
 		limitWarmupCooldownSeconds: 3600,
 		limitWarmupMinAvailablePercent: 100,
+		claudeSidecarAuthPlans: [],
+		claudeSidecarUsagePollIntervalSeconds: 15,
+		claudeSidecarUsageQueueBatchSize: 100,
+		claudeSidecarUsageCollectionEnabled: true,
 		...overrides,
 	});
 }

@@ -46,6 +46,10 @@ const BASE_SETTINGS: DashboardSettings = {
   claudeSidecarLastModelCount: 1,
   claudeSidecarManagementKeyConfigured: false,
   claudeSidecarQuotaPollIntervalSeconds: 60,
+  claudeSidecarAuthPlans: [],
+  claudeSidecarUsagePollIntervalSeconds: 15,
+  claudeSidecarUsageQueueBatchSize: 100,
+  claudeSidecarUsageCollectionEnabled: true,
 };
 
 function renderWithQueryClient(ui: React.ReactElement) {
@@ -133,5 +137,28 @@ describe("ClaudeSidecarSettings", () => {
       />,
     );
     expect(screen.getByLabelText(/Management key/)).toHaveAttribute("placeholder", "Configured");
+  });
+
+  it("saves per-auth quota estimation plans", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await screen.findByText("claude@example.com");
+    await user.click(screen.getByRole("button", { name: "Save quota estimates" }));
+
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        claudeSidecarAuthPlans: [
+          expect.objectContaining({
+            authIndex: "0",
+            email: "claude@example.com",
+            planType: "pro",
+            primaryTokenBudget: 40000,
+            secondaryTokenBudget: 280000,
+          }),
+        ],
+      }),
+    );
   });
 });
