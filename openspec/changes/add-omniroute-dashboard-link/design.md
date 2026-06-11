@@ -19,10 +19,10 @@
 ## Decisions
 
 - Validate `/omni` access at the `nohj.dev` reverse proxy by forwarding the incoming cookie to codex-lb's dashboard session endpoint and requiring an authenticated response. This keeps the codex-lb password session as the source of truth and avoids duplicating session decryption outside codex-lb.
-- Strip the `/omni` prefix when proxying to OmniRoute, matching the existing `/codex` prefix proxy pattern. OmniRoute can continue serving as though it is mounted at `/`.
+- Strip the `/omni` prefix when proxying to OmniRoute, while rewriting OmniRoute redirects and cookie paths back under `/omni`. OmniRoute can continue serving as though it is mounted at `/`, and its own dashboard session cookie remains scoped to the public mount path.
 - Render the OmniRoute affordance as an external navigation action from the codex-lb header. The dashboard link is visible only after codex-lb authentication because it is inside the existing AuthGate.
 
 ## Risks / Trade-offs
 
 - Direct `/omni` requests depend on codex-lb being reachable for session validation. If codex-lb is down, `/omni` fails closed with an auth failure instead of exposing OmniRoute.
-- If OmniRoute emits absolute root-relative asset URLs, the prefix proxy may need additional rewrite support. The initial implementation follows the existing codex-lb proxy pattern and can be extended if a concrete asset path issue appears.
+- If OmniRoute emits root-relative asset URLs inside HTML or JavaScript payloads, those payloads may need additional response rewriting. Redirect and cookie-path rewriting are handled by the proxy.
