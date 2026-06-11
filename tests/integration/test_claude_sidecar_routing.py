@@ -23,7 +23,8 @@ class _FakeModel:
 
 
 class _FakeSidecarClient:
-    def __init__(self) -> None:
+    def __init__(self, config: ClaudeSidecarConfig) -> None:
+        self.config = config
         self.chat_payloads: list[dict] = []
         self.stream_payloads: list[dict] = []
         self.models = [_FakeModel("claude-sonnet-4-5-20250929")]
@@ -104,16 +105,16 @@ async def sidecar_enabled(monkeypatch):
 
 @pytest.fixture
 async def fake_sidecar(monkeypatch):
-    client = _FakeSidecarClient()
     config = ClaudeSidecarConfig(
         enabled=True,
         base_url="http://127.0.0.1:8317",
         api_key="sidecar-key",
-        model_prefixes=("claude",),
+        model_prefixes=("claude", "cp-"),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
     )
+    client = _FakeSidecarClient(config)
 
     async def load_config():
         return config
@@ -172,6 +173,26 @@ async def test_claude_non_stream_routes_to_sidecar_and_finalizes_reservation(
     sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
     assert len(sidecar_logs) == 1
     assert sidecar_logs[0].model == "claude-sonnet-4-5-20250929"
+
+
+@pytest.mark.asyncio
+async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wire_model(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "cp_claude-fable-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[0]["model"] == "claude-fable-5"
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
+    assert len(sidecar_logs) == 1
+    assert sidecar_logs[0].model == "cp_claude-fable-5"
 
 
 @pytest.mark.asyncio

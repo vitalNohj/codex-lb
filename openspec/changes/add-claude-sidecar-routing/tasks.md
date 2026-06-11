@@ -26,6 +26,7 @@
 - [x] 5.3 Add streaming SSE sidecar forwarding with usage extraction.
 - [x] 5.4 Add sidecar error mapping into OpenAI-compatible envelopes.
 - [x] 5.5 Wire the sidecar branch into `/v1/chat/completions` without changing the existing Codex path.
+- [x] 5.6 Strip configured custom Claude sidecar alias prefixes from the forwarded sidecar payload while preserving the client-requested effective model for policy and logs.
 
 ## 6. Model catalog
 
@@ -45,6 +46,7 @@
 - [x] 8.2 Add unit tests for sidecar dispatch helpers and SSE usage extraction.
 - [x] 8.3 Add integration tests for chat routing, streaming, errors, model filtering, and Codex-path regression.
 - [x] 8.4 Run targeted tests and full lint/test verification.
+- [x] 8.5 Add regression coverage for custom-prefixed Claude sidecar aliases.
 
 ## 9. Dashboard-managed sidecar settings
 
