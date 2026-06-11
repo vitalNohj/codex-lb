@@ -1,4 +1,4 @@
-import { Eye, EyeOff, LogOut, Menu } from "lucide-react";
+import { ExternalLink, Eye, EyeOff, LogOut, Menu } from "lucide-react";
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -15,6 +15,8 @@ const NAV_ITEMS = [
   { to: "/apis", label: "APIs" },
   { to: "/settings", label: "Settings" },
 ] as const;
+
+const OMNIROUTE_PATH = "/omni";
 
 export type AppHeaderProps = {
   onLogout: () => void;
@@ -68,6 +70,13 @@ export function AppHeader({
               {item.label}
             </NavLink>
           ))}
+          <a
+            href={OMNIROUTE_PATH}
+            className="relative inline-flex h-7 items-center gap-1 rounded-md px-3.5 text-xs leading-none font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
+          >
+            OmniRoute
+            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+          </a>
         </nav>
 
         {/* Actions */}
@@ -128,6 +137,14 @@ export function AppHeader({
                     )}
                   </NavLink>
                 ))}
+                <a
+                  href={OMNIROUTE_PATH}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  OmniRoute
+                </a>
                 <div className="my-2 h-px bg-border" />
                 <button
                   type="button"
