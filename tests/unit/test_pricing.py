@@ -74,6 +74,49 @@ def test_get_pricing_for_model_gpt_5_4_mini_alias():
     assert price.output_per_1m == 4.5
 
 
+def test_get_pricing_for_model_claude_canonical():
+    result = get_pricing_for_model("claude-sonnet-4-6", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-sonnet-4-6"
+    assert price.input_per_1m == 3.0
+    assert price.cached_input_per_1m == 0.3
+    assert price.output_per_1m == 15.0
+
+
+def test_get_pricing_for_model_claude_date_suffixed():
+    result = get_pricing_for_model("claude-opus-4-5-20251101", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-opus-4-5"
+    assert price.input_per_1m == 5.0
+    assert price.output_per_1m == 25.0
+
+
+def test_get_pricing_for_model_claude_sidecar_prefixed():
+    result = get_pricing_for_model("cp-claude-fable-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-fable-5"
+    assert price.input_per_1m == 10.0
+    assert price.output_per_1m == 50.0
+
+
+def test_get_pricing_for_model_claude_sidecar_underscore_prefixed():
+    result = get_pricing_for_model("cp_claude-fable-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, _ = result
+    assert model == "claude-fable-5"
+
+
+def test_get_pricing_for_model_claude_versioned_beats_family():
+    result = get_pricing_for_model("claude-opus-4-1-20250805", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-opus-4-1"
+    assert price.input_per_1m == 15.0
+
+
 def test_get_pricing_for_model_gpt_5_4_nano_alias():
     result = get_pricing_for_model("gpt-5.4-nano-2026-03-17", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
