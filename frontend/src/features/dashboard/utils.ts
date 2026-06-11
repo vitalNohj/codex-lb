@@ -189,6 +189,9 @@ export function buildRemainingItems(
   const palette = buildDonutPalette(accounts.length, isDark);
   return accounts
     .map((account, index) => {
+      if (account.synthetic) {
+        return null;
+      }
       if (isMonthlyOnlyAccount(account)) {
         return null;
       }
@@ -237,6 +240,9 @@ function windowUsedAccountEquivalents(
   let includedAccounts = 0;
 
   for (const account of overview.accounts) {
+    if (account.synthetic) {
+      continue;
+    }
     const windowMinutes = windowKey === "primary" ? account.windowMinutesPrimary : account.windowMinutesSecondary;
     const remainingPercent =
       windowKey === "primary" ? account.usage?.primaryRemainingPercent : account.usage?.secondaryRemainingPercent;
@@ -266,6 +272,9 @@ function windowProjectedAccountEquivalents(
   const nowMs = Date.now();
 
   for (const account of overview.accounts) {
+    if (account.synthetic) {
+      continue;
+    }
     const windowMinutes = windowKey === "primary" ? account.windowMinutesPrimary : account.windowMinutesSecondary;
     const remainingPercent =
       windowKey === "primary" ? account.usage?.primaryRemainingPercent : account.usage?.secondaryRemainingPercent;
@@ -308,6 +317,9 @@ function windowIncludedAccountCount(
   let includedAccounts = 0;
 
   for (const account of overview.accounts) {
+    if (account.synthetic) {
+      continue;
+    }
     const windowMinutes = windowKey === "primary" ? account.windowMinutesPrimary : account.windowMinutesSecondary;
     const remainingPercent =
       windowKey === "primary" ? account.usage?.primaryRemainingPercent : account.usage?.secondaryRemainingPercent;
@@ -812,6 +824,6 @@ export function buildDashboardView(
         ? projections.weeklyCreditPace
         : overview.weeklyCreditPace !== undefined
           ? overview.weeklyCreditPace
-          : buildWeeklyCreditPace(overview.accounts),
+          : buildWeeklyCreditPace(overview.accounts.filter((account) => !account.synthetic)),
   };
 }

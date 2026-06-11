@@ -21,6 +21,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.core.auth.guardian import build_auth_guardian_scheduler
 from app.modules.claude_sidecar.quota_poller import build_claude_sidecar_quota_poller
+from app.modules.claude_sidecar.usage_collector import build_claude_sidecar_usage_collector
 from app.core.bootstrap import ensure_auto_bootstrap_token, log_bootstrap_token
 from app.core.clients.http import close_http_client, init_http_client
 from app.core.config.settings import _bridge_advertise_hostname_is_replica_specific, get_settings
@@ -154,6 +155,7 @@ async def lifespan(app: FastAPI):
     quota_planner_scheduler = build_quota_planner_scheduler()
     auth_guardian_scheduler = build_auth_guardian_scheduler()
     claude_sidecar_quota_poller = build_claude_sidecar_quota_poller()
+    claude_sidecar_usage_collector = build_claude_sidecar_usage_collector()
     await usage_scheduler.start()
     await api_key_limit_reset_scheduler.start()
     await model_scheduler.start()
@@ -161,6 +163,7 @@ async def lifespan(app: FastAPI):
     await quota_planner_scheduler.start()
     await auth_guardian_scheduler.start()
     await claude_sidecar_quota_poller.start()
+    await claude_sidecar_usage_collector.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
         import uvicorn
 
@@ -315,6 +318,7 @@ async def lifespan(app: FastAPI):
             metrics_server.should_exit = True
 
         await cache_poller.stop()
+        await claude_sidecar_usage_collector.stop()
         await claude_sidecar_quota_poller.stop()
         await quota_planner_scheduler.stop()
         await auth_guardian_scheduler.stop()

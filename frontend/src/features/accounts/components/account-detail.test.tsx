@@ -76,9 +76,15 @@ describe("AccountDetail", () => {
       modelCount: 4,
       resetAtPrimary: "2026-06-10T17:00:00+00:00",
       lastRefreshAt: "2026-06-10T12:00:00+00:00",
+      usage: {
+        primaryRemainingPercent: 75,
+        secondaryRemainingPercent: 96,
+      },
+      resetAtSecondary: "2026-06-17T12:00:00+00:00",
       sidecarAuths: [
         {
           name: "claude-1",
+          authIndex: "0",
           email: "exceeded@example.com",
           status: "active",
           quotaExceeded: true,
@@ -86,6 +92,14 @@ describe("AccountDetail", () => {
           modelsExceeded: ["claude-opus-4"],
           success: 4,
           failed: 1,
+          planType: "custom",
+          primaryRemainingPercent: 0,
+          secondaryRemainingPercent: 96,
+          primaryUsedTokens: 25,
+          secondaryUsedTokens: 25,
+          primaryTokenBudget: 100,
+          secondaryTokenBudget: 700,
+          confidence: "estimated",
         },
       ],
     });
@@ -108,8 +122,11 @@ describe("AccountDetail", () => {
     );
 
     expect(screen.getByText("exceeded@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Estimated 5h remaining")).toBeInTheDocument();
     expect(screen.getByText(/Exhausted — recovers/)).toBeInTheDocument();
     expect(screen.getByText(/claude-opus-4/)).toBeInTheDocument();
+    expect(screen.getByText(/Custom/)).toBeInTheDocument();
+    expect(screen.getByText(/25 \/ 100 tok/)).toBeInTheDocument();
   });
 
   it("lets operators change account routing policy", async () => {

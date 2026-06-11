@@ -39,6 +39,7 @@ function account(overrides: Partial<AccountSummary> & Pick<AccountSummary, "acco
     remainingCreditsMonthly: overrides.remainingCreditsMonthly ?? null,
     auth: overrides.auth ?? null,
     additionalQuotas: overrides.additionalQuotas ?? [],
+    synthetic: overrides.synthetic,
     sidecarAuths: overrides.sidecarAuths ?? [],
     isEmailDuplicate: overrides.isEmailDuplicate,
   };
@@ -252,6 +253,27 @@ describe("buildRemainingItems", () => {
 
     expect(items[0].label).toBe("one@example.com");
     expect(items[1].label).toBe("two@example.com");
+  });
+
+  it("excludes synthetic sidecar accounts even when usage is populated", () => {
+    const items = buildRemainingItems(
+      [
+        account({ accountId: "acc-1", email: "one@example.com" }),
+        account({
+          accountId: "claude-sidecar",
+          email: "cliproxyapi.local",
+          synthetic: true,
+          usage: {
+            primaryRemainingPercent: 75,
+            secondaryRemainingPercent: 96,
+          },
+        }),
+      ],
+      null,
+      "primary",
+    );
+
+    expect(items.map((item) => item.accountId)).toEqual(["acc-1"]);
   });
 
   it("appends compact account id only when backend marks the slot duplicate", () => {

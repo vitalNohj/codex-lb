@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import naive_utc_to_epoch, utcnow
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountStatus, ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.schemas import AccountSummary
+from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarQuotaSnapshot, snapshot_to_json
 from app.modules.dashboard.weekly_pace import _weekly_timing
 from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.repository import UsageRepository
 
 pytestmark = pytest.mark.integration
@@ -173,6 +175,79 @@ async def test_dashboard_overview_includes_claude_sidecar_synthetic_account(asyn
     assert sidecar["kind"] == "sidecar"
     assert sidecar["provider"] == "claude"
     # Real account aggregates should not be polluted by the synthetic entry.
+    assert payload["summary"]["primaryWindow"]["capacityCredits"] in (None, 0, pytest.approx(0.0))
+
+
+@pytest.mark.asyncio
+async def test_dashboard_overview_sidecar_estimated_usage_does_not_change_aggregates(async_client, db_setup):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "0",
+                    "email": "claude@example.com",
+                    "planType": "custom",
+                    "primaryTokenBudget": 100,
+                    "secondaryTokenBudget": 700,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=now,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-1",
+                auth_index="0",
+                email="claude@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=1,
+                failed=0,
+                last_refresh=None,
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=now.replace(tzinfo=None),
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="dash-claude-usage-1",
+                timestamp=now - timedelta(minutes=30),
+                auth_index="0",
+                source="claude@example.com",
+                provider="claude",
+                model="claude-sonnet",
+                alias="claude",
+                endpoint="POST /v1/chat/completions",
+                auth_type="oauth",
+                total_tokens=25,
+            )
+        )
+        await session.commit()
+
+    overview = await async_client.get("/api/dashboard/overview")
+    assert overview.status_code == 200
+    payload = overview.json()
+    sidecar = next(account for account in payload["accounts"] if account["accountId"] == "claude-sidecar")
+    assert sidecar["usage"]["primaryRemainingPercent"] == 75.0
     assert payload["summary"]["primaryWindow"]["capacityCredits"] in (None, 0, pytest.approx(0.0))
 
 

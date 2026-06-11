@@ -171,6 +171,10 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["limitWarmupCooldownSeconds"] == 7200
     assert payload["limitWarmupMinAvailablePercent"] == 99.0
     assert payload["weeklyPaceWorkingDays"] == "0,1,2,3,4"
+    assert payload["claudeSidecarAuthPlans"] == []
+    assert payload["claudeSidecarUsagePollIntervalSeconds"] == 15.0
+    assert payload["claudeSidecarUsageQueueBatchSize"] == 100
+    assert payload["claudeSidecarUsageCollectionEnabled"] is True
 
 
 @pytest.mark.asyncio
@@ -535,12 +539,38 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_managemen
             "claudeSidecarEnabled": True,
             "claudeSidecarManagementKey": " mgmt-supersecret ",
             "claudeSidecarQuotaPollIntervalSeconds": 90,
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "auth-1",
+                    "email": "claude@example.com",
+                    "source": "claude@example.com",
+                    "planType": "max5",
+                    "primaryTokenBudget": 88_000,
+                    "secondaryTokenBudget": 616_000,
+                }
+            ],
+            "claudeSidecarUsagePollIntervalSeconds": 20,
+            "claudeSidecarUsageQueueBatchSize": 50,
+            "claudeSidecarUsageCollectionEnabled": False,
         },
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["claudeSidecarManagementKeyConfigured"] is True
     assert payload["claudeSidecarQuotaPollIntervalSeconds"] == 90.0
+    assert payload["claudeSidecarAuthPlans"] == [
+        {
+            "authIndex": "auth-1",
+            "email": "claude@example.com",
+            "source": "claude@example.com",
+            "planType": "max5",
+            "primaryTokenBudget": 88_000,
+            "secondaryTokenBudget": 616_000,
+        }
+    ]
+    assert payload["claudeSidecarUsagePollIntervalSeconds"] == 20.0
+    assert payload["claudeSidecarUsageQueueBatchSize"] == 50
+    assert payload["claudeSidecarUsageCollectionEnabled"] is False
     assert "mgmt-supersecret" not in response.text
 
     response = await async_client.put("/api/settings", json={"claudeSidecarEnabled": True})
@@ -548,6 +578,10 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_managemen
     payload = response.json()
     assert payload["claudeSidecarManagementKeyConfigured"] is True
     assert payload["claudeSidecarQuotaPollIntervalSeconds"] == 90.0
+    assert payload["claudeSidecarAuthPlans"][0]["authIndex"] == "auth-1"
+    assert payload["claudeSidecarUsagePollIntervalSeconds"] == 20.0
+    assert payload["claudeSidecarUsageQueueBatchSize"] == 50
+    assert payload["claudeSidecarUsageCollectionEnabled"] is False
     assert "mgmt-supersecret" not in response.text
 
     response = await async_client.put("/api/settings", json={"claudeSidecarClearManagementKey": True})

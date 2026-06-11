@@ -11,6 +11,9 @@ from app.db.models import UsageHistory
 from app.modules.accounts.mappers import build_account_summaries
 from app.modules.accounts.schemas import AccountRequestUsage
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
+from app.modules.claude_sidecar.quota import snapshot_from_json
+from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
+from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.dashboard.builders import (
     build_dashboard_overview_summary,
     build_overview_timeframe,
@@ -25,6 +28,7 @@ from app.modules.dashboard.schemas import (
     DepletionResponse,
 )
 from app.modules.dashboard.weekly_pace import build_weekly_credit_pace
+from app.modules.settings.service import parse_claude_sidecar_auth_plans
 from app.modules.usage.builders import (
     align_bucket_window_start,
     build_activity_summaries,
@@ -53,8 +57,13 @@ def _parse_weekly_pace_working_days(value: str) -> set[int]:
 
 
 class DashboardService:
-    def __init__(self, repo: DashboardRepository) -> None:
+    def __init__(
+        self,
+        repo: DashboardRepository,
+        claude_usage_repo: ClaudeSidecarUsageRepository | None = None,
+    ) -> None:
         self._repo = repo
+        self._claude_usage_repo = claude_usage_repo
         self._encryptor = TokenEncryptor()
 
     async def get_overview(
@@ -162,7 +171,17 @@ class DashboardService:
             cached_input_tokens=usage_summary.cached_input_tokens,
             total_cost_usd=usage_summary.total_cost_usd,
         )
-        return build_claude_sidecar_summary(settings, request_usage)
+        estimates = None
+        if self._claude_usage_repo is not None:
+            now = utcnow()
+            events = await self._claude_usage_repo.list_events_since(now - SECONDARY_WINDOW)
+            estimates = build_claude_usage_estimates(
+                events=events,
+                plans=parse_claude_sidecar_auth_plans(settings.claude_sidecar_auth_plans_json),
+                snapshot=snapshot_from_json(settings.claude_sidecar_quota_state_json),
+                now=now,
+            )
+        return build_claude_sidecar_summary(settings, request_usage, estimates)
 
     async def get_projections(self) -> DashboardProjectionsResponse:
         now = utcnow()

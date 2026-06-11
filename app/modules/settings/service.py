@@ -13,6 +13,16 @@ from app.modules.usage.additional_quota_keys import (
 
 
 @dataclass(frozen=True, slots=True)
+class ClaudeSidecarAuthPlanData:
+    auth_index: str | None
+    email: str | None
+    source: str | None
+    plan_type: str
+    primary_token_budget: int | None
+    secondary_token_budget: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSettingsData:
     sticky_threads_enabled: bool
     upstream_stream_transport: str
@@ -57,6 +67,10 @@ class DashboardSettingsData:
     claude_sidecar_last_model_count: int | None
     claude_sidecar_management_key_configured: bool
     claude_sidecar_quota_poll_interval_seconds: float
+    claude_sidecar_auth_plans: list[ClaudeSidecarAuthPlanData]
+    claude_sidecar_usage_poll_interval_seconds: float
+    claude_sidecar_usage_queue_batch_size: int
+    claude_sidecar_usage_collection_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +115,10 @@ class DashboardSettingsUpdateData:
     claude_sidecar_management_key: str | None
     claude_sidecar_clear_management_key: bool
     claude_sidecar_quota_poll_interval_seconds: float
+    claude_sidecar_auth_plans: list[ClaudeSidecarAuthPlanData]
+    claude_sidecar_usage_poll_interval_seconds: float
+    claude_sidecar_usage_queue_batch_size: int
+    claude_sidecar_usage_collection_enabled: bool
 
 
 class SettingsService:
@@ -173,6 +191,10 @@ class SettingsService:
             claude_sidecar_models_cache_ttl_seconds=payload.claude_sidecar_models_cache_ttl_seconds,
             claude_sidecar_management_key_encrypted=management_key_encrypted,
             claude_sidecar_quota_poll_interval_seconds=payload.claude_sidecar_quota_poll_interval_seconds,
+            claude_sidecar_auth_plans_json=_dump_claude_sidecar_auth_plans(payload.claude_sidecar_auth_plans),
+            claude_sidecar_usage_poll_interval_seconds=payload.claude_sidecar_usage_poll_interval_seconds,
+            claude_sidecar_usage_queue_batch_size=payload.claude_sidecar_usage_queue_batch_size,
+            claude_sidecar_usage_collection_enabled=payload.claude_sidecar_usage_collection_enabled,
         )
         return self._to_data(row)
 
@@ -235,6 +257,10 @@ class SettingsService:
             claude_sidecar_last_model_count=row.claude_sidecar_last_model_count,
             claude_sidecar_management_key_configured=row.claude_sidecar_management_key_encrypted is not None,
             claude_sidecar_quota_poll_interval_seconds=row.claude_sidecar_quota_poll_interval_seconds,
+            claude_sidecar_auth_plans=_parse_claude_sidecar_auth_plans(row.claude_sidecar_auth_plans_json),
+            claude_sidecar_usage_poll_interval_seconds=row.claude_sidecar_usage_poll_interval_seconds,
+            claude_sidecar_usage_queue_batch_size=row.claude_sidecar_usage_queue_batch_size,
+            claude_sidecar_usage_collection_enabled=row.claude_sidecar_usage_collection_enabled,
         )
 
 
@@ -301,3 +327,89 @@ def _dump_claude_sidecar_model_prefixes(prefixes: list[str]) -> str:
     if not normalized:
         raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
     return json.dumps(normalized, separators=(",", ":"))
+
+
+def _parse_claude_sidecar_auth_plans(raw: str | None) -> list[ClaudeSidecarAuthPlanData]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    plans: list[ClaudeSidecarAuthPlanData] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        auth_index = _optional_str(entry.get("auth_index"))
+        email = _optional_str(entry.get("email"))
+        source = _optional_str(entry.get("source"))
+        plan_type = _optional_str(entry.get("plan_type"))
+        if plan_type not in {"pro", "max5", "max20", "custom"}:
+            continue
+        if not (auth_index or email or source):
+            continue
+        primary_budget = _optional_positive_int(entry.get("primary_token_budget"))
+        secondary_budget = _optional_positive_int(entry.get("secondary_token_budget"))
+        if plan_type == "custom" and (primary_budget is None or secondary_budget is None):
+            continue
+        plans.append(
+            ClaudeSidecarAuthPlanData(
+                auth_index=auth_index,
+                email=email,
+                source=source,
+                plan_type=plan_type,
+                primary_token_budget=primary_budget,
+                secondary_token_budget=secondary_budget,
+            )
+        )
+    return plans
+
+
+def parse_claude_sidecar_auth_plans(raw: str | None) -> list[ClaudeSidecarAuthPlanData]:
+    return _parse_claude_sidecar_auth_plans(raw)
+
+
+def _dump_claude_sidecar_auth_plans(plans: list[ClaudeSidecarAuthPlanData]) -> str:
+    payload: list[dict[str, int | str | None]] = []
+    seen: set[tuple[str | None, str | None, str | None]] = set()
+    for plan in plans:
+        key = (plan.auth_index, plan.email, plan.source)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not (plan.auth_index or plan.email or plan.source):
+            continue
+        if plan.plan_type not in {"pro", "max5", "max20", "custom"}:
+            continue
+        if plan.plan_type == "custom" and (
+            plan.primary_token_budget is None or plan.secondary_token_budget is None
+        ):
+            raise ValueError("custom Claude auth plan requires both token budgets")
+        payload.append(
+            {
+                "auth_index": plan.auth_index,
+                "email": plan.email,
+                "source": plan.source,
+                "plan_type": plan.plan_type,
+                "primary_token_budget": plan.primary_token_budget,
+                "secondary_token_budget": plan.secondary_token_budget,
+            }
+        )
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _optional_str(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _optional_positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    return None

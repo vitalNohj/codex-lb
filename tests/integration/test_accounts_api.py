@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.core.auth import DEFAULT_EMAIL, generate_unique_account_id, parse_auth_json
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountStatus, ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -583,3 +583,92 @@ async def test_accounts_list_sidecar_quota_all_exceeded_sets_quota_exceeded(asyn
     assert sidecar is not None
     assert sidecar["status"] == "quota_exceeded"
     assert sidecar["resetAtPrimary"] == "2026-06-10T13:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_accounts_list_sidecar_includes_estimated_usage(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "0",
+                    "email": "claude@example.com",
+                    "source": "claude@example.com",
+                    "planType": "custom",
+                    "primaryTokenBudget": 100,
+                    "secondaryTokenBudget": 700,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=now,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-1",
+                auth_index="0",
+                email="claude@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=4,
+                failed=0,
+                last_refresh=None,
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=now.replace(tzinfo=None),
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="claude-usage-1",
+                timestamp=now - timedelta(minutes=30),
+                auth_index="0",
+                source="claude@example.com",
+                provider="claude",
+                model="claude-sonnet",
+                alias="claude",
+                endpoint="POST /v1/chat/completions",
+                auth_type="oauth",
+                total_tokens=25,
+                input_tokens=10,
+                output_tokens=15,
+                reasoning_tokens=0,
+                cached_tokens=0,
+                failed=False,
+            )
+        )
+        await session.commit()
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    sidecar = next(
+        account for account in accounts.json()["accounts"] if account["accountId"] == "claude-sidecar"
+    )
+    assert sidecar["usage"]["primaryRemainingPercent"] == 75.0
+    assert sidecar["usage"]["secondaryRemainingPercent"] == pytest.approx(96.428571)
+    assert sidecar["windowMinutesPrimary"] == 300
+    assert sidecar["windowMinutesSecondary"] == 10080
+    auth = sidecar["sidecarAuths"][0]
+    assert auth["authIndex"] == "0"
+    assert auth["planType"] == "custom"
+    assert auth["primaryUsedTokens"] == 25
+    assert auth["primaryTokenBudget"] == 100
+    assert auth["confidence"] == "estimated"

@@ -76,12 +76,28 @@ describe("DashboardSettingsSchema", () => {
       claudeSidecarModelsCacheTtlSeconds: 5,
       claudeSidecarLastHealthStatus: "healthy",
       claudeSidecarLastModelCount: 3,
+      claudeSidecarAuthPlans: [
+        {
+          authIndex: "0",
+          email: "claude@example.com",
+          planType: "max5",
+          primaryTokenBudget: 88000,
+          secondaryTokenBudget: 616000,
+        },
+      ],
+      claudeSidecarUsagePollIntervalSeconds: 20,
+      claudeSidecarUsageQueueBatchSize: 50,
+      claudeSidecarUsageCollectionEnabled: false,
     });
 
     expect(parsed.claudeSidecarEnabled).toBe(true);
     expect(parsed.claudeSidecarApiKeyConfigured).toBe(true);
     expect(parsed.claudeSidecarModelPrefixes).toEqual(["claude", "anthropic"]);
     expect(parsed.claudeSidecarLastModelCount).toBe(3);
+    expect(parsed.claudeSidecarAuthPlans[0]?.planType).toBe("max5");
+    expect(parsed.claudeSidecarUsagePollIntervalSeconds).toBe(20);
+    expect(parsed.claudeSidecarUsageQueueBatchSize).toBe(50);
+    expect(parsed.claudeSidecarUsageCollectionEnabled).toBe(false);
   });
 
   it("parses legacy settings payload and applies defaults for missing routing fields", () => {
@@ -213,10 +229,24 @@ describe("SettingsUpdateRequestSchema", () => {
       claudeSidecarConnectTimeoutSeconds: 2,
       claudeSidecarRequestTimeoutSeconds: 60,
       claudeSidecarModelsCacheTtlSeconds: 5,
+      claudeSidecarAuthPlans: [
+        {
+          authIndex: "0",
+          email: "claude@example.com",
+          planType: "custom",
+          primaryTokenBudget: 100,
+          secondaryTokenBudget: 700,
+        },
+      ],
+      claudeSidecarUsagePollIntervalSeconds: 20,
+      claudeSidecarUsageQueueBatchSize: 50,
+      claudeSidecarUsageCollectionEnabled: true,
     });
 
     expect(parsed.claudeSidecarApiKey).toBe("secret");
     expect(parsed.claudeSidecarModelPrefixes).toEqual(["claude"]);
+    expect(parsed.claudeSidecarAuthPlans?.[0]?.planType).toBe("custom");
+    expect(parsed.claudeSidecarUsageQueueBatchSize).toBe(50);
   });
 
   it("accepts long session lifetimes above 30 days", () => {

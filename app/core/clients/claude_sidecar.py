@@ -156,6 +156,28 @@ class ClaudeSidecarClient:
                 files.append(cast(Mapping[str, JsonValue], entry))
         return files
 
+    async def pop_usage_queue(self, count: int) -> list[Mapping[str, JsonValue]]:
+        count = max(1, int(count))
+        url = f"{self.base_url}/v0/management/usage-queue?count={count}"
+        try:
+            async with lease_http_session() as session:
+                async with session.get(url, headers=self._management_headers(), timeout=self._timeout()) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, "fetch Claude sidecar usage queue")) from exc
+
+        if not isinstance(data, list):
+            raise ClaudeSidecarError(502, "Invalid response format from Claude sidecar usage queue", body=data)
+        records: list[Mapping[str, JsonValue]] = []
+        for entry in data:
+            if is_json_mapping(entry):
+                records.append(cast(Mapping[str, JsonValue], entry))
+        return records
+
     async def list_models_cached(self) -> list[SidecarModel]:
         now = time.monotonic()
         ttl = self._config.models_cache_ttl_seconds

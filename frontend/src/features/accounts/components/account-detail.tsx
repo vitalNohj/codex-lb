@@ -17,7 +17,7 @@ import type {
 import { useAccountTrends } from "@/features/accounts/hooks/use-accounts";
 import type { AccountProxyBindingRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
-import { formatDateTimeInline, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
+import { formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
 
 export type AccountDetailProps = {
   account: AccountSummary | null;
@@ -160,6 +160,9 @@ export function AccountDetail({
 function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
   const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
   const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
+  const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
+  const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
+  const hasEstimatedUsage = primaryRemaining !== null || secondaryRemaining !== null;
   return (
     <div
       key={account.accountId}
@@ -187,6 +190,19 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
         <SyntheticField label="Last quota check" value={lastQuotaCheck ?? "Never"} />
       </div>
 
+      {hasEstimatedUsage ? (
+        <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
+          <SyntheticField
+            label="Estimated 5h remaining"
+            value={`${formatPercentNullable(primaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`}
+          />
+          <SyntheticField
+            label="Estimated weekly remaining"
+            value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
+          />
+        </div>
+      ) : null}
+
       {account.sidecarAuths && account.sidecarAuths.length > 0 ? (
         <div className="space-y-1 rounded-lg border bg-card/40 p-3 text-sm">
           <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
@@ -205,11 +221,24 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
                   <div className="min-w-0 leading-tight">
                     <div className="truncate text-sm font-medium">{auth.email ?? auth.name}</div>
                     <div className="truncate text-[11px] text-muted-foreground">
+                      {auth.authIndex ? `auth_index ${auth.authIndex} | ` : ""}
                       {auth.quotaExceeded
                         ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
                         : "Ready"}
                       {auth.modelsExceeded && auth.modelsExceeded.length > 0
                         ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
+                        : ""}
+                    </div>
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      {auth.planType ? `${formatSlug(auth.planType)} | ` : "Plan required | "}
+                      5h {formatPercentNullable(auth.primaryRemainingPercent ?? null)}
+                      {auth.primaryUsedTokens != null && auth.primaryTokenBudget != null
+                        ? ` (${auth.primaryUsedTokens.toLocaleString()} / ${auth.primaryTokenBudget.toLocaleString()} tok)`
+                        : ""}
+                      {" | "}
+                      weekly {formatPercentNullable(auth.secondaryRemainingPercent ?? null)}
+                      {auth.secondaryUsedTokens != null && auth.secondaryTokenBudget != null
+                        ? ` (${auth.secondaryUsedTokens.toLocaleString()} / ${auth.secondaryTokenBudget.toLocaleString()} tok)`
                         : ""}
                     </div>
                   </div>

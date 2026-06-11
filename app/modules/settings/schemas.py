@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.modules.shared.schemas import DashboardModel
 
@@ -55,6 +55,33 @@ class AdditionalQuotaPolicy(DashboardModel):
     model_ids: list[str] = Field(default_factory=list)
 
 
+class ClaudeSidecarAuthPlan(DashboardModel):
+    auth_index: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    source: str | None = Field(default=None, max_length=255)
+    plan_type: str = Field(pattern=r"^(pro|max5|max20|custom)$")
+    primary_token_budget: int | None = Field(default=None, gt=0)
+    secondary_token_budget: int | None = Field(default=None, gt=0)
+
+    @field_validator("auth_index", "email", "source")
+    @classmethod
+    def _normalize_optional_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def _validate_identity_and_budget(self) -> "ClaudeSidecarAuthPlan":
+        if not (self.auth_index or self.email or self.source):
+            raise ValueError("Claude auth plan must include auth_index, email, or source")
+        if self.plan_type == "custom" and (
+            self.primary_token_budget is None or self.secondary_token_budget is None
+        ):
+            raise ValueError("custom Claude auth plan requires both token budgets")
+        return self
+
+
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
     upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
@@ -102,6 +129,10 @@ class DashboardSettingsResponse(DashboardModel):
     claude_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     claude_sidecar_management_key_configured: bool = False
     claude_sidecar_quota_poll_interval_seconds: float = Field(default=60.0, gt=0)
+    claude_sidecar_auth_plans: list[ClaudeSidecarAuthPlan] = Field(default_factory=list)
+    claude_sidecar_usage_poll_interval_seconds: float = Field(default=15.0, gt=0)
+    claude_sidecar_usage_queue_batch_size: int = Field(default=100, gt=0)
+    claude_sidecar_usage_collection_enabled: bool = True
 
 
 
@@ -152,6 +183,10 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     claude_sidecar_management_key: str | None = Field(default=None, max_length=4096)
     claude_sidecar_clear_management_key: bool | None = None
     claude_sidecar_quota_poll_interval_seconds: float | None = Field(default=None, gt=0)
+    claude_sidecar_auth_plans: list[ClaudeSidecarAuthPlan] | None = None
+    claude_sidecar_usage_poll_interval_seconds: float | None = Field(default=None, gt=0)
+    claude_sidecar_usage_queue_batch_size: int | None = Field(default=None, gt=0, le=1000)
+    claude_sidecar_usage_collection_enabled: bool | None = None
 
     @field_validator("warmup_model")
     @classmethod

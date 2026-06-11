@@ -17,6 +17,7 @@ from app.modules.api_keys.service import ApiKeysService
 from app.modules.audit.repository import AuditRepository
 from app.modules.audit.service import AuditLogsService
 from app.modules.claude_sidecar.service import ClaudeSidecarService
+from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.dashboard.repository import DashboardRepository
 from app.modules.dashboard.service import DashboardService
 from app.modules.dashboard_auth.repository import DashboardAuthRepository
@@ -153,6 +154,7 @@ def get_accounts_context(
     additional_usage_repository = AdditionalUsageRepository(session)
     limit_warmup_repository = LimitWarmupRepository(session)
     settings_repository = SettingsRepository(session)
+    claude_usage_repository = ClaudeSidecarUsageRepository(session)
     service = AccountsService(
         repository,
         usage_repository,
@@ -160,6 +162,7 @@ def get_accounts_context(
         limit_warmup_repository,
         auth_manager=AuthManager(repository, refresh_repo_factory=_accounts_repo_context),
         settings_repo=settings_repository,
+        claude_usage_repo=claude_usage_repository,
     )
     return AccountsContext(
         session=session,
@@ -284,7 +287,8 @@ def get_claude_sidecar_context(
     session: AsyncSession = Depends(get_session),
 ) -> ClaudeSidecarContext:
     settings_repository = SettingsRepository(session)
-    service = ClaudeSidecarService(settings_repository)
+    claude_usage_repository = ClaudeSidecarUsageRepository(session)
+    service = ClaudeSidecarService(settings_repository, claude_usage_repository)
     return ClaudeSidecarContext(session=session, settings_repository=settings_repository, service=service)
 
 
@@ -292,7 +296,8 @@ def get_dashboard_context(
     session: AsyncSession = Depends(get_session),
 ) -> DashboardContext:
     repository = DashboardRepository(session)
-    service = DashboardService(repository)
+    claude_usage_repository = ClaudeSidecarUsageRepository(session)
+    service = DashboardService(repository, claude_usage_repository)
     return DashboardContext(session=session, repository=repository, service=service)
 
 

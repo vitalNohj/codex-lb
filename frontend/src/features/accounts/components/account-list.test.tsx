@@ -543,4 +543,42 @@ describe("AccountList", () => {
       ),
     ).not.toBeInTheDocument();
   });
+
+  it("renders estimated quota rows for synthetic sidecar accounts", () => {
+    render(
+      <AccountList
+        accounts={accountList([
+          {
+            accountId: "claude-sidecar",
+            email: "cliproxyapi.local",
+            displayName: "Claude via CLIProxyAPI",
+            planType: "claude",
+            status: "active",
+            synthetic: true,
+            readOnly: true,
+            kind: "sidecar",
+            provider: "claude",
+            baseUrl: "http://127.0.0.1:8317",
+            limitWarmupEnabled: false,
+            usage: {
+              primaryRemainingPercent: 75,
+              secondaryRemainingPercent: 96,
+            },
+            resetAtPrimary: "2026-01-01T17:00:00.000Z",
+            resetAtSecondary: "2026-01-08T12:00:00.000Z",
+            windowMinutesPrimary: 300,
+            windowMinutesSecondary: 10080,
+            additionalQuotas: [],
+          },
+        ])}
+        selectedAccountId={null}
+        onSelect={() => {}}
+        onOpenImport={() => {}}
+        onOpenOauth={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("5h estimated")).toBeInTheDocument();
+    expect(screen.getByText("Weekly estimated")).toBeInTheDocument();
+  });
 });

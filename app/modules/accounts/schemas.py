@@ -72,6 +72,7 @@ class AccountAdditionalQuota(DashboardModel):
 
 class SidecarAuthAccount(DashboardModel):
     name: str
+    auth_index: str | None = None
     email: str | None = None
     status: str | None = None
     quota_exceeded: bool = False
@@ -79,6 +80,17 @@ class SidecarAuthAccount(DashboardModel):
     models_exceeded: list[str] = Field(default_factory=list)
     success: int = 0
     failed: int = 0
+    plan_type: str | None = None
+    usage_source: str | None = None
+    primary_remaining_percent: float | None = None
+    secondary_remaining_percent: float | None = None
+    primary_used_tokens: int | None = None
+    secondary_used_tokens: int | None = None
+    primary_token_budget: int | None = None
+    secondary_token_budget: int | None = None
+    reset_at_primary: datetime | None = None
+    reset_at_secondary: datetime | None = None
+    confidence: str | None = None
 
 
 class AccountSummary(DashboardModel):
