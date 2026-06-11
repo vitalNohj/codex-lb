@@ -65,9 +65,9 @@ def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model()
 
     payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
 
-    assert payload["model"] == "claude-sonnet-4-5"
-    assert payload["messages"] == [{"role": "user", "content": "hi"}]
-    assert payload["custom_flag"] == "kept"
+    assert payload.body["model"] == "claude-sonnet-4-5"
+    assert payload.body["messages"] == [{"role": "user", "content": "hi"}]
+    assert payload.body["custom_flag"] == "kept"
 
 
 def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() -> None:
@@ -80,7 +80,7 @@ def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() ->
 
     payload = build_sidecar_chat_payload(request, "cp_claude-fable-5", _config(prefixes=("cp-",)))
 
-    assert payload["model"] == "claude-fable-5"
+    assert payload.body["model"] == "claude-fable-5"
 
 
 def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
@@ -96,7 +96,7 @@ def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
                         {
                             "type": "tool_use",
                             "id": "call:abc.def",
-                            "name": "shell",
+                            "name": "Shell",
                             "input": {"command": "pwd"},
                         },
                     ],
@@ -107,8 +107,10 @@ def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
 
     payload = build_sidecar_chat_payload(request, "cp-claude-fable-5", _config(prefixes=("cp-",)))
 
-    tool_use = payload["messages"][1]["content"][1]
+    tool_use = payload.body["messages"][1]["content"][1]
     assert tool_use["id"] == "call_abc_def"
+    assert tool_use["name"] == "Bash"
+    assert payload.reverse_tool_names == {"Bash": "Shell"}
 
 
 def test_sanitize_sidecar_chat_tool_ids_keeps_tool_result_references_consistent() -> None:
@@ -171,8 +173,8 @@ def test_build_sidecar_chat_payload_sanitizes_openai_tool_call_ids() -> None:
 
     payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
 
-    assert payload["messages"][1]["tool_calls"][0]["id"] == "call_1_2"
-    assert payload["messages"][2]["tool_call_id"] == "call_1_2"
+    assert payload.body["messages"][1]["tool_calls"][0]["id"] == "call_1_2"
+    assert payload.body["messages"][2]["tool_call_id"] == "call_1_2"
 
 
 def test_ensure_stream_usage_requested_sets_or_overrides_include_usage() -> None:

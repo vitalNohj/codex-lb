@@ -28,6 +28,7 @@
 - [x] 5.5 Wire the sidecar branch into `/v1/chat/completions` without changing the existing Codex path.
 - [x] 5.6 Strip configured custom Claude sidecar alias prefixes from the forwarded sidecar payload while preserving the client-requested effective model for policy and logs.
 - [x] 5.7 Sanitize sidecar tool-use and tool-call IDs to Claude-compatible `[A-Za-z0-9_-]+` values before forwarding.
+- [x] 5.8 Map Cursor-native tool names to Claude Code-compatible names before sidecar forwarding and restore client tool names in sidecar responses.
 
 ## 6. Model catalog
 
