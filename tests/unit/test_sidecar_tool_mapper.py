@@ -9,7 +9,7 @@ from app.modules.proxy.sidecar_tool_mapper import (
 )
 
 
-def test_map_sidecar_chat_tool_names_maps_cursor_tools_and_drops_unknown_definitions() -> None:
+def test_map_sidecar_chat_tool_names_maps_cursor_tools_and_passes_through_unknown_definitions() -> None:
     body = {
         "model": "claude-fable-5",
         "tools": [
@@ -34,7 +34,7 @@ def test_map_sidecar_chat_tool_names_maps_cursor_tools_and_drops_unknown_definit
 
     result = map_sidecar_chat_tool_names(body)
 
-    assert [tool["function"]["name"] for tool in body["tools"]] == ["Bash", "Grep"]
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["Bash", "Grep", "UnknownTool"]
     assert body["messages"][0]["content"][0]["name"] == "Bash"
     assert result.reverse_tool_names == {"Bash": "Shell", "Grep": "SemanticSearch"}
 
@@ -100,6 +100,47 @@ def test_map_sidecar_chat_tool_names_maps_cursor_mcp_tools_and_tool_choice() -> 
         "Read": "FetchMcpResource",
         "Skill": "GenerateImage",
     }
+
+
+def test_reverse_sidecar_tool_names_in_response_restores_flat_tool_call_names() -> None:
+    reverse = {"Bash": "Shell"}
+    response = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "name": "Bash",
+                            "arguments": "{}",
+                        }
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ]
+    }
+
+    rewritten = reverse_sidecar_tool_names_in_response(response, reverse)
+
+    assert rewritten["choices"][0]["delta"]["tool_calls"][0]["name"] == "Shell"
+
+
+def test_map_sidecar_chat_tool_names_passes_through_flat_responses_shaped_tools() -> None:
+    body = {
+        "tools": [
+            {"type": "function", "name": "CustomMcpTool", "description": "test", "parameters": {"type": "object"}},
+        ],
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert body["tools"][0]["name"] == "CustomMcpTool"
+    assert result.reverse_tool_names == {}
 
 
 def test_sidecar_sse_tool_name_rewriter_rewrites_stream_chunks() -> None:
