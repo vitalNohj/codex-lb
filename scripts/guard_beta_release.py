@@ -17,7 +17,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from scripts.release_versions import ReleaseVersion, parse_version, read_project_versions, read_pyproject_version
+from scripts.release_versions import (
+    ReleaseVersion,
+    parse_version,
+    read_project_versions,
+    read_pyproject_version,
+    read_pyproject_version_text,
+)
 
 RELEASE_MANAGED_FILES = (
     "pyproject.toml",
@@ -146,6 +152,40 @@ def changed_release_version_files(root: Path, base_ref: str) -> list[str]:
     return changed
 
 
+def _read_ref_text(root: Path, ref: str, path: str) -> str:
+    proc = run_git(root, "show", f"{ref}:{path}")
+    return proc.stdout
+
+
+def _read_project_versions_at_ref(root: Path, ref: str) -> dict[str, str]:
+    package_data = json.loads(_read_ref_text(root, ref, "frontend/package.json"))
+    chart_text = _read_ref_text(root, ref, "deploy/helm/codex-lb/Chart.yaml")
+    uv_text = _read_ref_text(root, ref, "uv.lock")
+
+    def find(pattern: str, text: str, name: str) -> str:
+        match = re.search(pattern, text, flags=re.MULTILINE)
+        if not match:
+            raise GuardError(f"could not find {name} in {ref}")
+        return match.group(1)
+
+    return {
+        "pyproject.toml": read_pyproject_version_text(_read_ref_text(root, ref, "pyproject.toml")),
+        "app/__init__.py": find(
+            r'^__version__ = "([^"]+)"',
+            _read_ref_text(root, ref, "app/__init__.py"),
+            "app version",
+        ),
+        "frontend/package.json": package_data["version"],
+        "deploy/helm/codex-lb/Chart.yaml version": find(r"^version: (.+)$", chart_text, "chart version"),
+        "deploy/helm/codex-lb/Chart.yaml appVersion": find(r"^appVersion: (.+)$", chart_text, "chart appVersion"),
+        "uv.lock": find(
+            r'\[\[package\]\]\nname = "codex-lb"\nversion = "([^"]+)"\nsource = \{ editable = "\." \}',
+            uv_text,
+            "uv.lock codex-lb version",
+        ),
+    }
+
+
 def read_consistent_release_version(root: Path) -> ReleaseVersion:
     versions = read_project_versions(root)
     unique_versions = set(versions.values())
@@ -206,6 +246,12 @@ def guard_pull_request(root: Path, event: dict[str, Any], base_ref: str, head_re
     changed = changed_release_version_files(root, base_ref)
     if not changed:
         print("No release-managed version files changed; beta release PR guard passed.")
+        return
+
+    current_versions = read_project_versions(root)
+    base_versions = _read_project_versions_at_ref(root, base_ref)
+    if current_versions == base_versions:
+        print("No release-managed version files changed; release metadata is unchanged; beta release PR guard passed.")
         return
 
     release = read_consistent_release_version(root)
