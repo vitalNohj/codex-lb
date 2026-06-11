@@ -23,8 +23,10 @@ from app.modules.claude_sidecar.oauth_usage import (
 )
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
+    SidecarOAuthUsage,
     SidecarQuotaSnapshot,
     parse_auth_files,
+    snapshot_from_json,
     snapshot_to_json,
 )
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
@@ -102,7 +104,8 @@ class ClaudeSidecarQuotaPoller:
         if not config.management_key:
             return
         client = self._client_factory(config)
-        snapshot = await _classify_poll_result(client)
+        previous_snapshot = snapshot_from_json(settings_row.claude_sidecar_quota_state_json)
+        snapshot = await _classify_poll_result(client, previous_snapshot)
         await self._persist_snapshot(snapshot)
 
     async def _persist_snapshot(self, snapshot: SidecarQuotaSnapshot) -> None:
@@ -118,7 +121,10 @@ class ClaudeSidecarQuotaPoller:
             logger.warning("failed to persist Claude sidecar quota snapshot", exc_info=True)
 
 
-async def _classify_poll_result(client: ClaudeSidecarClient) -> SidecarQuotaSnapshot:
+async def _classify_poll_result(
+    client: ClaudeSidecarClient,
+    previous_snapshot: SidecarQuotaSnapshot | None = None,
+) -> SidecarQuotaSnapshot:
     now = datetime.now(timezone.utc)
     try:
         raw_files = await client.list_auth_files()
@@ -151,7 +157,7 @@ async def _classify_poll_result(client: ClaudeSidecarClient) -> SidecarQuotaSnap
             accounts=(),
         )
 
-    accounts = await _attach_oauth_usage(parse_auth_files(raw_files))
+    accounts = await _attach_oauth_usage(parse_auth_files(raw_files), previous_snapshot)
     return SidecarQuotaSnapshot(
         checked_at=now,
         status="healthy",
@@ -160,7 +166,11 @@ async def _classify_poll_result(client: ClaudeSidecarClient) -> SidecarQuotaSnap
     )
 
 
-async def _attach_oauth_usage(accounts: list[SidecarAuthQuota]) -> list[SidecarAuthQuota]:
+async def _attach_oauth_usage(
+    accounts: list[SidecarAuthQuota],
+    previous_snapshot: SidecarQuotaSnapshot | None = None,
+) -> list[SidecarAuthQuota]:
+    previous_usage = _previous_oauth_usage_by_key(previous_snapshot)
     enriched: list[SidecarAuthQuota] = []
     for account in accounts:
         usage = None
@@ -174,8 +184,36 @@ async def _attach_oauth_usage(accounts: list[SidecarAuthQuota]) -> list[SidecarA
                     account.email or account.auth_index or account.name,
                     exc,
                 )
+        if usage is None:
+            # Anthropic's OAuth usage endpoint intermittently rate-limits
+            # (HTTP 429); keep the last-known buckets so the dashboard's
+            # 5h/weekly bars do not flap to "Unavailable" between polls.
+            usage = previous_usage.get(_auth_identity_key(account))
         enriched.append(replace(account, oauth_usage=usage))
     return enriched
+
+
+def _previous_oauth_usage_by_key(
+    snapshot: SidecarQuotaSnapshot | None,
+) -> dict[str | None, SidecarOAuthUsage]:
+    if snapshot is None:
+        return {}
+    usage_by_key: dict[str | None, SidecarOAuthUsage] = {}
+    for account in snapshot.accounts:
+        key = _auth_identity_key(account)
+        if key is not None and account.oauth_usage is not None:
+            usage_by_key[key] = account.oauth_usage
+    return usage_by_key
+
+
+def _auth_identity_key(account: SidecarAuthQuota) -> str | None:
+    if account.auth_index:
+        return f"auth:{account.auth_index}"
+    if account.email:
+        return f"email:{account.email.lower()}"
+    if account.name:
+        return f"name:{account.name.lower()}"
+    return None
 
 
 def build_claude_sidecar_quota_poller() -> ClaudeSidecarQuotaPoller:

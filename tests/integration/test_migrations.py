@@ -870,3 +870,64 @@ async def test_free_account_monthly_migration_renames_only_free_usage_windows(tm
 
     assert free_windows == ["old-primary", "old-secondary", "old-primary"]
     assert paid_windows == ["primary", "secondary", None]
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_cost_backfill_migration_populates_cost(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-sidecar-cost-backfill.sqlite'}"
+
+    await to_thread.run_sync(
+        lambda: run_upgrade(
+            db_url,
+            "20260611_010000_add_claude_sidecar_usage_estimates",
+            bootstrap_legacy=True,
+        )
+    )
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, request_kind
+                    )
+                    VALUES
+                      (NULL, 'req_sidecar_1', '2026-06-10 00:00:00', 'cp-claude-fable-5', 'claude_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_sidecar_2', '2026-06-10 00:01:00', 'cp_claude-fable-5', 'claude_sidecar',
+                       2000000, 0, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_sidecar_unknown', '2026-06-10 00:02:00', 'cp-unknown-model', 'claude_sidecar',
+                       1000, 1000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_openai', '2026-06-10 00:03:00', 'gpt-5.2', NULL,
+                       1000, 1000, 0, 0, 100, 'success', 1.23, 'normal')
+                    """
+                )
+            )
+            await session.commit()
+
+        await to_thread.run_sync(
+            lambda: run_upgrade(
+                db_url,
+                "20260611_020000_backfill_claude_sidecar_request_log_costs",
+                bootstrap_legacy=False,
+            )
+        )
+
+        async with session_factory() as session:
+            rows = (
+                await session.execute(text("SELECT request_id, cost_usd FROM request_logs ORDER BY request_id"))
+            ).all()
+    finally:
+        await engine.dispose()
+
+    costs = {row[0]: row[1] for row in rows}
+    # Fable 5: $10/M input + $50/M output
+    assert costs["req_sidecar_1"] == pytest.approx(60.0)
+    assert costs["req_sidecar_2"] == pytest.approx(20.0)
+    assert costs["req_sidecar_unknown"] is None
+    assert costs["req_openai"] == pytest.approx(1.23)

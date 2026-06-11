@@ -43,6 +43,30 @@ async def test_add_log_ignores_closed_transaction(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_log_computes_cost_for_prefixed_claude_sidecar_model(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_claude_sidecar",
+            model="cp-claude-fable-5",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            source="claude_sidecar",
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        # Fable 5: $10/M input + $50/M output
+        assert persisted.cost_usd == pytest.approx(60.0)
+
+
+@pytest.mark.asyncio
 async def test_add_log_persists_request_kind(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:

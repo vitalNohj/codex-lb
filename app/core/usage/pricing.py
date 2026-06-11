@@ -275,6 +275,81 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=2.0,
         output_per_1m=30.0,
     ),
+    # Anthropic Claude pricing (June 2026 list prices, USD per 1M tokens).
+    # ``cached_input_per_1m`` maps to Anthropic's cache-hit (read) rate.
+    # These cover traffic proxied through the Claude sidecar; request logs
+    # may store prefixed model ids (e.g. ``cp-claude-fable-5``) which the
+    # alias patterns below resolve to these canonical entries.
+    "claude-fable-5": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+    ),
+    "claude-mythos-5": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+    ),
+    "claude-opus-4-8": ModelPrice(
+        input_per_1m=5.0,
+        cached_input_per_1m=0.5,
+        output_per_1m=25.0,
+    ),
+    "claude-opus-4-7": ModelPrice(
+        input_per_1m=5.0,
+        cached_input_per_1m=0.5,
+        output_per_1m=25.0,
+    ),
+    "claude-opus-4-6": ModelPrice(
+        input_per_1m=5.0,
+        cached_input_per_1m=0.5,
+        output_per_1m=25.0,
+    ),
+    "claude-opus-4-5": ModelPrice(
+        input_per_1m=5.0,
+        cached_input_per_1m=0.5,
+        output_per_1m=25.0,
+    ),
+    "claude-opus-4-1": ModelPrice(
+        input_per_1m=15.0,
+        cached_input_per_1m=1.5,
+        output_per_1m=75.0,
+    ),
+    "claude-opus-4": ModelPrice(
+        input_per_1m=15.0,
+        cached_input_per_1m=1.5,
+        output_per_1m=75.0,
+    ),
+    "claude-sonnet-4-6": ModelPrice(
+        input_per_1m=3.0,
+        cached_input_per_1m=0.3,
+        output_per_1m=15.0,
+    ),
+    "claude-sonnet-4-5": ModelPrice(
+        input_per_1m=3.0,
+        cached_input_per_1m=0.3,
+        output_per_1m=15.0,
+    ),
+    "claude-sonnet-4": ModelPrice(
+        input_per_1m=3.0,
+        cached_input_per_1m=0.3,
+        output_per_1m=15.0,
+    ),
+    "claude-3-7-sonnet": ModelPrice(
+        input_per_1m=3.0,
+        cached_input_per_1m=0.3,
+        output_per_1m=15.0,
+    ),
+    "claude-haiku-4-5": ModelPrice(
+        input_per_1m=1.0,
+        cached_input_per_1m=0.1,
+        output_per_1m=5.0,
+    ),
+    "claude-3-5-haiku": ModelPrice(
+        input_per_1m=0.8,
+        cached_input_per_1m=0.08,
+        output_per_1m=4.0,
+    ),
 }
 
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
@@ -302,6 +377,23 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "gpt-image-1.5*": "gpt-image-1.5",
     "gpt-image-1-mini*": "gpt-image-1-mini",
     "gpt-image-1*": "gpt-image-1",
+    # Claude aliases tolerate sidecar prefixes (``cp-claude-...``) and
+    # date-suffixed ids (``claude-opus-4-5-20251101``). The longest matching
+    # pattern wins, so version-specific patterns beat the family fallbacks.
+    "*claude-fable-5*": "claude-fable-5",
+    "*claude-mythos-5*": "claude-mythos-5",
+    "*claude-opus-4-8*": "claude-opus-4-8",
+    "*claude-opus-4-7*": "claude-opus-4-7",
+    "*claude-opus-4-6*": "claude-opus-4-6",
+    "*claude-opus-4-5*": "claude-opus-4-5",
+    "*claude-opus-4-1*": "claude-opus-4-1",
+    "*claude-opus-4*": "claude-opus-4",
+    "*claude-sonnet-4-6*": "claude-sonnet-4-6",
+    "*claude-sonnet-4-5*": "claude-sonnet-4-5",
+    "*claude-sonnet-4*": "claude-sonnet-4",
+    "*claude-3-7-sonnet*": "claude-3-7-sonnet",
+    "*claude-haiku-4-5*": "claude-haiku-4-5",
+    "*claude-3-5-haiku*": "claude-3-5-haiku",
 }
 
 
