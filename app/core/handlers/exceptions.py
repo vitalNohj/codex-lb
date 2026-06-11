@@ -111,11 +111,20 @@ def add_exception_handlers(app: FastAPI) -> None:
         exc: RequestValidationError,
     ) -> Response:
         first_message: str | None = None
+        first_param: str | None = None
+        first_input: str | None = None
         if exc.errors():
             first = exc.errors()[0]
             message = first.get("msg")
             if isinstance(message, str):
                 first_message = message
+            loc = first.get("loc", [])
+            if isinstance(loc, (list, tuple)):
+                joined = ".".join(str(part) for part in loc if part != "body")
+                if joined:
+                    first_param = joined
+            if "input" in first:
+                first_input = repr(first.get("input"))[:300]
         fmt = _error_format(request)
         if fmt == "dashboard":
             log_error_response(
@@ -132,19 +141,19 @@ def add_exception_handlers(app: FastAPI) -> None:
             )
         if fmt == "openai":
             error = openai_error("invalid_request_error", "Invalid request payload", error_type="invalid_request_error")
-            if exc.errors():
-                first = exc.errors()[0]
-                loc = first.get("loc", [])
-                if isinstance(loc, (list, tuple)):
-                    param = ".".join(str(part) for part in loc if part != "body")
-                    if param:
-                        error["error"]["param"] = param
+            if first_param:
+                error["error"]["param"] = first_param
+            log_detail = first_message or "Invalid request payload"
+            if first_param:
+                log_detail = f"{log_detail} param={first_param}"
+            if first_input:
+                log_detail = f"{log_detail} input={first_input}"
             log_error_response(
                 logger,
                 request,
                 400,
                 "invalid_request_error",
-                first_message or "Invalid request payload",
+                log_detail,
                 category="openai_error_response",
             )
             return JSONResponse(status_code=400, content=error)
