@@ -215,16 +215,16 @@ def _aggregate(estimates: Sequence[ClaudeAuthUsageEstimate]) -> ClaudeAggregateU
     secondary_budget = sum(estimate.secondary_token_budget or 0 for estimate in estimates)
     primary_used = sum(estimate.primary_used_tokens for estimate in estimates if estimate.primary_token_budget)
     secondary_used = sum(estimate.secondary_used_tokens for estimate in estimates if estimate.secondary_token_budget)
+    # Per-account remaining percents already prefer authoritative OAuth usage
+    # over local token estimates, so the aggregate must derive from them
+    # (budget-weighted) instead of redoing raw token math that would override
+    # OAuth-reported values.
     return ClaudeAggregateUsageEstimate(
-        primary_remaining_percent=(
-            _remaining_percent(primary_used, primary_budget)
-            if primary_budget
-            else _average_percent(estimate.primary_remaining_percent for estimate in estimates)
+        primary_remaining_percent=_weighted_remaining_percent(
+            ((estimate.primary_remaining_percent, estimate.primary_token_budget) for estimate in estimates),
         ),
-        secondary_remaining_percent=(
-            _remaining_percent(secondary_used, secondary_budget)
-            if secondary_budget
-            else _average_percent(estimate.secondary_remaining_percent for estimate in estimates)
+        secondary_remaining_percent=_weighted_remaining_percent(
+            ((estimate.secondary_remaining_percent, estimate.secondary_token_budget) for estimate in estimates),
         ),
         primary_used_tokens=primary_used,
         secondary_used_tokens=secondary_used,
@@ -236,11 +236,29 @@ def _aggregate(estimates: Sequence[ClaudeAuthUsageEstimate]) -> ClaudeAggregateU
     )
 
 
-def _average_percent(values) -> float | None:
-    candidates = [float(value) for value in values if value is not None]
-    if not candidates:
+def _weighted_remaining_percent(pairs) -> float | None:
+    """Budget-weighted average of per-account remaining percents.
+
+    Accounts without a budget contribute with weight 1 alongside budgeted
+    accounts only when no account has a budget; otherwise unbudgeted accounts
+    with a known percent are averaged in with the mean budget weight.
+    """
+    known: list[tuple[float, int | None]] = [
+        (float(percent), budget) for percent, budget in pairs if percent is not None
+    ]
+    if not known:
         return None
-    return sum(candidates) / len(candidates)
+    budgets = [budget for _, budget in known if budget]
+    if not budgets:
+        return sum(percent for percent, _ in known) / len(known)
+    default_weight = sum(budgets) / len(budgets)
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for percent, budget in known:
+        weight = float(budget) if budget else default_weight
+        weighted_sum += percent * weight
+        total_weight += weight
+    return weighted_sum / total_weight
 
 
 def _aggregate_confidence(
