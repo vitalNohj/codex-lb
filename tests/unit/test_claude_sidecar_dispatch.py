@@ -8,6 +8,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     ensure_stream_usage_requested,
     extract_usage,
     is_sidecar_model,
+    sanitize_sidecar_chat_tool_ids,
     sidecar_wire_model,
 )
 
@@ -80,6 +81,98 @@ def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() ->
     payload = build_sidecar_chat_payload(request, "cp_claude-fable-5", _config(prefixes=("cp-",)))
 
     assert payload["model"] == "claude-fable-5"
+
+
+def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cp-claude-fable-5",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "running tool"},
+                        {
+                            "type": "tool_use",
+                            "id": "call:abc.def",
+                            "name": "shell",
+                            "input": {"command": "pwd"},
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "cp-claude-fable-5", _config(prefixes=("cp-",)))
+
+    tool_use = payload["messages"][1]["content"][1]
+    assert tool_use["id"] == "call_abc_def"
+
+
+def test_sanitize_sidecar_chat_tool_ids_keeps_tool_result_references_consistent() -> None:
+    body = {
+        "model": "claude-fable-5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call:abc.def",
+                        "name": "shell",
+                        "input": {"command": "pwd"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call:abc.def",
+                        "content": "/tmp",
+                    }
+                ],
+            },
+        ],
+    }
+
+    sanitize_sidecar_chat_tool_ids(body)
+
+    tool_use = body["messages"][0]["content"][0]
+    tool_result = body["messages"][1]["content"][0]
+    assert tool_use["id"] == "call_abc_def"
+    assert tool_result["tool_use_id"] == "call_abc_def"
+
+
+def test_build_sidecar_chat_payload_sanitizes_openai_tool_call_ids() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call:1.2",
+                            "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call:1.2", "content": "ok"},
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    assert payload["messages"][1]["tool_calls"][0]["id"] == "call_1_2"
+    assert payload["messages"][2]["tool_call_id"] == "call_1_2"
 
 
 def test_ensure_stream_usage_requested_sets_or_overrides_include_usage() -> None:

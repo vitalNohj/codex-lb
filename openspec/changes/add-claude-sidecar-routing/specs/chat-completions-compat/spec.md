@@ -24,6 +24,13 @@ The service MUST forward the OpenAI-compatible chat-completions JSON payload to 
 - **AND** the forwarded payload includes `model: "claude-fable-5"`
 - **AND** request-limit and request-log records use the effective model `"cp_claude-fable-5"`
 
+#### Scenario: Sidecar payload sanitizes invalid tool IDs
+
+- **GIVEN** `claude_sidecar_enabled=true`
+- **WHEN** a client sends `POST /v1/chat/completions` whose messages include tool-use or tool-result IDs containing characters outside `[A-Za-z0-9_-]`
+- **THEN** the service forwards the request to the sidecar with those IDs rewritten to match `[A-Za-z0-9_-]+`
+- **AND** matching tool-use and tool-result references within the forwarded payload remain consistent
+
 #### Scenario: Enforced model controls sidecar dispatch
 
 - **GIVEN** an authenticated API key has `enforced_model: "claude-sonnet-4-5-20250929"`
