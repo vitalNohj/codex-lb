@@ -74,6 +74,11 @@ export function AccountListItem({
   const warmupMeta = account.limitWarmup
     ? `${formatSlug(account.limitWarmup.status)} | ${formatSlug(account.limitWarmup.model)} | ${formatDateTimeInline(account.limitWarmup.completedAt ?? account.limitWarmup.attemptedAt)}`
     : "No attempts";
+  const sidecarUsageLabel = account.sidecarAuths?.some((auth) => auth.usageSource === "oauth_usage")
+    ? "OAuth"
+    : primary !== null || secondary !== null
+      ? "estimated"
+      : "unavailable";
 
   return (
     <button
@@ -121,16 +126,10 @@ export function AccountListItem({
       </div>
       {account.synthetic ? (
         <div className="mt-2 grid gap-2 text-xs text-muted-foreground">
-          {primary !== null || secondary !== null ? (
-            <div className={cn("grid gap-2", primary !== null && secondary !== null ? "grid-cols-2" : "grid-cols-1")}>
-              {primary !== null ? (
-                <MiniQuotaRow label="5h estimated" percent={primary} resetAt={account.resetAtPrimary} />
-              ) : null}
-              {secondary !== null ? (
-                <MiniQuotaRow label="Weekly estimated" percent={secondary} resetAt={account.resetAtSecondary} />
-              ) : null}
-            </div>
-          ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <MiniQuotaRow label={`5h ${sidecarUsageLabel}`} percent={primary} resetAt={account.resetAtPrimary} />
+            <MiniQuotaRow label={`Weekly ${sidecarUsageLabel}`} percent={secondary} resetAt={account.resetAtSecondary} />
+          </div>
           <div className="flex items-center justify-between gap-2">
             <span>Health</span>
             <span className="truncate font-medium text-foreground">{formatSlug(account.healthStatus ?? account.status)}</span>

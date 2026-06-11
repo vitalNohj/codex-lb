@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,7 +13,11 @@ from app.core.clients.claude_sidecar import (
     ClaudeSidecarUnavailableError,
 )
 from app.modules.claude_sidecar import quota_poller as quota_poller_module
-from app.modules.claude_sidecar.quota import snapshot_from_json
+from app.modules.claude_sidecar.quota import (
+    SidecarOAuthUsage,
+    SidecarOAuthUsageBucket,
+    snapshot_from_json,
+)
 from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
 
 pytestmark = pytest.mark.unit
@@ -122,6 +126,7 @@ class _FakeClient:
             {
                 "provider": "claude",
                 "email": "ok@example.com",
+                "path": "/tmp/claude-ok@example.com.json",
                 "status": "active",
                 "quota": {"exceeded": False, "next_recover_at": None},
             }
@@ -179,6 +184,48 @@ async def test_poll_once_stores_healthy_snapshot(monkeypatch) -> None:
     assert len(snapshot.accounts) == 1
     assert snapshot.accounts[0].email == "ok@example.com"
     assert cache.invalidated == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_once_enriches_oauth_usage_without_storing_token(monkeypatch) -> None:
+    repo_holder: list[_FakeRepo] = []
+    _patch_environment(
+        monkeypatch,
+        settings=_FakeSettings(),
+        client_factory=_FakeClient,
+        repo_holder=repo_holder,
+    )
+
+    class _Credential:
+        access_token = "sk-ant-oat01-secret"
+
+    async def _load_credential(path: str | None):
+        assert path == "/tmp/claude-ok@example.com.json"
+        return _Credential()
+
+    async def _fetch_usage(_credential: _Credential) -> SidecarOAuthUsage:
+        return SidecarOAuthUsage(
+            five_hour=SidecarOAuthUsageBucket(remaining_percent=57.0, resets_at=None),
+            seven_day=SidecarOAuthUsageBucket(remaining_percent=82.0, resets_at=None),
+        )
+
+    monkeypatch.setattr(quota_poller_module, "load_claude_oauth_credential", _load_credential)
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_usage)
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_FakeClient)
+
+    await poller._poll_once()
+
+    repo = repo_holder[-1]
+    raw = repo.last_kwargs["claude_sidecar_quota_state_json"]
+    assert "sk-ant-oat01-secret" not in raw
+    snapshot = snapshot_from_json(raw)
+    assert snapshot is not None
+    usage = snapshot.accounts[0].oauth_usage
+    assert usage is not None
+    assert usage.five_hour is not None
+    assert usage.five_hour.remaining_percent == 57.0
+    assert usage.seven_day is not None
+    assert usage.seven_day.remaining_percent == 82.0
 
 
 @pytest.mark.asyncio

@@ -2,9 +2,9 @@
 
 ## Purpose
 
-`add-claude-sidecar-routing` deliberately deferred Claude quota visibility. CLIProxyAPI 7.1+ now exposes runtime quota state and per-request token telemetry on its Management API. This change polls hard quota state from `GET /v0/management/auth-files`, drains token telemetry from `GET /v0/management/usage-queue`, and surfaces both hard status and estimated 5-hour / weekly usage on the synthetic Claude account.
+`add-claude-sidecar-routing` deliberately deferred Claude quota visibility. CLIProxyAPI 7.1+ now exposes runtime quota state and per-request token telemetry on its Management API. This change polls hard quota state from `GET /v0/management/auth-files`, optionally reads the local CLIProxyAPI Claude OAuth token file path from that metadata to query Anthropic's OAuth usage endpoint, drains token telemetry from `GET /v0/management/usage-queue`, and surfaces hard status plus 5-hour / weekly usage on the synthetic Claude account.
 
-This change still never calls Anthropic directly. It uses CLIProxyAPI as the only source for Claude OAuth state and usage telemetry. `GET /v0/management/usage-queue` is a destructive queue read, so codex-lb owns draining it in one background collector; dashboard request handlers never call that endpoint directly.
+The source order is: hard quota status from CLIProxyAPI auth-files, official OAuth usage from Anthropic when a readable local Claude token is available, and usage-queue-derived estimates when OAuth usage is unavailable. `GET /v0/management/usage-queue` is a destructive queue read, so codex-lb owns draining it in one background collector; dashboard request handlers never call that endpoint directly.
 
 ## Decisions
 
@@ -14,9 +14,10 @@ This change still never calls Anthropic directly. It uses CLIProxyAPI as the onl
 - The usage collector runs only when `claude_sidecar_enabled=true`, `claude_sidecar_management_key_encrypted` is set, and usage collection is enabled. Default interval is 15 seconds; queue batch size defaults to 100.
 - The usage collector drains `/usage-queue`, sanitizes records, stores token counts in `claude_sidecar_usage_events`, and never persists the `api_key` value included in raw CLIProxyAPI records.
 - The quota snapshot is stored as JSON text on `dashboard_settings.claude_sidecar_quota_state_json` (same pattern as `claude_sidecar_last_health_*`), with `claude_sidecar_quota_checked_at` for staleness.
+- During quota polling, codex-lb reads only local Claude auth-file paths returned by CLIProxyAPI Management API metadata. If an auth file contains a top-level `access_token`, codex-lb calls `https://api.anthropic.com/api/oauth/usage` with `anthropic-beta: oauth-2025-04-20`, stores normalized remaining percentages and reset timestamps in the quota snapshot, and never stores the token.
 - Per-auth plan settings are stored as JSON text on `dashboard_settings.claude_sidecar_auth_plans_json`. Auth entries are keyed primarily by `auth_index`; email/source are fallback display and matching fields when `auth_index` is missing.
 - Built-in plan presets (`pro`, `max5`, `max20`) provide editable 5-hour and weekly token budgets. Operators can use `custom` to set both budgets explicitly.
-- Estimated usage is calculated from persisted `total_tokens`, not from Anthropic's private subscription accounting. When CLIProxyAPI reports an auth as quota-exceeded, the corresponding estimate is clamped to 0% remaining and hard status wins in the UI.
+- OAuth usage percentages are treated as official remaining percentages when present. Otherwise, estimated usage is calculated from persisted `total_tokens`, not from Anthropic's private subscription accounting. When CLIProxyAPI reports an auth as quota-exceeded, the corresponding 5-hour remaining value is clamped to 0% and hard status wins in the UI.
 - The synthetic account is enriched (not duplicated). One synthetic row aggregates all Claude auth files; per-auth detail lives in the account detail panel.
 - The dashboard overview appends the synthetic account AFTER sorting Codex accounts so it always lands last and never affects Codex aggregates.
 
@@ -114,24 +115,24 @@ Codex-lb persists the timestamp, safe identifiers, token counts, model metadata,
 `reset_at_primary` is the earliest non-null `next_recover_at` across exceeded auths.
 `last_refresh_at` is the snapshot's `checked_at`.
 
-## Estimated usage mapping
+## Usage mapping
 
 The synthetic account uses existing `AccountSummary.usage` fields:
 
 | Field | Meaning for Claude sidecar |
 | --- | --- |
-| `usage.primary_remaining_percent` | Estimated 5-hour remaining percent across configured Claude auths |
-| `usage.secondary_remaining_percent` | Estimated weekly remaining percent across configured Claude auths |
+| `usage.primary_remaining_percent` | 5-hour remaining percent across Claude auths, from OAuth usage when available or local estimates otherwise |
+| `usage.secondary_remaining_percent` | Weekly remaining percent across Claude auths, from OAuth usage when available or local estimates otherwise |
 | `window_minutes_primary` | `300` |
 | `window_minutes_secondary` | `10080` |
 | `reset_at_primary` | Active 5-hour block end, or CLIProxyAPI `next_recover_at` when exceeded |
 | `reset_at_secondary` | Active weekly block end when a weekly budget exists |
 
-Percentages are estimated because Anthropic does not expose the subscription quota bucket through a stable public API. The UI labels these values as estimated and keeps hard `rate_limited` / `quota_exceeded` state visible separately.
+The UI labels values by source: `OAuth` when Anthropic's OAuth usage endpoint supplied the percentages, `Estimated` when values come from local token telemetry and configured budgets, and `Unavailable` when neither source has percentages yet. Hard `rate_limited` / `quota_exceeded` state remains visible separately.
 
-## Why not call Anthropic directly?
+## Why read local OAuth usage?
 
-CLIProxyAPI owns Claude OAuth, token refresh, and the `quota` accounting. Adding a second client to Anthropic would re-do its work, risk inconsistent state, and would not respect the same recovery times CLIProxyAPI computes.
+CLIProxyAPI owns Claude OAuth and token refresh, but its usage queue is local telemetry, not Anthropic's subscription bucket. Anthropic's OAuth usage endpoint returns the actual five-hour and seven-day utilization buckets. Codex-lb reads only the local auth-file path that CLIProxyAPI reports, uses the access token transiently during the quota poll, stores only normalized percentages/reset timestamps, and falls back to usage-queue estimates if the endpoint is unavailable.
 
 ## Failure modes the poller handles
 
@@ -141,4 +142,5 @@ CLIProxyAPI owns Claude OAuth, token refresh, and the `quota` accounting. Adding
 - Sidecar disabled or Management key not configured → poller is a no-op (does not touch the snapshot).
 - Usage queue unauthorized: collector logs the failure, preserves already collected events, and tries again on the next interval.
 - Usage queue down or malformed: collector skips malformed records, does not stop the loop, and preserves the previous estimates.
-- Auth has usage but no plan: dashboard shows token totals/per-auth identity but leaves percent fields empty until the operator configures a plan.
+- OAuth usage unavailable: quota poller preserves hard auth-files status and leaves OAuth usage fields empty; local estimates can still populate percentages when plan budgets exist.
+- Auth has usage but no plan and no OAuth usage: dashboard shows token totals/per-auth identity but leaves percent fields empty until the operator configures a plan or OAuth usage becomes available.

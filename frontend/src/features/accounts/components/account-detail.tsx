@@ -162,7 +162,11 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
   const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
   const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
-  const hasEstimatedUsage = primaryRemaining !== null || secondaryRemaining !== null;
+  const usageSourceLabel = account.sidecarAuths?.some((auth) => auth.usageSource === "oauth_usage")
+    ? "OAuth"
+    : primaryRemaining !== null || secondaryRemaining !== null
+      ? "Estimated"
+      : "Unavailable";
   return (
     <div
       key={account.accountId}
@@ -190,18 +194,16 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
         <SyntheticField label="Last quota check" value={lastQuotaCheck ?? "Never"} />
       </div>
 
-      {hasEstimatedUsage ? (
-        <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
-          <SyntheticField
-            label="Estimated 5h remaining"
-            value={`${formatPercentNullable(primaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`}
-          />
-          <SyntheticField
-            label="Estimated weekly remaining"
-            value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
-          />
-        </div>
-      ) : null}
+      <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
+        <SyntheticField
+          label={`${usageSourceLabel} 5h remaining`}
+          value={`${formatPercentNullable(primaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`}
+        />
+        <SyntheticField
+          label={`${usageSourceLabel} weekly remaining`}
+          value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
+        />
+      </div>
 
       {account.sidecarAuths && account.sidecarAuths.length > 0 ? (
         <div className="space-y-1 rounded-lg border bg-card/40 p-3 text-sm">

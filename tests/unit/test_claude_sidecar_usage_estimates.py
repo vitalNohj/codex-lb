@@ -4,7 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarQuotaSnapshot
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarOAuthUsage,
+    SidecarOAuthUsageBucket,
+    SidecarQuotaSnapshot,
+)
 from app.modules.claude_sidecar.usage_estimates import build_claude_usage_estimates
 from app.modules.claude_sidecar.usage_queue import ClaudeSidecarUsageRecord
 from app.modules.settings.service import ClaudeSidecarAuthPlanData
@@ -52,7 +57,12 @@ def _event(
     )
 
 
-def _snapshot(auth_index: str, *, exceeded: bool = False) -> SidecarQuotaSnapshot:
+def _snapshot(
+    auth_index: str,
+    *,
+    exceeded: bool = False,
+    oauth_usage: SidecarOAuthUsage | None = None,
+) -> SidecarQuotaSnapshot:
     return SidecarQuotaSnapshot(
         checked_at=NOW,
         status="healthy",
@@ -72,6 +82,7 @@ def _snapshot(auth_index: str, *, exceeded: bool = False) -> SidecarQuotaSnapsho
                 success=1,
                 failed=0,
                 last_refresh=NOW,
+                oauth_usage=oauth_usage,
             ),
         ),
     )
@@ -170,3 +181,28 @@ def test_five_hour_block_rolls_over_after_expiry() -> None:
     assert account.primary_used_tokens == 10
     assert account.primary_remaining_percent == 90.0
     assert account.reset_at_primary == fresh + timedelta(hours=5)
+
+
+def test_oauth_usage_overrides_estimated_percentages() -> None:
+    five_hour_reset = NOW + timedelta(hours=2)
+    seven_day_reset = NOW + timedelta(days=3)
+    oauth_usage = SidecarOAuthUsage(
+        five_hour=SidecarOAuthUsageBucket(remaining_percent=57.0, resets_at=five_hour_reset),
+        seven_day=SidecarOAuthUsageBucket(remaining_percent=82.0, resets_at=seven_day_reset),
+    )
+    estimates = build_claude_usage_estimates(
+        events=[_event("auth-1", 25)],
+        plans=[],
+        snapshot=_snapshot("auth-1", oauth_usage=oauth_usage),
+        now=NOW,
+    )
+
+    account = estimates.accounts[0]
+    assert account.usage_source == "oauth_usage"
+    assert account.confidence == "oauth"
+    assert account.primary_remaining_percent == 57.0
+    assert account.secondary_remaining_percent == 82.0
+    assert account.reset_at_primary == five_hour_reset
+    assert account.reset_at_secondary == seven_day_reset
+    assert estimates.aggregate.primary_remaining_percent == 57.0
+    assert estimates.aggregate.confidence == "oauth"

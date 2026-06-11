@@ -63,3 +63,10 @@
 - [x] 9.3 Run frontend typecheck and targeted Vitest files.
 - [x] 9.4 Run changed-file lint checks.
 - [x] 9.5 Perform live smoke if local services are available.
+
+## 10. OAuth usage source fix
+
+- [x] 10.1 Add OAuth usage polling from local CLIProxyAPI Claude auth-file paths returned by auth-files metadata.
+- [x] 10.2 Prefer OAuth usage percentages/reset times over usage-queue-derived estimates.
+- [x] 10.3 Keep Claude dashboard/list/detail usage rows visible when percentages are unavailable.
+- [x] 10.4 Add focused parser/estimator/frontend tests.
