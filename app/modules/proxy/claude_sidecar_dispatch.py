@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -31,6 +32,13 @@ from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsage
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
+
+_SIDECAR_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_SIDECAR_TOOL_ID_INVALID_CHAR = re.compile(r"[^a-zA-Z0-9_-]")
+_SIDECAR_TOOL_CALL_ID_FIELDS = ("tool_call_id", "toolCallId", "call_id")
+_SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
+    {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +139,21 @@ def _parse_sidecar_prefixes(raw: str | None) -> list[str]:
     return prefixes or ["claude"]
 
 
+def sanitize_sidecar_chat_tool_ids(body: dict[str, JsonValue]) -> None:
+    cache: dict[str, str] = {}
+    used: set[str] = set()
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if is_json_mapping(message):
+                _sanitize_sidecar_message_tool_ids(cast(dict[str, JsonValue], message), cache=cache, used=used)
+    input_items = body.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if is_json_mapping(item):
+                _sanitize_sidecar_input_item_tool_ids(cast(dict[str, JsonValue], item), cache=cache, used=used)
+
+
 def build_sidecar_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
@@ -138,7 +161,102 @@ def build_sidecar_chat_payload(
 ) -> dict[str, JsonValue]:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     body["model"] = sidecar_wire_model(effective_model, config)
+    sanitize_sidecar_chat_tool_ids(body)
     return body
+
+
+def _sanitize_sidecar_tool_id(tool_id: str, *, cache: dict[str, str], used: set[str]) -> str:
+    if _SIDECAR_TOOL_ID_PATTERN.fullmatch(tool_id):
+        used.add(tool_id)
+        return tool_id
+    cached = cache.get(tool_id)
+    if cached is not None:
+        return cached
+    sanitized = _SIDECAR_TOOL_ID_INVALID_CHAR.sub("_", tool_id).strip("_") or "tool_id"
+    if sanitized in used:
+        base = sanitized
+        suffix = 1
+        while f"{base}_{suffix}" in used:
+            suffix += 1
+        sanitized = f"{base}_{suffix}"
+    cache[tool_id] = sanitized
+    used.add(sanitized)
+    return sanitized
+
+
+def _rewrite_sidecar_tool_id_field(
+    container: dict[str, JsonValue],
+    field: str,
+    *,
+    cache: dict[str, str],
+    used: set[str],
+) -> None:
+    value = container.get(field)
+    if isinstance(value, str) and value:
+        container[field] = _sanitize_sidecar_tool_id(value, cache=cache, used=used)
+
+
+def _sanitize_sidecar_content_tool_ids(
+    content: list[JsonValue],
+    *,
+    cache: dict[str, str],
+    used: set[str],
+) -> None:
+    for part in content:
+        if not is_json_mapping(part):
+            continue
+        part_dict = cast(dict[str, JsonValue], part)
+        part_type = part_dict.get("type")
+        if part_type == "tool_use":
+            _rewrite_sidecar_tool_id_field(part_dict, "id", cache=cache, used=used)
+        elif part_type == "tool_result":
+            _rewrite_sidecar_tool_id_field(part_dict, "tool_use_id", cache=cache, used=used)
+        elif isinstance(part_type, str) and part_type in _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES:
+            _rewrite_sidecar_tool_id_field(part_dict, "call_id", cache=cache, used=used)
+
+
+def _sanitize_sidecar_message_tool_ids(
+    message: dict[str, JsonValue],
+    *,
+    cache: dict[str, str],
+    used: set[str],
+) -> None:
+    content = message.get("content")
+    if isinstance(content, list):
+        _sanitize_sidecar_content_tool_ids(content, cache=cache, used=used)
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if is_json_mapping(tool_call):
+                _rewrite_sidecar_tool_id_field(
+                    cast(dict[str, JsonValue], tool_call),
+                    "id",
+                    cache=cache,
+                    used=used,
+                )
+
+    if message.get("role") == "tool":
+        for field in _SIDECAR_TOOL_CALL_ID_FIELDS:
+            _rewrite_sidecar_tool_id_field(message, field, cache=cache, used=used)
+
+    function_call = message.get("function_call")
+    if is_json_mapping(function_call):
+        _rewrite_sidecar_tool_id_field(cast(dict[str, JsonValue], function_call), "id", cache=cache, used=used)
+
+
+def _sanitize_sidecar_input_item_tool_ids(
+    item: dict[str, JsonValue],
+    *,
+    cache: dict[str, str],
+    used: set[str],
+) -> None:
+    item_type = item.get("type")
+    if isinstance(item_type, str) and item_type in _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES:
+        _rewrite_sidecar_tool_id_field(item, "call_id", cache=cache, used=used)
+    content = item.get("content")
+    if isinstance(content, list):
+        _sanitize_sidecar_content_tool_ids(content, cache=cache, used=used)
 
 
 def ensure_stream_usage_requested(payload: dict[str, JsonValue]) -> None:
