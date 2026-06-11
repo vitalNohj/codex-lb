@@ -206,3 +206,27 @@ def test_oauth_usage_overrides_estimated_percentages() -> None:
     assert account.reset_at_secondary == seven_day_reset
     assert estimates.aggregate.primary_remaining_percent == 57.0
     assert estimates.aggregate.confidence == "oauth"
+
+
+def test_oauth_usage_overrides_aggregate_even_with_plan_budget() -> None:
+    """Regression: aggregate must not redo token math over OAuth percents.
+
+    With a plan budget set and raw token usage far above it, the aggregate
+    previously recomputed remaining percent from tokens (clamping to 0%) and
+    ignored the authoritative OAuth-reported remaining percent.
+    """
+    oauth_usage = SidecarOAuthUsage(
+        five_hour=SidecarOAuthUsageBucket(remaining_percent=33.0, resets_at=NOW + timedelta(hours=2)),
+        seven_day=SidecarOAuthUsageBucket(remaining_percent=98.0, resets_at=NOW + timedelta(days=6)),
+    )
+    estimates = build_claude_usage_estimates(
+        events=[_event("auth-1", 1_700_000)],
+        plans=[_plan("auth-1", primary=40_000, secondary=280_000)],
+        snapshot=_snapshot("auth-1", oauth_usage=oauth_usage),
+        now=NOW,
+    )
+
+    assert estimates.accounts[0].primary_remaining_percent == 33.0
+    assert estimates.aggregate.primary_remaining_percent == 33.0
+    assert estimates.aggregate.secondary_remaining_percent == 98.0
+    assert estimates.aggregate.confidence == "oauth"
