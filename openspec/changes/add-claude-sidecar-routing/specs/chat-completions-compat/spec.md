@@ -31,6 +31,14 @@ The service MUST forward the OpenAI-compatible chat-completions JSON payload to 
 - **THEN** the service forwards the request to the sidecar with those IDs rewritten to match `[A-Za-z0-9_-]+`
 - **AND** matching tool-use and tool-result references within the forwarded payload remain consistent
 
+#### Scenario: Cursor clients receive sidecar usage fallback and context-limit compaction signals
+
+- **GIVEN** `claude_sidecar_enabled=true`
+- **AND** the downstream client is identified as Cursor-compatible
+- **WHEN** a Claude-model sidecar request completes without usable usage metadata
+- **THEN** the service returns estimated non-zero `prompt_tokens` and `completion_tokens` usage to the downstream client
+- **AND** when the sidecar reports a context-length failure, the service returns HTTP 200 with synthetic over-limit usage instead of an OpenAI error envelope
+
 #### Scenario: Sidecar payload maps Cursor tool names for Claude OAuth compatibility
 
 - **GIVEN** `claude_sidecar_enabled=true`

@@ -14,11 +14,26 @@ logger = logging.getLogger(__name__)
 _SIDECAR_TOOL_NAME_MAPPING: dict[str, str] = {
     "Shell": "Bash",
     "LS": "Glob",
+    "Glob": "Glob",
+    "Grep": "Grep",
+    "Read": "Read",
+    "Write": "Write",
     "Delete": "Edit",
     "StrReplace": "Edit",
+    "Edit": "Edit",
     "EditNotebook": "NotebookEdit",
     "ReadLints": "Read",
     "SemanticSearch": "Grep",
+    "CallMcpTool": "Task",
+    "FetchMcpResource": "Read",
+    "GenerateImage": "Skill",
+    "Await": "TaskOutput",
+    "SwitchMode": "SwitchMode",
+    "AskQuestion": "AskQuestion",
+    "Task": "Task",
+    "TodoWrite": "TodoWrite",
+    "WebSearch": "WebSearch",
+    "WebFetch": "WebFetch",
     "read_file": "Read",
     "view_file": "Read",
     "write": "Write",
@@ -127,7 +142,34 @@ def map_sidecar_chat_tool_names(body: dict[str, JsonValue]) -> SidecarToolMapRes
                     forward_tool_names=forward_tool_names,
                 )
 
+    tool_choice = body.get("tool_choice")
+    if is_json_mapping(tool_choice):
+        _map_tool_choice_names(
+            cast(dict[str, JsonValue], tool_choice),
+            used_names=used_names,
+            reverse_tool_names=reverse_tool_names,
+            forward_tool_names=forward_tool_names,
+        )
+
     return SidecarToolMapResult(reverse_tool_names=reverse_tool_names)
+
+
+def _map_tool_choice_names(
+    tool_choice: dict[str, JsonValue],
+    *,
+    used_names: set[str],
+    reverse_tool_names: dict[str, str],
+    forward_tool_names: dict[str, str],
+) -> None:
+    function = tool_choice.get("function")
+    if is_json_mapping(function):
+        _rewrite_tool_name_field(
+            cast(dict[str, JsonValue], function),
+            "name",
+            used_names=used_names,
+            reverse_tool_names=reverse_tool_names,
+            forward_tool_names=forward_tool_names,
+        )
 
 
 def reverse_sidecar_tool_names_in_response(

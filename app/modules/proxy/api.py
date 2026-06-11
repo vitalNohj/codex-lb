@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
@@ -55,7 +54,6 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import (
     ChatCompletion,
     ChatCompletionResult,
-    ChatCompletionUsage,
     collect_chat_completion,
     stream_chat_chunks,
 )
@@ -107,6 +105,14 @@ from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, load_sidecar_config, proxy_chat_to_sidecar
+from app.modules.proxy.cursor_chat_compat import (
+    apply_cursor_usage_fallback,
+    cursor_context_limit_usage_completion,
+    cursor_context_limit_usage_stream,
+    is_context_length_error,
+    is_cursor_compat_client,
+    stream_with_cursor_usage_fallback,
+)
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.request_policy import (
@@ -224,7 +230,6 @@ _STREAM_STARTUP_ERROR_PROBE_SECONDS = 0.05
 _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CURSOR_CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 15.0
-_CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS: Final[int] = 1_000_000
 _V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
     "gpt-5.4": 128_000,
     "gpt-5.5": 128_000,
@@ -1966,7 +1971,7 @@ async def v1_chat_completions(
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
     settings = get_settings()
-    cursor_compat_client = _is_cursor_compat_client(request, api_key)
+    cursor_compat_client = is_cursor_compat_client(request, api_key)
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
 
@@ -1988,6 +1993,7 @@ async def v1_chat_completions(
             rate_limit_headers=rate_limit_headers,
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
             client=ClaudeSidecarClient(sidecar_config),
+            cursor_compat=cursor_compat_client,
         )
 
     try:
@@ -2047,11 +2053,11 @@ async def v1_chat_completions(
         if cursor_compat_client and _is_context_length_startup_error(startup_error):
             await _release_reservation(reservation)
             if payload.stream:
-                return _cursor_context_limit_usage_stream(
+                return cursor_context_limit_usage_stream(
                     payload,
                     headers=rate_limit_headers,
                 )
-            return _cursor_context_limit_usage_completion(
+            return cursor_context_limit_usage_completion(
                 payload,
                 headers=rate_limit_headers,
             )
@@ -2065,7 +2071,7 @@ async def v1_chat_completions(
             include_usage=include_usage,
         )
         if cursor_compat_client:
-            chat_stream = _stream_with_cursor_usage_fallback(chat_stream, payload)
+            chat_stream = stream_with_cursor_usage_fallback(chat_stream, payload)
         return StreamingResponse(
             inject_sse_keepalives(
                 chat_stream,
@@ -2095,7 +2101,7 @@ async def v1_chat_completions(
             headers=rate_limit_headers,
         )
     if cursor_compat_client and isinstance(result, ChatCompletion):
-        _apply_cursor_usage_fallback(result, payload, source="non_stream")
+        apply_cursor_usage_fallback(result, payload, source="non_stream")
     return JSONResponse(
         content=result.model_dump(mode="json", exclude_none=True),
         status_code=200,
@@ -2528,280 +2534,15 @@ _CHAT_COMPLETIONS_STARTUP_EVENT_TYPES: Final[set[str]] = {
 }
 
 
-def _is_cursor_compat_client(request: Request, api_key: ApiKeyData | None) -> bool:
-    if api_key is not None and api_key.name.strip().lower() == "cursor":
-        return True
-    user_agent = request.headers.get("user-agent", "")
-    return "cursor" in user_agent.lower()
-
-
 def _is_context_length_startup_error(error: ProxyResponseError | OpenAIErrorEnvelopeModel) -> bool:
     code, message = _startup_error_details(error)
-    if code == "context_length_exceeded":
-        return True
-    if message is None:
-        return False
-    normalized = message.lower()
-    return (
-        "context window" in normalized
-        or "input token limit exceeded" in normalized
-        or "token limit exceeded" in normalized
-    )
+    return is_context_length_error(code=code, message=message)
 
 
 def _startup_error_details(error: ProxyResponseError | OpenAIErrorEnvelopeModel) -> tuple[str | None, str | None]:
     if isinstance(error, ProxyResponseError):
         return _error_details_from_content(error.payload)
     return _error_details_from_content(error)
-
-
-def _cursor_context_limit_usage_stream(
-    payload: ChatCompletionsRequest,
-    *,
-    headers: Mapping[str, str] | None = None,
-) -> StreamingResponse:
-    """Return a successful empty stream with over-limit usage so Cursor can compact.
-
-    Cursor's custom-provider path wraps provider errors before the agent loop can
-    classify them as its internal InputTokenLimitError. For Cursor only, preserve
-    the original request history and report token usage beyond the advertised
-    model window instead of returning an OpenAI error.
-    """
-    response_id = f"chatcmpl_{time.time_ns()}"
-    created = int(time.time())
-    model = payload.model
-    usage_tokens = _CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
-
-    def sse_data(data: dict[str, JsonValue] | str) -> str:
-        if data == "[DONE]":
-            return "data: [DONE]\n\n"
-        return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
-
-    async def body() -> AsyncIterator[str]:
-        yield sse_data(
-            {
-                "id": response_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant"},
-                        "finish_reason": None,
-                    }
-                ],
-            }
-        )
-        yield sse_data(
-            {
-                "id": response_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop",
-                    }
-                ],
-            }
-        )
-        yield sse_data(
-            {
-                "id": response_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": usage_tokens,
-                    "completion_tokens": 0,
-                    "total_tokens": usage_tokens,
-                },
-            }
-        )
-        yield sse_data("[DONE]")
-
-    return StreamingResponse(body(), media_type="text/event-stream", headers=headers)
-
-
-def _cursor_context_limit_usage_completion(
-    payload: ChatCompletionsRequest,
-    *,
-    headers: Mapping[str, str] | None = None,
-) -> JSONResponse:
-    response_id = f"chatcmpl_{time.time_ns()}"
-    created = int(time.time())
-    model = payload.model
-    usage_tokens = _CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
-    return JSONResponse(
-        content={
-            "id": response_id,
-            "object": "chat.completion",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": ""},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": usage_tokens,
-                "completion_tokens": 0,
-                "total_tokens": usage_tokens,
-            },
-        },
-        status_code=200,
-        headers=headers,
-    )
-
-
-async def _stream_with_cursor_usage_fallback(
-    stream: AsyncIterator[str],
-    payload: ChatCompletionsRequest,
-) -> AsyncIterator[str]:
-    prompt_tokens = _estimate_cursor_prompt_tokens(payload)
-    completion_chars = 0
-    async for line in stream:
-        parsed = _parse_chat_completion_sse(line)
-        if parsed is None:
-            yield line
-            continue
-        completion_chars += _chat_completion_delta_chars(parsed)
-        if _is_chat_completion_usage_chunk(parsed) and _needs_cursor_usage_fallback(parsed.get("usage")):
-            completion_tokens = max(1, _estimate_tokens_from_chars(completion_chars))
-            parsed["usage"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            }
-            logger.info(
-                "cursor_usage_fallback source=stream model=%s prompt_tokens=%s completion_tokens=%s",
-                payload.model,
-                prompt_tokens,
-                completion_tokens,
-            )
-            yield f"data: {json.dumps(parsed, separators=(',', ':'))}\n\n"
-            continue
-        yield line
-
-
-def _is_chat_completion_usage_chunk(payload: dict[str, JsonValue]) -> bool:
-    return payload.get("choices") == []
-
-
-def _parse_chat_completion_sse(line: str) -> dict[str, JsonValue] | None:
-    stripped = line.strip()
-    if not stripped.startswith("data:"):
-        return None
-    data = stripped.removeprefix("data:").strip()
-    if data == "[DONE]":
-        return None
-    try:
-        parsed = json.loads(data)
-    except ValueError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    return parsed
-
-
-def _needs_cursor_usage_fallback(usage: JsonValue) -> bool:
-    if not isinstance(usage, dict):
-        return True
-    prompt_tokens = usage.get("prompt_tokens")
-    completion_tokens = usage.get("completion_tokens")
-    return not isinstance(prompt_tokens, int) or prompt_tokens <= 0 or not isinstance(completion_tokens, int)
-
-
-def _apply_cursor_usage_fallback(
-    result: ChatCompletion,
-    payload: ChatCompletionsRequest,
-    *,
-    source: str,
-) -> None:
-    usage = result.usage.model_dump(mode="json", exclude_none=True) if result.usage is not None else None
-    if not _needs_cursor_usage_fallback(usage):
-        return
-    prompt_tokens = _estimate_cursor_prompt_tokens(payload)
-    completion_tokens = max(1, _estimate_tokens_from_chars(_chat_completion_result_chars(result)))
-    result.usage = ChatCompletionUsage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-    )
-    logger.info(
-        "cursor_usage_fallback source=%s model=%s prompt_tokens=%s completion_tokens=%s",
-        source,
-        payload.model,
-        prompt_tokens,
-        completion_tokens,
-    )
-
-
-def _estimate_cursor_prompt_tokens(payload: ChatCompletionsRequest) -> int:
-    data = payload.model_dump(mode="json", exclude_none=True)
-    counted: dict[str, JsonValue] = {}
-    for key in ("messages", "input", "instructions", "tools", "tool_choice", "response_format"):
-        value = data.get(key)
-        if value is not None:
-            counted[key] = value
-    message_count = len(data.get("messages", [])) if isinstance(data.get("messages"), list) else 0
-    return max(1, _estimate_tokens_from_chars(_json_text_chars(counted)) + message_count * 4)
-
-
-def _estimate_tokens_from_chars(chars: int) -> int:
-    return (max(0, chars) + 3) // 4
-
-
-def _json_text_chars(value: JsonValue) -> int:
-    if isinstance(value, str):
-        return len(value)
-    if isinstance(value, list):
-        return sum(_json_text_chars(item) for item in value)
-    if isinstance(value, dict):
-        return sum(_json_text_chars(item) for item in value.values())
-    return 0
-
-
-def _chat_completion_delta_chars(payload: dict[str, JsonValue]) -> int:
-    choices = payload.get("choices")
-    if not isinstance(choices, list):
-        return 0
-    total = 0
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        delta = choice.get("delta")
-        if not isinstance(delta, dict):
-            continue
-        for key in ("content", "refusal"):
-            value = delta.get(key)
-            if isinstance(value, str):
-                total += len(value)
-        tool_calls = delta.get("tool_calls")
-        if isinstance(tool_calls, list):
-            total += _json_text_chars(tool_calls)
-    return total
-
-
-def _chat_completion_result_chars(result: ChatCompletion) -> int:
-    total = 0
-    for choice in result.choices:
-        message = choice.message
-        if isinstance(message.content, str):
-            total += len(message.content)
-        if isinstance(message.refusal, str):
-            total += len(message.refusal)
-        if message.tool_calls:
-            total += _json_text_chars(
-                [tool_call.model_dump(mode="json", exclude_none=True) for tool_call in message.tool_calls]
-            )
-    return total
 
 
 async def _probe_chat_stream_startup_error(

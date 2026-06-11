@@ -5,7 +5,8 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import select
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError
+from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
 from app.db.models import ApiKeyUsageReservation, RequestLog
@@ -30,6 +31,7 @@ class _FakeSidecarClient:
         self.models = [_FakeModel("claude-sonnet-4-5-20250929")]
         self.chat_error: Exception | None = None
         self.stream_error: Exception | None = None
+        self.stream_include_usage = True
 
     async def list_models_cached(self):
         return self.models
@@ -48,12 +50,13 @@ class _FakeSidecarClient:
 
     def stream_chat_completion(self, payload):
         self.stream_payloads.append(dict(payload))
-        return _FakeStreamContext(self.stream_error)
+        return _FakeStreamContext(self.stream_error, include_usage=self.stream_include_usage)
 
 
 class _FakeStreamContext:
-    def __init__(self, error: Exception | None) -> None:
+    def __init__(self, error: Exception | None, *, include_usage: bool = True) -> None:
         self.error = error
+        self.include_usage = include_usage
 
     async def __aenter__(self):
         if self.error is not None:
@@ -61,10 +64,11 @@ class _FakeStreamContext:
 
         async def chunks():
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
-            yield (
-                b'data: {"id":"chunk-2","object":"chat.completion.chunk","choices":[],'
-                b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n'
-            )
+            if self.include_usage:
+                yield (
+                    b'data: {"id":"chunk-2","object":"chat.completion.chunk","choices":[],'
+                    b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n'
+                )
             yield b"data: [DONE]\n\n"
 
         return chunks()
@@ -262,3 +266,54 @@ async def test_sidecar_model_not_allowed_rejects_before_sidecar(async_client, si
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "model_not_allowed"
     assert fake_sidecar.chat_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_cursor_context_limit_returns_synthetic_usage(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    fake_sidecar.chat_error = ClaudeSidecarError(
+        400,
+        "Input token limit exceeded",
+        body={"error": {"code": "context_length_exceeded", "message": "Input token limit exceeded"}},
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"User-Agent": "Cursor/1.0"},
+        json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"] == {
+        "prompt_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
+        "completion_tokens": 0,
+        "total_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_cursor_stream_applies_usage_fallback(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    fake_sidecar.stream_include_usage = False
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"User-Agent": "Cursor/1.0"},
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert b'"prompt_tokens":' in body
+    assert b'"completion_tokens":' in body
