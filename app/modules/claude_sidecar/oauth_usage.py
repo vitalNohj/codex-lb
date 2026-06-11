@@ -58,7 +58,7 @@ async def fetch_claude_oauth_usage(credential: ClaudeOAuthCredential) -> Sidecar
     timeout = aiohttp.ClientTimeout(total=10.0)
     async with lease_http_session() as http:
         try:
-            async with http.session.get(CLAUDE_OAUTH_USAGE_URL, headers=headers, timeout=timeout) as response:
+            async with http.get(CLAUDE_OAUTH_USAGE_URL, headers=headers, timeout=timeout) as response:
                 status = response.status
                 data = await response.json(content_type=None) if status < 400 else None
         except (aiohttp.ClientError, ValueError) as exc:
