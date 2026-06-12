@@ -7,11 +7,14 @@ import {
   createUpstreamProxyPool,
   getClaudeSidecarQuota,
   getClaudeSidecarStatus,
+  getOpenRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
+  listOpenRouterSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
   testClaudeSidecarConnection,
+  testOpenRouterSidecarConnection,
   updateSettings,
 } from "@/features/settings/api";
 import type { SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -149,4 +152,30 @@ export function useClaudeSidecarQuota() {
     refetchInterval: 60_000,
   });
   return { quotaQuery };
+}
+
+export function useOpenRouterSidecar() {
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ["settings", "openrouter-sidecar", "status"],
+    queryFn: getOpenRouterSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "openrouter-sidecar", "models"],
+    queryFn: listOpenRouterSidecarModels,
+  });
+  const testMutation = useMutation({
+    mutationFn: testOpenRouterSidecarConnection,
+    onSuccess: () => {
+      toast.success("OpenRouter sidecar tested");
+      void queryClient.invalidateQueries({ queryKey: ["settings", "openrouter-sidecar"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "OpenRouter sidecar test failed");
+    },
+  });
+  return { statusQuery, modelsQuery, testMutation };
 }

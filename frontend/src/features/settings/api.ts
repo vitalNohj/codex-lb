@@ -7,6 +7,9 @@ import {
   ClaudeSidecarStatusResponseSchema,
   ClaudeSidecarTestResponseSchema,
   DashboardSettingsSchema,
+  OpenRouterSidecarModelsResponseSchema,
+  OpenRouterSidecarStatusResponseSchema,
+  OpenRouterSidecarTestResponseSchema,
   SettingsUpdateRequestSchema,
   UpstreamProxyAdminSchema,
   UpstreamProxyEndpointCreateRequestSchema,
@@ -19,6 +22,7 @@ import {
 const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
+const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -77,4 +81,16 @@ export function listClaudeSidecarModels() {
 
 export function getClaudeSidecarQuota() {
   return get(`${CLAUDE_SIDECAR_PATH}/quota`, ClaudeSidecarQuotaResponseSchema);
+}
+
+export function getOpenRouterSidecarStatus() {
+  return get(`${OPENROUTER_SIDECAR_PATH}/status`, OpenRouterSidecarStatusResponseSchema);
+}
+
+export function testOpenRouterSidecarConnection() {
+  return post(`${OPENROUTER_SIDECAR_PATH}/test`, OpenRouterSidecarTestResponseSchema);
+}
+
+export function listOpenRouterSidecarModels() {
+  return get(`${OPENROUTER_SIDECAR_PATH}/models`, OpenRouterSidecarModelsResponseSchema);
 }

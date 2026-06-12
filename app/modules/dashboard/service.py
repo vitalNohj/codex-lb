@@ -10,6 +10,7 @@ from app.core.utils.time import utcnow
 from app.db.models import UsageHistory
 from app.modules.accounts.mappers import build_account_summaries
 from app.modules.accounts.schemas import AccountRequestUsage
+from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.claude_sidecar.quota import snapshot_from_json
 from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
@@ -96,6 +97,9 @@ class DashboardService:
         synthetic_sidecar = await self._build_claude_sidecar_summary()
         if synthetic_sidecar is not None:
             account_summaries.append(synthetic_sidecar)
+        openrouter_sidecar = await self._build_openrouter_sidecar_summary()
+        if openrouter_sidecar is not None:
+            account_summaries.append(openrouter_sidecar)
 
         primary_rows_raw = _rows_from_latest(primary_usage)
         secondary_rows_raw = _rows_from_latest(secondary_usage)
@@ -182,6 +186,17 @@ class DashboardService:
                 now=now,
             )
         return build_claude_sidecar_summary(settings, request_usage, estimates)
+
+    async def _build_openrouter_sidecar_summary(self):
+        settings = await self._repo.get_settings()
+        usage_summary = await self._repo.request_usage_summary_for_source("openrouter_sidecar")
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
+        )
+        return build_openrouter_sidecar_summary(settings, request_usage)
 
     async def get_projections(self) -> DashboardProjectionsResponse:
         now = utcnow()

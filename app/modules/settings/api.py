@@ -153,6 +153,17 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         claude_sidecar_usage_poll_interval_seconds=settings.claude_sidecar_usage_poll_interval_seconds,
         claude_sidecar_usage_queue_batch_size=settings.claude_sidecar_usage_queue_batch_size,
         claude_sidecar_usage_collection_enabled=settings.claude_sidecar_usage_collection_enabled,
+        openrouter_sidecar_enabled=settings.openrouter_sidecar_enabled,
+        openrouter_sidecar_base_url=settings.openrouter_sidecar_base_url,
+        openrouter_sidecar_api_key_configured=settings.openrouter_sidecar_api_key_configured,
+        openrouter_sidecar_model_prefixes=settings.openrouter_sidecar_model_prefixes,
+        openrouter_sidecar_connect_timeout_seconds=settings.openrouter_sidecar_connect_timeout_seconds,
+        openrouter_sidecar_request_timeout_seconds=settings.openrouter_sidecar_request_timeout_seconds,
+        openrouter_sidecar_models_cache_ttl_seconds=settings.openrouter_sidecar_models_cache_ttl_seconds,
+        openrouter_sidecar_last_health_status=settings.openrouter_sidecar_last_health_status,
+        openrouter_sidecar_last_health_message=settings.openrouter_sidecar_last_health_message,
+        openrouter_sidecar_last_checked_at=settings.openrouter_sidecar_last_checked_at,
+        openrouter_sidecar_last_model_count=settings.openrouter_sidecar_last_model_count,
     )
 
 
@@ -641,6 +652,38 @@ async def update_settings(
                     if payload.claude_sidecar_usage_collection_enabled is not None
                     else current.claude_sidecar_usage_collection_enabled
                 ),
+                openrouter_sidecar_enabled=(
+                    payload.openrouter_sidecar_enabled
+                    if payload.openrouter_sidecar_enabled is not None
+                    else current.openrouter_sidecar_enabled
+                ),
+                openrouter_sidecar_base_url=payload.openrouter_sidecar_base_url or current.openrouter_sidecar_base_url,
+                openrouter_sidecar_api_key=(
+                    payload.openrouter_sidecar_api_key
+                    if "openrouter_sidecar_api_key" in payload.model_fields_set
+                    else None
+                ),
+                openrouter_sidecar_clear_api_key=payload.openrouter_sidecar_clear_api_key is True,
+                openrouter_sidecar_model_prefixes=(
+                    payload.openrouter_sidecar_model_prefixes
+                    if payload.openrouter_sidecar_model_prefixes is not None
+                    else current.openrouter_sidecar_model_prefixes
+                ),
+                openrouter_sidecar_connect_timeout_seconds=(
+                    payload.openrouter_sidecar_connect_timeout_seconds
+                    if payload.openrouter_sidecar_connect_timeout_seconds is not None
+                    else current.openrouter_sidecar_connect_timeout_seconds
+                ),
+                openrouter_sidecar_request_timeout_seconds=(
+                    payload.openrouter_sidecar_request_timeout_seconds
+                    if payload.openrouter_sidecar_request_timeout_seconds is not None
+                    else current.openrouter_sidecar_request_timeout_seconds
+                ),
+                openrouter_sidecar_models_cache_ttl_seconds=(
+                    payload.openrouter_sidecar_models_cache_ttl_seconds
+                    if payload.openrouter_sidecar_models_cache_ttl_seconds is not None
+                    else current.openrouter_sidecar_models_cache_ttl_seconds
+                ),
             )
         )
     except ValueError as exc:
@@ -697,6 +740,17 @@ async def update_settings(
             "claude_sidecar_usage_poll_interval_seconds",
             "claude_sidecar_usage_queue_batch_size",
             "claude_sidecar_usage_collection_enabled",
+            "openrouter_sidecar_enabled",
+            "openrouter_sidecar_base_url",
+            "openrouter_sidecar_api_key_configured",
+            "openrouter_sidecar_model_prefixes",
+            "openrouter_sidecar_connect_timeout_seconds",
+            "openrouter_sidecar_request_timeout_seconds",
+            "openrouter_sidecar_models_cache_ttl_seconds",
+            "openrouter_sidecar_last_health_status",
+            "openrouter_sidecar_last_health_message",
+            "openrouter_sidecar_last_checked_at",
+            "openrouter_sidecar_last_model_count",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

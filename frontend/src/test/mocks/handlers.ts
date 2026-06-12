@@ -1395,6 +1395,37 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/openrouter-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenRouter sidecar reachable",
+      baseUrl: "https://openrouter.ai/api/v1",
+      modelCount: 1,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/openrouter-sidecar/models", () => {
+    return HttpResponse.json({
+      models: [{ id: "deepseek/deepseek-chat", created: 123, ownedBy: "deepseek" }],
+    });
+  }),
+
+  http.post("*/api/openrouter-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenRouter sidecar reachable",
+      baseUrl: "https://openrouter.ai/api/v1",
+      modelCount: 1,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: [{ id: "deepseek/deepseek-chat", created: 123, ownedBy: "deepseek" }],
+    });
+  }),
+
   http.get("*/api/models", () => {
     return HttpResponse.json({
       models: [

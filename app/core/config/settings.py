@@ -188,6 +188,13 @@ class Settings(BaseSettings):
     claude_sidecar_usage_poll_interval_seconds: float = Field(default=15.0, gt=0)
     claude_sidecar_usage_queue_batch_size: int = Field(default=100, gt=0)
     claude_sidecar_usage_collection_enabled: bool = True
+    openrouter_sidecar_enabled: bool = False
+    openrouter_sidecar_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_sidecar_api_key: str = ""
+    openrouter_sidecar_model_prefixes: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    openrouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    openrouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    openrouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)
@@ -502,6 +509,21 @@ class Settings(BaseSettings):
         normalized = value.strip().rstrip('/')
         if not normalized:
             raise ValueError("claude_sidecar_base_url must not be blank")
+        return normalized
+
+    @field_validator("openrouter_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _normalize_openrouter_sidecar_model_prefixes(cls, value: StringListInput) -> list[str]:
+        return _normalize_string_list(value, field_name="openrouter_sidecar_model_prefixes")
+
+    @field_validator("openrouter_sidecar_base_url", mode="before")
+    @classmethod
+    def _normalize_openrouter_sidecar_base_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("openrouter_sidecar_base_url must be a string")
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("openrouter_sidecar_base_url must not be blank")
         return normalized
 
     @field_validator("warmup_model", mode="before")

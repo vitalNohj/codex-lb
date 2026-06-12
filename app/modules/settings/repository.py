@@ -77,6 +77,20 @@ class SettingsRepository:
             claude_sidecar_usage_poll_interval_seconds=static_settings.claude_sidecar_usage_poll_interval_seconds,
             claude_sidecar_usage_queue_batch_size=static_settings.claude_sidecar_usage_queue_batch_size,
             claude_sidecar_usage_collection_enabled=static_settings.claude_sidecar_usage_collection_enabled,
+            openrouter_sidecar_enabled=static_settings.openrouter_sidecar_enabled,
+            openrouter_sidecar_base_url=static_settings.openrouter_sidecar_base_url,
+            openrouter_sidecar_api_key_encrypted=(
+                TokenEncryptor().encrypt(static_settings.openrouter_sidecar_api_key.strip())
+                if static_settings.openrouter_sidecar_api_key.strip()
+                else None
+            ),
+            openrouter_sidecar_model_prefixes_json=json.dumps(
+                static_settings.openrouter_sidecar_model_prefixes,
+                separators=(",", ":"),
+            ),
+            openrouter_sidecar_connect_timeout_seconds=static_settings.openrouter_sidecar_connect_timeout_seconds,
+            openrouter_sidecar_request_timeout_seconds=static_settings.openrouter_sidecar_request_timeout_seconds,
+            openrouter_sidecar_models_cache_ttl_seconds=static_settings.openrouter_sidecar_models_cache_ttl_seconds,
         )
         self._session.add(row)
         try:
@@ -141,6 +155,17 @@ class SettingsRepository:
         claude_sidecar_usage_poll_interval_seconds: float | None = None,
         claude_sidecar_usage_queue_batch_size: int | None = None,
         claude_sidecar_usage_collection_enabled: bool | None = None,
+        openrouter_sidecar_enabled: bool | None = None,
+        openrouter_sidecar_base_url: str | None = None,
+        openrouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        openrouter_sidecar_model_prefixes_json: str | None = None,
+        openrouter_sidecar_connect_timeout_seconds: float | None = None,
+        openrouter_sidecar_request_timeout_seconds: float | None = None,
+        openrouter_sidecar_models_cache_ttl_seconds: float | None = None,
+        openrouter_sidecar_last_health_status: str | None | object = _UNSET,
+        openrouter_sidecar_last_health_message: str | None | object = _UNSET,
+        openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        openrouter_sidecar_last_model_count: int | None | object = _UNSET,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
@@ -243,6 +268,28 @@ class SettingsRepository:
             settings.claude_sidecar_usage_queue_batch_size = claude_sidecar_usage_queue_batch_size
         if claude_sidecar_usage_collection_enabled is not None:
             settings.claude_sidecar_usage_collection_enabled = claude_sidecar_usage_collection_enabled
+        if openrouter_sidecar_enabled is not None:
+            settings.openrouter_sidecar_enabled = openrouter_sidecar_enabled
+        if openrouter_sidecar_base_url is not None:
+            settings.openrouter_sidecar_base_url = openrouter_sidecar_base_url
+        if openrouter_sidecar_api_key_encrypted is not _UNSET:
+            settings.openrouter_sidecar_api_key_encrypted = openrouter_sidecar_api_key_encrypted
+        if openrouter_sidecar_model_prefixes_json is not None:
+            settings.openrouter_sidecar_model_prefixes_json = openrouter_sidecar_model_prefixes_json
+        if openrouter_sidecar_connect_timeout_seconds is not None:
+            settings.openrouter_sidecar_connect_timeout_seconds = openrouter_sidecar_connect_timeout_seconds
+        if openrouter_sidecar_request_timeout_seconds is not None:
+            settings.openrouter_sidecar_request_timeout_seconds = openrouter_sidecar_request_timeout_seconds
+        if openrouter_sidecar_models_cache_ttl_seconds is not None:
+            settings.openrouter_sidecar_models_cache_ttl_seconds = openrouter_sidecar_models_cache_ttl_seconds
+        if openrouter_sidecar_last_health_status is not _UNSET:
+            settings.openrouter_sidecar_last_health_status = openrouter_sidecar_last_health_status
+        if openrouter_sidecar_last_health_message is not _UNSET:
+            settings.openrouter_sidecar_last_health_message = openrouter_sidecar_last_health_message
+        if openrouter_sidecar_last_checked_at is not _UNSET:
+            settings.openrouter_sidecar_last_checked_at = openrouter_sidecar_last_checked_at
+        if openrouter_sidecar_last_model_count is not _UNSET:
+            settings.openrouter_sidecar_last_model_count = openrouter_sidecar_last_model_count
         await self.commit_refresh(settings)
         return settings
 

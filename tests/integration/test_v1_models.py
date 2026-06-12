@@ -88,8 +88,22 @@ async def _populate_test_registry() -> None:
     await registry.update({"plus": models, "pro": models})
 
 
+async def _disable_sidecars(async_client) -> None:
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": False,
+            "claudeSidecarClearApiKey": True,
+            "openrouterSidecarEnabled": False,
+            "openrouterSidecarClearApiKey": True,
+        },
+    )
+    assert response.status_code == 200
+
+
 @pytest.mark.asyncio
 async def test_v1_models_list(async_client):
+    await _disable_sidecars(async_client)
     await _populate_test_registry()
     resp = await async_client.get("/v1/models")
     assert resp.status_code == 200
@@ -121,6 +135,7 @@ async def test_v1_models_list(async_client):
 
 @pytest.mark.asyncio
 async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async_client):
+    await _disable_sidecars(async_client)
     registry = get_model_registry()
     registry._snapshot = None
     resp = await async_client.get("/v1/models")
@@ -554,6 +569,7 @@ async def test_backend_codex_models_uses_bootstrap_models_when_registry_not_popu
 
 @pytest.mark.asyncio
 async def test_model_sets_are_consistent_across_api_endpoints(async_client):
+    await _disable_sidecars(async_client)
     registry = get_model_registry()
     models = [
         _make_upstream_model("gpt-5.2"),

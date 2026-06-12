@@ -158,6 +158,9 @@ export function AccountDetail({
 }
 
 function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
+  const isOpenRouter = account.provider === "openrouter";
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : "CLIProxyAPI";
+  const settingsAnchor = isOpenRouter ? "/settings#openrouter-sidecar" : "/settings#claude-sidecar";
   const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
   const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
@@ -167,6 +170,7 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
     : primaryRemaining !== null || secondaryRemaining !== null
       ? "Estimated"
       : "Unavailable";
+  const showQuotaUsage = !isOpenRouter;
   return (
     <div
       key={account.accountId}
@@ -178,22 +182,29 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
             <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
             {account.displayName}
           </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">Read-only Claude sidecar account</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {isOpenRouter ? "Read-only OpenRouter sidecar account" : "Read-only Claude sidecar account"}
+          </p>
         </div>
         <Badge variant="outline" className="border-violet-300 bg-violet-50 text-violet-700">
-          CLIProxyAPI
+          {sidecarLabel}
         </Badge>
       </div>
 
       <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-2">
         <SyntheticField label="Status" value={formatSlug(account.healthStatus ?? account.status)} />
-        <SyntheticField label="Quota" value={formatSidecarQuotaLabel(account)} />
+        {showQuotaUsage ? (
+          <SyntheticField label="Quota" value={formatSidecarQuotaLabel(account)} />
+        ) : null}
         <SyntheticField label="Models" value={account.modelCount == null ? "--" : String(account.modelCount)} />
         <SyntheticField label="Base URL" value={account.baseUrl ?? "--"} mono />
         <SyntheticField label="Last check" value={lastChecked ?? "Never"} />
-        <SyntheticField label="Last quota check" value={lastQuotaCheck ?? "Never"} />
+        {showQuotaUsage ? (
+          <SyntheticField label="Last quota check" value={lastQuotaCheck ?? "Never"} />
+        ) : null}
       </div>
 
+      {showQuotaUsage ? (
       <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
         <SyntheticField
           label={`${usageSourceLabel} 5h remaining`}
@@ -204,6 +215,7 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
           value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
         />
       </div>
+      ) : null}
 
       {account.sidecarAuths && account.sidecarAuths.length > 0 ? (
         <div className="space-y-1 rounded-lg border bg-card/40 p-3 text-sm">
@@ -263,7 +275,7 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
 
       <div className="flex flex-wrap gap-2 border-t pt-4">
         <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs" disabled={busy}>
-          <Link to="/settings#claude-sidecar">
+          <Link to={settingsAnchor}>
             <SettingsIcon className="h-3.5 w-3.5" />
             Configure
           </Link>

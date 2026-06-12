@@ -43,8 +43,10 @@ export function AccountListItem({
     : null;
   const workspaceLabel = account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
+  const isOpenRouter = account.provider === "openrouter";
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : "CLIProxyAPI";
   const slotSubtitle = account.synthetic
-    ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? "CLIProxyAPI"}`
+    ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? sidecarLabel}`
     : `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;
   const idSuffix = showAccountId ? ` | ID ${formatCompactAccountId(account.accountId)}` : "";
   const primary = account.usage?.primaryRemainingPercent ?? null;
@@ -79,6 +81,7 @@ export function AccountListItem({
     : primary !== null || secondary !== null
       ? "estimated"
       : "unavailable";
+  const showSidecarQuota = account.synthetic && !isOpenRouter;
 
   return (
     <button
@@ -108,7 +111,7 @@ export function AccountListItem({
             className="shrink-0 gap-1 border-violet-300 bg-violet-50 px-1.5 text-[11px] text-violet-700"
           >
             <Bot className="h-3 w-3" aria-hidden="true" />
-            CLIProxyAPI
+            {sidecarLabel}
           </Badge>
         ) : null}
         {showRoutingPolicy ? (
@@ -126,20 +129,24 @@ export function AccountListItem({
       </div>
       {account.synthetic ? (
         <div className="mt-2 grid gap-2 text-xs text-muted-foreground">
+          {showSidecarQuota ? (
           <div className="grid grid-cols-2 gap-2">
             <MiniQuotaRow label={`5h ${sidecarUsageLabel}`} percent={primary} resetAt={account.resetAtPrimary} />
             <MiniQuotaRow label={`Weekly ${sidecarUsageLabel}`} percent={secondary} resetAt={account.resetAtSecondary} />
           </div>
+          ) : null}
           <div className="flex items-center justify-between gap-2">
             <span>Health</span>
             <span className="truncate font-medium text-foreground">{formatSlug(account.healthStatus ?? account.status)}</span>
           </div>
+          {showSidecarQuota ? (
           <div className="flex items-center justify-between gap-2">
             <span>Quota</span>
             <span className="truncate font-medium text-foreground">
               {formatSidecarQuotaLabel(account)}
             </span>
           </div>
+          ) : null}
           <div className="flex items-center justify-between gap-2">
             <span>Models</span>
             <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
