@@ -171,9 +171,11 @@ def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
 
     payload = build_sidecar_chat_payload(request, "cp-claude-fable-5", _config(prefixes=("cp-",)))
 
-    tool_use = payload.body["messages"][1]["content"][1]
-    assert tool_use["id"] == "call_abc_def"
-    assert tool_use["name"] == "Bash"
+    assistant_message = payload.body["messages"][1]
+    tool_call = assistant_message["tool_calls"][0]
+    assert assistant_message["content"] == "running tool"
+    assert tool_call["id"] == "call_abc_def"
+    assert tool_call["function"]["name"] == "Bash"
     assert payload.reverse_tool_names == {"Bash": "Shell"}
 
 
@@ -213,7 +215,7 @@ def test_sanitize_sidecar_chat_tool_ids_keeps_tool_result_references_consistent(
     assert tool_result["tool_use_id"] == "call_abc_def"
 
 
-def test_build_sidecar_chat_payload_keeps_referenced_cursor_tool_result_content_part() -> None:
+def test_build_sidecar_chat_payload_normalizes_cursor_tool_history_for_sidecar() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "claude-sonnet-4-5",
@@ -245,12 +247,50 @@ def test_build_sidecar_chat_payload_keeps_referenced_cursor_tool_result_content_
 
     payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
 
-    tool_result = payload.body["messages"][1]["content"][0]
-    assert tool_result == {
-        "type": "tool_result",
-        "tool_use_id": "call_abc_def",
+    assistant_message = payload.body["messages"][0]
+    tool_message = payload.body["messages"][1]
+    assert assistant_message == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_abc_def",
+                "type": "function",
+                "function": {"name": "Bash", "arguments": '{"command":"pwd"}'},
+            }
+        ],
+    }
+    assert tool_message == {
+        "role": "tool",
+        "tool_call_id": "call_abc_def",
         "content": "/tmp",
     }
+    assert payload.reverse_tool_names == {"Bash": "Shell"}
+
+
+def test_build_sidecar_chat_payload_drops_orphan_cursor_tool_result_after_normalization() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "run pwd"},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_missing",
+                            "content": "orphan",
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    assert payload.body["messages"] == [{"role": "user", "content": "run pwd"}]
 
 
 def test_sanitize_sidecar_chat_messages_drops_orphan_cursor_tool_result_content_parts() -> None:
