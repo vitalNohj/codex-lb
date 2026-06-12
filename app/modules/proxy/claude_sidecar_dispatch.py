@@ -52,6 +52,7 @@ _SIDECAR_TOOL_CALL_ID_FIELDS = ("tool_call_id", "toolCallId", "call_id")
 _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
     {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
 )
+_SIDECAR_MESSAGE_CONTINUATION = "Continue."
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +159,133 @@ def _parse_sidecar_prefixes(raw: str | None) -> list[str]:
     return prefixes or ["claude"]
 
 
+def sanitize_sidecar_chat_messages(body: dict[str, JsonValue]) -> None:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    filtered = _filter_sidecar_messages(messages)
+    filtered = _ensure_sidecar_trailing_user_message(filtered)
+    body["messages"] = filtered
+
+
+def _filter_sidecar_messages(messages: list[JsonValue]) -> list[JsonValue]:
+    filtered: list[JsonValue] = []
+    seen_tool_call_ids: set[str] = set()
+    for raw_message in messages:
+        if not is_json_mapping(raw_message):
+            continue
+        message = cast(dict[str, JsonValue], raw_message)
+        role = message.get("role")
+        if role == "assistant":
+            _register_sidecar_assistant_tool_call_ids(message, seen_tool_call_ids)
+        if not _sidecar_message_has_substance(message):
+            continue
+        if role == "tool" and not _sidecar_tool_message_is_referenced(message, seen_tool_call_ids):
+            continue
+        filtered.append(message)
+    return filtered
+
+
+def _ensure_sidecar_trailing_user_message(messages: list[JsonValue]) -> list[JsonValue]:
+    if not messages:
+        return messages
+    last = messages[-1]
+    if not is_json_mapping(last):
+        return messages
+    if cast(dict[str, JsonValue], last).get("role") != "assistant":
+        return messages
+    return [
+        *messages,
+        {"role": "user", "content": _SIDECAR_MESSAGE_CONTINUATION},
+    ]
+
+
+def _register_sidecar_assistant_tool_call_ids(
+    message: dict[str, JsonValue],
+    seen_tool_call_ids: set[str],
+) -> None:
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if not is_json_mapping(tool_call):
+                continue
+            tool_call_id = cast(dict[str, JsonValue], tool_call).get("id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                seen_tool_call_ids.add(tool_call_id)
+    function_call = message.get("function_call")
+    if is_json_mapping(function_call):
+        function_call_id = cast(dict[str, JsonValue], function_call).get("id")
+        if isinstance(function_call_id, str) and function_call_id:
+            seen_tool_call_ids.add(function_call_id)
+    content = message.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if not is_json_mapping(part):
+                continue
+            part_dict = cast(dict[str, JsonValue], part)
+            if part_dict.get("type") == "tool_use":
+                tool_use_id = part_dict.get("id")
+                if isinstance(tool_use_id, str) and tool_use_id:
+                    seen_tool_call_ids.add(tool_use_id)
+
+
+def _sidecar_tool_message_is_referenced(
+    message: dict[str, JsonValue],
+    seen_tool_call_ids: set[str],
+) -> bool:
+    for field in _SIDECAR_TOOL_CALL_ID_FIELDS:
+        tool_call_id = message.get(field)
+        if isinstance(tool_call_id, str) and tool_call_id in seen_tool_call_ids:
+            return True
+    return False
+
+
+def _sidecar_message_has_substance(message: dict[str, JsonValue]) -> bool:
+    role = message.get("role")
+    if role == "tool":
+        return _sidecar_tool_message_is_present(message)
+    if role == "assistant":
+        if message.get("tool_calls") or message.get("function_call"):
+            return True
+        return not _sidecar_content_is_empty(message.get("content"))
+    return not _sidecar_content_is_empty(message.get("content"))
+
+
+def _sidecar_tool_message_is_present(message: dict[str, JsonValue]) -> bool:
+    for field in _SIDECAR_TOOL_CALL_ID_FIELDS:
+        tool_call_id = message.get(field)
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return True
+    return not _sidecar_content_is_empty(message.get("content"))
+
+
+def _sidecar_content_is_empty(content: JsonValue) -> bool:
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        if not content:
+            return True
+        return all(_sidecar_content_part_is_empty(part) for part in content)
+    return False
+
+
+def _sidecar_content_part_is_empty(part: JsonValue) -> bool:
+    if isinstance(part, str):
+        return not part.strip()
+    if not is_json_mapping(part):
+        return False
+    part_dict = cast(dict[str, JsonValue], part)
+    part_type = part_dict.get("type")
+    if part_type == "text":
+        text = part_dict.get("text")
+        return not isinstance(text, str) or not text.strip()
+    if part_type in {"tool_use", "tool_result", "image", "image_url", "input_image"}:
+        return False
+    return False
+
+
 def sanitize_sidecar_chat_tool_ids(body: dict[str, JsonValue]) -> None:
     cache: dict[str, str] = {}
     used: set[str] = set()
@@ -181,6 +309,7 @@ def build_sidecar_chat_payload(
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     body["model"] = sidecar_wire_model(effective_model, config)
     sanitize_sidecar_chat_tool_ids(body)
+    sanitize_sidecar_chat_messages(body)
     tool_map = map_sidecar_chat_tool_names(body)
     return SidecarChatPayload(body=body, reverse_tool_names=tool_map.reverse_tool_names)
 

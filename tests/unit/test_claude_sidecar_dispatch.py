@@ -3,11 +3,13 @@ from __future__ import annotations
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import (
+    _SIDECAR_MESSAGE_CONTINUATION,
     _SseUsageDecoder,
     build_sidecar_chat_payload,
     ensure_stream_usage_requested,
     extract_usage,
     is_sidecar_model,
+    sanitize_sidecar_chat_messages,
     sanitize_sidecar_chat_tool_ids,
     sidecar_wire_model,
 )
@@ -147,6 +149,113 @@ def test_sanitize_sidecar_chat_tool_ids_keeps_tool_result_references_consistent(
     tool_result = body["messages"][1]["content"][0]
     assert tool_use["id"] == "call_abc_def"
     assert tool_result["tool_use_id"] == "call_abc_def"
+
+
+def test_build_sidecar_chat_payload_appends_user_continuation_after_trailing_assistant() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "partial reply"},
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    assert payload.body["messages"][-2] == {"role": "assistant", "content": "partial reply"}
+    assert payload.body["messages"][-1] == {
+        "role": "user",
+        "content": _SIDECAR_MESSAGE_CONTINUATION,
+    }
+
+
+def test_build_sidecar_chat_payload_appends_user_continuation_after_assistant_tool_calls() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "run pwd"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "Shell", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    assert payload.body["messages"][-1] == {
+        "role": "user",
+        "content": _SIDECAR_MESSAGE_CONTINUATION,
+    }
+
+
+def test_sanitize_sidecar_chat_messages_drops_empty_messages() -> None:
+    body = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "   "},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        {"role": "user", "content": _SIDECAR_MESSAGE_CONTINUATION},
+    ]
+
+
+def test_sanitize_sidecar_chat_messages_drops_orphan_tool_messages() -> None:
+    body = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_2", "content": "orphan"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
 
 
 def test_build_sidecar_chat_payload_sanitizes_openai_tool_call_ids() -> None:
