@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+.venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and test outputs
+build/
+dist/
+frontend/dist/
+frontend/coverage/
+
+# Local work/cache directories
+.local/
+.worktrees/
+.codex-lb/
+.sisyphus/
+.specstory/
+.omx/
+.superpowers/
