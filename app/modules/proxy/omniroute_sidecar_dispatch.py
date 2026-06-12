@@ -20,6 +20,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
@@ -32,6 +33,11 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     SidecarUsage,
     ensure_stream_usage_requested,
     extract_usage,
+)
+from app.modules.proxy.omniroute_responses_dispatch import (
+    ResponsesStreamSynthesizer,
+    omniroute_chat_to_responses_result,
+    responses_to_omniroute_chat_request,
 )
 from app.modules.request_logs.repository import RequestLogsRepository
 
@@ -427,3 +433,205 @@ async def _release_omniroute_reservation(
         model=reservation.model if reservation else "",
         usage=None,
     )
+
+
+def _responses_sse(event: JsonObject) -> bytes:
+    data = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
+    return f"data: {data}\n\n".encode("utf-8")
+
+
+async def proxy_responses_to_omniroute(
+    request: Request,
+    payload: ResponsesRequest,
+    *,
+    effective_model: str,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    rate_limit_headers: Mapping[str, str],
+    sse_keepalive_interval_seconds: float,
+    client: OmniRouteSidecarClient,
+) -> Response:
+    """Dispatch a Responses-shaped request to OmniRoute and return Responses output.
+
+    The Responses request is translated into an OmniRoute ``/chat/completions``
+    request, and OmniRoute's chat-completions output is translated back into the
+    Responses result (non-streaming) or Responses event stream (streaming).
+    """
+
+    chat_request = responses_to_omniroute_chat_request(payload, effective_model)
+    chat_body = build_omniroute_chat_payload(chat_request, effective_model).body
+    requested_at = time.monotonic()
+    stream = bool(payload.stream)
+
+    if stream:
+        ensure_stream_usage_requested(chat_body)
+        return StreamingResponse(
+            inject_sse_keepalives(
+                _omniroute_responses_stream_iterator(
+                    chat_body,
+                    api_key=api_key,
+                    reservation=reservation,
+                    model=effective_model,
+                    started_at=requested_at,
+                    client=client,
+                ),
+                sse_keepalive_interval_seconds,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
+        )
+
+    try:
+        response_body = await client.chat_completion(chat_body)
+    except OmniRouteSidecarUnavailableError:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        await _log_omniroute_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code="omniroute_sidecar_unavailable",
+            error_message="OmniRoute sidecar unavailable",
+        )
+        return JSONResponse(
+            status_code=503,
+            content=openai_error(
+                "omniroute_sidecar_unavailable",
+                "OmniRoute sidecar unavailable",
+                error_type="upstream_error",
+            ),
+            headers=dict(rate_limit_headers),
+        )
+    except OmniRouteSidecarError as exc:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        await _log_omniroute_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code="omniroute_sidecar_error",
+            error_message=exc.message,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_openai_error_content(exc),
+            headers=dict(rate_limit_headers),
+        )
+
+    usage = extract_usage(response_body)
+    await _finalize_or_release_omniroute_reservation(
+        reservation,
+        api_key=api_key,
+        model=effective_model,
+        usage=usage,
+    )
+    await _log_omniroute_request(
+        api_key=api_key,
+        model=effective_model,
+        started_at=requested_at,
+        status="success",
+        usage=usage,
+    )
+    result = omniroute_chat_to_responses_result(response_body, model=effective_model)
+    return JSONResponse(content=result, status_code=200, headers=dict(rate_limit_headers))
+
+
+async def _omniroute_responses_stream_iterator(
+    payload: Mapping[str, JsonValue],
+    *,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    model: str,
+    started_at: float,
+    client: OmniRouteSidecarClient,
+) -> AsyncIterator[bytes]:
+    usage: SidecarUsage | None = None
+    completed = False
+    settled = False
+    synthesizer = ResponsesStreamSynthesizer(model=model)
+    try:
+        async with client.stream_chat_completion(payload) as chunks:
+            decoder = _SseUsageDecoder()
+            async for raw_chunk in chunks:
+                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                    if event == "[DONE]":
+                        completed = True
+                    else:
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                    for responses_event in synthesizer.feed(event):
+                        yield _responses_sse(responses_event)
+            for event in decoder.flush():
+                if event == "[DONE]":
+                    completed = True
+                else:
+                    event_usage = extract_usage(event)
+                    if event_usage is not None:
+                        usage = event_usage
+                for responses_event in synthesizer.feed(event):
+                    yield _responses_sse(responses_event)
+            for responses_event in synthesizer.finish():
+                yield _responses_sse(responses_event)
+            yield b"data: [DONE]\n\n"
+    except OmniRouteSidecarUnavailableError:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        await _log_omniroute_request(
+            api_key=api_key,
+            model=model,
+            started_at=started_at,
+            status="error",
+            error_code="omniroute_sidecar_unavailable",
+            error_message="OmniRoute sidecar unavailable",
+        )
+        settled = True
+        yield _error_sse(
+            openai_error(
+                "omniroute_sidecar_unavailable",
+                "OmniRoute sidecar unavailable",
+                error_type="upstream_error",
+            )
+        )
+        yield b"data: [DONE]\n\n"
+    except OmniRouteSidecarError as exc:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        await _log_omniroute_request(
+            api_key=api_key,
+            model=model,
+            started_at=started_at,
+            status="error",
+            error_code="omniroute_sidecar_error",
+            error_message=exc.message,
+        )
+        settled = True
+        yield _error_sse(_openai_error_content(exc))
+        yield b"data: [DONE]\n\n"
+    except BaseException as exc:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        await _log_omniroute_request(
+            api_key=api_key,
+            model=model,
+            started_at=started_at,
+            status="error",
+            error_code="omniroute_sidecar_stream_interrupted",
+            error_message=str(exc) or exc.__class__.__name__,
+        )
+        settled = True
+        raise
+    finally:
+        if not settled:
+            usage_to_settle = usage if completed else None
+            await _finalize_or_release_omniroute_reservation(
+                reservation,
+                api_key=api_key,
+                model=model,
+                usage=usage_to_settle,
+            )
+            await _log_omniroute_request(
+                api_key=api_key,
+                model=model,
+                started_at=started_at,
+                status="success" if completed else "error",
+                error_code=None if completed else "omniroute_sidecar_stream_incomplete",
+                usage=usage_to_settle,
+            )
