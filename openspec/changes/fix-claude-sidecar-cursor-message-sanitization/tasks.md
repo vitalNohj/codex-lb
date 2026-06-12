@@ -13,6 +13,9 @@
       forwarding.
 - [x] 1.5 Normalize Cursor-native sidecar tool history to OpenAI-compatible
       `tool_calls` and `tool` messages before forwarding to CLIProxyAPI.
+- [x] 1.6 Normalize Cursor-native flat tool definitions and structured auto
+      tool choice into OpenAI-compatible chat-completions format before
+      forwarding to CLIProxyAPI.
 
 ## 2. Verification
 
