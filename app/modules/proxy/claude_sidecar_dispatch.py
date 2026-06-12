@@ -37,7 +37,10 @@ from app.modules.proxy.cursor_chat_compat import (
     is_context_length_error,
     is_context_length_error_envelope,
 )
-from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile
+from app.modules.proxy.sidecar_model_profiles import (
+    apply_sidecar_model_profile,
+    is_known_claude_sidecar_model,
+)
 from app.modules.proxy.sidecar_prefix import (
     is_custom_alias_prefix,
     matching_sidecar_prefix,
@@ -78,7 +81,9 @@ class SidecarChatPayload:
 def is_sidecar_model(model: str, config: ClaudeSidecarConfig) -> bool:
     if not config.enabled:
         return False
-    return sidecar_prefix_match(model, config)
+    if sidecar_prefix_match(model, config):
+        return True
+    return is_known_claude_sidecar_model(model)
 
 
 def sidecar_prefix_match(model: str, config: ClaudeSidecarConfig) -> bool:
@@ -140,15 +145,15 @@ def _decrypt_sidecar_secret(encrypted: bytes | None, *, label: str) -> str | Non
 
 def _parse_sidecar_prefixes(raw: str | None) -> list[str]:
     if not raw:
-        return ["claude"]
+        return ["claude", "cp-"]
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return ["claude"]
+        return ["claude", "cp-"]
     if not isinstance(parsed, list):
-        return ["claude"]
+        return ["claude", "cp-"]
     prefixes = [entry.strip().lower() for entry in parsed if isinstance(entry, str) and entry.strip()]
-    return prefixes or ["claude"]
+    return prefixes or ["claude", "cp-"]
 
 
 def sanitize_sidecar_chat_messages(body: dict[str, JsonValue]) -> None:
@@ -293,6 +298,19 @@ def sanitize_sidecar_chat_tool_ids(body: dict[str, JsonValue]) -> None:
                 _sanitize_sidecar_input_item_tool_ids(cast(dict[str, JsonValue], item), cache=cache, used=used)
 
 
+def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        reasoning_dict = cast(dict[str, JsonValue], reasoning)
+        effort = reasoning_dict.get("effort")
+        if isinstance(effort, str) and effort.strip() and not isinstance(body.get("reasoning_effort"), str):
+            body["reasoning_effort"] = effort.strip()
+        if isinstance(body.get("reasoning_effort"), str) and body["reasoning_effort"].strip():
+            body.pop("reasoning", None)
+    for key in ("previous_response_id", "truncation", "user", "text", "metadata"):
+        body.pop(key, None)
+
+
 def build_sidecar_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
@@ -301,6 +319,7 @@ def build_sidecar_chat_payload(
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     stripped_model = strip_sidecar_model_prefix(effective_model, config)
     apply_sidecar_model_profile(body, stripped_model=stripped_model)
+    sanitize_sidecar_forward_payload(body)
     sanitize_sidecar_chat_tool_ids(body)
     sanitize_sidecar_chat_messages(body)
     tool_map = map_sidecar_chat_tool_names(body)

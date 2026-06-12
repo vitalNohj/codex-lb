@@ -11,6 +11,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     is_sidecar_model,
     sanitize_sidecar_chat_messages,
     sanitize_sidecar_chat_tool_ids,
+    sanitize_sidecar_forward_payload,
     sidecar_wire_model,
 )
 
@@ -43,6 +44,22 @@ def test_is_sidecar_model_treats_dash_and_underscore_alias_prefixes_as_equivalen
 
     assert is_sidecar_model("cp-claude-fable-5", enabled) is True
     assert is_sidecar_model("cp_claude-fable-5", enabled) is True
+
+
+def test_is_sidecar_model_routes_builtin_cp_prefix_without_dashboard_prefix() -> None:
+    enabled = _config(prefixes=("claude",))
+
+    assert is_sidecar_model("cp-claude-opus-4-7", enabled) is True
+    assert is_sidecar_model("cp_claude-fable-5", enabled) is True
+
+
+def test_is_sidecar_model_routes_known_claude_wire_models_without_prefix() -> None:
+    enabled = _config(prefixes=("cp-",))
+
+    assert is_sidecar_model("claude-opus-4-7", enabled) is True
+    assert is_sidecar_model("claude-opus-4-7-thinking-high", enabled) is True
+    assert is_sidecar_model("claude-fable-5", enabled) is True
+    assert is_sidecar_model("gpt-5.4", enabled) is False
 
 
 def test_sidecar_wire_model_strips_custom_alias_prefix_only() -> None:
@@ -97,6 +114,37 @@ def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() ->
     payload = build_sidecar_chat_payload(request, "cp_claude-fable-5", _config(prefixes=("cp-",)))
 
     assert payload.body["model"] == "claude-fable-5"
+
+
+def test_sanitize_sidecar_forward_payload_normalizes_reasoning_and_drops_responses_fields() -> None:
+    body = {
+        "model": "claude-opus-4-7",
+        "reasoning": {"effort": "high", "summary": "auto"},
+        "reasoning_effort": "medium",
+        "previous_response_id": "resp_123",
+        "text": {"format": {"type": "text"}},
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    sanitize_sidecar_forward_payload(body)
+
+    assert body["reasoning_effort"] == "medium"
+    assert "reasoning" not in body
+    assert "previous_response_id" not in body
+    assert "text" not in body
+
+
+def test_sanitize_sidecar_forward_payload_promotes_reasoning_effort_and_drops_reasoning() -> None:
+    body = {
+        "model": "claude-opus-4-7",
+        "reasoning": {"effort": "high"},
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    sanitize_sidecar_forward_payload(body)
+
+    assert body["reasoning_effort"] == "high"
+    assert "reasoning" not in body
 
 
 def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
