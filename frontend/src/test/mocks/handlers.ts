@@ -216,6 +216,25 @@ export function resetMockState(): void {
   state = createInitialState();
 }
 
+const openrouterSidecarModels = [
+  { id: "deepseek/deepseek-chat", created: 123, ownedBy: "deepseek" },
+  { id: "deepseek/deepseek-r1", created: 124, ownedBy: "deepseek" },
+  { id: "google/gemini-2.5-pro-preview", created: 125, ownedBy: "google" },
+  { id: "google/gemini-2.0-flash", created: 126, ownedBy: "google" },
+  { id: "anthropic/claude-sonnet-4", created: 127, ownedBy: "anthropic" },
+  { id: "anthropic/claude-opus-4", created: 128, ownedBy: "anthropic" },
+  { id: "meta-llama/llama-3.3-70b-instruct", created: 129, ownedBy: "meta-llama" },
+  { id: "meta-llama/llama-3.1-405b-instruct", created: 130, ownedBy: "meta-llama" },
+  { id: "qwen/qwen-2.5-72b-instruct", created: 131, ownedBy: "qwen" },
+  { id: "qwen/qwq-32b", created: 132, ownedBy: "qwen" },
+  { id: "openai/gpt-4o-mini", created: 133, ownedBy: "openai" },
+  { id: "openai/o4-mini", created: 134, ownedBy: "openai" },
+  { id: "mistralai/mistral-large", created: 135, ownedBy: "mistralai" },
+  { id: "mistralai/codestral-2501", created: 136, ownedBy: "mistralai" },
+  { id: "cohere/command-r-plus", created: 137, ownedBy: "cohere" },
+  { id: "x-ai/grok-3", created: 138, ownedBy: "x-ai" },
+];
+
 function parseDateValue(value: string | null): number | null {
   if (!value) {
     return null;
@@ -1402,15 +1421,13 @@ export const handlers = [
       status: "healthy",
       message: "OpenRouter sidecar reachable",
       baseUrl: "https://openrouter.ai/api/v1",
-      modelCount: 1,
+      modelCount: openrouterSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
     });
   }),
 
   http.get("*/api/openrouter-sidecar/models", () => {
-    return HttpResponse.json({
-      models: [{ id: "deepseek/deepseek-chat", created: 123, ownedBy: "deepseek" }],
-    });
+    return HttpResponse.json({ models: openrouterSidecarModels });
   }),
 
   http.post("*/api/openrouter-sidecar/test", () => {
@@ -1420,9 +1437,9 @@ export const handlers = [
       status: "healthy",
       message: "OpenRouter sidecar reachable",
       baseUrl: "https://openrouter.ai/api/v1",
-      modelCount: 1,
+      modelCount: openrouterSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
-      models: [{ id: "deepseek/deepseek-chat", created: 123, ownedBy: "deepseek" }],
+      models: openrouterSidecarModels,
     });
   }),
 

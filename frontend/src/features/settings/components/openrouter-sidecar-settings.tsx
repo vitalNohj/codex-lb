@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
-import { Globe } from "lucide-react";
+import { Globe, Plus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
+import { OpenRouterModelBrowser } from "@/features/settings/components/openrouter-model-browser";
+import {
+  POPULAR_OPENROUTER_MODELS,
+  prefixFromModelId,
+} from "@/features/settings/components/openrouter-popular-models";
 import { useOpenRouterSidecar } from "@/features/settings/hooks/use-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { formatDateTimeInline, formatSlug } from "@/utils/formatters";
@@ -26,10 +31,12 @@ function parsePrefixes(value: string): string[] {
 }
 
 export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouterSidecarSettingsProps) {
-  const { statusQuery, modelsQuery, testMutation } = useOpenRouterSidecar();
   const sidecarEnabled = settings.openrouterSidecarEnabled ?? false;
   const sidecarBaseUrl = settings.openrouterSidecarBaseUrl ?? DEFAULT_BASE_URL;
   const sidecarApiKeyConfigured = settings.openrouterSidecarApiKeyConfigured ?? false;
+  const { statusQuery, modelsQuery, testMutation } = useOpenRouterSidecar({
+    modelsEnabled: sidecarEnabled && sidecarApiKeyConfigured,
+  });
   const sidecarPrefixes = settings.openrouterSidecarModelPrefixes ?? [];
   const sidecarConnectTimeout = settings.openrouterSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS;
   const sidecarRequestTimeout = settings.openrouterSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS;
@@ -77,128 +84,210 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
     setApiKey("");
   };
 
+  const addPrefix = (prefix: string) => {
+    const next = parsePrefixes(`${prefixes}, ${prefix}`);
+    setPrefixes(next.join(", "));
+  };
+
+  const discoveredIds = useMemo(() => new Set(modelRows.map((model) => model.id)), [modelRows]);
+
   return (
     <section id="openrouter-sidecar" className="rounded-xl border bg-card p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Globe className="h-4 w-4 text-primary" aria-hidden="true" />
-            OpenRouter sidecar
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Route configured OpenRouter models through codex-lb. Use explicit prefixes such as{" "}
-            <code className="rounded bg-muted px-1">deepseek/</code> to avoid overlapping native Codex models.
-          </p>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <Globe className="h-4 w-4 text-primary" aria-hidden="true" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">OpenRouter Sidecar</h3>
+              <p className="text-xs text-muted-foreground">Route configured OpenRouter models through codex-lb.</p>
+            </div>
+          </div>
+          <Badge variant="outline">{formatSlug(currentStatus)}</Badge>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Enabled</span>
-          <Switch
-            checked={sidecarEnabled}
-            disabled={busy}
-            onCheckedChange={(checked) => void save({ openrouterSidecarEnabled: checked })}
-          />
-        </div>
-      </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Base URL</span>
-          <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} disabled={busy} />
-        </label>
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">API key</span>
-          <Input
-            type="password"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder={sidecarApiKeyConfigured ? "Configured — enter to replace" : "OpenRouter API key"}
-            disabled={busy}
-          />
-        </label>
-        <label className="space-y-1 text-sm sm:col-span-2">
-          <span className="text-xs font-medium text-muted-foreground">Model prefixes (comma-separated)</span>
-          <Input
-            value={prefixes}
-            onChange={(event) => setPrefixes(event.target.value)}
-            placeholder="deepseek/, google/, meta-llama/"
-            disabled={busy}
-          />
-        </label>
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Connect timeout (s)</span>
-          <Input value={connectTimeout} onChange={(event) => setConnectTimeout(event.target.value)} disabled={busy} />
-        </label>
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Request timeout (s)</span>
-          <Input value={requestTimeout} onChange={(event) => setRequestTimeout(event.target.value)} disabled={busy} />
-        </label>
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Models cache TTL (s)</span>
-          <Input value={cacheTtl} onChange={(event) => setCacheTtl(event.target.value)} disabled={busy} />
-        </label>
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button type="button" size="sm" disabled={busy || !formValid} onClick={() => void saveConfig()}>
-          Save OpenRouter settings
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={busy || testMutation.isPending}
-          onClick={() => void testMutation.mutateAsync()}
-        >
-          Test connection
-        </Button>
-        {sidecarApiKeyConfigured ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => void save({ openrouterSidecarClearApiKey: true })}
-          >
-            Clear API key
-          </Button>
-        ) : null}
-      </div>
-
-      <div className="mt-4 grid gap-2 rounded-lg border bg-muted/20 p-3 text-sm sm:grid-cols-2">
-        <div>
-          <div className="text-xs text-muted-foreground">Health</div>
-          <div className="font-medium">{formatSlug(currentStatus)}</div>
+        <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+          Create an API key at https://openrouter.ai/settings/keys, then configure provider prefixes such as{" "}
+          <code className="rounded bg-muted px-1">deepseek/</code> so OpenRouter models do not overlap native Codex{" "}
+          <code className="rounded bg-muted px-1">gpt-*</code> models.
         </div>
-        <div>
-          <div className="text-xs text-muted-foreground">Models</div>
-          <div className="font-medium">{modelCount ?? "--"}</div>
-        </div>
-        <div className="sm:col-span-2">
-          <div className="text-xs text-muted-foreground">Last check</div>
-          <div className="font-medium">{lastChecked ? formatDateTimeInline(lastChecked) : "Never"}</div>
-        </div>
-        {currentMessage ? (
-          <div className="sm:col-span-2 text-xs text-muted-foreground">{currentMessage}</div>
-        ) : null}
-      </div>
 
-      {modelRows.length > 0 ? (
-        <div className="mt-4 space-y-2">
-          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Cached models</div>
-          <div className="flex flex-wrap gap-2">
-            {modelRows.slice(0, 12).map((model) => (
-              <Badge key={model.id} variant="outline" className="font-mono text-[11px]">
-                {model.id}
-              </Badge>
-            ))}
-            {modelRows.length > 12 ? (
-              <Badge variant="secondary" className="text-[11px]">
-                +{modelRows.length - 12} more
-              </Badge>
-            ) : null}
+        <div className="divide-y rounded-lg border">
+          <div className="flex items-center justify-between gap-4 p-3">
+            <div>
+              <p className="text-sm font-medium">Enable OpenRouter sidecar</p>
+              <p className="text-xs text-muted-foreground">
+                When enabled, matching model requests route to OpenRouter.
+              </p>
+            </div>
+            <Switch
+              aria-label="Enable OpenRouter sidecar"
+              checked={sidecarEnabled}
+              disabled={busy}
+              onCheckedChange={(checked) => void save({ openrouterSidecarEnabled: checked })}
+            />
+          </div>
+
+          <div className="space-y-3 p-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-api-key">
+                API key
+                <Input
+                  id="openrouter-sidecar-api-key"
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={sidecarApiKeyConfigured ? "Configured" : "OpenRouter API key"}
+                  disabled={busy}
+                  className="h-8 text-xs"
+                />
+                <span className="block font-normal text-muted-foreground">
+                  Saved keys are encrypted and never shown again.
+                </span>
+              </label>
+              <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-prefixes">
+                Model prefixes
+                <Input
+                  id="openrouter-sidecar-prefixes"
+                  value={prefixes}
+                  onChange={(event) => setPrefixes(event.target.value)}
+                  placeholder="deepseek/, google/, meta-llama/"
+                  disabled={busy}
+                  className="h-8 text-xs"
+                />
+                <span className="block font-normal text-muted-foreground">
+                  Comma-separated provider prefixes, e.g. deepseek/, google/
+                </span>
+              </label>
+            </div>
+
+            <details className="rounded-md border bg-muted/10 p-2">
+              <summary className="cursor-pointer text-xs font-medium">Advanced</summary>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-base-url">
+                  Base URL
+                  <Input
+                    id="openrouter-sidecar-base-url"
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder={DEFAULT_BASE_URL}
+                    disabled={busy}
+                    className="h-8 text-xs"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-connect-timeout">
+                  Connect timeout (s)
+                  <Input
+                    id="openrouter-sidecar-connect-timeout"
+                    value={connectTimeout}
+                    onChange={(event) => setConnectTimeout(event.target.value)}
+                    disabled={busy}
+                    className="h-8 text-xs"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-request-timeout">
+                  Request timeout (s)
+                  <Input
+                    id="openrouter-sidecar-request-timeout"
+                    value={requestTimeout}
+                    onChange={(event) => setRequestTimeout(event.target.value)}
+                    disabled={busy}
+                    className="h-8 text-xs"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-cache-ttl">
+                  Models cache TTL (s)
+                  <Input
+                    id="openrouter-sidecar-cache-ttl"
+                    value={cacheTtl}
+                    onChange={(event) => setCacheTtl(event.target.value)}
+                    disabled={busy}
+                    className="h-8 text-xs"
+                  />
+                </label>
+              </div>
+            </details>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 text-xs"
+                disabled={busy || !formValid}
+                onClick={() => void saveConfig()}
+              >
+                Save OpenRouter settings
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={busy || testMutation.isPending}
+                onClick={() => void testMutation.mutateAsync()}
+              >
+                Test connection
+              </Button>
+              {sidecarApiKeyConfigured ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 text-xs"
+                  disabled={busy}
+                  onClick={() => void save({ openrouterSidecarClearApiKey: true })}
+                >
+                  Clear API key
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
-      ) : null}
+
+        <div className="grid gap-3 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-3">
+          <div>
+            <span className="text-muted-foreground">Configured:</span> {sidecarApiKeyConfigured ? "yes" : "no"}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Models:</span> {modelCount ?? "--"}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Last check:</span>{" "}
+            {lastChecked ? formatDateTimeInline(lastChecked) : "never"}
+          </div>
+        </div>
+        {currentMessage ? <p className="text-xs text-muted-foreground">{currentMessage}</p> : null}
+
+        <div className="space-y-2">
+          <p className="text-xs font-medium">Popular models</p>
+          {modelRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Save API key and test connection to verify availability
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-1.5">
+            {POPULAR_OPENROUTER_MODELS.filter(
+              (id) => modelRows.length === 0 || discoveredIds.has(id),
+            ).map((id) => (
+              <Badge key={id} variant="secondary" className="gap-1 font-mono text-[11px]">
+                {id}
+                <button
+                  type="button"
+                  className="ml-0.5 hover:text-foreground"
+                  aria-label={`Add prefix ${prefixFromModelId(id)}`}
+                  disabled={busy}
+                  onClick={() => addPrefix(prefixFromModelId(id))}
+                >
+                  <Plus className="size-3" aria-hidden="true" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        </div>
+
+        <OpenRouterModelBrowser models={modelRows} isLoading={modelsQuery.isLoading} onAddPrefix={addPrefix} />
+      </div>
     </section>
   );
 }
