@@ -51,7 +51,21 @@ def test_sidecar_wire_model_strips_custom_alias_prefix_only() -> None:
 
     assert sidecar_wire_model("cp-claude-fable-5", alias_config) == "claude-fable-5"
     assert sidecar_wire_model("cp_claude-fable-5", alias_config) == "claude-fable-5"
+    assert sidecar_wire_model("cp-claude-opus-4-7", alias_config) == "claude-opus-4-7"
+    assert sidecar_wire_model("cp-claude-opus-4-8", alias_config) == "claude-opus-4-8"
     assert sidecar_wire_model("claude-fable-5", claude_config) == "claude-fable-5"
+
+
+def test_sidecar_wire_model_uses_longest_matching_prefix() -> None:
+    config = _config(prefixes=("cp-", "cp-claude-"))
+
+    assert sidecar_wire_model("cp-claude-opus-4-7", config) == "claude-opus-4-7"
+
+
+def test_sidecar_wire_model_restores_claude_prefix_after_overlong_alias_prefix() -> None:
+    config = _config(prefixes=("cp-claude-",))
+
+    assert sidecar_wire_model("cp-claude-opus-4-7", config) == "claude-opus-4-7"
 
 
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:

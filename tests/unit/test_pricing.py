@@ -109,6 +109,13 @@ def test_get_pricing_for_model_claude_sidecar_underscore_prefixed():
     assert model == "claude-fable-5"
 
 
+def test_get_pricing_for_model_claude_sidecar_prefixed_opus():
+    result = get_pricing_for_model("cp-claude-opus-4-7", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, _ = result
+    assert model == "claude-opus-4-7"
+
+
 def test_get_pricing_for_model_claude_versioned_beats_family():
     result = get_pricing_for_model("claude-opus-4-1-20250805", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None

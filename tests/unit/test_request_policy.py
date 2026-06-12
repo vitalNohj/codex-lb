@@ -105,3 +105,15 @@ def test_model_access_rejects_alias_when_canonical_model_not_allowed() -> None:
 
     with pytest.raises(ProxyModelNotAllowed):
         validate_model_access(api_key, "gpt-5.5-extra")
+
+
+def test_model_access_accepts_cp_prefixed_claude_model_when_wire_model_allowed() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-4-7"})))
+
+    validate_model_access(api_key, "cp-claude-opus-4-7")
+
+
+def test_model_access_accepts_wire_claude_model_when_cp_alias_allowed() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cp-claude-fable-5"})))
+
+    validate_model_access(api_key, "claude-fable-5")

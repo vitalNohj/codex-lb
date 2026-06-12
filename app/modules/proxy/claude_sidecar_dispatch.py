@@ -37,6 +37,13 @@ from app.modules.proxy.cursor_chat_compat import (
     is_context_length_error,
     is_context_length_error_envelope,
 )
+from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile
+from app.modules.proxy.sidecar_prefix import (
+    is_custom_alias_prefix,
+    matching_sidecar_prefix,
+    sidecar_prefix_variants,
+    strip_sidecar_model_prefix,
+)
 from app.modules.proxy.sidecar_tool_mapper import (
     SidecarSseToolNameRewriter,
     map_sidecar_chat_tool_names,
@@ -79,35 +86,20 @@ def sidecar_prefix_match(model: str, config: ClaudeSidecarConfig) -> bool:
 
 
 def sidecar_wire_model(model: str, config: ClaudeSidecarConfig) -> str:
-    normalized_model = model.strip()
-    prefix = _matching_sidecar_prefix(normalized_model, config)
-    if prefix is None or not _is_custom_alias_prefix(prefix):
-        return normalized_model
-    return normalized_model[len(prefix) :].strip() or normalized_model
+    stripped = strip_sidecar_model_prefix(model, config)
+    return apply_sidecar_model_profile({}, stripped_model=stripped)
 
 
 def _matching_sidecar_prefix(model: str, config: ClaudeSidecarConfig) -> str | None:
-    normalized = model.strip().lower()
-    for prefix in config.model_prefixes:
-        for candidate in _sidecar_prefix_variants(prefix):
-            if normalized.startswith(candidate):
-                return candidate
-    return None
+    return matching_sidecar_prefix(model, config)
 
 
 def _sidecar_prefix_variants(prefix: str) -> tuple[str, ...]:
-    normalized = prefix.strip().lower()
-    if not normalized:
-        return ()
-    if normalized.endswith("-"):
-        return (normalized, f"{normalized[:-1]}_")
-    if normalized.endswith("_"):
-        return (normalized, f"{normalized[:-1]}-")
-    return (normalized,)
+    return sidecar_prefix_variants(prefix)
 
 
 def _is_custom_alias_prefix(prefix: str) -> bool:
-    return prefix.endswith(("-", "_"))
+    return is_custom_alias_prefix(prefix)
 
 
 async def load_sidecar_config() -> ClaudeSidecarConfig | None:
@@ -307,7 +299,8 @@ def build_sidecar_chat_payload(
     config: ClaudeSidecarConfig,
 ) -> SidecarChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
-    body["model"] = sidecar_wire_model(effective_model, config)
+    stripped_model = strip_sidecar_model_prefix(effective_model, config)
+    apply_sidecar_model_profile(body, stripped_model=stripped_model)
     sanitize_sidecar_chat_tool_ids(body)
     sanitize_sidecar_chat_messages(body)
     tool_map = map_sidecar_chat_tool_names(body)

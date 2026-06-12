@@ -6,13 +6,13 @@ import pytest
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError
-from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
 from app.db.models import ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 
 pytestmark = pytest.mark.integration
 
@@ -197,6 +197,21 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
     sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
     assert len(sidecar_logs) == 1
     assert sidecar_logs[0].model == "cp_claude-fable-5"
+
+
+@pytest.mark.asyncio
+async def test_custom_prefixed_opus_alias_routes_to_sidecar_with_unprefixed_wire_model(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "cp-claude-opus-4-7", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "claude-opus-4-7"
 
 
 @pytest.mark.asyncio
