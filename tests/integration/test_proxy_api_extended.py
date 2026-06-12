@@ -586,6 +586,105 @@ async def test_codex_control_json_endpoints_forward_upstream(
 
 
 @pytest.mark.asyncio
+async def test_codex_trace_summarize_applies_composer_model_policy(async_client, monkeypatch):
+    await _import_account(async_client, "acc_trace_summarize", "trace-summarize@example.com")
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "trace-summarize-policy",
+            "allowedModels": ["gpt-5.5"],
+            "enforcedReasoningEffort": "high",
+            "enforcedServiceTier": "fast",
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    calls = []
+
+    async def fake_codex_control_request(
+        path,
+        *,
+        method,
+        payload: bytes | None,
+        query_params,
+        headers,
+        access_token,
+        account_id,
+        timeout_seconds=None,
+        **_kwargs,
+    ):
+        calls.append(
+            {
+                "path": path,
+                "method": method,
+                "payload": json.loads(payload or b"{}"),
+                "query_params": dict(query_params),
+                "access_token": access_token,
+                "account_id": account_id,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return core_proxy.CodexControlResponse(
+            status_code=200,
+            body=json.dumps({"ok": True}).encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(proxy_module, "core_codex_control_request", fake_codex_control_request)
+
+    response = await async_client.post(
+        "/backend-api/codex/memories/trace_summarize",
+        headers={"Authorization": f"Bearer {key}"},
+        json={
+            "model": "gpt-5.5-low-fast",
+            "raw_memories": [{"id": "mem_1", "text": "Keep this"}],
+            "metadata": {"source": "cursor"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["payload"] == {
+        "model": "gpt-5.5",
+        "raw_memories": [{"id": "mem_1", "text": "Keep this"}],
+        "metadata": {"source": "cursor"},
+        "reasoning": {"effort": "high"},
+        "service_tier": "priority",
+    }
+    assert calls[0]["path"] == "memories/trace_summarize"
+    assert calls[0]["account_id"] == "acc_trace_summarize"
+    assert isinstance(calls[0]["timeout_seconds"], float)
+
+
+@pytest.mark.asyncio
+async def test_codex_trace_summarize_rejects_invalid_payload_before_upstream(async_client, monkeypatch):
+    calls = []
+
+    async def fake_codex_control_request(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("invalid trace summarize payload must not reach upstream")
+
+    monkeypatch.setattr(proxy_module, "core_codex_control_request", fake_codex_control_request)
+
+    response = await async_client.post(
+        "/backend-api/codex/memories/trace_summarize",
+        json={"raw_memories": []},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request_error"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_codex_realtime_call_forwards_raw_sdp_and_location(async_client, monkeypatch):
     await _import_account(async_client, "acc_codex_realtime", "codex-realtime@example.com")
     calls = []

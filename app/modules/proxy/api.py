@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
@@ -23,7 +24,7 @@ from fastapi import (
     WebSocket,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,7 +72,7 @@ from app.core.openai.models import (
     OpenAIErrorEnvelope as OpenAIErrorEnvelopeModel,
 )
 from app.core.openai.parsing import parse_response_payload
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
+from app.core.openai.requests import ResponsesCompactRequest, ResponsesReasoning, ResponsesRequest
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.core.resilience.overload import is_local_overload_error_code, merge_retry_after_headers
 from app.core.runtime_logging import log_error_response
@@ -361,8 +362,69 @@ _CODEX_CONTROL_RESPONSE_HEADERS = frozenset(
 )
 
 
+class _TraceSummarizePolicyPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str = Field(min_length=1)
+    reasoning: ResponsesReasoning | None = None
+    service_tier: str | None = None
+
+    @field_validator("service_tier")
+    @classmethod
+    def _normalize_service_tier_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value.strip().lower() == "fast":
+            return "priority"
+        return value
+
+
 def _codex_control_downstream_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in headers.items() if key.lower() in _CODEX_CONTROL_RESPONSE_HEADERS}
+
+
+async def _trace_summarize_control_payload(
+    request: Request,
+    api_key: ApiKeyData | None,
+) -> tuple[bytes | None, JSONResponse | None]:
+    body = await request.body()
+    try:
+        raw = json.loads(body)
+    except (JSONDecodeError, UnicodeDecodeError):
+        error = openai_error(
+            "invalid_request_error",
+            "trace summarize payload must be valid JSON",
+            error_type="invalid_request_error",
+        )
+        return None, _logged_error_json_response(request, 400, error)
+    if not is_json_mapping(raw):
+        error = openai_error(
+            "invalid_request_error",
+            "trace summarize payload must be a JSON object",
+            error_type="invalid_request_error",
+        )
+        return None, _logged_error_json_response(request, 400, error)
+
+    payload = dict(raw)
+    try:
+        policy_payload = _TraceSummarizePolicyPayload.model_validate(payload)
+    except ValidationError as exc:
+        error = openai_validation_error(exc)
+        return None, _logged_error_json_response(request, 400, error)
+
+    apply_api_key_enforcement(policy_payload, api_key)
+    validate_model_access(api_key, policy_payload.model)
+
+    payload["model"] = policy_payload.model
+    if policy_payload.reasoning is not None:
+        payload["reasoning"] = policy_payload.reasoning.model_dump(mode="json", exclude_none=True)
+    if policy_payload.service_tier is None:
+        payload.pop("service_tier", None)
+    else:
+        payload["service_tier"] = policy_payload.service_tier
+
+    normalized_body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return normalized_body, None
 
 
 async def _codex_control_proxy(
@@ -370,12 +432,21 @@ async def _codex_control_proxy(
     path: str,
     context: ProxyContext,
     api_key: ApiKeyData | None,
+    *,
+    payload_override: bytes | None = None,
 ) -> Response:
+    request_payload = (
+        payload_override
+        if payload_override is not None
+        else await request.body()
+        if request.method.upper() not in {"GET", "HEAD"}
+        else None
+    )
     try:
         response = await context.service.codex_control_request(
             path,
             method=request.method,
-            payload=await request.body() if request.method.upper() not in {"GET", "HEAD"} else None,
+            payload=request_payload,
             query_params=list(request.query_params.multi_items()),
             headers=request.headers,
             codex_session_affinity=True,
@@ -432,7 +503,16 @@ async def codex_memories_trace_summarize(
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
-    return await _codex_control_proxy(request, "memories/trace_summarize", context, api_key)
+    payload, error_response = await _trace_summarize_control_payload(request, api_key)
+    if error_response is not None:
+        return error_response
+    return await _codex_control_proxy(
+        request,
+        "memories/trace_summarize",
+        context,
+        api_key,
+        payload_override=payload,
+    )
 
 
 @router.post("/realtime/calls")
