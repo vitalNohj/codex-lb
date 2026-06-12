@@ -15,8 +15,11 @@ from app.core.openai.strict_schema import (
 )
 from app.core.openai.v1_requests import V1ResponsesRequest
 from app.core.types import JsonValue
+from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
+from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.core.utils.request_id import get_request_id
 from app.modules.api_keys.service import ApiKeyData
+from app.modules.proxy.sidecar_model_profiles import canonical_sidecar_model
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +90,23 @@ def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None
         return
     if not api_key.allowed_models:
         return
-    allowed_models = {resolve_model_alias(allowed_model) for allowed_model in api_key.allowed_models}
-    effective_model = resolve_model_alias(model)
-    if model is None or effective_model in allowed_models:
+    allowed_models = {_canonical_model_for_access(allowed_model) for allowed_model in api_key.allowed_models}
+    effective_model = _canonical_model_for_access(model)
+    if model is None or effective_model in allowed_models or model in api_key.allowed_models:
         return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
+
+
+def _canonical_model_for_access(model: str | None) -> str | None:
+    if model is None:
+        return None
+    gpt_alias = resolve_model_alias(model)
+    normalized = gpt_alias if gpt_alias is not None else model
+    pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
+    if pricing_alias is not None:
+        return pricing_alias
+    sidecar_alias = canonical_sidecar_model(normalized)
+    return sidecar_alias if sidecar_alias is not None else normalized
 
 
 def apply_api_key_enforcement(

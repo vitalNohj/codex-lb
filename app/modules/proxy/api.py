@@ -36,8 +36,8 @@ from app.core.auth.dependencies import (
     validate_usage_api_key,
 )
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
-from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.files import FileProxyError
+from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
@@ -106,11 +106,6 @@ from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, load_sidecar_config, proxy_chat_to_sidecar
-from app.modules.proxy.openrouter_sidecar_dispatch import (
-    is_openrouter_sidecar_model,
-    load_openrouter_sidecar_config,
-    proxy_chat_to_openrouter,
-)
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
     cursor_context_limit_usage_completion,
@@ -121,14 +116,19 @@ from app.modules.proxy.cursor_chat_compat import (
 )
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
+from app.modules.proxy.openrouter_sidecar_dispatch import (
+    is_openrouter_sidecar_model,
+    load_openrouter_sidecar_config,
+    proxy_chat_to_openrouter,
+)
 from app.modules.proxy.request_policy import (
+    _canonical_model_for_access,
     apply_api_key_enforcement,
     enforce_strict_function_tools_format,
     enforce_strict_text_format,
     normalize_responses_request_payload,
     openai_client_payload_error,
     openai_validation_error,
-    resolve_model_alias,
     validate_model_access,
 )
 from app.modules.proxy.schemas import (
@@ -148,6 +148,7 @@ from app.modules.proxy.schemas import (
     WarmupSkippedAccount,
     WarmupSubmittedAccount,
 )
+from app.modules.proxy.sidecar_model_profiles import sidecar_prefixed_model_ids
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
     RateLimitStatusPayloadData,
@@ -1786,22 +1787,22 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     sidecar_config = await load_sidecar_config()
     if sidecar_config is not None and sidecar_config.enabled:
         for sidecar_model in await ClaudeSidecarClient(sidecar_config).list_models_cached():
-            slug = sidecar_model.id
-            if slug in seen_model_ids:
-                continue
-            if allowed_models is not None and slug not in allowed_models:
-                continue
-            seen_model_ids.add(slug)
-            items.append(
-                ModelListItem.model_validate(
-                    {
-                        "id": slug,
-                        "created": sidecar_model.created or created,
-                        "owned_by": "anthropic",
-                        "api_types": ["chat_completions"],
-                    }
+            for slug in sidecar_prefixed_model_ids(sidecar_model.id, sidecar_config):
+                if slug in seen_model_ids:
+                    continue
+                if not _model_visible_for_api_key(slug, allowed_models):
+                    continue
+                seen_model_ids.add(slug)
+                items.append(
+                    ModelListItem.model_validate(
+                        {
+                            "id": slug,
+                            "created": sidecar_model.created or created,
+                            "owned_by": "anthropic",
+                            "api_types": ["chat_completions"],
+                        }
+                    )
                 )
-            )
     openrouter_config = await load_openrouter_sidecar_config()
     if openrouter_config is not None and openrouter_config.enabled:
         for sidecar_model in await OpenRouterSidecarClient(openrouter_config).list_models_cached():
@@ -1838,7 +1839,16 @@ def _canonical_model_set(models: Iterable[str]) -> set[str]:
 
 
 def _canonical_model_slug(model: str) -> str:
-    return resolve_model_alias(model) or model
+    return _canonical_model_for_access(model) or model
+
+
+def _model_visible_for_api_key(model: str, allowed_models: set[str] | None) -> bool:
+    if allowed_models is None:
+        return True
+    if model in allowed_models:
+        return True
+    canonical = _canonical_model_for_access(model)
+    return canonical in allowed_models if canonical is not None else False
 
 
 def _codex_model_visibility_allowed_models(api_key: ApiKeyData | None) -> set[str] | None:
