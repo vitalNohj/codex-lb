@@ -165,6 +165,169 @@ def sanitize_sidecar_chat_messages(body: dict[str, JsonValue]) -> None:
     body["messages"] = filtered
 
 
+def normalize_sidecar_cursor_tool_history(body: dict[str, JsonValue]) -> None:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    normalized: list[JsonValue] = []
+    for raw_message in messages:
+        if not is_json_mapping(raw_message):
+            continue
+        message = cast(dict[str, JsonValue], raw_message)
+        role = message.get("role")
+        if role == "assistant":
+            normalized.append(_normalize_sidecar_assistant_tool_use_message(message))
+            continue
+        if role == "user":
+            normalized.extend(_normalize_sidecar_user_tool_result_message(message))
+            continue
+        normalized.append(message)
+    body["messages"] = normalized
+
+
+def _normalize_sidecar_assistant_tool_use_message(message: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+
+    text_parts: list[JsonValue] = []
+    generated_tool_calls: list[JsonValue] = []
+    for part in content:
+        if not is_json_mapping(part):
+            text_parts.append(part)
+            continue
+        part_dict = cast(dict[str, JsonValue], part)
+        if part_dict.get("type") != "tool_use":
+            text_parts.append(part)
+            continue
+        tool_call = _sidecar_tool_call_from_tool_use(part_dict)
+        if tool_call is not None:
+            generated_tool_calls.append(tool_call)
+
+    if not generated_tool_calls:
+        return {**message, "content": _normalize_sidecar_content_parts(content)}
+
+    normalized = {**message, "content": _sidecar_text_from_content_parts(text_parts) or None}
+    existing_tool_calls = message.get("tool_calls")
+    if isinstance(existing_tool_calls, list):
+        normalized["tool_calls"] = [*existing_tool_calls, *generated_tool_calls]
+    else:
+        normalized["tool_calls"] = generated_tool_calls
+    return normalized
+
+
+def _sidecar_tool_call_from_tool_use(part: dict[str, JsonValue]) -> JsonValue | None:
+    tool_id = part.get("id")
+    tool_name = part.get("name")
+    if not isinstance(tool_id, str) or not tool_id:
+        return None
+    if not isinstance(tool_name, str) or not tool_name:
+        return None
+    return {
+        "id": tool_id,
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "arguments": _sidecar_tool_arguments(part.get("input")),
+        },
+    }
+
+
+def _sidecar_tool_arguments(value: JsonValue) -> str:
+    if value is None:
+        return "{}"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_sidecar_user_tool_result_message(message: dict[str, JsonValue]) -> list[JsonValue]:
+    content = message.get("content")
+    content_dict = cast(dict[str, JsonValue], content) if is_json_mapping(content) else None
+    if content_dict is not None and content_dict.get("type") == "tool_result":
+        return _sidecar_tool_message_from_tool_result(message, content_dict)
+    if not isinstance(content, list):
+        return [{**message, "content": _normalize_sidecar_content_part(content)}]
+
+    normalized: list[JsonValue] = []
+    message_parts: list[JsonValue] = []
+    for part in content:
+        part_dict = cast(dict[str, JsonValue], part) if is_json_mapping(part) else None
+        if part_dict is None or part_dict.get("type") != "tool_result":
+            message_parts.append(_normalize_sidecar_content_part(part))
+            continue
+        if message_parts:
+            normalized.append({**message, "content": message_parts})
+            message_parts = []
+        normalized.extend(_sidecar_tool_message_from_tool_result(message, part_dict))
+    if message_parts:
+        normalized.append({**message, "content": message_parts})
+    return normalized
+
+
+def _sidecar_tool_message_from_tool_result(
+    message: dict[str, JsonValue],
+    part: dict[str, JsonValue],
+) -> list[JsonValue]:
+    tool_use_id = part.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return []
+    return [
+        {
+            "role": "tool",
+            "tool_call_id": tool_use_id,
+            "content": _sidecar_tool_result_output(part.get("content")),
+        }
+    ]
+
+
+def _normalize_sidecar_content_parts(content: list[JsonValue]) -> list[JsonValue]:
+    return [_normalize_sidecar_content_part(part) for part in content]
+
+
+def _normalize_sidecar_content_part(part: JsonValue) -> JsonValue:
+    if not is_json_mapping(part):
+        return part
+    part_dict = dict(cast(dict[str, JsonValue], part))
+    part_type = part_dict.get("type")
+    if part_type in {"input_text", "output_text"}:
+        part_dict["type"] = "text"
+    return cast(JsonValue, part_dict)
+
+
+def _sidecar_text_from_content_parts(parts: list[JsonValue]) -> str:
+    text: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            text.append(part)
+            continue
+        if not is_json_mapping(part):
+            continue
+        part_dict = cast(dict[str, JsonValue], part)
+        part_type = part_dict.get("type")
+        if part_type in {"text", "input_text", "output_text"}:
+            value = part_dict.get("text")
+            if isinstance(value, str):
+                text.append(value)
+    return "".join(text)
+
+
+def _sidecar_tool_result_output(content: JsonValue) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        output = _sidecar_text_from_content_parts(content)
+        return output if output or not content else json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    if is_json_mapping(content):
+        content_dict = cast(dict[str, JsonValue], content)
+        text = content_dict.get("text")
+        if isinstance(text, str):
+            return text
+    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+
+
 def _filter_sidecar_messages(messages: list[JsonValue]) -> list[JsonValue]:
     filtered: list[JsonValue] = []
     seen_tool_call_ids: set[str] = set()
@@ -359,6 +522,7 @@ def build_sidecar_chat_payload(
     stripped_model = strip_sidecar_model_prefix(effective_model, config)
     apply_sidecar_model_profile(body, stripped_model=stripped_model)
     sanitize_sidecar_forward_payload(body)
+    normalize_sidecar_cursor_tool_history(body)
     sanitize_sidecar_chat_tool_ids(body)
     sanitize_sidecar_chat_messages(body)
     tool_map = map_sidecar_chat_tool_names(body)

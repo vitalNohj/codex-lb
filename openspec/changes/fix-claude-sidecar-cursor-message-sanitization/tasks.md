@@ -11,6 +11,8 @@
 - [x] 1.4 Unit tests: Cursor-native `tool_result` parts are accepted, referenced
       parts keep sanitized IDs, and orphan parts are dropped before sidecar
       forwarding.
+- [x] 1.5 Normalize Cursor-native sidecar tool history to OpenAI-compatible
+      `tool_calls` and `tool` messages before forwarding to CLIProxyAPI.
 
 ## 2. Verification
 
