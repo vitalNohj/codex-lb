@@ -4,6 +4,7 @@ from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile,
     canonical_sidecar_model,
+    is_known_claude_sidecar_model,
     sidecar_prefixed_model_ids,
 )
 
@@ -29,6 +30,13 @@ def test_canonical_sidecar_model_strips_cp_prefix_via_pricing_alias() -> None:
 def test_canonical_sidecar_model_restores_claude_family_prefix() -> None:
     assert canonical_sidecar_model("opus-4-7") == "claude-opus-4-7"
     assert canonical_sidecar_model("fable-5") == "claude-fable-5"
+
+
+def test_is_known_claude_sidecar_model_accepts_wire_and_prefixed_ids() -> None:
+    assert is_known_claude_sidecar_model("claude-opus-4-7") is True
+    assert is_known_claude_sidecar_model("cp-claude-opus-4-7") is True
+    assert is_known_claude_sidecar_model("claude-opus-4-7-thinking-high") is True
+    assert is_known_claude_sidecar_model("gpt-5.4") is False
 
 
 def test_apply_sidecar_model_profile_resolves_cursor_thinking_suffix() -> None:

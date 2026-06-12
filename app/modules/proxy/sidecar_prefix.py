@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 
+_BUILTIN_SIDECAR_ALIAS_PREFIXES: tuple[str, ...] = ("cp-", "cp_")
+
 
 def is_custom_alias_prefix(prefix: str) -> bool:
     return prefix.endswith(("-", "_"))
@@ -25,6 +27,9 @@ def matching_sidecar_prefix(model: str, config: ClaudeSidecarConfig) -> str | No
         for candidate in sidecar_prefix_variants(prefix):
             if normalized.startswith(candidate) and (best is None or len(candidate) > len(best)):
                 best = candidate
+    for candidate in _BUILTIN_SIDECAR_ALIAS_PREFIXES:
+        if normalized.startswith(candidate) and (best is None or len(candidate) > len(best)):
+            best = candidate
     return best
 
 

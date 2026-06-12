@@ -200,6 +200,21 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
 
 
 @pytest.mark.asyncio
+async def test_bare_claude_opus_routes_to_sidecar_with_wire_model(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-opus-4-7", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "claude-opus-4-7"
+
+
+@pytest.mark.asyncio
 async def test_custom_prefixed_opus_alias_routes_to_sidecar_with_unprefixed_wire_model(
     async_client,
     sidecar_enabled,

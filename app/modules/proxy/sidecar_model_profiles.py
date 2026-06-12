@@ -77,8 +77,23 @@ def _resolve_sidecar_wire_model_and_effort(model: str) -> tuple[str, str | None]
     return base_model, suffix_effort
 
 
+def is_known_claude_sidecar_model(model: str | None) -> bool:
+    if model is None:
+        return False
+    normalized = model.strip()
+    if not normalized:
+        return False
+    alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
+    if alias is not None and alias.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        return True
+    canonical = canonical_sidecar_model(normalized)
+    if canonical is None or not canonical.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        return False
+    return resolve_pricing_model_alias(canonical, DEFAULT_MODEL_ALIASES) is not None
+
+
 def _is_known_claude_model_id(model_id: str) -> bool:
-    return resolve_pricing_model_alias(model_id, DEFAULT_MODEL_ALIASES) is not None
+    return is_known_claude_sidecar_model(model_id)
 
 
 def _is_date_suffix_variant(model: str, canonical: str) -> bool:
