@@ -154,7 +154,7 @@ export function useClaudeSidecarQuota() {
   return { quotaQuery };
 }
 
-export function useOpenRouterSidecar() {
+export function useOpenRouterSidecar(options?: { modelsEnabled?: boolean }) {
   const queryClient = useQueryClient();
   const statusQuery = useQuery({
     queryKey: ["settings", "openrouter-sidecar", "status"],
@@ -163,6 +163,7 @@ export function useOpenRouterSidecar() {
   const modelsQuery = useQuery({
     queryKey: ["settings", "openrouter-sidecar", "models"],
     queryFn: listOpenRouterSidecarModels,
+    enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useMutation({
     mutationFn: testOpenRouterSidecarConnection,
