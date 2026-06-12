@@ -51,6 +51,7 @@ const TRANSPORT_LABELS: Record<string, string> = {
 const SIDECAR_SOURCE_LABELS: Record<string, string> = {
   claude_sidecar: "Claude sidecar",
   openrouter_sidecar: "OpenRouter sidecar",
+  omniroute_sidecar: "OmniRoute sidecar",
 };
 
 function sidecarSourceLabel(source: string | null | undefined): string | null {

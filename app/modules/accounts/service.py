@@ -47,6 +47,7 @@ from app.modules.accounts.schemas import (
     OpenCodeOAuthAuth,
 )
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
+from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.claude_sidecar.quota import snapshot_from_json
 from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
@@ -189,7 +190,23 @@ class AccountsService:
         openrouter_synthetic = await self._openrouter_sidecar_account_summary()
         if openrouter_synthetic is not None:
             summaries.append(openrouter_synthetic)
+        omniroute_synthetic = await self._omniroute_sidecar_account_summary()
+        if omniroute_synthetic is not None:
+            summaries.append(omniroute_synthetic)
         return summaries
+
+    async def _omniroute_sidecar_account_summary(self) -> AccountSummary | None:
+        if self._settings_repo is None:
+            return None
+        settings = await self._settings_repo.get_or_create()
+        usage_summary = await self._repo.request_usage_summary_for_source("omniroute_sidecar")
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
+        )
+        return build_omniroute_sidecar_summary(settings, request_usage)
 
     async def _openrouter_sidecar_account_summary(self) -> AccountSummary | None:
         if self._settings_repo is None:

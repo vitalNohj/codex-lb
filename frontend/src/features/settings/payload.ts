@@ -50,6 +50,12 @@ export function buildSettingsUpdateRequest(
     openrouterSidecarConnectTimeoutSeconds: settings.openrouterSidecarConnectTimeoutSeconds,
     openrouterSidecarRequestTimeoutSeconds: settings.openrouterSidecarRequestTimeoutSeconds,
     openrouterSidecarModelsCacheTtlSeconds: settings.openrouterSidecarModelsCacheTtlSeconds,
+    omnirouteSidecarEnabled: settings.omnirouteSidecarEnabled,
+    omnirouteSidecarBaseUrl: settings.omnirouteSidecarBaseUrl,
+    omnirouteSidecarSelectedModels: settings.omnirouteSidecarSelectedModels,
+    omnirouteSidecarConnectTimeoutSeconds: settings.omnirouteSidecarConnectTimeoutSeconds,
+    omnirouteSidecarRequestTimeoutSeconds: settings.omnirouteSidecarRequestTimeoutSeconds,
+    omnirouteSidecarModelsCacheTtlSeconds: settings.omnirouteSidecarModelsCacheTtlSeconds,
     ...patch,
   };
   if (

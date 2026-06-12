@@ -132,6 +132,17 @@ export const DashboardSettingsSchema = z
     openrouterSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     openrouterSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     openrouterSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    omnirouteSidecarEnabled: z.boolean().optional().default(false),
+    omnirouteSidecarBaseUrl: z.string().trim().min(1).optional().default("http://127.0.0.1:20128/v1"),
+    omnirouteSidecarApiKeyConfigured: z.boolean().optional().default(false),
+    omnirouteSidecarSelectedModels: z.array(z.string().trim().min(1).max(256)).optional().default([]),
+    omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
+    omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
+    omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+    omnirouteSidecarLastHealthStatus: z.string().nullable().optional().default(null),
+    omnirouteSidecarLastHealthMessage: z.string().nullable().optional().default(null),
+    omnirouteSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
+    omnirouteSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -209,6 +220,14 @@ export const SettingsUpdateRequestSchema = z.object({
   openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  omnirouteSidecarEnabled: z.boolean().optional(),
+  omnirouteSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+  omnirouteSidecarApiKey: z.string().trim().max(4096).optional(),
+  omnirouteSidecarClearApiKey: z.boolean().optional(),
+  omnirouteSidecarSelectedModels: z.array(z.string().trim().min(1).max(256)).optional(),
+  omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+  omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+  omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
 });
 
 export const ClaudeSidecarModelSummarySchema = z.object({
@@ -264,6 +283,39 @@ export const OpenRouterSidecarTestResponseSchema = OpenRouterSidecarStatusRespon
 
 export const OpenRouterSidecarModelsResponseSchema = z.object({
   models: z.array(OpenRouterSidecarModelSummarySchema).default([]),
+});
+
+const OmniRouteSidecarStatusValueSchema = z.enum([
+  "disabled",
+  "missing_api_key",
+  "unreachable",
+  "unauthorized",
+  "healthy",
+  "error",
+]);
+
+export const OmniRouteSidecarModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+});
+
+export const OmniRouteSidecarStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: OmniRouteSidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+export const OmniRouteSidecarTestResponseSchema = OmniRouteSidecarStatusResponseSchema.extend({
+  models: z.array(OmniRouteSidecarModelSummarySchema).default([]),
+});
+
+export const OmniRouteSidecarModelsResponseSchema = z.object({
+  models: z.array(OmniRouteSidecarModelSummarySchema).default([]),
 });
 
 const ClaudeSidecarQuotaStatusSchema = z.enum([
@@ -334,6 +386,21 @@ type OpenRouterSidecarSettingsFields = Pick<
   | "openrouterSidecarLastModelCount"
 >;
 
+type OmniRouteSidecarSettingsFields = Pick<
+  ParsedDashboardSettings,
+  | "omnirouteSidecarEnabled"
+  | "omnirouteSidecarBaseUrl"
+  | "omnirouteSidecarApiKeyConfigured"
+  | "omnirouteSidecarSelectedModels"
+  | "omnirouteSidecarConnectTimeoutSeconds"
+  | "omnirouteSidecarRequestTimeoutSeconds"
+  | "omnirouteSidecarModelsCacheTtlSeconds"
+  | "omnirouteSidecarLastHealthStatus"
+  | "omnirouteSidecarLastHealthMessage"
+  | "omnirouteSidecarLastCheckedAt"
+  | "omnirouteSidecarLastModelCount"
+>;
+
 type ClaudeSidecarSettingsFields = Pick<
   ParsedDashboardSettings,
   | "claudeSidecarEnabled"
@@ -361,11 +428,13 @@ export type DashboardSettings = Omit<
   | keyof StickyThresholdValues
   | keyof ClaudeSidecarSettingsFields
   | keyof OpenRouterSidecarSettingsFields
+  | keyof OmniRouteSidecarSettingsFields
 > &
   Partial<StickyThresholdPresenceFlags> &
   Partial<StickyThresholdValues> &
   Partial<ClaudeSidecarSettingsFields> &
-  Partial<OpenRouterSidecarSettingsFields>;
+  Partial<OpenRouterSidecarSettingsFields> &
+  Partial<OmniRouteSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
 export type ClaudeSidecarStatusResponse = z.infer<typeof ClaudeSidecarStatusResponseSchema>;
@@ -379,6 +448,10 @@ export type OpenRouterSidecarModelSummary = z.infer<typeof OpenRouterSidecarMode
 export type OpenRouterSidecarStatusResponse = z.infer<typeof OpenRouterSidecarStatusResponseSchema>;
 export type OpenRouterSidecarTestResponse = z.infer<typeof OpenRouterSidecarTestResponseSchema>;
 export type OpenRouterSidecarModelsResponse = z.infer<typeof OpenRouterSidecarModelsResponseSchema>;
+export type OmniRouteSidecarModelSummary = z.infer<typeof OmniRouteSidecarModelSummarySchema>;
+export type OmniRouteSidecarStatusResponse = z.infer<typeof OmniRouteSidecarStatusResponseSchema>;
+export type OmniRouteSidecarTestResponse = z.infer<typeof OmniRouteSidecarTestResponseSchema>;
+export type OmniRouteSidecarModelsResponse = z.infer<typeof OmniRouteSidecarModelsResponseSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({

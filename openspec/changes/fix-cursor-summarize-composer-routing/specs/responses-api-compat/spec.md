@@ -10,9 +10,17 @@ upstream model slugs, apply API-key enforced model, reasoning-effort, and
 service-tier policy, normalize unsupported upstream reasoning efforts, and
 validate the effective model against API-key model access.
 
+Compact responses MUST preserve the official Codex compact response contract.
+When upstream returns a JSON object containing an `output` array and no `object`
+discriminator, the proxy MUST treat it as a successful compact response and
+return that payload unchanged to the client. The proxy MAY continue accepting
+object-discriminated compact response payloads for compatibility, but it MUST
+NOT require that discriminator for successful compaction.
+
 For `POST /backend-api/codex/memories/trace_summarize`, the proxy MUST preserve
-trace-summarize-specific JSON fields such as `raw_memories` and MUST forward the
-request to the same upstream control path. When the summarize payload is a JSON
+trace-summarize-specific JSON fields such as `traces` and MUST forward the
+request to the same upstream control path without converting it into
+`instructions`/`input` compact input. When the summarize payload is a JSON
 object with a non-empty string `model`, the proxy MUST apply the same supported
 Cursor GPT-5 model alias normalization, API-key enforced model,
 reasoning-effort, service-tier policy, unsupported-reasoning normalization, and
@@ -22,6 +30,14 @@ forward the payload unchanged rather than rejecting the control request. Other
 Codex control endpoints MUST remain raw pass-through endpoints unless a separate
 compatibility rule says otherwise.
 
+#### Scenario: Output-only compact response round trips
+
+- **GIVEN** upstream accepts `POST /backend-api/codex/responses/compact`
+- **AND** upstream returns `{"output": [...]}` without an `object` field
+- **WHEN** the proxy parses the upstream compact response
+- **THEN** the proxy returns HTTP 200 to the client
+- **AND** the downstream response body preserves the same `output` array
+
 #### Scenario: Cursor summarize model alias is rewritten before upstream control dispatch
 
 - **GIVEN** a client sends `POST /backend-api/codex/memories/trace_summarize`
@@ -30,7 +46,7 @@ compatibility rule says otherwise.
 - **THEN** the forwarded payload has `model = "gpt-5.5"`
 - **AND** the forwarded payload has `reasoning.effort = "high"`
 - **AND** the forwarded payload has `service_tier = "priority"`
-- **AND** trace-summarize fields such as `raw_memories` are preserved
+- **AND** trace-summarize fields such as `traces` are preserved
 
 #### Scenario: Cursor summarize honors API-key enforced policy
 

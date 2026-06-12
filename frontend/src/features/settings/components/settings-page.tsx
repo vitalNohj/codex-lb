@@ -11,6 +11,7 @@ import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
+import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { ImportSettings } from "@/features/settings/components/import-settings";
 import { PasswordSettings } from "@/features/settings/components/password-settings";
 import { RoutingSettings } from "@/features/settings/components/routing-settings";
@@ -107,6 +108,7 @@ export function SettingsPage() {
             />
             <ClaudeSidecarSettings settings={settings} busy={busy} onSave={handleSave} />
             <OpenRouterSidecarSettings settings={settings} busy={busy} onSave={handleSave} />
+            <OmniRouteSidecarSettings settings={settings} busy={busy} onSave={handleSave} />
             {upstreamProxyQuery.data ? (
               <UpstreamProxySettings
                 admin={upstreamProxyQuery.data}

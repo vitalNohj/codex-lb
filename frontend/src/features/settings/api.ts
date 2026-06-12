@@ -7,6 +7,9 @@ import {
   ClaudeSidecarStatusResponseSchema,
   ClaudeSidecarTestResponseSchema,
   DashboardSettingsSchema,
+  OmniRouteSidecarModelsResponseSchema,
+  OmniRouteSidecarStatusResponseSchema,
+  OmniRouteSidecarTestResponseSchema,
   OpenRouterSidecarModelsResponseSchema,
   OpenRouterSidecarStatusResponseSchema,
   OpenRouterSidecarTestResponseSchema,
@@ -23,6 +26,7 @@ const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
 const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
+const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -93,4 +97,16 @@ export function testOpenRouterSidecarConnection() {
 
 export function listOpenRouterSidecarModels() {
   return get(`${OPENROUTER_SIDECAR_PATH}/models`, OpenRouterSidecarModelsResponseSchema);
+}
+
+export function getOmniRouteSidecarStatus() {
+  return get(`${OMNIROUTE_SIDECAR_PATH}/status`, OmniRouteSidecarStatusResponseSchema);
+}
+
+export function testOmniRouteSidecarConnection() {
+  return post(`${OMNIROUTE_SIDECAR_PATH}/test`, OmniRouteSidecarTestResponseSchema);
+}
+
+export function listOmniRouteSidecarModels() {
+  return get(`${OMNIROUTE_SIDECAR_PATH}/models`, OmniRouteSidecarModelsResponseSchema);
 }

@@ -223,8 +223,9 @@ function SyntheticAccountCard({
   onAction?: (account: AccountSummary, action: AccountAction) => void;
 }) {
   const isOpenRouter = account.provider === "openrouter";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : "CLIProxyAPI";
-  const showQuotaUsage = !isOpenRouter;
+  const isOmniRoute = account.provider === "omniroute";
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLIProxyAPI";
+  const showQuotaUsage = !isOpenRouter && !isOmniRoute;
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;

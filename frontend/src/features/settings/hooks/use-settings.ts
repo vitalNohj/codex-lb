@@ -7,13 +7,16 @@ import {
   createUpstreamProxyPool,
   getClaudeSidecarQuota,
   getClaudeSidecarStatus,
+  getOmniRouteSidecarStatus,
   getOpenRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
+  listOmniRouteSidecarModels,
   listOpenRouterSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
   testClaudeSidecarConnection,
+  testOmniRouteSidecarConnection,
   testOpenRouterSidecarConnection,
   updateSettings,
 } from "@/features/settings/api";
@@ -176,6 +179,33 @@ export function useOpenRouterSidecar(options?: { modelsEnabled?: boolean }) {
     },
     onError: (error: Error) => {
       toast.error(error.message || "OpenRouter sidecar test failed");
+    },
+  });
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useOmniRouteSidecar(options?: { modelsEnabled?: boolean }) {
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ["settings", "omniroute-sidecar", "status"],
+    queryFn: getOmniRouteSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "omniroute-sidecar", "models"],
+    queryFn: listOmniRouteSidecarModels,
+    enabled: options?.modelsEnabled ?? true,
+  });
+  const testMutation = useMutation({
+    mutationFn: testOmniRouteSidecarConnection,
+    onSuccess: () => {
+      toast.success("OmniRoute sidecar tested");
+      void queryClient.invalidateQueries({ queryKey: ["settings", "omniroute-sidecar"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "OmniRoute sidecar test failed");
     },
   });
   return { statusQuery, modelsQuery, testMutation };
