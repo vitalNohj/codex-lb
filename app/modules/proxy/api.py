@@ -38,8 +38,8 @@ from app.core.auth.dependencies import (
 )
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
-from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
+from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
@@ -118,15 +118,16 @@ from app.modules.proxy.cursor_chat_compat import (
 )
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
-from app.modules.proxy.openrouter_sidecar_dispatch import (
-    is_openrouter_sidecar_model,
-    load_openrouter_sidecar_config,
-    proxy_chat_to_openrouter,
-)
 from app.modules.proxy.omniroute_sidecar_dispatch import (
     is_omniroute_sidecar_model,
     load_omniroute_sidecar_config,
     proxy_chat_to_omniroute,
+    proxy_responses_to_omniroute,
+)
+from app.modules.proxy.openrouter_sidecar_dispatch import (
+    is_openrouter_sidecar_model,
+    load_openrouter_sidecar_config,
+    proxy_chat_to_openrouter,
 )
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
@@ -561,6 +562,43 @@ async def wham_agent_identities_jwks(
     return await _codex_control_proxy(request, "wham/agent-identities/jwks", context, api_key)
 
 
+async def _omniroute_responses_dispatch_or_none(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> Response | None:
+    """Dispatch OmniRoute sidecar-selected models on the Responses endpoints.
+
+    Returns the sidecar ``Response`` when the effective model is an OmniRoute
+    selected model and routing is enabled, otherwise ``None`` so the caller
+    proceeds with the existing Codex Responses path.
+    """
+    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+    omniroute_config = await load_omniroute_sidecar_config()
+    if omniroute_config is None or not is_omniroute_sidecar_model(effective_model, omniroute_config):
+        return None
+    validate_model_access(api_key, effective_model)
+    rate_limit_headers = await context.service.rate_limit_headers()
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=effective_model,
+        request_service_tier=responses_payload.service_tier,
+        request_usage_budget=None,
+    )
+    settings = get_settings()
+    return await proxy_responses_to_omniroute(
+        request,
+        responses_payload,
+        effective_model=effective_model,
+        api_key=api_key,
+        reservation=reservation,
+        rate_limit_headers=rate_limit_headers,
+        sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+        client=OmniRouteSidecarClient(omniroute_config),
+    )
+
+
 @router.post(
     "/responses",
     responses={
@@ -592,6 +630,10 @@ async def responses(
     except ValidationError as exc:
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
+
+    omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
+    if omniroute_response is not None:
+        return omniroute_response
 
     return await _stream_responses(
         request,
@@ -672,6 +714,11 @@ async def v1_responses(
     except ValidationError as exc:
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
+
+    omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
+    if omniroute_response is not None:
+        return omniroute_response
+
     if responses_payload.stream:
         return await _stream_responses(
             request,
