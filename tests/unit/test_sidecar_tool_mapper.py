@@ -94,7 +94,7 @@ def test_map_sidecar_chat_tool_names_maps_cursor_mcp_tools_and_tool_choice() -> 
     result = map_sidecar_chat_tool_names(body)
 
     assert [tool["function"]["name"] for tool in body["tools"]] == ["Task", "Read", "Skill"]
-    assert body["tool_choice"]["function"]["name"] == "Task"
+    assert body["tool_choice"] == {"type": "function", "function": {"name": "Task"}}
     assert result.reverse_tool_names == {
         "Task": "CallMcpTool",
         "Read": "FetchMcpResource",
@@ -129,7 +129,7 @@ def test_reverse_sidecar_tool_names_in_response_restores_flat_tool_call_names() 
     assert rewritten["choices"][0]["delta"]["tool_calls"][0]["name"] == "Shell"
 
 
-def test_map_sidecar_chat_tool_names_passes_through_flat_responses_shaped_tools() -> None:
+def test_map_sidecar_chat_tool_names_normalizes_flat_responses_shaped_tools() -> None:
     body = {
         "tools": [
             {"type": "function", "name": "CustomMcpTool", "description": "test", "parameters": {"type": "object"}},
@@ -139,7 +139,47 @@ def test_map_sidecar_chat_tool_names_passes_through_flat_responses_shaped_tools(
 
     result = map_sidecar_chat_tool_names(body)
 
-    assert body["tools"][0]["name"] == "CustomMcpTool"
+    assert body["tools"][0] == {
+        "type": "function",
+        "function": {"name": "CustomMcpTool", "description": "test", "parameters": {"type": "object"}},
+    }
+    assert result.reverse_tool_names == {}
+
+
+def test_map_sidecar_chat_tool_names_normalizes_cursor_input_schema_tools_and_auto_choice() -> None:
+    body = {
+        "tools": [
+            {
+                "name": "ReadFile",
+                "description": "Read a file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        ],
+        "tool_choice": {"type": "auto"},
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert body["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "ReadFile",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        }
+    ]
+    assert body["tool_choice"] == "auto"
     assert result.reverse_tool_names == {}
 
 

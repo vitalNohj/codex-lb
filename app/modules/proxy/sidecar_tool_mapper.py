@@ -144,7 +144,7 @@ def map_sidecar_chat_tool_names(body: dict[str, JsonValue]) -> SidecarToolMapRes
 
     tool_choice = body.get("tool_choice")
     if is_json_mapping(tool_choice):
-        _map_tool_choice_names(
+        body["tool_choice"] = _map_tool_choice_names(
             cast(dict[str, JsonValue], tool_choice),
             used_names=used_names,
             reverse_tool_names=reverse_tool_names,
@@ -160,16 +160,31 @@ def _map_tool_choice_names(
     used_names: set[str],
     reverse_tool_names: dict[str, str],
     forward_tool_names: dict[str, str],
-) -> None:
+) -> JsonValue:
+    choice_type = tool_choice.get("type")
+    if choice_type in {"auto", "none", "required"} and "function" not in tool_choice and "name" not in tool_choice:
+        return cast(JsonValue, choice_type)
+    if choice_type == "any" and "function" not in tool_choice and "name" not in tool_choice:
+        return "required"
+
     function = tool_choice.get("function")
     if is_json_mapping(function):
-        _rewrite_tool_name_field(
-            cast(dict[str, JsonValue], function),
-            "name",
+        function_dict = cast(dict[str, JsonValue], function)
+        name = function_dict.get("name")
+    else:
+        name = tool_choice.get("name")
+
+    if isinstance(name, str) and name:
+        wire_name = _resolve_forward_tool_name(
+            name,
             used_names=used_names,
             reverse_tool_names=reverse_tool_names,
             forward_tool_names=forward_tool_names,
+            allow_unknown=True,
         )
+        if wire_name is not None:
+            return {"type": "function", "function": {"name": wire_name}}
+    return cast(JsonValue, tool_choice)
 
 
 def reverse_sidecar_tool_names_in_response(
@@ -269,10 +284,7 @@ def _map_tools_array(
         if wire_name is None:
             mapped_tools.append(tool)
             continue
-        if wire_name == original_name:
-            mapped_tools.append(tool)
-            continue
-        mapped_tools.append(_write_tool_definition_name(tool_dict, wire_name))
+        mapped_tools.append(_write_tool_definition(tool_dict, wire_name))
     return mapped_tools
 
 
@@ -373,6 +385,35 @@ def _write_tool_definition_name(tool: dict[str, JsonValue], wire_name: str) -> d
     if "name" in rewritten:
         rewritten["name"] = wire_name
     return rewritten
+
+
+def _write_tool_definition(tool: dict[str, JsonValue], wire_name: str) -> JsonValue:
+    function = tool.get("function")
+    if is_json_mapping(function):
+        rewritten = _write_tool_definition_name(tool, wire_name)
+        function_dict = cast(dict[str, JsonValue], rewritten["function"])
+        return {
+            "type": "function",
+            "function": {
+                "name": function_dict.get("name"),
+                "description": function_dict.get("description"),
+                "parameters": function_dict.get("parameters"),
+                **({"strict": function_dict["strict"]} if isinstance(function_dict.get("strict"), bool) else {}),
+            },
+        }
+
+    parameters = tool.get("parameters")
+    if parameters is None:
+        parameters = tool.get("input_schema")
+    return {
+        "type": "function",
+        "function": {
+            "name": wire_name,
+            "description": tool.get("description"),
+            "parameters": parameters,
+            **({"strict": tool["strict"]} if isinstance(tool.get("strict"), bool) else {}),
+        },
+    }
 
 
 def _rewrite_tool_name_field(
