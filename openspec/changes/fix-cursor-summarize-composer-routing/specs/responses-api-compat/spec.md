@@ -2,20 +2,25 @@
 
 ### Requirement: Codex compaction requests use Responses policy normalization
 
-Composer compaction requests and Cursor summarize control requests MUST apply the
-Responses request policy before reaching the upstream ChatGPT backend. For
-`POST /backend-api/codex/responses/compact`, `POST /v1/responses/compact`, and
-`POST /backend-api/codex/memories/trace_summarize`, the proxy MUST normalize
-supported Cursor GPT-5 model aliases to canonical upstream model slugs, apply
-API-key enforced model, reasoning-effort, and service-tier policy, normalize
-unsupported upstream reasoning efforts, and validate the effective model against
-API-key model access.
+Composer compaction requests MUST apply the Responses request policy before
+reaching the upstream ChatGPT backend. For
+`POST /backend-api/codex/responses/compact` and `POST /v1/responses/compact`,
+the proxy MUST normalize supported Cursor GPT-5 model aliases to canonical
+upstream model slugs, apply API-key enforced model, reasoning-effort, and
+service-tier policy, normalize unsupported upstream reasoning efforts, and
+validate the effective model against API-key model access.
 
 For `POST /backend-api/codex/memories/trace_summarize`, the proxy MUST preserve
 trace-summarize-specific JSON fields such as `raw_memories` and MUST forward the
-request to the same upstream control path after rewriting only the policy-managed
-fields. Other Codex control endpoints MUST remain raw pass-through endpoints
-unless a separate compatibility rule says otherwise.
+request to the same upstream control path. When the summarize payload is a JSON
+object with a non-empty string `model`, the proxy MUST apply the same supported
+Cursor GPT-5 model alias normalization, API-key enforced model,
+reasoning-effort, service-tier policy, unsupported-reasoning normalization, and
+model-access validation to the policy-managed fields before forwarding. When
+the summarize payload does not include a usable `model` field, the proxy MUST
+forward the payload unchanged rather than rejecting the control request. Other
+Codex control endpoints MUST remain raw pass-through endpoints unless a separate
+compatibility rule says otherwise.
 
 #### Scenario: Cursor summarize model alias is rewritten before upstream control dispatch
 
@@ -37,6 +42,14 @@ unless a separate compatibility rule says otherwise.
   fields
 - **AND** model-access validation runs against the effective model before
   upstream dispatch
+
+#### Scenario: Cursor summarize without a model stays raw
+
+- **WHEN** a client sends `POST /backend-api/codex/memories/trace_summarize`
+  with a JSON object that has no string `model` field
+- **THEN** the proxy forwards the payload unchanged to the upstream control path
+- **AND** the proxy does not reject the request for failing a Responses or
+  compact-request schema
 
 #### Scenario: Other Codex control endpoints stay raw
 

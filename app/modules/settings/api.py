@@ -164,6 +164,17 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_last_health_message=settings.openrouter_sidecar_last_health_message,
         openrouter_sidecar_last_checked_at=settings.openrouter_sidecar_last_checked_at,
         openrouter_sidecar_last_model_count=settings.openrouter_sidecar_last_model_count,
+        omniroute_sidecar_enabled=settings.omniroute_sidecar_enabled,
+        omniroute_sidecar_base_url=settings.omniroute_sidecar_base_url,
+        omniroute_sidecar_api_key_configured=settings.omniroute_sidecar_api_key_configured,
+        omniroute_sidecar_selected_models=settings.omniroute_sidecar_selected_models,
+        omniroute_sidecar_connect_timeout_seconds=settings.omniroute_sidecar_connect_timeout_seconds,
+        omniroute_sidecar_request_timeout_seconds=settings.omniroute_sidecar_request_timeout_seconds,
+        omniroute_sidecar_models_cache_ttl_seconds=settings.omniroute_sidecar_models_cache_ttl_seconds,
+        omniroute_sidecar_last_health_status=settings.omniroute_sidecar_last_health_status,
+        omniroute_sidecar_last_health_message=settings.omniroute_sidecar_last_health_message,
+        omniroute_sidecar_last_checked_at=settings.omniroute_sidecar_last_checked_at,
+        omniroute_sidecar_last_model_count=settings.omniroute_sidecar_last_model_count,
     )
 
 
@@ -684,6 +695,38 @@ async def update_settings(
                     if payload.openrouter_sidecar_models_cache_ttl_seconds is not None
                     else current.openrouter_sidecar_models_cache_ttl_seconds
                 ),
+                omniroute_sidecar_enabled=(
+                    payload.omniroute_sidecar_enabled
+                    if payload.omniroute_sidecar_enabled is not None
+                    else current.omniroute_sidecar_enabled
+                ),
+                omniroute_sidecar_base_url=payload.omniroute_sidecar_base_url or current.omniroute_sidecar_base_url,
+                omniroute_sidecar_api_key=(
+                    payload.omniroute_sidecar_api_key
+                    if "omniroute_sidecar_api_key" in payload.model_fields_set
+                    else None
+                ),
+                omniroute_sidecar_clear_api_key=payload.omniroute_sidecar_clear_api_key is True,
+                omniroute_sidecar_selected_models=(
+                    payload.omniroute_sidecar_selected_models
+                    if payload.omniroute_sidecar_selected_models is not None
+                    else current.omniroute_sidecar_selected_models
+                ),
+                omniroute_sidecar_connect_timeout_seconds=(
+                    payload.omniroute_sidecar_connect_timeout_seconds
+                    if payload.omniroute_sidecar_connect_timeout_seconds is not None
+                    else current.omniroute_sidecar_connect_timeout_seconds
+                ),
+                omniroute_sidecar_request_timeout_seconds=(
+                    payload.omniroute_sidecar_request_timeout_seconds
+                    if payload.omniroute_sidecar_request_timeout_seconds is not None
+                    else current.omniroute_sidecar_request_timeout_seconds
+                ),
+                omniroute_sidecar_models_cache_ttl_seconds=(
+                    payload.omniroute_sidecar_models_cache_ttl_seconds
+                    if payload.omniroute_sidecar_models_cache_ttl_seconds is not None
+                    else current.omniroute_sidecar_models_cache_ttl_seconds
+                ),
             )
         )
     except ValueError as exc:
@@ -751,6 +794,17 @@ async def update_settings(
             "openrouter_sidecar_last_health_message",
             "openrouter_sidecar_last_checked_at",
             "openrouter_sidecar_last_model_count",
+            "omniroute_sidecar_enabled",
+            "omniroute_sidecar_base_url",
+            "omniroute_sidecar_api_key_configured",
+            "omniroute_sidecar_selected_models",
+            "omniroute_sidecar_connect_timeout_seconds",
+            "omniroute_sidecar_request_timeout_seconds",
+            "omniroute_sidecar_models_cache_ttl_seconds",
+            "omniroute_sidecar_last_health_status",
+            "omniroute_sidecar_last_health_message",
+            "omniroute_sidecar_last_checked_at",
+            "omniroute_sidecar_last_model_count",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

@@ -69,6 +69,28 @@ def _normalize_openrouter_sidecar_model_prefixes(value: list[str] | None) -> lis
     return prefixes
 
 
+def _normalize_omniroute_sidecar_base_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("omniroute_sidecar_base_url must not be blank")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("omniroute_sidecar_base_url must be an http(s) URL")
+    return normalized
+
+
+def _normalize_omniroute_sidecar_selected_models(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    # Preserve case for exact-match dispatch; only trim, drop blanks, and dedupe.
+    models = list(dict.fromkeys(entry.strip() for entry in value if entry.strip()))
+    if any(len(entry) > 256 for entry in models):
+        raise ValueError("omniroute_sidecar_selected_models entries must be 256 characters or fewer")
+    return models
+
+
 class AdditionalQuotaPolicy(DashboardModel):
     quota_key: str
     display_label: str
@@ -165,6 +187,17 @@ class DashboardSettingsResponse(DashboardModel):
     openrouter_sidecar_last_health_message: str | None = None
     openrouter_sidecar_last_checked_at: datetime | None = None
     openrouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    omniroute_sidecar_enabled: bool = False
+    omniroute_sidecar_base_url: str = Field(default="http://127.0.0.1:20128/v1", min_length=1)
+    omniroute_sidecar_api_key_configured: bool = False
+    omniroute_sidecar_selected_models: list[str] = Field(default_factory=list, max_length=256)
+    omniroute_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    omniroute_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    omniroute_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    omniroute_sidecar_last_health_status: str | None = None
+    omniroute_sidecar_last_health_message: str | None = None
+    omniroute_sidecar_last_checked_at: datetime | None = None
+    omniroute_sidecar_last_model_count: int | None = Field(default=None, ge=0)
 
 
 class DashboardSettingsUpdateRequest(DashboardModel):
@@ -226,6 +259,14 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     openrouter_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    omniroute_sidecar_enabled: bool | None = None
+    omniroute_sidecar_base_url: str | None = Field(default=None, max_length=2048)
+    omniroute_sidecar_api_key: str | None = Field(default=None, max_length=4096)
+    omniroute_sidecar_clear_api_key: bool | None = None
+    omniroute_sidecar_selected_models: list[str] | None = Field(default=None, max_length=256)
+    omniroute_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    omniroute_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
+    omniroute_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
 
     @field_validator("warmup_model")
     @classmethod
@@ -280,6 +321,23 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator("openrouter_sidecar_api_key")
     @classmethod
     def _normalize_openrouter_sidecar_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("omniroute_sidecar_base_url")
+    @classmethod
+    def _normalize_omniroute_sidecar_base_url(cls, value: str | None) -> str | None:
+        return _normalize_omniroute_sidecar_base_url(value)
+
+    @field_validator("omniroute_sidecar_selected_models")
+    @classmethod
+    def _normalize_omniroute_sidecar_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_omniroute_sidecar_selected_models(value)
+
+    @field_validator("omniroute_sidecar_api_key")
+    @classmethod
+    def _normalize_omniroute_sidecar_api_key(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip()

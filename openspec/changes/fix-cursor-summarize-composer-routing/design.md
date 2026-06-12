@@ -14,7 +14,8 @@ Keep the upstream route and generic control service unchanged. Add a narrow API
 edge normalization path for `memories/trace_summarize`:
 
 - read the JSON body at the route handler,
-- validate that it is a JSON object containing a string `model`,
+- if the body cannot be parsed as a JSON object, or the object does not contain
+  a non-empty string `model`, keep forwarding the original bytes unchanged,
 - adapt only the policy-managed fields (`model`, `reasoning`, `service_tier`)
   into a small Pydantic model that is compatible with `apply_api_key_enforcement`,
 - validate the effective model with `validate_model_access`,
@@ -31,5 +32,5 @@ Cursor's control payload includes fields such as `raw_memories` rather than the
   control payloads are still forwarded unchanged.
 - Add an integration test for `memories/trace_summarize` with a Cursor GPT-5
   alias and an API key enforcing reasoning/service tier.
-- Add a negative integration test proving invalid summarize JSON fails before
-  opening the upstream control call.
+- Add an integration test proving a summarize payload without `model` remains
+  raw pass-through, preserving Cursor control-endpoint compatibility.

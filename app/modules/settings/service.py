@@ -82,6 +82,17 @@ class DashboardSettingsData:
     openrouter_sidecar_last_health_message: str | None
     openrouter_sidecar_last_checked_at: datetime | None
     openrouter_sidecar_last_model_count: int | None
+    omniroute_sidecar_enabled: bool
+    omniroute_sidecar_base_url: str
+    omniroute_sidecar_api_key_configured: bool
+    omniroute_sidecar_selected_models: list[str]
+    omniroute_sidecar_connect_timeout_seconds: float
+    omniroute_sidecar_request_timeout_seconds: float
+    omniroute_sidecar_models_cache_ttl_seconds: float
+    omniroute_sidecar_last_health_status: str | None
+    omniroute_sidecar_last_health_message: str | None
+    omniroute_sidecar_last_checked_at: datetime | None
+    omniroute_sidecar_last_model_count: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +149,14 @@ class DashboardSettingsUpdateData:
     openrouter_sidecar_connect_timeout_seconds: float
     openrouter_sidecar_request_timeout_seconds: float
     openrouter_sidecar_models_cache_ttl_seconds: float
+    omniroute_sidecar_enabled: bool
+    omniroute_sidecar_base_url: str
+    omniroute_sidecar_api_key: str | None
+    omniroute_sidecar_clear_api_key: bool
+    omniroute_sidecar_selected_models: list[str]
+    omniroute_sidecar_connect_timeout_seconds: float
+    omniroute_sidecar_request_timeout_seconds: float
+    omniroute_sidecar_models_cache_ttl_seconds: float
 
 
 class SettingsService:
@@ -174,6 +193,14 @@ class SettingsService:
             openrouter_api_key_value = payload.openrouter_sidecar_api_key.strip()
             openrouter_api_key_encrypted = (
                 self._encryptor.encrypt(openrouter_api_key_value) if openrouter_api_key_value else None
+            )
+        omniroute_api_key_encrypted = current.omniroute_sidecar_api_key_encrypted
+        if payload.omniroute_sidecar_clear_api_key:
+            omniroute_api_key_encrypted = None
+        elif payload.omniroute_sidecar_api_key is not None:
+            omniroute_api_key_value = payload.omniroute_sidecar_api_key.strip()
+            omniroute_api_key_encrypted = (
+                self._encryptor.encrypt(omniroute_api_key_value) if omniroute_api_key_value else None
             )
         row = await self._repository.update(
             sticky_threads_enabled=payload.sticky_threads_enabled,
@@ -231,6 +258,15 @@ class SettingsService:
             openrouter_sidecar_connect_timeout_seconds=payload.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=payload.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=payload.openrouter_sidecar_models_cache_ttl_seconds,
+            omniroute_sidecar_enabled=payload.omniroute_sidecar_enabled,
+            omniroute_sidecar_base_url=payload.omniroute_sidecar_base_url,
+            omniroute_sidecar_api_key_encrypted=omniroute_api_key_encrypted,
+            omniroute_sidecar_selected_models_json=_dump_omniroute_sidecar_selected_models(
+                payload.omniroute_sidecar_selected_models
+            ),
+            omniroute_sidecar_connect_timeout_seconds=payload.omniroute_sidecar_connect_timeout_seconds,
+            omniroute_sidecar_request_timeout_seconds=payload.omniroute_sidecar_request_timeout_seconds,
+            omniroute_sidecar_models_cache_ttl_seconds=payload.omniroute_sidecar_models_cache_ttl_seconds,
         )
         return self._to_data(row)
 
@@ -310,6 +346,19 @@ class SettingsService:
             openrouter_sidecar_last_health_message=row.openrouter_sidecar_last_health_message,
             openrouter_sidecar_last_checked_at=row.openrouter_sidecar_last_checked_at,
             openrouter_sidecar_last_model_count=row.openrouter_sidecar_last_model_count,
+            omniroute_sidecar_enabled=row.omniroute_sidecar_enabled,
+            omniroute_sidecar_base_url=row.omniroute_sidecar_base_url,
+            omniroute_sidecar_api_key_configured=row.omniroute_sidecar_api_key_encrypted is not None,
+            omniroute_sidecar_selected_models=_parse_omniroute_sidecar_selected_models(
+                row.omniroute_sidecar_selected_models_json
+            ),
+            omniroute_sidecar_connect_timeout_seconds=row.omniroute_sidecar_connect_timeout_seconds,
+            omniroute_sidecar_request_timeout_seconds=row.omniroute_sidecar_request_timeout_seconds,
+            omniroute_sidecar_models_cache_ttl_seconds=row.omniroute_sidecar_models_cache_ttl_seconds,
+            omniroute_sidecar_last_health_status=row.omniroute_sidecar_last_health_status,
+            omniroute_sidecar_last_health_message=row.omniroute_sidecar_last_health_message,
+            omniroute_sidecar_last_checked_at=row.omniroute_sidecar_last_checked_at,
+            omniroute_sidecar_last_model_count=row.omniroute_sidecar_last_model_count,
         )
 
 
@@ -392,6 +441,23 @@ def _parse_openrouter_sidecar_model_prefixes(raw: str | None) -> list[str]:
 
 def _dump_openrouter_sidecar_model_prefixes(prefixes: list[str]) -> str:
     normalized = list(dict.fromkeys(prefix.strip().lower() for prefix in prefixes if prefix.strip()))
+    return json.dumps(normalized, separators=(",", ":"))
+
+
+def _parse_omniroute_sidecar_selected_models(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [entry.strip() for entry in parsed if isinstance(entry, str) and entry.strip()]
+
+
+def _dump_omniroute_sidecar_selected_models(models: list[str]) -> str:
+    normalized = list(dict.fromkeys(entry.strip() for entry in models if entry.strip()))
     return json.dumps(normalized, separators=(",", ":"))
 
 

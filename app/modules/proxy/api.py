@@ -386,31 +386,32 @@ def _codex_control_downstream_headers(headers: Mapping[str, str]) -> dict[str, s
 async def _trace_summarize_control_payload(
     request: Request,
     api_key: ApiKeyData | None,
-) -> tuple[bytes | None, JSONResponse | None]:
+) -> bytes:
     body = await request.body()
     try:
         raw = json.loads(body)
     except (JSONDecodeError, UnicodeDecodeError):
-        error = openai_error(
-            "invalid_request_error",
-            "trace summarize payload must be valid JSON",
-            error_type="invalid_request_error",
-        )
-        return None, _logged_error_json_response(request, 400, error)
+        return body
     if not is_json_mapping(raw):
-        error = openai_error(
-            "invalid_request_error",
-            "trace summarize payload must be a JSON object",
-            error_type="invalid_request_error",
-        )
-        return None, _logged_error_json_response(request, 400, error)
+        return body
 
     payload = dict(raw)
+    requested_model = payload.get("model")
+    if not isinstance(requested_model, str) or not requested_model.strip():
+        return body
+
+    policy_data: dict[str, JsonValue] = {"model": requested_model}
+    requested_reasoning = payload.get("reasoning")
+    if is_json_mapping(requested_reasoning):
+        policy_data["reasoning"] = dict(requested_reasoning)
+    requested_service_tier = payload.get("service_tier")
+    if isinstance(requested_service_tier, str):
+        policy_data["service_tier"] = requested_service_tier
+
     try:
-        policy_payload = _TraceSummarizePolicyPayload.model_validate(payload)
-    except ValidationError as exc:
-        error = openai_validation_error(exc)
-        return None, _logged_error_json_response(request, 400, error)
+        policy_payload = _TraceSummarizePolicyPayload.model_validate(policy_data)
+    except ValidationError:
+        return body
 
     apply_api_key_enforcement(policy_payload, api_key)
     validate_model_access(api_key, policy_payload.model)
@@ -418,13 +419,18 @@ async def _trace_summarize_control_payload(
     payload["model"] = policy_payload.model
     if policy_payload.reasoning is not None:
         payload["reasoning"] = policy_payload.reasoning.model_dump(mode="json", exclude_none=True)
-    if policy_payload.service_tier is None:
+    should_write_service_tier = (
+        isinstance(requested_service_tier, str)
+        or policy_payload.service_tier is not None
+        or (api_key is not None and api_key.enforced_service_tier is not None)
+    )
+    if should_write_service_tier and policy_payload.service_tier is None:
         payload.pop("service_tier", None)
-    else:
+    elif policy_payload.service_tier is not None:
         payload["service_tier"] = policy_payload.service_tier
 
     normalized_body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    return normalized_body, None
+    return normalized_body
 
 
 async def _codex_control_proxy(
@@ -503,9 +509,7 @@ async def codex_memories_trace_summarize(
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
-    payload, error_response = await _trace_summarize_control_payload(request, api_key)
-    if error_response is not None:
-        return error_response
+    payload = await _trace_summarize_control_payload(request, api_key)
     return await _codex_control_proxy(
         request,
         "memories/trace_summarize",
