@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.dependencies import DashboardContext, get_dashboard_context
 from app.modules.dashboard.schemas import (
@@ -14,6 +15,7 @@ from app.modules.dashboard.schemas import (
     DashboardProjectionsResponse,
 )
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
+from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
 
 logger = logging.getLogger(__name__)
 
@@ -61,4 +63,16 @@ async def list_models() -> dict:
                 continue
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}"})
+    openrouter_config = await load_openrouter_sidecar_config()
+    if openrouter_config is not None and openrouter_config.enabled:
+        try:
+            openrouter_models = await OpenRouterSidecarClient(openrouter_config).list_models_cached()
+        except Exception:
+            logger.warning("failed to append OpenRouter sidecar models to dashboard model list", exc_info=True)
+            openrouter_models = []
+        for sidecar_model in openrouter_models:
+            if sidecar_model.id in seen_model_ids:
+                continue
+            seen_model_ids.add(sidecar_model.id)
+            models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}"})
     return {"models": models}

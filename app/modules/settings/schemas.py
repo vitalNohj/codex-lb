@@ -48,6 +48,27 @@ def _normalize_claude_sidecar_model_prefixes(value: list[str] | None) -> list[st
     return prefixes
 
 
+def _normalize_openrouter_sidecar_base_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("openrouter_sidecar_base_url must not be blank")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("openrouter_sidecar_base_url must be an http(s) URL")
+    return normalized
+
+
+def _normalize_openrouter_sidecar_model_prefixes(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    prefixes = list(dict.fromkeys(prefix.strip().lower() for prefix in value if prefix.strip()))
+    if any(len(prefix) > 64 for prefix in prefixes):
+        raise ValueError("openrouter_sidecar_model_prefixes entries must be 64 characters or fewer")
+    return prefixes
+
+
 class AdditionalQuotaPolicy(DashboardModel):
     quota_key: str
     display_label: str
@@ -133,7 +154,17 @@ class DashboardSettingsResponse(DashboardModel):
     claude_sidecar_usage_poll_interval_seconds: float = Field(default=15.0, gt=0)
     claude_sidecar_usage_queue_batch_size: int = Field(default=100, gt=0)
     claude_sidecar_usage_collection_enabled: bool = True
-
+    openrouter_sidecar_enabled: bool = False
+    openrouter_sidecar_base_url: str = Field(default="https://openrouter.ai/api/v1", min_length=1)
+    openrouter_sidecar_api_key_configured: bool = False
+    openrouter_sidecar_model_prefixes: list[str] = Field(default_factory=list, max_length=32)
+    openrouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    openrouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    openrouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    openrouter_sidecar_last_health_status: str | None = None
+    openrouter_sidecar_last_health_message: str | None = None
+    openrouter_sidecar_last_checked_at: datetime | None = None
+    openrouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
 
 
 class DashboardSettingsUpdateRequest(DashboardModel):
@@ -187,6 +218,14 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     claude_sidecar_usage_poll_interval_seconds: float | None = Field(default=None, gt=0)
     claude_sidecar_usage_queue_batch_size: int | None = Field(default=None, gt=0, le=1000)
     claude_sidecar_usage_collection_enabled: bool | None = None
+    openrouter_sidecar_enabled: bool | None = None
+    openrouter_sidecar_base_url: str | None = Field(default=None, max_length=2048)
+    openrouter_sidecar_api_key: str | None = Field(default=None, max_length=4096)
+    openrouter_sidecar_clear_api_key: bool | None = None
+    openrouter_sidecar_model_prefixes: list[str] | None = Field(default=None, max_length=32)
+    openrouter_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    openrouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
+    openrouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
 
     @field_validator("warmup_model")
     @classmethod
@@ -224,6 +263,23 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator("claude_sidecar_management_key")
     @classmethod
     def _normalize_sidecar_management_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("openrouter_sidecar_base_url")
+    @classmethod
+    def _normalize_openrouter_sidecar_base_url(cls, value: str | None) -> str | None:
+        return _normalize_openrouter_sidecar_base_url(value)
+
+    @field_validator("openrouter_sidecar_model_prefixes")
+    @classmethod
+    def _normalize_openrouter_sidecar_prefixes(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_openrouter_sidecar_model_prefixes(value)
+
+    @field_validator("openrouter_sidecar_api_key")
+    @classmethod
+    def _normalize_openrouter_sidecar_api_key(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip()

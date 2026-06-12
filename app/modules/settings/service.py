@@ -71,6 +71,17 @@ class DashboardSettingsData:
     claude_sidecar_usage_poll_interval_seconds: float
     claude_sidecar_usage_queue_batch_size: int
     claude_sidecar_usage_collection_enabled: bool
+    openrouter_sidecar_enabled: bool
+    openrouter_sidecar_base_url: str
+    openrouter_sidecar_api_key_configured: bool
+    openrouter_sidecar_model_prefixes: list[str]
+    openrouter_sidecar_connect_timeout_seconds: float
+    openrouter_sidecar_request_timeout_seconds: float
+    openrouter_sidecar_models_cache_ttl_seconds: float
+    openrouter_sidecar_last_health_status: str | None
+    openrouter_sidecar_last_health_message: str | None
+    openrouter_sidecar_last_checked_at: datetime | None
+    openrouter_sidecar_last_model_count: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +130,14 @@ class DashboardSettingsUpdateData:
     claude_sidecar_usage_poll_interval_seconds: float
     claude_sidecar_usage_queue_batch_size: int
     claude_sidecar_usage_collection_enabled: bool
+    openrouter_sidecar_enabled: bool
+    openrouter_sidecar_base_url: str
+    openrouter_sidecar_api_key: str | None
+    openrouter_sidecar_clear_api_key: bool
+    openrouter_sidecar_model_prefixes: list[str]
+    openrouter_sidecar_connect_timeout_seconds: float
+    openrouter_sidecar_request_timeout_seconds: float
+    openrouter_sidecar_models_cache_ttl_seconds: float
 
 
 class SettingsService:
@@ -147,6 +166,14 @@ class SettingsService:
             management_key_value = payload.claude_sidecar_management_key.strip()
             management_key_encrypted = (
                 self._encryptor.encrypt(management_key_value) if management_key_value else None
+            )
+        openrouter_api_key_encrypted = current.openrouter_sidecar_api_key_encrypted
+        if payload.openrouter_sidecar_clear_api_key:
+            openrouter_api_key_encrypted = None
+        elif payload.openrouter_sidecar_api_key is not None:
+            openrouter_api_key_value = payload.openrouter_sidecar_api_key.strip()
+            openrouter_api_key_encrypted = (
+                self._encryptor.encrypt(openrouter_api_key_value) if openrouter_api_key_value else None
             )
         row = await self._repository.update(
             sticky_threads_enabled=payload.sticky_threads_enabled,
@@ -195,6 +222,15 @@ class SettingsService:
             claude_sidecar_usage_poll_interval_seconds=payload.claude_sidecar_usage_poll_interval_seconds,
             claude_sidecar_usage_queue_batch_size=payload.claude_sidecar_usage_queue_batch_size,
             claude_sidecar_usage_collection_enabled=payload.claude_sidecar_usage_collection_enabled,
+            openrouter_sidecar_enabled=payload.openrouter_sidecar_enabled,
+            openrouter_sidecar_base_url=payload.openrouter_sidecar_base_url,
+            openrouter_sidecar_api_key_encrypted=openrouter_api_key_encrypted,
+            openrouter_sidecar_model_prefixes_json=_dump_openrouter_sidecar_model_prefixes(
+                payload.openrouter_sidecar_model_prefixes
+            ),
+            openrouter_sidecar_connect_timeout_seconds=payload.openrouter_sidecar_connect_timeout_seconds,
+            openrouter_sidecar_request_timeout_seconds=payload.openrouter_sidecar_request_timeout_seconds,
+            openrouter_sidecar_models_cache_ttl_seconds=payload.openrouter_sidecar_models_cache_ttl_seconds,
         )
         return self._to_data(row)
 
@@ -261,6 +297,19 @@ class SettingsService:
             claude_sidecar_usage_poll_interval_seconds=row.claude_sidecar_usage_poll_interval_seconds,
             claude_sidecar_usage_queue_batch_size=row.claude_sidecar_usage_queue_batch_size,
             claude_sidecar_usage_collection_enabled=row.claude_sidecar_usage_collection_enabled,
+            openrouter_sidecar_enabled=row.openrouter_sidecar_enabled,
+            openrouter_sidecar_base_url=row.openrouter_sidecar_base_url,
+            openrouter_sidecar_api_key_configured=row.openrouter_sidecar_api_key_encrypted is not None,
+            openrouter_sidecar_model_prefixes=_parse_openrouter_sidecar_model_prefixes(
+                row.openrouter_sidecar_model_prefixes_json
+            ),
+            openrouter_sidecar_connect_timeout_seconds=row.openrouter_sidecar_connect_timeout_seconds,
+            openrouter_sidecar_request_timeout_seconds=row.openrouter_sidecar_request_timeout_seconds,
+            openrouter_sidecar_models_cache_ttl_seconds=row.openrouter_sidecar_models_cache_ttl_seconds,
+            openrouter_sidecar_last_health_status=row.openrouter_sidecar_last_health_status,
+            openrouter_sidecar_last_health_message=row.openrouter_sidecar_last_health_message,
+            openrouter_sidecar_last_checked_at=row.openrouter_sidecar_last_checked_at,
+            openrouter_sidecar_last_model_count=row.openrouter_sidecar_last_model_count,
         )
 
 
@@ -326,6 +375,23 @@ def _dump_claude_sidecar_model_prefixes(prefixes: list[str]) -> str:
     normalized = list(dict.fromkeys(prefix.strip().lower() for prefix in prefixes if prefix.strip()))
     if not normalized:
         raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
+    return json.dumps(normalized, separators=(",", ":"))
+
+
+def _parse_openrouter_sidecar_model_prefixes(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [entry.strip().lower() for entry in parsed if isinstance(entry, str) and entry.strip()]
+
+
+def _dump_openrouter_sidecar_model_prefixes(prefixes: list[str]) -> str:
+    normalized = list(dict.fromkeys(prefix.strip().lower() for prefix in prefixes if prefix.strip()))
     return json.dumps(normalized, separators=(",", ":"))
 
 

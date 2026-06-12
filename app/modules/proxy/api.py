@@ -36,6 +36,7 @@ from app.core.auth.dependencies import (
     validate_usage_api_key,
 )
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.files import FileProxyError
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
@@ -105,6 +106,11 @@ from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, load_sidecar_config, proxy_chat_to_sidecar
+from app.modules.proxy.openrouter_sidecar_dispatch import (
+    is_openrouter_sidecar_model,
+    load_openrouter_sidecar_config,
+    proxy_chat_to_openrouter,
+)
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
     cursor_context_limit_usage_completion,
@@ -1796,6 +1802,25 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                     }
                 )
             )
+    openrouter_config = await load_openrouter_sidecar_config()
+    if openrouter_config is not None and openrouter_config.enabled:
+        for sidecar_model in await OpenRouterSidecarClient(openrouter_config).list_models_cached():
+            slug = sidecar_model.id
+            if slug in seen_model_ids:
+                continue
+            if allowed_models is not None and slug not in allowed_models:
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": sidecar_model.created or created,
+                        "owned_by": sidecar_model.owned_by or "openrouter",
+                        "api_types": ["chat_completions"],
+                    }
+                )
+            )
     await _release_reservation(reservation)
     return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
 
@@ -1994,6 +2019,25 @@ async def v1_chat_completions(
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
             client=ClaudeSidecarClient(sidecar_config),
             cursor_compat=cursor_compat_client,
+        )
+
+    openrouter_config = await load_openrouter_sidecar_config()
+    if openrouter_config is not None and is_openrouter_sidecar_model(effective_model, openrouter_config):
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=payload.service_tier,
+            request_usage_budget=None,
+        )
+        return await proxy_chat_to_openrouter(
+            request,
+            payload,
+            effective_model=effective_model,
+            api_key=api_key,
+            reservation=reservation,
+            rate_limit_headers=rate_limit_headers,
+            sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+            client=OpenRouterSidecarClient(openrouter_config),
         )
 
     try:

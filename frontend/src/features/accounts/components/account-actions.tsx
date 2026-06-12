@@ -55,10 +55,11 @@ export function AccountActions({
   onRoutingPolicyChange,
 }: AccountActionsProps) {
   if (account.synthetic || account.readOnly) {
+    const sidecarName = account.provider === "openrouter" ? "OpenRouter" : "Claude via CLIProxyAPI";
     return (
       <div className="space-y-3 border-t pt-4">
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-          This is a read-only synthetic account for Claude via CLIProxyAPI. Configure and test it from Settings.
+          This is a read-only synthetic account for {sidecarName}. Configure and test it from Settings.
         </div>
       </div>
     );

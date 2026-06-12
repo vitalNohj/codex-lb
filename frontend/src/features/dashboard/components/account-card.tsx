@@ -222,6 +222,9 @@ function SyntheticAccountCard({
   account: AccountSummary;
   onAction?: (account: AccountSummary, action: AccountAction) => void;
 }) {
+  const isOpenRouter = account.provider === "openrouter";
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : "CLIProxyAPI";
+  const showQuotaUsage = !isOpenRouter;
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;
@@ -240,7 +243,7 @@ function SyntheticAccountCard({
             {account.displayName}
           </p>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {formatSlug(account.provider ?? "claude")} | {account.baseUrl ?? "CLIProxyAPI"}
+            {formatSlug(account.provider ?? "claude")} | {account.baseUrl ?? sidecarLabel}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -249,12 +252,13 @@ function SyntheticAccountCard({
             className="gap-1 border-violet-300 bg-violet-50 px-1.5 text-[11px] text-violet-700"
           >
             <Bot className="h-3 w-3" aria-hidden="true" />
-            CLIProxyAPI
+            {sidecarLabel}
           </Badge>
           <StatusBadge status={status} />
         </div>
       </div>
 
+      {showQuotaUsage ? (
       <div className="mt-3 space-y-2 rounded-lg border bg-muted/20 p-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium">Claude usage</span>
@@ -273,6 +277,7 @@ function SyntheticAccountCard({
           />
         </div>
       </div>
+      ) : null}
 
       <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
         <div className="flex items-center justify-between gap-2">
@@ -281,12 +286,14 @@ function SyntheticAccountCard({
             {formatSlug(account.healthStatus ?? account.status)}
           </span>
         </div>
+        {showQuotaUsage ? (
         <div className="flex items-center justify-between gap-2">
           <span>Quota</span>
           <span className="truncate font-medium text-foreground">
             {formatSidecarQuotaLabel(account)}
           </span>
         </div>
+        ) : null}
         <div className="flex items-center justify-between gap-2">
           <span>Models</span>
           <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>

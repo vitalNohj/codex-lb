@@ -48,10 +48,20 @@ const TRANSPORT_LABELS: Record<string, string> = {
   websocket: "WS",
 };
 
-const SIDECAR_SOURCE = "claude_sidecar";
+const SIDECAR_SOURCE_LABELS: Record<string, string> = {
+  claude_sidecar: "Claude sidecar",
+  openrouter_sidecar: "OpenRouter sidecar",
+};
+
+function sidecarSourceLabel(source: string | null | undefined): string | null {
+  if (!source) {
+    return null;
+  }
+  return SIDECAR_SOURCE_LABELS[source] ?? null;
+}
 
 function isSidecarRequest(request: RequestLog | null): boolean {
-  return request?.source === SIDECAR_SOURCE;
+  return sidecarSourceLabel(request?.source) !== null;
 }
 
 const TRANSPORT_CLASS_MAP: Record<string, string> = {
@@ -189,9 +199,10 @@ export function RecentRequestsTable({
           <TableBody>
             {requests.map((request) => {
               const time = formatTimeLong(request.requestedAt);
-              const sidecarRequest = isSidecarRequest(request);
+              const sidecarLabel = sidecarSourceLabel(request.source);
+              const sidecarRequest = sidecarLabel !== null;
               const accountLabel = sidecarRequest
-                ? "Claude sidecar"
+                ? sidecarLabel
                 : request.accountId
                 ? (accountLabelMap.get(request.accountId) ?? request.accountId)
                 : "Unassigned";
@@ -247,7 +258,7 @@ export function RecentRequestsTable({
                       {sidecarRequest ? (
                         <div className="mt-1">
                           <Badge variant="outline" className="border-violet-300 bg-violet-50 text-[10px] text-violet-700">
-                            Claude sidecar
+                            {sidecarLabel}
                           </Badge>
                         </div>
                       ) : null}
@@ -373,7 +384,7 @@ export function RecentRequestsTable({
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label="Transport" value={isSidecarRequest(selectedRequest) ? "Sidecar HTTP" : selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
-                <RequestDetailField label="Source" value={isSidecarRequest(selectedRequest) ? "Claude sidecar" : selectedRequest?.source ?? "—"} />
+                <RequestDetailField label="Source" value={sidecarSourceLabel(selectedRequest?.source) ?? selectedRequest?.source ?? "—"} />
                 <RequestDetailField label="Time" value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label="Error Code" value={selectedRequest?.errorCode ?? "—"} mono />
               </div>

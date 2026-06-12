@@ -121,6 +121,17 @@ export const DashboardSettingsSchema = z
     claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional().default(15),
     claudeSidecarUsageQueueBatchSize: z.number().int().positive().optional().default(100),
     claudeSidecarUsageCollectionEnabled: z.boolean().optional().default(true),
+    openrouterSidecarEnabled: z.boolean().optional().default(false),
+    openrouterSidecarBaseUrl: z.string().trim().min(1).optional().default("https://openrouter.ai/api/v1"),
+    openrouterSidecarApiKeyConfigured: z.boolean().optional().default(false),
+    openrouterSidecarModelPrefixes: z.array(z.string().trim().min(1).max(64)).optional().default([]),
+    openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
+    openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
+    openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+    openrouterSidecarLastHealthStatus: z.string().nullable().optional().default(null),
+    openrouterSidecarLastHealthMessage: z.string().nullable().optional().default(null),
+    openrouterSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
+    openrouterSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -190,6 +201,14 @@ export const SettingsUpdateRequestSchema = z.object({
   claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional(),
   claudeSidecarUsageQueueBatchSize: z.number().int().positive().max(1000).optional(),
   claudeSidecarUsageCollectionEnabled: z.boolean().optional(),
+  openrouterSidecarEnabled: z.boolean().optional(),
+  openrouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+  openrouterSidecarApiKey: z.string().trim().max(4096).optional(),
+  openrouterSidecarClearApiKey: z.boolean().optional(),
+  openrouterSidecarModelPrefixes: z.array(z.string().trim().min(1).max(64)).optional(),
+  openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+  openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+  openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
 });
 
 export const ClaudeSidecarModelSummarySchema = z.object({
@@ -212,6 +231,39 @@ export const ClaudeSidecarTestResponseSchema = ClaudeSidecarStatusResponseSchema
 });
 export const ClaudeSidecarModelsResponseSchema = z.object({
   models: z.array(ClaudeSidecarModelSummarySchema).default([]),
+});
+
+const OpenRouterSidecarStatusValueSchema = z.enum([
+  "disabled",
+  "missing_api_key",
+  "unreachable",
+  "unauthorized",
+  "healthy",
+  "error",
+]);
+
+export const OpenRouterSidecarModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+});
+
+export const OpenRouterSidecarStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: OpenRouterSidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+export const OpenRouterSidecarTestResponseSchema = OpenRouterSidecarStatusResponseSchema.extend({
+  models: z.array(OpenRouterSidecarModelSummarySchema).default([]),
+});
+
+export const OpenRouterSidecarModelsResponseSchema = z.object({
+  models: z.array(OpenRouterSidecarModelSummarySchema).default([]),
 });
 
 const ClaudeSidecarQuotaStatusSchema = z.enum([
@@ -267,6 +319,21 @@ type StickyThresholdValues = Pick<
   | "stickyReallocationPrimaryBudgetThresholdPct"
   | "stickyReallocationSecondaryBudgetThresholdPct"
 >;
+type OpenRouterSidecarSettingsFields = Pick<
+  ParsedDashboardSettings,
+  | "openrouterSidecarEnabled"
+  | "openrouterSidecarBaseUrl"
+  | "openrouterSidecarApiKeyConfigured"
+  | "openrouterSidecarModelPrefixes"
+  | "openrouterSidecarConnectTimeoutSeconds"
+  | "openrouterSidecarRequestTimeoutSeconds"
+  | "openrouterSidecarModelsCacheTtlSeconds"
+  | "openrouterSidecarLastHealthStatus"
+  | "openrouterSidecarLastHealthMessage"
+  | "openrouterSidecarLastCheckedAt"
+  | "openrouterSidecarLastModelCount"
+>;
+
 type ClaudeSidecarSettingsFields = Pick<
   ParsedDashboardSettings,
   | "claudeSidecarEnabled"
@@ -290,11 +357,15 @@ type ClaudeSidecarSettingsFields = Pick<
 
 export type DashboardSettings = Omit<
   ParsedDashboardSettings,
-  keyof StickyThresholdPresenceFlags | keyof StickyThresholdValues | keyof ClaudeSidecarSettingsFields
+  | keyof StickyThresholdPresenceFlags
+  | keyof StickyThresholdValues
+  | keyof ClaudeSidecarSettingsFields
+  | keyof OpenRouterSidecarSettingsFields
 > &
   Partial<StickyThresholdPresenceFlags> &
   Partial<StickyThresholdValues> &
-  Partial<ClaudeSidecarSettingsFields>;
+  Partial<ClaudeSidecarSettingsFields> &
+  Partial<OpenRouterSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
 export type ClaudeSidecarStatusResponse = z.infer<typeof ClaudeSidecarStatusResponseSchema>;
@@ -304,6 +375,10 @@ export type ClaudeSidecarQuotaResponse = z.infer<typeof ClaudeSidecarQuotaRespon
 export type ClaudeSidecarQuotaAuth = z.infer<typeof ClaudeSidecarQuotaAuthSchema>;
 export type ClaudeSidecarAuthPlan = z.infer<typeof ClaudeSidecarAuthPlanSchema>;
 export type ClaudeSidecarPlanType = z.infer<typeof ClaudeSidecarPlanTypeSchema>;
+export type OpenRouterSidecarModelSummary = z.infer<typeof OpenRouterSidecarModelSummarySchema>;
+export type OpenRouterSidecarStatusResponse = z.infer<typeof OpenRouterSidecarStatusResponseSchema>;
+export type OpenRouterSidecarTestResponse = z.infer<typeof OpenRouterSidecarTestResponseSchema>;
+export type OpenRouterSidecarModelsResponse = z.infer<typeof OpenRouterSidecarModelsResponseSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({

@@ -350,6 +350,17 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=0.08,
         output_per_1m=4.0,
     ),
+    # OpenRouter sidecar models (approximate OpenRouter list prices, USD per 1M tokens).
+    "deepseek/deepseek-chat": ModelPrice(
+        input_per_1m=0.14,
+        cached_input_per_1m=0.014,
+        output_per_1m=0.28,
+    ),
+    "google/gemini-2.5-pro-preview": ModelPrice(
+        input_per_1m=1.25,
+        cached_input_per_1m=0.125,
+        output_per_1m=10.0,
+    ),
 }
 
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
@@ -394,6 +405,8 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "*claude-3-7-sonnet*": "claude-3-7-sonnet",
     "*claude-haiku-4-5*": "claude-haiku-4-5",
     "*claude-3-5-haiku*": "claude-3-5-haiku",
+    "*deepseek/deepseek-chat*": "deepseek/deepseek-chat",
+    "*google/gemini-2.5-pro-preview*": "google/gemini-2.5-pro-preview",
 }
 
 

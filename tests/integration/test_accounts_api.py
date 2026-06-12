@@ -449,6 +449,38 @@ async def test_accounts_list_includes_read_only_claude_sidecar_synthetic_account
     assert pause.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_accounts_list_includes_read_only_openrouter_sidecar_synthetic_account(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "openrouterSidecarEnabled": True,
+            "openrouterSidecarApiKey": "openrouter-key",
+            "openrouterSidecarModelPrefixes": ["deepseek/"],
+        },
+    )
+    assert response.status_code == 200
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    sidecar = next(
+        (account for account in accounts.json()["accounts"] if account["accountId"] == "openrouter-sidecar"),
+        None,
+    )
+    assert sidecar is not None
+    assert sidecar["displayName"] == "OpenRouter"
+    assert sidecar["email"] == "openrouter.ai"
+    assert sidecar["kind"] == "sidecar"
+    assert sidecar["provider"] == "openrouter"
+    assert sidecar["readOnly"] is True
+    assert sidecar["synthetic"] is True
+    assert sidecar["baseUrl"] == "https://openrouter.ai/api/v1"
+    assert sidecar["requestUsage"]["requestCount"] == 0
+
+    pause = await async_client.post("/api/accounts/openrouter-sidecar/pause")
+    assert pause.status_code == 404
+
+
 async def _seed_quota_snapshot(snapshot: SidecarQuotaSnapshot) -> None:
     async with SessionLocal() as session:
         repo = SettingsRepository(session)

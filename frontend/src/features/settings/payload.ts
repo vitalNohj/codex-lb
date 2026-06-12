@@ -44,6 +44,12 @@ export function buildSettingsUpdateRequest(
     claudeSidecarUsagePollIntervalSeconds: settings.claudeSidecarUsagePollIntervalSeconds,
     claudeSidecarUsageQueueBatchSize: settings.claudeSidecarUsageQueueBatchSize,
     claudeSidecarUsageCollectionEnabled: settings.claudeSidecarUsageCollectionEnabled,
+    openrouterSidecarEnabled: settings.openrouterSidecarEnabled,
+    openrouterSidecarBaseUrl: settings.openrouterSidecarBaseUrl,
+    openrouterSidecarModelPrefixes: settings.openrouterSidecarModelPrefixes,
+    openrouterSidecarConnectTimeoutSeconds: settings.openrouterSidecarConnectTimeoutSeconds,
+    openrouterSidecarRequestTimeoutSeconds: settings.openrouterSidecarRequestTimeoutSeconds,
+    openrouterSidecarModelsCacheTtlSeconds: settings.openrouterSidecarModelsCacheTtlSeconds,
     ...patch,
   };
   if (

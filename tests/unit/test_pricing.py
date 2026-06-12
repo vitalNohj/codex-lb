@@ -141,6 +141,15 @@ def test_get_pricing_for_model_gpt_5_2_chat_latest_alias():
     assert model == "gpt-5.2-chat-latest"
 
 
+def test_get_pricing_for_model_openrouter_deepseek_chat():
+    result = get_pricing_for_model("deepseek/deepseek-chat", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "deepseek/deepseek-chat"
+    assert price.input_per_1m == 0.14
+    assert price.output_per_1m == 0.28
+
+
 def test_calculate_cost_from_usage_cached_tokens():
     usage = ResponseUsage(
         input_tokens=1000,
