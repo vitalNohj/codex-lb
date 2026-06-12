@@ -213,6 +213,95 @@ def test_sanitize_sidecar_chat_tool_ids_keeps_tool_result_references_consistent(
     assert tool_result["tool_use_id"] == "call_abc_def"
 
 
+def test_build_sidecar_chat_payload_keeps_referenced_cursor_tool_result_content_part() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call:abc.def",
+                            "name": "Shell",
+                            "input": {"command": "pwd"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call:abc.def",
+                            "content": "/tmp",
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    tool_result = payload.body["messages"][1]["content"][0]
+    assert tool_result == {
+        "type": "tool_result",
+        "tool_use_id": "call_abc_def",
+        "content": "/tmp",
+    }
+
+
+def test_sanitize_sidecar_chat_messages_drops_orphan_cursor_tool_result_content_parts() -> None:
+    body = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "lookup",
+                        "input": {"q": "abc"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "keep"},
+                    {"type": "tool_result", "tool_use_id": "call_2", "content": "orphan"},
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "ok"},
+                ],
+            },
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "lookup",
+                    "input": {"q": "abc"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "keep"},
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "ok"},
+            ],
+        },
+    ]
+
+
 def test_build_sidecar_chat_payload_appends_user_continuation_after_trailing_assistant() -> None:
     request = ChatCompletionsRequest.model_validate(
         {

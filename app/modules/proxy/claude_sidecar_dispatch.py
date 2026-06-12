@@ -175,6 +175,8 @@ def _filter_sidecar_messages(messages: list[JsonValue]) -> list[JsonValue]:
         role = message.get("role")
         if role == "assistant":
             _register_sidecar_assistant_tool_call_ids(message, seen_tool_call_ids)
+        if role == "user":
+            message = _filter_sidecar_user_tool_result_parts(message, seen_tool_call_ids)
         if not _sidecar_message_has_substance(message):
             continue
         if role == "tool" and not _sidecar_tool_message_is_referenced(message, seen_tool_call_ids):
@@ -235,6 +237,41 @@ def _sidecar_tool_message_is_referenced(
         if isinstance(tool_call_id, str) and tool_call_id in seen_tool_call_ids:
             return True
     return False
+
+
+def _filter_sidecar_user_tool_result_parts(
+    message: dict[str, JsonValue],
+    seen_tool_call_ids: set[str],
+) -> dict[str, JsonValue]:
+    content = message.get("content")
+    if is_json_mapping(content):
+        content_dict = cast(dict[str, JsonValue], content)
+        if content_dict.get("type") != "tool_result":
+            return message
+        tool_use_id = content_dict.get("tool_use_id")
+        if isinstance(tool_use_id, str) and tool_use_id in seen_tool_call_ids:
+            return message
+        return {**message, "content": []}
+    if not isinstance(content, list):
+        return message
+    filtered_content: list[JsonValue] = []
+    changed = False
+    for part in content:
+        if not is_json_mapping(part):
+            filtered_content.append(part)
+            continue
+        part_dict = cast(dict[str, JsonValue], part)
+        if part_dict.get("type") != "tool_result":
+            filtered_content.append(part)
+            continue
+        tool_use_id = part_dict.get("tool_use_id")
+        if isinstance(tool_use_id, str) and tool_use_id in seen_tool_call_ids:
+            filtered_content.append(part)
+            continue
+        changed = True
+    if not changed:
+        return message
+    return {**message, "content": filtered_content}
 
 
 def _sidecar_message_has_substance(message: dict[str, JsonValue]) -> bool:

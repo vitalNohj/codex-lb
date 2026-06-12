@@ -5,6 +5,7 @@ from typing import Mapping, cast
 import pytest
 from pydantic import ValidationError
 
+from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.requests import (
     ResponsesCompactRequest,
@@ -860,6 +861,67 @@ def test_v1_tool_message_accepts_tool_call_id_camel_case():
         {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'},
         {"role": "user", "content": [{"type": "input_text", "text": "Continue"}]},
     ]
+
+
+def test_chat_user_tool_result_content_part_normalizes_to_function_call_output():
+    payload = {
+        "model": "gpt-5.1",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": [{"type": "text", "text": "tool output"}],
+                    },
+                    {"type": "text", "text": "after"},
+                ],
+            }
+        ],
+    }
+    request = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+
+    assert request.input == [
+        {"role": "user", "content": [{"type": "input_text", "text": "before"}]},
+        {"type": "function_call_output", "call_id": "call_1", "output": "tool output"},
+        {"role": "user", "content": [{"type": "input_text", "text": "after"}]},
+    ]
+
+
+def test_chat_user_tool_result_object_content_normalizes_to_function_call_output():
+    payload = {
+        "model": "gpt-5.1",
+        "messages": [
+            {
+                "role": "user",
+                "content": {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": {"ok": True},
+                },
+            }
+        ],
+    }
+    request = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+
+    assert request.input == [{"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'}]
+
+
+def test_chat_user_tool_result_content_part_requires_tool_use_id():
+    payload = {
+        "model": "gpt-5.1",
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "content": "tool output"}],
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="tool_use_id"):
+        ChatCompletionsRequest.model_validate(payload)
 
 
 def test_v1_tool_message_requires_tool_call_id():
