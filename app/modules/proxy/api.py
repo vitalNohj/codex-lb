@@ -39,6 +39,7 @@ from app.core.auth.dependencies import (
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
@@ -121,6 +122,11 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     is_openrouter_sidecar_model,
     load_openrouter_sidecar_config,
     proxy_chat_to_openrouter,
+)
+from app.modules.proxy.omniroute_sidecar_dispatch import (
+    is_omniroute_sidecar_model,
+    load_omniroute_sidecar_config,
+    proxy_chat_to_omniroute,
 )
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
@@ -1906,6 +1912,26 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                     }
                 )
             )
+    omniroute_config = await load_omniroute_sidecar_config()
+    if omniroute_config is not None and omniroute_config.enabled:
+        discovered_models = await OmniRouteSidecarClient(omniroute_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        for slug in omniroute_config.selected_models:
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": "omniroute",
+                        "api_types": ["chat_completions"],
+                    }
+                )
+            )
     await _release_reservation(reservation)
     return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
 
@@ -2132,6 +2158,25 @@ async def v1_chat_completions(
             rate_limit_headers=rate_limit_headers,
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
             client=OpenRouterSidecarClient(openrouter_config),
+        )
+
+    omniroute_config = await load_omniroute_sidecar_config()
+    if omniroute_config is not None and is_omniroute_sidecar_model(effective_model, omniroute_config):
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=payload.service_tier,
+            request_usage_budget=None,
+        )
+        return await proxy_chat_to_omniroute(
+            request,
+            payload,
+            effective_model=effective_model,
+            api_key=api_key,
+            reservation=reservation,
+            rate_limit_headers=rate_limit_headers,
+            sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+            client=OmniRouteSidecarClient(omniroute_config),
         )
 
     try:

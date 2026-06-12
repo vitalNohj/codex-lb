@@ -235,6 +235,11 @@ const openrouterSidecarModels = [
   { id: "x-ai/grok-3", created: 138, ownedBy: "x-ai" },
 ];
 
+const omnirouteSidecarModels = [
+  { id: "omniroute/test-chat", created: 223, ownedBy: "omniroute" },
+  { id: "local/qwen-coder", created: 224, ownedBy: "local" },
+];
+
 function parseDateValue(value: string | null): number | null {
   if (!value) {
     return null;
@@ -1443,6 +1448,35 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/omniroute-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OmniRoute sidecar reachable",
+      baseUrl: "http://127.0.0.1:20128/v1",
+      modelCount: omnirouteSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/omniroute-sidecar/models", () => {
+    return HttpResponse.json({ models: omnirouteSidecarModels });
+  }),
+
+  http.post("*/api/omniroute-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OmniRoute sidecar reachable",
+      baseUrl: "http://127.0.0.1:20128/v1",
+      modelCount: omnirouteSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: omnirouteSidecarModels,
+    });
+  }),
+
   http.get("*/api/models", () => {
     return HttpResponse.json({
       models: [
@@ -1450,6 +1484,7 @@ export const handlers = [
         { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
         { id: "gpt-4o-mini", name: "GPT 4o Mini" },
         { id: "claude-sonnet", name: "Claude: claude-sonnet" },
+        { id: "omniroute/test-chat", name: "OmniRoute: omniroute/test-chat" },
       ],
     });
   }),

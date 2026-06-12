@@ -513,7 +513,7 @@ async def test_thread_goal_set_uses_active_account_when_budget_selection_is_empt
         (
             "/backend-api/codex/memories/trace_summarize",
             "memories/trace_summarize",
-            {"model": "gpt-5.1", "raw_memories": []},
+            {"model": "gpt-5.1", "traces": []},
         ),
         (
             "/backend-api/codex/safety/arc",
@@ -646,7 +646,7 @@ async def test_codex_trace_summarize_applies_composer_model_policy(async_client,
         headers={"Authorization": f"Bearer {key}"},
         json={
             "model": "gpt-5.5-low-fast",
-            "raw_memories": [{"id": "mem_1", "text": "Keep this"}],
+            "traces": [{"id": "mem_1", "text": "Keep this"}],
             "metadata": {"source": "cursor"},
         },
     )
@@ -654,7 +654,7 @@ async def test_codex_trace_summarize_applies_composer_model_policy(async_client,
     assert response.status_code == 200
     assert calls[0]["payload"] == {
         "model": "gpt-5.5",
-        "raw_memories": [{"id": "mem_1", "text": "Keep this"}],
+        "traces": [{"id": "mem_1", "text": "Keep this"}],
         "metadata": {"source": "cursor"},
         "reasoning": {"effort": "high"},
         "service_tier": "priority",
@@ -699,7 +699,7 @@ async def test_codex_trace_summarize_forwards_payload_without_model_unchanged(as
         )
 
     monkeypatch.setattr(proxy_module, "core_codex_control_request", fake_codex_control_request)
-    payload = {"raw_memories": [{"id": "mem_1", "text": "Keep this"}], "metadata": {"source": "cursor"}}
+    payload = {"traces": [{"id": "mem_1", "text": "Keep this"}], "metadata": {"source": "cursor"}}
 
     response = await async_client.post(
         "/backend-api/codex/memories/trace_summarize",

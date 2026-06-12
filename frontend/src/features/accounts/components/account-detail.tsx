@@ -159,8 +159,13 @@ export function AccountDetail({
 
 function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
   const isOpenRouter = account.provider === "openrouter";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : "CLIProxyAPI";
-  const settingsAnchor = isOpenRouter ? "/settings#openrouter-sidecar" : "/settings#claude-sidecar";
+  const isOmniRoute = account.provider === "omniroute";
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLIProxyAPI";
+  const settingsAnchor = isOpenRouter
+    ? "/settings#openrouter-sidecar"
+    : isOmniRoute
+      ? "/settings#omniroute-sidecar"
+      : "/settings#claude-sidecar";
   const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
   const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
@@ -170,7 +175,7 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
     : primaryRemaining !== null || secondaryRemaining !== null
       ? "Estimated"
       : "Unavailable";
-  const showQuotaUsage = !isOpenRouter;
+  const showQuotaUsage = !isOpenRouter && !isOmniRoute;
   return (
     <div
       key={account.accountId}
@@ -183,7 +188,11 @@ function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; bu
             {account.displayName}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {isOpenRouter ? "Read-only OpenRouter sidecar account" : "Read-only Claude sidecar account"}
+            {isOpenRouter
+              ? "Read-only OpenRouter sidecar account"
+              : isOmniRoute
+                ? "Read-only OmniRoute sidecar account"
+                : "Read-only Claude sidecar account"}
           </p>
         </div>
         <Badge variant="outline" className="border-violet-300 bg-violet-50 text-violet-700">

@@ -49,7 +49,7 @@ async def test_trace_summarize_normalizes_model_policy_fields() -> None:
         json.dumps(
             {
                 "model": "gpt-5.5-low-fast",
-                "raw_memories": [{"id": "mem_1", "text": "Keep this"}],
+                "traces": [{"id": "mem_1", "text": "Keep this"}],
                 "metadata": {"source": "cursor"},
             }
         ).encode("utf-8")
@@ -59,7 +59,7 @@ async def test_trace_summarize_normalizes_model_policy_fields() -> None:
 
     assert json.loads(body) == {
         "model": "gpt-5.5",
-        "raw_memories": [{"id": "mem_1", "text": "Keep this"}],
+        "traces": [{"id": "mem_1", "text": "Keep this"}],
         "metadata": {"source": "cursor"},
         "reasoning": {"effort": "high"},
         "service_tier": "priority",
@@ -68,7 +68,7 @@ async def test_trace_summarize_normalizes_model_policy_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_trace_summarize_without_model_preserves_original_body() -> None:
-    original = b'{"raw_memories":[{"id":"mem_1"}],"metadata":{"source":"cursor"}}'
+    original = b'{"traces":[{"id":"mem_1"}],"metadata":{"source":"cursor"}}'
     request = _request_with_body(original)
 
     body = await _trace_summarize_control_payload(request, _api_key())

@@ -10,6 +10,7 @@ from pydantic import (
     StrictStr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from app.core.types import JsonValue
@@ -115,15 +116,28 @@ class OpenAIResponsePayload(BaseModel):
 class CompactResponsePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    object: StrictStr
+    object: StrictStr | None = None
     id: StrictStr | None = None
     status: StrictStr | None = None
     error: OpenAIError | None = None
     usage: ResponseUsage | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_compact_shape(cls, value: ModelLikeInput) -> ModelLikeInput:
+        if not isinstance(value, dict):
+            return value
+        if value.get("object") is not None:
+            return value
+        if isinstance(value.get("output"), list):
+            return value
+        raise ValueError("Compact response payload requires an output array or compact object discriminator")
+
     @field_validator("object")
     @classmethod
-    def _validate_object(cls, value: str) -> str:
+    def _validate_object(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
             raise ValueError("Compact response payload requires an object discriminator")

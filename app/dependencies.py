@@ -18,6 +18,7 @@ from app.modules.audit.repository import AuditRepository
 from app.modules.audit.service import AuditLogsService
 from app.modules.claude_sidecar.service import ClaudeSidecarService
 from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
+from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.dashboard.repository import DashboardRepository
 from app.modules.dashboard.service import DashboardService
@@ -123,6 +124,13 @@ class OpenRouterSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OpenRouterSidecarService
+
+
+@dataclass(slots=True)
+class OmniRouteSidecarContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: OmniRouteSidecarService
 
 
 @dataclass(slots=True)
@@ -306,6 +314,14 @@ def get_openrouter_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OpenRouterSidecarService(settings_repository)
     return OpenRouterSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_omniroute_sidecar_context(
+    session: AsyncSession = Depends(get_session),
+) -> OmniRouteSidecarContext:
+    settings_repository = SettingsRepository(session)
+    service = OmniRouteSidecarService(settings_repository)
+    return OmniRouteSidecarContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_dashboard_context(

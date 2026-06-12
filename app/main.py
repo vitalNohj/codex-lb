@@ -50,6 +50,7 @@ from app.modules.api_keys.reset_scheduler import build_api_key_limit_reset_sched
 from app.modules.audit import api as audit_api
 from app.modules.claude_sidecar import api as claude_sidecar_api
 from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
+from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
@@ -400,6 +401,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_api.router)
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
+    app.include_router(omniroute_sidecar_api.router)
     app.include_router(usage_api.router)
     app.include_router(request_logs_api.router)
     app.include_router(quota_planner_api.router)

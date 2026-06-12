@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.exceptions import ClientPayloadError
+from app.core.openai.models import CompactResponsePayload
+from app.core.openai.parsing import parse_compact_response_payload
 from app.core.openai.requests import (
     ResponsesCompactRequest,
     ResponsesRequest,
@@ -69,6 +71,43 @@ def test_compact_store_false_is_preserved():
 
     assert request.store is False
     assert "store" not in request.to_payload()
+
+
+def test_compact_response_accepts_codex_output_only_shape():
+    payload = {
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Compacted"}],
+            },
+            {"type": "reasoning", "encrypted_content": "enc_compact_state"},
+        ]
+    }
+
+    parsed = CompactResponsePayload.model_validate(payload)
+
+    assert parsed.object is None
+    assert parsed.model_extra == payload
+
+
+def test_parse_compact_response_accepts_codex_output_only_shape():
+    payload = {"output": [{"type": "reasoning", "encrypted_content": "enc_compact_state"}]}
+
+    parsed = parse_compact_response_payload(payload)
+
+    assert parsed is not None
+    assert parsed.object is None
+    assert parsed.model_extra == payload
+
+
+def test_compact_response_still_accepts_object_discriminator_shape():
+    payload = {"object": "response.compaction", "output": []}
+
+    parsed = CompactResponsePayload.model_validate(payload)
+
+    assert parsed.object == "response.compaction"
+    assert parsed.model_extra == {"output": []}
 
 
 def test_known_unsupported_upstream_fields_are_stripped():

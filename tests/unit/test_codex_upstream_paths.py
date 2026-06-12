@@ -59,10 +59,10 @@ class _Response:
 class _CompactResponse:
     status_code = 200
     headers = {"content-type": "application/json"}
-    content = b'{"object": "response.compact", "id": "compact_1"}'
+    content = b'{"output": [{"type": "reasoning", "encrypted_content": "enc_compact"}]}'
 
-    def json(self) -> dict[str, str]:
-        return {"object": "response.compact", "id": "compact_1"}
+    def json(self) -> dict[str, list[dict[str, str]]]:
+        return {"output": [{"type": "reasoning", "encrypted_content": "enc_compact"}]}
 
 
 class _TranscribeResponse:
@@ -273,8 +273,8 @@ async def test_compact_responses_uses_codex_client_when_route_is_resolved(route:
         route_trace=trace,
     )
 
-    assert response.object == "response.compact"
-    assert response.id == "compact_1"
+    assert response.object is None
+    assert response.model_extra == {"output": [{"type": "reasoning", "encrypted_content": "enc_compact"}]}
     assert client.calls[0]["url"].endswith("/backend-api/codex/responses/compact")
     assert client.calls[0]["route"] is route
     assert client.calls[0]["json"]["model"] == "gpt-5.2"

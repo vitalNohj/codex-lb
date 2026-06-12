@@ -44,7 +44,8 @@ export function AccountListItem({
   const workspaceLabel = account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
   const isOpenRouter = account.provider === "openrouter";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : "CLIProxyAPI";
+  const isOmniRoute = account.provider === "omniroute";
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLIProxyAPI";
   const slotSubtitle = account.synthetic
     ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? sidecarLabel}`
     : `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;
@@ -81,7 +82,7 @@ export function AccountListItem({
     : primary !== null || secondary !== null
       ? "estimated"
       : "unavailable";
-  const showSidecarQuota = account.synthetic && !isOpenRouter;
+  const showSidecarQuota = account.synthetic && !isOpenRouter && !isOmniRoute;
 
   return (
     <button

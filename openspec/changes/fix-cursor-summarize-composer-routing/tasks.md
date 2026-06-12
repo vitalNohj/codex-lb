@@ -18,3 +18,13 @@
       pass-through.
 - [x] 2.3 Run targeted tests for the proxy API and request policy.
 - [x] 2.4 Run `ruff` and `openspec validate fix-cursor-summarize-composer-routing --strict`.
+
+## 3. Compact wire contract repair
+
+- [x] 3.1 Accept official Codex compact responses that contain an `output` array
+      without requiring an `object` discriminator.
+- [x] 3.2 Preserve output-only compact responses unchanged through the raw
+      upstream HTTP path.
+- [x] 3.3 Align trace summarize tests and specs with the official `traces` wire
+      field.
+- [ ] 3.4 Run targeted parser/proxy tests plus OpenSpec validation.

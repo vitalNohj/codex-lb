@@ -46,8 +46,8 @@ const PAGINATION_PROPS = {
   onOffsetChange: vi.fn(),
 };
 
-function openRequestDetails() {
-  fireEvent.click(screen.getByRole("button", { name: "View Details" }));
+function openRequestDetails(index = 0) {
+  fireEvent.click(screen.getAllByRole("button", { name: "View Details" })[index]);
   return screen.getByRole("dialog");
 }
 
@@ -168,10 +168,11 @@ describe("RecentRequestsTable", () => {
   });
 
 
-  it("labels claude sidecar rows with null account id", () => {
+  it("labels sidecar rows with null account id", () => {
     render(
       <RecentRequestsTable
         {...PAGINATION_PROPS}
+        total={2}
         accounts={[]}
         requests={[
           {
@@ -202,11 +203,40 @@ describe("RecentRequestsTable", () => {
             costBreakdown: null,
             latencyMs: 50,
           },
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: "OmniRoute Key",
+            apiKeyId: "key-omniroute",
+            requestId: "req-omniroute",
+            requestKind: "normal",
+            model: "omniroute/test-chat",
+            source: "omniroute_sidecar",
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 15,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            costUsd: 0,
+            costBreakdown: null,
+            latencyMs: 50,
+          },
         ]}
       />,
     );
 
     expect(screen.getAllByText("Claude sidecar").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OmniRoute sidecar").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Sidecar HTTP").length).toBeGreaterThan(0);
     const dialog = openRequestDetails();
     expect(within(dialog).getByText("Source")).toBeInTheDocument();

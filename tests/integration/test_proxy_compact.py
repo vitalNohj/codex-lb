@@ -272,7 +272,7 @@ async def test_proxy_compact_headers_include_monthly_only_credits(async_client, 
 
 
 @pytest.mark.asyncio
-async def test_proxy_compact_success_preserves_compaction_payload(async_client, monkeypatch):
+async def test_proxy_compact_success_preserves_codex_output_payload(async_client, monkeypatch):
     email = "compact-pass-through@example.com"
     raw_account_id = "acc_compact_pass_through"
     auth_json = _make_auth_json(raw_account_id, email)
@@ -283,11 +283,14 @@ async def test_proxy_compact_success_preserves_compaction_payload(async_client, 
     session = _JsonSession(
         _JsonResponse(
             {
-                "object": "response.compaction",
-                "compaction_summary": {
-                    "encrypted_content": "enc_compact_summary_1",
-                    "summary_text": "condensed thread state",
-                },
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "condensed thread state"}],
+                    },
+                    {"type": "reasoning", "encrypted_content": "enc_compact_summary_1"},
+                ],
             }
         )
     )
@@ -304,10 +307,15 @@ async def test_proxy_compact_success_preserves_compaction_payload(async_client, 
 
     assert response.status_code == 200
     body = response.json()
-    assert body["object"] == "response.compaction"
-    assert body["compaction_summary"] == {
-        "encrypted_content": "enc_compact_summary_1",
-        "summary_text": "condensed thread state",
+    assert body == {
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "condensed thread state"}],
+            },
+            {"type": "reasoning", "encrypted_content": "enc_compact_summary_1"},
+        ]
     }
     assert _session_call_url(session).endswith("/codex/responses/compact")
     call_json = _session_call_json(session)

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.dependencies import DashboardContext, get_dashboard_context
 from app.modules.dashboard.schemas import (
@@ -16,6 +17,7 @@ from app.modules.dashboard.schemas import (
 )
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
+from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 
 logger = logging.getLogger(__name__)
 
@@ -75,4 +77,15 @@ async def list_models() -> dict:
                 continue
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}"})
+    omniroute_config = await load_omniroute_sidecar_config()
+    if omniroute_config is not None and omniroute_config.enabled:
+        try:
+            await OmniRouteSidecarClient(omniroute_config).list_models_cached()
+        except Exception:
+            logger.warning("failed to refresh OmniRoute sidecar models for dashboard model list", exc_info=True)
+        for model_id in omniroute_config.selected_models:
+            if model_id in seen_model_ids:
+                continue
+            seen_model_ids.add(model_id)
+            models.append({"id": model_id, "name": f"OmniRoute: {model_id}"})
     return {"models": models}
