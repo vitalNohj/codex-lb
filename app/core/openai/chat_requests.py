@@ -20,6 +20,7 @@ from app.core.utils.json_guards import is_json_list, is_json_mapping
 
 _SUPPORTED_CHAT_ROLES = frozenset({"system", "developer", "user", "assistant", "tool"})
 _TEXT_CONTENT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
+_USER_TOOL_RESULT_CONTENT_PART_TYPES = frozenset({"tool_result"})
 
 
 def _content_parts(content: JsonValue) -> list[JsonValue]:
@@ -388,7 +389,18 @@ def _validate_user_content(content: JsonValue) -> None:
             if file_info is None:
                 raise ValueError("File content parts must include file metadata.")
             continue
+        if part_type in _USER_TOOL_RESULT_CONTENT_PART_TYPES:
+            _validate_user_tool_result_content_part(part_mapping)
+            continue
         raise ValueError(f"Unsupported user content part type: {part_type}")
+
+
+def _validate_user_tool_result_content_part(part: Mapping[str, JsonValue]) -> None:
+    tool_use_id = part.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        raise ValueError("Tool result content parts must include a string 'tool_use_id'.")
+    if "content" not in part:
+        raise ValueError("Tool result content parts must include 'content'.")
 
 
 def _validate_tool_message(message: Mapping[str, JsonValue]) -> None:

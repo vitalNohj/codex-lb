@@ -16,8 +16,15 @@ payload failures.
   - drop empty-content messages,
   - drop orphan `tool` messages whose `tool_call_id` is not referenced by a
     prior assistant `tool_calls` entry,
+  - drop orphan Cursor-native `tool_result` content parts embedded in `user`
+    messages when their `tool_use_id` is not referenced by a prior assistant
+    tool-use entry,
   - ensure the forwarded conversation ends with a `user` message by appending a
     minimal continuation user turn when the last message is `assistant`.
+- Accept Cursor-native `tool_result` user content parts at the chat request
+  parser so Claude sidecar-bound payloads can reach the sidecar sanitizer, and
+  normalize those parts into standard tool-output input items for the
+  non-sidecar Responses path.
 - Add unit tests at the sidecar dispatch path for the Cursor failure modes.
 
 ## Impact

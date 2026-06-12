@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import cast
 
@@ -17,6 +18,7 @@ from app.core.utils.json_guards import is_json_dict, is_json_list
 
 _SUPPORTED_MESSAGE_ROLES = frozenset({"system", "developer", "user", "assistant", "tool"})
 _TEXT_CONTENT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
+_USER_TOOL_RESULT_CONTENT_PART_TYPES = frozenset({"tool_result"})
 
 
 def _json_dict_or_none(value: JsonValue) -> dict[str, JsonValue] | None:
@@ -68,7 +70,7 @@ def coerce_messages(
             else:
                 input_messages.append(cast(JsonValue, _normalize_message_content(cast(OpenAIMessage, message_dict))))
             continue
-        input_messages.append(cast(JsonValue, _normalize_message_content(cast(OpenAIMessage, message_dict))))
+        input_messages.extend(_decompose_user_message(cast(OpenAIMessage, message_dict)))
     merged = _merge_instructions(existing_instructions, instruction_parts)
     return merged, input_messages
 
@@ -210,6 +212,72 @@ def _convert_tool_message(message: OpenAIMessage) -> FunctionCallOutputInputItem
             param="messages",
         )
     return FunctionCallOutputInputItem(type="function_call_output", call_id=resolved_call_id, output=output)
+
+
+def _decompose_user_message(message: OpenAIMessage) -> list[JsonValue]:
+    content = message.get("content")
+    content_dict = _json_dict_or_none(content)
+    if content_dict is not None and content_dict.get("type") in _USER_TOOL_RESULT_CONTENT_PART_TYPES:
+        return [cast(JsonValue, _convert_user_tool_result_part(content_dict))]
+    if not is_json_list(content):
+        return [cast(JsonValue, _normalize_message_content(message))]
+
+    message_parts: list[JsonValue] = []
+    items: list[JsonValue] = []
+    for part in _content_parts(content):
+        part_dict = _json_dict_or_none(part)
+        if part_dict is not None and part_dict.get("type") in _USER_TOOL_RESULT_CONTENT_PART_TYPES:
+            if message_parts:
+                items.append(_normalized_user_message_from_parts(message_parts))
+                message_parts = []
+            items.append(cast(JsonValue, _convert_user_tool_result_part(part_dict)))
+            continue
+        message_parts.append(part)
+    if message_parts:
+        items.append(_normalized_user_message_from_parts(message_parts))
+    return items
+
+
+def _normalized_user_message_from_parts(parts: list[JsonValue]) -> JsonValue:
+    return cast(
+        JsonValue,
+        _normalize_message_content(cast(OpenAIMessage, {"role": "user", "content": parts})),
+    )
+
+
+def _convert_user_tool_result_part(part: dict[str, JsonValue]) -> FunctionCallOutputInputItem:
+    tool_use_id = part.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        raise ClientPayloadError(
+            "tool_result content parts must include 'tool_use_id'.",
+            param="messages",
+        )
+    if "content" not in part:
+        raise ClientPayloadError(
+            "tool_result content parts must include 'content'.",
+            param="messages",
+        )
+    return FunctionCallOutputInputItem(
+        type="function_call_output",
+        call_id=tool_use_id,
+        output=_tool_result_output(part.get("content")),
+    )
+
+
+def _tool_result_output(content: JsonValue) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if is_json_list(content):
+        output = _concat_text_parts(content)
+        return output if output or not content else json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    content_dict = _json_dict_or_none(content)
+    if content_dict is not None:
+        text = content_dict.get("text")
+        if isinstance(text, str):
+            return text
+    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
 
 
 def _concat_text_parts(content: list[JsonValue]) -> str:
