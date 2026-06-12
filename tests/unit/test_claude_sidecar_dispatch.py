@@ -357,6 +357,8 @@ def test_sanitize_sidecar_chat_messages_drops_empty_messages() -> None:
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": ""},
             {"role": "user", "content": "   "},
+            {"role": "user", "content": [{"type": "input_text", "text": ""}]},
+            {"role": "user", "content": {"type": "input_text", "text": "   "}},
             {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
         ]
     }

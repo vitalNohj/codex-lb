@@ -298,6 +298,8 @@ def _sidecar_content_is_empty(content: JsonValue) -> bool:
         return True
     if isinstance(content, str):
         return not content.strip()
+    if is_json_mapping(content):
+        return _sidecar_content_part_is_empty(content)
     if isinstance(content, list):
         if not content:
             return True
@@ -312,7 +314,7 @@ def _sidecar_content_part_is_empty(part: JsonValue) -> bool:
         return False
     part_dict = cast(dict[str, JsonValue], part)
     part_type = part_dict.get("type")
-    if part_type == "text":
+    if part_type in {"text", "input_text", "output_text"}:
         text = part_dict.get("text")
         return not isinstance(text, str) or not text.strip()
     if part_type in {"tool_use", "tool_result", "image", "image_url", "input_image"}:

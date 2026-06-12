@@ -16,7 +16,7 @@ The service MUST forward the OpenAI-compatible chat-completions JSON payload to 
 #### Scenario: Sidecar payload drops empty messages
 
 - **GIVEN** `claude_sidecar_enabled=true`
-- **WHEN** a client sends `POST /v1/chat/completions` whose `messages` include empty-string or empty-content-array entries
+- **WHEN** a client sends `POST /v1/chat/completions` whose `messages` include empty-string, empty-content-array, or empty text-part entries
 - **THEN** the service forwards the request to the sidecar without those empty messages
 
 #### Scenario: Sidecar payload drops orphan tool results
