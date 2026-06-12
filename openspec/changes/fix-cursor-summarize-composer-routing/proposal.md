@@ -17,13 +17,14 @@ the Responses policy pipeline.
 ## What Changes
 
 - Normalize JSON payloads for `POST /backend-api/codex/memories/trace_summarize`
-  before forwarding them to the Codex control upstream.
+  before forwarding them to the Codex control upstream when the payload includes
+  a usable `model` field.
 - Apply the same model alias, API-key enforced model, enforced reasoning effort,
   unsupported reasoning-effort, service-tier, and model-access policy used by
   Composer/Responses requests, while preserving trace-summarize-specific fields.
 - Keep unrelated Codex control endpoints as raw pass-through routes.
-- Add integration coverage proving summarize payloads are rewritten and invalid
-  summarize payloads fail before upstream dispatch.
+- Add coverage proving summarize payloads with a model are rewritten and
+  summarize payloads without a model remain raw pass-through.
 
 ## Impact
 

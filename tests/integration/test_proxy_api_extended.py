@@ -665,23 +665,51 @@ async def test_codex_trace_summarize_applies_composer_model_policy(async_client,
 
 
 @pytest.mark.asyncio
-async def test_codex_trace_summarize_rejects_invalid_payload_before_upstream(async_client, monkeypatch):
+async def test_codex_trace_summarize_forwards_payload_without_model_unchanged(async_client, monkeypatch):
+    await _import_account(async_client, "acc_trace_summarize_nomodel", "trace-summarize-nomodel@example.com")
     calls = []
 
-    async def fake_codex_control_request(*args, **kwargs):
-        calls.append((args, kwargs))
-        raise AssertionError("invalid trace summarize payload must not reach upstream")
+    async def fake_codex_control_request(
+        path,
+        *,
+        method,
+        payload: bytes | None,
+        query_params,
+        headers,
+        access_token,
+        account_id,
+        timeout_seconds=None,
+        **_kwargs,
+    ):
+        calls.append(
+            {
+                "path": path,
+                "method": method,
+                "payload": json.loads(payload or b"{}"),
+                "query_params": dict(query_params),
+                "access_token": access_token,
+                "account_id": account_id,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return core_proxy.CodexControlResponse(
+            status_code=200,
+            body=json.dumps({"ok": True}).encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
 
     monkeypatch.setattr(proxy_module, "core_codex_control_request", fake_codex_control_request)
+    payload = {"raw_memories": [{"id": "mem_1", "text": "Keep this"}], "metadata": {"source": "cursor"}}
 
     response = await async_client.post(
         "/backend-api/codex/memories/trace_summarize",
-        json={"raw_memories": []},
+        json=payload,
     )
 
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_request_error"
-    assert calls == []
+    assert response.status_code == 200
+    assert calls[0]["payload"] == payload
+    assert calls[0]["path"] == "memories/trace_summarize"
+    assert calls[0]["account_id"] == "acc_trace_summarize_nomodel"
 
 
 @pytest.mark.asyncio

@@ -699,6 +699,47 @@ class DashboardSettings(Base):
     openrouter_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     openrouter_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     openrouter_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    omniroute_sidecar_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    omniroute_sidecar_base_url: Mapped[str] = mapped_column(
+        String,
+        default="http://127.0.0.1:20128/v1",
+        server_default=text("'http://127.0.0.1:20128/v1'"),
+        nullable=False,
+    )
+    omniroute_sidecar_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    omniroute_sidecar_selected_models_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
+    omniroute_sidecar_connect_timeout_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=8.0,
+        server_default=text("8.0"),
+        nullable=False,
+    )
+    omniroute_sidecar_request_timeout_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=600.0,
+        server_default=text("600.0"),
+        nullable=False,
+    )
+    omniroute_sidecar_models_cache_ttl_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=60.0,
+        server_default=text("60.0"),
+        nullable=False,
+    )
+    omniroute_sidecar_last_health_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    omniroute_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    omniroute_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    omniroute_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     warmup_model: Mapped[str] = mapped_column(
         String,
         default="gpt-5.4-mini",
