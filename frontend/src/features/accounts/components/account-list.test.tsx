@@ -582,6 +582,54 @@ describe("AccountList", () => {
     expect(screen.getByText("Weekly estimated")).toBeInTheDocument();
   });
 
+  it("omits provider badges and model rows for OpenRouter and OmniRoute synthetic items", () => {
+    render(
+      <AccountList
+        accounts={accountList([
+          {
+            accountId: "openrouter-sidecar",
+            email: "openrouter.local",
+            displayName: "OpenRouter",
+            planType: "openrouter",
+            status: "active",
+            synthetic: true,
+            readOnly: true,
+            kind: "sidecar",
+            provider: "openrouter",
+            baseUrl: "https://openrouter.ai/api/v1",
+            modelCount: 12,
+            limitWarmupEnabled: false,
+            additionalQuotas: [],
+          },
+          {
+            accountId: "omniroute-sidecar",
+            email: "omniroute.local",
+            displayName: "OmniRoute",
+            planType: "omniroute",
+            status: "active",
+            synthetic: true,
+            readOnly: true,
+            kind: "sidecar",
+            provider: "omniroute",
+            baseUrl: "http://127.0.0.1:20128/v1",
+            modelCount: 7,
+            limitWarmupEnabled: false,
+            additionalQuotas: [],
+          },
+        ])}
+        selectedAccountId={null}
+        onSelect={() => {}}
+        onOpenImport={() => {}}
+        onOpenOauth={() => {}}
+      />,
+    );
+
+    // Provider name appears once (the title), not duplicated as a badge.
+    expect(screen.getAllByText("OpenRouter")).toHaveLength(1);
+    expect(screen.getAllByText("OmniRoute")).toHaveLength(1);
+    expect(screen.queryByText("Models")).not.toBeInTheDocument();
+  });
+
   it("renders placeholder quota rows for synthetic sidecar accounts without usage yet", () => {
     render(
       <AccountList

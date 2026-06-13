@@ -1,4 +1,4 @@
-import { Bot, Flame, Shield, ShieldCheck } from "lucide-react";
+import { Flame, Shield, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -106,15 +106,6 @@ export function AccountListItem({
             {emailSubtitle ? <><span className={blurred ? "privacy-blur" : undefined}>{emailSubtitle}</span> | {slotSubtitle}{idSuffix}</> : <>{slotSubtitle}{idSuffix}</>}
           </p>
         </div>
-        {account.synthetic ? (
-          <Badge
-            variant="outline"
-            className="shrink-0 gap-1 border-violet-300 bg-violet-50 px-1.5 text-[11px] text-violet-700"
-          >
-            <Bot className="h-3 w-3" aria-hidden="true" />
-            {sidecarLabel}
-          </Badge>
-        ) : null}
         {showRoutingPolicy ? (
           <RoutingPolicyBadge
             policy={account.routingPolicy as AccountRoutingPolicy | undefined}
@@ -137,7 +128,7 @@ export function AccountListItem({
           </div>
           ) : null}
           <div className="flex items-center justify-between gap-2">
-            <span>Health</span>
+            <span>Connection</span>
             <span className="truncate font-medium text-foreground">{formatSlug(account.healthStatus ?? account.status)}</span>
           </div>
           {showSidecarQuota ? (
@@ -148,10 +139,12 @@ export function AccountListItem({
             </span>
           </div>
           ) : null}
+          {showSidecarQuota ? (
           <div className="flex items-center justify-between gap-2">
             <span>Models</span>
             <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
           </div>
+          ) : null}
         </div>
       ) : (
       <div

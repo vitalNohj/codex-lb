@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import type { DashboardSettings } from "@/features/settings/schemas";
+import { server } from "@/test/mocks/server";
 
 const BASE_SETTINGS: DashboardSettings = {
   stickyThreadsEnabled: false,
@@ -97,14 +99,36 @@ describe("OpenRouterSidecarSettings", () => {
     );
   });
 
-  it("renders a clickable test connection button", async () => {
+  it("does not render a manual Test connection button", () => {
+    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+  });
+
+  it("runs the connection test after a successful save", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
+    const testSpy = vi.fn();
+    server.use(
+      http.post("*/api/openrouter-sidecar/test", () => {
+        testSpy();
+        return HttpResponse.json({
+          enabled: true,
+          configured: true,
+          status: "healthy",
+          message: "OpenRouter sidecar reachable",
+          baseUrl: "https://openrouter.ai/api/v1",
+          modelCount: 0,
+          lastCheckedAt: "2026-01-01T00:00:00Z",
+          models: [],
+        });
+      }),
+    );
     renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    const testButton = screen.getByRole("button", { name: "Test connection" });
-    expect(testButton).toBeEnabled();
-    await user.click(testButton);
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
   });
 
   it("adds a provider prefix from popular models", async () => {

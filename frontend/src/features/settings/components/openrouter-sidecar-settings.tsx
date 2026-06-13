@@ -77,6 +77,7 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
     }
     await save(payload);
     setApiKey("");
+    await testMutation.mutateAsync().catch(() => null);
   };
 
   const addPrefix = (prefix: string) => {
@@ -207,20 +208,10 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
                 type="button"
                 size="sm"
                 className="h-8 text-xs"
-                disabled={busy || !formValid}
+                disabled={busy || !formValid || testMutation.isPending}
                 onClick={() => void saveConfig()}
               >
                 Save
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                disabled={busy || testMutation.isPending}
-                onClick={() => void testMutation.mutateAsync()}
-              >
-                Test connection
               </Button>
               <Button
                 type="button"
@@ -240,7 +231,7 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
           <p className="text-xs font-medium">Popular models</p>
           {modelRows.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Save API key and test connection to verify availability
+              Saving tests availability automatically; run a manual test from the Accounts tab if needed.
             </p>
           ) : null}
           <div className="flex flex-wrap gap-1.5">

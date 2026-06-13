@@ -794,7 +794,7 @@ export const handlers = [
     return HttpResponse.json(createOauthCompleteResponse());
   }),
 
-  http.get("/api/settings", () => {
+  http.get("*/api/settings", () => {
     return HttpResponse.json(state.settings);
   }),
 
@@ -1078,7 +1078,7 @@ export const handlers = [
     );
   }),
 
-  http.put("/api/settings", async ({ request }) => {
+  http.put("*/api/settings", async ({ request }) => {
     const payload = await parseJsonBody(request, SettingsPayloadSchema);
     if (!payload) {
       return HttpResponse.json(state.settings);
