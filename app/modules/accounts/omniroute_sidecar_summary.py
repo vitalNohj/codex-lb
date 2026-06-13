@@ -20,7 +20,11 @@ def build_omniroute_sidecar_summary(
         if settings.omniroute_sidecar_api_key_encrypted is None
         else "unknown"
     )
-    account_status = "active" if health_status == "healthy" else "paused"
+    enabled_and_configured = (
+        settings.omniroute_sidecar_enabled
+        and settings.omniroute_sidecar_api_key_encrypted is not None
+    )
+    account_status = "active" if enabled_and_configured else "paused"
 
     return AccountSummary(
         account_id="omniroute-sidecar",

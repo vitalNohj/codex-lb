@@ -66,7 +66,7 @@ def build_claude_sidecar_summary(
         account_id="claude-sidecar",
         email="cliproxyapi.local",
         alias=None,
-        display_name="Claude via CLIProxyAPI",
+        display_name="CLI Proxy API",
         workspace_id=None,
         workspace_label="External sidecar",
         seat_type="sidecar",

@@ -435,7 +435,7 @@ async def test_accounts_list_includes_read_only_claude_sidecar_synthetic_account
         None,
     )
     assert sidecar is not None
-    assert sidecar["displayName"] == "Claude via CLIProxyAPI"
+    assert sidecar["displayName"] == "CLI Proxy API"
     assert sidecar["email"] == "cliproxyapi.local"
     assert sidecar["kind"] == "sidecar"
     assert sidecar["provider"] == "claude"
