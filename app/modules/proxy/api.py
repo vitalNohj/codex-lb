@@ -1966,6 +1966,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                         "created": sidecar_model.created or created,
                         "owned_by": sidecar_model.owned_by or "openrouter",
                         "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
                     }
                 )
             )
@@ -1986,6 +1987,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                         "created": created_by_model.get(slug) or created,
                         "owned_by": "omniroute",
                         "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
                     }
                 )
             )
@@ -2120,7 +2122,7 @@ def _sidecar_model_list_fields(context_window: int = _SIDECAR_DEFAULT_CONTEXT_WI
     # Mirror the capability/context fields registry models expose so Cursor's
     # local-provider discovery can learn the context window and trigger its own
     # compaction. Sidecar models are not in the upstream registry, so they have
-    # no ``UpstreamModel`` to read these from; advertise the Claude window.
+    # no ``UpstreamModel`` to read these from; advertise a default window.
     return {
         "context_length": context_window,
         "contextLength": context_window,
