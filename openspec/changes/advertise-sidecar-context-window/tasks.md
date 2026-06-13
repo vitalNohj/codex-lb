@@ -6,6 +6,8 @@
 ## 2. Cover the regression
 
 - [x] 2.1 Extend the Claude, OpenRouter, and OmniRoute model-list integration tests to assert the sidecar entry exposes `context_length=200000` (and the capabilities mirror).
+- [x] 2.2 Add coverage proving Cursor-compatible chat-completions requests use the default API-key reservation instead of pre-reserving the full large prompt estimate.
+- [x] 2.3 Add coverage proving late Cursor-compatible context-limit stream errors are converted to synthetic usage instead of error chunks.
 
 ## 3. Validate the change
 

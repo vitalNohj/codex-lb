@@ -495,6 +495,109 @@ async def test_v1_chat_completions_cursor_context_limit_returns_usage_stream(asy
 
 
 @pytest.mark.asyncio
+async def test_v1_chat_completions_cursor_late_context_limit_returns_usage_stream(async_client, monkeypatch):
+    email = "chat-late-cursor-context@example.com"
+    raw_account_id = "acc_chat_late_cursor_context"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        yield 'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1"}}\n\n'
+        yield 'event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"resp_1"}}\n\n'
+        yield 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"starting"}\n\n'
+        yield (
+            'event: response.failed\ndata: {"type":"response.failed","response":{"id":"resp_1","error":'
+            '{"message":"Input token limit exceeded",'
+            '"type":"invalid_request_error","code":"context_length_exceeded","param":"input"}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [{"role": "user", "content": "too much context"}],
+        "stream": True,
+    }
+    resp = await async_client.post(
+        "/v1/chat/completions",
+        json=payload,
+        headers={"User-Agent": "Cursor/1.0"},
+    )
+
+    assert resp.status_code == 200
+    lines = [line for line in resp.text.splitlines() if line]
+    chunks = [json.loads(line[6:]) for line in lines if line.startswith("data: ") and line != "data: [DONE]"]
+
+    assert not any("error" in chunk for chunk in chunks)
+    assert chunks[-1]["choices"] == []
+    assert chunks[-1]["usage"] == {
+        "prompt_tokens": 1000000,
+        "completion_tokens": 0,
+        "total_tokens": 1000000,
+    }
+    assert lines[-1] == "data: [DONE]"
+
+
+@pytest.mark.asyncio
+async def test_v1_chat_completions_cursor_uses_default_api_key_reservation(async_client, monkeypatch):
+    observed = {}
+
+    async def fake_enforce_request_limits(api_key, *, request_model, request_service_tier, request_usage_budget=None):
+        observed["request_usage_budget"] = request_usage_budget
+        return None
+
+    monkeypatch.setattr(proxy_api, "_enforce_request_limits", fake_enforce_request_limits)
+
+    payload = {
+        "model": "gpt-5.5-extra",
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "x" * 10_000}],
+            }
+        ],
+        "stream": True,
+    }
+    resp = await async_client.post(
+        "/v1/chat/completions",
+        json=payload,
+        headers={"User-Agent": "Cursor/1.0"},
+    )
+
+    assert resp.status_code in {200, 502, 503}
+    assert observed["request_usage_budget"] is None
+
+
+@pytest.mark.asyncio
+async def test_v1_chat_completions_non_cursor_uses_estimated_api_key_reservation(async_client, monkeypatch):
+    observed = {}
+
+    async def fake_enforce_request_limits(api_key, *, request_model, request_service_tier, request_usage_budget=None):
+        observed["request_usage_budget"] = request_usage_budget
+        return None
+
+    monkeypatch.setattr(proxy_api, "_enforce_request_limits", fake_enforce_request_limits)
+
+    payload = {
+        "model": "gpt-5.5-extra",
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "x" * 10_000}],
+            }
+        ],
+        "stream": True,
+    }
+    resp = await async_client.post("/v1/chat/completions", json=payload)
+
+    assert resp.status_code in {200, 502, 503}
+    assert observed["request_usage_budget"] is not None
+    assert observed["request_usage_budget"].input_tokens is not None
+
+
+@pytest.mark.asyncio
 async def test_v1_chat_completions_cursor_context_limit_non_stream_returns_json(async_client, monkeypatch):
     email = "chat-startup-cursor-context-json@example.com"
     raw_account_id = "acc_chat_startup_cursor_context_json"
