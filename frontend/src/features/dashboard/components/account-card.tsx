@@ -222,20 +222,24 @@ function SyntheticAccountCard({
   account: AccountSummary;
   onAction?: (account: AccountSummary, action: AccountAction) => void;
 }) {
+  const blurred = usePrivacyStore((s) => s.blurred);
   const isOpenRouter = account.provider === "openrouter";
   const isOmniRoute = account.provider === "omniroute";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLIProxyAPI";
-  const showQuotaUsage = !isOpenRouter && !isOmniRoute;
+  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLI Proxy API";
+  const isClaude = !isOpenRouter && !isOmniRoute;
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
   const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
-  const usageSourceLabel = account.sidecarAuths?.some((auth) => auth.usageSource === "oauth_usage")
-    ? "OAuth"
-    : primaryRemaining !== null || secondaryRemaining !== null
-      ? "Estimated"
-      : "Unavailable";
+  const sidecarAuths = account.sidecarAuths ?? [];
+  const usageSourceLabel = (oauthSource: boolean, hasPercent: boolean): string =>
+    oauthSource ? "OAuth" : hasPercent ? "Estimated" : "Unavailable";
+  const aggregateUsageSourceLabel = usageSourceLabel(
+    sidecarAuths.some((auth) => auth.usageSource === "oauth_usage"),
+    primaryRemaining !== null || secondaryRemaining !== null,
+  );
+  const hasAggregateUsage = primaryRemaining !== null || secondaryRemaining !== null;
   return (
     <div className="card-hover rounded-xl border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
@@ -259,56 +263,82 @@ function SyntheticAccountCard({
         </div>
       </div>
 
-      {showQuotaUsage ? (
-      <div className="mt-3 space-y-2 rounded-lg border bg-muted/20 p-3">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium">Claude usage</span>
-          <Badge variant="outline" className="text-[11px]">{usageSourceLabel}</Badge>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <QuotaBar
-            label="5h"
-            percent={primaryRemaining}
-            resetLabel={formatQuotaResetLabel(account.resetAtPrimary ?? null)}
-          />
-          <QuotaBar
-            label="Weekly"
-            percent={secondaryRemaining}
-            resetLabel={formatQuotaResetLabel(account.resetAtSecondary ?? null)}
-          />
-        </div>
-      </div>
-      ) : null}
-
-      <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
-        <div className="flex items-center justify-between gap-2">
-          <span>Health</span>
-          <span className="truncate font-medium text-foreground">
-            {formatSlug(account.healthStatus ?? account.status)}
-          </span>
-        </div>
-        {showQuotaUsage ? (
-        <div className="flex items-center justify-between gap-2">
-          <span>Quota</span>
-          <span className="truncate font-medium text-foreground">
-            {formatSidecarQuotaLabel(account)}
-          </span>
-        </div>
-        ) : null}
-        <div className="flex items-center justify-between gap-2">
-          <span>Models</span>
-          <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
-        </div>
-        {requestCount !== null ? (
+      {isClaude ? (
+        sidecarAuths.length > 0 ? (
+          <div className="mt-3 space-y-3">
+            {sidecarAuths.map((auth, idx) => {
+              const authLabel = auth.email ?? auth.name;
+              const authUsageSource = usageSourceLabel(
+                auth.usageSource === "oauth_usage",
+                auth.primaryRemainingPercent !== null || auth.secondaryRemainingPercent !== null,
+              );
+              return (
+                <div key={`${auth.name}-${idx}`} className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate text-xs font-medium">
+                      <span className={blurred ? "privacy-blur" : undefined}>{authLabel}</span> Usage
+                    </span>
+                    <Badge variant="outline" className="shrink-0 text-[11px]">{authUsageSource}</Badge>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <QuotaBar
+                      label="5h"
+                      percent={auth.primaryRemainingPercent ?? null}
+                      resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
+                    />
+                    <QuotaBar
+                      label="Weekly"
+                      percent={auth.secondaryRemainingPercent ?? null}
+                      resetLabel={formatQuotaResetLabel(auth.resetAtSecondary ?? null)}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : hasAggregateUsage ? (
+          <div className="mt-3 space-y-2 rounded-lg border bg-muted/20 p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium">Claude Usage</span>
+              <Badge variant="outline" className="text-[11px]">{aggregateUsageSourceLabel}</Badge>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <QuotaBar
+                label="5h"
+                percent={primaryRemaining}
+                resetLabel={formatQuotaResetLabel(account.resetAtPrimary ?? null)}
+              />
+              <QuotaBar
+                label="Weekly"
+                percent={secondaryRemaining}
+                resetLabel={formatQuotaResetLabel(account.resetAtSecondary ?? null)}
+              />
+            </div>
+          </div>
+        ) : null
+      ) : (
+        <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
           <div className="flex items-center justify-between gap-2">
-            <span>Requests</span>
-            <span className="font-medium tabular-nums text-foreground">
-              {requestCount}
-              {totalTokens != null && totalTokens > 0 ? ` | ${totalTokens.toLocaleString()} tok` : ""}
+            <span>Health</span>
+            <span className="truncate font-medium text-foreground">
+              {formatSlug(account.healthStatus ?? account.status)}
             </span>
           </div>
-        ) : null}
-      </div>
+          <div className="flex items-center justify-between gap-2">
+            <span>Models</span>
+            <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
+          </div>
+          {requestCount !== null ? (
+            <div className="flex items-center justify-between gap-2">
+              <span>Requests</span>
+              <span className="font-medium tabular-nums text-foreground">
+                {requestCount}
+                {totalTokens != null && totalTokens > 0 ? ` | ${totalTokens.toLocaleString()} tok` : ""}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
         <Button
@@ -324,18 +354,4 @@ function SyntheticAccountCard({
       </div>
     </div>
   );
-}
-
-function formatSidecarQuotaLabel(account: AccountSummary): string {
-  const status = account.status;
-  if (status === "quota_exceeded") {
-    return `Exhausted — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
-  }
-  if (status === "rate_limited") {
-    return `Limited — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
-  }
-  if (status === "active") {
-    return "OK";
-  }
-  return "--";
 }

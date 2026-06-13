@@ -98,11 +98,11 @@ describe("AccountCard", () => {
     expect(screen.getByRole("button", { name: "Re-auth" })).toBeInTheDocument();
   });
 
-  it("renders synthetic claude sidecar account without warmup or credits", () => {
+  it("renders CLI Proxy API card with per-auth usage and no metadata rows", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
       email: "cliproxyapi.local",
-      displayName: "Claude via CLIProxyAPI",
+      displayName: "CLI Proxy API",
       planType: "claude",
       status: "rate_limited",
       synthetic: true,
@@ -120,6 +120,22 @@ describe("AccountCard", () => {
       remainingCreditsSecondary: null,
       creditsHas: null,
       creditsBalance: null,
+      sidecarAuths: [
+        {
+          name: "claude-1",
+          authIndex: "0",
+          email: "claude-one@example.com",
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 0,
+          failed: 0,
+          usageSource: "oauth_usage",
+          primaryRemainingPercent: 75,
+          secondaryRemainingPercent: 96,
+          resetAtPrimary: "2026-06-10T17:00:00+00:00",
+          resetAtSecondary: "2026-06-17T12:00:00+00:00",
+        },
+      ],
       requestUsage: {
         requestCount: 12,
         totalTokens: 5000,
@@ -130,22 +146,62 @@ describe("AccountCard", () => {
 
     render(<AccountCard account={account} />);
 
-    expect(screen.getByText("Claude via CLIProxyAPI")).toBeInTheDocument();
-    expect(screen.getByText("CLIProxyAPI")).toBeInTheDocument();
-    expect(screen.getByText("Claude usage")).toBeInTheDocument();
-    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getAllByText("CLI Proxy API").length).toBeGreaterThan(0);
+    expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/Usage/)).toBeInTheDocument();
+    expect(screen.getByText("OAuth")).toBeInTheDocument();
     expect(screen.getByText("5h")).toBeInTheDocument();
     expect(screen.getByText("Weekly")).toBeInTheDocument();
-    expect(screen.getByText(/Limited — resets/)).toBeInTheDocument();
+    expect(screen.queryByText("Health")).toBeNull();
+    expect(screen.queryByText("Quota")).toBeNull();
+    expect(screen.queryByText("Models")).toBeNull();
+    expect(screen.queryByText("Requests")).toBeNull();
     expect(screen.queryByRole("button", { name: /Warm-up/i })).toBeNull();
     expect(screen.queryByText("Credits:")).toBeNull();
   });
 
-  it("renders estimated quota bars for synthetic claude sidecar account", () => {
+  it("blurs the CLI Proxy API auth label when privacy mode is enabled", () => {
+    act(() => {
+      usePrivacyStore.setState({ blurred: true });
+    });
     const account = createAccountSummary({
       accountId: "claude-sidecar",
       email: "cliproxyapi.local",
-      displayName: "Claude via CLIProxyAPI",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+      sidecarAuths: [
+        {
+          name: "claude-1",
+          authIndex: "0",
+          email: "claude-one@example.com",
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 0,
+          failed: 0,
+          usageSource: "oauth_usage",
+          primaryRemainingPercent: 75,
+          secondaryRemainingPercent: 96,
+        },
+      ],
+    });
+
+    const { container } = render(<AccountCard account={account} />);
+
+    expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
+    expect(container.querySelector(".privacy-blur")).not.toBeNull();
+  });
+
+  it("renders a fallback Claude Usage panel when no auth accounts exist", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "CLI Proxy API",
       planType: "claude",
       status: "active",
       synthetic: true,
@@ -164,9 +220,39 @@ describe("AccountCard", () => {
 
     render(<AccountCard account={account} />);
 
-    expect(screen.getByText("Claude usage")).toBeInTheDocument();
+    expect(screen.getByText("Claude Usage")).toBeInTheDocument();
     expect(screen.getByText("Estimated")).toBeInTheDocument();
     expect(screen.getByText("5h")).toBeInTheDocument();
     expect(screen.getByText("Weekly")).toBeInTheDocument();
+  });
+
+  it("keeps metadata rows for OpenRouter and OmniRoute sidecar cards", () => {
+    const openRouter = createAccountSummary({
+      accountId: "openrouter-sidecar",
+      email: "openrouter.ai",
+      displayName: "OpenRouter",
+      planType: "openrouter",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "openrouter",
+      healthStatus: "healthy",
+      baseUrl: "https://openrouter.ai/api/v1",
+      modelCount: 3,
+      usage: null,
+      requestUsage: {
+        requestCount: 4,
+        totalTokens: 100,
+        cachedInputTokens: 0,
+        totalCostUsd: 0,
+      },
+    });
+
+    render(<AccountCard account={openRouter} />);
+
+    expect(screen.getByText("Health")).toBeInTheDocument();
+    expect(screen.getByText("Models")).toBeInTheDocument();
+    expect(screen.getByText("Requests")).toBeInTheDocument();
   });
 });
