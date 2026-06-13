@@ -69,7 +69,7 @@ describe("ClaudeSidecarSettings", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("switch", { name: "Enable Claude sidecar" }));
+    await user.click(screen.getByRole("switch", { name: "Enable CLI Proxy integration" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ claudeSidecarEnabled: true }));
 
     await user.clear(screen.getByLabelText(/Base URL/));
@@ -78,7 +78,7 @@ describe("ClaudeSidecarSettings", () => {
     await user.type(screen.getByLabelText(/API key/), "new-key");
     await user.clear(screen.getByLabelText(/Model prefixes/));
     await user.type(screen.getByLabelText(/Model prefixes/), "claude, anthropic");
-    await user.click(screen.getByRole("button", { name: "Save sidecar" }));
+    await user.click(screen.getByRole("button", { name: "Save", exact: true }));
 
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -98,7 +98,7 @@ describe("ClaudeSidecarSettings", () => {
 
     await user.clear(screen.getByLabelText(/Connect timeout/));
     await user.type(screen.getByLabelText(/Connect timeout/), "0");
-    expect(screen.getByRole("button", { name: "Save sidecar" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Test connection" })).toBeInTheDocument());
@@ -110,7 +110,7 @@ describe("ClaudeSidecarSettings", () => {
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.type(screen.getByLabelText(/Management key/), "mgmt-secret");
-    await user.click(screen.getByRole("button", { name: "Save sidecar" }));
+    await user.click(screen.getByRole("button", { name: "Save", exact: true }));
 
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({ claudeSidecarManagementKey: "mgmt-secret" }),
