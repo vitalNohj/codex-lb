@@ -128,3 +128,19 @@ These rules encode recurring review blockers observed across codex-lb PRs.
   behavior, external error envelopes, env-var semantics, and response-schema
   contracts. Update OpenSpec/context and tests together so docs cannot promise
   behavior the code does not implement.
+
+## Learned User Preferences
+
+- Prefer replacing visible "sidecar" labels with provider-specific text: "CLIProxyAPI Integration", "OpenRouter Integration", "OmniRoute Integration".
+- Dashboard account cards should show a cleaner interface: remove health/quota/models/requests metadata rows from the Claude card; remove model-count rows from OpenRouter/OmniRoute cards; remove duplicate sidecar-type badges.
+- Request Logs table should display sidecar rows like normal rows: no sidecar badge under Model, no "Sidecar HTTP" in Transport (just "HTTP").
+- Account column in Request Logs should show provider names without "sidecar": "CLIProxyAPI: <email>", "OpenRouter", "OmniRoute".
+- Settings UI sidecar sections should place the enable toggle above the explanation callout, not below it.
+
+## Learned Workspace Facts
+
+- codex-lb runs as a systemd user service (`systemctl --user restart codex-lb.service`). Backend code changes require a service restart to take effect.
+- Frontend build artifacts live in `app/static/` and are served by the FastAPI backend in production mode. The `/codex` API prefix is stripped by the reverse proxy (HTTPS on port 443).
+- Standard validation commands: `openspec validate --specs` for all specs; `openspec validate <change> --strict` for a specific change.
+- Testing commands: `uv run pytest <path>` for backend; `npx vitest run <path>` for frontend.
+- UI-only changes (layout, copy, visibility) can skip OpenSpec spec deltas when following an established precedent (e.g. OpenRouter settings refine declared no spec deltas).
