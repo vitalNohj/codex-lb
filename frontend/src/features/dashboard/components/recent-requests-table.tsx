@@ -54,11 +54,32 @@ const SIDECAR_SOURCE_LABELS: Record<string, string> = {
   omniroute_sidecar: "OmniRoute sidecar",
 };
 
+const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
+  claude_sidecar: "CLIProxyAPI",
+  openrouter_sidecar: "OpenRouter",
+  omniroute_sidecar: "OmniRoute",
+};
+
 function sidecarSourceLabel(source: string | null | undefined): string | null {
   if (!source) {
     return null;
   }
   return SIDECAR_SOURCE_LABELS[source] ?? null;
+}
+
+function sidecarAccountLabel(request: RequestLog): string | null {
+  const source = request.source;
+  if (!source) {
+    return null;
+  }
+  const providerLabel = SIDECAR_ACCOUNT_LABELS[source];
+  if (!providerLabel) {
+    return null;
+  }
+  if (source === "claude_sidecar" && request.sidecarAccountLabel) {
+    return `${providerLabel}: ${request.sidecarAccountLabel}`;
+  }
+  return providerLabel;
 }
 
 const TRANSPORT_CLASS_MAP: Record<string, string> = {
@@ -196,9 +217,8 @@ export function RecentRequestsTable({
           <TableBody>
             {requests.map((request) => {
               const time = formatTimeLong(request.requestedAt);
-              const sidecarLabel = sidecarSourceLabel(request.source);
-              const sidecarRequest = sidecarLabel !== null;
-              const accountLabel = sidecarRequest
+              const sidecarLabel = sidecarAccountLabel(request);
+              const accountLabel = sidecarLabel
                 ? sidecarLabel
                 : request.accountId
                 ? (accountLabelMap.get(request.accountId) ?? request.accountId)

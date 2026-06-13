@@ -172,7 +172,7 @@ describe("RecentRequestsTable", () => {
     render(
       <RecentRequestsTable
         {...PAGINATION_PROPS}
-        total={2}
+        total={3}
         accounts={[]}
         requests={[
           {
@@ -185,6 +185,36 @@ describe("RecentRequestsTable", () => {
             requestKind: "normal",
             model: "claude-sonnet",
             source: "claude_sidecar",
+            sidecarAccountLabel: "claude@example.com",
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 15,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            costUsd: 0,
+            costBreakdown: null,
+            latencyMs: 50,
+          },
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: "OpenRouter Key",
+            apiKeyId: "key-openrouter",
+            requestId: "req-openrouter",
+            requestKind: "normal",
+            model: "openrouter/test-chat",
+            source: "openrouter_sidecar",
+            sidecarAccountLabel: null,
             serviceTier: null,
             requestedServiceTier: null,
             actualServiceTier: null,
@@ -213,6 +243,7 @@ describe("RecentRequestsTable", () => {
             requestKind: "normal",
             model: "omniroute/test-chat",
             source: "omniroute_sidecar",
+            sidecarAccountLabel: null,
             serviceTier: null,
             requestedServiceTier: null,
             actualServiceTier: null,
@@ -238,16 +269,24 @@ describe("RecentRequestsTable", () => {
     const claudeRow = screen.getByText("claude-sonnet").closest("tr");
     expect(claudeRow).not.toBeNull();
     const claudeCells = within(claudeRow as HTMLElement).getAllByRole("cell");
-    expect(claudeCells[1]).toHaveTextContent("Claude sidecar");
+    expect(claudeCells[1]).toHaveTextContent("CLIProxyAPI: claude@example.com");
+    expect(claudeCells[1]).not.toHaveTextContent("Claude sidecar");
     expect(claudeCells[4]).toHaveTextContent("claude-sonnet");
     expect(claudeCells[4]).not.toHaveTextContent("Claude sidecar");
     expect(claudeCells[5]).toHaveTextContent("HTTP");
     expect(claudeCells[5]).not.toHaveTextContent("Sidecar HTTP");
 
+    const openRouterRow = screen.getByText("openrouter/test-chat").closest("tr");
+    expect(openRouterRow).not.toBeNull();
+    const openRouterCells = within(openRouterRow as HTMLElement).getAllByRole("cell");
+    expect(openRouterCells[1]).toHaveTextContent("OpenRouter");
+    expect(openRouterCells[1]).not.toHaveTextContent("OpenRouter sidecar");
+
     const omniRouteRow = screen.getByText("omniroute/test-chat").closest("tr");
     expect(omniRouteRow).not.toBeNull();
     const omniRouteCells = within(omniRouteRow as HTMLElement).getAllByRole("cell");
-    expect(omniRouteCells[1]).toHaveTextContent("OmniRoute sidecar");
+    expect(omniRouteCells[1]).toHaveTextContent("OmniRoute");
+    expect(omniRouteCells[1]).not.toHaveTextContent("OmniRoute sidecar");
     expect(omniRouteCells[4]).toHaveTextContent("omniroute/test-chat");
     expect(omniRouteCells[4]).not.toHaveTextContent("OmniRoute sidecar");
     expect(omniRouteCells[5]).toHaveTextContent("HTTP");

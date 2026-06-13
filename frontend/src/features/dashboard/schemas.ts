@@ -150,6 +150,7 @@ export const RequestLogSchema = z.object({
   requestKind: z.enum(["normal", "warmup", "limit_warmup"]).optional().default("normal"),
   model: z.string(),
   source: z.string().nullable().optional().default(null),
+  sidecarAccountLabel: z.string().nullable().optional().default(null),
   transport: z.string().nullable().optional().default(null),
   useragent: z.string().nullable().optional().default(null),
   useragentGroup: z.string().nullable().optional().default(null),

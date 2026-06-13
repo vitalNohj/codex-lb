@@ -14,7 +14,7 @@ from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
 from app.core.usage.types import BucketModelAggregate, RequestActivityAggregate
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, ApiKey, RequestKind, RequestLog
+from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
 from app.db.session import sqlite_writer_section
 
 
@@ -448,6 +448,27 @@ class RequestLogsRepository:
         result = await self._session.execute(select(ApiKey.id, ApiKey.name).where(ApiKey.id.in_(unique_ids)))
         return {key_id: name for key_id, name in result.all() if key_id and name}
 
+    async def get_claude_sidecar_account_labels_by_request_ids(
+        self,
+        request_ids: list[str],
+    ) -> dict[str, str]:
+        unique_ids = sorted({request_id for request_id in request_ids if request_id})
+        if not unique_ids:
+            return {}
+        result = await self._session.execute(
+            select(
+                ClaudeSidecarUsageEvent.request_id,
+                ClaudeSidecarUsageEvent.source,
+                ClaudeSidecarUsageEvent.auth_index,
+            ).where(ClaudeSidecarUsageEvent.request_id.in_(unique_ids))
+        )
+        labels: dict[str, str] = {}
+        for request_id, source, auth_index in result.all():
+            label = _sidecar_account_label(source, auth_index)
+            if request_id and label:
+                labels[request_id] = label
+        return labels
+
     async def get_api_key_details_by_ids(self, api_key_ids: list[str]) -> dict[str, tuple[str, str | None]]:
         unique_ids = sorted({key_id for key_id in api_key_ids if key_id})
         if not unique_ids:
@@ -564,3 +585,11 @@ async def _safe_rollback(session: AsyncSession) -> None:
             await session.rollback()
     except BaseException:
         return
+
+
+def _sidecar_account_label(source: str | None, auth_index: str | None) -> str | None:
+    if isinstance(source, str) and source.strip():
+        return source.strip()
+    if isinstance(auth_index, str) and auth_index.strip():
+        return f"auth {auth_index.strip()}"
+    return None
