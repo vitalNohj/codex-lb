@@ -55,6 +55,12 @@ function renderWithQueryClient(ui: React.ReactElement) {
 }
 
 describe("OmniRouteSidecarSettings", () => {
+  it("labels the section as the OmniRoute integration", () => {
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: "OmniRoute Integration" })).toBeInTheDocument();
+  });
+
   it("saves sidecar config and can clear a configured key", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);

@@ -53,6 +53,12 @@ function renderWithQueryClient(ui: React.ReactElement) {
 }
 
 describe("OpenRouterSidecarSettings", () => {
+  it("labels the section as the OpenRouter integration", () => {
+    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: "OpenRouter Integration" })).toBeInTheDocument();
+  });
+
   it("saves sidecar config and can clear a configured key", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);

@@ -106,7 +106,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
               <Route className="h-4 w-4 text-primary" aria-hidden="true" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">OmniRoute Sidecar</h3>
+              <h3 className="text-sm font-semibold">OmniRoute Integration</h3>
               <p className="text-xs text-muted-foreground">Route exact model IDs to OmniRoute.</p>
             </div>
           </div>
