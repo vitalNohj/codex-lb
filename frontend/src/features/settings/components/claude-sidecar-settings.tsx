@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -14,7 +13,6 @@ import type {
   DashboardSettings,
   SettingsUpdateRequest,
 } from "@/features/settings/schemas";
-import { formatDateTimeInline, formatSlug } from "@/utils/formatters";
 
 export type ClaudeSidecarSettingsProps = {
   settings: DashboardSettings;
@@ -67,7 +65,7 @@ function planDraftFromPlan(plan: ClaudeSidecarAuthPlan): PlanDraft {
 }
 
 export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarSettingsProps) {
-  const { statusQuery, modelsQuery, testMutation } = useClaudeSidecar();
+  const { testMutation } = useClaudeSidecar();
   const { quotaQuery } = useClaudeSidecarQuota();
   const sidecarEnabled = settings.claudeSidecarEnabled ?? false;
   const sidecarBaseUrl = settings.claudeSidecarBaseUrl ?? DEFAULT_BASE_URL;
@@ -104,13 +102,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
     parsedCacheTtl >= 0 &&
     Number.isFinite(parsedPollInterval) &&
     parsedPollInterval > 0;
-  const currentStatus = statusQuery.data?.status ?? settings.claudeSidecarLastHealthStatus ?? "disabled";
-  const currentMessage = statusQuery.data?.message ?? settings.claudeSidecarLastHealthMessage;
-  const lastChecked = statusQuery.data?.lastCheckedAt ?? settings.claudeSidecarLastCheckedAt;
-  const modelCount = statusQuery.data?.modelCount ?? settings.claudeSidecarLastModelCount;
-  const modelRows = modelsQuery.data?.models ?? [];
   const quota = quotaQuery.data;
-  const exceededCount = quota?.accounts.filter((acct) => acct.quotaExceeded).length ?? 0;
   const estimationRows = useMemo(() => Object.entries(planDrafts), [planDrafts]);
 
   useEffect(() => {
@@ -206,7 +198,6 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
               <p className="text-xs text-muted-foreground">Configure CLIProxyAPI for Claude chat-completions routing.</p>
             </div>
           </div>
-          <Badge variant="outline">{formatSlug(currentStatus)}</Badge>
         </div>
 
         <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
@@ -229,24 +220,50 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
           </div>
 
           <div className="space-y-3 p-3">
-            <div className="grid gap-2 sm:grid-cols-[1fr_14rem]">
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-base-url">
-                Base URL
-                <Input id="claude-sidecar-base-url" value={baseUrl} disabled={busy} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8317" className="h-8 text-xs" />
-                <span className="block font-normal text-muted-foreground">Example: http://127.0.0.1:8317</span>
-              </label>
+            <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-base-url">
+              Base URL
+              <Input id="claude-sidecar-base-url" value={baseUrl} disabled={busy} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8317" className="h-8 text-xs" />
+              <span className="block font-normal text-muted-foreground">Example: http://127.0.0.1:8317</span>
+            </label>
+            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_10rem]">
               <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-api-key">
                 API key
                 <Input id="claude-sidecar-api-key" value={apiKey} disabled={busy} type="password" onChange={(event) => setApiKey(event.target.value)} placeholder={sidecarApiKeyConfigured ? "Configured" : "Not configured"} className="h-8 text-xs" />
                 <span className="block font-normal text-muted-foreground">Saved keys are encrypted and never shown again.</span>
               </label>
+              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-management-key">
+                Management key
+                <Input
+                  id="claude-sidecar-management-key"
+                  type="password"
+                  value={managementKey}
+                  disabled={busy}
+                  onChange={(event) => setManagementKey(event.target.value)}
+                  placeholder={sidecarManagementKeyConfigured ? "Configured" : "Not configured"}
+                  className="h-8 text-xs"
+                />
+                <span className="block font-normal text-muted-foreground">Must match `remote-management.secret-key`.</span>
+              </label>
+              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-poll-interval">
+                Poll interval (s)
+                <Input
+                  id="claude-sidecar-poll-interval"
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={pollInterval}
+                  disabled={busy}
+                  onChange={(event) => setPollInterval(event.target.value)}
+                  className="h-8 text-xs"
+                />
+              </label>
             </div>
-            <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-prefixes">
-              Model prefixes
-              <Input id="claude-sidecar-prefixes" value={prefixes} disabled={busy} onChange={(event) => setPrefixes(event.target.value)} placeholder="claude" className="h-8 text-xs" />
-              <span className="block font-normal text-muted-foreground">Comma-separated prefixes, for example: claude, anthropic</span>
-            </label>
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-[1.6fr_1fr_1fr_1fr]">
+              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-prefixes">
+                Model prefixes
+                <Input id="claude-sidecar-prefixes" value={prefixes} disabled={busy} onChange={(event) => setPrefixes(event.target.value)} placeholder="claude" className="h-8 text-xs" />
+                <span className="block font-normal text-muted-foreground">Comma-separated, e.g. claude, anthropic</span>
+              </label>
               <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-connect-timeout">
                 Connect timeout
                 <Input id="claude-sidecar-connect-timeout" type="number" min={0.1} step={0.1} value={connectTimeout} disabled={busy} onChange={(event) => setConnectTimeout(event.target.value)} className="h-8 text-xs" />
@@ -270,47 +287,6 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
               <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy || !sidecarApiKeyConfigured} onClick={() => void save({ claudeSidecarClearApiKey: true })}>
                 Clear API key
               </Button>
-            </div>
-          </div>
-
-          <div className="space-y-3 p-3">
-            <div>
-              <p className="text-sm font-medium">Quota polling</p>
-              <p className="text-xs text-muted-foreground">
-                Codex-LB polls CLIProxyAPI's Management API to surface Claude rate-limit and quota state on the dashboard.
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-[1fr_14rem]">
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-management-key">
-                Management key
-                <Input
-                  id="claude-sidecar-management-key"
-                  type="password"
-                  value={managementKey}
-                  disabled={busy}
-                  onChange={(event) => setManagementKey(event.target.value)}
-                  placeholder={sidecarManagementKeyConfigured ? "Configured" : "Not configured"}
-                  className="h-8 text-xs"
-                />
-                <span className="block font-normal text-muted-foreground">
-                  Must match `remote-management.secret-key` in CLIProxyAPI's config.
-                </span>
-              </label>
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-poll-interval">
-                Poll interval (seconds)
-                <Input
-                  id="claude-sidecar-poll-interval"
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={pollInterval}
-                  disabled={busy}
-                  onChange={(event) => setPollInterval(event.target.value)}
-                  className="h-8 text-xs"
-                />
-              </label>
-            </div>
-            <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="sm"
@@ -322,23 +298,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
                 Clear management key
               </Button>
             </div>
-            {quota ? (
-              <div className="rounded-md border bg-muted/10 p-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">Quota status</span>
-                  <Badge variant="outline" className="text-[11px]">{formatSlug(quota.status)}</Badge>
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  {quota.checkedAt ? `Checked ${formatDateTimeInline(quota.checkedAt)}` : "Never checked"}
-                  {quota.accounts.length > 0
-                    ? ` | ${quota.accounts.length} auth${quota.accounts.length === 1 ? "" : "s"} | ${exceededCount} exhausted`
-                    : ""}
-                </div>
-                {quota.message ? (
-                  <div className="mt-1 text-muted-foreground">{quota.message}</div>
-                ) : null}
-              </div>
-            ) : null}
+
             <div className="space-y-3 rounded-md border bg-muted/10 p-3">
               <div>
                 <p className="text-sm font-medium">Quota estimation</p>
@@ -408,21 +368,6 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
             </div>
           </div>
         </div>
-
-        <div className="grid gap-3 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-3">
-          <div><span className="text-muted-foreground">Configured:</span> {sidecarApiKeyConfigured ? "yes" : "no"}</div>
-          <div><span className="text-muted-foreground">Models:</span> {modelCount ?? "--"}</div>
-          <div><span className="text-muted-foreground">Last check:</span> {lastChecked ? formatDateTimeInline(lastChecked) : "never"}</div>
-        </div>
-        {currentMessage ? <p className="text-xs text-muted-foreground">{currentMessage}</p> : null}
-        {modelRows.length > 0 ? (
-          <div className="space-y-2">
-            <p className="text-xs font-medium">Discovered models</p>
-            <div className="flex flex-wrap gap-1.5">
-              {modelRows.map((model) => <Badge key={model.id} variant="secondary" className="font-mono text-[11px]">{model.id}</Badge>)}
-            </div>
-          </div>
-        ) : null}
       </div>
     </section>
   );
