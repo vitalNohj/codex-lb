@@ -202,25 +202,25 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
           </div>
         </div>
 
+        <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+          <div>
+            <p className="text-sm font-medium">Enable CLI Proxy integration</p>
+            <p className="text-xs text-muted-foreground">When enabled, matching Claude model requests route to CLIProxyAPI.</p>
+          </div>
+          <Switch
+            aria-label="Enable CLI Proxy integration"
+            checked={sidecarEnabled}
+            disabled={busy}
+            onCheckedChange={(checked) => void save({ claudeSidecarEnabled: checked })}
+          />
+        </div>
+
         <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
           Run CLIProxyAPI separately, log in with `cli-proxy-api --claude-login`, then point codex-lb at its local base URL.
           Cursor should use a Claude custom model ID that starts with one of the configured prefixes.
         </div>
 
-        <div className="divide-y rounded-lg border">
-          <div className="flex items-center justify-between gap-4 p-3">
-            <div>
-              <p className="text-sm font-medium">Enable CLI Proxy integration</p>
-              <p className="text-xs text-muted-foreground">When enabled, matching Claude model requests route to CLIProxyAPI.</p>
-            </div>
-            <Switch
-              aria-label="Enable CLI Proxy integration"
-              checked={sidecarEnabled}
-              disabled={busy}
-              onCheckedChange={(checked) => void save({ claudeSidecarEnabled: checked })}
-            />
-          </div>
-
+        <div className="rounded-lg border">
           <div className="space-y-3 p-3">
             <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-base-url">
               Base URL
