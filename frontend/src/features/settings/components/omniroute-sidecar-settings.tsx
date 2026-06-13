@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, Route, X } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -9,7 +8,6 @@ import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { OmniRouteModelBrowser } from "@/features/settings/components/omniroute-model-browser";
 import { useOmniRouteSidecar } from "@/features/settings/hooks/use-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
-import { formatDateTimeInline, formatSlug } from "@/utils/formatters";
 
 export type OmniRouteSidecarSettingsProps = {
   settings: DashboardSettings;
@@ -34,7 +32,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
   const sidecarConnectTimeout = settings.omnirouteSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS;
   const sidecarRequestTimeout = settings.omnirouteSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS;
   const sidecarCacheTtl = settings.omnirouteSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS;
-  const { statusQuery, modelsQuery, testMutation } = useOmniRouteSidecar({
+  const { modelsQuery, testMutation } = useOmniRouteSidecar({
     modelsEnabled: sidecarEnabled && sidecarApiKeyConfigured,
   });
   const [baseUrl, setBaseUrl] = useState(sidecarBaseUrl);
@@ -57,10 +55,6 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
     parsedRequestTimeout > 0 &&
     Number.isFinite(parsedCacheTtl) &&
     parsedCacheTtl >= 0;
-  const currentStatus = statusQuery.data?.status ?? settings.omnirouteSidecarLastHealthStatus ?? "disabled";
-  const currentMessage = statusQuery.data?.message ?? settings.omnirouteSidecarLastHealthMessage;
-  const lastChecked = statusQuery.data?.lastCheckedAt ?? settings.omnirouteSidecarLastCheckedAt;
-  const modelCount = statusQuery.data?.modelCount ?? settings.omnirouteSidecarLastModelCount;
   const modelRows = modelsQuery.data?.models ?? [];
 
   const save = (patch: Partial<SettingsUpdateRequest>) => onSave(buildSettingsUpdateRequest(settings, patch));
@@ -117,8 +111,22 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
                 <ExternalLink className="size-3" aria-hidden="true" />
               </a>
             </Button>
-            <Badge variant="outline">{formatSlug(currentStatus)}</Badge>
           </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+          <div>
+            <p className="text-sm font-medium">Enable OmniRoute Integration</p>
+            <p className="text-xs text-muted-foreground">
+              When enabled, selected model IDs route to OmniRoute after Claude and OpenRouter checks.
+            </p>
+          </div>
+          <Switch
+            aria-label="Enable OmniRoute Integration"
+            checked={sidecarEnabled}
+            disabled={busy}
+            onCheckedChange={(checked) => void save({ omnirouteSidecarEnabled: checked })}
+          />
         </div>
 
         <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
@@ -126,23 +134,20 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
           codex-lb only routes requests whose effective model exactly matches one of those IDs.
         </div>
 
-        <div className="divide-y rounded-lg border">
-          <div className="flex items-center justify-between gap-4 p-3">
-            <div>
-              <p className="text-sm font-medium">Enable OmniRoute sidecar</p>
-              <p className="text-xs text-muted-foreground">
-                When enabled, selected model IDs route to OmniRoute after Claude and OpenRouter checks.
-              </p>
-            </div>
-            <Switch
-              aria-label="Enable OmniRoute sidecar"
-              checked={sidecarEnabled}
-              disabled={busy}
-              onCheckedChange={(checked) => void save({ omnirouteSidecarEnabled: checked })}
-            />
-          </div>
-
+        <div className="rounded-lg border">
           <div className="space-y-3 p-3">
+            <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-base-url">
+              Base URL
+              <Input
+                id="omniroute-sidecar-base-url"
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder={DEFAULT_BASE_URL}
+                disabled={busy}
+                className="h-8 text-xs"
+              />
+            </label>
+
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-api-key">
                 API key
@@ -212,52 +217,41 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
               <p className="text-xs text-muted-foreground">No selected models yet.</p>
             )}
 
-            <details className="rounded-md border bg-muted/10 p-2">
-              <summary className="cursor-pointer text-xs font-medium">Advanced</summary>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-base-url">
-                  Base URL
-                  <Input
-                    id="omniroute-sidecar-base-url"
-                    value={baseUrl}
-                    onChange={(event) => setBaseUrl(event.target.value)}
-                    placeholder={DEFAULT_BASE_URL}
-                    disabled={busy}
-                    className="h-8 text-xs"
-                  />
-                </label>
-                <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-connect-timeout">
-                  Connect timeout (s)
-                  <Input
-                    id="omniroute-sidecar-connect-timeout"
-                    value={connectTimeout}
-                    onChange={(event) => setConnectTimeout(event.target.value)}
-                    disabled={busy}
-                    className="h-8 text-xs"
-                  />
-                </label>
-                <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-request-timeout">
-                  Request timeout (s)
-                  <Input
-                    id="omniroute-sidecar-request-timeout"
-                    value={requestTimeout}
-                    onChange={(event) => setRequestTimeout(event.target.value)}
-                    disabled={busy}
-                    className="h-8 text-xs"
-                  />
-                </label>
-                <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-cache-ttl">
-                  Models cache TTL (s)
-                  <Input
-                    id="omniroute-sidecar-cache-ttl"
-                    value={cacheTtl}
-                    onChange={(event) => setCacheTtl(event.target.value)}
-                    disabled={busy}
-                    className="h-8 text-xs"
-                  />
-                </label>
-              </div>
-            </details>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-connect-timeout">
+                Connect timeout (s)
+                <Input
+                  id="omniroute-sidecar-connect-timeout"
+                  type="number"
+                  value={connectTimeout}
+                  onChange={(event) => setConnectTimeout(event.target.value)}
+                  disabled={busy}
+                  className="h-8 text-xs"
+                />
+              </label>
+              <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-request-timeout">
+                Request timeout (s)
+                <Input
+                  id="omniroute-sidecar-request-timeout"
+                  type="number"
+                  value={requestTimeout}
+                  onChange={(event) => setRequestTimeout(event.target.value)}
+                  disabled={busy}
+                  className="h-8 text-xs"
+                />
+              </label>
+              <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-cache-ttl">
+                Model cache TTL (s)
+                <Input
+                  id="omniroute-sidecar-cache-ttl"
+                  type="number"
+                  value={cacheTtl}
+                  onChange={(event) => setCacheTtl(event.target.value)}
+                  disabled={busy}
+                  className="h-8 text-xs"
+                />
+              </label>
+            </div>
 
             <div className="flex flex-wrap gap-2">
               <Button
@@ -267,7 +261,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
                 disabled={busy || !formValid}
                 onClick={() => void saveConfig()}
               >
-                Save OmniRoute settings
+                Save
               </Button>
               <Button
                 type="button"
@@ -279,35 +273,19 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
               >
                 Test connection
               </Button>
-              {sidecarApiKeyConfigured ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-8 text-xs"
-                  disabled={busy}
-                  onClick={() => void save({ omnirouteSidecarClearApiKey: true })}
-                >
-                  Clear API key
-                </Button>
-              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={busy || !sidecarApiKeyConfigured}
+                onClick={() => void save({ omnirouteSidecarClearApiKey: true })}
+              >
+                Clear API key
+              </Button>
             </div>
           </div>
         </div>
-
-        <div className="grid gap-3 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-3">
-          <div>
-            <span className="text-muted-foreground">Configured:</span> {sidecarApiKeyConfigured ? "yes" : "no"}
-          </div>
-          <div>
-            <span className="text-muted-foreground">Models:</span> {modelCount ?? "--"}
-          </div>
-          <div>
-            <span className="text-muted-foreground">Last check:</span>{" "}
-            {lastChecked ? formatDateTimeInline(lastChecked) : "never"}
-          </div>
-        </div>
-        {currentMessage ? <p className="text-xs text-muted-foreground">{currentMessage}</p> : null}
 
         <OmniRouteModelBrowser
           models={modelRows}

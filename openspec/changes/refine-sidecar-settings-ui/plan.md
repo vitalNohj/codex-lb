@@ -15,14 +15,14 @@
 
 ## Phase 1: OpenRouter Sidecar
 
-**What this phase achieves:** The OpenRouter settings card gets the same compact layout as the Claude card. 4 files change: the component, its test, and the two files where imports are unused afterward.
+**What this phase achieves:** The OpenRouter settings card gets the same compact layout as the Claude card. 2 files change: the component and its test.
 
 ### Step 1.1 — Update user-visible label strings
 
 - [ ] Open `frontend/src/features/settings/components/openrouter-sidecar-settings.tsx`
 - [ ] Line 103: change heading `<h3>OpenRouter Integration</h3>` — keep this, no "sidecar"
-- [ ] Line 107: delete the `<Badge>` line with `{formatSlug(currentStatus)}` and its wrapping `</div>`
-- [ ] Line 107: after removing the badge line, the JSX structure changes from `<div className="flex items-center justify-between gap-3"><div className="flex..."><div>...heading...</div></div><Badge.../></div>` to `<div className="flex items-center gap-2.5"><div>...heading...</div></div>`. Remove the `justify-between` wrapper — make the header `div` just `flex items-center gap-2.5` with no right-aligned content. (Remove the outer `div` that says `flex items-center justify-between gap-3`; keep only the inner `div flex items-center gap-2.5`.)
+- [ ] Line 107: delete the `<Badge>` line with `{formatSlug(currentStatus)}`
+- [ ] Line 107: after removing the badge line, simplify the header wrapper so the icon/title row is just `<div className="flex items-center gap-2.5">...</div>` with no empty right-aligned content.
 - [ ] Line 119: change "Enable OpenRouter sidecar" to "Enable OpenRouter Integration" (the `<p>` label)
 - [ ] Line 120-122: change subtitle text
 - [ ] Line 125: change `aria-label="Enable OpenRouter sidecar"` to `aria-label="Enable OpenRouter Integration"`
@@ -79,11 +79,10 @@
 
 - [ ] Open `frontend/src/features/settings/components/omniroute-sidecar-settings.tsx`
 - [ ] Line 120: delete the `<Badge>` line with `{formatSlug(currentStatus)}`
-- [ ] The header area now just has the icon + heading + "Open OmniRoute" link button. Keep the link button. Remove the wrapping `justify-between` so it reads: `<div className="flex items-center gap-2.5">...</div>` followed by the link button.
+- [ ] The header area now has the icon + heading on the left and the "Open OmniRoute" link button on the right. Keep the outer `justify-between` wrapper because the link should remain right-aligned.
 - [ ] Line 132: change "Enable OmniRoute sidecar" to "Enable OmniRoute Integration" (the `<p>` label)
 - [ ] Line 138: change `aria-label="Enable OmniRoute sidecar"` to `aria-label="Enable OmniRoute Integration"`
 - [ ] Line 270: change button text "Save OmniRoute settings" to "Save"
-- [ ] Line 112: the test assertion for current status message searches for "OmniRoute sidecar reachable" — after removing the status message display this test expectation will break, so remove it. Delete line 112.
 - [ ] Delete `formatSlug` import if unused; keep `formatDateTimeInline` if used only in the health strip (check: if the health strip is removed, delete the import too)
 
 ### Step 2.2 — Remove bottom health strip and status message
@@ -121,8 +120,8 @@
 - [ ] Line 69: change `name: "Enable OmniRoute sidecar"` to `name: "Enable OmniRoute Integration"`
 - [ ] Line 73: change `name: "Save OmniRoute settings"` to `name: /^Save$/`
 - [ ] Line 95: same replacement
-- [ ] Delete the entire test `"tests the connection"` (lines 106-113) — it asserts `screen.findByText(/OmniRoute sidecar reachable/)` which no longer renders
-- [ ] Re-number the last test's `it(...)` to `it("opens the OmniRoute link in a new tab"...` (it will be the 4th test, change the test count from 5 to 4)
+- [ ] Keep a `"tests the connection"` test, but change it to assert that the `Test connection` button is enabled and clickable. Do not assert on `OmniRoute sidecar reachable` because that message no longer renders.
+- [ ] Keep the last test `it("opens the OmniRoute link in a new tab"...` unchanged except for any line-number drift.
 - [ ] Run tests: `npx vitest run src/features/settings/components/omniroute-sidecar-settings.test.tsx` — all must pass
 
 ## Phase 3: Final verification

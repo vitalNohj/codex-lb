@@ -61,16 +61,16 @@ describe("OmniRouteSidecarSettings", () => {
     expect(screen.getByRole("heading", { name: "OmniRoute Integration" })).toBeInTheDocument();
   });
 
-  it("saves sidecar config and can clear a configured key", async () => {
+  it("saves integration config and can clear a configured key", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("switch", { name: "Enable OmniRoute sidecar" }));
+    await user.click(screen.getByRole("switch", { name: "Enable OmniRoute Integration" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ omnirouteSidecarEnabled: true }));
 
     await user.type(screen.getByLabelText(/API key/), "new-key");
-    await user.click(screen.getByRole("button", { name: "Save OmniRoute settings" }));
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -92,7 +92,7 @@ describe("OmniRouteSidecarSettings", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByText("manual/model")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Save OmniRoute settings" }));
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({
         omnirouteSidecarSelectedModels: ["omniroute/test-chat", "manual/model"],
@@ -108,8 +108,9 @@ describe("OmniRouteSidecarSettings", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("button", { name: "Test connection" }));
-    expect(await screen.findByText(/OmniRoute sidecar reachable/)).toBeInTheDocument();
+    const testButton = screen.getByRole("button", { name: "Test connection" });
+    expect(testButton).toBeEnabled();
+    await user.click(testButton);
   });
 
   it("opens the OmniRoute link in a new tab", () => {
