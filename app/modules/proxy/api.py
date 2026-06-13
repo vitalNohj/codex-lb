@@ -2239,6 +2239,7 @@ async def v1_chat_completions(
             rate_limit_headers=rate_limit_headers,
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
             client=OpenRouterSidecarClient(openrouter_config),
+            cursor_compat=cursor_compat_client,
         )
 
     omniroute_config = await load_omniroute_sidecar_config()
@@ -2258,6 +2259,7 @@ async def v1_chat_completions(
             rate_limit_headers=rate_limit_headers,
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
             client=OmniRouteSidecarClient(omniroute_config),
+            cursor_compat=cursor_compat_client,
         )
 
     try:

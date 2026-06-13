@@ -34,6 +34,10 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     ensure_stream_usage_requested,
     extract_usage,
 )
+from app.modules.proxy.cursor_chat_compat import (
+    apply_cursor_usage_fallback_to_response,
+    stream_bytes_with_cursor_usage_fallback,
+)
 from app.modules.proxy.omniroute_responses_dispatch import (
     ResponsesStreamSynthesizer,
     omniroute_chat_to_responses_result,
@@ -121,21 +125,29 @@ async def proxy_chat_to_omniroute(
     rate_limit_headers: Mapping[str, str],
     sse_keepalive_interval_seconds: float,
     client: OmniRouteSidecarClient,
+    cursor_compat: bool = False,
 ) -> Response:
     sidecar_payload = build_omniroute_chat_payload(payload, effective_model)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
+        stream: AsyncIterator[bytes] = _omniroute_stream_iterator(
+            sidecar_payload.body,
+            api_key=api_key,
+            reservation=reservation,
+            model=effective_model,
+            started_at=requested_at,
+            client=client,
+        )
+        if cursor_compat:
+            stream = stream_bytes_with_cursor_usage_fallback(
+                stream,
+                payload,
+                source="omniroute_sidecar_stream",
+            )
         return StreamingResponse(
             inject_sse_keepalives(
-                _omniroute_stream_iterator(
-                    sidecar_payload.body,
-                    api_key=api_key,
-                    reservation=reservation,
-                    model=effective_model,
-                    started_at=requested_at,
-                    client=client,
-                ),
+                stream,
                 sse_keepalive_interval_seconds,
             ),
             media_type="text/event-stream",
@@ -193,6 +205,12 @@ async def proxy_chat_to_omniroute(
         status="success",
         usage=usage,
     )
+    if cursor_compat and is_json_mapping(response_body):
+        response_body = apply_cursor_usage_fallback_to_response(
+            cast(dict[str, JsonValue], response_body),
+            payload,
+            source="omniroute_sidecar_non_stream",
+        )
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
 
 

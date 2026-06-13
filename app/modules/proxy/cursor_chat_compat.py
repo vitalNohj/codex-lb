@@ -156,38 +156,30 @@ async def stream_with_cursor_usage_fallback(
     stream: AsyncIterator[str],
     payload: ChatCompletionsRequest,
 ) -> AsyncIterator[str]:
-    prompt_tokens = estimate_cursor_prompt_tokens(payload)
-    completion_chars = 0
+    rewriter = CursorChatSseCompatRewriter(payload, source="stream")
     async for line in stream:
-        parsed = parse_chat_completion_sse(line)
-        if parsed is None:
-            yield line
-            continue
-        if is_context_length_error_envelope(parsed):
-            logger.info(
-                "cursor_context_limit_fallback source=stream_error model=%s",
-                payload.model,
-            )
-            for chunk in cursor_context_limit_usage_sse_chunks(payload):
-                yield chunk.decode("utf-8")
+        for chunk in rewriter.feed(line.encode("utf-8")):
+            yield chunk.decode("utf-8")
+        if rewriter.terminated:
             return
-        completion_chars += chat_completion_delta_chars(parsed)
-        if is_chat_completion_usage_chunk(parsed) and needs_cursor_usage_fallback(parsed.get("usage")):
-            completion_tokens = max(1, estimate_tokens_from_chars(completion_chars))
-            parsed["usage"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            }
-            logger.info(
-                "cursor_usage_fallback source=stream model=%s prompt_tokens=%s completion_tokens=%s",
-                payload.model,
-                prompt_tokens,
-                completion_tokens,
-            )
-            yield f"data: {json.dumps(parsed, separators=(',', ':'))}\n\n"
-            continue
-        yield line
+    for chunk in rewriter.flush():
+        yield chunk.decode("utf-8")
+
+
+async def stream_bytes_with_cursor_usage_fallback(
+    stream: AsyncIterator[bytes],
+    payload: ChatCompletionsRequest,
+    *,
+    source: str = "stream_bytes",
+) -> AsyncIterator[bytes]:
+    rewriter = CursorChatSseCompatRewriter(payload, source=source)
+    async for chunk in stream:
+        for rewritten_chunk in rewriter.feed(chunk):
+            yield rewritten_chunk
+        if rewriter.terminated:
+            return
+    for rewritten_chunk in rewriter.flush():
+        yield rewritten_chunk
 
 
 def apply_cursor_usage_fallback(
@@ -241,30 +233,34 @@ def apply_cursor_usage_fallback_to_response(
     return response_body
 
 
-class SidecarSseCursorUsageRewriter:
-    def __init__(self, payload: ChatCompletionsRequest) -> None:
+class CursorChatSseCompatRewriter:
+    def __init__(self, payload: ChatCompletionsRequest, *, source: str = "stream_bytes") -> None:
         self._payload = payload
+        self._source = source
         self._prompt_tokens = estimate_cursor_prompt_tokens(payload)
         self._completion_chars = 0
         self._buffer = ""
         self._usage_emitted = False
+        self.terminated = False
 
     def feed(self, chunk: bytes) -> list[bytes]:
+        if self.terminated:
+            return []
         self._buffer += chunk.decode("utf-8", errors="ignore")
         outputs: list[bytes] = []
-        while "\n\n" in self._buffer:
+        while "\n\n" in self._buffer and not self.terminated:
             raw_event, self._buffer = self._buffer.split("\n\n", 1)
-            outputs.append(self._rewrite_event(raw_event))
+            outputs.extend(self._rewrite_event(raw_event))
         return outputs
 
     def flush(self) -> list[bytes]:
-        if not self._buffer:
+        if self.terminated or not self._buffer:
             return []
         pending = self._rewrite_event(self._buffer)
         self._buffer = ""
-        return [pending]
+        return pending
 
-    def _rewrite_event(self, raw_event: str) -> bytes:
+    def _rewrite_event(self, raw_event: str) -> list[bytes]:
         data_lines: list[str] = []
         prefix_lines: list[str] = []
         for raw_line in raw_event.splitlines():
@@ -278,23 +274,34 @@ class SidecarSseCursorUsageRewriter:
             data_lines.append(value[1:] if value.startswith(" ") else value)
 
         if not data_lines:
-            return (raw_event + "\n\n").encode("utf-8")
+            return [_sse_event_bytes(raw_event)]
 
         data = "\n".join(data_lines)
         if data.strip() == "[DONE]":
             if not self._usage_emitted:
-                return self._build_fallback_usage_chunk() + (raw_event + "\n\n").encode("utf-8")
-            return (raw_event + "\n\n").encode("utf-8")
+                self._usage_emitted = True
+                return [self._build_fallback_usage_chunk(), _sse_event_bytes(raw_event)]
+            return [_sse_event_bytes(raw_event)]
 
         try:
             parsed = json.loads(data)
         except json.JSONDecodeError:
-            return (raw_event + "\n\n").encode("utf-8")
+            return [_sse_event_bytes(raw_event)]
 
         if not is_json_mapping(parsed):
-            return (raw_event + "\n\n").encode("utf-8")
+            return [_sse_event_bytes(raw_event)]
 
         payload_dict = cast(dict[str, JsonValue], parsed)
+        if is_context_length_error_envelope(payload_dict):
+            logger.info(
+                "cursor_context_limit_fallback source=%s model=%s",
+                self._source,
+                self._payload.model,
+            )
+            self.terminated = True
+            self._buffer = ""
+            return cursor_context_limit_usage_sse_chunks(self._payload)
+
         self._completion_chars += chat_completion_delta_chars(payload_dict)
         if is_chat_completion_usage_chunk(payload_dict):
             self._usage_emitted = True
@@ -306,16 +313,17 @@ class SidecarSseCursorUsageRewriter:
                     "total_tokens": self._prompt_tokens + completion_tokens,
                 }
                 logger.info(
-                    "cursor_usage_fallback source=sidecar_stream model=%s prompt_tokens=%s completion_tokens=%s",
+                    "cursor_usage_fallback source=%s model=%s prompt_tokens=%s completion_tokens=%s",
+                    self._source,
                     self._payload.model,
                     self._prompt_tokens,
                     completion_tokens,
                 )
                 rewritten_data = json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
                 lines = [*prefix_lines, f"data: {rewritten_data}"]
-                return ("\n".join(lines) + "\n\n").encode("utf-8")
+                return [_sse_event_bytes("\n".join(lines))]
 
-        return (raw_event + "\n\n").encode("utf-8")
+        return [_sse_event_bytes(raw_event)]
 
     def _build_fallback_usage_chunk(self) -> bytes:
         completion_tokens = max(1, estimate_tokens_from_chars(self._completion_chars))
@@ -330,13 +338,18 @@ class SidecarSseCursorUsageRewriter:
             },
         }
         logger.info(
-            "cursor_usage_fallback source=sidecar_stream_synthetic model=%s prompt_tokens=%s completion_tokens=%s",
+            "cursor_usage_fallback source=%s_synthetic model=%s prompt_tokens=%s completion_tokens=%s",
+            self._source,
             self._payload.model,
             self._prompt_tokens,
             completion_tokens,
         )
         rewritten_data = json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
         return f"data: {rewritten_data}\n\n".encode("utf-8")
+
+
+def _sse_event_bytes(raw_event: str) -> bytes:
+    return (raw_event + "\n\n").encode("utf-8")
 
 
 def is_chat_completion_usage_chunk(payload: dict[str, JsonValue]) -> bool:
