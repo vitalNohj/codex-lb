@@ -30,12 +30,12 @@ from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
 from app.modules.proxy.cursor_chat_compat import (
-    SidecarSseCursorUsageRewriter,
     apply_cursor_usage_fallback_to_response,
     cursor_context_limit_usage_completion,
     cursor_context_limit_usage_sse_chunks,
     is_context_length_error,
     is_context_length_error_envelope,
+    stream_bytes_with_cursor_usage_fallback,
 )
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile,
@@ -649,20 +649,27 @@ async def proxy_chat_to_sidecar(
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
+        stream: AsyncIterator[bytes] = _sidecar_stream_iterator(
+            sidecar_payload.body,
+            reverse_tool_names=sidecar_payload.reverse_tool_names,
+            api_key=api_key,
+            reservation=reservation,
+            model=effective_model,
+            started_at=requested_at,
+            client=client,
+            request_payload=payload,
+            cursor_compat=cursor_compat,
+            rate_limit_headers=rate_limit_headers,
+        )
+        if cursor_compat:
+            stream = stream_bytes_with_cursor_usage_fallback(
+                stream,
+                payload,
+                source="claude_sidecar_stream",
+            )
         return StreamingResponse(
             inject_sse_keepalives(
-                _sidecar_stream_iterator(
-                    sidecar_payload.body,
-                    reverse_tool_names=sidecar_payload.reverse_tool_names,
-                    api_key=api_key,
-                    reservation=reservation,
-                    model=effective_model,
-                    started_at=requested_at,
-                    client=client,
-                    request_payload=payload,
-                    cursor_compat=cursor_compat,
-                    rate_limit_headers=rate_limit_headers,
-                ),
+                stream,
                 sse_keepalive_interval_seconds,
             ),
             media_type="text/event-stream",
@@ -759,9 +766,6 @@ async def _sidecar_stream_iterator(
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
             tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
-            usage_rewriter = (
-                SidecarSseCursorUsageRewriter(request_payload) if cursor_compat else None
-            )
             async for raw_chunk in chunks:
                 for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
                     if event == "[DONE]":
@@ -770,16 +774,8 @@ async def _sidecar_stream_iterator(
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
-                outgoing_chunks = [raw_chunk]
-                if usage_rewriter is not None:
-                    outgoing_chunks = usage_rewriter.feed(raw_chunk)
-                for intermediate_chunk in outgoing_chunks:
-                    for rewritten_chunk in tool_name_rewriter.feed(intermediate_chunk):
-                        yield rewritten_chunk
-            if usage_rewriter is not None:
-                for rewritten_chunk in usage_rewriter.flush():
-                    for tool_chunk in tool_name_rewriter.feed(rewritten_chunk):
-                        yield tool_chunk
+                for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
+                    yield rewritten_chunk
             for rewritten_chunk in tool_name_rewriter.flush():
                 yield rewritten_chunk
             for event in decoder.flush():

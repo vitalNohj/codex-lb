@@ -33,6 +33,10 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     ensure_stream_usage_requested,
     extract_usage,
 )
+from app.modules.proxy.cursor_chat_compat import (
+    apply_cursor_usage_fallback_to_response,
+    stream_bytes_with_cursor_usage_fallback,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -151,21 +155,29 @@ async def proxy_chat_to_openrouter(
     rate_limit_headers: Mapping[str, str],
     sse_keepalive_interval_seconds: float,
     client: OpenRouterSidecarClient,
+    cursor_compat: bool = False,
 ) -> Response:
     sidecar_payload = build_openrouter_chat_payload(payload, effective_model, client.config)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
+        stream: AsyncIterator[bytes] = _openrouter_stream_iterator(
+            sidecar_payload.body,
+            api_key=api_key,
+            reservation=reservation,
+            model=effective_model,
+            started_at=requested_at,
+            client=client,
+        )
+        if cursor_compat:
+            stream = stream_bytes_with_cursor_usage_fallback(
+                stream,
+                payload,
+                source="openrouter_sidecar_stream",
+            )
         return StreamingResponse(
             inject_sse_keepalives(
-                _openrouter_stream_iterator(
-                    sidecar_payload.body,
-                    api_key=api_key,
-                    reservation=reservation,
-                    model=effective_model,
-                    started_at=requested_at,
-                    client=client,
-                ),
+                stream,
                 sse_keepalive_interval_seconds,
             ),
             media_type="text/event-stream",
@@ -223,6 +235,12 @@ async def proxy_chat_to_openrouter(
         status="success",
         usage=usage,
     )
+    if cursor_compat and is_json_mapping(response_body):
+        response_body = apply_cursor_usage_fallback_to_response(
+            cast(dict[str, JsonValue], response_body),
+            payload,
+            source="openrouter_sidecar_non_stream",
+        )
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
 
 
