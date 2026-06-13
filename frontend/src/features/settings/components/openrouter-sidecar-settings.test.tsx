@@ -59,16 +59,16 @@ describe("OpenRouterSidecarSettings", () => {
     expect(screen.getByRole("heading", { name: "OpenRouter Integration" })).toBeInTheDocument();
   });
 
-  it("saves sidecar config and can clear a configured key", async () => {
+  it("saves integration config and can clear a configured key", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("switch", { name: "Enable OpenRouter sidecar" }));
+    await user.click(screen.getByRole("switch", { name: "Enable OpenRouter Integration" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ openrouterSidecarEnabled: true }));
 
     await user.type(screen.getByLabelText(/API key/), "new-key");
-    await user.click(screen.getByRole("button", { name: "Save OpenRouter settings" }));
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -90,7 +90,7 @@ describe("OpenRouterSidecarSettings", () => {
     const prefixInput = screen.getByLabelText(/Model prefixes/);
     await user.clear(prefixInput);
     await user.type(prefixInput, "google/, meta-llama/");
-    await user.click(screen.getByRole("button", { name: "Save OpenRouter settings" }));
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({ openrouterSidecarModelPrefixes: ["google/", "meta-llama/"] }),
