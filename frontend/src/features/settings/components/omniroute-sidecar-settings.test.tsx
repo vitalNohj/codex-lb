@@ -105,4 +105,13 @@ describe("OmniRouteSidecarSettings", () => {
     await user.click(screen.getByRole("button", { name: "Test connection" }));
     expect(await screen.findByText(/OmniRoute sidecar reachable/)).toBeInTheDocument();
   });
+
+  it("opens the OmniRoute link in a new tab", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    const link = screen.getByRole("link", { name: /open omniroute/i });
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
 });
