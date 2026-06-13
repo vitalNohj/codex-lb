@@ -324,10 +324,6 @@ function SyntheticAccountCard({
               {formatSlug(account.healthStatus ?? account.status)}
             </span>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <span>Models</span>
-            <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
-          </div>
           {requestCount !== null ? (
             <div className="flex items-center justify-between gap-2">
               <span>Requests</span>

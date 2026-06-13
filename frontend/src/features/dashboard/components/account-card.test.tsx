@@ -226,7 +226,7 @@ describe("AccountCard", () => {
     expect(screen.getByText("Weekly")).toBeInTheDocument();
   });
 
-  it("keeps metadata rows for OpenRouter and OmniRoute sidecar cards", () => {
+  it("shows OpenRouter health and requests without a model count", () => {
     const openRouter = createAccountSummary({
       accountId: "openrouter-sidecar",
       email: "openrouter.ai",
@@ -252,7 +252,40 @@ describe("AccountCard", () => {
     render(<AccountCard account={openRouter} />);
 
     expect(screen.getByText("Health")).toBeInTheDocument();
-    expect(screen.getByText("Models")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
+    expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    expect(screen.getByText("Requests")).toBeInTheDocument();
+  });
+
+  it("shows OmniRoute health and requests without a model count", () => {
+    const omniRoute = createAccountSummary({
+      accountId: "omniroute-sidecar",
+      email: "omniroute.local",
+      displayName: "OmniRoute",
+      planType: "omniroute",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "omniroute",
+      healthStatus: "healthy",
+      baseUrl: "http://127.0.0.1:20128/v1",
+      modelCount: 117,
+      usage: null,
+      requestUsage: {
+        requestCount: 9,
+        totalTokens: 200,
+        cachedInputTokens: 0,
+        totalCostUsd: 0,
+      },
+    });
+
+    render(<AccountCard account={omniRoute} />);
+
+    expect(screen.getByText("Health")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
+    expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    expect(screen.queryByText("117")).not.toBeInTheDocument();
     expect(screen.getByText("Requests")).toBeInTheDocument();
   });
 });

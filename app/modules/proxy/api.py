@@ -2146,6 +2146,47 @@ def _to_model_metadata(model: UpstreamModel) -> ModelMetadata:
     )
 
 
+def _summarize_debug_log_chat_request(
+    payload: ChatCompletionsRequest,
+    effective_model: str,
+    *,
+    cursor_compat: bool,
+) -> None:
+    # TEMPORARY diagnostic for the broken Cursor summarize/compaction handoff.
+    # Logs the inbound chat-completions request shape so we can see which route
+    # a summarize request takes (cp-* sidecar vs GPT/Codex) and whether it
+    # carries tool_result content parts. Remove once the routing fix lands.
+    if not cursor_compat:
+        return
+    messages = payload.messages or []
+    roles: list[str] = []
+    tool_result_messages = 0
+    for message in messages:
+        if not is_json_mapping(message):
+            continue
+        role = message.get("role")
+        roles.append(role if isinstance(role, str) else "?")
+        content = message.get("content")
+        parts = content if isinstance(content, list) else []
+        for part in parts:
+            if is_json_mapping(part) and part.get("type") == "tool_result":
+                tool_result_messages += 1
+                break
+    route = "sidecar_cp" if effective_model.startswith("cp-") else "gpt_codex"
+    logger.warning(
+        "summarize_debug request_id=%s route=%s model=%s effective_model=%s "
+        "messages=%s tool_result_messages=%s stream=%s roles=%s",
+        get_request_id(),
+        route,
+        payload.model,
+        effective_model,
+        len(messages),
+        tool_result_messages,
+        payload.stream,
+        ",".join(roles[:40]),
+    )
+
+
 @v1_router.post(
     "/chat/completions",
     response_model=ChatCompletionResult,
@@ -2169,6 +2210,8 @@ async def v1_chat_completions(
     cursor_compat_client = is_cursor_compat_client(request, api_key)
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
+
+    _summarize_debug_log_chat_request(payload, effective_model, cursor_compat=cursor_compat_client)
 
     rate_limit_headers = await context.service.rate_limit_headers()
     sidecar_config = await load_sidecar_config()

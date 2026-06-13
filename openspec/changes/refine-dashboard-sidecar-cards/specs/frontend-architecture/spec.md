@@ -29,16 +29,48 @@ When the Claude sidecar has no sidecar auth accounts but still has aggregate usa
 - **WHEN** dashboard privacy mode is enabled and the Claude synthetic card renders an auth usage panel
 - **THEN** the auth email or name in the panel heading is blurred
 
+### Requirement: OpenRouter and OmniRoute synthetic card presentation
+
+The dashboard MUST render OpenRouter and OmniRoute synthetic account cards with a `Health` row and a `Requests` row when request usage exists. The cards MUST NOT render a model-count row. The `Health` row MUST display the effective synthetic account `healthStatus` value.
+
+#### Scenario: OpenRouter synthetic card hides model count
+
+- **WHEN** the OpenRouter synthetic account card renders with a model count and request usage
+- **THEN** the card renders the `Health` row
+- **AND** the card renders the `Requests` row
+- **AND** the card does not render a `Models` row
+
+#### Scenario: OmniRoute synthetic card hides model count
+
+- **WHEN** the OmniRoute synthetic account card renders with a model count and request usage
+- **THEN** the card renders the `Health` row
+- **AND** the card renders the `Requests` row
+- **AND** the card does not render a `Models` row
+
 ### Requirement: Enabled sidecar synthetic accounts are active
 
-The OpenRouter and OmniRoute synthetic account summaries MUST report `status` of `active` when the corresponding sidecar is enabled and an API key is configured. When the sidecar is disabled or missing an API key, the summary MUST report `status` of `paused`. The synthetic account `health_status` MUST continue to reflect the latest health probe state independently of the account status.
+The OpenRouter and OmniRoute synthetic account summaries MUST report `status` of `active` when the corresponding sidecar is enabled and an API key is configured. When the sidecar is disabled or missing an API key, the summary MUST report `status` of `paused`.
+
+The synthetic account `health_status` MUST use the same effective health semantics as the corresponding settings status endpoint: disabled sidecars report `disabled`, sidecars missing API keys report `missing_api_key`, enabled and configured sidecars report the last recorded reachable/unreachable/unauthorized/error health result when one exists, and enabled and configured sidecars with no usable recorded health result report `healthy`. Stale recorded `disabled` or `missing_api_key` health states MUST NOT override an enabled and configured sidecar.
 
 #### Scenario: Enabled and configured OpenRouter sidecar is active
 
 - **WHEN** the OpenRouter sidecar is enabled and an API key is configured
 - **THEN** the OpenRouter synthetic account summary `status` is `active`
 
+#### Scenario: Re-enabled OpenRouter sidecar ignores stale disabled health
+
+- **WHEN** the OpenRouter sidecar is enabled and an API key is configured
+- **AND** the last recorded OpenRouter health status is `disabled`
+- **THEN** the OpenRouter synthetic account summary `healthStatus` is `healthy`
+
 #### Scenario: Disabled OmniRoute sidecar is paused
 
 - **WHEN** the OmniRoute sidecar is disabled
 - **THEN** the OmniRoute synthetic account summary `status` is `paused`
+
+#### Scenario: Re-keyed OmniRoute sidecar ignores stale missing-key health
+
+- **WHEN** the OmniRoute sidecar is enabled and an API key is configured
+- **AND** the last recorded OmniRoute health status is `missing_api_key`
+- **THEN** the OmniRoute synthetic account summary `healthStatus` is `healthy`

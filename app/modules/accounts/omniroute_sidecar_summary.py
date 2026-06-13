@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.db.models import DashboardSettings
 from app.modules.accounts.schemas import AccountRequestUsage, AccountSummary
+from app.modules.accounts.sidecar_health import resolve_sidecar_health_status
 
 
 def build_omniroute_sidecar_summary(
@@ -13,16 +14,14 @@ def build_omniroute_sidecar_summary(
     if not configured and not settings.omniroute_sidecar_enabled:
         return None
 
-    health_status = settings.omniroute_sidecar_last_health_status or (
-        "disabled"
-        if not settings.omniroute_sidecar_enabled
-        else "missing_api_key"
-        if settings.omniroute_sidecar_api_key_encrypted is None
-        else "unknown"
-    )
     enabled_and_configured = (
         settings.omniroute_sidecar_enabled
         and settings.omniroute_sidecar_api_key_encrypted is not None
+    )
+    health_status = resolve_sidecar_health_status(
+        enabled=bool(settings.omniroute_sidecar_enabled),
+        api_key_configured=settings.omniroute_sidecar_api_key_encrypted is not None,
+        recorded_status=settings.omniroute_sidecar_last_health_status,
     )
     account_status = "active" if enabled_and_configured else "paused"
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.db.models import DashboardSettings
 from app.modules.accounts.schemas import AccountRequestUsage, AccountSummary
+from app.modules.accounts.sidecar_health import resolve_sidecar_health_status
 
 
 def build_openrouter_sidecar_summary(
@@ -16,16 +17,14 @@ def build_openrouter_sidecar_summary(
     if not configured and not settings.openrouter_sidecar_enabled:
         return None
 
-    health_status = settings.openrouter_sidecar_last_health_status or (
-        "disabled"
-        if not settings.openrouter_sidecar_enabled
-        else "missing_api_key"
-        if settings.openrouter_sidecar_api_key_encrypted is None
-        else "unknown"
-    )
     enabled_and_configured = (
         settings.openrouter_sidecar_enabled
         and settings.openrouter_sidecar_api_key_encrypted is not None
+    )
+    health_status = resolve_sidecar_health_status(
+        enabled=bool(settings.openrouter_sidecar_enabled),
+        api_key_configured=settings.openrouter_sidecar_api_key_encrypted is not None,
+        recorded_status=settings.openrouter_sidecar_last_health_status,
     )
     account_status = "active" if enabled_and_configured else "paused"
 
