@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import type { DashboardSettings } from "@/features/settings/schemas";
+import { server } from "@/test/mocks/server";
 
 const BASE_SETTINGS: DashboardSettings = {
   stickyThreadsEnabled: false,
@@ -92,16 +94,52 @@ describe("ClaudeSidecarSettings", () => {
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ claudeSidecarClearApiKey: true }));
   });
 
-  it("disables save for invalid timeout and triggers test mutation", async () => {
+  it("disables save for invalid timeout", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
 
     await user.clear(screen.getByLabelText(/Connect timeout/));
     await user.type(screen.getByLabelText(/Connect timeout/), "0");
     expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Test connection" })).toBeInTheDocument());
+  it("does not render a manual Test connection button", () => {
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+  });
+
+  it("runs the connection test after a successful save", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const testSpy = vi.fn();
+    server.use(
+      http.post("*/api/claude-sidecar/test", () => {
+        testSpy();
+        return HttpResponse.json({
+          enabled: true,
+          configured: true,
+          status: "healthy",
+          message: "Claude sidecar reachable",
+          baseUrl: "http://127.0.0.1:8317",
+          modelCount: 1,
+          lastCheckedAt: "2026-01-01T00:00:00Z",
+          models: [],
+        });
+      }),
+    );
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not render quota estimation controls", () => {
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByText("Quota estimation")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save quota estimates" })).not.toBeInTheDocument();
   });
 
   it("saves the management key when provided", async () => {
@@ -145,26 +183,4 @@ describe("ClaudeSidecarSettings", () => {
     expect(screen.getByLabelText(/Management key/)).toHaveAttribute("placeholder", "Configured");
   });
 
-  it("saves per-auth quota estimation plans", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
-
-    await screen.findByText("claude@example.com");
-    await user.click(screen.getByRole("button", { name: "Save quota estimates" }));
-
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        claudeSidecarAuthPlans: [
-          expect.objectContaining({
-            authIndex: "0",
-            email: "claude@example.com",
-            planType: "pro",
-            primaryTokenBudget: 40000,
-            secondaryTokenBudget: 280000,
-          }),
-        ],
-      }),
-    );
-  });
 });

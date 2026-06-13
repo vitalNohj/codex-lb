@@ -1,16 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Bot } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
-import { useClaudeSidecar, useClaudeSidecarQuota } from "@/features/settings/hooks/use-settings";
+import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
 import type {
-  ClaudeSidecarAuthPlan,
-  ClaudeSidecarPlanType,
   DashboardSettings,
   SettingsUpdateRequest,
 } from "@/features/settings/schemas";
@@ -27,47 +24,13 @@ const DEFAULT_CONNECT_TIMEOUT_SECONDS = 8;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS = 600;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
 const DEFAULT_QUOTA_POLL_INTERVAL_SECONDS = 60;
-const PLAN_DEFAULTS: Record<ClaudeSidecarPlanType, { primary: number; secondary: number }> = {
-  pro: { primary: 40_000, secondary: 280_000 },
-  max5: { primary: 88_000, secondary: 616_000 },
-  max20: { primary: 352_000, secondary: 2_464_000 },
-  custom: { primary: 88_000, secondary: 616_000 },
-};
-type PlanDraft = {
-  authIndex?: string | null;
-  email?: string | null;
-  source?: string | null;
-  planType: ClaudeSidecarPlanType;
-  primaryTokenBudget: string;
-  secondaryTokenBudget: string;
-};
 
 function parsePrefixes(value: string): string[] {
   return Array.from(new Set(value.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)));
 }
 
-function authPlanKey(value: { authIndex?: string | null; email?: string | null; source?: string | null; name?: string | null }): string {
-  if (value.authIndex) {
-    return `auth:${value.authIndex}`;
-  }
-  return `source:${(value.email ?? value.source ?? value.name ?? "unknown").toLowerCase()}`;
-}
-
-function planDraftFromPlan(plan: ClaudeSidecarAuthPlan): PlanDraft {
-  const defaults = PLAN_DEFAULTS[plan.planType];
-  return {
-    authIndex: plan.authIndex,
-    email: plan.email,
-    source: plan.source,
-    planType: plan.planType,
-    primaryTokenBudget: String(plan.primaryTokenBudget ?? defaults.primary),
-    secondaryTokenBudget: String(plan.secondaryTokenBudget ?? defaults.secondary),
-  };
-}
-
 export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarSettingsProps) {
   const { modelsQuery, testMutation } = useClaudeSidecar();
-  const { quotaQuery } = useClaudeSidecarQuota();
   const sidecarEnabled = settings.claudeSidecarEnabled ?? false;
   const sidecarBaseUrl = settings.claudeSidecarBaseUrl ?? DEFAULT_BASE_URL;
   const sidecarApiKeyConfigured = settings.claudeSidecarApiKeyConfigured ?? false;
@@ -85,7 +48,6 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
   const [requestTimeout, setRequestTimeout] = useState(String(sidecarRequestTimeout));
   const [cacheTtl, setCacheTtl] = useState(String(sidecarCacheTtl));
   const [pollInterval, setPollInterval] = useState(String(sidecarPollInterval));
-  const [planDrafts, setPlanDrafts] = useState<Record<string, PlanDraft>>({});
 
   const parsedPrefixes = useMemo(() => parsePrefixes(prefixes), [prefixes]);
   const parsedConnectTimeout = Number(connectTimeout);
@@ -103,31 +65,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
     parsedCacheTtl >= 0 &&
     Number.isFinite(parsedPollInterval) &&
     parsedPollInterval > 0;
-  const quota = quotaQuery.data;
   const modelRows = modelsQuery.data?.models ?? [];
-  const estimationRows = useMemo(() => Object.entries(planDrafts), [planDrafts]);
-
-  useEffect(() => {
-    const next: Record<string, PlanDraft> = {};
-    for (const plan of settings.claudeSidecarAuthPlans ?? []) {
-      next[authPlanKey(plan)] = planDraftFromPlan(plan);
-    }
-    for (const account of quota?.accounts ?? []) {
-      const key = authPlanKey(account);
-      if (!next[key]) {
-        const defaults = PLAN_DEFAULTS.pro;
-        next[key] = {
-          authIndex: account.authIndex,
-          email: account.email,
-          source: account.email ?? account.name,
-          planType: "pro",
-          primaryTokenBudget: String(account.primaryTokenBudget ?? defaults.primary),
-          secondaryTokenBudget: String(account.secondaryTokenBudget ?? defaults.secondary),
-        };
-      }
-    }
-    setPlanDrafts(next);
-  }, [quota?.accounts, settings.claudeSidecarAuthPlans]);
 
   const save = (patch: Partial<SettingsUpdateRequest>) =>
     onSave(buildSettingsUpdateRequest(settings, patch));
@@ -149,42 +87,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
     await save(payload);
     setApiKey("");
     setManagementKey("");
-  };
-  const updatePlanDraft = (key: string, patch: Partial<PlanDraft>) => {
-    setPlanDrafts((current) => {
-      const existing = current[key];
-      if (!existing) {
-        return current;
-      }
-      return { ...current, [key]: { ...existing, ...patch } };
-    });
-  };
-  const updatePlanType = (key: string, planType: ClaudeSidecarPlanType) => {
-    const defaults = PLAN_DEFAULTS[planType];
-    updatePlanDraft(key, {
-      planType,
-      primaryTokenBudget: String(defaults.primary),
-      secondaryTokenBudget: String(defaults.secondary),
-    });
-  };
-  const saveEstimationPlans = async () => {
-    const plans: ClaudeSidecarAuthPlan[] = Object.values(planDrafts)
-      .map((draft) => ({
-        authIndex: draft.authIndex ?? undefined,
-        email: draft.email ?? undefined,
-        source: draft.source ?? draft.email ?? undefined,
-        planType: draft.planType,
-        primaryTokenBudget: Number(draft.primaryTokenBudget),
-        secondaryTokenBudget: Number(draft.secondaryTokenBudget),
-      }))
-      .filter(
-        (plan) =>
-          Number.isFinite(plan.primaryTokenBudget) &&
-          Number.isFinite(plan.secondaryTokenBudget) &&
-          plan.primaryTokenBudget > 0 &&
-          plan.secondaryTokenBudget > 0,
-      );
-    await save({ claudeSidecarAuthPlans: plans });
+    await testMutation.mutateAsync().catch(() => null);
   };
 
   return (
@@ -280,11 +183,8 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
               </label>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" size="sm" className="h-8 text-xs" disabled={busy || !formValid} onClick={() => void saveConfig()}>
+              <Button type="button" size="sm" className="h-8 text-xs" disabled={busy || !formValid || testMutation.isPending} onClick={() => void saveConfig()}>
                 Save
-              </Button>
-              <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy || testMutation.isPending} onClick={() => testMutation.mutate()}>
-                Test connection
               </Button>
               <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy || !sidecarApiKeyConfigured} onClick={() => void save({ claudeSidecarClearApiKey: true })}>
                 Clear API key
@@ -318,75 +218,8 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  No models retrieved yet. Save your config and run Test connection to fetch the model list.
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-3 rounded-md border bg-muted/10 p-3">
-              <div>
-                <p className="text-sm font-medium">Quota estimation</p>
-                <p className="text-xs text-muted-foreground">
-                  Percentages are estimates from CLIProxyAPI usage telemetry and configured plan budgets.
-                </p>
-              </div>
-              {estimationRows.length > 0 ? (
-                <div className="space-y-2">
-                  {estimationRows.map(([key, draft]) => (
-                    <div key={key} className="grid gap-2 rounded-md border bg-background/60 p-2 sm:grid-cols-[1.4fr_8rem_9rem_9rem]">
-                      <div className="min-w-0">
-                        <div className="truncate text-xs font-medium">{draft.email ?? draft.source ?? draft.authIndex ?? "Claude auth"}</div>
-                        <div className="truncate text-[11px] text-muted-foreground">
-                          {draft.authIndex ? `auth_index ${draft.authIndex}` : draft.source ?? "source unknown"}
-                        </div>
-                      </div>
-                      <label className="space-y-1 text-xs font-medium">
-                        Plan
-                        <Select value={draft.planType} onValueChange={(value) => updatePlanType(key, value as ClaudeSidecarPlanType)} disabled={busy}>
-                          <SelectTrigger size="sm" className="h-8 w-full text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="pro">Pro</SelectItem>
-                            <SelectItem value="max5">Max 5x</SelectItem>
-                            <SelectItem value="max20">Max 20x</SelectItem>
-                            <SelectItem value="custom">Custom</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </label>
-                      <label className="space-y-1 text-xs font-medium">
-                        5-hour tokens
-                        <Input
-                          type="number"
-                          min={1}
-                          step={1000}
-                          value={draft.primaryTokenBudget}
-                          disabled={busy}
-                          onChange={(event) => updatePlanDraft(key, { primaryTokenBudget: event.target.value })}
-                          className="h-8 text-xs"
-                        />
-                      </label>
-                      <label className="space-y-1 text-xs font-medium">
-                        Weekly tokens
-                        <Input
-                          type="number"
-                          min={1}
-                          step={1000}
-                          value={draft.secondaryTokenBudget}
-                          disabled={busy}
-                          onChange={(event) => updatePlanDraft(key, { secondaryTokenBudget: event.target.value })}
-                          className="h-8 text-xs"
-                        />
-                      </label>
-                    </div>
-                  ))}
-                  <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy} onClick={() => void saveEstimationPlans()}>
-                    Save quota estimates
-                  </Button>
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  No Claude auths discovered yet. Save the Management key and wait for one quota poll.
+                  No models retrieved yet. Save your config to refresh the model list; run a manual test from the
+                  Accounts tab if needed.
                 </p>
               )}
             </div>

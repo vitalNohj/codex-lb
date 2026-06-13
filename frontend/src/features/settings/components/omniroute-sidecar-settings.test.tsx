@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import type { DashboardSettings } from "@/features/settings/schemas";
+import { server } from "@/test/mocks/server";
 
 const BASE_SETTINGS: DashboardSettings = {
   stickyThreadsEnabled: true,
@@ -103,14 +105,36 @@ describe("OmniRouteSidecarSettings", () => {
     expect(screen.queryByText("manual/model")).not.toBeInTheDocument();
   });
 
-  it("tests the connection", async () => {
+  it("does not render a manual Test connection button", () => {
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+  });
+
+  it("runs the connection test after a successful save", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
+    const testSpy = vi.fn();
+    server.use(
+      http.post("*/api/omniroute-sidecar/test", () => {
+        testSpy();
+        return HttpResponse.json({
+          enabled: true,
+          configured: true,
+          status: "healthy",
+          message: "OmniRoute sidecar reachable",
+          baseUrl: "http://127.0.0.1:20128/v1",
+          modelCount: 0,
+          lastCheckedAt: "2026-01-01T00:00:00Z",
+          models: [],
+        });
+      }),
+    );
     renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    const testButton = screen.getByRole("button", { name: "Test connection" });
-    expect(testButton).toBeEnabled();
-    await user.click(testButton);
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
   });
 
   it("opens the OmniRoute link in a new tab", () => {

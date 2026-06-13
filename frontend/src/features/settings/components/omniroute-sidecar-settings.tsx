@@ -72,6 +72,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
     }
     await save(payload);
     setApiKey("");
+    await testMutation.mutateAsync().catch(() => null);
   };
 
   const addModel = (modelId: string) => {
@@ -258,20 +259,10 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
                 type="button"
                 size="sm"
                 className="h-8 text-xs"
-                disabled={busy || !formValid}
+                disabled={busy || !formValid || testMutation.isPending}
                 onClick={() => void saveConfig()}
               >
                 Save
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                disabled={busy || testMutation.isPending}
-                onClick={() => void testMutation.mutateAsync()}
-              >
-                Test connection
               </Button>
               <Button
                 type="button"

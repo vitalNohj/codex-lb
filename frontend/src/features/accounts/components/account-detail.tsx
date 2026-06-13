@@ -1,15 +1,13 @@
-import { Bot, Settings as SettingsIcon } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Bot } from "lucide-react";
 
 import { isEmailLabel } from "@/components/blur-email";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { AccountAliasForm } from "@/features/accounts/components/account-alias-form";
 import { AccountActions } from "@/features/accounts/components/account-actions";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { AccountProxyBinding } from "@/features/accounts/components/account-proxy-binding";
 import { AccountTokenInfo } from "@/features/accounts/components/account-token-info";
 import { AccountUsagePanel } from "@/features/accounts/components/account-usage-panel";
+import { SyntheticAccountDetail } from "@/features/accounts/components/synthetic-account-detail";
 import type {
   AccountRoutingPolicy,
   AccountSummary,
@@ -17,7 +15,7 @@ import type {
 import { useAccountTrends } from "@/features/accounts/hooks/use-accounts";
 import type { AccountProxyBindingRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
-import { formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
+import { formatSlug } from "@/utils/formatters";
 
 export type AccountDetailProps = {
   account: AccountSummary | null;
@@ -157,162 +155,3 @@ export function AccountDetail({
   );
 }
 
-function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
-  const isOpenRouter = account.provider === "openrouter";
-  const isOmniRoute = account.provider === "omniroute";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLIProxyAPI";
-  const settingsAnchor = isOpenRouter
-    ? "/settings#openrouter-sidecar"
-    : isOmniRoute
-      ? "/settings#omniroute-sidecar"
-      : "/settings#claude-sidecar";
-  const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
-  const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
-  const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
-  const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
-  const usageSourceLabel = account.sidecarAuths?.some((auth) => auth.usageSource === "oauth_usage")
-    ? "OAuth"
-    : primaryRemaining !== null || secondaryRemaining !== null
-      ? "Estimated"
-      : "Unavailable";
-  const showQuotaUsage = !isOpenRouter && !isOmniRoute;
-  return (
-    <div
-      key={account.accountId}
-      className="animate-fade-in-up space-y-4 rounded-xl border bg-card p-5"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
-            {account.displayName}
-          </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {isOpenRouter
-              ? "Read-only OpenRouter sidecar account"
-              : isOmniRoute
-                ? "Read-only OmniRoute sidecar account"
-                : "Read-only Claude sidecar account"}
-          </p>
-        </div>
-        <Badge variant="outline" className="border-violet-300 bg-violet-50 text-violet-700">
-          {sidecarLabel}
-        </Badge>
-      </div>
-
-      <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-2">
-        <SyntheticField label="Status" value={formatSlug(account.healthStatus ?? account.status)} />
-        {showQuotaUsage ? (
-          <SyntheticField label="Quota" value={formatSidecarQuotaLabel(account)} />
-        ) : null}
-        <SyntheticField label="Models" value={account.modelCount == null ? "--" : String(account.modelCount)} />
-        <SyntheticField label="Base URL" value={account.baseUrl ?? "--"} mono />
-        <SyntheticField label="Last check" value={lastChecked ?? "Never"} />
-        {showQuotaUsage ? (
-          <SyntheticField label="Last quota check" value={lastQuotaCheck ?? "Never"} />
-        ) : null}
-      </div>
-
-      {showQuotaUsage ? (
-      <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
-        <SyntheticField
-          label={`${usageSourceLabel} 5h remaining`}
-          value={`${formatPercentNullable(primaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`}
-        />
-        <SyntheticField
-          label={`${usageSourceLabel} weekly remaining`}
-          value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
-        />
-      </div>
-      ) : null}
-
-      {account.sidecarAuths && account.sidecarAuths.length > 0 ? (
-        <div className="space-y-1 rounded-lg border bg-card/40 p-3 text-sm">
-          <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
-            Sidecar accounts
-          </div>
-          <ul className="divide-y">
-            {account.sidecarAuths.map((auth, idx) => (
-              <li key={`${auth.name}-${idx}`} className="flex items-center justify-between gap-3 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      auth.quotaExceeded ? "bg-amber-500" : "bg-emerald-500"
-                    }`}
-                  />
-                  <div className="min-w-0 leading-tight">
-                    <div className="truncate text-sm font-medium">{auth.email ?? auth.name}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {auth.authIndex ? `auth_index ${auth.authIndex} | ` : ""}
-                      {auth.quotaExceeded
-                        ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
-                        : "Ready"}
-                      {auth.modelsExceeded && auth.modelsExceeded.length > 0
-                        ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
-                        : ""}
-                    </div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {auth.planType ? `${formatSlug(auth.planType)} | ` : "Plan required | "}
-                      5h {formatPercentNullable(auth.primaryRemainingPercent ?? null)}
-                      {auth.primaryUsedTokens != null && auth.primaryTokenBudget != null
-                        ? ` (${auth.primaryUsedTokens.toLocaleString()} / ${auth.primaryTokenBudget.toLocaleString()} tok)`
-                        : ""}
-                      {" | "}
-                      weekly {formatPercentNullable(auth.secondaryRemainingPercent ?? null)}
-                      {auth.secondaryUsedTokens != null && auth.secondaryTokenBudget != null
-                        ? ` (${auth.secondaryUsedTokens.toLocaleString()} / ${auth.secondaryTokenBudget.toLocaleString()} tok)`
-                        : ""}
-                    </div>
-                  </div>
-                </div>
-                <div className="shrink-0 text-right text-[11px] text-muted-foreground">
-                  <div>OK {auth.success}</div>
-                  <div>Failed {auth.failed}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {account.healthMessage ? (
-        <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-          {account.healthMessage}
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap gap-2 border-t pt-4">
-        <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs" disabled={busy}>
-          <Link to={settingsAnchor}>
-            <SettingsIcon className="h-3.5 w-3.5" />
-            Configure
-          </Link>
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function SyntheticField({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="space-y-1">
-      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">{label}</div>
-      <div className={`break-all text-sm ${mono ? "font-mono" : ""}`}>{value}</div>
-    </div>
-  );
-}
-
-function formatSidecarQuotaLabel(account: AccountSummary): string {
-  const status = account.status;
-  if (status === "quota_exceeded") {
-    return `Exhausted — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
-  }
-  if (status === "rate_limited") {
-    return `Limited — resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`;
-  }
-  if (status === "active") {
-    return "OK";
-  }
-  return "--";
-}
