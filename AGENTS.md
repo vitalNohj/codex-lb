@@ -136,6 +136,8 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - Request Logs table should display sidecar rows like normal rows: no sidecar badge under Model, no "Sidecar HTTP" in Transport (just "HTTP").
 - Account column in Request Logs should show provider names without "sidecar": "CLIProxyAPI: <email>", "OpenRouter", "OmniRoute".
 - Settings UI sidecar sections should place the enable toggle above the explanation callout, not below it.
+- Accounts tab integration items (CLIProxyAPI, OpenRouter, OmniRoute) should not show provider-name badges; the heading already names the provider.
+- Move integration controls from Settings into the relevant Accounts tab item (e.g. CLIProxyAPI quota estimation and a manual "Test connection" button); Settings should run test-connection automatically on save.
 
 ## Learned Workspace Facts
 
@@ -144,3 +146,6 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - Standard validation commands: `openspec validate --specs` for all specs; `openspec validate <change> --strict` for a specific change.
 - Testing commands: `uv run pytest <path>` for backend; `npx vitest run <path>` for frontend.
 - UI-only changes (layout, copy, visibility) can skip OpenSpec spec deltas when following an established precedent (e.g. OpenRouter settings refine declared no spec deltas).
+- The Cursor↔OpenAI compatibility layer must stay aligned with upstream codex-lb; CLIProxyAPI already converts to OpenAI chat format, so only add minimal Claude-specific handling and avoid divergence from upstream behavior.
+- Codex control endpoints (e.g. `trace_summarize`) must be raw pass-through to the backend; do not inject `reasoning`/`service_tier` or rewrite the model on control payloads. Such policy rewriting broke Cursor `/summarize` compaction (only triggered with the OpenAI API key enabled, not on Composer models).
+- At the context limit, return an error Cursor recognizes as a compaction trigger; surfacing it as an API-key/rate-limit error prevents Cursor from compacting.

@@ -586,7 +586,7 @@ async def test_codex_control_json_endpoints_forward_upstream(
 
 
 @pytest.mark.asyncio
-async def test_codex_trace_summarize_applies_composer_model_policy(async_client, monkeypatch):
+async def test_codex_trace_summarize_forwards_model_payload_unchanged(async_client, monkeypatch):
     await _import_account(async_client, "acc_trace_summarize", "trace-summarize@example.com")
     settings = await async_client.put(
         "/api/settings",
@@ -641,24 +641,23 @@ async def test_codex_trace_summarize_applies_composer_model_policy(async_client,
 
     monkeypatch.setattr(proxy_module, "core_codex_control_request", fake_codex_control_request)
 
+    # The trace_summarize control endpoint is a raw pass-through (matching
+    # upstream): even with an API key enforcing reasoning/service tier, the
+    # Cursor control payload (including a GPT-5 UI alias model label) MUST be
+    # forwarded byte-for-byte without alias rewriting or policy injection.
+    payload = {
+        "model": "gpt-5.5-low-fast",
+        "traces": [{"id": "mem_1", "text": "Keep this"}],
+        "metadata": {"source": "cursor"},
+    }
     response = await async_client.post(
         "/backend-api/codex/memories/trace_summarize",
         headers={"Authorization": f"Bearer {key}"},
-        json={
-            "model": "gpt-5.5-low-fast",
-            "traces": [{"id": "mem_1", "text": "Keep this"}],
-            "metadata": {"source": "cursor"},
-        },
+        json=payload,
     )
 
     assert response.status_code == 200
-    assert calls[0]["payload"] == {
-        "model": "gpt-5.5",
-        "traces": [{"id": "mem_1", "text": "Keep this"}],
-        "metadata": {"source": "cursor"},
-        "reasoning": {"effort": "high"},
-        "service_tier": "priority",
-    }
+    assert calls[0]["payload"] == payload
     assert calls[0]["path"] == "memories/trace_summarize"
     assert calls[0]["account_id"] == "acc_trace_summarize"
     assert isinstance(calls[0]["timeout_seconds"], float)
