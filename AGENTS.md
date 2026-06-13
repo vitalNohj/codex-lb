@@ -138,6 +138,7 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - Settings UI sidecar sections should place the enable toggle above the explanation callout, not below it.
 - Accounts tab integration items (CLIProxyAPI, OpenRouter, OmniRoute) should not show provider-name badges; the heading already names the provider.
 - Move integration controls from Settings into the relevant Accounts tab item (e.g. CLIProxyAPI quota estimation and a manual "Test connection" button); Settings should run test-connection automatically on save.
+- When investigating behavior issues, prioritize querying the database and request logs over code analysis to avoid making dangerous assumptions about the current state.
 
 ## Learned Workspace Facts
 
