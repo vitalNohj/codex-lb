@@ -1,7 +1,7 @@
 ## 1. Dashboard account viewport
 
-- [x] 1.1 Increase `ACCOUNT_CARD_ROW_HEIGHT_REM` to `14` in `account-cards.tsx`.
-- [x] 1.2 Update `account-cards.test.tsx` to expect `maxHeight: "calc(2 * 14rem + 1rem)"`.
+- [x] 1.1 Increase `ACCOUNT_CARD_ROW_HEIGHT_REM` to `16` in `account-cards.tsx`.
+- [x] 1.2 Update `account-cards.test.tsx` to expect `maxHeight: "calc(2 * 16rem + 1rem)"`.
 
 ## 2. CLI Proxy API synthetic card
 
