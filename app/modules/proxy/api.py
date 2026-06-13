@@ -254,6 +254,12 @@ _V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
     "gpt-5.4-mini": 128_000,
     "gpt-5.3-codex": 128_000,
 }
+# Context window advertised for Claude sidecar (cliproxyapi) models on
+# ``/v1/models``. Cursor's local-provider discovery reads this to decide when
+# to auto-summarize/compact a conversation. Without it, Cursor never learns the
+# window and lets the conversation grow until the upstream hard-fails. Claude
+# Opus/Sonnet expose a 200k input window.
+_SIDECAR_DEFAULT_CONTEXT_WINDOW: Final[int] = 200_000
 _OPPORTUNISTIC_RETRY_AFTER_SECONDS = 60
 
 # OpenAI error ``type`` -> HTTP status for the /v1/images/* non-streaming
@@ -1940,6 +1946,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                             "created": sidecar_model.created or created,
                             "owned_by": "anthropic",
                             "api_types": ["chat_completions"],
+                            **_sidecar_model_list_fields(),
                         }
                     )
                 )
@@ -2109,6 +2116,28 @@ def _v1_model_capabilities(model: UpstreamModel) -> dict[str, JsonValue]:
     }
 
 
+def _sidecar_model_list_fields(context_window: int = _SIDECAR_DEFAULT_CONTEXT_WINDOW) -> dict[str, JsonValue]:
+    # Mirror the capability/context fields registry models expose so Cursor's
+    # local-provider discovery can learn the context window and trigger its own
+    # compaction. Sidecar models are not in the upstream registry, so they have
+    # no ``UpstreamModel`` to read these from; advertise the Claude window.
+    return {
+        "context_length": context_window,
+        "contextLength": context_window,
+        "capabilities": {
+            "context_length": context_window,
+            "supports_tool_use": True,
+            "supports_streaming": True,
+            "input_modalities": ["text", "image"],
+            "output_modalities": ["text"],
+        },
+        "supports_images": True,
+        "supportsImages": True,
+        "supports_vision": True,
+        "supportsVision": True,
+    }
+
+
 def _v1_supports_reasoning(model: UpstreamModel) -> bool:
     return bool(model.supported_reasoning_levels) or model.supports_reasoning_summaries
 
@@ -2146,47 +2175,6 @@ def _to_model_metadata(model: UpstreamModel) -> ModelMetadata:
     )
 
 
-def _summarize_debug_log_chat_request(
-    payload: ChatCompletionsRequest,
-    effective_model: str,
-    *,
-    cursor_compat: bool,
-) -> None:
-    # TEMPORARY diagnostic for the broken Cursor summarize/compaction handoff.
-    # Logs the inbound chat-completions request shape so we can see which route
-    # a summarize request takes (cp-* sidecar vs GPT/Codex) and whether it
-    # carries tool_result content parts. Remove once the routing fix lands.
-    if not cursor_compat:
-        return
-    messages = payload.messages or []
-    roles: list[str] = []
-    tool_result_messages = 0
-    for message in messages:
-        if not is_json_mapping(message):
-            continue
-        role = message.get("role")
-        roles.append(role if isinstance(role, str) else "?")
-        content = message.get("content")
-        parts = content if isinstance(content, list) else []
-        for part in parts:
-            if is_json_mapping(part) and part.get("type") == "tool_result":
-                tool_result_messages += 1
-                break
-    route = "sidecar_cp" if effective_model.startswith("cp-") else "gpt_codex"
-    logger.warning(
-        "summarize_debug request_id=%s route=%s model=%s effective_model=%s "
-        "messages=%s tool_result_messages=%s stream=%s roles=%s",
-        get_request_id(),
-        route,
-        payload.model,
-        effective_model,
-        len(messages),
-        tool_result_messages,
-        payload.stream,
-        ",".join(roles[:40]),
-    )
-
-
 @v1_router.post(
     "/chat/completions",
     response_model=ChatCompletionResult,
@@ -2210,8 +2198,6 @@ async def v1_chat_completions(
     cursor_compat_client = is_cursor_compat_client(request, api_key)
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
-
-    _summarize_debug_log_chat_request(payload, effective_model, cursor_compat=cursor_compat_client)
 
     rate_limit_headers = await context.service.rate_limit_headers()
     sidecar_config = await load_sidecar_config()

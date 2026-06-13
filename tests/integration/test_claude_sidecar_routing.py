@@ -265,9 +265,17 @@ async def test_sidecar_model_list_merges_and_filters(async_client, sidecar_enabl
     response = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
 
     assert response.status_code == 200
-    ids = [item["id"] for item in response.json()["data"]]
+    data = response.json()["data"]
+    ids = [item["id"] for item in data]
     assert "claude-sonnet-4-5-20250929" in ids
     assert "gpt-5.4" not in ids
+
+    sidecar_entry = next(item for item in data if item["id"] == "claude-sonnet-4-5-20250929")
+    # Cursor's local-provider discovery reads the advertised context window to
+    # decide when to auto-summarize/compact; sidecar models must expose it.
+    assert sidecar_entry["context_length"] == 200_000
+    assert sidecar_entry["contextLength"] == 200_000
+    assert sidecar_entry["capabilities"]["context_length"] == 200_000
 
 
 @pytest.mark.asyncio
