@@ -100,7 +100,7 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
               <Globe className="h-4 w-4 text-primary" aria-hidden="true" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">OpenRouter Sidecar</h3>
+              <h3 className="text-sm font-semibold">OpenRouter Integration</h3>
               <p className="text-xs text-muted-foreground">Route configured OpenRouter models through codex-lb.</p>
             </div>
           </div>
