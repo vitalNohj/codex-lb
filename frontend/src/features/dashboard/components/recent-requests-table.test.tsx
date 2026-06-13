@@ -168,7 +168,7 @@ describe("RecentRequestsTable", () => {
   });
 
 
-  it("labels sidecar rows with null account id", () => {
+  it("renders sidecar rows with standard model and transport labels", () => {
     render(
       <RecentRequestsTable
         {...PAGINATION_PROPS}
@@ -235,13 +235,30 @@ describe("RecentRequestsTable", () => {
       />,
     );
 
-    expect(screen.getAllByText("Claude sidecar").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("OmniRoute sidecar").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Sidecar HTTP").length).toBeGreaterThan(0);
+    const claudeRow = screen.getByText("claude-sonnet").closest("tr");
+    expect(claudeRow).not.toBeNull();
+    const claudeCells = within(claudeRow as HTMLElement).getAllByRole("cell");
+    expect(claudeCells[1]).toHaveTextContent("Claude sidecar");
+    expect(claudeCells[4]).toHaveTextContent("claude-sonnet");
+    expect(claudeCells[4]).not.toHaveTextContent("Claude sidecar");
+    expect(claudeCells[5]).toHaveTextContent("HTTP");
+    expect(claudeCells[5]).not.toHaveTextContent("Sidecar HTTP");
+
+    const omniRouteRow = screen.getByText("omniroute/test-chat").closest("tr");
+    expect(omniRouteRow).not.toBeNull();
+    const omniRouteCells = within(omniRouteRow as HTMLElement).getAllByRole("cell");
+    expect(omniRouteCells[1]).toHaveTextContent("OmniRoute sidecar");
+    expect(omniRouteCells[4]).toHaveTextContent("omniroute/test-chat");
+    expect(omniRouteCells[4]).not.toHaveTextContent("OmniRoute sidecar");
+    expect(omniRouteCells[5]).toHaveTextContent("HTTP");
+    expect(omniRouteCells[5]).not.toHaveTextContent("Sidecar HTTP");
+    expect(screen.queryByText("Sidecar HTTP")).not.toBeInTheDocument();
+
     const dialog = openRequestDetails();
     expect(within(dialog).getByText("Source")).toBeInTheDocument();
     expect(within(dialog).getAllByText("Claude sidecar").length).toBeGreaterThan(0);
-    expect(within(dialog).getByText("Sidecar HTTP")).toBeInTheDocument();
+    expect(within(dialog).getByText("Transport").closest("div.space-y-1")).toHaveTextContent("HTTP");
+    expect(within(dialog).queryByText("Sidecar HTTP")).not.toBeInTheDocument();
   });
 
   it("renders empty state", () => {

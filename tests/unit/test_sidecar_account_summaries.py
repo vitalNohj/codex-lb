@@ -32,7 +32,21 @@ def test_openrouter_summary_active_without_health_probe() -> None:
 
     assert summary is not None
     assert summary.status == "active"
-    assert summary.health_status == "unknown"
+    assert summary.health_status == "healthy"
+
+
+def test_openrouter_summary_ignores_stale_disabled_health_when_configured() -> None:
+    settings = _settings(
+        openrouter_sidecar_enabled=True,
+        openrouter_sidecar_api_key_encrypted=b"key",
+        openrouter_sidecar_last_health_status="disabled",
+    )
+
+    summary = build_openrouter_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.status == "active"
+    assert summary.health_status == "healthy"
 
 
 def test_openrouter_summary_paused_when_disabled() -> None:
@@ -95,3 +109,17 @@ def test_omniroute_summary_paused_when_missing_api_key() -> None:
 
     assert summary is not None
     assert summary.status == "paused"
+
+
+def test_omniroute_summary_ignores_stale_missing_key_health_when_configured() -> None:
+    settings = _settings(
+        omniroute_sidecar_enabled=True,
+        omniroute_sidecar_api_key_encrypted=b"key",
+        omniroute_sidecar_last_health_status="missing_api_key",
+    )
+
+    summary = build_omniroute_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.status == "active"
+    assert summary.health_status == "healthy"

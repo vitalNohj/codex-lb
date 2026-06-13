@@ -61,10 +61,6 @@ function sidecarSourceLabel(source: string | null | undefined): string | null {
   return SIDECAR_SOURCE_LABELS[source] ?? null;
 }
 
-function isSidecarRequest(request: RequestLog | null): boolean {
-  return sidecarSourceLabel(request?.source) !== null;
-}
-
 const TRANSPORT_CLASS_MAP: Record<string, string> = {
   http: "bg-slate-500/10 text-slate-700 border-slate-500/20 hover:bg-slate-500/15 dark:text-slate-300",
   websocket: "bg-sky-500/15 text-sky-700 border-sky-500/20 hover:bg-sky-500/20 dark:text-sky-300",
@@ -256,13 +252,6 @@ export function RecentRequestsTable({
                           {REQUEST_KIND_LABELS.warmup}
                         </div>
                       ) : null}
-                      {sidecarRequest ? (
-                        <div className="mt-1">
-                          <Badge variant="outline" className="border-violet-300 bg-violet-50 text-[10px] text-violet-700">
-                            {sidecarLabel}
-                          </Badge>
-                        </div>
-                      ) : null}
                       {showRequestedTier ? (
                         <div className="text-[11px] text-muted-foreground">
                           Requested {request.requestedServiceTier}
@@ -271,11 +260,7 @@ export function RecentRequestsTable({
                     </div>
                   </TableCell>
                   <TableCell className="align-top">
-                    {sidecarRequest ? (
-                      <Badge variant="outline" className="border-violet-300 bg-violet-50 text-violet-700">
-                        Sidecar HTTP
-                      </Badge>
-                    ) : request.transport ? (
+                    {request.transport ? (
                       <Badge
                         variant="outline"
                         className={TRANSPORT_CLASS_MAP[request.transport] ?? TRANSPORT_CLASS_MAP.http}
@@ -384,7 +369,7 @@ export function RecentRequestsTable({
                 <RequestDetailField label="Plan" value={selectedRequest?.planType ? formatSlug(selectedRequest.planType) : "—"} />
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
-                <RequestDetailField label="Transport" value={isSidecarRequest(selectedRequest) ? "Sidecar HTTP" : selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
+                <RequestDetailField label="Transport" value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
                 <RequestDetailField label="Source" value={sidecarSourceLabel(selectedRequest?.source) ?? selectedRequest?.source ?? "—"} />
                 <RequestDetailField label="Time" value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label="Error Code" value={selectedRequest?.errorCode ?? "—"} mono />
