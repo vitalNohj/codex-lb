@@ -6,7 +6,7 @@ import type { AccountSummary } from "@/features/dashboard/schemas";
 
 const ACCOUNT_CARD_VISIBLE_ROWS = 2;
 // Account cards can grow when the optional email row is rendered.
-const ACCOUNT_CARD_ROW_HEIGHT_REM = 14;
+const ACCOUNT_CARD_ROW_HEIGHT_REM = 16;
 const ACCOUNT_CARD_ROW_GAP_REM = 1;
 
 export type AccountCardsProps = {

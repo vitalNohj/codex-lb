@@ -20,7 +20,7 @@ describe("AccountCards", () => {
     );
 
     expect(screen.getByTestId("dashboard-account-cards")).toHaveStyle({
-      maxHeight: "calc(2 * 14rem + 1rem)",
+      maxHeight: "calc(2 * 16rem + 1rem)",
     });
   });
 

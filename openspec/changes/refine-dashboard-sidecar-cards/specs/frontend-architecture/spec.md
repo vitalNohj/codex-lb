@@ -1,13 +1,13 @@
 ## MODIFIED Requirements
 
-### Requirement: Account card row height is 14rem
+### Requirement: Account card row height is 16rem
 
-The dashboard account card viewport MUST use 14rem per visible row so at least two full rows of account cards are visible before the grid scrolls.
+The dashboard account card viewport MUST use 16rem per visible row so at least two full rows of account cards (six cards on a three-column grid) are visible before the grid scrolls.
 
 #### Scenario: Account card max height
 
 - **WHEN** the account cards container renders with `ACCOUNT_CARD_VISIBLE_ROWS=2`
-- **THEN** the container `maxHeight` is `calc(2 * 14rem + 1rem)`
+- **THEN** the container `maxHeight` is `calc(2 * 16rem + 1rem)`
 
 ## ADDED Requirements
 
