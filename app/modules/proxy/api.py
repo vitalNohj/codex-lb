@@ -2177,58 +2177,6 @@ def _to_model_metadata(model: UpstreamModel) -> ModelMetadata:
     )
 
 
-def _summarize_capture_log_chat_entry(
-    payload: ChatCompletionsRequest,
-    effective_model: str,
-    *,
-    cursor_compat: bool,
-) -> None:
-    # TEMPORARY: capture Cursor manual /summarize traffic shape. Cursor is
-    # routing these requests through /v1/chat/completions with either chat
-    # messages or Responses-shaped input, so logging before branch selection is
-    # the only reliable place to see what it asked for.
-    if not cursor_compat:
-        return
-    data = payload.model_dump(mode="json", exclude_none=True)
-    input_value = data.get("input")
-    input_len = len(input_value) if isinstance(input_value, list) else None
-    last_input_type: str | None = None
-    last_input_role: str | None = None
-    last_input_head = ""
-    if isinstance(input_value, list) and input_value:
-        last = input_value[-1]
-        if isinstance(last, dict):
-            type_value = last.get("type")
-            role_value = last.get("role")
-            last_input_type = type_value if isinstance(type_value, str) else None
-            last_input_role = role_value if isinstance(role_value, str) else None
-            content = last.get("content")
-            try:
-                last_input_head = json.dumps(content, ensure_ascii=True, separators=(",", ":"))[:360]
-            except TypeError:
-                last_input_head = repr(content)[:360]
-    messages = data.get("messages")
-    message_count = len(messages) if isinstance(messages, list) else None
-    instructions = data.get("instructions")
-    instructions_head = instructions[:360] if isinstance(instructions, str) else ""
-    logger.warning(
-        "summarize_capture_entry request_id=%s model=%s effective_model=%s "
-        "stream=%s messages=%s input_len=%s last_input_type=%s "
-        "last_input_role=%s instructions_head=%r last_input_head=%r keys=%s",
-        get_request_id(),
-        payload.model,
-        effective_model,
-        payload.stream,
-        message_count,
-        input_len,
-        last_input_type,
-        last_input_role,
-        instructions_head,
-        last_input_head,
-        ",".join(sorted(data.keys())),
-    )
-
-
 @v1_router.post(
     "/chat/completions",
     response_model=ChatCompletionResult,
@@ -2252,7 +2200,6 @@ async def v1_chat_completions(
     cursor_compat_client = is_cursor_compat_client(request, api_key)
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
-    _summarize_capture_log_chat_entry(payload, effective_model, cursor_compat=cursor_compat_client)
 
     rate_limit_headers = await context.service.rate_limit_headers()
     sidecar_config = await load_sidecar_config()
@@ -2347,7 +2294,9 @@ async def v1_chat_completions(
         api_key,
         request_model=responses_payload.model,
         request_service_tier=responses_payload.service_tier,
-        request_usage_budget=estimate_api_key_request_usage(responses_payload),
+        request_usage_budget=None
+        if cursor_compat_client
+        else estimate_api_key_request_usage(responses_payload),
     )
     responses_payload.stream = True
     stream = context.service.stream_responses(
@@ -2382,11 +2331,8 @@ async def v1_chat_completions(
     if payload.stream:
         stream_options = payload.stream_options
         include_usage = cursor_compat_client or bool(stream_options and stream_options.include_usage)
-        converted_stream = _stream_proxy_errors_as_response_failed(stream)
-        if cursor_compat_client and responses_shaped_payload:
-            converted_stream = _summarize_capture_response_events(converted_stream)
         chat_stream = stream_chat_chunks(
-            converted_stream,
+            _stream_proxy_errors_as_response_failed(stream),
             model=responses_payload.model,
             include_usage=include_usage,
         )
@@ -3107,28 +3053,6 @@ async def _prepend_initial_sse_heartbeat(
 async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) -> AsyncIterator[str]:
     async for line in _stream_response_error_events(stream, owns_reservation=False, reservation=None):
         yield line
-
-
-async def _summarize_capture_response_events(stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    # TEMPORARY: identify whether Cursor /summarize responses include
-    # compaction output items that the chat-completions stream adapter drops.
-    async for chunk in stream:
-        payload = parse_sse_data_json(chunk)
-        if payload:
-            event_type = payload.get("type")
-            item_type: str | None = None
-            item = payload.get("item")
-            if is_json_mapping(item):
-                raw_type = item.get("type")
-                item_type = raw_type if isinstance(raw_type, str) else None
-            logger.warning(
-                "summarize_capture_response request_id=%s event=%s item_type=%s keys=%s",
-                get_request_id(),
-                event_type if isinstance(event_type, str) else None,
-                item_type,
-                ",".join(sorted(str(key) for key in payload.keys())),
-            )
-        yield chunk
 
 
 async def _stream_response_error_events(

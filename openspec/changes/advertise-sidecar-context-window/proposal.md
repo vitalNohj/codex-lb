@@ -23,13 +23,21 @@ hard-fails with "max context length exceeded."
   registry models already expose (`context_length`, `contextLength`,
   `capabilities.context_length`).
 - Use a default window of 200000 for sidecar models.
+- For Cursor-compatible chat-completions traffic, avoid rejecting very large
+  context requests as local API-key rate-limit failures before the upstream can
+  return a model/context-specific response that Cursor can use for compaction.
+- For Cursor-compatible streaming chat-completions traffic, convert late
+  context-window error chunks into the synthetic high-usage completion stream
+  Cursor already uses to trigger compaction.
 - Keep registry-model metadata unchanged.
 
 ## Impact
 
 - Affected spec: `model-catalog-compat`.
 - Affected code: `app/modules/proxy/api.py`,
+  `app/modules/proxy/cursor_chat_compat.py`,
   `tests/integration/test_claude_sidecar_routing.py`,
   `tests/integration/test_openrouter_sidecar_routing.py`,
-  `tests/integration/test_omniroute_sidecar_routing.py`.
+  `tests/integration/test_omniroute_sidecar_routing.py`,
+  `tests/integration/test_proxy_chat_completions.py`.
 - No database or dashboard changes.

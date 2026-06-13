@@ -633,50 +633,6 @@ def ensure_stream_usage_requested(payload: dict[str, JsonValue]) -> None:
     payload["stream_options"] = options
 
 
-def _summarize_capture_log(payload: ChatCompletionsRequest, *, cursor_compat: bool) -> None:
-    # TEMPORARY: capture Cursor's request shape so we can see what /summarize
-    # actually sends and whether it differs from a normal turn. Remove after
-    # diagnosis.
-    if not cursor_compat:
-        return
-    messages = payload.messages or []
-
-    def _text(content: object) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            out: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    t = part.get("text")
-                    if isinstance(t, str):
-                        out.append(t)
-            return " ".join(out)
-        return ""
-
-    system_text = ""
-    for m in messages:
-        if isinstance(m, dict) and m.get("role") in ("system", "developer"):
-            system_text = _text(m.get("content"))
-            break
-    last_text = ""
-    for m in reversed(messages):
-        if isinstance(m, dict) and m.get("role") == "user":
-            last_text = _text(m.get("content"))
-            break
-    logger.warning(
-        "summarize_capture request_id=%s model=%s msgs=%s stream=%s "
-        "system_head=%r last_user_head=%r last_user_tail=%r",
-        get_request_id(),
-        payload.model,
-        len(messages),
-        payload.stream,
-        system_text[:240],
-        last_text[:240],
-        last_text[-240:],
-    )
-
-
 async def proxy_chat_to_sidecar(
     request: Request,
     payload: ChatCompletionsRequest,
@@ -690,7 +646,6 @@ async def proxy_chat_to_sidecar(
     cursor_compat: bool = False,
 ) -> Response:
     sidecar_payload = build_sidecar_chat_payload(payload, effective_model, client.config)
-    _summarize_capture_log(payload, cursor_compat=cursor_compat)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)

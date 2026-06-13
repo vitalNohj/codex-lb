@@ -163,6 +163,14 @@ async def stream_with_cursor_usage_fallback(
         if parsed is None:
             yield line
             continue
+        if is_context_length_error_envelope(parsed):
+            logger.info(
+                "cursor_context_limit_fallback source=stream_error model=%s",
+                payload.model,
+            )
+            for chunk in cursor_context_limit_usage_sse_chunks(payload):
+                yield chunk.decode("utf-8")
+            return
         completion_chars += chat_completion_delta_chars(parsed)
         if is_chat_completion_usage_chunk(parsed) and needs_cursor_usage_fallback(parsed.get("usage")):
             completion_tokens = max(1, estimate_tokens_from_chars(completion_chars))
