@@ -6,7 +6,7 @@ import pytest
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, ApiKey
+from app.db.models import Account, AccountStatus, ApiKey, ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.request_logs.repository import RequestLogsRepository
@@ -124,6 +124,44 @@ async def test_request_logs_api_returns_recent(async_client, db_setup):
     }
     assert older["transport"] == "http"
     assert older["requestKind"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_request_logs_api_returns_claude_sidecar_account_label(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="req_claude_sidecar_label",
+            model="claude-sonnet",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            transport="http",
+            source="claude_sidecar",
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="req_claude_sidecar_label",
+                timestamp=now,
+                auth_index="0",
+                source="claude@example.com",
+                total_tokens=15,
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=1")
+    assert response.status_code == 200
+    latest = response.json()["requests"][0]
+    assert latest["source"] == "claude_sidecar"
+    assert latest["sidecarAccountLabel"] == "claude@example.com"
 
 
 @pytest.mark.asyncio
