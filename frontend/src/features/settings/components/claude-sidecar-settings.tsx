@@ -202,7 +202,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
               <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Claude Sidecar</h3>
+              <h3 className="text-sm font-semibold">CLIProxyAPI Integration</h3>
               <p className="text-xs text-muted-foreground">Configure CLIProxyAPI for Claude chat-completions routing.</p>
             </div>
           </div>

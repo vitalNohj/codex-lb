@@ -58,6 +58,12 @@ function renderWithQueryClient(ui: React.ReactElement) {
 }
 
 describe("ClaudeSidecarSettings", () => {
+  it("labels the section as the CLIProxyAPI integration", () => {
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: "CLIProxyAPI Integration" })).toBeInTheDocument();
+  });
+
   it("saves sidecar config and can clear a configured key", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);

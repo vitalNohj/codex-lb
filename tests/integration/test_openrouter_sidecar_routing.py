@@ -208,9 +208,16 @@ async def test_openrouter_model_list_merges_and_filters(async_client, openrouter
     response = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
 
     assert response.status_code == 200
-    ids = [item["id"] for item in response.json()["data"]]
+    data = response.json()["data"]
+    ids = [item["id"] for item in data]
     assert "deepseek/deepseek-chat" in ids
     assert "gpt-5.4" not in ids
+
+    sidecar_entry = next(item for item in data if item["id"] == "deepseek/deepseek-chat")
+    # Clients (e.g. Cursor) read the advertised context window to trigger their
+    # own compaction; sidecar models must expose it.
+    assert sidecar_entry["context_length"] == 200_000
+    assert sidecar_entry["capabilities"]["context_length"] == 200_000
 
 
 @pytest.mark.asyncio
