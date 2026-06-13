@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -65,7 +66,7 @@ function planDraftFromPlan(plan: ClaudeSidecarAuthPlan): PlanDraft {
 }
 
 export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarSettingsProps) {
-  const { testMutation } = useClaudeSidecar();
+  const { modelsQuery, testMutation } = useClaudeSidecar();
   const { quotaQuery } = useClaudeSidecarQuota();
   const sidecarEnabled = settings.claudeSidecarEnabled ?? false;
   const sidecarBaseUrl = settings.claudeSidecarBaseUrl ?? DEFAULT_BASE_URL;
@@ -103,6 +104,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
     Number.isFinite(parsedPollInterval) &&
     parsedPollInterval > 0;
   const quota = quotaQuery.data;
+  const modelRows = modelsQuery.data?.models ?? [];
   const estimationRows = useMemo(() => Object.entries(planDrafts), [planDrafts]);
 
   useEffect(() => {
@@ -208,11 +210,11 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
         <div className="divide-y rounded-lg border">
           <div className="flex items-center justify-between gap-4 p-3">
             <div>
-              <p className="text-sm font-medium">Enable Claude sidecar</p>
+              <p className="text-sm font-medium">Enable CLI Proxy integration</p>
               <p className="text-xs text-muted-foreground">When enabled, matching Claude model requests route to CLIProxyAPI.</p>
             </div>
             <Switch
-              aria-label="Enable Claude sidecar"
+              aria-label="Enable CLI Proxy integration"
               checked={sidecarEnabled}
               disabled={busy}
               onCheckedChange={(checked) => void save({ claudeSidecarEnabled: checked })}
@@ -279,7 +281,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
             </div>
             <div className="flex flex-wrap gap-2">
               <Button type="button" size="sm" className="h-8 text-xs" disabled={busy || !formValid} onClick={() => void saveConfig()}>
-                Save sidecar
+                Save
               </Button>
               <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy || testMutation.isPending} onClick={() => testMutation.mutate()}>
                 Test connection
@@ -297,6 +299,28 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
               >
                 Clear management key
               </Button>
+            </div>
+
+            <div className="space-y-2 rounded-md border bg-muted/10 p-3">
+              <div>
+                <p className="text-sm font-medium">Available models</p>
+                <p className="text-xs text-muted-foreground">
+                  Models retrievable from CLIProxyAPI. Append a model ID after a configured prefix, e.g. <span className="font-mono">{`${parsedPrefixes[0] ?? "claude"}/${modelRows[0]?.id ?? "claude-sonnet-4"}`}</span>.
+                </p>
+              </div>
+              {modelRows.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {modelRows.map((model) => (
+                    <Badge key={model.id} variant="secondary" className="font-mono text-[11px]">
+                      {model.id}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No models retrieved yet. Save your config and run Test connection to fetch the model list.
+                </p>
+              )}
             </div>
 
             <div className="space-y-3 rounded-md border bg-muted/10 p-3">
