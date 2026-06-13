@@ -72,6 +72,8 @@ export function AppHeader({
           ))}
           <a
             href={OMNIROUTE_PATH}
+            target="_blank"
+            rel="noopener noreferrer"
             className="relative inline-flex h-7 items-center gap-1 rounded-md px-3.5 text-xs leading-none font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
           >
             OmniRoute
@@ -139,6 +141,8 @@ export function AppHeader({
                 ))}
                 <a
                   href={OMNIROUTE_PATH}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   onClick={() => setMobileOpen(false)}
                 >

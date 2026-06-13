@@ -112,7 +112,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
           </div>
           <div className="flex items-center gap-2">
             <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
-              <a href="/omni">
+              <a href="/omni" target="_blank" rel="noopener noreferrer">
                 Open OmniRoute
                 <ExternalLink className="size-3" aria-hidden="true" />
               </a>
