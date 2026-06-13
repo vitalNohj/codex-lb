@@ -146,7 +146,7 @@ describe("AccountCard", () => {
 
     render(<AccountCard account={account} />);
 
-    expect(screen.getAllByText("CLI Proxy API").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("CLI Proxy API")).toHaveLength(1);
     expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
     expect(screen.getByText(/Usage/)).toBeInTheDocument();
     expect(screen.getByText("OAuth")).toBeInTheDocument();
@@ -251,6 +251,7 @@ describe("AccountCard", () => {
 
     render(<AccountCard account={openRouter} />);
 
+    expect(screen.getAllByText("OpenRouter")).toHaveLength(1);
     expect(screen.getByText("Health")).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.queryByText("Models")).not.toBeInTheDocument();
@@ -282,6 +283,7 @@ describe("AccountCard", () => {
 
     render(<AccountCard account={omniRoute} />);
 
+    expect(screen.getAllByText("OmniRoute")).toHaveLength(1);
     expect(screen.getByText("Health")).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.queryByText("Models")).not.toBeInTheDocument();

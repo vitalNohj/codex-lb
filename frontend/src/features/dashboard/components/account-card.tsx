@@ -1,4 +1,4 @@
-import { Bot, Clock, ExternalLink, Play, RotateCcw, Zap } from "lucide-react";
+import { Clock, ExternalLink, Play, RotateCcw, Zap } from "lucide-react";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
@@ -251,16 +251,7 @@ function SyntheticAccountCard({
             {formatSlug(account.provider ?? "claude")} | {account.baseUrl ?? sidecarLabel}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Badge
-            variant="outline"
-            className="gap-1 border-violet-300 bg-violet-50 px-1.5 text-[11px] text-violet-700"
-          >
-            <Bot className="h-3 w-3" aria-hidden="true" />
-            {sidecarLabel}
-          </Badge>
-          <StatusBadge status={status} />
-        </div>
+        <StatusBadge status={status} />
       </div>
 
       {isClaude ? (
