@@ -6,6 +6,7 @@ The dashboard account list caps its scrollable viewport too tightly, so fewer th
 
 - Increase the dashboard account-card two-row viewport so at least two full rows of cards are visible before scrolling.
 - Rename the Claude synthetic account card to `CLI Proxy API` and render one compact, privacy-aware usage panel per sidecar auth account, headed by that auth's email (or name) plus `Usage`.
+- Remove the duplicated sidecar-type badge from synthetic dashboard account cards because the card title already identifies CLI Proxy API, OpenRouter, or OmniRoute.
 - Remove the Claude synthetic card's lower `Health`, `Quota`, `Models`, and `Requests` metadata rows.
 - Remove model-count rows from the OpenRouter and OmniRoute dashboard cards; keep their health and request rows.
 - Derive the OpenRouter and OmniRoute synthetic account status as `active` when the sidecar is enabled and configured, instead of `paused`, without hiding real disabled/missing-key states.

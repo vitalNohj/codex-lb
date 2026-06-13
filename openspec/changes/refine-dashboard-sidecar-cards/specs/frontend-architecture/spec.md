@@ -13,7 +13,7 @@ The dashboard account card viewport MUST use 16rem per visible row so at least t
 
 ### Requirement: CLI Proxy API synthetic card presentation
 
-The dashboard MUST render the Claude sidecar synthetic account card with the title `CLI Proxy API`. The card MUST render one usage panel per sidecar auth account in `sidecarAuths`, and each usage panel MUST be headed by that auth account's email (or, when no email exists, its name) followed by `Usage`. Each per-auth usage panel MUST show that auth account's 5h and weekly remaining quota. The auth account email or name in each panel heading MUST be hideable via dashboard privacy mode using the same blur treatment as regular account emails. The Claude synthetic card MUST NOT render the `Health`, `Quota`, `Models`, or `Requests` metadata rows.
+The dashboard MUST render the Claude sidecar synthetic account card with the title `CLI Proxy API`. The card MUST render one usage panel per sidecar auth account in `sidecarAuths`, and each usage panel MUST be headed by that auth account's email (or, when no email exists, its name) followed by `Usage`. Each per-auth usage panel MUST show that auth account's 5h and weekly remaining quota. The auth account email or name in each panel heading MUST be hideable via dashboard privacy mode using the same blur treatment as regular account emails. The Claude synthetic card MUST NOT render the `Health`, `Quota`, `Models`, or `Requests` metadata rows. The card MUST NOT render a duplicate sidecar-type badge labelled `CLI Proxy API`.
 
 When the Claude sidecar has no sidecar auth accounts but still has aggregate usage data, the card MUST render a single fallback usage panel headed `Claude Usage`.
 
@@ -23,6 +23,7 @@ When the Claude sidecar has no sidecar auth accounts but still has aggregate usa
 - **THEN** the card title is `CLI Proxy API`
 - **AND** each sidecar auth account renders a usage panel headed by its email (or name) plus `Usage`
 - **AND** the card does not render the `Health`, `Quota`, `Models`, or `Requests` metadata rows
+- **AND** the card does not render a duplicate `CLI Proxy API` sidecar-type badge
 
 #### Scenario: Claude synthetic card auth label respects privacy mode
 
@@ -31,7 +32,7 @@ When the Claude sidecar has no sidecar auth accounts but still has aggregate usa
 
 ### Requirement: OpenRouter and OmniRoute synthetic card presentation
 
-The dashboard MUST render OpenRouter and OmniRoute synthetic account cards with a `Health` row and a `Requests` row when request usage exists. The cards MUST NOT render a model-count row. The `Health` row MUST display the effective synthetic account `healthStatus` value.
+The dashboard MUST render OpenRouter and OmniRoute synthetic account cards with a `Health` row and a `Requests` row when request usage exists. The cards MUST NOT render a model-count row. The cards MUST NOT render duplicate sidecar-type badges labelled `OpenRouter` or `OmniRoute`. The `Health` row MUST display the effective synthetic account `healthStatus` value.
 
 #### Scenario: OpenRouter synthetic card hides model count
 
@@ -39,6 +40,7 @@ The dashboard MUST render OpenRouter and OmniRoute synthetic account cards with 
 - **THEN** the card renders the `Health` row
 - **AND** the card renders the `Requests` row
 - **AND** the card does not render a `Models` row
+- **AND** the card does not render a duplicate `OpenRouter` sidecar-type badge
 
 #### Scenario: OmniRoute synthetic card hides model count
 
@@ -46,6 +48,7 @@ The dashboard MUST render OpenRouter and OmniRoute synthetic account cards with 
 - **THEN** the card renders the `Health` row
 - **AND** the card renders the `Requests` row
 - **AND** the card does not render a `Models` row
+- **AND** the card does not render a duplicate `OmniRoute` sidecar-type badge
 
 ### Requirement: Enabled sidecar synthetic accounts are active
 

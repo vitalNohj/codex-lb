@@ -11,6 +11,7 @@
 - [x] 2.4 Remove the Claude synthetic card `Health`, `Quota`, `Models`, and `Requests` metadata rows.
 - [x] 2.5 Keep OpenRouter and OmniRoute card health and request rows.
 - [x] 2.6 Remove model-count rows from OpenRouter and OmniRoute cards.
+- [x] 2.7 Remove duplicate sidecar-type badges from CLI Proxy API, OpenRouter, and OmniRoute dashboard cards while keeping the status badge.
 
 ## 3. Sidecar summary status
 
@@ -28,3 +29,5 @@
 - [x] 4.4 Add/update backend tests for stale OpenRouter and OmniRoute health values.
 - [x] 4.5 Run focused backend and frontend tests.
 - [x] 4.6 Validate the OpenSpec change with `--strict`.
+- [x] 4.7 Add/update frontend tests for absent duplicate sidecar-type badges.
+- [x] 4.8 Re-run focused frontend tests and OpenSpec validation.
