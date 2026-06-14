@@ -25,7 +25,14 @@ When the OmniRoute sidecar response does not contain a cost field, the system SH
 
 #### Scenario: OmniRoute unknown model remains zero cost
 - **WHEN** an OmniRoute sidecar request completes for a model not in `DEFAULT_PRICING_MODELS` or aliases
+- **AND** the model name does not explicitly identify a free model
 - **THEN** the resulting `request_logs` row has `cost_usd = NULL`
+
+#### Scenario: Explicit free sidecar model stores zero cost
+- **WHEN** an OpenRouter or OmniRoute sidecar request completes for a model whose identifier includes a free-model marker such as `:free`, `-free`, or `free-`
+- **AND** no authoritative cost is provided by the upstream response
+- **THEN** the resulting `request_logs` row has `cost_usd = 0.0`
+- **AND** the dashboard can render the value as `$0.00` rather than an unknown-cost placeholder
 
 ### Requirement: Authoritative cost takes precedence over pricing table
 
@@ -44,6 +51,11 @@ Historical `request_logs` rows for `openrouter_sidecar` and `omniroute_sidecar` 
 - **WHEN** the Alembic migration `20260614_000000_backfill_openrouter_omniroute_request_log_costs` runs
 - **THEN** all qualifying rows for both sources are updated with computed costs
 - **AND** rows where no pricing match exists retain `cost_usd = NULL`
+
+#### Scenario: Migration backfills explicit free sidecar models to zero
+- **WHEN** the Alembic migration `20260614_010000_backfill_free_sidecar_request_log_costs` runs
+- **THEN** qualifying OpenRouter and OmniRoute rows with explicit free model markers and `cost_usd IS NULL` are updated to `cost_usd = 0.0`
+- **AND** rows for unknown non-free models retain `cost_usd = NULL`
 
 ### Requirement: No regression for other sources
 

@@ -931,3 +931,65 @@ async def test_claude_sidecar_cost_backfill_migration_populates_cost(tmp_path):
     assert costs["req_sidecar_2"] == pytest.approx(20.0)
     assert costs["req_sidecar_unknown"] is None
     assert costs["req_openai"] == pytest.approx(1.23)
+
+
+@pytest.mark.asyncio
+async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_models(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'sidecar-free-cost-backfill.sqlite'}"
+
+    await to_thread.run_sync(
+        lambda: run_upgrade(
+            db_url,
+            "20260614_000000_backfill_openrouter_omniroute_request_log_costs",
+            bootstrap_legacy=True,
+        )
+    )
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, request_kind
+                    )
+                    VALUES
+                      (NULL, 'req_openrouter_free', '2026-06-14 00:00:00',
+                       'nvidia/nemotron-3-ultra-550b-a55b:free', 'openrouter_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_omniroute_free', '2026-06-14 00:01:00',
+                       'oc/deepseek-v4-flash-free', 'omniroute_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_omniroute_free_stack', '2026-06-14 00:02:00',
+                       'free-stack', 'omniroute_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_omniroute_unknown', '2026-06-14 00:03:00',
+                       'oc/big-pickle', 'omniroute_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_openai_free_name', '2026-06-14 00:04:00',
+                       'free-stack', NULL,
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal')
+                    """
+                )
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+
+        async with session_factory() as session:
+            rows = (
+                await session.execute(text("SELECT request_id, cost_usd FROM request_logs ORDER BY request_id"))
+            ).all()
+    finally:
+        await engine.dispose()
+
+    costs = {row[0]: row[1] for row in rows}
+    assert costs["req_openrouter_free"] == pytest.approx(0.0)
+    assert costs["req_omniroute_free"] == pytest.approx(0.0)
+    assert costs["req_omniroute_free_stack"] == pytest.approx(0.0)
+    assert costs["req_omniroute_unknown"] is None
+    assert costs["req_openai_free_name"] is None
