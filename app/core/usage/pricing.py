@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-import re
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
