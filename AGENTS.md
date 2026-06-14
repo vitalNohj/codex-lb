@@ -139,6 +139,7 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - Accounts tab integration items (CLIProxyAPI, OpenRouter, OmniRoute) should not show provider-name badges; the heading already names the provider.
 - Move integration controls from Settings into the relevant Accounts tab item (e.g. CLIProxyAPI quota estimation and a manual "Test connection" button); Settings should run test-connection automatically on save.
 - When investigating behavior issues, prioritize querying the database and request logs over code analysis to avoid making dangerous assumptions about the current state.
+- External navigation links (e.g. "Open OmniRoute") in the dashboard or settings cards should always open in a new browser tab with `rel="noopener noreferrer"`.
 
 ## Learned Workspace Facts
 
@@ -150,3 +151,7 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - The Cursor↔OpenAI compatibility layer must stay aligned with upstream codex-lb; CLIProxyAPI already converts to OpenAI chat format, so only add minimal Claude-specific handling and avoid divergence from upstream behavior.
 - Codex control endpoints (e.g. `trace_summarize`) must be raw pass-through to the backend; do not inject `reasoning`/`service_tier` or rewrite the model on control payloads. Such policy rewriting broke Cursor `/summarize` compaction (only triggered with the OpenAI API key enabled, not on Composer models).
 - At the context limit, return an error Cursor recognizes as a compaction trigger; surfacing it as an API-key/rate-limit error prevents Cursor from compacting.
+- OpenSpec validation requires at least one delta spec in the change folder for any behavior change, even if the change is a small UI refinement.
+- OmniRoute model routing uses an exact case-insensitive string match; models must be explicitly added to the "selected models" list to avoid falling through to the default OpenAI path.
+- The CLIProxyAPI management secret must be configured as plaintext in the database (which the app then encrypts) because the sidecar hashes the config value on its end.
+- Claude sidecar usage estimates prefer authoritative OAuth-reported percentages over local token-budget math when a pro/team plan is configured.
