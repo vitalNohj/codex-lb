@@ -186,6 +186,18 @@ def test_get_pricing_for_model_free_suffix_beats_broad_paid_alias() -> None:
     assert price.output_per_1m == 0.0
 
 
+@pytest.mark.parametrize("model_name", ["oc/big-pickle", "big-pickle"])
+def test_get_pricing_for_model_known_opaque_omniroute_free_model_is_zero_cost(model_name: str) -> None:
+    result = get_pricing_for_model(model_name, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+
+    assert result is not None
+    model, price = result
+    assert model == "free"
+    assert price.input_per_1m == 0.0
+    assert price.cached_input_per_1m == 0.0
+    assert price.output_per_1m == 0.0
+
+
 def test_calculate_cost_from_usage_cached_tokens():
     usage = ResponseUsage(
         input_tokens=1000,

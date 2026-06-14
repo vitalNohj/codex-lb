@@ -164,6 +164,30 @@ async def test_add_log_persists_zero_cost_for_explicit_free_sidecar_model(db_set
 
 
 @pytest.mark.asyncio
+async def test_add_log_persists_zero_cost_for_known_opaque_omniroute_free_model(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_opaque_free_omniroute_model",
+            model="oc/big-pickle",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            source="omniroute_sidecar",
+            cost_usd=None,
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        assert persisted.cost_usd == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
 async def test_find_latest_account_id_for_response_id_prefers_session_then_falls_back_to_api_key_scope() -> None:
     session = AsyncMock()
     repo = RequestLogsRepository(session)

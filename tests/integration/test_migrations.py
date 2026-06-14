@@ -967,11 +967,14 @@ async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_mode
                       (NULL, 'req_omniroute_free_stack', '2026-06-14 00:02:00',
                        'free-stack', 'omniroute_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
-                      (NULL, 'req_omniroute_unknown', '2026-06-14 00:03:00',
+                      (NULL, 'req_omniroute_opaque_free', '2026-06-14 00:03:00',
                        'oc/big-pickle', 'omniroute_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
                       (NULL, 'req_openai_free_name', '2026-06-14 00:04:00',
                        'free-stack', NULL,
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_omniroute_unknown', '2026-06-14 00:05:00',
+                       'oc/unknown-paid-model', 'omniroute_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal')
                     """
                 )
@@ -991,5 +994,6 @@ async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_mode
     assert costs["req_openrouter_free"] == pytest.approx(0.0)
     assert costs["req_omniroute_free"] == pytest.approx(0.0)
     assert costs["req_omniroute_free_stack"] == pytest.approx(0.0)
-    assert costs["req_omniroute_unknown"] is None
+    assert costs["req_omniroute_opaque_free"] == pytest.approx(0.0)
     assert costs["req_openai_free_name"] is None
+    assert costs["req_omniroute_unknown"] is None
