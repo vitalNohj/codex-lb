@@ -398,6 +398,7 @@ async def _log_omniroute_request(
                 api_key_id=api_key.id if api_key else None,
                 source=OMNIROUTE_SIDECAR_SOURCE,
                 failure_phase="sidecar" if status != "success" else None,
+                cost_usd=usage.cost_usd if usage else None,
             )
     except Exception:
         logger.warning(

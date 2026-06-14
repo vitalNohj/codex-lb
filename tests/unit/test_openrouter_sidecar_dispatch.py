@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage
 from app.modules.proxy.openrouter_sidecar_dispatch import (
+    _log_openrouter_request,
     build_openrouter_chat_payload,
     is_openrouter_sidecar_model,
     openrouter_sidecar_wire_model,
@@ -63,3 +67,39 @@ def test_build_openrouter_chat_payload_preserves_extra_fields_and_effective_mode
     assert payload.body["model"] == "deepseek/deepseek-chat"
     assert payload.body["messages"] == [{"role": "user", "content": "hi"}]
     assert payload.body["custom_flag"] == "kept"
+
+
+@pytest.mark.asyncio
+async def test_log_openrouter_request_passes_authoritative_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class _SessionContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class _Repository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def add_log(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.get_background_session", _SessionContext)
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.RequestLogsRepository", _Repository)
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.get_request_id", lambda: "req-openrouter-cost")
+
+    await _log_openrouter_request(
+        api_key=None,
+        model="deepseek/deepseek-chat",
+        started_at=0,
+        status="success",
+        usage=SidecarUsage(input_tokens=10, output_tokens=5, cost_usd=0.00123),
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["request_id"] == "req-openrouter-cost"
+    assert calls[0]["source"] == "openrouter_sidecar"
+    assert calls[0]["cost_usd"] == 0.00123

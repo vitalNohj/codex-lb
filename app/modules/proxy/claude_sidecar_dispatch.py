@@ -70,6 +70,7 @@ class SidecarUsage:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int = 0
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -878,10 +879,14 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     input_details = usage.get("input_tokens_details")
     if is_json_mapping(input_details):
         cached_tokens = _int_field(input_details, "cached_tokens") or cached_tokens
+
+    cost_usd = _float_field(usage, "cost")
+
     return SidecarUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
+        cost_usd=cost_usd,
     )
 
 
@@ -940,6 +945,15 @@ def _int_field(payload: Mapping[str, JsonValue], key: str) -> int | None:
         return value
     if isinstance(value, float):
         return int(value)
+    return None
+
+
+def _float_field(payload: Mapping[str, JsonValue], key: str) -> float | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
     return None
 
 

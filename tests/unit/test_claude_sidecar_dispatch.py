@@ -517,6 +517,37 @@ def test_extract_usage_supports_chat_and_responses_usage_shapes() -> None:
     assert responses_usage.cached_input_tokens == 3
 
 
+def test_extract_usage_reads_openrouter_cost_field() -> None:
+    usage_with_cost = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "cost": 0.00123,
+            }
+        }
+    )
+
+    assert usage_with_cost is not None
+    assert usage_with_cost.input_tokens == 100
+    assert usage_with_cost.output_tokens == 50
+    assert usage_with_cost.cost_usd == 0.00123
+
+
+def test_extract_usage_handles_missing_cost_field() -> None:
+    usage_without_cost = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+            }
+        }
+    )
+
+    assert usage_without_cost is not None
+    assert usage_without_cost.cost_usd is None
+
+
 def test_sse_decoder_extracts_usage_from_split_chunks() -> None:
     decoder = _SseUsageDecoder()
 

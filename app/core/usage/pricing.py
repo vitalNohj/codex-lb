@@ -361,6 +361,118 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=0.125,
         output_per_1m=10.0,
     ),
+    # Additional common OpenRouter models
+    "openai/gpt-4o": ModelPrice(
+        input_per_1m=2.50,
+        cached_input_per_1m=0.25,
+        output_per_1m=10.0,
+    ),
+    "openai/gpt-4o-mini": ModelPrice(
+        input_per_1m=0.15,
+        cached_input_per_1m=0.015,
+        output_per_1m=0.60,
+    ),
+    "anthropic/claude-3.5-sonnet": ModelPrice(
+        input_per_1m=3.00,
+        cached_input_per_1m=0.30,
+        output_per_1m=15.0,
+    ),
+    "anthropic/claude-3.5-haiku": ModelPrice(
+        input_per_1m=0.80,
+        cached_input_per_1m=0.08,
+        output_per_1m=4.0,
+    ),
+    "google/gemini-1.5-pro": ModelPrice(
+        input_per_1m=1.25,
+        cached_input_per_1m=0.125,
+        output_per_1m=5.0,
+    ),
+    "google/gemini-1.5-flash": ModelPrice(
+        input_per_1m=0.075,
+        cached_input_per_1m=0.0075,
+        output_per_1m=0.30,
+    ),
+    "meta-llama/llama-3.1-405b-instruct": ModelPrice(
+        input_per_1m=2.70,
+        cached_input_per_1m=0.27,
+        output_per_1m=2.70,
+    ),
+    "meta-llama/llama-3.1-70b-instruct": ModelPrice(
+        input_per_1m=0.70,
+        cached_input_per_1m=0.07,
+        output_per_1m=0.70,
+    ),
+    "meta-llama/llama-3.1-8b-instruct": ModelPrice(
+        input_per_1m=0.10,
+        cached_input_per_1m=0.01,
+        output_per_1m=0.10,
+    ),
+    "mistralai/mistral-large": ModelPrice(
+        input_per_1m=3.00,
+        cached_input_per_1m=0.30,
+        output_per_1m=9.00,
+    ),
+    "mistralai/mistral-small": ModelPrice(
+        input_per_1m=0.20,
+        cached_input_per_1m=0.02,
+        output_per_1m=0.60,
+    ),
+    "cohere/command-r-plus": ModelPrice(
+        input_per_1m=3.00,
+        cached_input_per_1m=0.30,
+        output_per_1m=15.0,
+    ),
+    "cohere/command-r": ModelPrice(
+        input_per_1m=0.50,
+        cached_input_per_1m=0.05,
+        output_per_1m=1.50,
+    ),
+    # OmniRoute sidecar models (commonly routed models, approximate list prices).
+    "gpt-4o": ModelPrice(
+        input_per_1m=2.50,
+        cached_input_per_1m=0.25,
+        output_per_1m=10.0,
+    ),
+    "gpt-4o-mini": ModelPrice(
+        input_per_1m=0.15,
+        cached_input_per_1m=0.015,
+        output_per_1m=0.60,
+    ),
+    "claude-3-5-sonnet-20241022": ModelPrice(
+        input_per_1m=3.00,
+        cached_input_per_1m=0.30,
+        output_per_1m=15.0,
+    ),
+    "claude-3-5-haiku-20241022": ModelPrice(
+        input_per_1m=0.80,
+        cached_input_per_1m=0.08,
+        output_per_1m=4.0,
+    ),
+    "gemini-1.5-pro": ModelPrice(
+        input_per_1m=1.25,
+        cached_input_per_1m=0.125,
+        output_per_1m=5.0,
+    ),
+    "gemini-1.5-flash": ModelPrice(
+        input_per_1m=0.075,
+        cached_input_per_1m=0.0075,
+        output_per_1m=0.30,
+    ),
+    "llama-3.1-405b": ModelPrice(
+        input_per_1m=2.70,
+        cached_input_per_1m=0.27,
+        output_per_1m=2.70,
+    ),
+    "llama-3.1-70b": ModelPrice(
+        input_per_1m=0.70,
+        cached_input_per_1m=0.07,
+        output_per_1m=0.70,
+    ),
+    "llama-3.1-8b": ModelPrice(
+        input_per_1m=0.10,
+        cached_input_per_1m=0.01,
+        output_per_1m=0.10,
+    ),
 }
 
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
@@ -388,6 +500,33 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "gpt-image-1.5*": "gpt-image-1.5",
     "gpt-image-1-mini*": "gpt-image-1-mini",
     "gpt-image-1*": "gpt-image-1",
+    # OpenRouter model aliases (provider/model format)
+    "*openai/gpt-4o*": "openai/gpt-4o",
+    "*openai/gpt-4o-mini*": "openai/gpt-4o-mini",
+    "*anthropic/claude-3.5-sonnet*": "anthropic/claude-3.5-sonnet",
+    "*anthropic/claude-3.5-haiku*": "anthropic/claude-3.5-haiku",
+    "*google/gemini-1.5-pro*": "google/gemini-1.5-pro",
+    "*google/gemini-1.5-flash*": "google/gemini-1.5-flash",
+    "*meta-llama/llama-3.1-405b*": "meta-llama/llama-3.1-405b-instruct",
+    "*meta-llama/llama-3.1-70b*": "meta-llama/llama-3.1-70b-instruct",
+    "*meta-llama/llama-3.1-8b*": "meta-llama/llama-3.1-8b-instruct",
+    "*mistralai/mistral-large*": "mistralai/mistral-large",
+    "*mistralai/mistral-small*": "mistralai/mistral-small",
+    "*cohere/command-r-plus*": "cohere/command-r-plus",
+    "*cohere/command-r*": "cohere/command-r",
+    # Existing OpenRouter entries
+    "*deepseek/deepseek-chat*": "deepseek/deepseek-chat",
+    "*google/gemini-2.5-pro-preview*": "google/gemini-2.5-pro-preview",
+    # OmniRoute model aliases (bare model names as used in selected_models)
+    "*gpt-4o*": "gpt-4o",
+    "*gpt-4o-mini*": "gpt-4o-mini",
+    "*claude-3-5-sonnet*": "claude-3-5-sonnet-20241022",
+    "*claude-3-5-haiku*": "claude-3-5-haiku-20241022",
+    "*gemini-1.5-pro*": "gemini-1.5-pro",
+    "*gemini-1.5-flash*": "gemini-1.5-flash",
+    "*llama-3.1-405b*": "llama-3.1-405b",
+    "*llama-3.1-70b*": "llama-3.1-70b",
+    "*llama-3.1-8b*": "llama-3.1-8b",
     # Claude aliases tolerate sidecar prefixes (``cp-claude-...``) and
     # date-suffixed ids (``claude-opus-4-5-20251101``). The longest matching
     # pattern wins, so version-specific patterns beat the family fallbacks.
@@ -405,8 +544,6 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "*claude-3-7-sonnet*": "claude-3-7-sonnet",
     "*claude-haiku-4-5*": "claude-haiku-4-5",
     "*claude-3-5-haiku*": "claude-3-5-haiku",
-    "*deepseek/deepseek-chat*": "deepseek/deepseek-chat",
-    "*google/gemini-2.5-pro-preview*": "google/gemini-2.5-pro-preview",
 }
 
 
