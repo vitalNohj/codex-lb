@@ -157,6 +157,35 @@ def test_get_pricing_for_model_openrouter_deepseek_chat():
     assert price.output_per_1m == 0.28
 
 
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "oc/deepseek-v4-flash-free",
+        "free-stack",
+    ],
+)
+def test_get_pricing_for_model_explicit_free_models_are_zero_cost(model_name: str) -> None:
+    result = get_pricing_for_model(model_name, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+
+    assert result is not None
+    model, price = result
+    assert model == "free"
+    assert price.input_per_1m == 0.0
+    assert price.cached_input_per_1m == 0.0
+    assert price.output_per_1m == 0.0
+
+
+def test_get_pricing_for_model_free_suffix_beats_broad_paid_alias() -> None:
+    result = get_pricing_for_model("openai/gpt-4o:free", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+
+    assert result is not None
+    model, price = result
+    assert model == "free"
+    assert price.input_per_1m == 0.0
+    assert price.output_per_1m == 0.0
+
+
 def test_calculate_cost_from_usage_cached_tokens():
     usage = ResponseUsage(
         input_tokens=1000,

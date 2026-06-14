@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+import re
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
@@ -49,6 +50,16 @@ class CostItem:
     service_tier: str | None = None
 
 
+FREE_MODEL_PRICE = ModelPrice(input_per_1m=0.0, output_per_1m=0.0, cached_input_per_1m=0.0)
+_FREE_MODEL_RE = re.compile(r"(^|[/:_-])free($|[/:_-])")
+
+
+def is_explicit_free_model(model: str | None) -> bool:
+    if not model:
+        return False
+    return bool(_FREE_MODEL_RE.search(model.strip().lower()))
+
+
 def _as_number(value: int | float | None) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -88,6 +99,7 @@ def _normalize_usage(usage: UsageTokens | ResponseUsage | None) -> UsageTokens |
 
 
 DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
+    "free": FREE_MODEL_PRICE,
     "gpt-5.5": ModelPrice(
         input_per_1m=5.0,
         cached_input_per_1m=0.5,
@@ -571,6 +583,9 @@ def get_pricing_for_model(
     aliases = aliases or DEFAULT_MODEL_ALIASES
 
     normalized = model.lower()
+    if is_explicit_free_model(normalized):
+        return "free", FREE_MODEL_PRICE
+
     for key, value in pricing.items():
         if key.lower() == normalized:
             return key, value
