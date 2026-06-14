@@ -173,6 +173,8 @@ export const RequestLogSchema = z.object({
   reasoningEffort: z.string().nullable(),
   costUsd: z.number().nullable(),
   costBreakdown: RequestLogCostBreakdownSchema.nullable().optional().default(null),
+  referenceCostUsd: z.number().nullable().optional(),
+  savingsUsd: z.number().nullable().optional(),
   latencyMs: z.number().nullable(),
 });
 

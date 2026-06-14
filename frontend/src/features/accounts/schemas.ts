@@ -22,6 +22,7 @@ export const AccountRequestUsageSchema = z.object({
   totalTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
   totalCostUsd: z.number().nonnegative(),
+  totalSavingsUsd: z.number().nonnegative().optional(),
 });
 
 export const AccountTokenStatusSchema = z.object({

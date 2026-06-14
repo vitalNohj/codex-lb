@@ -12,7 +12,7 @@ import {
   quotaBarColor,
   quotaBarTrack,
 } from "@/utils/account-status";
-import { formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
+import { formatCurrency, formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
 
 type AccountAction = "details" | "resume" | "reauth" | "warmup-toggle";
 
@@ -230,6 +230,7 @@ function SyntheticAccountCard({
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;
+  const totalSavings = account.requestUsage?.totalSavingsUsd ?? 0;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
   const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
   const sidecarAuths = account.sidecarAuths ?? [];
@@ -321,6 +322,14 @@ function SyntheticAccountCard({
               <span className="font-medium tabular-nums text-foreground">
                 {requestCount}
                 {totalTokens != null && totalTokens > 0 ? ` | ${totalTokens.toLocaleString()} tok` : ""}
+              </span>
+            </div>
+          ) : null}
+          {totalSavings > 0 ? (
+            <div className="flex items-center justify-between gap-2">
+              <span>Saved</span>
+              <span className="font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+                {formatCurrency(totalSavings)}
               </span>
             </div>
           ) : null}

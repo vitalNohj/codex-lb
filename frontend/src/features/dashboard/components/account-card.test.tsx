@@ -246,6 +246,7 @@ describe("AccountCard", () => {
         totalTokens: 100,
         cachedInputTokens: 0,
         totalCostUsd: 0,
+        totalSavingsUsd: 0.42,
       },
     });
 
@@ -256,6 +257,33 @@ describe("AccountCard", () => {
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.queryByText("Models")).not.toBeInTheDocument();
     expect(screen.getByText("Requests")).toBeInTheDocument();
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(screen.getByText("$0.42")).toBeInTheDocument();
+  });
+
+  it("hides the saved row when there are no savings", () => {
+    const openRouter = createAccountSummary({
+      accountId: "openrouter-sidecar",
+      displayName: "OpenRouter",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "openrouter",
+      healthStatus: "healthy",
+      usage: null,
+      requestUsage: {
+        requestCount: 4,
+        totalTokens: 100,
+        cachedInputTokens: 0,
+        totalCostUsd: 0,
+        totalSavingsUsd: 0,
+      },
+    });
+
+    render(<AccountCard account={openRouter} />);
+
+    expect(screen.queryByText("Saved")).toBeNull();
   });
 
   it("shows OmniRoute health and requests without a model count", () => {

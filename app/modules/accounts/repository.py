@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ class AccountRequestUsageSummary:
     total_tokens: int
     cached_input_tokens: int
     total_cost_usd: float
+    total_savings_usd: float = 0.0
 
 
 class AccountIdentityConflictError(Exception):
@@ -137,12 +138,22 @@ class AccountsRepository:
             RequestLog.deleted_at.is_(None),
             RequestLog.source == source,
         ]
+        savings_diff = RequestLog.reference_cost_usd - func.coalesce(RequestLog.cost_usd, 0.0)
+        per_request_savings = case(
+            (
+                RequestLog.reference_cost_usd.is_(None),
+                0.0,
+            ),
+            (savings_diff > 0.0, savings_diff),
+            else_=0.0,
+        )
         stmt = select(
             func.count(RequestLog.id).label("request_count"),
             func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(output_tokens_expr), 0).label("output_tokens"),
             func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
             func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
+            func.coalesce(func.sum(per_request_savings), 0.0).label("total_savings_usd"),
         ).where(*conditions)
         row = (await self._session.execute(stmt)).one()
         input_sum = int(row.input_tokens or 0)
@@ -153,6 +164,7 @@ class AccountsRepository:
             total_tokens=input_sum + output_sum,
             cached_input_tokens=cached_sum,
             total_cost_usd=round(float(row.total_cost_usd or 0.0), 6),
+            total_savings_usd=round(float(row.total_savings_usd or 0.0), 6),
         )
 
     async def exists_active_chatgpt_account_id(self, chatgpt_account_id: str) -> bool:

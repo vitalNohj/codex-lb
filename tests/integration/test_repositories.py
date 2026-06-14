@@ -931,3 +931,57 @@ async def test_request_logs_repository_normalizes_whitespace_only_useragent_fiel
         stored = result.scalar_one()
         assert stored.useragent is None
         assert stored.useragent_group is None
+
+
+@pytest.mark.asyncio
+async def test_request_usage_summary_for_source_aggregates_savings(db_setup):
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        # Free model: actual cost 0, reference cost 0.016 -> savings 0.016.
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="req_savings_free",
+            model="vendor/model-x:free",
+            input_tokens=10_000,
+            output_tokens=2_000,
+            latency_ms=10,
+            status="success",
+            error_code=None,
+            source="openrouter_sidecar",
+            cost_usd=0.0,
+            reference_cost_usd=0.016,
+        )
+        # Reference unavailable -> contributes nothing to savings.
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="req_savings_none",
+            model="vendor/model-y",
+            input_tokens=1_000,
+            output_tokens=500,
+            latency_ms=10,
+            status="success",
+            error_code=None,
+            source="openrouter_sidecar",
+            cost_usd=0.01,
+            reference_cost_usd=None,
+        )
+        # Reference below actual -> no negative savings.
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="req_savings_negative",
+            model="vendor/model-z",
+            input_tokens=1_000,
+            output_tokens=500,
+            latency_ms=10,
+            status="success",
+            error_code=None,
+            source="openrouter_sidecar",
+            cost_usd=0.05,
+            reference_cost_usd=0.01,
+        )
+
+        accounts_repo = AccountsRepository(session)
+        summary = await accounts_repo.request_usage_summary_for_source("openrouter_sidecar")
+
+    assert summary.request_count == 3
+    assert summary.total_savings_usd == pytest.approx(0.016)

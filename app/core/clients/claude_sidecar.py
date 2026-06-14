@@ -13,6 +13,7 @@ import aiohttp
 
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
+from app.core.usage.pricing import ModelPrice
 from app.core.utils.json_guards import is_json_mapping
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class SidecarModel:
     created: int | None = None
     owned_by: str | None = None
     raw: Mapping[str, JsonValue] | None = None
+    pricing: ModelPrice | None = None
 
 
 class ClaudeSidecarError(Exception):

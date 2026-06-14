@@ -38,6 +38,8 @@ def to_request_log_entry(
 ) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
     cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
+    reference_cost_usd = round(log.reference_cost_usd, 6) if log.reference_cost_usd is not None else None
+    savings_usd = _savings_usd(actual=cost_breakdown.total_usd, reference=reference_cost_usd)
     return RequestLogEntry(
         requested_at=log.requested_at,
         account_id=log.account_id,
@@ -71,6 +73,17 @@ def to_request_log_entry(
         cached_input_tokens=cached_input_tokens_from_log(log_like),
         cost_usd=cost_breakdown.total_usd,
         cost_breakdown=RequestLogCostBreakdown(**cost_breakdown.__dict__),
+        reference_cost_usd=reference_cost_usd,
+        savings_usd=savings_usd,
         latency_ms=log.latency_ms,
         latency_first_token_ms=log.latency_first_token_ms,
     )
+
+
+def _savings_usd(*, actual: float | None, reference: float | None) -> float | None:
+    if reference is None:
+        return None
+    savings = reference - (actual or 0.0)
+    if savings <= 0:
+        return 0.0
+    return round(savings, 6)

@@ -113,6 +113,41 @@ async def test_list_models_sends_bearer_key_and_parses_models(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> None:
+    from app.core.usage.runtime_pricing import get_runtime_pricing_registry
+
+    get_runtime_pricing_registry().clear()
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            '{"object":"list","data":['
+            '{"id":"vendor/model-x","pricing":{"prompt":"0.0000008","completion":"0.000004",'
+            '"input_cache_read":"0.0000002"}},'
+            '{"id":"vendor/model-y","pricing":{"prompt":"bad","completion":"0.000004"}},'
+            '{"id":"vendor/model-z"}'
+            "]}",
+        )
+    )
+    monkeypatch.setattr("app.core.clients.openrouter_sidecar.lease_http_session", lambda: _Lease(session))
+    client = OpenRouterSidecarClient(_config(api_key="key"))
+
+    models = await client.list_models()
+
+    by_id = {model.id: model for model in models}
+    assert by_id["vendor/model-x"].pricing is not None
+    assert by_id["vendor/model-x"].pricing.input_per_1m == pytest.approx(0.8)
+    assert by_id["vendor/model-x"].pricing.output_per_1m == pytest.approx(4.0)
+    assert by_id["vendor/model-x"].pricing.cached_input_per_1m == pytest.approx(0.2)
+    # Unparseable / missing pricing -> no runtime price, fetch still succeeds.
+    assert by_id["vendor/model-y"].pricing is None
+    assert by_id["vendor/model-z"].pricing is None
+
+    registry = get_runtime_pricing_registry()
+    assert registry.runtime_pricing_for_model("vendor/model-x") is not None
+    assert registry.runtime_pricing_for_model("vendor/model-y") is None
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_relays_error_envelope(monkeypatch) -> None:
     session = _FakeSession(
         post_response=_FakeResponse(401, '{"error":{"message":"expired","type":"authentication_error"}}')

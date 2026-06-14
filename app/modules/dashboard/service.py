@@ -199,6 +199,7 @@ class DashboardService:
             total_tokens=usage_summary.total_tokens,
             cached_input_tokens=usage_summary.cached_input_tokens,
             total_cost_usd=usage_summary.total_cost_usd,
+            total_savings_usd=usage_summary.total_savings_usd,
         )
         return build_openrouter_sidecar_summary(settings, request_usage)
 
@@ -210,6 +211,7 @@ class DashboardService:
             total_tokens=usage_summary.total_tokens,
             cached_input_tokens=usage_summary.cached_input_tokens,
             total_cost_usd=usage_summary.total_cost_usd,
+            total_savings_usd=usage_summary.total_savings_usd,
         )
         return build_omniroute_sidecar_summary(settings, request_usage)
 
