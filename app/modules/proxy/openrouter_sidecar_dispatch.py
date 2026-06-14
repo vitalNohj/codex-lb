@@ -32,6 +32,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     SidecarUsage,
     ensure_stream_usage_requested,
     extract_usage,
+    reference_cost_from_sidecar_usage,
 )
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
@@ -429,6 +430,7 @@ async def _log_openrouter_request(
                 source=OPENROUTER_SIDECAR_SOURCE,
                 failure_phase="sidecar" if status != "success" else None,
                 cost_usd=usage.cost_usd if usage else None,
+                reference_cost_usd=reference_cost_from_sidecar_usage(model, usage),
             )
     except Exception:
         logger.warning(

@@ -30,6 +30,7 @@ class AccountRequestUsage(DashboardModel):
     total_tokens: int = 0
     cached_input_tokens: int = 0
     total_cost_usd: float = 0.0
+    total_savings_usd: float = 0.0
 
 
 class AccountTokenStatus(DashboardModel):

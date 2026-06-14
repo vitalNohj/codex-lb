@@ -997,3 +997,47 @@ async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_mode
     assert costs["req_omniroute_opaque_free"] == pytest.approx(0.0)
     assert costs["req_openai_free_name"] is None
     assert costs["req_omniroute_unknown"] is None
+
+
+@pytest.mark.asyncio
+async def test_request_log_reference_cost_column_added_and_nullable(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'reference-cost-column.sqlite'}"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            cols = (await session.execute(text("PRAGMA table_info(request_logs)"))).all()
+            by_name = {row[1]: row for row in cols}
+            assert "reference_cost_usd" in by_name
+            # PRAGMA notnull flag (index 3) == 0 means nullable.
+            assert by_name["reference_cost_usd"][3] == 0
+
+            # A row may persist a reference cost distinct from actual cost.
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, reference_cost_usd, request_kind
+                    )
+                    VALUES (NULL, 'req_ref', '2026-06-14 02:00:00', 'vendor/model-x:free',
+                            'openrouter_sidecar', 10000, 2000, 0, 0, 50, 'success',
+                            0.0, 0.016, 'normal')
+                    """
+                )
+            )
+            await session.commit()
+            row = (
+                await session.execute(
+                    text("SELECT cost_usd, reference_cost_usd FROM request_logs WHERE request_id = 'req_ref'")
+                )
+            ).one()
+    finally:
+        await engine.dispose()
+
+    assert row[0] == pytest.approx(0.0)
+    assert row[1] == pytest.approx(0.016)

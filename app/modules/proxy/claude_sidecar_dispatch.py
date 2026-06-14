@@ -22,6 +22,8 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.usage.pricing import UsageTokens
+from app.core.usage.runtime_pricing import calculate_reference_cost
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
@@ -854,6 +856,24 @@ async def _sidecar_stream_iterator(
                 error_code=None if completed else "claude_sidecar_stream_incomplete",
                 usage=usage_to_settle,
             )
+
+
+def reference_cost_from_sidecar_usage(model: str, usage: SidecarUsage | None) -> float | None:
+    """Reference (paid-equivalent) cost for a sidecar request, or None.
+
+    Used to surface savings when the request was served by a free/cheap model:
+    the same token usage priced at the resolved paid-equivalent list price.
+    """
+    if usage is None:
+        return None
+    return calculate_reference_cost(
+        model,
+        UsageTokens(
+            input_tokens=float(usage.input_tokens),
+            output_tokens=float(usage.output_tokens),
+            cached_input_tokens=float(usage.cached_input_tokens),
+        ),
+    )
 
 
 def extract_usage(payload: JsonValue) -> SidecarUsage | None:
