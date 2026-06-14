@@ -23,7 +23,7 @@ When the OmniRoute sidecar response does not contain a cost field, the system SH
 - **AND** `cost_usd` equals the pricing-table computed value
 - **AND** `cost_usd` is non-zero for priced models
 
-#### Scenario: OmniRoute unknown model remains zero cost
+#### Scenario: OmniRoute unknown non-free model remains unknown cost
 - **WHEN** an OmniRoute sidecar request completes for a model not in `DEFAULT_PRICING_MODELS` or aliases
 - **AND** the model name does not explicitly identify a free model
 - **THEN** the resulting `request_logs` row has `cost_usd = NULL`
