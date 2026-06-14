@@ -213,6 +213,7 @@ class RequestLogsRepository:
         upstream_proxy_endpoint_id: str | None = None,
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
+        cost_usd: float | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             resolved_request_id = ensure_request_id(request_id)
@@ -242,7 +243,7 @@ class RequestLogsRepository:
                 output_tokens=output_tokens,
                 cached_input_tokens=cached_input_tokens,
                 reasoning_tokens=reasoning_tokens,
-                cost_usd=None,
+                cost_usd=cost_usd,
                 reasoning_effort=reasoning_effort,
                 latency_ms=latency_ms,
                 latency_first_token_ms=latency_first_token_ms,
@@ -262,7 +263,8 @@ class RequestLogsRepository:
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 requested_at=requested_at or utcnow(),
             )
-            log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+            if cost_usd is None:
+                log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
             self._session.add(log)
             try:
                 await self._session.commit()

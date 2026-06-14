@@ -90,6 +90,56 @@ async def test_add_log_persists_request_kind(db_setup) -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_log_persists_passed_cost_usd_and_skips_pricing_table(db_setup) -> None:
+    """When an explicit cost_usd is provided, it should be persisted directly without pricing-table fallback."""
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        # Use a model with NO pricing entry to ensure fallback would return None
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_explicit_cost",
+            model="unknown-model-no-pricing",
+            input_tokens=1000,
+            output_tokens=500,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            cost_usd=0.042,  # Authoritative cost from API
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        assert persisted.cost_usd == 0.042  # Exact passed value, not None from pricing table
+
+
+@pytest.mark.asyncio
+async def test_add_log_falls_back_to_pricing_table_when_cost_usd_none(db_setup) -> None:
+    """When cost_usd is None (default), the pricing table should be used."""
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_fallback",
+            model="gpt-5.2",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            cost_usd=None,
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        # gpt-5.2 pricing: $1.75/M input + $14/M output = $15.75
+        assert persisted.cost_usd == pytest.approx(15.75)
+
+
+@pytest.mark.asyncio
 async def test_find_latest_account_id_for_response_id_prefers_session_then_falls_back_to_api_key_scope() -> None:
     session = AsyncMock()
     repo = RequestLogsRepository(session)
