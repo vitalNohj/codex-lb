@@ -25,14 +25,21 @@ branch_labels = None
 depends_on = None
 
 _FREE_MODEL_RE = re.compile(r"(^|[/:_-])free($|[/:_-])")
+_OPAQUE_FREE_MODELS = frozenset(
+    {
+        "big-pickle",
+        "oc/big-pickle",
+    }
+)
 _SIDECAR_SOURCES = ("openrouter_sidecar", "omniroute_sidecar")
 _BACKFILL_BATCH_SIZE = 1000
 
 
-def _is_explicit_free_model(model: str | None) -> bool:
+def _is_known_free_model(model: str | None) -> bool:
     if not model:
         return False
-    return bool(_FREE_MODEL_RE.search(model.strip().lower()))
+    normalized = model.strip().lower()
+    return normalized in _OPAQUE_FREE_MODELS or bool(_FREE_MODEL_RE.search(normalized))
 
 
 def _has_table(connection: Connection, table_name: str) -> bool:
@@ -70,7 +77,7 @@ def upgrade() -> None:
         )
         if not rows:
             break
-        free_ids = [row["id"] for row in rows if _is_explicit_free_model(row["model"])]
+        free_ids = [row["id"] for row in rows if _is_known_free_model(row["model"])]
         if free_ids:
             bind.execute(sa.update(request_logs).where(request_logs.c.id.in_(free_ids)).values(cost_usd=0.0))
         last_seen_id = int(rows[-1]["id"])
@@ -107,7 +114,7 @@ def downgrade() -> None:
         )
         if not rows:
             break
-        free_ids = [row["id"] for row in rows if _is_explicit_free_model(row["model"])]
+        free_ids = [row["id"] for row in rows if _is_known_free_model(row["model"])]
         if free_ids:
             bind.execute(sa.update(request_logs).where(request_logs.c.id.in_(free_ids)).values(cost_usd=None))
         last_seen_id = int(rows[-1]["id"])

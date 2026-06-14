@@ -140,18 +140,18 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - Move integration controls from Settings into the relevant Accounts tab item (e.g. CLIProxyAPI quota estimation and a manual "Test connection" button); Settings should run test-connection automatically on save.
 - When investigating behavior issues, prioritize querying the database and request logs over code analysis to avoid making dangerous assumptions about the current state.
 - External navigation links (e.g. "Open OmniRoute") in the dashboard or settings cards should always open in a new browser tab with `rel="noopener noreferrer"`.
+- Do not implement a plan (especially an old/handed-off plan) before confirming the work is actually necessary; verify each claimed gap against real request logs/DB/traffic and stop/revert if it is already handled or never exercised.
 
 ## Learned Workspace Facts
 
 - codex-lb runs as a systemd user service (`systemctl --user restart codex-lb.service`). Backend code changes require a service restart to take effect.
 - Frontend build artifacts live in `app/static/` and are served by the FastAPI backend in production mode. The `/codex` API prefix is stripped by the reverse proxy (HTTPS on port 443).
-- Standard validation commands: `openspec validate --specs` for all specs; `openspec validate <change> --strict` for a specific change.
+- Standard validation commands: `openspec validate --specs` for all specs; `openspec validate <change> --strict` for a specific change. OpenSpec validation requires at least one delta spec in the change folder for any behavior change, even a small UI refinement; UI-only changes (layout, copy, visibility) can skip spec deltas only when following an established precedent (e.g. OpenRouter settings refine declared no spec deltas).
 - Testing commands: `uv run pytest <path>` for backend; `npx vitest run <path>` for frontend.
-- UI-only changes (layout, copy, visibility) can skip OpenSpec spec deltas when following an established precedent (e.g. OpenRouter settings refine declared no spec deltas).
-- The Cursor↔OpenAI compatibility layer must stay aligned with upstream codex-lb; CLIProxyAPI already converts to OpenAI chat format, so only add minimal Claude-specific handling and avoid divergence from upstream behavior.
+- The Cursor↔OpenAI compatibility layer must stay aligned with upstream codex-lb; CLIProxyAPI already converts to OpenAI chat format, so only add minimal Claude-specific handling and avoid divergence from upstream behavior. Custom Cursor-specific hardening has been removed; before re-adding any, confirm the gap is real in current traffic rather than reading code in isolation.
 - Codex control endpoints (e.g. `trace_summarize`) must be raw pass-through to the backend; do not inject `reasoning`/`service_tier` or rewrite the model on control payloads. Such policy rewriting broke Cursor `/summarize` compaction (only triggered with the OpenAI API key enabled, not on Composer models).
 - At the context limit, return an error Cursor recognizes as a compaction trigger; surfacing it as an API-key/rate-limit error prevents Cursor from compacting.
-- OpenSpec validation requires at least one delta spec in the change folder for any behavior change, even if the change is a small UI refinement.
 - OmniRoute model routing uses an exact case-insensitive string match; models must be explicitly added to the "selected models" list to avoid falling through to the default OpenAI path.
 - The CLIProxyAPI management secret must be configured as plaintext in the database (which the app then encrypts) because the sidecar hashes the config value on its end.
 - Claude sidecar usage estimates prefer authoritative OAuth-reported percentages over local token-budget math when a pro/team plan is configured.
+- Sidecar cost capture should mirror OpenRouter for OmniRoute: free-model detection uses a marker regex (e.g. `:free`) for OpenRouter, but OmniRoute has opaque free models (e.g. `oc/big-pickle`) with no textual marker, so a curated `_OPAQUE_FREE_MODELS` allowlist in `app/core/usage/pricing.py` is required; genuinely paid models with no pricing entry must stay `NULL` (not zero), and historical rows are repaired via a backfill migration.

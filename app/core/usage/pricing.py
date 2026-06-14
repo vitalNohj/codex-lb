@@ -52,12 +52,19 @@ class CostItem:
 
 FREE_MODEL_PRICE = ModelPrice(input_per_1m=0.0, output_per_1m=0.0, cached_input_per_1m=0.0)
 _FREE_MODEL_RE = re.compile(r"(^|[/:_-])free($|[/:_-])")
+_OPAQUE_FREE_MODELS = frozenset(
+    {
+        "big-pickle",
+        "oc/big-pickle",
+    }
+)
 
 
-def is_explicit_free_model(model: str | None) -> bool:
+def is_known_free_model(model: str | None) -> bool:
     if not model:
         return False
-    return bool(_FREE_MODEL_RE.search(model.strip().lower()))
+    normalized = model.strip().lower()
+    return normalized in _OPAQUE_FREE_MODELS or bool(_FREE_MODEL_RE.search(normalized))
 
 
 def _as_number(value: int | float | None) -> float | None:
@@ -583,7 +590,7 @@ def get_pricing_for_model(
     aliases = aliases or DEFAULT_MODEL_ALIASES
 
     normalized = model.lower()
-    if is_explicit_free_model(normalized):
+    if is_known_free_model(normalized):
         return "free", FREE_MODEL_PRICE
 
     for key, value in pricing.items():
