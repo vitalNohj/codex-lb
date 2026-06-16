@@ -267,14 +267,26 @@ def guard_pull_request(root: Path, event: dict[str, Any], base_ref: str, head_re
         expected_sha = run_git(root, "rev-parse", "HEAD").stdout.strip()
         body = os.environ.get("BETA_RELEASE_PR_BODY", "")
 
+    current_versions = _canonical_release_versions(read_project_versions(root))
+    release_from_head: ReleaseVersion | None = None
+    if head_ref.startswith("release/beta-"):
+        try:
+            release_from_head = parse_version(head_ref.removeprefix("release/beta-"))
+        except ValueError:
+            release_from_head = None
+    is_canonical_beta_pr = bool(
+        release_from_head is not None
+        and release_from_head.channel == "beta"
+        and all(version == release_from_head.version for version in current_versions.values())
+    )
+
     changed = changed_release_version_files(root, base_ref)
-    if not changed:
+    if not changed and not is_canonical_beta_pr:
         print("No release-managed version files changed; beta release PR guard passed.")
         return
 
-    current_versions = _canonical_release_versions(read_project_versions(root))
     base_versions = _canonical_release_versions(_read_project_versions_at_ref(root, base_ref))
-    if current_versions == base_versions:
+    if current_versions == base_versions and not is_canonical_beta_pr:
         print("No release-managed version files changed; release metadata is unchanged; beta release PR guard passed.")
         return
 
