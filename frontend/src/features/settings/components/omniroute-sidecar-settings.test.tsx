@@ -51,6 +51,11 @@ const BASE_SETTINGS: DashboardSettings = {
   omnirouteSidecarLastModelCount: 1,
 };
 
+const ENABLED_SETTINGS: DashboardSettings = {
+  ...BASE_SETTINGS,
+  omnirouteSidecarEnabled: true,
+};
+
 function renderWithQueryClient(ui: React.ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
@@ -92,6 +97,7 @@ describe("OmniRouteSidecarSettings", () => {
 
     await user.type(screen.getByLabelText(/Add model ID manually/), "manual/model");
     await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: /Discovered models/i }));
     expect(screen.getByText("manual/model")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /^Save$/ }));
@@ -103,6 +109,26 @@ describe("OmniRouteSidecarSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Remove manual/model" }));
     expect(screen.queryByText("manual/model")).not.toBeInTheDocument();
+  });
+
+  it("keeps discovered models collapsed inside the configuration card above actions", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
+
+    const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
+    const saveButton = screen.getByRole("button", { name: /^Save$/ });
+
+    expect(disclosure.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Search OmniRoute models")).not.toBeInTheDocument();
+    expect(screen.queryByText("omniroute/test-chat")).not.toBeInTheDocument();
+
+    await user.click(disclosure);
+
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByLabelText("Search OmniRoute models")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove omniroute/test-chat" })).toBeInTheDocument();
   });
 
   it("does not render a manual Test connection button", () => {

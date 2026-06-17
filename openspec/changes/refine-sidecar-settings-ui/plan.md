@@ -5,7 +5,7 @@
 **Not in this plan:**
 - Backend changes (schema, API, routing, model endpoints)
 - `ClaudeSidecarSettings` changes (already done)
-- `OpenRouterModelBrowser`, `OmniRouteModelBrowser`, or `openrouter-popular-models` helper (no user-visible "sidecar" text)
+- Model discovery, search, add-prefix, add-model, or remove-model behavior changes; this pass only moves the existing OpenRouter/OmniRoute model browsers into the config cards and makes their discovered-model lists collapsible
 - Any `aria-label` on icons or decorative elements beyond what's listed
 
 **Before you start:**
@@ -54,9 +54,11 @@
   - Change the Save button size to `className="h-8 text-xs"` (match Claude)
   - The Clear API key button should be unconditional (not conditionally rendered) like Claude's — change it from `{sidecarApiKeyConfigured ? <Button>...` to always-rendered `<Button>` with `disabled={busy || !sidecarApiKeyConfigured}`
 
-### Step 1.5 — Verify available models are shown
+### Step 1.5 — Move model controls into the config card
 
-- [ ] The existing "Popular models" + `<OpenRouterModelBrowser>` sections (lines 262-289) already show the models from `modelsQuery`. No new "Available models" block needed. But verify they render correctly with the new layout — the `modelsQuery` hook and `modelRows` variable should still be in the component. If you deleted `modelCount` in step 1.2, make sure you kept `modelRows` (line 67).
+- [ ] Move the existing "Popular models" block and `<OpenRouterModelBrowser>` into the config card directly below the `API key` / `Model prefixes` row and above the Save/Clear API key buttons.
+- [ ] Make the discovered-model browser collapsed by default with a `Discovered models (N)` disclosure. Expanding it reveals the existing search and add-prefix controls. Do not change the query gating, search behavior, or prefix mutation behavior.
+- [ ] Verify `modelsQuery`, `modelRows`, `addPrefix`, and `discoveredIds` are still declared and used.
 
 ### Step 1.6 — Update OpenRouter test file
 
@@ -109,10 +111,12 @@
 - [ ] Keep the buttons row: **Save** | **Test connection** | **Clear API key**
   - Same changes as OpenRouter: always-rendered Clear API key, `h-8 text-xs` on Save
 
-### Step 2.5 — Verify models section
+### Step 2.5 — Move model controls into the config card
 
-- [ ] The `<OmniRouteModelBrowser>` (lines 312-318) stays as-is. It shows discoverable models with add/remove actions.
-- [ ] Make sure `modelsQuery` and `modelRows` are still declared (not removed with `modelCount` in step 2.2)
+- [ ] Move `<OmniRouteModelBrowser>` into the config card directly below the `API key` / `Add model ID manually` row and above the Save/Clear API key buttons.
+- [ ] Remove the separate always-visible selected-model chip row from the parent card; the browser owns the selected-model chips when expanded.
+- [ ] Make the discovered-model browser collapsed by default with a `Discovered models (N)` disclosure. Expanding it reveals the existing search, add/remove controls, and selected-model chips. Do not change the query gating, model normalization, save payload, or add/remove behavior.
+- [ ] Make sure `modelsQuery`, `modelRows`, `addModel`, and `removeModel` are still declared.
 
 ### Step 2.6 — Update OmniRoute test file
 

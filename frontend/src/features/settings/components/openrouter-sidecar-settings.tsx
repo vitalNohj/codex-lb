@@ -167,6 +167,35 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
               </label>
             </div>
 
+            <div className="space-y-2">
+              <p className="text-xs font-medium">Popular models</p>
+              {modelRows.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Saving tests availability automatically; run a manual test from the Accounts tab if needed.
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-1.5">
+                {POPULAR_OPENROUTER_MODELS.filter(
+                  (id) => modelRows.length === 0 || discoveredIds.has(id),
+                ).map((id) => (
+                  <Badge key={id} variant="secondary" className="gap-1 font-mono text-[11px]">
+                    {id}
+                    <button
+                      type="button"
+                      className="ml-0.5 hover:text-foreground"
+                      aria-label={`Add prefix ${prefixFromModelId(id)}`}
+                      disabled={busy}
+                      onClick={() => addPrefix(prefixFromModelId(id))}
+                    >
+                      <Plus className="size-3" aria-hidden="true" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+
+            <OpenRouterModelBrowser models={modelRows} isLoading={modelsQuery.isLoading} onAddPrefix={addPrefix} />
+
             <div className="grid gap-2 sm:grid-cols-3">
               <label className="space-y-1 text-xs font-medium" htmlFor="openrouter-sidecar-connect-timeout">
                 Connect timeout (s)
@@ -226,35 +255,6 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
             </div>
           </div>
         </div>
-
-        <div className="space-y-2">
-          <p className="text-xs font-medium">Popular models</p>
-          {modelRows.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              Saving tests availability automatically; run a manual test from the Accounts tab if needed.
-            </p>
-          ) : null}
-          <div className="flex flex-wrap gap-1.5">
-            {POPULAR_OPENROUTER_MODELS.filter(
-              (id) => modelRows.length === 0 || discoveredIds.has(id),
-            ).map((id) => (
-              <Badge key={id} variant="secondary" className="gap-1 font-mono text-[11px]">
-                {id}
-                <button
-                  type="button"
-                  className="ml-0.5 hover:text-foreground"
-                  aria-label={`Add prefix ${prefixFromModelId(id)}`}
-                  disabled={busy}
-                  onClick={() => addPrefix(prefixFromModelId(id))}
-                >
-                  <Plus className="size-3" aria-hidden="true" />
-                </button>
-              </Badge>
-            ))}
-          </div>
-        </div>
-
-        <OpenRouterModelBrowser models={modelRows} isLoading={modelsQuery.isLoading} onAddPrefix={addPrefix} />
       </div>
     </section>
   );

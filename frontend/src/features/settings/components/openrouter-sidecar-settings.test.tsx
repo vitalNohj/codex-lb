@@ -49,6 +49,11 @@ const BASE_SETTINGS: DashboardSettings = {
   openrouterSidecarLastModelCount: 1,
 };
 
+const ENABLED_SETTINGS: DashboardSettings = {
+  ...BASE_SETTINGS,
+  openrouterSidecarEnabled: true,
+};
+
 function renderWithQueryClient(ui: React.ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
@@ -136,8 +141,29 @@ describe("OpenRouterSidecarSettings", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
+    await user.click(screen.getByRole("button", { name: /Discovered models/i }));
     await user.click(screen.getByRole("button", { name: "Add prefix google/" }));
 
+    expect(screen.getByLabelText(/Model prefixes/)).toHaveValue("deepseek/, google/");
+  });
+
+  it("keeps discovered models collapsed inside the configuration card above actions", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<OpenRouterSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
+
+    const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
+    const saveButton = screen.getByRole("button", { name: /^Save$/ });
+
+    expect(disclosure.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Search models")).not.toBeInTheDocument();
+
+    await user.click(disclosure);
+
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByLabelText("Search models")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add prefix google/" }));
     expect(screen.getByLabelText(/Model prefixes/)).toHaveValue("deepseek/, google/");
   });
 });
