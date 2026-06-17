@@ -8,9 +8,13 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 Resources
 -->
 
-# codex-lb
+# codex-lb fork
 
-Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.
+This repository is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). It keeps the upstream goal of pooling ChatGPT/Codex accounts behind an OpenAI-compatible proxy, then adds fork-specific integration work for CLIProxyAPI, OpenRouter, OmniRoute, richer cost tracking, Cursor/Codex compatibility fixes, and dashboard polish.
+
+This README is a draft for the fork. Until fork-specific release artifacts are published, build from this source checkout when you want the features described here. Upstream package and image names may not include these changes.
+
+Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, route selected models to integrations, and view everything in a dashboard.
 
 | ![dashboard](docs/screenshots/dashboard.jpg) | ![accounts](docs/screenshots/accounts.jpg) |
 |:---:|:---:|
@@ -28,36 +32,153 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 
 </details>
 
+## What This Fork Adds
+
+| Area | What changed |
+| --- | --- |
+| **CLIProxyAPI Integration** | Routes configured Claude-family models through CLIProxyAPI, keeps per-auth usage visible, maps Codex/Cursor tool shapes for sidecar requests, and exposes test/usage controls in the dashboard. |
+| **OpenRouter Integration** | Routes configured model prefixes to OpenRouter, discovers models, monitors health, detects free models, and uses live model pricing for reference-cost lookups. |
+| **OmniRoute Integration** | Routes exact selected model IDs to OmniRoute, merges those models into OpenAI-compatible model lists, preserves API-key model restrictions, and surfaces OmniRoute as a synthetic dashboard account. |
+| **Cost Savings Tracking** | Stores actual spend separately from paid-equivalent reference cost, then derives savings for free or discounted sidecar models. |
+| **Cursor/Codex Compatibility** | Keeps Codex control endpoints raw, accepts the official compact response shape, advertises sidecar context windows, and includes a Codex session provider retag command. |
+| **Dashboard Polish** | Uses provider-specific integration language, cleaner synthetic account cards, normal request-log rows for sidecar traffic, and connection controls in the Accounts tab. |
+
 ## Features
 
 <table>
 <tr>
-<td><b>Account Pooling</b><br>Load balance across multiple ChatGPT accounts</td>
-<td><b>Usage Tracking</b><br>Per-account tokens, cost, 28-day trends</td>
+<td><b>Account Pooling</b><br>Load balance across multiple ChatGPT/Codex accounts</td>
+<td><b>Usage Tracking</b><br>Per-account tokens, cost, trends, and sidecar savings</td>
 <td><b>API Keys</b><br>Per-key rate limits by token, cost, window, model</td>
 </tr>
 <tr>
-<td><b>Dashboard Auth</b><br>Password + optional TOTP</td>
+<td><b>Dashboard Auth</b><br>Password/TOTP, trusted reverse-proxy headers, or disabled mode</td>
 <td><b>OpenAI-compatible</b><br>Codex CLI, OpenCode, any OpenAI client</td>
-<td><b>Auto Model Sync</b><br>Available models fetched from upstream</td>
+<td><b>Model Discovery</b><br>Native Codex models plus configured sidecar catalogs</td>
+</tr>
+<tr>
+<td><b>Sidecar Routing</b><br>CLIProxyAPI, OpenRouter, and OmniRoute dispatch paths</td>
+<td><b>Request Observability</b><br>Unified logs with provider, model, transport, cost, and savings</td>
+<td><b>Deployment Options</b><br>Local source, Docker, Docker Compose, and Helm</td>
 </tr>
 </table>
 
-## Quick Start
+## Sidecar Integrations
+
+Sidecar integrations let codex-lb keep owning API-key authentication, request logging, model allowlists, and dashboard observability while routing selected models to another backend.
+
+Routing order for Chat Completions traffic is:
+
+1. CLIProxyAPI / Claude sidecar checks.
+2. OpenRouter sidecar checks.
+3. OmniRoute exact selected-model checks.
+4. Native Codex/ChatGPT path.
+
+### CLIProxyAPI Integration
+
+Use this for Claude-family model routing through CLIProxyAPI.
+
+Primary configuration:
 
 ```bash
-# Docker (recommended)
+CODEX_LB_CLAUDE_SIDECAR_ENABLED=false
+CODEX_LB_CLAUDE_SIDECAR_BASE_URL=http://127.0.0.1:8317
+CODEX_LB_CLAUDE_SIDECAR_MODEL_PREFIXES=claude
+CODEX_LB_CLAUDE_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
+CODEX_LB_CLAUDE_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
+CODEX_LB_CLAUDE_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
+```
+
+Dashboard surfaces use the label `CLIProxyAPI Integration`. The Accounts tab shows per-auth usage panels and exposes connection testing plus quota-estimation controls. Settings can still hold integration configuration and run connection checks on save.
+
+Claude sidecar usage estimates prefer authoritative OAuth-reported percentages over local token-budget math when a Pro or Team plan is configured.
+
+### OpenRouter Integration
+
+Use this for direct OpenRouter Chat Completions routing.
+
+Primary configuration:
+
+```bash
+CODEX_LB_OPENROUTER_SIDECAR_ENABLED=false
+CODEX_LB_OPENROUTER_SIDECAR_BASE_URL=https://openrouter.ai/api/v1
+CODEX_LB_OPENROUTER_SIDECAR_MODEL_PREFIXES=deepseek/,google/
+CODEX_LB_OPENROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
+CODEX_LB_OPENROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
+CODEX_LB_OPENROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
+```
+
+The sidecar discovers models from OpenRouter, merges them into `/v1/models`, and parses OpenRouter pricing so free models can still show paid-equivalent reference cost.
+
+Free-model detection uses explicit markers such as `:free`, `-free`, and `_free`.
+
+### OmniRoute Integration
+
+Use this for a local or remote OmniRoute instance.
+
+Primary configuration exists in the dashboard under `OmniRoute Integration`; environment variables can seed defaults:
+
+```bash
+CODEX_LB_OMNIROUTE_SIDECAR_ENABLED=false
+CODEX_LB_OMNIROUTE_SIDECAR_BASE_URL=http://127.0.0.1:20128/v1
+CODEX_LB_OMNIROUTE_SIDECAR_SELECTED_MODELS=oc/big-pickle,oc/deepseek-v4-flash-free
+CODEX_LB_OMNIROUTE_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
+CODEX_LB_OMNIROUTE_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
+CODEX_LB_OMNIROUTE_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
+```
+
+OmniRoute routing uses exact selected model IDs. This avoids accidentally stealing native Codex models or broad provider prefixes. OmniRoute models are merged into OpenAI-compatible model lists and dashboard model lists, while Codex-native model endpoints remain native.
+
+OmniRoute owns its own provider cooling and dashboard at `/omni`; codex-lb does not manage the OmniRoute process lifecycle.
+
+## Cost, Reference Cost, And Savings
+
+Actual spend and reference value are tracked separately.
+
+- `cost_usd` is actual spend.
+- `reference_cost_usd` is the paid-equivalent price for the same usage when a reference price can be resolved.
+- `savings_usd` is derived from `reference_cost_usd - cost_usd` and is floored at zero.
+
+For free OpenRouter or OmniRoute sidecar models, actual cost can be `$0.00` while reference cost shows what the same token usage would have cost on a paid equivalent. If no reference price can be resolved, reference cost stays null instead of pretending the request was free.
+
+OmniRoute also supports opaque free models that do not include a textual free marker. Those are handled through a curated allowlist in `app/core/usage/pricing.py`.
+
+## Cursor And Codex Compatibility Notes
+
+This fork includes compatibility work for Cursor, Codex CLI, and OpenAI-style clients.
+
+Important behavior:
+
+- Codex control endpoints are raw pass-through routes. `POST /backend-api/codex/memories/trace_summarize` forwards the original request body unchanged and does not apply Responses policy, model alias normalization, API-key model enforcement, reasoning injection, or service-tier injection.
+- Compact response handling accepts the official Codex compact shape `{"output": [...]}` as well as older object-discriminated shapes.
+- Sidecar models advertise context-window metadata in model lists so Cursor local-provider discovery can make better compaction decisions.
+- Context-limit and terminal-compaction handling is tuned so clients can compact long conversations instead of misclassifying the event as an API-key or rate-limit failure.
+- Cursor-style GPT-5 model aliases are normalized on the Responses/API-key paths where policy is supposed to apply, not on raw Codex control payloads.
+
+## Quick Start From This Fork
+
+```bash
+git clone https://github.com/vitalNohj/codex-lb.git
+cd codex-lb
+
+# Docker (recommended while this fork is draft/published-from-source)
+docker build -t codex-lb-fork:local .
 docker volume create codex-lb-data
+
 docker run -d --name codex-lb \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  codex-lb-fork:local
 
-# or uvx
-uvx codex-lb
+# or run from source
+uv sync
+cd frontend && bun install && bun run build && cd ..
+uv run fastapi run app/main.py --host 127.0.0.1 --port 2455
 ```
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
+
+If you install from upstream package or image names before this fork publishes its own artifacts, expect upstream behavior rather than the fork-only features listed above.
 
 ## Remote Setup
 
@@ -82,7 +203,7 @@ docker run -d --name codex-lb \
   -e CODEX_LB_DASHBOARD_BOOTSTRAP_TOKEN=your-secret-token \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  codex-lb-fork:local
 ```
 
 **Local access** (localhost) bypasses bootstrap entirely — no token needed.
@@ -425,7 +546,7 @@ docker run -d --name codex-lb \
   -e CODEX_LB_FIREWALL_TRUST_PROXY_HEADERS=true \
   -e CODEX_LB_FIREWALL_TRUSTED_PROXY_CIDRS=172.18.0.0/16 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  codex-lb-fork:local
 ```
 
 **Hard override / no app-level dashboard auth**
@@ -435,7 +556,7 @@ docker run -d --name codex-lb \
   -p 2455:2455 -p 1455:1455 \
   -e CODEX_LB_DASHBOARD_AUTH_MODE=disabled \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  codex-lb-fork:local
 ```
 
 For Helm, pass the same values through `extraEnv`.
@@ -444,7 +565,7 @@ For Helm, pass the same values through `extraEnv`.
 
 | Environment | Path |
 |-------------|------|
-| Local / uvx | `~/.codex-lb/` |
+| Local / source | `~/.codex-lb/` |
 | Docker | `/var/lib/codex-lb/` |
 
 Backup this directory to preserve your data.
@@ -454,6 +575,8 @@ Backup this directory to preserve your data.
 - [Usage and quota - why does codex-lb still say `rate_limited` when Codex Desktop says reset?](openspec/specs/usage-refresh-policy/context.md)
 
 ## Kubernetes
+
+When testing fork-only features with Helm, override the image repository/tag to an image built from this fork. The upstream chart and image examples may not include these changes unless fork artifacts have been published.
 
 ```bash
 helm install codex-lb oci://ghcr.io/soju06/charts/codex-lb \
