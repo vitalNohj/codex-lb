@@ -144,7 +144,7 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 
 ## Learned Workspace Facts
 
-- codex-lb runs as a systemd user service (`systemctl --user restart codex-lb.service`). Backend code changes require a service restart to take effect.
+- codex-lb runs as a systemd user service (`systemctl --user restart codex-lb.service`). Backend code changes require a service restart to take effect, but do not restart the service (or rerun the full test suite) unprompted: the shared instance serves multiple concurrent agents and a restart can break their in-flight work. Restart only when the user has confirmed it is safe.
 - Frontend build artifacts live in `app/static/` and are served by the FastAPI backend in production mode. The `/codex` API prefix is stripped by the reverse proxy (HTTPS on port 443).
 - Standard validation commands: `openspec validate --specs` for all specs; `openspec validate <change> --strict` for a specific change. OpenSpec validation requires at least one delta spec in the change folder for any behavior change, even a small UI refinement; UI-only changes (layout, copy, visibility) can skip spec deltas only when following an established precedent (e.g. OpenRouter settings refine declared no spec deltas).
 - Testing commands: `uv run pytest <path>` for backend; `npx vitest run <path>` for frontend.
