@@ -136,6 +136,7 @@ These rules encode recurring review blockers observed across codex-lb PRs.
 - Request Logs table should display sidecar rows like normal rows: no sidecar badge under Model, no "Sidecar HTTP" in Transport (just "HTTP").
 - Account column in Request Logs should show provider names without "sidecar": "CLIProxyAPI: <email>", "OpenRouter", "OmniRoute".
 - Settings UI sidecar sections should place the enable toggle above the explanation callout, not below it.
+- OpenRouter/OmniRoute settings should keep Discovered Models collapsible inside the integration card, above Save/Clear/API key actions; OpenRouter places it under Model prefixes, and OmniRoute replaces the selected-model row under manual add.
 - Accounts tab integration items (CLIProxyAPI, OpenRouter, OmniRoute) should not show provider-name badges; the heading already names the provider.
 - Move integration controls from Settings into the relevant Accounts tab item (e.g. CLIProxyAPI quota estimation and a manual "Test connection" button); Settings should run test-connection automatically on save.
 - When investigating behavior issues, prioritize querying the database and request logs over code analysis to avoid making dangerous assumptions about the current state.

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ExternalLink, Route, X } from "lucide-react";
+import { ExternalLink, Route } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -199,24 +199,13 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
               </label>
             </div>
 
-            {normalizedSelectedModels.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {normalizedSelectedModels.map((modelId) => (
-                  <button
-                    key={modelId}
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2 py-1 font-mono text-[11px]"
-                    onClick={() => removeModel(modelId)}
-                    aria-label={`Remove ${modelId}`}
-                  >
-                    {modelId}
-                    <X className="size-3" aria-hidden="true" />
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">No selected models yet.</p>
-            )}
+            <OmniRouteModelBrowser
+              models={modelRows}
+              selectedModels={normalizedSelectedModels}
+              isLoading={modelsQuery.isLoading}
+              onAddModel={addModel}
+              onRemoveModel={removeModel}
+            />
 
             <div className="grid gap-2 sm:grid-cols-3">
               <label className="space-y-1 text-xs font-medium" htmlFor="omniroute-sidecar-connect-timeout">
@@ -277,14 +266,6 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
             </div>
           </div>
         </div>
-
-        <OmniRouteModelBrowser
-          models={modelRows}
-          selectedModels={normalizedSelectedModels}
-          isLoading={modelsQuery.isLoading}
-          onAddModel={addModel}
-          onRemoveModel={removeModel}
-        />
       </div>
     </section>
   );
