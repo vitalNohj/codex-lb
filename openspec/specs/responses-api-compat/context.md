@@ -11,6 +11,7 @@ See `openspec/specs/responses-api-compat/spec.md` for normative requirements.
 - **Responses as canonical wire format:** Internally we treat Responses as the source of truth to avoid divergent streaming semantics.
 - **Strict validation:** Required fields and mutually exclusive fields are enforced up front to match official client expectations.
 - **Cursor alias compatibility:** Cursor UI model labels may append reasoning or speed suffixes to GPT-5 slugs; those are normalized to canonical upstream fields before forwarding.
+- **Unified sidecar routing:** Responses-shaped requests use the same sidecar resolver as chat completions. Exact full-model matches route before prefixes, full models are forwarded unchanged, and strip-enabled prefixes rewrite only the sidecar wire model while logs and reservations keep the client-requested effective model.
 - **No truncation support:** Requests that include `truncation` are rejected because upstream does not support it.
 - **Compact as a separate contract:** Standalone compact is treated as a canonical opaque context-window contract, not as a variant of buffered normal `/responses`.
 
@@ -136,6 +137,14 @@ Cursor-style model alias request:
 ```
 
 This forwards upstream as `model: "gpt-5.4-mini"` with `reasoning.effort: "high"`.
+
+Sidecar Responses routing example:
+
+```json
+{ "model": "cp-some-model", "input": "hi" }
+```
+
+If an enabled sidecar has prefix `cp-` with strip enabled and no exact full-model owner exists, the sidecar receives `some-model` while codex-lb records and enforces limits against `cp-some-model`.
 
 ## Operational Notes
 

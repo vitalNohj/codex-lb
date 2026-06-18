@@ -557,6 +557,15 @@ def _is_ignored_schema_drift(connection: Connection, diff: object) -> bool:
         if (str(diff[2]), str(column_name)) in _LEGACY_EXTRA_COLUMNS:
             return True
 
+    if connection.dialect.name == "sqlite" and diff[0] == "modify_default" and len(diff) >= 4:
+        table_name = str(diff[2])
+        column_name = str(diff[3])
+        if table_name == "dashboard_settings" and column_name in {
+            "claude_sidecar_model_prefixes_json",
+            "openrouter_sidecar_model_prefixes_json",
+        }:
+            return True
+
     if connection.dialect.name == "sqlite" and diff[0] == "modify_type" and len(diff) >= 7:
         table_name = str(diff[2])
         column_name = str(diff[3])
