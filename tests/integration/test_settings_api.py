@@ -514,7 +514,10 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_api_key(a
     assert payload["claudeSidecarBaseUrl"] == "http://127.0.0.1:8317"
     assert payload["claudeSidecarApiKeyConfigured"] is True
     assert "sidecar-secret" not in response.text
-    assert payload["claudeSidecarModelPrefixes"] == ["claude", "anthropic"]
+    assert payload["claudeSidecarModelPrefixes"] == [
+        {"prefix": "claude", "strip": False},
+        {"prefix": "anthropic", "strip": False},
+    ]
     assert payload["claudeSidecarConnectTimeoutSeconds"] == 2.5
     assert payload["claudeSidecarRequestTimeoutSeconds"] == 45.0
     assert payload["claudeSidecarModelsCacheTtlSeconds"] == 10.0

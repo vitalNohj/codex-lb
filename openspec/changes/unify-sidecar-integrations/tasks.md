@@ -52,5 +52,5 @@
 ## 8. Validation + docs
 
 - [x] 8.1 Run `openspec validate unify-sidecar-integrations --strict` and `openspec validate --specs`.
-- [ ] 8.2 Run `uv run pytest` for touched backend modules and `npx vitest run` for touched frontend files; run `uv run ruff`.
-- [ ] 8.3 Update `openspec/specs/<capability>/context.md` (or change-level context) with the unified routing rationale, the `minimax/` vs `minimax/minimax-m3` precedence example, and the strip-flag migration note.
+- [x] 8.2 Run `uv run pytest` for touched backend modules and `npx vitest run` for touched frontend files; run `uv run ruff`.
+- [x] 8.3 Update `openspec/specs/<capability>/context.md` (or change-level context) with the unified routing rationale, the `minimax/` vs `minimax/minimax-m3` precedence example, and the strip-flag migration note.

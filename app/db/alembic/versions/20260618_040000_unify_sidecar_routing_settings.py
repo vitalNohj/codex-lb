@@ -137,6 +137,19 @@ def upgrade() -> None:
         return
 
     with op.batch_alter_table(_TABLE_NAME) as batch_op:
+        if "claude_sidecar_model_prefixes_json" in columns:
+            batch_op.alter_column(
+                "claude_sidecar_model_prefixes_json",
+                server_default=sa.text("'[]'"),
+                existing_type=sa.Text(),
+            )
+        if "openrouter_sidecar_model_prefixes_json" in columns:
+            batch_op.alter_column(
+                "openrouter_sidecar_model_prefixes_json",
+                server_default=sa.text("'[]'"),
+                existing_type=sa.Text(),
+            )
+
         if "claude_sidecar_full_models_json" not in columns:
             batch_op.add_column(
                 sa.Column("claude_sidecar_full_models_json", sa.Text(), server_default=sa.text("'[]'"), nullable=False)

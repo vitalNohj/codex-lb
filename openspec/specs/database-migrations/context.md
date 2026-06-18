@@ -20,6 +20,7 @@
 - Revision IDs use `YYYYMMDD_HHMMSS_slug` for readability and merge-conflict reduction.
 - Legacy IDs are auto-remapped at startup to avoid manual DB patching during cutover.
 - CI checks both policy (head/naming) and drift in one command path.
+- SQLite requires explicit handling for false-positive drift on modified server_defaults because `alter_column` does not drop them reliably on that backend.
 
 ## Constraints
 
@@ -39,6 +40,8 @@
 - Drift between metadata and migrated schema:
   - Mitigation: CI unified migration check blocks merge.
   - Runtime mitigation: startup drift check logs explicit diffs and fails startup when `database_migrations_fail_fast=true`.
+- SQLite `alter_column` server_default drift detection false positives:
+  - Mitigation: The central schema drift helper ignores `modify_default` diffs on SQLite for modified columns when their constraints are managed correctly by data migrations.
 
 ## Operational Notes
 
