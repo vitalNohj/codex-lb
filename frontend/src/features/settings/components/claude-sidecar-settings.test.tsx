@@ -38,7 +38,8 @@ const BASE_SETTINGS: DashboardSettings = {
   claudeSidecarEnabled: false,
   claudeSidecarBaseUrl: "http://127.0.0.1:8317",
   claudeSidecarApiKeyConfigured: true,
-  claudeSidecarModelPrefixes: ["claude"],
+  claudeSidecarModelPrefixes: [{ prefix: "claude", strip: false }],
+  claudeSidecarFullModels: [],
   claudeSidecarConnectTimeoutSeconds: 8,
   claudeSidecarRequestTimeoutSeconds: 600,
   claudeSidecarModelsCacheTtlSeconds: 60,
@@ -78,15 +79,18 @@ describe("ClaudeSidecarSettings", () => {
     await user.type(screen.getByLabelText(/Base URL/), "http://127.0.0.1:9000");
     await user.clear(screen.getByLabelText(/API key/));
     await user.type(screen.getByLabelText(/API key/), "new-key");
-    await user.clear(screen.getByLabelText(/Model prefixes/));
-    await user.type(screen.getByLabelText(/Model prefixes/), "claude, anthropic");
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
     await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({
         claudeSidecarBaseUrl: "http://127.0.0.1:9000",
         claudeSidecarApiKey: "new-key",
-        claudeSidecarModelPrefixes: ["claude", "anthropic"],
+        claudeSidecarModelPrefixes: [
+          { prefix: "claude", strip: false },
+          { prefix: "anthropic", strip: false },
+        ],
       }),
     );
 

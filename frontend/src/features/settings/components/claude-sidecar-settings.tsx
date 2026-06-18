@@ -1,11 +1,6 @@
-import { useMemo, useState } from "react";
 import { Bot } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
+import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
 import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
 import type {
   DashboardSettings,
@@ -19,213 +14,85 @@ export type ClaudeSidecarSettingsProps = {
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8317";
-const DEFAULT_PREFIXES = ["claude"];
+const DEFAULT_PREFIXES = [
+  { prefix: "claude", strip: false },
+  { prefix: "cp-", strip: true },
+  { prefix: "cp_", strip: true },
+];
 const DEFAULT_CONNECT_TIMEOUT_SECONDS = 8;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS = 600;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
 const DEFAULT_QUOTA_POLL_INTERVAL_SECONDS = 60;
 
-function parsePrefixes(value: string): string[] {
-  return Array.from(new Set(value.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)));
-}
-
 export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarSettingsProps) {
   const { modelsQuery, testMutation } = useClaudeSidecar();
-  const sidecarEnabled = settings.claudeSidecarEnabled ?? false;
-  const sidecarBaseUrl = settings.claudeSidecarBaseUrl ?? DEFAULT_BASE_URL;
-  const sidecarApiKeyConfigured = settings.claudeSidecarApiKeyConfigured ?? false;
-  const sidecarManagementKeyConfigured = settings.claudeSidecarManagementKeyConfigured ?? false;
-  const sidecarPrefixes = settings.claudeSidecarModelPrefixes ?? DEFAULT_PREFIXES;
-  const sidecarConnectTimeout = settings.claudeSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS;
-  const sidecarRequestTimeout = settings.claudeSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS;
-  const sidecarCacheTtl = settings.claudeSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS;
-  const sidecarPollInterval = settings.claudeSidecarQuotaPollIntervalSeconds ?? DEFAULT_QUOTA_POLL_INTERVAL_SECONDS;
-  const [baseUrl, setBaseUrl] = useState(sidecarBaseUrl);
-  const [apiKey, setApiKey] = useState("");
-  const [managementKey, setManagementKey] = useState("");
-  const [prefixes, setPrefixes] = useState(sidecarPrefixes.join(", "));
-  const [connectTimeout, setConnectTimeout] = useState(String(sidecarConnectTimeout));
-  const [requestTimeout, setRequestTimeout] = useState(String(sidecarRequestTimeout));
-  const [cacheTtl, setCacheTtl] = useState(String(sidecarCacheTtl));
-  const [pollInterval, setPollInterval] = useState(String(sidecarPollInterval));
-
-  const parsedPrefixes = useMemo(() => parsePrefixes(prefixes), [prefixes]);
-  const parsedConnectTimeout = Number(connectTimeout);
-  const parsedRequestTimeout = Number(requestTimeout);
-  const parsedCacheTtl = Number(cacheTtl);
-  const parsedPollInterval = Number(pollInterval);
-  const formValid =
-    baseUrl.trim().length > 0 &&
-    parsedPrefixes.length > 0 &&
-    Number.isFinite(parsedConnectTimeout) &&
-    parsedConnectTimeout > 0 &&
-    Number.isFinite(parsedRequestTimeout) &&
-    parsedRequestTimeout > 0 &&
-    Number.isFinite(parsedCacheTtl) &&
-    parsedCacheTtl >= 0 &&
-    Number.isFinite(parsedPollInterval) &&
-    parsedPollInterval > 0;
-  const modelRows = modelsQuery.data?.models ?? [];
-
-  const save = (patch: Partial<SettingsUpdateRequest>) =>
-    onSave(buildSettingsUpdateRequest(settings, patch));
-  const saveConfig = async () => {
-    const payload: Partial<SettingsUpdateRequest> = {
-      claudeSidecarBaseUrl: baseUrl.trim(),
-      claudeSidecarModelPrefixes: parsedPrefixes,
-      claudeSidecarConnectTimeoutSeconds: parsedConnectTimeout,
-      claudeSidecarRequestTimeoutSeconds: parsedRequestTimeout,
-      claudeSidecarModelsCacheTtlSeconds: parsedCacheTtl,
-      claudeSidecarQuotaPollIntervalSeconds: parsedPollInterval,
-    };
-    if (apiKey.trim()) {
-      payload.claudeSidecarApiKey = apiKey.trim();
-    }
-    if (managementKey.trim()) {
-      payload.claudeSidecarManagementKey = managementKey.trim();
-    }
-    await save(payload);
-    setApiKey("");
-    setManagementKey("");
-    await testMutation.mutateAsync().catch(() => null);
-  };
 
   return (
-    <section id="claude-sidecar" className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">CLIProxyAPI Integration</h3>
-              <p className="text-xs text-muted-foreground">Configure CLIProxyAPI for Claude chat-completions routing.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
-          <div>
-            <p className="text-sm font-medium">Enable CLI Proxy integration</p>
-            <p className="text-xs text-muted-foreground">When enabled, matching Claude model requests route to CLIProxyAPI.</p>
-          </div>
-          <Switch
-            aria-label="Enable CLI Proxy integration"
-            checked={sidecarEnabled}
-            disabled={busy}
-            onCheckedChange={(checked) => void save({ claudeSidecarEnabled: checked })}
-          />
-        </div>
-
-        <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
-          Run CLIProxyAPI separately, log in with `cli-proxy-api --claude-login`, then point codex-lb at its local base URL.
-          Cursor should use a Claude custom model ID that starts with one of the configured prefixes.
-        </div>
-
-        <div className="rounded-lg border">
-          <div className="space-y-3 p-3">
-            <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-base-url">
-              Base URL
-              <Input id="claude-sidecar-base-url" value={baseUrl} disabled={busy} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8317" className="h-8 text-xs" />
-              <span className="block font-normal text-muted-foreground">Example: http://127.0.0.1:8317</span>
-            </label>
-            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_10rem]">
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-api-key">
-                API key
-                <Input id="claude-sidecar-api-key" value={apiKey} disabled={busy} type="password" onChange={(event) => setApiKey(event.target.value)} placeholder={sidecarApiKeyConfigured ? "Configured" : "Not configured"} className="h-8 text-xs" />
-                <span className="block font-normal text-muted-foreground">Saved keys are encrypted and never shown again.</span>
-              </label>
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-management-key">
-                Management key
-                <Input
-                  id="claude-sidecar-management-key"
-                  type="password"
-                  value={managementKey}
-                  disabled={busy}
-                  onChange={(event) => setManagementKey(event.target.value)}
-                  placeholder={sidecarManagementKeyConfigured ? "Configured" : "Not configured"}
-                  className="h-8 text-xs"
-                />
-                <span className="block font-normal text-muted-foreground">Must match `remote-management.secret-key`.</span>
-              </label>
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-poll-interval">
-                Poll interval (s)
-                <Input
-                  id="claude-sidecar-poll-interval"
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={pollInterval}
-                  disabled={busy}
-                  onChange={(event) => setPollInterval(event.target.value)}
-                  className="h-8 text-xs"
-                />
-              </label>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-[1.6fr_1fr_1fr_1fr]">
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-prefixes">
-                Model prefixes
-                <Input id="claude-sidecar-prefixes" value={prefixes} disabled={busy} onChange={(event) => setPrefixes(event.target.value)} placeholder="claude" className="h-8 text-xs" />
-                <span className="block font-normal text-muted-foreground">Comma-separated, e.g. claude, anthropic</span>
-              </label>
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-connect-timeout">
-                Connect timeout
-                <Input id="claude-sidecar-connect-timeout" type="number" min={0.1} step={0.1} value={connectTimeout} disabled={busy} onChange={(event) => setConnectTimeout(event.target.value)} className="h-8 text-xs" />
-              </label>
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-request-timeout">
-                Request timeout
-                <Input id="claude-sidecar-request-timeout" type="number" min={1} step={1} value={requestTimeout} disabled={busy} onChange={(event) => setRequestTimeout(event.target.value)} className="h-8 text-xs" />
-              </label>
-              <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-cache-ttl">
-                Model cache TTL
-                <Input id="claude-sidecar-cache-ttl" type="number" min={0} step={1} value={cacheTtl} disabled={busy} onChange={(event) => setCacheTtl(event.target.value)} className="h-8 text-xs" />
-              </label>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" size="sm" className="h-8 text-xs" disabled={busy || !formValid || testMutation.isPending} onClick={() => void saveConfig()}>
-                Save
-              </Button>
-              <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy || !sidecarApiKeyConfigured} onClick={() => void save({ claudeSidecarClearApiKey: true })}>
-                Clear API key
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                disabled={busy || !sidecarManagementKeyConfigured}
-                onClick={() => void save({ claudeSidecarClearManagementKey: true })}
-              >
-                Clear management key
-              </Button>
-            </div>
-
-            <div className="space-y-2 rounded-md border bg-muted/10 p-3">
-              <div>
-                <p className="text-sm font-medium">Available models</p>
-                <p className="text-xs text-muted-foreground">
-                  Models retrievable from CLIProxyAPI. Append a model ID after a configured prefix, e.g. <span className="font-mono">{`${parsedPrefixes[0] ?? "claude"}/${modelRows[0]?.id ?? "claude-sonnet-4"}`}</span>.
-                </p>
-              </div>
-              {modelRows.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {modelRows.map((model) => (
-                    <Badge key={model.id} variant="secondary" className="font-mono text-[11px]">
-                      {model.id}
-                    </Badge>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  No models retrieved yet. Save your config to refresh the model list; run a manual test from the
-                  Accounts tab if needed.
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+    <SidecarIntegrationCard.Provider
+      settings={settings}
+      busy={busy}
+      meta={{
+        id: "claude",
+        title: "CLIProxyAPI Integration",
+        conflictName: "CLIProxyAPI",
+        description: "Configure CLIProxyAPI for Claude chat-completions routing.",
+        icon: Bot,
+        sectionId: "claude-sidecar",
+        enableLabel: "Enable CLI Proxy integration",
+        enableDescription: "When enabled, matching Claude model requests route to CLIProxyAPI.",
+        callout: (
+          <>
+            Run CLIProxyAPI separately, log in with `cli-proxy-api --claude-login`, then point codex-lb at its
+            local base URL.
+          </>
+        ),
+        baseUrlPlaceholder: DEFAULT_BASE_URL,
+        apiKeyPlaceholder: "Not configured",
+        apiKeyConfigured: settings.claudeSidecarApiKeyConfigured ?? false,
+        managementKeyConfigured: settings.claudeSidecarManagementKeyConfigured ?? false,
+      }}
+      initial={{
+        enabled: settings.claudeSidecarEnabled ?? false,
+        baseUrl: settings.claudeSidecarBaseUrl ?? DEFAULT_BASE_URL,
+        prefixes: settings.claudeSidecarModelPrefixes ?? DEFAULT_PREFIXES,
+        fullModels: settings.claudeSidecarFullModels ?? [],
+        connectTimeout: settings.claudeSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        requestTimeout: settings.claudeSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        cacheTtl: settings.claudeSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS,
+        pollInterval: settings.claudeSidecarQuotaPollIntervalSeconds ?? DEFAULT_QUOTA_POLL_INTERVAL_SECONDS,
+      }}
+      models={{ rows: modelsQuery.data?.models ?? [], isLoading: modelsQuery.isLoading }}
+      onSave={onSave}
+      onTestConnection={() => testMutation.mutateAsync()}
+      buildEnablePatch={(enabled) => ({ claudeSidecarEnabled: enabled })}
+      buildClearApiKeyPatch={() => ({ claudeSidecarClearApiKey: true })}
+      buildClearManagementKeyPatch={() => ({ claudeSidecarClearManagementKey: true })}
+      buildPatch={(state) => ({
+        claudeSidecarBaseUrl: state.baseUrl,
+        claudeSidecarModelPrefixes: state.prefixes,
+        claudeSidecarFullModels: state.fullModels,
+        claudeSidecarConnectTimeoutSeconds: state.connectTimeout,
+        claudeSidecarRequestTimeoutSeconds: state.requestTimeout,
+        claudeSidecarModelsCacheTtlSeconds: state.cacheTtl,
+        claudeSidecarQuotaPollIntervalSeconds: state.pollInterval ?? DEFAULT_QUOTA_POLL_INTERVAL_SECONDS,
+        ...(state.apiKey ? { claudeSidecarApiKey: state.apiKey } : {}),
+        ...(state.managementKey ? { claudeSidecarManagementKey: state.managementKey } : {}),
+      })}
+    >
+      <SidecarIntegrationCard.Frame>
+        <SidecarIntegrationCard.Header />
+        <SidecarIntegrationCard.EnableToggle />
+        <SidecarIntegrationCard.Callout />
+        <SidecarIntegrationCard.Fields>
+          <SidecarIntegrationCard.BaseUrl />
+          <SidecarIntegrationCard.Secrets showManagementKey />
+          <SidecarIntegrationCard.Prefixes />
+          <SidecarIntegrationCard.FullModels />
+          <SidecarIntegrationCard.DiscoveredModels />
+          <SidecarIntegrationCard.Timeouts showPollInterval />
+          <SidecarIntegrationCard.Actions showManagementKey />
+        </SidecarIntegrationCard.Fields>
+      </SidecarIntegrationCard.Frame>
+    </SidecarIntegrationCard.Provider>
   );
 }

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
@@ -39,7 +39,8 @@ const BASE_SETTINGS: DashboardSettings = {
   openrouterSidecarEnabled: false,
   openrouterSidecarBaseUrl: "https://openrouter.ai/api/v1",
   openrouterSidecarApiKeyConfigured: true,
-  openrouterSidecarModelPrefixes: ["deepseek/"],
+  openrouterSidecarModelPrefixes: [{ prefix: "deepseek/", strip: false }],
+  openrouterSidecarFullModels: [],
   openrouterSidecarConnectTimeoutSeconds: 8,
   openrouterSidecarRequestTimeoutSeconds: 600,
   openrouterSidecarModelsCacheTtlSeconds: 60,
@@ -80,7 +81,7 @@ describe("OpenRouterSidecarSettings", () => {
     expect(onSave).toHaveBeenLastCalledWith(
       expect.objectContaining({
         openrouterSidecarApiKey: "new-key",
-        openrouterSidecarModelPrefixes: ["deepseek/"],
+        openrouterSidecarModelPrefixes: [{ prefix: "deepseek/", strip: false }],
         openrouterSidecarBaseUrl: "https://openrouter.ai/api/v1",
       }),
     );
@@ -94,13 +95,20 @@ describe("OpenRouterSidecarSettings", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    const prefixInput = screen.getByLabelText(/Model prefixes/);
-    await user.clear(prefixInput);
-    await user.type(prefixInput, "google/, meta-llama/");
+    await user.click(screen.getByRole("button", { name: "Remove deepseek/" }));
+    await user.type(screen.getByLabelText("New prefix for OpenRouter Integration"), "google/");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await user.type(screen.getByLabelText("New prefix for OpenRouter Integration"), "meta-llama/");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
     await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({ openrouterSidecarModelPrefixes: ["google/", "meta-llama/"] }),
+      expect.objectContaining({
+        openrouterSidecarModelPrefixes: [
+          { prefix: "google/", strip: false },
+          { prefix: "meta-llama/", strip: false },
+        ],
+      }),
     );
   });
 
@@ -136,15 +144,20 @@ describe("OpenRouterSidecarSettings", () => {
     await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
   });
 
-  it("adds a provider prefix from popular models", async () => {
+  it("adds a discovered model as a full model", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithQueryClient(<OpenRouterSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("button", { name: /Discovered models/i }));
-    await user.click(screen.getByRole("button", { name: "Add prefix google/" }));
+    await screen.findAllByText("google/gemini-2.5-pro-preview");
+    await user.click(await screen.findByRole("button", { name: /Add full model google\/gemini-2.5-pro-preview/ }));
 
-    expect(screen.getByLabelText(/Model prefixes/)).toHaveValue("deepseek/, google/");
+    expect(
+      within(screen.getByLabelText("Configured full models for OpenRouter Integration")).getByText(
+        "google/gemini-2.5-pro-preview",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("keeps discovered models collapsed inside the configuration card above actions", async () => {
@@ -163,7 +176,12 @@ describe("OpenRouterSidecarSettings", () => {
 
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByLabelText("Search models")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Add prefix google/" }));
-    expect(screen.getByLabelText(/Model prefixes/)).toHaveValue("deepseek/, google/");
+    await screen.findAllByText("google/gemini-2.5-pro-preview");
+    await user.click(await screen.findByRole("button", { name: /Add full model google\/gemini-2.5-pro-preview/ }));
+    expect(
+      within(screen.getByLabelText("Configured full models for OpenRouter Integration")).getByText(
+        "google/gemini-2.5-pro-preview",
+      ),
+    ).toBeInTheDocument();
   });
 });

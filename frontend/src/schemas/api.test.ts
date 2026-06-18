@@ -12,11 +12,13 @@ describe("DashboardApiErrorSchema", () => {
       error: {
         code: "quota_exceeded",
         message: "quota exceeded",
+        details: { quotaKey: "primary" },
       },
     });
 
     expect(parsed.error.code).toBe("quota_exceeded");
     expect(parsed.error.message).toBe("quota exceeded");
+    expect(parsed.error.details).toEqual({ quotaKey: "primary" });
   });
 
   it("rejects missing required fields", () => {

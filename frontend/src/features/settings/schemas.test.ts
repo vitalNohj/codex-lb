@@ -70,7 +70,16 @@ describe("DashboardSettingsSchema", () => {
       claudeSidecarEnabled: true,
       claudeSidecarBaseUrl: "http://127.0.0.1:8317",
       claudeSidecarApiKeyConfigured: true,
-      claudeSidecarModelPrefixes: ["claude", "anthropic"],
+      claudeSidecarModelPrefixes: [
+        { prefix: "claude", strip: false },
+        { prefix: "cp-", strip: true },
+      ],
+      claudeSidecarFullModels: ["cp-claude-sonnet-4"],
+      openrouterSidecarModelPrefixes: [{ prefix: "deepseek/", strip: false }],
+      openrouterSidecarFullModels: ["deepseek/deepseek-chat"],
+      omnirouteSidecarModelPrefixes: [{ prefix: "local/", strip: true }],
+      omnirouteSidecarFullModels: ["omniroute/test-chat"],
+      omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
       claudeSidecarConnectTimeoutSeconds: 2,
       claudeSidecarRequestTimeoutSeconds: 60,
       claudeSidecarModelsCacheTtlSeconds: 5,
@@ -92,7 +101,14 @@ describe("DashboardSettingsSchema", () => {
 
     expect(parsed.claudeSidecarEnabled).toBe(true);
     expect(parsed.claudeSidecarApiKeyConfigured).toBe(true);
-    expect(parsed.claudeSidecarModelPrefixes).toEqual(["claude", "anthropic"]);
+    expect(parsed.claudeSidecarModelPrefixes).toEqual([
+      { prefix: "claude", strip: false },
+      { prefix: "cp-", strip: true },
+    ]);
+    expect(parsed.claudeSidecarFullModels).toEqual(["cp-claude-sonnet-4"]);
+    expect(parsed.openrouterSidecarFullModels).toEqual(["deepseek/deepseek-chat"]);
+    expect(parsed.omnirouteSidecarFullModels).toEqual(["omniroute/test-chat"]);
+    expect(parsed.omnirouteSidecarSelectedModels).toEqual(["omniroute/test-chat"]);
     expect(parsed.claudeSidecarLastModelCount).toBe(3);
     expect(parsed.claudeSidecarAuthPlans[0]?.planType).toBe("max5");
     expect(parsed.claudeSidecarUsagePollIntervalSeconds).toBe(20);
@@ -225,7 +241,13 @@ describe("SettingsUpdateRequestSchema", () => {
       claudeSidecarBaseUrl: "http://127.0.0.1:8317",
       claudeSidecarApiKey: "secret",
       claudeSidecarClearApiKey: false,
-      claudeSidecarModelPrefixes: ["claude"],
+      claudeSidecarModelPrefixes: [{ prefix: "claude", strip: false }],
+      claudeSidecarFullModels: ["cp-claude-sonnet-4"],
+      openrouterSidecarModelPrefixes: [{ prefix: "deepseek/", strip: false }],
+      openrouterSidecarFullModels: ["deepseek/deepseek-chat"],
+      omnirouteSidecarModelPrefixes: [{ prefix: "local/", strip: true }],
+      omnirouteSidecarFullModels: ["omniroute/test-chat"],
+      omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
       claudeSidecarConnectTimeoutSeconds: 2,
       claudeSidecarRequestTimeoutSeconds: 60,
       claudeSidecarModelsCacheTtlSeconds: 5,
@@ -244,7 +266,10 @@ describe("SettingsUpdateRequestSchema", () => {
     });
 
     expect(parsed.claudeSidecarApiKey).toBe("secret");
-    expect(parsed.claudeSidecarModelPrefixes).toEqual(["claude"]);
+    expect(parsed.claudeSidecarModelPrefixes).toEqual([{ prefix: "claude", strip: false }]);
+    expect(parsed.claudeSidecarFullModels).toEqual(["cp-claude-sonnet-4"]);
+    expect(parsed.openrouterSidecarFullModels).toEqual(["deepseek/deepseek-chat"]);
+    expect(parsed.omnirouteSidecarFullModels).toEqual(["omniroute/test-chat"]);
     expect(parsed.claudeSidecarAuthPlans?.[0]?.planType).toBe("custom");
     expect(parsed.claudeSidecarUsageQueueBatchSize).toBe(50);
   });

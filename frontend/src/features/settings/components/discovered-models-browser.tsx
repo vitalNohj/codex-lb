@@ -1,32 +1,38 @@
 import { useMemo, useState } from "react";
-import { Check, ChevronDown, Plus, X } from "lucide-react";
+import { Check, ChevronDown, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { OmniRouteSidecarModelSummary } from "@/features/settings/schemas";
 
-export type OmniRouteModelBrowserProps = {
-  models: OmniRouteSidecarModelSummary[];
-  selectedModels: string[];
-  isLoading: boolean;
-  onAddModel: (modelId: string) => void;
-  onRemoveModel: (modelId: string) => void;
+export type DiscoveredModelSummary = {
+  id: string;
+  created?: number | null;
+  ownedBy?: string | null;
 };
 
-export function OmniRouteModelBrowser({
+export type DiscoveredModelsBrowserProps = {
+  models: DiscoveredModelSummary[];
+  selectedModels: string[];
+  isLoading: boolean;
+  searchLabel?: string;
+  onAddModel: (modelId: string) => void;
+};
+
+export function DiscoveredModelsBrowser({
   models,
   selectedModels,
   isLoading,
+  searchLabel = "Search models",
   onAddModel,
-  onRemoveModel,
-}: OmniRouteModelBrowserProps) {
+}: DiscoveredModelsBrowserProps) {
   const [search, setSearch] = useState("");
   const [isOpen, setIsOpen] = useState(false);
-  const selected = useMemo(() => new Set(selectedModels), [selectedModels]);
-
+  const selected = useMemo(() => new Set(selectedModels.map((model) => model.toLowerCase())), [selectedModels]);
   const filtered = useMemo(() => {
-    if (!search.trim()) return models;
-    const query = search.toLowerCase();
+    const query = search.trim().toLowerCase();
+    if (!query) {
+      return models;
+    }
     return models.filter((model) => model.id.toLowerCase().includes(query));
   }, [models, search]);
 
@@ -45,7 +51,7 @@ export function OmniRouteModelBrowser({
         <div className="space-y-2 border-t p-2">
           {models.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              {isLoading ? "Loading models..." : "No models loaded — save API key and test connection"}
+              {isLoading ? "Loading models..." : "No models loaded - save API key and test connection"}
             </p>
           ) : (
             <>
@@ -54,11 +60,11 @@ export function OmniRouteModelBrowser({
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search models..."
                 className="h-8 text-xs"
-                aria-label="Search OmniRoute models"
+                aria-label={searchLabel}
               />
               <div className="max-h-64 divide-y overflow-y-auto rounded-md border">
                 {filtered.map((model) => {
-                  const isSelected = selected.has(model.id);
+                  const isSelected = selected.has(model.id.toLowerCase());
                   return (
                     <div key={model.id} className="flex items-center justify-between gap-2 px-2 py-1.5">
                       <div className="min-w-0">
@@ -72,20 +78,17 @@ export function OmniRouteModelBrowser({
                         size="sm"
                         variant="ghost"
                         className="h-6 shrink-0 gap-1 px-2 text-[11px]"
-                        onClick={() => {
-                          if (isSelected) {
-                            onRemoveModel(model.id);
-                          } else {
-                            onAddModel(model.id);
-                          }
-                        }}
+                        aria-label={`${isSelected ? "Added" : "Add full model"} ${model.id}`}
+                        disabled={isSelected}
+                        onClick={() => onAddModel(model.id)}
                       >
                         {isSelected ? (
                           <Check className="size-3" aria-hidden="true" />
                         ) : (
                           <Plus className="size-3" aria-hidden="true" />
                         )}
-                        {isSelected ? "Selected" : "Add model"}
+                        {isSelected ? "Added" : "Add full model"}
+                        <span className="sr-only"> {model.id}</span>
                       </Button>
                     </div>
                   );
@@ -96,22 +99,6 @@ export function OmniRouteModelBrowser({
               </div>
             </>
           )}
-          {selectedModels.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {selectedModels.map((modelId) => (
-                <button
-                  key={modelId}
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2 py-1 font-mono text-[11px]"
-                  onClick={() => onRemoveModel(modelId)}
-                  aria-label={`Remove ${modelId}`}
-                >
-                  {modelId}
-                  <X className="size-3" aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>

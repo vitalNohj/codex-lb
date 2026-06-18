@@ -38,7 +38,13 @@ const LimitWarmupPromptSchema = z.string().min(1).max(512);
 const WeeklyPaceWorkingDaysValueSchema = z.string().regex(/^[0-6](,[0-6])*$/);
 const WeeklyPaceWorkingDaysSchema = WeeklyPaceWorkingDaysValueSchema.default("0,1,2,3,4,5,6");
 const ClaudeSidecarStatusValueSchema = z.enum(["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]);
-const ClaudeSidecarModelPrefixesSchema = z.array(z.string().trim().min(1).max(64)).min(1).max(32);
+export const SidecarModelPrefixSchema = z.object({
+  prefix: z.string().trim().min(1).max(64).transform((value) => value.toLowerCase()),
+  strip: z.boolean().optional().default(false),
+});
+const SidecarModelPrefixesSchema = z.array(SidecarModelPrefixSchema).max(32);
+const RequiredSidecarModelPrefixesSchema = SidecarModelPrefixesSchema.min(1);
+const SidecarFullModelsSchema = z.array(z.string().trim().min(1).max(256)).max(256);
 export const ClaudeSidecarPlanTypeSchema = z.enum(["pro", "max5", "max20", "custom"]);
 export const ClaudeSidecarAuthPlanSchema = z.object({
   authIndex: z.string().trim().min(1).max(255).nullable().optional(),
@@ -107,7 +113,12 @@ export const DashboardSettingsSchema = z
     claudeSidecarEnabled: z.boolean().optional().default(false),
     claudeSidecarBaseUrl: z.string().trim().min(1).optional().default("http://127.0.0.1:8317"),
     claudeSidecarApiKeyConfigured: z.boolean().optional().default(false),
-    claudeSidecarModelPrefixes: ClaudeSidecarModelPrefixesSchema.optional().default(["claude"]),
+    claudeSidecarModelPrefixes: RequiredSidecarModelPrefixesSchema.optional().default([
+      { prefix: "claude", strip: false },
+      { prefix: "cp-", strip: true },
+      { prefix: "cp_", strip: true },
+    ]),
+    claudeSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
     claudeSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
     claudeSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
     claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
@@ -124,7 +135,8 @@ export const DashboardSettingsSchema = z
     openrouterSidecarEnabled: z.boolean().optional().default(false),
     openrouterSidecarBaseUrl: z.string().trim().min(1).optional().default("https://openrouter.ai/api/v1"),
     openrouterSidecarApiKeyConfigured: z.boolean().optional().default(false),
-    openrouterSidecarModelPrefixes: z.array(z.string().trim().min(1).max(64)).optional().default([]),
+    openrouterSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
+    openrouterSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
     openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
     openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
     openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
@@ -135,7 +147,9 @@ export const DashboardSettingsSchema = z
     omnirouteSidecarEnabled: z.boolean().optional().default(false),
     omnirouteSidecarBaseUrl: z.string().trim().min(1).optional().default("http://127.0.0.1:20128/v1"),
     omnirouteSidecarApiKeyConfigured: z.boolean().optional().default(false),
-    omnirouteSidecarSelectedModels: z.array(z.string().trim().min(1).max(256)).optional().default([]),
+    omnirouteSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
+    omnirouteSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
+    omnirouteSidecarSelectedModels: SidecarFullModelsSchema.optional().default([]),
     omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
     omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
     omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
@@ -148,6 +162,10 @@ export const DashboardSettingsSchema = z
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
     const primaryProvided = settings.stickyReallocationPrimaryBudgetThresholdPct !== undefined;
     const secondaryProvided = settings.stickyReallocationSecondaryBudgetThresholdPct !== undefined;
+    const omnirouteFullModels =
+      settings.omnirouteSidecarFullModels.length > 0
+        ? settings.omnirouteSidecarFullModels
+        : settings.omnirouteSidecarSelectedModels;
     const primaryThreshold =
       settings.stickyReallocationPrimaryBudgetThresholdPct ??
       settings.stickyReallocationBudgetThresholdPct ??
@@ -164,6 +182,11 @@ export const DashboardSettingsSchema = z
       __stickyReallocationBudgetThresholdPctProvided: legacyProvided,
       __stickyReallocationPrimaryBudgetThresholdPctProvided: primaryProvided,
       __stickyReallocationSecondaryBudgetThresholdPctProvided: secondaryProvided,
+      omnirouteSidecarFullModels: omnirouteFullModels,
+      omnirouteSidecarSelectedModels:
+        settings.omnirouteSidecarSelectedModels.length > 0
+          ? settings.omnirouteSidecarSelectedModels
+          : omnirouteFullModels,
     };
   });
 
@@ -201,7 +224,8 @@ export const SettingsUpdateRequestSchema = z.object({
   claudeSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
   claudeSidecarApiKey: z.string().trim().max(4096).optional(),
   claudeSidecarClearApiKey: z.boolean().optional(),
-  claudeSidecarModelPrefixes: ClaudeSidecarModelPrefixesSchema.optional(),
+  claudeSidecarModelPrefixes: RequiredSidecarModelPrefixesSchema.optional(),
+  claudeSidecarFullModels: SidecarFullModelsSchema.optional(),
   claudeSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   claudeSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
@@ -216,7 +240,8 @@ export const SettingsUpdateRequestSchema = z.object({
   openrouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
   openrouterSidecarApiKey: z.string().trim().max(4096).optional(),
   openrouterSidecarClearApiKey: z.boolean().optional(),
-  openrouterSidecarModelPrefixes: z.array(z.string().trim().min(1).max(64)).optional(),
+  openrouterSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+  openrouterSidecarFullModels: SidecarFullModelsSchema.optional(),
   openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
@@ -224,7 +249,9 @@ export const SettingsUpdateRequestSchema = z.object({
   omnirouteSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
   omnirouteSidecarApiKey: z.string().trim().max(4096).optional(),
   omnirouteSidecarClearApiKey: z.boolean().optional(),
-  omnirouteSidecarSelectedModels: z.array(z.string().trim().min(1).max(256)).optional(),
+  omnirouteSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+  omnirouteSidecarFullModels: SidecarFullModelsSchema.optional(),
+  omnirouteSidecarSelectedModels: SidecarFullModelsSchema.optional(),
   omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
@@ -377,6 +404,7 @@ type OpenRouterSidecarSettingsFields = Pick<
   | "openrouterSidecarBaseUrl"
   | "openrouterSidecarApiKeyConfigured"
   | "openrouterSidecarModelPrefixes"
+  | "openrouterSidecarFullModels"
   | "openrouterSidecarConnectTimeoutSeconds"
   | "openrouterSidecarRequestTimeoutSeconds"
   | "openrouterSidecarModelsCacheTtlSeconds"
@@ -391,6 +419,8 @@ type OmniRouteSidecarSettingsFields = Pick<
   | "omnirouteSidecarEnabled"
   | "omnirouteSidecarBaseUrl"
   | "omnirouteSidecarApiKeyConfigured"
+  | "omnirouteSidecarModelPrefixes"
+  | "omnirouteSidecarFullModels"
   | "omnirouteSidecarSelectedModels"
   | "omnirouteSidecarConnectTimeoutSeconds"
   | "omnirouteSidecarRequestTimeoutSeconds"
@@ -407,6 +437,7 @@ type ClaudeSidecarSettingsFields = Pick<
   | "claudeSidecarBaseUrl"
   | "claudeSidecarApiKeyConfigured"
   | "claudeSidecarModelPrefixes"
+  | "claudeSidecarFullModels"
   | "claudeSidecarConnectTimeoutSeconds"
   | "claudeSidecarRequestTimeoutSeconds"
   | "claudeSidecarModelsCacheTtlSeconds"
@@ -436,6 +467,7 @@ export type DashboardSettings = Omit<
   Partial<OpenRouterSidecarSettingsFields> &
   Partial<OmniRouteSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
+export type SidecarModelPrefix = z.infer<typeof SidecarModelPrefixSchema>;
 export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
 export type ClaudeSidecarStatusResponse = z.infer<typeof ClaudeSidecarStatusResponseSchema>;
 export type ClaudeSidecarTestResponse = z.infer<typeof ClaudeSidecarTestResponseSchema>;
