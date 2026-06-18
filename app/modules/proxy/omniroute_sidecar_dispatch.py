@@ -39,6 +39,15 @@ from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
     stream_bytes_with_cursor_usage_fallback,
 )
+from app.modules.proxy.deepseek_v4_compat import (
+    capture_non_streaming as deepseek_capture_non_streaming,
+)
+from app.modules.proxy.deepseek_v4_compat import (
+    observe_stream as deepseek_observe_stream,
+)
+from app.modules.proxy.deepseek_v4_compat import (
+    resolve_scope as deepseek_resolve_scope,
+)
 from app.modules.proxy.omniroute_responses_dispatch import (
     ResponsesStreamSynthesizer,
     omniroute_chat_to_responses_result,
@@ -125,6 +134,12 @@ async def proxy_chat_to_omniroute(
     wire_model: str | None = None,
 ) -> Response:
     sidecar_payload = build_omniroute_chat_payload(payload, wire_model or effective_model)
+    deepseek_scope = deepseek_resolve_scope(
+        effective_model=effective_model,
+        provider="omniroute",
+        sidecar_body=sidecar_payload.body,
+        api_key_id=api_key.id if api_key else None,
+    )
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
@@ -136,6 +151,8 @@ async def proxy_chat_to_omniroute(
             started_at=requested_at,
             client=client,
         )
+        if deepseek_scope is not None:
+            stream = deepseek_observe_stream(deepseek_scope, stream)
         if cursor_compat:
             stream = stream_bytes_with_cursor_usage_fallback(
                 stream,
@@ -202,6 +219,8 @@ async def proxy_chat_to_omniroute(
         status="success",
         usage=usage,
     )
+    if deepseek_scope is not None:
+        deepseek_capture_non_streaming(deepseek_scope, response_body)
     if cursor_compat and is_json_mapping(response_body):
         response_body = apply_cursor_usage_fallback_to_response(
             cast(dict[str, JsonValue], response_body),
