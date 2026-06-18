@@ -15,22 +15,22 @@
 
 ## 3. Persistence schema + migration
 
-- [ ] 3.1 Update `DashboardSettings` (`app/db/models.py:593-743`): change `*_model_prefixes_json` semantics to `{prefix, strip}` arrays; add `claude_sidecar_full_models_json` and `openrouter_sidecar_full_models_json`; treat `omniroute_sidecar_selected_models_json` as OmniRoute's full-models store (keep column name to minimize churn).
-- [ ] 3.2 Add an Alembic revision on the current single head (`alembic heads` to confirm parent) implementing upgrade: prefix strings → `{prefix, strip}` (strip = ends-with `-`/`_`), seed CLIProxyAPI `cp-`/`cp_` (strip true) where absent, ensure full-model columns default `[]`, preserve OmniRoute selected models as full models.
-- [ ] 3.3 Implement the downgrade: collapse `{prefix, strip}` back to string arrays, drop added full-model columns, restore prior OmniRoute naming/semantics.
-- [ ] 3.4 Add migration tests (upgrade backfill parity + downgrade) and detect/log (do not drop) any pre-existing cross-integration prefix collisions.
+- [x] 3.1 Update `DashboardSettings` (`app/db/models.py:593-743`): change `*_model_prefixes_json` semantics to `{prefix, strip}` arrays; add `claude_sidecar_full_models_json` and `openrouter_sidecar_full_models_json`; treat `omniroute_sidecar_selected_models_json` as OmniRoute's full-models store (keep column name to minimize churn).
+- [x] 3.2 Add an Alembic revision on the current single head (`alembic heads` to confirm parent) implementing upgrade: prefix strings → `{prefix, strip}` (strip = ends-with `-`/`_`), seed CLIProxyAPI `cp-`/`cp_` (strip true) where absent, ensure full-model columns default `[]`, preserve OmniRoute selected models as full models.
+- [x] 3.3 Implement the downgrade: collapse `{prefix, strip}` back to string arrays, drop added full-model columns, restore prior OmniRoute naming/semantics.
+- [x] 3.4 Add migration tests (upgrade backfill parity + downgrade) and detect/log (do not drop) any pre-existing cross-integration prefix collisions.
 
 ## 4. Settings schemas + uniqueness validation
 
-- [ ] 4.1 Update Pydantic settings models (`app/modules/settings/schemas.py:162-269`): response + update models expose `{prefix, strip}` prefixes and `full_models` for all three integrations; keep management-key fields CLIProxyAPI-only.
-- [ ] 4.2 Update normalization validators (base URL, prefix normalization to lowercase, full-model trimming) for the new shapes.
-- [ ] 4.3 Add a cross-integration uniqueness validator over the post-update state: a prefix or full-model value may own at most one integration; allow prefix-vs-full-model textual coincidence across integrations. Reject with a structured conflict error (`code`, `value`, `kind`, `owning_integration`).
-- [ ] 4.4 Wire the conflict error into the settings update API response envelope so the frontend can render it.
-- [ ] 4.5 Update `*_config_from_settings` builders in the dispatch modules to construct the new config shapes from settings.
+- [x] 4.1 Update Pydantic settings models (`app/modules/settings/schemas.py:162-269`): response + update models expose `{prefix, strip}` prefixes and `full_models` for all three integrations; keep management-key fields CLIProxyAPI-only.
+- [x] 4.2 Update normalization validators (base URL, prefix normalization to lowercase, full-model trimming) for the new shapes.
+- [x] 4.3 Add a cross-integration uniqueness validator over the post-update state: a prefix or full-model value may own at most one integration; allow prefix-vs-full-model textual coincidence across integrations. Reject with a structured conflict error (`code`, `value`, `kind`, `owning_integration`).
+- [x] 4.4 Wire the conflict error into the settings update API response envelope so the frontend can render it.
+- [x] 4.5 Update `*_config_from_settings` builders in the dispatch modules to construct the new config shapes from settings.
 
 ## 5. Model catalog advertising
 
-- [ ] 5.1 Update sidecar model-catalog advertising (`app/modules/proxy/api.py` ~1894 and any per-integration summary) to advertise each enabled integration's `full_models` uniformly, dedup by resolver-owner, and not advertise prefixes.
+- [x] 5.1 Update sidecar model-catalog advertising (`app/modules/proxy/api.py` ~1894 and any per-integration summary) to advertise each enabled integration's `full_models` uniformly, dedup by resolver-owner, and not advertise prefixes.
 
 ## 6. Shared frontend component
 
@@ -43,10 +43,10 @@
 
 ## 7. Tests
 
-- [ ] 7.1 Backend resolver unit tests: full-name beats prefix, longest-prefix wins, per-prefix strip on/off, full-name never stripped, disabled integrations ignored, no-match fallthrough.
-- [ ] 7.2 Chat-completions routing tests asserting reservation/log use the effective model and wire model reflects strip rules.
-- [ ] 7.3 Responses-path routing test mirroring precedence/strip behavior.
-- [ ] 7.4 Settings uniqueness validator tests: duplicate prefix rejected, duplicate full-model rejected, prefix-vs-full-model coincidence accepted, structured error shape.
+- [x] 7.1 Backend resolver unit tests: full-name beats prefix, longest-prefix wins, per-prefix strip on/off, full-name never stripped, disabled integrations ignored, no-match fallthrough.
+- [x] 7.2 Chat-completions routing tests asserting reservation/log use the effective model and wire model reflects strip rules.
+- [x] 7.3 Responses-path routing test mirroring precedence/strip behavior.
+- [x] 7.4 Settings uniqueness validator tests: duplicate prefix rejected, duplicate full-model rejected, prefix-vs-full-model coincidence accepted, structured error shape.
 - [ ] 7.5 Frontend tests (vitest): per-prefix strip toggle, inline duplicate rejection text, discovered-model click adds to full-models, Save blocked on conflict.
 
 ## 8. Validation + docs

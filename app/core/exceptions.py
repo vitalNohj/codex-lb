@@ -64,6 +64,16 @@ class DashboardBadRequestError(AppError):
     status_code = 400
     code = "bad_request"
 
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        code: str | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        self.details = details
+        super().__init__(message, code=code)
+
 
 class DashboardValidationError(AppError):
     status_code = 422

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import select
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
 from app.db.models import ApiKeyUsageReservation, RequestLog
@@ -133,10 +133,11 @@ async def fake_sidecar(monkeypatch):
         enabled=True,
         base_url="http://127.0.0.1:8317",
         api_key="sidecar-key",
-        model_prefixes=("claude", "cp-"),
+        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
+        full_models=("claude-sonnet-4-5-20250929",),
     )
     client = _FakeSidecarClient(config)
 
@@ -290,6 +291,13 @@ async def test_claude_stream_routes_to_sidecar_and_requests_usage(async_client, 
 
 @pytest.mark.asyncio
 async def test_sidecar_model_list_merges_and_filters(async_client, sidecar_enabled, fake_sidecar):
+    await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarFullModels": ["claude-sonnet-4-5-20250929"],
+        },
+    )
     await _enable_api_key_auth(async_client)
     registry = get_model_registry()
     await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})

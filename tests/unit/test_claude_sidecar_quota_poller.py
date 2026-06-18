@@ -11,6 +11,7 @@ from app.core.clients.claude_sidecar import (
     ClaudeSidecarConfig,
     ClaudeSidecarError,
     ClaudeSidecarUnavailableError,
+    SidecarPrefix,
 )
 from app.modules.claude_sidecar import quota_poller as quota_poller_module
 from app.modules.claude_sidecar.quota import (
@@ -107,7 +108,7 @@ def _patch_environment(
             enabled=True,
             base_url="http://127.0.0.1:8317",
             api_key=None,
-            model_prefixes=("claude",),
+            prefixes=(SidecarPrefix(prefix="claude", strip=False),),
             connect_timeout_seconds=8.0,
             request_timeout_seconds=600.0,
             models_cache_ttl_seconds=60.0,

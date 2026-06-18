@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile,
     canonical_sidecar_model,
@@ -14,7 +14,7 @@ def _config(*, prefixes: tuple[str, ...] = ("cp-",)) -> ClaudeSidecarConfig:
         enabled=True,
         base_url="http://127.0.0.1:8317",
         api_key="key",
-        model_prefixes=prefixes,
+        prefixes=tuple(SidecarPrefix(prefix=prefix, strip=prefix.endswith(("-", "_"))) for prefix in prefixes),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,

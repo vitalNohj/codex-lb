@@ -22,6 +22,7 @@ class OpenAIErrorEnvelope(TypedDict):
 class DashboardErrorDetail(TypedDict):
     code: str
     message: str
+    details: NotRequired[dict[str, object]]
 
 
 class DashboardErrorEnvelope(TypedDict):
@@ -51,8 +52,16 @@ def openai_error(code: str, message: str, error_type: str = "server_error") -> O
     return {"error": {"message": message, "type": error_type, "code": code}}
 
 
-def dashboard_error(code: str, message: str) -> DashboardErrorEnvelope:
-    return {"error": {"code": code, "message": message}}
+def dashboard_error(
+    code: str,
+    message: str,
+    *,
+    details: dict[str, object] | None = None,
+) -> DashboardErrorEnvelope:
+    error: DashboardErrorDetail = {"code": code, "message": message}
+    if details is not None:
+        error["details"] = details
+    return {"error": error}
 
 
 def previous_response_stream_incomplete_error() -> OpenAIErrorEnvelope:
