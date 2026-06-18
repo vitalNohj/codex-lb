@@ -39,6 +39,18 @@ from app.modules.proxy.cursor_chat_compat import (
     is_context_length_error_envelope,
     stream_bytes_with_cursor_usage_fallback,
 )
+from app.modules.proxy.deepseek_v4_compat import (
+    DeepSeekScope,
+)
+from app.modules.proxy.deepseek_v4_compat import (
+    capture_non_streaming as deepseek_capture_non_streaming,
+)
+from app.modules.proxy.deepseek_v4_compat import (
+    make_stream_recorder as deepseek_make_stream_recorder,
+)
+from app.modules.proxy.deepseek_v4_compat import (
+    resolve_scope as deepseek_resolve_scope,
+)
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -617,6 +629,12 @@ async def proxy_chat_to_sidecar(
     # ``effective_model`` is used for reservations/logging; ``wire_model`` (the
     # resolver's stripped model) shapes the forwarded payload.
     sidecar_payload = build_sidecar_chat_payload(payload, wire_model or effective_model, client.config)
+    deepseek_scope = deepseek_resolve_scope(
+        effective_model=effective_model,
+        provider="claude",
+        sidecar_body=sidecar_payload.body,
+        api_key_id=api_key.id if api_key else None,
+    )
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
@@ -631,6 +649,7 @@ async def proxy_chat_to_sidecar(
             request_payload=payload,
             cursor_compat=cursor_compat,
             rate_limit_headers=rate_limit_headers,
+            deepseek_scope=deepseek_scope,
         )
         if cursor_compat:
             stream = stream_bytes_with_cursor_usage_fallback(
@@ -704,6 +723,8 @@ async def proxy_chat_to_sidecar(
         status="success",
         usage=usage,
     )
+    if deepseek_scope is not None:
+        deepseek_capture_non_streaming(deepseek_scope, response_body)
     relay_body = reverse_sidecar_tool_names_in_response(
         response_body,
         sidecar_payload.reverse_tool_names,
@@ -729,15 +750,23 @@ async def _sidecar_stream_iterator(
     request_payload: ChatCompletionsRequest,
     cursor_compat: bool,
     rate_limit_headers: Mapping[str, str],
+    deepseek_scope: DeepSeekScope | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
     settled = False
+    # Observe the raw (pre tool-name-reversal) chunks so the DeepSeek reasoning
+    # cache key uses forward-sanitized tool names, matching re-injection.
+    deepseek_recorder = (
+        deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
+    )
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
             tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
             async for raw_chunk in chunks:
+                if deepseek_recorder is not None:
+                    deepseek_recorder.record(raw_chunk)
                 for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
                     if event == "[DONE]":
                         completed = True
@@ -808,6 +837,8 @@ async def _sidecar_stream_iterator(
         settled = True
         raise
     finally:
+        if deepseek_recorder is not None:
+            deepseek_recorder.commit()
         if not settled:
             usage_to_settle = usage if completed else None
             await _finalize_or_release_sidecar_reservation(

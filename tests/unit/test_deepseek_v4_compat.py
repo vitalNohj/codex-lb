@@ -7,6 +7,7 @@ import pytest
 from app.core.types import JsonValue
 from app.modules.proxy.deepseek_v4_compat import (
     DeepSeekReasoningCache,
+    DeepSeekReasoningRecorder,
     DeepSeekReasoningStreamObserver,
     api_key_hash,
     capture_reasoning_from_response,
@@ -451,6 +452,67 @@ async def test_stream_accumulates_and_commits_on_clean_tool_call_finish() -> Non
     assert messages[1]["reasoning_content"] == "step 1 step 2"
 
 
+def test_recorder_observes_raw_chunks_and_commits() -> None:
+    # CLIProxyAPI path feeds raw (pre tool-name-reversal) chunks directly.
+    cache = DeepSeekReasoningCache()
+    outgoing = [{"role": "user", "content": "weather in Paris?"}]
+    recorder = DeepSeekReasoningRecorder(
+        outgoing_messages=outgoing,
+        provider="claude",
+        model_family="deepseek-v4-flash",
+        api_key_digest="d",
+        cache=cache,
+    )
+    for chunk in _tool_call_finish_stream():
+        recorder.record(chunk)
+    recorder.commit()
+    body: dict[str, JsonValue] = {
+        "messages": [
+            {"role": "user", "content": "weather in Paris?"},
+            _assistant_turn(reasoning=None),
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    }
+    reinject_reasoning_into_sidecar_body(
+        body, provider="claude", model_family="deepseek-v4-flash", api_key_digest="d", cache=cache
+    )
+    messages = body["messages"]
+    assert isinstance(messages, list)
+    assert messages[1]["reasoning_content"] == "step 1 step 2"
+
+
+def test_recorder_does_not_commit_on_interrupt() -> None:
+    cache = DeepSeekReasoningCache()
+    recorder = DeepSeekReasoningRecorder(
+        outgoing_messages=[{"role": "user", "content": "hi"}],
+        provider="claude",
+        model_family="deepseek-v4-flash",
+        api_key_digest="d",
+        cache=cache,
+    )
+    # Reasoning + tool-call finish but no [DONE] (interrupted upstream).
+    recorder.record(_sse(_chunk(reasoning="partial")))
+    recorder.record(
+        _sse(_chunk(tool_call={"index": 0, "id": "c", "function": {"name": "f", "arguments": "{}"}}))
+    )
+    recorder.record(_sse(_chunk(finish="tool_calls")))
+    recorder.commit()
+    # No [DONE] => no commit => re-injection finds nothing and leaves body intact.
+    body: dict[str, JsonValue] = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            _assistant_turn(reasoning=None),
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    }
+    reinject_reasoning_into_sidecar_body(
+        body, provider="claude", model_family="deepseek-v4-flash", api_key_digest="d", cache=cache
+    )
+    messages = body["messages"]
+    assert isinstance(messages, list)
+    assert "reasoning_content" not in messages[1]
+
+
 @pytest.mark.asyncio
 async def test_stream_does_not_commit_without_done() -> None:
     cache = DeepSeekReasoningCache()
@@ -521,3 +583,96 @@ async def test_stream_forwards_error_chunks_unchanged() -> None:
     )
     forwarded = await _collect(observer.__aiter__())
     assert forwarded == chunks
+
+
+# --------------------------------------------------------------------------
+# Multi-round chain (DeepSeek requires the complete reasoning chain)
+# --------------------------------------------------------------------------
+
+
+def _assistant_turn_n(call_id: str, name: str, args: str, reasoning: str | None = None) -> dict[str, JsonValue]:
+    msg: dict[str, JsonValue] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}],
+    }
+    if reasoning is not None:
+        msg["reasoning_content"] = reasoning
+    return msg
+
+
+def test_multi_round_chain_reinjects_every_prior_assistant_turn() -> None:
+    cache = DeepSeekReasoningCache()
+    kw = {"provider": "omniroute", "model_family": "deepseek-v4-flash", "api_key_digest": "d"}
+
+    # --- Round 1 request: just the user turn ---
+    round1_outgoing: list[JsonValue] = [{"role": "user", "content": "weather in Paris?"}]
+    round1_response: dict[str, JsonValue] = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "R1: need weather",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    capture_reasoning_from_response(round1_response, outgoing_messages=round1_outgoing, cache=cache, **kw)
+
+    # --- Round 2 request: user, assistant_tc_1 (no reasoning from Cursor), tool_1, ... ---
+    round2_messages: list[JsonValue] = [
+        {"role": "user", "content": "weather in Paris?"},
+        _assistant_turn_n("call_1", "get_weather", '{"city":"Paris"}'),
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"temp_c":18}'},
+    ]
+    round2_body: dict[str, JsonValue] = {"messages": [dict(m) for m in round2_messages]}
+    # Snapshot outgoing BEFORE reinjection (as resolve_scope does)
+    round2_outgoing = [dict(m) for m in round2_messages]
+    reinject_reasoning_into_sidecar_body(round2_body, cache=cache, **kw)
+    msgs2 = round2_body["messages"]
+    assert isinstance(msgs2, list)
+    assert msgs2[1]["reasoning_content"] == "R1: need weather"
+
+    # Round 2 upstream returns a SECOND assistant tool-call turn with new reasoning
+    round2_response: dict[str, JsonValue] = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "R2: convert units",
+                    "tool_calls": [
+                        {"id": "call_2", "type": "function", "function": {"name": "to_f", "arguments": '{"c":18}'}}
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    capture_reasoning_from_response(round2_response, outgoing_messages=round2_outgoing, cache=cache, **kw)
+
+    # --- Round 3 request: full history, BOTH assistant turns lack reasoning ---
+    round3_body: dict[str, JsonValue] = {
+        "messages": [
+            {"role": "user", "content": "weather in Paris?"},
+            _assistant_turn_n("call_1", "get_weather", '{"city":"Paris"}'),
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"temp_c":18}'},
+            _assistant_turn_n("call_2", "to_f", '{"c":18}'),
+            {"role": "tool", "tool_call_id": "call_2", "content": '{"f":64}'},
+        ]
+    }
+    reinject_reasoning_into_sidecar_body(round3_body, cache=cache, **kw)
+    msgs3 = round3_body["messages"]
+    assert isinstance(msgs3, list)
+    # The complete multi-round reasoning chain is restored on BOTH assistant turns.
+    assert msgs3[1]["reasoning_content"] == "R1: need weather"
+    assert msgs3[3]["reasoning_content"] == "R2: convert units"

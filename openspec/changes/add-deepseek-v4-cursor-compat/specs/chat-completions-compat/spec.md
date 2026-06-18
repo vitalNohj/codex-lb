@@ -3,11 +3,11 @@
 ### Requirement: DeepSeek V4 sidecar chat completions repair missing reasoning_content for tool-call history
 
 The service MUST repair missing assistant `reasoning_content` on DeepSeek V4
-tool-call continuation turns routed through the OpenRouter or OmniRoute sidecar
-dispatch path, so the upstream provider does not reject the request with a
-"reasoning_content in the thinking mode must be passed back" error. This applies
-only when the `/v1/chat/completions` request's effective model is a DeepSeek V4
-thinking-mode model.
+tool-call continuation turns routed through any sidecar chat-completions
+dispatch path (CLIProxyAPI, OpenRouter, or OmniRoute), so the upstream provider
+does not reject the request with a "reasoning_content in the thinking mode must
+be passed back" error. This applies only when the `/v1/chat/completions`
+request's effective model is a DeepSeek V4 thinking-mode model.
 
 The service MUST treat a model as a DeepSeek V4 model when the effective model
 (case-insensitive) matches a DeepSeek V4 family token (`deepseek-v4-pro` or
@@ -28,9 +28,15 @@ forwarding upstream. The repair MUST mutate only the forwarded sidecar payload
 and MUST NOT alter the client-visible request or response bytes.
 
 Cached reasoning MUST be isolated such that unrelated conversations, different
-configured providers (`openrouter` vs `omniroute`), different API keys, and
-different DeepSeek V4 model families (`pro` vs `flash`) cannot reuse one
-another's reasoning content. Cache storage MUST be bounded in size and retention.
+configured providers (`claude` / `openrouter` / `omniroute`), different API
+keys, and different DeepSeek V4 model families (`pro` vs `flash`) cannot reuse
+one another's reasoning content. Cache storage MUST be bounded in size and
+retention.
+
+On the CLIProxyAPI (`claude`) path, where forwarded streamed tool-call names are
+rewritten before reaching the client, reasoning capture MUST observe the raw
+upstream stream (before tool-name rewriting) so the cache key matches the
+re-injection key derived from the forward-sanitized outgoing payload.
 
 When no cached reasoning is available for an assistant tool-call turn, the
 service MUST forward the request unchanged (no fabricated reasoning).
@@ -102,8 +108,8 @@ fail the proxied request.
 
 #### Scenario: Non-DeepSeek sidecar traffic is byte-for-byte unchanged
 
-- **WHEN** a non-DeepSeek OpenRouter or OmniRoute model is routed through the
-  sidecar chat-completions path
+- **WHEN** a non-DeepSeek CLIProxyAPI, OpenRouter, or OmniRoute model is routed
+  through the sidecar chat-completions path
 - **THEN** the forwarded sidecar payload and the client-visible response/stream
   are identical to behavior without this adapter (no reasoning capture or
   re-injection occurs)

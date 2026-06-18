@@ -419,6 +419,40 @@ class DeepSeekReasoningStreamObserver:
         cache: DeepSeekReasoningCache,
     ) -> None:
         self._stream = stream
+        self._recorder = DeepSeekReasoningRecorder(
+            outgoing_messages=outgoing_messages,
+            provider=provider,
+            model_family=model_family,
+            api_key_digest=api_key_digest,
+            cache=cache,
+        )
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._stream:
+                self._recorder.record(chunk)
+                yield chunk
+        finally:
+            self._recorder.commit()
+
+
+class DeepSeekReasoningRecorder:
+    """Accumulate streamed reasoning from SSE byte chunks and commit on success.
+
+    Decoupled from byte forwarding so it can observe either the forwarded
+    stream (OmniRoute/OpenRouter) or the *raw* upstream chunks before any
+    provider-specific rewriting (CLIProxyAPI tool-name reversal).
+    """
+
+    def __init__(
+        self,
+        *,
+        outgoing_messages: list[JsonValue],
+        provider: str,
+        model_family: str,
+        api_key_digest: str,
+        cache: DeepSeekReasoningCache,
+    ) -> None:
         self._outgoing_messages = outgoing_messages
         self._provider = provider
         self._model_family = model_family
@@ -432,15 +466,7 @@ class DeepSeekReasoningStreamObserver:
         self._done = False
         self._committed = False
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        try:
-            async for chunk in self._stream:
-                self._observe(chunk)
-                yield chunk
-        finally:
-            self._maybe_commit()
-
-    def _observe(self, chunk: bytes) -> None:
+    def record(self, chunk: bytes) -> None:
         try:
             self._buffer += chunk.decode("utf-8", errors="ignore")
             while "\n\n" in self._buffer:
@@ -488,7 +514,7 @@ class DeepSeekReasoningStreamObserver:
             if choice.get("finish_reason") == "tool_calls":
                 self._tool_call_finish = True
 
-    def _maybe_commit(self) -> None:
+    def commit(self) -> None:
         if self._committed:
             return
         self._committed = True
@@ -588,3 +614,20 @@ def observe_stream(scope: DeepSeekScope, stream: AsyncIterator[bytes]) -> AsyncI
         api_key_digest=scope.api_key_digest,
         cache=get_reasoning_cache(),
     ).__aiter__()
+
+
+def make_stream_recorder(scope: DeepSeekScope) -> DeepSeekReasoningRecorder:
+    """Recorder for observing *raw* upstream SSE chunks inline.
+
+    Used on the CLIProxyAPI path where the forwarded stream rewrites tool
+    names; the recorder must see the un-rewritten (forward-sanitized) names so
+    its cache key matches the re-injection key.
+    """
+
+    return DeepSeekReasoningRecorder(
+        outgoing_messages=scope.outgoing_messages,
+        provider=scope.provider,
+        model_family=scope.model_family,
+        api_key_digest=scope.api_key_digest,
+        cache=get_reasoning_cache(),
+    )
