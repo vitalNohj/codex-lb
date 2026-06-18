@@ -39,15 +39,11 @@ from app.modules.proxy.cursor_chat_compat import (
     is_context_length_error_envelope,
     stream_bytes_with_cursor_usage_fallback,
 )
-from app.modules.proxy.sidecar_model_profiles import (
-    apply_sidecar_model_profile,
-    is_known_claude_sidecar_model,
-)
-from app.modules.proxy.sidecar_prefix import (
-    is_custom_alias_prefix,
-    matching_sidecar_prefix,
-    sidecar_prefix_variants,
-    strip_sidecar_model_prefix,
+from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile
+from app.modules.proxy.sidecar_routing import (
+    SidecarRoutingEntry,
+    parse_sidecar_full_models,
+    parse_sidecar_prefixes,
 )
 from app.modules.proxy.sidecar_tool_mapper import (
     SidecarSseToolNameRewriter,
@@ -81,33 +77,12 @@ class SidecarChatPayload:
     reverse_tool_names: dict[str, str]
 
 
-def is_sidecar_model(model: str, config: ClaudeSidecarConfig) -> bool:
-    if not config.enabled:
-        return False
-    if sidecar_prefix_match(model, config):
-        return True
-    return is_known_claude_sidecar_model(model)
-
-
-def sidecar_prefix_match(model: str, config: ClaudeSidecarConfig) -> bool:
-    return _matching_sidecar_prefix(model, config) is not None
-
-
-def sidecar_wire_model(model: str, config: ClaudeSidecarConfig) -> str:
-    stripped = strip_sidecar_model_prefix(model, config)
-    return apply_sidecar_model_profile({}, stripped_model=stripped)
-
-
-def _matching_sidecar_prefix(model: str, config: ClaudeSidecarConfig) -> str | None:
-    return matching_sidecar_prefix(model, config)
-
-
-def _sidecar_prefix_variants(prefix: str) -> tuple[str, ...]:
-    return sidecar_prefix_variants(prefix)
-
-
-def _is_custom_alias_prefix(prefix: str) -> bool:
-    return is_custom_alias_prefix(prefix)
+def claude_routing_entry(config: ClaudeSidecarConfig) -> SidecarRoutingEntry:
+    return SidecarRoutingEntry(
+        provider="claude",
+        prefixes=config.prefixes,
+        full_models=config.full_models,
+    )
 
 
 async def load_sidecar_config() -> ClaudeSidecarConfig | None:
@@ -128,10 +103,11 @@ def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarCo
         enabled=bool(settings.claude_sidecar_enabled),
         base_url=settings.claude_sidecar_base_url.rstrip("/"),
         api_key=api_key,
-        model_prefixes=tuple(_parse_sidecar_prefixes(settings.claude_sidecar_model_prefixes_json)),
+        prefixes=parse_sidecar_prefixes(settings.claude_sidecar_model_prefixes_json),
         connect_timeout_seconds=settings.claude_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.claude_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
+        full_models=parse_sidecar_full_models(settings.claude_sidecar_full_models_json),
         management_key=management_key,
     )
 
@@ -144,19 +120,6 @@ def _decrypt_sidecar_secret(encrypted: bytes | None, *, label: str) -> str | Non
     except Exception:
         logger.warning("failed to decrypt Claude sidecar %s", label, exc_info=True)
         return None
-
-
-def _parse_sidecar_prefixes(raw: str | None) -> list[str]:
-    if not raw:
-        return ["claude", "cp-"]
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return ["claude", "cp-"]
-    if not isinstance(parsed, list):
-        return ["claude", "cp-"]
-    prefixes = [entry.strip().lower() for entry in parsed if isinstance(entry, str) and entry.strip()]
-    return prefixes or ["claude", "cp-"]
 
 
 def sanitize_sidecar_chat_messages(body: dict[str, JsonValue]) -> None:
@@ -522,8 +485,10 @@ def build_sidecar_chat_payload(
     config: ClaudeSidecarConfig,
 ) -> SidecarChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
-    stripped_model = strip_sidecar_model_prefix(effective_model, config)
-    apply_sidecar_model_profile(body, stripped_model=stripped_model)
+    # The unified resolver already produced the wire model (prefix stripped per
+    # the matched prefix's strip flag); apply the canonical-model + reasoning
+    # effort profile to that wire model.
+    apply_sidecar_model_profile(body, stripped_model=effective_model)
     sanitize_sidecar_forward_payload(body)
     normalize_sidecar_cursor_tool_history(body)
     sanitize_sidecar_chat_tool_ids(body)
@@ -647,8 +612,11 @@ async def proxy_chat_to_sidecar(
     sse_keepalive_interval_seconds: float,
     client: ClaudeSidecarClient,
     cursor_compat: bool = False,
+    wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_sidecar_chat_payload(payload, effective_model, client.config)
+    # ``effective_model`` is used for reservations/logging; ``wire_model`` (the
+    # resolver's stripped model) shapes the forwarded payload.
+    sidecar_payload = build_sidecar_chat_payload(payload, wire_model or effective_model, client.config)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)

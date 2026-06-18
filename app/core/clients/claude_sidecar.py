@@ -20,14 +20,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class SidecarPrefix:
+    prefix: str
+    strip: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ClaudeSidecarConfig:
     enabled: bool
     base_url: str
     api_key: str | None
-    model_prefixes: tuple[str, ...]
+    prefixes: tuple[SidecarPrefix, ...]
     connect_timeout_seconds: float
     request_timeout_seconds: float
     models_cache_ttl_seconds: float
+    full_models: tuple[str, ...] = ()
     management_key: str | None = None
 
 

@@ -44,6 +44,11 @@ from app.modules.proxy.omniroute_responses_dispatch import (
     omniroute_chat_to_responses_result,
     responses_to_omniroute_chat_request,
 )
+from app.modules.proxy.sidecar_routing import (
+    SidecarRoutingEntry,
+    parse_sidecar_full_models,
+    parse_sidecar_prefixes,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -56,11 +61,12 @@ class OmniRouteChatPayload:
     body: dict[str, JsonValue]
 
 
-def is_omniroute_sidecar_model(model: str, config: OmniRouteSidecarConfig) -> bool:
-    if not config.enabled:
-        return False
-    normalized_model = model.strip().lower()
-    return any(normalized_model == selected.strip().lower() for selected in config.selected_models)
+def omniroute_routing_entry(config: OmniRouteSidecarConfig) -> SidecarRoutingEntry:
+    return SidecarRoutingEntry(
+        provider="omniroute",
+        prefixes=config.prefixes,
+        full_models=config.full_models,
+    )
 
 
 async def load_omniroute_sidecar_config() -> OmniRouteSidecarConfig | None:
@@ -78,7 +84,8 @@ def omniroute_sidecar_config_from_settings(settings: DashboardSettings) -> OmniR
         enabled=bool(settings.omniroute_sidecar_enabled),
         base_url=settings.omniroute_sidecar_base_url.rstrip("/"),
         api_key=api_key,
-        selected_models=tuple(_parse_omniroute_sidecar_selected_models(settings.omniroute_sidecar_selected_models_json)),
+        full_models=parse_sidecar_full_models(settings.omniroute_sidecar_selected_models_json),
+        prefixes=parse_sidecar_prefixes(settings.omniroute_sidecar_prefixes_json),
         connect_timeout_seconds=settings.omniroute_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.omniroute_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.omniroute_sidecar_models_cache_ttl_seconds,
@@ -93,18 +100,6 @@ def _decrypt_omniroute_secret(encrypted: bytes | None) -> str | None:
     except Exception:
         logger.warning("failed to decrypt OmniRoute sidecar API key", exc_info=True)
         return None
-
-
-def _parse_omniroute_sidecar_selected_models(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [entry.strip() for entry in parsed if isinstance(entry, str) and entry.strip()]
 
 
 def build_omniroute_chat_payload(
@@ -127,8 +122,9 @@ async def proxy_chat_to_omniroute(
     sse_keepalive_interval_seconds: float,
     client: OmniRouteSidecarClient,
     cursor_compat: bool = False,
+    wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_omniroute_chat_payload(payload, effective_model)
+    sidecar_payload = build_omniroute_chat_payload(payload, wire_model or effective_model)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
@@ -471,6 +467,7 @@ async def proxy_responses_to_omniroute(
     rate_limit_headers: Mapping[str, str],
     sse_keepalive_interval_seconds: float,
     client: OmniRouteSidecarClient,
+    wire_model: str | None = None,
 ) -> Response:
     """Dispatch a Responses-shaped request to OmniRoute and return Responses output.
 
@@ -479,8 +476,9 @@ async def proxy_responses_to_omniroute(
     Responses result (non-streaming) or Responses event stream (streaming).
     """
 
-    chat_request = responses_to_omniroute_chat_request(payload, effective_model)
-    chat_body = build_omniroute_chat_payload(chat_request, effective_model).body
+    forward_model = wire_model or effective_model
+    chat_request = responses_to_omniroute_chat_request(payload, forward_model)
+    chat_body = build_omniroute_chat_payload(chat_request, forward_model).body
     requested_at = time.monotonic()
     stream = bool(payload.stream)
 

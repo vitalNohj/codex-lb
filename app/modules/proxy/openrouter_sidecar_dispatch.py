@@ -38,6 +38,11 @@ from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
     stream_bytes_with_cursor_usage_fallback,
 )
+from app.modules.proxy.sidecar_routing import (
+    SidecarRoutingEntry,
+    parse_sidecar_full_models,
+    parse_sidecar_prefixes,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -50,46 +55,12 @@ class OpenRouterChatPayload:
     body: dict[str, JsonValue]
 
 
-def is_openrouter_sidecar_model(model: str, config: OpenRouterSidecarConfig) -> bool:
-    if not config.enabled:
-        return False
-    return openrouter_sidecar_prefix_match(model, config)
-
-
-def openrouter_sidecar_prefix_match(model: str, config: OpenRouterSidecarConfig) -> bool:
-    return _matching_openrouter_prefix(model, config) is not None
-
-
-def openrouter_sidecar_wire_model(model: str, config: OpenRouterSidecarConfig) -> str:
-    normalized_model = model.strip()
-    prefix = _matching_openrouter_prefix(normalized_model, config)
-    if prefix is None or not _is_custom_alias_prefix(prefix):
-        return normalized_model
-    return normalized_model[len(prefix) :].strip() or normalized_model
-
-
-def _matching_openrouter_prefix(model: str, config: OpenRouterSidecarConfig) -> str | None:
-    normalized = model.strip().lower()
-    for prefix in config.model_prefixes:
-        for candidate in _openrouter_prefix_variants(prefix):
-            if normalized.startswith(candidate):
-                return candidate
-    return None
-
-
-def _openrouter_prefix_variants(prefix: str) -> tuple[str, ...]:
-    normalized = prefix.strip().lower()
-    if not normalized:
-        return ()
-    if normalized.endswith("-"):
-        return (normalized, f"{normalized[:-1]}_")
-    if normalized.endswith("_"):
-        return (normalized, f"{normalized[:-1]}-")
-    return (normalized,)
-
-
-def _is_custom_alias_prefix(prefix: str) -> bool:
-    return prefix.endswith(("-", "_"))
+def openrouter_routing_entry(config: OpenRouterSidecarConfig) -> SidecarRoutingEntry:
+    return SidecarRoutingEntry(
+        provider="openrouter",
+        prefixes=config.prefixes,
+        full_models=config.full_models,
+    )
 
 
 async def load_openrouter_sidecar_config() -> OpenRouterSidecarConfig | None:
@@ -107,10 +78,11 @@ def openrouter_sidecar_config_from_settings(settings: DashboardSettings) -> Open
         enabled=bool(settings.openrouter_sidecar_enabled),
         base_url=settings.openrouter_sidecar_base_url.rstrip("/"),
         api_key=api_key,
-        model_prefixes=tuple(_parse_openrouter_sidecar_prefixes(settings.openrouter_sidecar_model_prefixes_json)),
+        prefixes=parse_sidecar_prefixes(settings.openrouter_sidecar_model_prefixes_json),
         connect_timeout_seconds=settings.openrouter_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.openrouter_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.openrouter_sidecar_models_cache_ttl_seconds,
+        full_models=parse_sidecar_full_models(settings.openrouter_sidecar_full_models_json),
     )
 
 
@@ -124,25 +96,15 @@ def _decrypt_openrouter_secret(encrypted: bytes | None) -> str | None:
         return None
 
 
-def _parse_openrouter_sidecar_prefixes(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [entry.strip().lower() for entry in parsed if isinstance(entry, str) and entry.strip()]
-
-
 def build_openrouter_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
     config: OpenRouterSidecarConfig,
 ) -> OpenRouterChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
-    body["model"] = openrouter_sidecar_wire_model(effective_model, config)
+    # ``effective_model`` is the wire model already resolved (and stripped per
+    # the matched prefix's flag) by the unified resolver.
+    body["model"] = effective_model.strip()
     return OpenRouterChatPayload(body=body)
 
 
@@ -157,8 +119,9 @@ async def proxy_chat_to_openrouter(
     sse_keepalive_interval_seconds: float,
     client: OpenRouterSidecarClient,
     cursor_compat: bool = False,
+    wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_openrouter_chat_payload(payload, effective_model, client.config)
+    sidecar_payload = build_openrouter_chat_payload(payload, wire_model or effective_model, client.config)
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)

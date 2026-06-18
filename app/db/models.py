@@ -605,8 +605,10 @@ class DashboardSettings(Base):
     claude_sidecar_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     claude_sidecar_model_prefixes_json: Mapped[str] = mapped_column(
         Text,
-        default='["claude"]',
-        server_default=text("'[\"claude\"]'"),
+        default='[{"prefix": "claude", "strip": false}, {"prefix": "cp-", "strip": true}, {"prefix": "cp_", "strip": true}]',
+        server_default=text(
+            "'[{\"prefix\": \"claude\", \"strip\": false}, {\"prefix\": \"cp-\", \"strip\": true}, {\"prefix\": \"cp_\", \"strip\": true}]'"
+        ),
         nullable=False,
     )
     claude_sidecar_connect_timeout_seconds: Mapped[float] = mapped_column(
@@ -632,6 +634,12 @@ class DashboardSettings(Base):
     claude_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     claude_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     claude_sidecar_management_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    claude_sidecar_full_models_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
     claude_sidecar_quota_poll_interval_seconds: Mapped[float] = mapped_column(
         Float,
         default=60.0,
@@ -678,6 +686,12 @@ class DashboardSettings(Base):
         server_default=text("'[]'"),
         nullable=False,
     )
+    openrouter_sidecar_full_models_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
     openrouter_sidecar_connect_timeout_seconds: Mapped[float] = mapped_column(
         Float,
         default=8.0,
@@ -714,6 +728,12 @@ class DashboardSettings(Base):
     )
     omniroute_sidecar_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     omniroute_sidecar_selected_models_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
+    omniroute_sidecar_prefixes_json: Mapped[str] = mapped_column(
         Text,
         default="[]",
         server_default=text("'[]'"),

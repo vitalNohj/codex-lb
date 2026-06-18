@@ -83,7 +83,7 @@ async def list_models() -> dict:
             await OmniRouteSidecarClient(omniroute_config).list_models_cached()
         except Exception:
             logger.warning("failed to refresh OmniRoute sidecar models for dashboard model list", exc_info=True)
-        for model_id in omniroute_config.selected_models:
+        for model_id in omniroute_config.full_models:
             if model_id in seen_model_ids:
                 continue
             seen_model_ids.add(model_id)
