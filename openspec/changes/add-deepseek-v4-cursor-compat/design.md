@@ -53,9 +53,10 @@ visible even when a strip-prefix would remove it from the wire model.
 
 ## Where the transform hooks in
 
-Both `proxy_chat_to_openrouter` and `proxy_chat_to_omniroute` already build a
-sidecar payload (`build_*_chat_payload`) and branch on `payload.stream`. The
-DeepSeek repair is a thin, provider-agnostic layer applied around that:
+All three sidecar dispatchers — `proxy_chat_to_sidecar` (CLIProxyAPI/Claude),
+`proxy_chat_to_openrouter`, and `proxy_chat_to_omniroute` — build a sidecar
+payload (`build_*_chat_payload`) and branch on `payload.stream`. The DeepSeek
+repair is a thin, provider-agnostic layer applied around that:
 
 1. **Request re-injection (outgoing):** after the sidecar body dict is built and
    before it is sent, if the request is in scope, walk `messages` and patch any
@@ -76,10 +77,18 @@ DeepSeek repair is a thin, provider-agnostic layer applied around that:
 
 The DeepSeek layer is applied **inside** the provider dispatch functions, ahead
 of the existing `cursor_compat` wrappers, so Cursor usage-fallback rewriting and
-keepalive injection continue to operate on the final byte stream unchanged. The
-DeepSeek stream observer wraps the raw sidecar iterator (the same place the
-provider's own `_*_stream_iterator` is created), so settlement/logging in that
-iterator is preserved and the observer only reads chunks already yielded.
+keepalive injection continue to operate on the final byte stream unchanged.
+
+For OmniRoute/OpenRouter, the stream observer wraps the provider's
+`_*_stream_iterator` output (pure pass-through; those iterators do not rewrite
+tool names). For CLIProxyAPI/Claude, the forwarded stream **rewrites tool
+names** (`SidecarSseToolNameRewriter`) to client-facing names; observing the
+rewritten output would key reasoning by client-facing names that do not match
+the forward-sanitized names re-injection uses. So on that path a
+`DeepSeekReasoningRecorder` is fed the **raw** upstream chunks *inside*
+`_sidecar_stream_iterator` (before rewriting) and committed in that iterator's
+`finally`, preserving its settlement/logging. Non-streaming capture likewise
+reads the raw upstream `response_body` (before `reverse_sidecar_tool_names`).
 
 ## Cache key strategy
 
