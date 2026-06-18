@@ -1,0 +1,910 @@
+import { createContext, type ReactNode, use, useMemo, useState } from "react";
+import { ExternalLink, Plus, X, type LucideIcon } from "lucide-react";
+
+import { AlertMessage } from "@/components/alert-message";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
+import { buildSettingsUpdateRequest } from "@/features/settings/payload";
+import type {
+  DashboardSettings,
+  SettingsUpdateRequest,
+  SidecarModelPrefix,
+} from "@/features/settings/schemas";
+import { ApiError } from "@/lib/api-client";
+
+export type SidecarIntegrationId = "claude" | "openrouter" | "omniroute";
+
+type SidecarIntegrationMeta = {
+  id: SidecarIntegrationId;
+  title: string;
+  conflictName: string;
+  description: string;
+  icon: LucideIcon;
+  sectionId: string;
+  enableLabel: string;
+  enableDescription: string;
+  callout: ReactNode;
+  baseUrlPlaceholder: string;
+  apiKeyPlaceholder: string;
+  apiKeyConfigured: boolean;
+  managementKeyConfigured?: boolean;
+  externalLink?: {
+    href: string;
+    label: string;
+  };
+};
+
+type SidecarIntegrationState = {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+  managementKey: string;
+  prefixes: SidecarModelPrefix[];
+  fullModels: string[];
+  connectTimeout: string;
+  requestTimeout: string;
+  cacheTtl: string;
+  pollInterval: string;
+  manualPrefix: string;
+  manualFullModel: string;
+  inlineError: string | null;
+  saveError: string | null;
+};
+
+type SidecarIntegrationActions = {
+  setEnabled: (enabled: boolean) => void;
+  setBaseUrl: (value: string) => void;
+  setApiKey: (value: string) => void;
+  setManagementKey: (value: string) => void;
+  setConnectTimeout: (value: string) => void;
+  setRequestTimeout: (value: string) => void;
+  setCacheTtl: (value: string) => void;
+  setPollInterval: (value: string) => void;
+  setManualPrefix: (value: string) => void;
+  setManualFullModel: (value: string) => void;
+  addPrefix: () => void;
+  removePrefix: (prefix: string) => void;
+  setPrefixStrip: (prefix: string, strip: boolean) => void;
+  addFullModel: (modelId?: string) => void;
+  removeFullModel: (modelId: string) => void;
+  saveConfig: () => Promise<void>;
+  clearApiKey: () => Promise<void>;
+  clearManagementKey: () => Promise<void>;
+};
+
+type SidecarIntegrationContextValue = {
+  settings: DashboardSettings;
+  busy: boolean;
+  meta: SidecarIntegrationMeta;
+  state: SidecarIntegrationState;
+  actions: SidecarIntegrationActions;
+  models: {
+    rows: DiscoveredModelSummary[];
+    isLoading: boolean;
+  };
+  form: {
+    isValid: boolean;
+    hasConflict: boolean;
+    conflictMessage: string | null;
+    savePending: boolean;
+  };
+};
+
+type SidecarIntegrationCardProviderProps = {
+  settings: DashboardSettings;
+  busy: boolean;
+  meta: SidecarIntegrationMeta;
+  initial: {
+    enabled: boolean;
+    baseUrl: string;
+    prefixes: SidecarModelPrefix[];
+    fullModels: string[];
+    connectTimeout: number;
+    requestTimeout: number;
+    cacheTtl: number;
+    pollInterval?: number;
+  };
+  models: {
+    rows: DiscoveredModelSummary[];
+    isLoading: boolean;
+  };
+  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onTestConnection: () => Promise<unknown>;
+  buildPatch: (state: {
+    baseUrl: string;
+    apiKey: string;
+    managementKey: string;
+    prefixes: SidecarModelPrefix[];
+    fullModels: string[];
+    connectTimeout: number;
+    requestTimeout: number;
+    cacheTtl: number;
+    pollInterval: number | null;
+  }) => Partial<SettingsUpdateRequest>;
+  buildEnablePatch: (enabled: boolean) => Partial<SettingsUpdateRequest>;
+  buildClearApiKeyPatch: () => Partial<SettingsUpdateRequest>;
+  buildClearManagementKeyPatch?: () => Partial<SettingsUpdateRequest>;
+  children: ReactNode;
+};
+
+const INTEGRATION_NAMES: Record<SidecarIntegrationId, string> = {
+  claude: "CLIProxyAPI",
+  openrouter: "OpenRouter",
+  omniroute: "OmniRoute",
+};
+
+const SidecarIntegrationContext = createContext<SidecarIntegrationContextValue | null>(null);
+
+function useSidecarIntegration() {
+  const value = use(SidecarIntegrationContext);
+  if (!value) {
+    throw new Error("SidecarIntegrationCard subcomponents must be used inside Provider");
+  }
+  return value;
+}
+
+function normalizePrefixes(prefixes: SidecarModelPrefix[]): SidecarModelPrefix[] {
+  const seen = new Set<string>();
+  const next: SidecarModelPrefix[] = [];
+  for (const entry of prefixes) {
+    const prefix = entry.prefix.trim().toLowerCase();
+    if (!prefix || seen.has(prefix)) {
+      continue;
+    }
+    seen.add(prefix);
+    next.push({ prefix, strip: entry.strip });
+  }
+  return next;
+}
+
+function normalizeFullModels(models: string[]): string[] {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const model of models) {
+    const trimmed = model.trim();
+    const key = trimmed.toLowerCase();
+    if (!trimmed || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(trimmed);
+  }
+  return next;
+}
+
+type IntegrationValues = {
+  id: SidecarIntegrationId;
+  name: string;
+  prefixes: SidecarModelPrefix[];
+  fullModels: string[];
+};
+
+function integrationValues(settings: DashboardSettings, current?: IntegrationValues): IntegrationValues[] {
+  const values: IntegrationValues[] = [
+    {
+      id: "claude",
+      name: INTEGRATION_NAMES.claude,
+      prefixes: settings.claudeSidecarModelPrefixes ?? [],
+      fullModels: settings.claudeSidecarFullModels ?? [],
+    },
+    {
+      id: "openrouter",
+      name: INTEGRATION_NAMES.openrouter,
+      prefixes: settings.openrouterSidecarModelPrefixes ?? [],
+      fullModels: settings.openrouterSidecarFullModels ?? [],
+    },
+    {
+      id: "omniroute",
+      name: INTEGRATION_NAMES.omniroute,
+      prefixes: settings.omnirouteSidecarModelPrefixes ?? [],
+      fullModels: settings.omnirouteSidecarFullModels ?? settings.omnirouteSidecarSelectedModels ?? [],
+    },
+  ];
+  if (!current) {
+    return values;
+  }
+  return values.map((value) => (value.id === current.id ? current : value));
+}
+
+function findDuplicateOwner(params: {
+  settings: DashboardSettings;
+  currentId: SidecarIntegrationId;
+  kind: "prefix" | "full_model";
+  value: string;
+  currentPrefixes?: SidecarModelPrefix[];
+  currentFullModels?: string[];
+}): string | null {
+  const key = params.value.trim().toLowerCase();
+  if (!key) {
+    return null;
+  }
+  const values = integrationValues(params.settings, {
+    id: params.currentId,
+    name: INTEGRATION_NAMES[params.currentId],
+    prefixes: params.currentPrefixes ?? [],
+    fullModels: params.currentFullModels ?? [],
+  });
+  for (const integration of values) {
+    if (integration.id === params.currentId) {
+      continue;
+    }
+    const matches =
+      params.kind === "prefix"
+        ? integration.prefixes.some((entry) => entry.prefix.toLowerCase() === key)
+        : integration.fullModels.some((model) => model.toLowerCase() === key);
+    if (matches) {
+      return integration.name;
+    }
+  }
+  return null;
+}
+
+function currentConflict(settings: DashboardSettings, current: IntegrationValues): {
+  kind: "prefix" | "full_model";
+  value: string;
+  owner: string;
+} | null {
+  for (const prefix of current.prefixes) {
+    const owner = findDuplicateOwner({
+      settings,
+      currentId: current.id,
+      kind: "prefix",
+      value: prefix.prefix,
+      currentPrefixes: current.prefixes,
+      currentFullModels: current.fullModels,
+    });
+    if (owner) {
+      return { kind: "prefix", value: prefix.prefix, owner };
+    }
+  }
+  for (const model of current.fullModels) {
+    const owner = findDuplicateOwner({
+      settings,
+      currentId: current.id,
+      kind: "full_model",
+      value: model,
+      currentPrefixes: current.prefixes,
+      currentFullModels: current.fullModels,
+    });
+    if (owner) {
+      return { kind: "full_model", value: model, owner };
+    }
+  }
+  return null;
+}
+
+function conflictLabel(kind: "prefix" | "full_model") {
+  return kind === "prefix" ? "Prefix" : "Full model";
+}
+
+function conflictMessage(kind: "prefix" | "full_model", value: string, owner: string) {
+  return `${conflictLabel(kind)} ${value} is already used by ${owner}.`;
+}
+
+function backendConflictMessage(error: unknown, currentName: string): string | null {
+  if (!(error instanceof ApiError)) {
+    return null;
+  }
+  const errorDetails = error.details;
+  const details =
+    typeof errorDetails === "object" && errorDetails !== null && "details" in errorDetails
+      ? (errorDetails as { details?: unknown }).details
+      : errorDetails;
+  if (typeof details !== "object" || details === null) {
+    return null;
+  }
+  const conflict = details as Record<string, unknown>;
+  if (conflict.code !== "sidecar_routing_conflict") {
+    return null;
+  }
+  const kind = conflict.kind === "full_model" ? "full_model" : conflict.kind === "prefix" ? "prefix" : null;
+  const value = typeof conflict.value === "string" ? conflict.value : null;
+  const owner = typeof conflict.owning_integration === "string" ? conflict.owning_integration : null;
+  const challenger =
+    typeof conflict.challenging_integration === "string" ? conflict.challenging_integration : currentName;
+  if (!kind || !value || !owner) {
+    return null;
+  }
+  return `${conflictLabel(kind)} ${value} conflicts with ${owner} while saving ${challenger}.`;
+}
+
+function SidecarIntegrationCardProvider({
+  settings,
+  busy,
+  meta,
+  initial,
+  models,
+  onSave,
+  onTestConnection,
+  buildPatch,
+  buildEnablePatch,
+  buildClearApiKeyPatch,
+  buildClearManagementKeyPatch,
+  children,
+}: SidecarIntegrationCardProviderProps) {
+  const [enabled, setEnabledState] = useState(initial.enabled);
+  const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
+  const [apiKey, setApiKey] = useState("");
+  const [managementKey, setManagementKey] = useState("");
+  const [prefixes, setPrefixes] = useState(() => normalizePrefixes(initial.prefixes));
+  const [fullModels, setFullModels] = useState(() => normalizeFullModels(initial.fullModels));
+  const [connectTimeout, setConnectTimeout] = useState(String(initial.connectTimeout));
+  const [requestTimeout, setRequestTimeout] = useState(String(initial.requestTimeout));
+  const [cacheTtl, setCacheTtl] = useState(String(initial.cacheTtl));
+  const [pollInterval, setPollInterval] = useState(String(initial.pollInterval ?? 0));
+  const [manualPrefix, setManualPrefix] = useState("");
+  const [manualFullModel, setManualFullModel] = useState("");
+  const [inlineError, setInlineError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savePending, setSavePending] = useState(false);
+
+  const parsedConnectTimeout = Number(connectTimeout);
+  const parsedRequestTimeout = Number(requestTimeout);
+  const parsedCacheTtl = Number(cacheTtl);
+  const parsedPollInterval = Number(pollInterval);
+  const current = useMemo(
+    () => ({
+      id: meta.id,
+      name: meta.conflictName,
+      prefixes,
+      fullModels,
+    }),
+    [fullModels, meta.conflictName, meta.id, prefixes],
+  );
+  const conflict = useMemo(() => currentConflict(settings, current), [current, settings]);
+  const conflictText = conflict ? conflictMessage(conflict.kind, conflict.value, conflict.owner) : null;
+  const formValid =
+    baseUrl.trim().length > 0 &&
+    (meta.id !== "claude" || prefixes.length > 0) &&
+    Number.isFinite(parsedConnectTimeout) &&
+    parsedConnectTimeout > 0 &&
+    Number.isFinite(parsedRequestTimeout) &&
+    parsedRequestTimeout > 0 &&
+    Number.isFinite(parsedCacheTtl) &&
+    parsedCacheTtl >= 0 &&
+    (initial.pollInterval === undefined || (Number.isFinite(parsedPollInterval) && parsedPollInterval > 0));
+
+  const setEnabled = (nextEnabled: boolean) => {
+    setEnabledState(nextEnabled);
+    void onSave(buildSettingsUpdateRequest(settings, buildEnablePatch(nextEnabled)));
+  };
+
+  const addPrefix = () => {
+    const prefix = manualPrefix.trim().toLowerCase();
+    if (!prefix) {
+      return;
+    }
+    const owner = findDuplicateOwner({
+      settings,
+      currentId: meta.id,
+      kind: "prefix",
+      value: prefix,
+      currentPrefixes: prefixes,
+      currentFullModels: fullModels,
+    });
+    if (owner) {
+      setInlineError(conflictMessage("prefix", prefix, owner));
+      return;
+    }
+    setInlineError(null);
+    setPrefixes((currentPrefixes) => normalizePrefixes([...currentPrefixes, { prefix, strip: false }]));
+    setManualPrefix("");
+  };
+
+  const removePrefix = (prefix: string) => {
+    setPrefixes((currentPrefixes) => currentPrefixes.filter((entry) => entry.prefix !== prefix));
+  };
+
+  const setPrefixStrip = (prefix: string, strip: boolean) => {
+    setPrefixes((currentPrefixes) =>
+      currentPrefixes.map((entry) => (entry.prefix === prefix ? { ...entry, strip } : entry)),
+    );
+  };
+
+  const addFullModel = (modelId?: string) => {
+    const fullModel = (modelId ?? manualFullModel).trim();
+    if (!fullModel) {
+      return;
+    }
+    const owner = findDuplicateOwner({
+      settings,
+      currentId: meta.id,
+      kind: "full_model",
+      value: fullModel,
+      currentPrefixes: prefixes,
+      currentFullModels: fullModels,
+    });
+    if (owner) {
+      setInlineError(conflictMessage("full_model", fullModel, owner));
+      return;
+    }
+    setInlineError(null);
+    setFullModels((currentModels) => normalizeFullModels([...currentModels, fullModel]));
+    if (!modelId) {
+      setManualFullModel("");
+    }
+  };
+
+  const removeFullModel = (modelId: string) => {
+    setFullModels((currentModels) => currentModels.filter((candidate) => candidate !== modelId));
+  };
+
+  const saveConfig = async () => {
+    if (!formValid || conflict) {
+      return;
+    }
+    setSaveError(null);
+    setSavePending(true);
+    try {
+      await onSave(
+        buildSettingsUpdateRequest(
+          settings,
+          buildPatch({
+            baseUrl: baseUrl.trim(),
+            apiKey: apiKey.trim(),
+            managementKey: managementKey.trim(),
+            prefixes,
+            fullModels,
+            connectTimeout: parsedConnectTimeout,
+            requestTimeout: parsedRequestTimeout,
+            cacheTtl: parsedCacheTtl,
+            pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
+          }),
+        ),
+      );
+      setApiKey("");
+      setManagementKey("");
+      await onTestConnection().catch(() => null);
+    } catch (error) {
+      setSaveError(backendConflictMessage(error, meta.conflictName) ?? (error instanceof Error ? error.message : "Failed to save settings"));
+    } finally {
+      setSavePending(false);
+    }
+  };
+
+  const clearApiKey = () => onSave(buildSettingsUpdateRequest(settings, buildClearApiKeyPatch()));
+  const clearManagementKey = async () => {
+    if (!buildClearManagementKeyPatch) {
+      return;
+    }
+    await onSave(buildSettingsUpdateRequest(settings, buildClearManagementKeyPatch()));
+  };
+
+  const value: SidecarIntegrationContextValue = {
+    settings,
+    busy,
+    meta,
+    state: {
+      enabled,
+      baseUrl,
+      apiKey,
+      managementKey,
+      prefixes,
+      fullModels,
+      connectTimeout,
+      requestTimeout,
+      cacheTtl,
+      pollInterval,
+      manualPrefix,
+      manualFullModel,
+      inlineError,
+      saveError,
+    },
+    actions: {
+      setEnabled,
+      setBaseUrl,
+      setApiKey,
+      setManagementKey,
+      setConnectTimeout,
+      setRequestTimeout,
+      setCacheTtl,
+      setPollInterval,
+      setManualPrefix,
+      setManualFullModel,
+      addPrefix,
+      removePrefix,
+      setPrefixStrip,
+      addFullModel,
+      removeFullModel,
+      saveConfig,
+      clearApiKey,
+      clearManagementKey,
+    },
+    models,
+    form: {
+      isValid: formValid,
+      hasConflict: Boolean(conflict),
+      conflictMessage: conflictText,
+      savePending,
+    },
+  };
+
+  return <SidecarIntegrationContext value={value}>{children}</SidecarIntegrationContext>;
+}
+
+function Frame({ children }: { children: ReactNode }) {
+  const { meta } = useSidecarIntegration();
+  return (
+    <section id={meta.sectionId} className="rounded-xl border bg-card p-5">
+      <div className="space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function Header() {
+  const { meta } = useSidecarIntegration();
+  const Icon = meta.icon;
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+          <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold">{meta.title}</h3>
+          <p className="text-xs text-muted-foreground">{meta.description}</p>
+        </div>
+      </div>
+      {meta.externalLink ? (
+        <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
+          <a href={meta.externalLink.href} target="_blank" rel="noopener noreferrer">
+            {meta.externalLink.label}
+            <ExternalLink className="size-3" aria-hidden="true" />
+          </a>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function EnableToggle() {
+  const { busy, meta, state, actions } = useSidecarIntegration();
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+      <div>
+        <p className="text-sm font-medium">{meta.enableLabel}</p>
+        <p className="text-xs text-muted-foreground">{meta.enableDescription}</p>
+      </div>
+      <Switch
+        aria-label={meta.enableLabel}
+        checked={state.enabled}
+        disabled={busy}
+        onCheckedChange={(checked) => actions.setEnabled(checked)}
+      />
+    </div>
+  );
+}
+
+function Callout() {
+  const { meta } = useSidecarIntegration();
+  return <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">{meta.callout}</div>;
+}
+
+function Fields({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border">
+      <div className="space-y-3 p-3">{children}</div>
+    </div>
+  );
+}
+
+function BaseUrl() {
+  const { busy, meta, state, actions } = useSidecarIntegration();
+  return (
+    <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-base-url`}>
+      Base URL
+      <Input
+        id={`${meta.sectionId}-base-url`}
+        value={state.baseUrl}
+        onChange={(event) => actions.setBaseUrl(event.target.value)}
+        placeholder={meta.baseUrlPlaceholder}
+        disabled={busy}
+        className="h-8 text-xs"
+      />
+    </label>
+  );
+}
+
+function Secrets({ showManagementKey = false }: { showManagementKey?: boolean }) {
+  const { busy, meta, state, actions } = useSidecarIntegration();
+  return (
+    <div className={showManagementKey ? "grid gap-2 sm:grid-cols-2" : "grid gap-2"}>
+      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-api-key`}>
+        API key
+        <Input
+          id={`${meta.sectionId}-api-key`}
+          type="password"
+          value={state.apiKey}
+          onChange={(event) => actions.setApiKey(event.target.value)}
+          placeholder={meta.apiKeyConfigured ? "Configured" : meta.apiKeyPlaceholder}
+          disabled={busy}
+          className="h-8 text-xs"
+        />
+        <span className="block font-normal text-muted-foreground">Saved keys are encrypted and never shown again.</span>
+      </label>
+      {showManagementKey ? (
+        <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-management-key`}>
+          Management key
+          <Input
+            id={`${meta.sectionId}-management-key`}
+            type="password"
+            value={state.managementKey}
+            onChange={(event) => actions.setManagementKey(event.target.value)}
+            placeholder={meta.managementKeyConfigured ? "Configured" : "Not configured"}
+            disabled={busy}
+            className="h-8 text-xs"
+          />
+          <span className="block font-normal text-muted-foreground">Must match `remote-management.secret-key`.</span>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function Prefixes() {
+  const { busy, meta, state, actions } = useSidecarIntegration();
+  return (
+    <div className="space-y-2 rounded-md border bg-muted/10 p-3">
+      <div>
+        <p className="text-sm font-medium">Model prefixes</p>
+        <p className="text-xs text-muted-foreground">
+          Full model names take precedence over prefixes across all integrations.
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <Input
+          aria-label={`New prefix for ${meta.title}`}
+          value={state.manualPrefix}
+          onChange={(event) => actions.setManualPrefix(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              actions.addPrefix();
+            }
+          }}
+          placeholder="provider/ or cp-"
+          disabled={busy}
+          className="h-8 text-xs"
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 shrink-0 text-xs"
+          disabled={busy || !state.manualPrefix.trim()}
+          onClick={actions.addPrefix}
+        >
+          Add prefix
+        </Button>
+      </div>
+      {state.inlineError ? <p className="text-xs font-medium text-destructive">{state.inlineError}</p> : null}
+      <div className="space-y-2">
+        {state.prefixes.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No prefixes configured.</p>
+        ) : null}
+        {state.prefixes.map((entry) => (
+          <div key={entry.prefix} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background/60 px-2 py-1.5">
+            <span className="font-mono text-xs">{entry.prefix}</span>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Checkbox
+                  aria-label={`Remove prefix ${entry.prefix} before forwarding`}
+                  checked={entry.strip}
+                  disabled={busy}
+                  onCheckedChange={(checked) => actions.setPrefixStrip(entry.prefix, checked === true)}
+                />
+                Remove before forwarding
+              </label>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[11px]"
+                disabled={busy || (meta.id === "claude" && state.prefixes.length <= 1)}
+                onClick={() => actions.removePrefix(entry.prefix)}
+              >
+                <X className="size-3" aria-hidden="true" />
+                <span className="sr-only">Remove {entry.prefix}</span>
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FullModels() {
+  const { busy, meta, state, actions, form } = useSidecarIntegration();
+  return (
+    <div className="space-y-2 rounded-md border bg-muted/10 p-3" aria-label={`Configured full models for ${meta.title}`}>
+      <div>
+        <p className="text-sm font-medium">Full models</p>
+        <p className="text-xs text-muted-foreground">
+          Exact model IDs route to this integration first and are forwarded unchanged.
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <Input
+          aria-label={`New full model for ${meta.title}`}
+          value={state.manualFullModel}
+          onChange={(event) => actions.setManualFullModel(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              actions.addFullModel();
+            }
+          }}
+          placeholder="provider/model-id"
+          disabled={busy}
+          className="h-8 text-xs"
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 shrink-0 text-xs"
+          disabled={busy || !state.manualFullModel.trim()}
+          onClick={() => actions.addFullModel()}
+        >
+          Add full model
+        </Button>
+      </div>
+      {form.conflictMessage ? <p className="text-xs font-medium text-destructive">{form.conflictMessage}</p> : null}
+      {state.fullModels.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {state.fullModels.map((modelId) => (
+            <button
+              key={modelId}
+              type="button"
+              className="inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2 py-1 font-mono text-[11px]"
+              onClick={() => actions.removeFullModel(modelId)}
+              aria-label={`Remove ${modelId}`}
+              disabled={busy}
+            >
+              {modelId}
+              <X className="size-3" aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">No full models configured.</p>
+      )}
+    </div>
+  );
+}
+
+function DiscoveredModels() {
+  const { actions, models, state } = useSidecarIntegration();
+  return (
+    <DiscoveredModelsBrowser
+      models={models.rows}
+      selectedModels={state.fullModels}
+      isLoading={models.isLoading}
+      onAddModel={actions.addFullModel}
+    />
+  );
+}
+
+function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) {
+  const { busy, meta, state, actions } = useSidecarIntegration();
+  return (
+    <div className={showPollInterval ? "grid gap-2 sm:grid-cols-4" : "grid gap-2 sm:grid-cols-3"}>
+      {showPollInterval ? (
+        <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-poll-interval`}>
+          Poll interval (s)
+          <Input
+            id={`${meta.sectionId}-poll-interval`}
+            type="number"
+            min={5}
+            step={5}
+            value={state.pollInterval}
+            disabled={busy}
+            onChange={(event) => actions.setPollInterval(event.target.value)}
+            className="h-8 text-xs"
+          />
+        </label>
+      ) : null}
+      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-connect-timeout`}>
+        Connect timeout (s)
+        <Input
+          id={`${meta.sectionId}-connect-timeout`}
+          type="number"
+          min={0.1}
+          step={0.1}
+          value={state.connectTimeout}
+          disabled={busy}
+          onChange={(event) => actions.setConnectTimeout(event.target.value)}
+          className="h-8 text-xs"
+        />
+      </label>
+      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-request-timeout`}>
+        Request timeout (s)
+        <Input
+          id={`${meta.sectionId}-request-timeout`}
+          type="number"
+          min={1}
+          step={1}
+          value={state.requestTimeout}
+          disabled={busy}
+          onChange={(event) => actions.setRequestTimeout(event.target.value)}
+          className="h-8 text-xs"
+        />
+      </label>
+      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-cache-ttl`}>
+        Model cache TTL (s)
+        <Input
+          id={`${meta.sectionId}-cache-ttl`}
+          type="number"
+          min={0}
+          step={1}
+          value={state.cacheTtl}
+          disabled={busy}
+          onChange={(event) => actions.setCacheTtl(event.target.value)}
+          className="h-8 text-xs"
+        />
+      </label>
+    </div>
+  );
+}
+
+function Actions({ showManagementKey = false }: { showManagementKey?: boolean }) {
+  const { busy, meta, state, actions, form } = useSidecarIntegration();
+  return (
+    <div className="space-y-2">
+      {state.saveError ? <AlertMessage variant="error">{state.saveError}</AlertMessage> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 text-xs"
+          disabled={busy || !form.isValid || form.hasConflict || form.savePending}
+          onClick={() => void actions.saveConfig()}
+        >
+          Save
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs"
+          disabled={busy || !meta.apiKeyConfigured}
+          onClick={() => void actions.clearApiKey()}
+        >
+          Clear API key
+        </Button>
+        {showManagementKey ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled={busy || !meta.managementKeyConfigured}
+            onClick={() => void actions.clearManagementKey()}
+          >
+            Clear management key
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export const SidecarIntegrationCard = {
+  Provider: SidecarIntegrationCardProvider,
+  Frame,
+  Header,
+  EnableToggle,
+  Callout,
+  Fields,
+  BaseUrl,
+  Secrets,
+  Prefixes,
+  FullModels,
+  DiscoveredModels,
+  Timeouts,
+  Actions,
+};

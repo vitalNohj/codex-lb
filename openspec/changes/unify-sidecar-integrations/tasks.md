@@ -34,12 +34,12 @@
 
 ## 6. Shared frontend component
 
-- [ ] 6.1 Create `SidecarIntegrationCard` compound component (provider + subcomponents: Header, EnableToggle, Callout, BaseUrl, ApiKey, ManagementKey, Prefixes, FullModels, DiscoveredModels, Timeouts, Actions) under `frontend/src/features/settings/components/`, using `use()` context per the composition skill.
-- [ ] 6.2 Build a shared `DiscoveredModelsBrowser` (collapsible, searchable) replacing `openrouter-model-browser.tsx` and `omniroute-model-browser.tsx`.
-- [ ] 6.3 Implement the Prefixes editor with a per-entry "remove prefix before forwarding" checkbox and inline red-text rejection naming the conflicting integration; implement the FullModels editor rendered outside the browser (add via discovered-model click or typed full name).
-- [ ] 6.4 Add client-side cross-integration uniqueness checks (prefix/full-model) with the prefix-vs-full-model coincidence exception; block Save while unresolved; surface backend conflict errors.
-- [ ] 6.5 Replace `{claude,openrouter,omniroute}-sidecar-settings.tsx` with provider-specific compositions of the shared card (CLIProxyAPI includes ManagementKey + poll interval; others omit ManagementKey); update `settings-page.tsx` wiring.
-- [ ] 6.6 Update frontend schemas/payload (`schemas.ts`, `payload.ts`) and `use-settings` hooks for the new `{prefix, strip}` + full-models shapes; add subtitle copy stating full model names take precedence over prefixes across all integrations.
+- [x] 6.1 Create `SidecarIntegrationCard` compound component (provider + subcomponents: Header, EnableToggle, Callout, BaseUrl, ApiKey, ManagementKey, Prefixes, FullModels, DiscoveredModels, Timeouts, Actions) under `frontend/src/features/settings/components/`, using `use()` context per the composition skill.
+- [x] 6.2 Build a shared `DiscoveredModelsBrowser` (collapsible, searchable) replacing `openrouter-model-browser.tsx` and `omniroute-model-browser.tsx`.
+- [x] 6.3 Implement the Prefixes editor with a per-entry "remove prefix before forwarding" checkbox and inline red-text rejection naming the conflicting integration; implement the FullModels editor rendered outside the browser (add via discovered-model click or typed full name).
+- [x] 6.4 Add client-side cross-integration uniqueness checks (prefix/full-model) with the prefix-vs-full-model coincidence exception; block Save while unresolved; surface backend conflict errors.
+- [x] 6.5 Replace `{claude,openrouter,omniroute}-sidecar-settings.tsx` with provider-specific compositions of the shared card (CLIProxyAPI includes ManagementKey + poll interval; others omit ManagementKey); update `settings-page.tsx` wiring.
+- [x] 6.6 Update frontend schemas/payload (`schemas.ts`, `payload.ts`) and `use-settings` hooks for the new `{prefix, strip}` + full-models shapes; add subtitle copy stating full model names take precedence over prefixes across all integrations.
 
 ## 7. Tests
 
@@ -47,10 +47,10 @@
 - [x] 7.2 Chat-completions routing tests asserting reservation/log use the effective model and wire model reflects strip rules.
 - [x] 7.3 Responses-path routing test mirroring precedence/strip behavior.
 - [x] 7.4 Settings uniqueness validator tests: duplicate prefix rejected, duplicate full-model rejected, prefix-vs-full-model coincidence accepted, structured error shape.
-- [ ] 7.5 Frontend tests (vitest): per-prefix strip toggle, inline duplicate rejection text, discovered-model click adds to full-models, Save blocked on conflict.
+- [x] 7.5 Frontend tests (vitest): per-prefix strip toggle, inline duplicate rejection text, discovered-model click adds to full-models, Save blocked on conflict.
 
 ## 8. Validation + docs
 
-- [ ] 8.1 Run `openspec validate unify-sidecar-integrations --strict` and `openspec validate --specs`.
+- [x] 8.1 Run `openspec validate unify-sidecar-integrations --strict` and `openspec validate --specs`.
 - [ ] 8.2 Run `uv run pytest` for touched backend modules and `npx vitest run` for touched frontend files; run `uv run ruff`.
 - [ ] 8.3 Update `openspec/specs/<capability>/context.md` (or change-level context) with the unified routing rationale, the `minimax/` vs `minimax/minimax-m3` precedence example, and the strip-flag migration note.
