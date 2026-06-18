@@ -1,5 +1,5 @@
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
-import { ExternalLink, Plus, X, type LucideIcon } from "lucide-react";
+import { ExternalLink, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
 import { Button } from "@/components/ui/button";
