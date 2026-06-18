@@ -134,7 +134,6 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
-from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
     apply_api_key_enforcement,
@@ -163,7 +162,7 @@ from app.modules.proxy.schemas import (
     WarmupSkippedAccount,
     WarmupSubmittedAccount,
 )
-from app.modules.proxy.sidecar_model_profiles import sidecar_prefixed_model_ids
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
     RateLimitStatusPayloadData,
@@ -1869,50 +1868,72 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         )
 
     sidecar_config = await load_sidecar_config()
-    if sidecar_config is not None and sidecar_config.enabled:
-        for sidecar_model in await ClaudeSidecarClient(sidecar_config).list_models_cached():
-            for slug in sidecar_prefixed_model_ids(sidecar_model.id, sidecar_config):
-                if slug in seen_model_ids:
-                    continue
-                if not _model_visible_for_api_key(slug, allowed_models):
-                    continue
-                seen_model_ids.add(slug)
-                items.append(
-                    ModelListItem.model_validate(
-                        {
-                            "id": slug,
-                            "created": sidecar_model.created or created,
-                            "owned_by": "anthropic",
-                            "api_types": ["chat_completions"],
-                            **_sidecar_model_list_fields(),
-                        }
-                    )
-                )
     openrouter_config = await load_openrouter_sidecar_config()
+    omniroute_config = await load_omniroute_sidecar_config()
+
+    routing_entries: list[SidecarRoutingEntry] = []
+    if sidecar_config is not None and sidecar_config.enabled:
+        routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
-        for sidecar_model in await OpenRouterSidecarClient(openrouter_config).list_models_cached():
-            slug = sidecar_model.id
+        routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if omniroute_config is not None and omniroute_config.enabled:
+        routing_entries.append(omniroute_routing_entry(omniroute_config))
+    routing_entry_tuple = tuple(routing_entries)
+
+    if sidecar_config is not None and sidecar_config.enabled:
+        discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        for slug in sidecar_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "claude":
+                continue
             if slug in seen_model_ids:
                 continue
-            if allowed_models is not None and slug not in allowed_models:
+            if not _model_visible_for_api_key(slug, allowed_models):
                 continue
             seen_model_ids.add(slug)
             items.append(
                 ModelListItem.model_validate(
                     {
                         "id": slug,
-                        "created": sidecar_model.created or created,
-                        "owned_by": sidecar_model.owned_by or "openrouter",
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": "anthropic",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
                 )
             )
-    omniroute_config = await load_omniroute_sidecar_config()
+    if openrouter_config is not None and openrouter_config.enabled:
+        discovered_models = await OpenRouterSidecarClient(openrouter_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in openrouter_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "openrouter":
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "openrouter",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
     if omniroute_config is not None and omniroute_config.enabled:
         discovered_models = await OmniRouteSidecarClient(omniroute_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
         for slug in omniroute_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "omniroute":
+                continue
             if slug in seen_model_ids:
                 continue
             if not _model_visible_for_api_key(slug, allowed_models):

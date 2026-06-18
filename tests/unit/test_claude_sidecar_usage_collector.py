@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.modules.claude_sidecar import usage_collector as usage_collector_module
 from app.modules.claude_sidecar.usage_collector import ClaudeSidecarUsageCollector
 from app.modules.claude_sidecar.usage_queue import ClaudeSidecarUsageRecord
@@ -89,7 +89,7 @@ def _patch_environment(
             enabled=True,
             base_url="http://127.0.0.1:8317",
             api_key=None,
-            model_prefixes=("claude",),
+            prefixes=(SidecarPrefix(prefix="claude", strip=False),),
             connect_timeout_seconds=8.0,
             request_timeout_seconds=600.0,
             models_cache_ttl_seconds=60.0,

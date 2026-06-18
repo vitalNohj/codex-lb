@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import select
 
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarConfig,
     OpenRouterSidecarUnavailableError,
@@ -137,10 +138,11 @@ async def fake_openrouter(monkeypatch):
         enabled=True,
         base_url="https://openrouter.ai/api/v1",
         api_key="openrouter-key",
-        model_prefixes=("deepseek/",),
+        prefixes=(SidecarPrefix(prefix="deepseek/", strip=False),),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
+        full_models=("deepseek/deepseek-chat",),
     )
     client = _FakeOpenRouterClient(config)
 
@@ -199,6 +201,7 @@ async def test_openrouter_non_stream_routes_to_sidecar_and_finalizes_reservation
             "openrouterSidecarEnabled": True,
             "openrouterSidecarApiKey": "openrouter-key",
             "openrouterSidecarModelPrefixes": ["deepseek/"],
+            "openrouterSidecarFullModels": ["deepseek/deepseek-chat"],
         },
     )
     await _enable_api_key_auth(async_client)

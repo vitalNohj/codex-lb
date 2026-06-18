@@ -87,7 +87,7 @@ async def fake_omniroute(monkeypatch):
         enabled=True,
         base_url="http://127.0.0.1:20128/v1",
         api_key="omniroute-key",
-        selected_models=("omniroute/test-chat",),
+        full_models=("omniroute/test-chat",),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
@@ -225,12 +225,12 @@ async def test_unselected_model_keeps_codex_path(async_client, omniroute_enabled
 
 @pytest.mark.asyncio
 async def test_disabled_sidecar_does_not_dispatch(async_client, monkeypatch):
-    # OmniRoute disabled: is_omniroute_sidecar_model returns False for any model.
+    # OmniRoute disabled: the unified resolver receives no enabled OmniRoute entry.
     config = OmniRouteSidecarConfig(
         enabled=False,
         base_url="http://127.0.0.1:20128/v1",
         api_key="omniroute-key",
-        selected_models=("omniroute/test-chat",),
+        full_models=("omniroute/test-chat",),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,

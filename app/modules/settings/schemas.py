@@ -37,14 +37,24 @@ def _normalize_claude_sidecar_base_url(value: str | None) -> str | None:
     return normalized
 
 
-def _normalize_claude_sidecar_model_prefixes(value: list[str] | None) -> list[str] | None:
+def _normalize_sidecar_model_prefixes(
+    value: list[SidecarModelPrefix] | None,
+    *,
+    field_name: str,
+    require_one: bool = False,
+) -> list[SidecarModelPrefix] | None:
     if value is None:
         return None
-    prefixes = list(dict.fromkeys(prefix.strip().lower() for prefix in value if prefix.strip()))
-    if not prefixes:
-        raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
-    if any(len(prefix) > 64 for prefix in prefixes):
-        raise ValueError("claude_sidecar_model_prefixes entries must be 64 characters or fewer")
+    prefixes: list[SidecarModelPrefix] = []
+    seen: set[str] = set()
+    for entry in value:
+        prefix = entry.prefix.strip().lower()
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        prefixes.append(SidecarModelPrefix(prefix=prefix, strip=entry.strip))
+    if require_one and not prefixes:
+        raise ValueError(f"{field_name} must include at least one prefix")
     return prefixes
 
 
@@ -60,13 +70,28 @@ def _normalize_openrouter_sidecar_base_url(value: str | None) -> str | None:
     return normalized
 
 
-def _normalize_openrouter_sidecar_model_prefixes(value: list[str] | None) -> list[str] | None:
+def _normalize_sidecar_full_models(value: list[str] | None, *, field_name: str) -> list[str] | None:
     if value is None:
         return None
-    prefixes = list(dict.fromkeys(prefix.strip().lower() for prefix in value if prefix.strip()))
-    if any(len(prefix) > 64 for prefix in prefixes):
-        raise ValueError("openrouter_sidecar_model_prefixes entries must be 64 characters or fewer")
-    return prefixes
+    # Preserve case for the forwarded model; normalize only for comparison in
+    # the routing resolver and uniqueness validator.
+    models = list(dict.fromkeys(entry.strip() for entry in value if entry.strip()))
+    if any(len(entry) > 256 for entry in models):
+        raise ValueError(f"{field_name} entries must be 256 characters or fewer")
+    return models
+
+
+def _coerce_sidecar_model_prefixes(value: object) -> object:
+    if not isinstance(value, list):
+        return value
+    coerced: list[object] = []
+    for entry in value:
+        if isinstance(entry, str):
+            normalized = entry.strip().lower()
+            coerced.append({"prefix": normalized, "strip": normalized.endswith(("-", "_"))})
+            continue
+        coerced.append(entry)
+    return coerced
 
 
 def _normalize_omniroute_sidecar_base_url(value: str | None) -> str | None:
@@ -79,16 +104,6 @@ def _normalize_omniroute_sidecar_base_url(value: str | None) -> str | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("omniroute_sidecar_base_url must be an http(s) URL")
     return normalized
-
-
-def _normalize_omniroute_sidecar_selected_models(value: list[str] | None) -> list[str] | None:
-    if value is None:
-        return None
-    # Preserve case for exact-match dispatch; only trim, drop blanks, and dedupe.
-    models = list(dict.fromkeys(entry.strip() for entry in value if entry.strip()))
-    if any(len(entry) > 256 for entry in models):
-        raise ValueError("omniroute_sidecar_selected_models entries must be 256 characters or fewer")
-    return models
 
 
 class AdditionalQuotaPolicy(DashboardModel):
@@ -123,6 +138,19 @@ class ClaudeSidecarAuthPlan(DashboardModel):
         ):
             raise ValueError("custom Claude auth plan requires both token budgets")
         return self
+
+
+class SidecarModelPrefix(DashboardModel):
+    prefix: str = Field(min_length=1, max_length=64)
+    strip: bool = False
+
+    @field_validator("prefix")
+    @classmethod
+    def _normalize_prefix(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("prefix must not be blank")
+        return normalized
 
 
 class DashboardSettingsResponse(DashboardModel):
@@ -162,7 +190,15 @@ class DashboardSettingsResponse(DashboardModel):
     claude_sidecar_enabled: bool = False
     claude_sidecar_base_url: str = Field(default="http://127.0.0.1:8317", min_length=1)
     claude_sidecar_api_key_configured: bool = False
-    claude_sidecar_model_prefixes: list[str] = Field(default_factory=lambda: ["claude"], min_length=1)
+    claude_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(
+        default_factory=lambda: [
+            SidecarModelPrefix(prefix="claude", strip=False),
+            SidecarModelPrefix(prefix="cp-", strip=True),
+            SidecarModelPrefix(prefix="cp_", strip=True),
+        ],
+        min_length=1,
+    )
+    claude_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
     claude_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     claude_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     claude_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
@@ -179,7 +215,8 @@ class DashboardSettingsResponse(DashboardModel):
     openrouter_sidecar_enabled: bool = False
     openrouter_sidecar_base_url: str = Field(default="https://openrouter.ai/api/v1", min_length=1)
     openrouter_sidecar_api_key_configured: bool = False
-    openrouter_sidecar_model_prefixes: list[str] = Field(default_factory=list, max_length=32)
+    openrouter_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(default_factory=list, max_length=32)
+    openrouter_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
     openrouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     openrouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
@@ -190,6 +227,8 @@ class DashboardSettingsResponse(DashboardModel):
     omniroute_sidecar_enabled: bool = False
     omniroute_sidecar_base_url: str = Field(default="http://127.0.0.1:20128/v1", min_length=1)
     omniroute_sidecar_api_key_configured: bool = False
+    omniroute_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(default_factory=list, max_length=32)
+    omniroute_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
     omniroute_sidecar_selected_models: list[str] = Field(default_factory=list, max_length=256)
     omniroute_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     omniroute_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
@@ -240,7 +279,8 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     claude_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     claude_sidecar_api_key: str | None = Field(default=None, max_length=4096)
     claude_sidecar_clear_api_key: bool | None = None
-    claude_sidecar_model_prefixes: list[str] | None = Field(default=None, min_length=1, max_length=32)
+    claude_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, min_length=1, max_length=32)
+    claude_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
     claude_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     claude_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     claude_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
@@ -255,7 +295,8 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     openrouter_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     openrouter_sidecar_api_key: str | None = Field(default=None, max_length=4096)
     openrouter_sidecar_clear_api_key: bool | None = None
-    openrouter_sidecar_model_prefixes: list[str] | None = Field(default=None, max_length=32)
+    openrouter_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, max_length=32)
+    openrouter_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
     openrouter_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
@@ -263,6 +304,8 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     omniroute_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     omniroute_sidecar_api_key: str | None = Field(default=None, max_length=4096)
     omniroute_sidecar_clear_api_key: bool | None = None
+    omniroute_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, max_length=32)
+    omniroute_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
     omniroute_sidecar_selected_models: list[str] | None = Field(default=None, max_length=256)
     omniroute_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     omniroute_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
@@ -291,8 +334,22 @@ class DashboardSettingsUpdateRequest(DashboardModel):
 
     @field_validator("claude_sidecar_model_prefixes")
     @classmethod
-    def _normalize_sidecar_prefixes(cls, value: list[str] | None) -> list[str] | None:
-        return _normalize_claude_sidecar_model_prefixes(value)
+    def _normalize_sidecar_prefixes(cls, value: list[SidecarModelPrefix] | None) -> list[SidecarModelPrefix] | None:
+        return _normalize_sidecar_model_prefixes(
+            value,
+            field_name="claude_sidecar_model_prefixes",
+            require_one=True,
+        )
+
+    @field_validator("claude_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _coerce_sidecar_prefixes(cls, value: object) -> object:
+        return _coerce_sidecar_model_prefixes(value)
+
+    @field_validator("claude_sidecar_full_models")
+    @classmethod
+    def _normalize_claude_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_sidecar_full_models(value, field_name="claude_sidecar_full_models")
 
     @field_validator("claude_sidecar_api_key")
     @classmethod
@@ -315,8 +372,21 @@ class DashboardSettingsUpdateRequest(DashboardModel):
 
     @field_validator("openrouter_sidecar_model_prefixes")
     @classmethod
-    def _normalize_openrouter_sidecar_prefixes(cls, value: list[str] | None) -> list[str] | None:
-        return _normalize_openrouter_sidecar_model_prefixes(value)
+    def _normalize_openrouter_sidecar_prefixes(
+        cls,
+        value: list[SidecarModelPrefix] | None,
+    ) -> list[SidecarModelPrefix] | None:
+        return _normalize_sidecar_model_prefixes(value, field_name="openrouter_sidecar_model_prefixes")
+
+    @field_validator("openrouter_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _coerce_openrouter_sidecar_prefixes(cls, value: object) -> object:
+        return _coerce_sidecar_model_prefixes(value)
+
+    @field_validator("openrouter_sidecar_full_models")
+    @classmethod
+    def _normalize_openrouter_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_sidecar_full_models(value, field_name="openrouter_sidecar_full_models")
 
     @field_validator("openrouter_sidecar_api_key")
     @classmethod
@@ -330,10 +400,28 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     def _normalize_omniroute_sidecar_base_url(cls, value: str | None) -> str | None:
         return _normalize_omniroute_sidecar_base_url(value)
 
+    @field_validator("omniroute_sidecar_model_prefixes")
+    @classmethod
+    def _normalize_omniroute_sidecar_prefixes(
+        cls,
+        value: list[SidecarModelPrefix] | None,
+    ) -> list[SidecarModelPrefix] | None:
+        return _normalize_sidecar_model_prefixes(value, field_name="omniroute_sidecar_model_prefixes")
+
+    @field_validator("omniroute_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _coerce_omniroute_sidecar_prefixes(cls, value: object) -> object:
+        return _coerce_sidecar_model_prefixes(value)
+
+    @field_validator("omniroute_sidecar_full_models")
+    @classmethod
+    def _normalize_omniroute_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_sidecar_full_models(value, field_name="omniroute_sidecar_full_models")
+
     @field_validator("omniroute_sidecar_selected_models")
     @classmethod
     def _normalize_omniroute_sidecar_models(cls, value: list[str] | None) -> list[str] | None:
-        return _normalize_omniroute_sidecar_selected_models(value)
+        return _normalize_sidecar_full_models(value, field_name="omniroute_sidecar_selected_models")
 
     @field_validator("omniroute_sidecar_api_key")
     @classmethod

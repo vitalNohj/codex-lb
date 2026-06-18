@@ -1,34 +1,26 @@
 from __future__ import annotations
 
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
-from app.modules.proxy.omniroute_sidecar_dispatch import build_omniroute_chat_payload, is_omniroute_sidecar_model
+from app.modules.proxy.omniroute_sidecar_dispatch import build_omniroute_chat_payload
 
 
 def _config(
     *,
     enabled: bool = True,
-    selected_models: tuple[str, ...] = ("omniroute/test-chat",),
+    full_models: tuple[str, ...] = ("omniroute/test-chat",),
 ) -> OmniRouteSidecarConfig:
     return OmniRouteSidecarConfig(
         enabled=enabled,
         base_url="http://127.0.0.1:20128/v1",
         api_key="key",
-        selected_models=selected_models,
+        full_models=full_models,
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
+        prefixes=(SidecarPrefix(prefix="omni-", strip=True),),
     )
-
-
-def test_is_omniroute_sidecar_model_respects_enabled_and_exact_selection() -> None:
-    enabled = _config()
-    disabled = _config(enabled=False)
-
-    assert is_omniroute_sidecar_model("omniroute/test-chat", enabled) is True
-    assert is_omniroute_sidecar_model("OmniRoute/Test-Chat", enabled) is True
-    assert is_omniroute_sidecar_model("omniroute/test-chat-plus", enabled) is False
-    assert is_omniroute_sidecar_model("omniroute/test-chat", disabled) is False
 
 
 def test_build_omniroute_chat_payload_preserves_extra_fields_and_effective_model() -> None:

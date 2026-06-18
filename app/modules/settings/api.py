@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.audit.service import AuditService
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardBadRequestError
@@ -30,7 +31,11 @@ from app.modules.settings.schemas import (
     UpstreamProxyPoolMemberRequest,
     UpstreamProxyPoolResponse,
 )
-from app.modules.settings.service import ClaudeSidecarAuthPlanData, DashboardSettingsUpdateData
+from app.modules.settings.service import (
+    ClaudeSidecarAuthPlanData,
+    DashboardSettingsUpdateData,
+    SidecarRoutingConflictError,
+)
 from app.modules.usage.additional_quota_keys import (
     get_additional_quota_routing_policy,
     list_additional_quota_definitions,
@@ -136,7 +141,8 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         claude_sidecar_enabled=settings.claude_sidecar_enabled,
         claude_sidecar_base_url=settings.claude_sidecar_base_url,
         claude_sidecar_api_key_configured=settings.claude_sidecar_api_key_configured,
-        claude_sidecar_model_prefixes=settings.claude_sidecar_model_prefixes,
+        claude_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.claude_sidecar_model_prefixes],
+        claude_sidecar_full_models=settings.claude_sidecar_full_models,
         claude_sidecar_connect_timeout_seconds=settings.claude_sidecar_connect_timeout_seconds,
         claude_sidecar_request_timeout_seconds=settings.claude_sidecar_request_timeout_seconds,
         claude_sidecar_models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
@@ -156,7 +162,10 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_enabled=settings.openrouter_sidecar_enabled,
         openrouter_sidecar_base_url=settings.openrouter_sidecar_base_url,
         openrouter_sidecar_api_key_configured=settings.openrouter_sidecar_api_key_configured,
-        openrouter_sidecar_model_prefixes=settings.openrouter_sidecar_model_prefixes,
+        openrouter_sidecar_model_prefixes=[
+            asdict(prefix) for prefix in settings.openrouter_sidecar_model_prefixes
+        ],
+        openrouter_sidecar_full_models=settings.openrouter_sidecar_full_models,
         openrouter_sidecar_connect_timeout_seconds=settings.openrouter_sidecar_connect_timeout_seconds,
         openrouter_sidecar_request_timeout_seconds=settings.openrouter_sidecar_request_timeout_seconds,
         openrouter_sidecar_models_cache_ttl_seconds=settings.openrouter_sidecar_models_cache_ttl_seconds,
@@ -167,7 +176,11 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         omniroute_sidecar_enabled=settings.omniroute_sidecar_enabled,
         omniroute_sidecar_base_url=settings.omniroute_sidecar_base_url,
         omniroute_sidecar_api_key_configured=settings.omniroute_sidecar_api_key_configured,
-        omniroute_sidecar_selected_models=settings.omniroute_sidecar_selected_models,
+        omniroute_sidecar_model_prefixes=[
+            asdict(prefix) for prefix in settings.omniroute_sidecar_model_prefixes
+        ],
+        omniroute_sidecar_full_models=settings.omniroute_sidecar_full_models,
+        omniroute_sidecar_selected_models=settings.omniroute_sidecar_full_models,
         omniroute_sidecar_connect_timeout_seconds=settings.omniroute_sidecar_connect_timeout_seconds,
         omniroute_sidecar_request_timeout_seconds=settings.omniroute_sidecar_request_timeout_seconds,
         omniroute_sidecar_models_cache_ttl_seconds=settings.omniroute_sidecar_models_cache_ttl_seconds,
@@ -187,6 +200,10 @@ def _auth_plan_data(plan) -> ClaudeSidecarAuthPlanData:
         primary_token_budget=plan.primary_token_budget,
         secondary_token_budget=plan.secondary_token_budget,
     )
+
+
+def _sidecar_prefix_data(prefix) -> SidecarPrefix:
+    return SidecarPrefix(prefix=prefix.prefix, strip=prefix.strip)
 
 
 @router.get("", response_model=DashboardSettingsResponse)
@@ -613,9 +630,14 @@ async def update_settings(
                 ),
                 claude_sidecar_clear_api_key=payload.claude_sidecar_clear_api_key is True,
                 claude_sidecar_model_prefixes=(
-                    payload.claude_sidecar_model_prefixes
+                    [_sidecar_prefix_data(prefix) for prefix in payload.claude_sidecar_model_prefixes]
                     if payload.claude_sidecar_model_prefixes is not None
                     else current.claude_sidecar_model_prefixes
+                ),
+                claude_sidecar_full_models=(
+                    payload.claude_sidecar_full_models
+                    if payload.claude_sidecar_full_models is not None
+                    else current.claude_sidecar_full_models
                 ),
                 claude_sidecar_connect_timeout_seconds=(
                     payload.claude_sidecar_connect_timeout_seconds
@@ -676,9 +698,14 @@ async def update_settings(
                 ),
                 openrouter_sidecar_clear_api_key=payload.openrouter_sidecar_clear_api_key is True,
                 openrouter_sidecar_model_prefixes=(
-                    payload.openrouter_sidecar_model_prefixes
+                    [_sidecar_prefix_data(prefix) for prefix in payload.openrouter_sidecar_model_prefixes]
                     if payload.openrouter_sidecar_model_prefixes is not None
                     else current.openrouter_sidecar_model_prefixes
+                ),
+                openrouter_sidecar_full_models=(
+                    payload.openrouter_sidecar_full_models
+                    if payload.openrouter_sidecar_full_models is not None
+                    else current.openrouter_sidecar_full_models
                 ),
                 openrouter_sidecar_connect_timeout_seconds=(
                     payload.openrouter_sidecar_connect_timeout_seconds
@@ -707,10 +734,28 @@ async def update_settings(
                     else None
                 ),
                 omniroute_sidecar_clear_api_key=payload.omniroute_sidecar_clear_api_key is True,
+                omniroute_sidecar_model_prefixes=(
+                    [_sidecar_prefix_data(prefix) for prefix in payload.omniroute_sidecar_model_prefixes]
+                    if payload.omniroute_sidecar_model_prefixes is not None
+                    else current.omniroute_sidecar_model_prefixes
+                ),
+                omniroute_sidecar_full_models=(
+                    payload.omniroute_sidecar_full_models
+                    if payload.omniroute_sidecar_full_models is not None
+                    else (
+                        payload.omniroute_sidecar_selected_models
+                        if payload.omniroute_sidecar_selected_models is not None
+                        else current.omniroute_sidecar_full_models
+                    )
+                ),
                 omniroute_sidecar_selected_models=(
                     payload.omniroute_sidecar_selected_models
                     if payload.omniroute_sidecar_selected_models is not None
-                    else current.omniroute_sidecar_selected_models
+                    else (
+                        payload.omniroute_sidecar_full_models
+                        if payload.omniroute_sidecar_full_models is not None
+                        else current.omniroute_sidecar_full_models
+                    )
                 ),
                 omniroute_sidecar_connect_timeout_seconds=(
                     payload.omniroute_sidecar_connect_timeout_seconds
@@ -729,6 +774,19 @@ async def update_settings(
                 ),
             )
         )
+    except SidecarRoutingConflictError as exc:
+        conflict = exc.conflict
+        raise DashboardBadRequestError(
+            str(exc),
+            code="sidecar_routing_conflict",
+            details={
+                "code": "sidecar_routing_conflict",
+                "value": conflict.value,
+                "kind": conflict.kind,
+                "owning_integration": conflict.owner,
+                "challenging_integration": conflict.challenger,
+            },
+        ) from exc
     except ValueError as exc:
         code = "invalid_totp_config" if "TOTP" in str(exc) else "invalid_settings"
         raise DashboardBadRequestError(str(exc), code=code) from exc
@@ -770,6 +828,7 @@ async def update_settings(
             "claude_sidecar_base_url",
             "claude_sidecar_api_key_configured",
             "claude_sidecar_model_prefixes",
+            "claude_sidecar_full_models",
             "claude_sidecar_connect_timeout_seconds",
             "claude_sidecar_request_timeout_seconds",
             "claude_sidecar_models_cache_ttl_seconds",
@@ -787,6 +846,7 @@ async def update_settings(
             "openrouter_sidecar_base_url",
             "openrouter_sidecar_api_key_configured",
             "openrouter_sidecar_model_prefixes",
+            "openrouter_sidecar_full_models",
             "openrouter_sidecar_connect_timeout_seconds",
             "openrouter_sidecar_request_timeout_seconds",
             "openrouter_sidecar_models_cache_ttl_seconds",
@@ -797,6 +857,8 @@ async def update_settings(
             "omniroute_sidecar_enabled",
             "omniroute_sidecar_base_url",
             "omniroute_sidecar_api_key_configured",
+            "omniroute_sidecar_model_prefixes",
+            "omniroute_sidecar_full_models",
             "omniroute_sidecar_selected_models",
             "omniroute_sidecar_connect_timeout_seconds",
             "omniroute_sidecar_request_timeout_seconds",

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.crypto import TokenEncryptor
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
@@ -57,7 +58,8 @@ class DashboardSettingsData:
     claude_sidecar_enabled: bool
     claude_sidecar_base_url: str
     claude_sidecar_api_key_configured: bool
-    claude_sidecar_model_prefixes: list[str]
+    claude_sidecar_model_prefixes: list[SidecarPrefix]
+    claude_sidecar_full_models: list[str]
     claude_sidecar_connect_timeout_seconds: float
     claude_sidecar_request_timeout_seconds: float
     claude_sidecar_models_cache_ttl_seconds: float
@@ -74,7 +76,8 @@ class DashboardSettingsData:
     openrouter_sidecar_enabled: bool
     openrouter_sidecar_base_url: str
     openrouter_sidecar_api_key_configured: bool
-    openrouter_sidecar_model_prefixes: list[str]
+    openrouter_sidecar_model_prefixes: list[SidecarPrefix]
+    openrouter_sidecar_full_models: list[str]
     openrouter_sidecar_connect_timeout_seconds: float
     openrouter_sidecar_request_timeout_seconds: float
     openrouter_sidecar_models_cache_ttl_seconds: float
@@ -85,6 +88,8 @@ class DashboardSettingsData:
     omniroute_sidecar_enabled: bool
     omniroute_sidecar_base_url: str
     omniroute_sidecar_api_key_configured: bool
+    omniroute_sidecar_model_prefixes: list[SidecarPrefix]
+    omniroute_sidecar_full_models: list[str]
     omniroute_sidecar_selected_models: list[str]
     omniroute_sidecar_connect_timeout_seconds: float
     omniroute_sidecar_request_timeout_seconds: float
@@ -130,7 +135,8 @@ class DashboardSettingsUpdateData:
     claude_sidecar_base_url: str
     claude_sidecar_api_key: str | None
     claude_sidecar_clear_api_key: bool
-    claude_sidecar_model_prefixes: list[str]
+    claude_sidecar_model_prefixes: list[SidecarPrefix]
+    claude_sidecar_full_models: list[str]
     claude_sidecar_connect_timeout_seconds: float
     claude_sidecar_request_timeout_seconds: float
     claude_sidecar_models_cache_ttl_seconds: float
@@ -145,7 +151,8 @@ class DashboardSettingsUpdateData:
     openrouter_sidecar_base_url: str
     openrouter_sidecar_api_key: str | None
     openrouter_sidecar_clear_api_key: bool
-    openrouter_sidecar_model_prefixes: list[str]
+    openrouter_sidecar_model_prefixes: list[SidecarPrefix]
+    openrouter_sidecar_full_models: list[str]
     openrouter_sidecar_connect_timeout_seconds: float
     openrouter_sidecar_request_timeout_seconds: float
     openrouter_sidecar_models_cache_ttl_seconds: float
@@ -153,10 +160,29 @@ class DashboardSettingsUpdateData:
     omniroute_sidecar_base_url: str
     omniroute_sidecar_api_key: str | None
     omniroute_sidecar_clear_api_key: bool
+    omniroute_sidecar_model_prefixes: list[SidecarPrefix]
+    omniroute_sidecar_full_models: list[str]
     omniroute_sidecar_selected_models: list[str]
     omniroute_sidecar_connect_timeout_seconds: float
     omniroute_sidecar_request_timeout_seconds: float
     omniroute_sidecar_models_cache_ttl_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class SidecarRoutingConflict:
+    kind: str
+    value: str
+    owner: str
+    challenger: str
+
+
+class SidecarRoutingConflictError(ValueError):
+    def __init__(self, conflict: SidecarRoutingConflict) -> None:
+        self.conflict = conflict
+        super().__init__(
+            f"{conflict.kind} '{conflict.value}' is already used by {conflict.owner}; "
+            f"{conflict.challenger} cannot use it"
+        )
 
 
 class SettingsService:
@@ -172,6 +198,7 @@ class SettingsService:
         current = await self._repository.get_or_create()
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
+        _validate_unique_sidecar_routes(payload)
         api_key_encrypted = current.claude_sidecar_api_key_encrypted
         if payload.claude_sidecar_clear_api_key:
             api_key_encrypted = None
@@ -240,6 +267,7 @@ class SettingsService:
             claude_sidecar_base_url=payload.claude_sidecar_base_url,
             claude_sidecar_api_key_encrypted=api_key_encrypted,
             claude_sidecar_model_prefixes_json=_dump_claude_sidecar_model_prefixes(payload.claude_sidecar_model_prefixes),
+            claude_sidecar_full_models_json=_dump_sidecar_full_models(payload.claude_sidecar_full_models),
             claude_sidecar_connect_timeout_seconds=payload.claude_sidecar_connect_timeout_seconds,
             claude_sidecar_request_timeout_seconds=payload.claude_sidecar_request_timeout_seconds,
             claude_sidecar_models_cache_ttl_seconds=payload.claude_sidecar_models_cache_ttl_seconds,
@@ -255,6 +283,7 @@ class SettingsService:
             openrouter_sidecar_model_prefixes_json=_dump_openrouter_sidecar_model_prefixes(
                 payload.openrouter_sidecar_model_prefixes
             ),
+            openrouter_sidecar_full_models_json=_dump_sidecar_full_models(payload.openrouter_sidecar_full_models),
             openrouter_sidecar_connect_timeout_seconds=payload.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=payload.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=payload.openrouter_sidecar_models_cache_ttl_seconds,
@@ -262,7 +291,10 @@ class SettingsService:
             omniroute_sidecar_base_url=payload.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_encrypted=omniroute_api_key_encrypted,
             omniroute_sidecar_selected_models_json=_dump_omniroute_sidecar_selected_models(
-                payload.omniroute_sidecar_selected_models
+                payload.omniroute_sidecar_full_models
+            ),
+            omniroute_sidecar_prefixes_json=_dump_omniroute_sidecar_model_prefixes(
+                payload.omniroute_sidecar_model_prefixes
             ),
             omniroute_sidecar_connect_timeout_seconds=payload.omniroute_sidecar_connect_timeout_seconds,
             omniroute_sidecar_request_timeout_seconds=payload.omniroute_sidecar_request_timeout_seconds,
@@ -320,6 +352,7 @@ class SettingsService:
             claude_sidecar_base_url=row.claude_sidecar_base_url,
             claude_sidecar_api_key_configured=row.claude_sidecar_api_key_encrypted is not None,
             claude_sidecar_model_prefixes=_parse_claude_sidecar_model_prefixes(row.claude_sidecar_model_prefixes_json),
+            claude_sidecar_full_models=_parse_sidecar_full_models(row.claude_sidecar_full_models_json),
             claude_sidecar_connect_timeout_seconds=row.claude_sidecar_connect_timeout_seconds,
             claude_sidecar_request_timeout_seconds=row.claude_sidecar_request_timeout_seconds,
             claude_sidecar_models_cache_ttl_seconds=row.claude_sidecar_models_cache_ttl_seconds,
@@ -339,6 +372,7 @@ class SettingsService:
             openrouter_sidecar_model_prefixes=_parse_openrouter_sidecar_model_prefixes(
                 row.openrouter_sidecar_model_prefixes_json
             ),
+            openrouter_sidecar_full_models=_parse_sidecar_full_models(row.openrouter_sidecar_full_models_json),
             openrouter_sidecar_connect_timeout_seconds=row.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=row.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=row.openrouter_sidecar_models_cache_ttl_seconds,
@@ -349,6 +383,12 @@ class SettingsService:
             omniroute_sidecar_enabled=row.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=row.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_configured=row.omniroute_sidecar_api_key_encrypted is not None,
+            omniroute_sidecar_model_prefixes=_parse_omniroute_sidecar_model_prefixes(
+                row.omniroute_sidecar_prefixes_json
+            ),
+            omniroute_sidecar_full_models=_parse_omniroute_sidecar_selected_models(
+                row.omniroute_sidecar_selected_models_json
+            ),
             omniroute_sidecar_selected_models=_parse_omniroute_sidecar_selected_models(
                 row.omniroute_sidecar_selected_models_json
             ),
@@ -363,7 +403,11 @@ class SettingsService:
 
 
 _ROUTING_POLICIES = frozenset({"inherit", "normal", "burn_first", "preserve"})
-_DEFAULT_CLAUDE_SIDECAR_PREFIXES = ["claude"]
+_DEFAULT_CLAUDE_SIDECAR_PREFIXES = [
+    SidecarPrefix(prefix="claude", strip=False),
+    SidecarPrefix(prefix="cp-", strip=True),
+    SidecarPrefix(prefix="cp_", strip=True),
+]
 
 
 def _normalize_additional_quota_key(raw_quota_key: str) -> str | None:
@@ -407,27 +451,77 @@ def _dump_additional_quota_routing_policies(policies: dict[str, str]) -> str:
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
-def _parse_claude_sidecar_model_prefixes(raw: str | None) -> list[str]:
+def _parse_sidecar_model_prefixes(
+    raw: str | None,
+    *,
+    default: list[SidecarPrefix] | None = None,
+) -> list[SidecarPrefix]:
     if not raw:
-        return list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+        return list(default or [])
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+        return list(default or [])
     if not isinstance(parsed, list):
-        return list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
-    prefixes = [entry.strip() for entry in parsed if isinstance(entry, str) and entry.strip()]
-    return prefixes or list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES)
+        return list(default or [])
+    prefixes: list[SidecarPrefix] = []
+    seen: set[str] = set()
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        prefix_value = entry.get("prefix")
+        if not isinstance(prefix_value, str):
+            continue
+        normalized = prefix_value.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        prefixes.append(SidecarPrefix(prefix=normalized, strip=bool(entry.get("strip", False))))
+    return prefixes or list(default or [])
 
 
-def _dump_claude_sidecar_model_prefixes(prefixes: list[str]) -> str:
-    normalized = list(dict.fromkeys(prefix.strip().lower() for prefix in prefixes if prefix.strip()))
+def _dump_sidecar_model_prefixes(prefixes: list[SidecarPrefix], *, require_one: bool = False) -> str:
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for entry in prefixes:
+        prefix = entry.prefix.strip().lower()
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        normalized.append({"prefix": prefix, "strip": bool(entry.strip)})
+    if require_one and not normalized:
+        raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def _parse_claude_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
+    return _parse_sidecar_model_prefixes(raw, default=list(_DEFAULT_CLAUDE_SIDECAR_PREFIXES))
+
+
+def _dump_claude_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str:
+    normalized = _parse_sidecar_model_prefixes(_dump_sidecar_model_prefixes(prefixes))
     if not normalized:
         raise ValueError("claude_sidecar_model_prefixes must include at least one prefix")
-    return json.dumps(normalized, separators=(",", ":"))
+    return _dump_sidecar_model_prefixes(normalized, require_one=True)
 
 
-def _parse_openrouter_sidecar_model_prefixes(raw: str | None) -> list[str]:
+def _parse_openrouter_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
+    return _parse_sidecar_model_prefixes(raw)
+
+
+def _dump_openrouter_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str:
+    return _dump_sidecar_model_prefixes(prefixes)
+
+
+def _parse_omniroute_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
+    return _parse_sidecar_model_prefixes(raw)
+
+
+def _dump_omniroute_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str:
+    return _dump_sidecar_model_prefixes(prefixes)
+
+
+def _parse_sidecar_full_models(raw: str | None) -> list[str]:
     if not raw:
         return []
     try:
@@ -436,29 +530,101 @@ def _parse_openrouter_sidecar_model_prefixes(raw: str | None) -> list[str]:
         return []
     if not isinstance(parsed, list):
         return []
-    return [entry.strip().lower() for entry in parsed if isinstance(entry, str) and entry.strip()]
+    models: list[str] = []
+    seen: set[str] = set()
+    for entry in parsed:
+        if not isinstance(entry, str):
+            continue
+        normalized = entry.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        models.append(normalized)
+    return models
 
 
-def _dump_openrouter_sidecar_model_prefixes(prefixes: list[str]) -> str:
-    normalized = list(dict.fromkeys(prefix.strip().lower() for prefix in prefixes if prefix.strip()))
+def _dump_sidecar_full_models(models: list[str]) -> str:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for entry in models:
+        stripped = entry.strip()
+        if not stripped:
+            continue
+        key = stripped.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(stripped)
     return json.dumps(normalized, separators=(",", ":"))
+
+
+def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> None:
+    _validate_unique_sidecar_prefixes(
+        (
+            ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
+            ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
+            ("OmniRoute", payload.omniroute_sidecar_model_prefixes),
+        )
+    )
+    _validate_unique_sidecar_full_models(
+        (
+            ("CLIProxyAPI", payload.claude_sidecar_full_models),
+            ("OpenRouter", payload.openrouter_sidecar_full_models),
+            ("OmniRoute", payload.omniroute_sidecar_full_models),
+        )
+    )
+
+
+def _validate_unique_sidecar_prefixes(entries: tuple[tuple[str, list[SidecarPrefix]], ...]) -> None:
+    owners: dict[str, str] = {}
+    for integration, prefixes in entries:
+        for prefix in prefixes:
+            value = prefix.prefix.strip().lower()
+            if not value:
+                continue
+            owner = owners.get(value)
+            if owner is not None and owner != integration:
+                raise SidecarRoutingConflictError(
+                    SidecarRoutingConflict(
+                        kind="prefix",
+                        value=value,
+                        owner=owner,
+                        challenger=integration,
+                    )
+                )
+            owners[value] = integration
+
+
+def _validate_unique_sidecar_full_models(entries: tuple[tuple[str, list[str]], ...]) -> None:
+    owners: dict[str, tuple[str, str]] = {}
+    for integration, models in entries:
+        for model in models:
+            value = model.strip()
+            if not value:
+                continue
+            key = value.lower()
+            owner = owners.get(key)
+            if owner is not None and owner[0] != integration:
+                raise SidecarRoutingConflictError(
+                    SidecarRoutingConflict(
+                        kind="full_model",
+                        value=value,
+                        owner=owner[0],
+                        challenger=integration,
+                    )
+                )
+            owners[key] = (integration, value)
 
 
 def _parse_omniroute_sidecar_selected_models(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [entry.strip() for entry in parsed if isinstance(entry, str) and entry.strip()]
+    return _parse_sidecar_full_models(raw)
 
 
 def _dump_omniroute_sidecar_selected_models(models: list[str]) -> str:
-    normalized = list(dict.fromkeys(entry.strip() for entry in models if entry.strip()))
-    return json.dumps(normalized, separators=(",", ":"))
+    return _dump_sidecar_full_models(models)
 
 
 def _parse_claude_sidecar_auth_plans(raw: str | None) -> list[ClaudeSidecarAuthPlanData]:

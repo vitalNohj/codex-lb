@@ -63,9 +63,14 @@ class SettingsRepository:
             claude_sidecar_base_url=static_settings.claude_sidecar_base_url,
             claude_sidecar_api_key_encrypted=TokenEncryptor().encrypt(sidecar_api_key) if sidecar_api_key else None,
             claude_sidecar_model_prefixes_json=json.dumps(
-                static_settings.claude_sidecar_model_prefixes,
+                [
+                    {"prefix": prefix.strip().lower(), "strip": prefix.strip().endswith(("-", "_"))}
+                    for prefix in static_settings.claude_sidecar_model_prefixes
+                    if prefix.strip()
+                ],
                 separators=(",", ":"),
             ),
+            claude_sidecar_full_models_json="[]",
             claude_sidecar_connect_timeout_seconds=static_settings.claude_sidecar_connect_timeout_seconds,
             claude_sidecar_request_timeout_seconds=static_settings.claude_sidecar_request_timeout_seconds,
             claude_sidecar_models_cache_ttl_seconds=static_settings.claude_sidecar_models_cache_ttl_seconds,
@@ -85,9 +90,14 @@ class SettingsRepository:
                 else None
             ),
             openrouter_sidecar_model_prefixes_json=json.dumps(
-                static_settings.openrouter_sidecar_model_prefixes,
+                [
+                    {"prefix": prefix.strip().lower(), "strip": prefix.strip().endswith(("-", "_"))}
+                    for prefix in static_settings.openrouter_sidecar_model_prefixes
+                    if prefix.strip()
+                ],
                 separators=(",", ":"),
             ),
+            openrouter_sidecar_full_models_json="[]",
             openrouter_sidecar_connect_timeout_seconds=static_settings.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=static_settings.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=static_settings.openrouter_sidecar_models_cache_ttl_seconds,
@@ -102,6 +112,7 @@ class SettingsRepository:
                 static_settings.omniroute_sidecar_selected_models,
                 separators=(",", ":"),
             ),
+            omniroute_sidecar_prefixes_json="[]",
             omniroute_sidecar_connect_timeout_seconds=static_settings.omniroute_sidecar_connect_timeout_seconds,
             omniroute_sidecar_request_timeout_seconds=static_settings.omniroute_sidecar_request_timeout_seconds,
             omniroute_sidecar_models_cache_ttl_seconds=static_settings.omniroute_sidecar_models_cache_ttl_seconds,
@@ -154,6 +165,7 @@ class SettingsRepository:
         claude_sidecar_base_url: str | None = None,
         claude_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
         claude_sidecar_model_prefixes_json: str | None = None,
+        claude_sidecar_full_models_json: str | None = None,
         claude_sidecar_connect_timeout_seconds: float | None = None,
         claude_sidecar_request_timeout_seconds: float | None = None,
         claude_sidecar_models_cache_ttl_seconds: float | None = None,
@@ -173,6 +185,7 @@ class SettingsRepository:
         openrouter_sidecar_base_url: str | None = None,
         openrouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
         openrouter_sidecar_model_prefixes_json: str | None = None,
+        openrouter_sidecar_full_models_json: str | None = None,
         openrouter_sidecar_connect_timeout_seconds: float | None = None,
         openrouter_sidecar_request_timeout_seconds: float | None = None,
         openrouter_sidecar_models_cache_ttl_seconds: float | None = None,
@@ -184,6 +197,7 @@ class SettingsRepository:
         omniroute_sidecar_base_url: str | None = None,
         omniroute_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
         omniroute_sidecar_selected_models_json: str | None = None,
+        omniroute_sidecar_prefixes_json: str | None = None,
         omniroute_sidecar_connect_timeout_seconds: float | None = None,
         omniroute_sidecar_request_timeout_seconds: float | None = None,
         omniroute_sidecar_models_cache_ttl_seconds: float | None = None,
@@ -263,6 +277,8 @@ class SettingsRepository:
             settings.claude_sidecar_api_key_encrypted = claude_sidecar_api_key_encrypted
         if claude_sidecar_model_prefixes_json is not None:
             settings.claude_sidecar_model_prefixes_json = claude_sidecar_model_prefixes_json
+        if claude_sidecar_full_models_json is not None:
+            settings.claude_sidecar_full_models_json = claude_sidecar_full_models_json
         if claude_sidecar_connect_timeout_seconds is not None:
             settings.claude_sidecar_connect_timeout_seconds = claude_sidecar_connect_timeout_seconds
         if claude_sidecar_request_timeout_seconds is not None:
@@ -301,6 +317,8 @@ class SettingsRepository:
             settings.openrouter_sidecar_api_key_encrypted = openrouter_sidecar_api_key_encrypted
         if openrouter_sidecar_model_prefixes_json is not None:
             settings.openrouter_sidecar_model_prefixes_json = openrouter_sidecar_model_prefixes_json
+        if openrouter_sidecar_full_models_json is not None:
+            settings.openrouter_sidecar_full_models_json = openrouter_sidecar_full_models_json
         if openrouter_sidecar_connect_timeout_seconds is not None:
             settings.openrouter_sidecar_connect_timeout_seconds = openrouter_sidecar_connect_timeout_seconds
         if openrouter_sidecar_request_timeout_seconds is not None:
@@ -323,6 +341,8 @@ class SettingsRepository:
             settings.omniroute_sidecar_api_key_encrypted = omniroute_sidecar_api_key_encrypted
         if omniroute_sidecar_selected_models_json is not None:
             settings.omniroute_sidecar_selected_models_json = omniroute_sidecar_selected_models_json
+        if omniroute_sidecar_prefixes_json is not None:
+            settings.omniroute_sidecar_prefixes_json = omniroute_sidecar_prefixes_json
         if omniroute_sidecar_connect_timeout_seconds is not None:
             settings.omniroute_sidecar_connect_timeout_seconds = omniroute_sidecar_connect_timeout_seconds
         if omniroute_sidecar_request_timeout_seconds is not None:

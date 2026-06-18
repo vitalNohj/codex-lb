@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
@@ -8,81 +8,29 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     build_sidecar_chat_payload,
     ensure_stream_usage_requested,
     extract_usage,
-    is_sidecar_model,
     sanitize_sidecar_chat_messages,
     sanitize_sidecar_chat_tool_ids,
     sanitize_sidecar_forward_payload,
-    sidecar_wire_model,
 )
 
 
-def _config(*, enabled: bool = True, prefixes: tuple[str, ...] = ("claude", "anthropic")) -> ClaudeSidecarConfig:
+def _config(
+    *,
+    enabled: bool = True,
+    prefixes: tuple[SidecarPrefix, ...] = (
+        SidecarPrefix(prefix="claude", strip=False),
+        SidecarPrefix(prefix="anthropic", strip=False),
+    ),
+) -> ClaudeSidecarConfig:
     return ClaudeSidecarConfig(
         enabled=enabled,
         base_url="http://127.0.0.1:8317",
         api_key="key",
-        model_prefixes=prefixes,
+        prefixes=prefixes,
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
     )
-
-
-def test_is_sidecar_model_respects_enabled_prefix_and_case() -> None:
-    enabled = _config()
-    disabled = _config(enabled=False)
-
-    assert is_sidecar_model("claude-sonnet-4-5", enabled) is True
-    assert is_sidecar_model("Claude-Sonnet-4-5", enabled) is True
-    assert is_sidecar_model("anthropic/claude-sonnet", enabled) is True
-    assert is_sidecar_model("gpt-5.4", enabled) is False
-    assert is_sidecar_model("claude-sonnet-4-5", disabled) is False
-
-
-def test_is_sidecar_model_treats_dash_and_underscore_alias_prefixes_as_equivalent() -> None:
-    enabled = _config(prefixes=("cp-",))
-
-    assert is_sidecar_model("cp-claude-fable-5", enabled) is True
-    assert is_sidecar_model("cp_claude-fable-5", enabled) is True
-
-
-def test_is_sidecar_model_routes_builtin_cp_prefix_without_dashboard_prefix() -> None:
-    enabled = _config(prefixes=("claude",))
-
-    assert is_sidecar_model("cp-claude-opus-4-7", enabled) is True
-    assert is_sidecar_model("cp_claude-fable-5", enabled) is True
-
-
-def test_is_sidecar_model_routes_known_claude_wire_models_without_prefix() -> None:
-    enabled = _config(prefixes=("cp-",))
-
-    assert is_sidecar_model("claude-opus-4-7", enabled) is True
-    assert is_sidecar_model("claude-opus-4-7-thinking-high", enabled) is True
-    assert is_sidecar_model("claude-fable-5", enabled) is True
-    assert is_sidecar_model("gpt-5.4", enabled) is False
-
-
-def test_sidecar_wire_model_strips_custom_alias_prefix_only() -> None:
-    alias_config = _config(prefixes=("cp-",))
-    claude_config = _config(prefixes=("claude",))
-
-    assert sidecar_wire_model("cp-claude-fable-5", alias_config) == "claude-fable-5"
-    assert sidecar_wire_model("cp_claude-fable-5", alias_config) == "claude-fable-5"
-    assert sidecar_wire_model("cp-claude-opus-4-7", alias_config) == "claude-opus-4-7"
-    assert sidecar_wire_model("cp-claude-opus-4-8", alias_config) == "claude-opus-4-8"
-    assert sidecar_wire_model("claude-fable-5", claude_config) == "claude-fable-5"
-
-
-def test_sidecar_wire_model_uses_longest_matching_prefix() -> None:
-    config = _config(prefixes=("cp-", "cp-claude-"))
-
-    assert sidecar_wire_model("cp-claude-opus-4-7", config) == "claude-opus-4-7"
-
-
-def test_sidecar_wire_model_restores_claude_prefix_after_overlong_alias_prefix() -> None:
-    config = _config(prefixes=("cp-claude-",))
-
-    assert sidecar_wire_model("cp-claude-opus-4-7", config) == "claude-opus-4-7"
 
 
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:
@@ -111,7 +59,11 @@ def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() ->
         }
     )
 
-    payload = build_sidecar_chat_payload(request, "cp_claude-fable-5", _config(prefixes=("cp-",)))
+    payload = build_sidecar_chat_payload(
+        request,
+        "claude-fable-5",
+        _config(prefixes=(SidecarPrefix(prefix="cp-", strip=True),)),
+    )
 
     assert payload.body["model"] == "claude-fable-5"
 
@@ -169,7 +121,11 @@ def test_build_sidecar_chat_payload_sanitizes_assistant_tool_use_ids() -> None:
         }
     )
 
-    payload = build_sidecar_chat_payload(request, "cp-claude-fable-5", _config(prefixes=("cp-",)))
+    payload = build_sidecar_chat_payload(
+        request,
+        "cp-claude-fable-5",
+        _config(prefixes=(SidecarPrefix(prefix="cp-", strip=True),)),
+    )
 
     assistant_message = payload.body["messages"][1]
     tool_call = assistant_message["tool_calls"][0]
