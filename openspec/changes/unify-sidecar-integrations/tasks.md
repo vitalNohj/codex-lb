@@ -1,17 +1,17 @@
 ## 1. Config dataclasses (normalized shape)
 
-- [ ] 1.1 Add a `SidecarPrefix` type (`prefix: str`, `strip: bool`) and update `ClaudeSidecarConfig` (`app/core/clients/claude_sidecar.py`) to use `prefixes: tuple[SidecarPrefix, ...]` plus a `full_models: tuple[str, ...]`.
-- [ ] 1.2 Update `OpenRouterSidecarConfig` (`app/core/clients/openrouter_sidecar.py`) with the same `prefixes` (`{prefix, strip}`) and new `full_models` fields.
-- [ ] 1.3 Update `OmniRouteSidecarConfig` (`app/core/clients/omniroute_sidecar.py`) to add `prefixes` (`{prefix, strip}`) and rename/alias `selected_models` to `full_models`.
+- [x] 1.1 Add a `SidecarPrefix` type (`prefix: str`, `strip: bool`) and update `ClaudeSidecarConfig` (`app/core/clients/claude_sidecar.py`) to use `prefixes: tuple[SidecarPrefix, ...]` plus a `full_models: tuple[str, ...]`.
+- [x] 1.2 Update `OpenRouterSidecarConfig` (`app/core/clients/openrouter_sidecar.py`) with the same `prefixes` (`{prefix, strip}`) and new `full_models` fields.
+- [x] 1.3 Update `OmniRouteSidecarConfig` (`app/core/clients/omniroute_sidecar.py`) to add `prefixes` (`{prefix, strip}`) and rename/alias `selected_models` to `full_models`.
 
 ## 2. Unified routing resolver (backend)
 
-- [ ] 2.1 Create `app/modules/proxy/sidecar_routing.py` with a pure resolver: input = effective model + enabled integration configs, output = `(provider, wire_model)` or `None`. Implement full-name pass (case-insensitive exact, wire model as-is) then longest-prefix pass (strip iff row flag), with deterministic Claude→OpenRouter→OmniRoute tiebreak.
-- [ ] 2.2 Add prefix-variant handling (`-`/`_` interchange) and longest-match selection in the resolver; cover empty prefix/full-model lists.
-- [ ] 2.3 Remove the built-in alias list `_BUILTIN_SIDECAR_ALIAS_PREFIXES` from `app/modules/proxy/sidecar_prefix.py`; retire `matching_sidecar_prefix`/`strip_sidecar_model_prefix` usage in favor of the resolver (keep or delete the module per call-site cleanup).
-- [ ] 2.4 Replace the per-integration matchers (`is_*_sidecar_model`, `*_wire_model`) call sites with the resolver; keep each provider's `proxy_chat_to_*` dispatch and payload-builders, passing the resolver's `wire_model` as `effective_model`.
-- [ ] 2.5 Rewire `v1_chat_completions` (`app/modules/proxy/api.py` ~2122-2180) to call the resolver once and dispatch to the owning provider; preserve reservation/log use of the effective (un-stripped) model.
-- [ ] 2.6 Rewire the Responses sidecar dispatch (`app/modules/proxy/api.py` ~491-519) to use the resolver with the same precedence/strip rules.
+- [x] 2.1 Create `app/modules/proxy/sidecar_routing.py` with a pure resolver: input = effective model + enabled integration configs, output = `(provider, wire_model)` or `None`. Implement full-name pass (case-insensitive exact, wire model as-is) then longest-prefix pass (strip iff row flag), with deterministic Claude→OpenRouter→OmniRoute tiebreak.
+- [x] 2.2 Add prefix-variant handling (`-`/`_` interchange) and longest-match selection in the resolver; cover empty prefix/full-model lists.
+- [x] 2.3 Remove the built-in alias list `_BUILTIN_SIDECAR_ALIAS_PREFIXES` from `app/modules/proxy/sidecar_prefix.py`; retire `matching_sidecar_prefix`/`strip_sidecar_model_prefix` usage in favor of the resolver (deleted the module; catalog alias IDs now derive from strip-enabled prefixes).
+- [x] 2.4 Replace the per-integration matchers (`is_*_sidecar_model`, `*_wire_model`) call sites with the resolver; keep each provider's `proxy_chat_to_*` dispatch and payload-builders, passing the resolver's `wire_model` (new `wire_model` kwarg).
+- [x] 2.5 Rewire `v1_chat_completions` (`app/modules/proxy/api.py`) to call the resolver once and dispatch to the owning provider; preserve reservation/log use of the effective (un-stripped) model.
+- [x] 2.6 Rewire the Responses sidecar dispatch (`app/modules/proxy/api.py`) to use the resolver with the same precedence/strip rules.
 
 ## 3. Persistence schema + migration
 

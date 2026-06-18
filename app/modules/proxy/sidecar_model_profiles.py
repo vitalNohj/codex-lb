@@ -7,7 +7,7 @@ from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.types import JsonValue
 from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
-from app.modules.proxy.sidecar_prefix import is_custom_alias_prefix, sidecar_prefix_variants
+from app.modules.proxy.sidecar_routing import prefix_variants
 
 _CLAUDE_MODEL_FAMILY_PREFIX = "claude-"
 _DATE_SUFFIX_PATTERN = re.compile(r"-\d{8}$")
@@ -40,10 +40,13 @@ def canonical_sidecar_model(model: str | None) -> str | None:
 def sidecar_prefixed_model_ids(model_id: str, config: ClaudeSidecarConfig) -> tuple[str, ...]:
     ids: list[str] = [model_id]
     seen = {model_id}
-    for prefix in config.model_prefixes:
-        for variant in sidecar_prefix_variants(prefix):
-            if not is_custom_alias_prefix(variant):
-                continue
+    for prefix in config.prefixes:
+        # Only strip-enabled prefixes produce alias-prefixed catalog IDs; a
+        # non-stripping prefix forwards the model as-is, so advertising
+        # ``<prefix><model_id>`` would not round-trip to ``model_id``.
+        if not prefix.strip:
+            continue
+        for variant in prefix_variants(prefix.prefix):
             alias_id = f"{variant}{model_id}"
             if alias_id not in seen:
                 seen.add(alias_id)

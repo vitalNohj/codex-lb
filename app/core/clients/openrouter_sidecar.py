@@ -11,7 +11,7 @@ from typing import cast
 
 import aiohttp
 
-from app.core.clients.claude_sidecar import SidecarModel
+from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
 from app.core.usage.pricing import ModelPrice
@@ -26,10 +26,11 @@ class OpenRouterSidecarConfig:
     enabled: bool
     base_url: str
     api_key: str | None
-    model_prefixes: tuple[str, ...]
+    prefixes: tuple[SidecarPrefix, ...]
     connect_timeout_seconds: float
     request_timeout_seconds: float
     models_cache_ttl_seconds: float
+    full_models: tuple[str, ...] = ()
 
 
 class OpenRouterSidecarError(Exception):

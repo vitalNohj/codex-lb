@@ -108,7 +108,11 @@ from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-from app.modules.proxy.claude_sidecar_dispatch import is_sidecar_model, load_sidecar_config, proxy_chat_to_sidecar
+from app.modules.proxy.claude_sidecar_dispatch import (
+    claude_routing_entry,
+    load_sidecar_config,
+    proxy_chat_to_sidecar,
+)
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
     cursor_context_limit_usage_completion,
@@ -120,16 +124,17 @@ from app.modules.proxy.cursor_chat_compat import (
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.omniroute_sidecar_dispatch import (
-    is_omniroute_sidecar_model,
     load_omniroute_sidecar_config,
+    omniroute_routing_entry,
     proxy_chat_to_omniroute,
     proxy_responses_to_omniroute,
 )
 from app.modules.proxy.openrouter_sidecar_dispatch import (
-    is_openrouter_sidecar_model,
     load_openrouter_sidecar_config,
+    openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
     apply_api_key_enforcement,
@@ -501,8 +506,23 @@ async def _omniroute_responses_dispatch_or_none(
     proceeds with the existing Codex Responses path.
     """
     effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+
+    sidecar_config = await load_sidecar_config()
+    openrouter_config = await load_openrouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
-    if omniroute_config is None or not is_omniroute_sidecar_model(effective_model, omniroute_config):
+
+    routing_entries: list[SidecarRoutingEntry] = []
+    if sidecar_config is not None and sidecar_config.enabled:
+        routing_entries.append(claude_routing_entry(sidecar_config))
+    if openrouter_config is not None and openrouter_config.enabled:
+        routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if omniroute_config is not None and omniroute_config.enabled:
+        routing_entries.append(omniroute_routing_entry(omniroute_config))
+
+    decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
+    # Only OmniRoute supports Responses dispatch today; other sidecars fall
+    # through to the existing Codex Responses path.
+    if decision is None or decision.provider != "omniroute" or omniroute_config is None:
         return None
     validate_model_access(api_key, effective_model)
     rate_limit_headers = await context.service.rate_limit_headers()
@@ -522,6 +542,7 @@ async def _omniroute_responses_dispatch_or_none(
         rate_limit_headers=rate_limit_headers,
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         client=OmniRouteSidecarClient(omniroute_config),
+        wire_model=decision.wire_model,
     )
 
 
@@ -1891,7 +1912,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     if omniroute_config is not None and omniroute_config.enabled:
         discovered_models = await OmniRouteSidecarClient(omniroute_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
-        for slug in omniroute_config.selected_models:
+        for slug in omniroute_config.full_models:
             if slug in seen_model_ids:
                 continue
             if not _model_visible_for_api_key(slug, allowed_models):
@@ -2119,54 +2140,56 @@ async def v1_chat_completions(
     validate_model_access(api_key, effective_model)
 
     rate_limit_headers = await context.service.rate_limit_headers()
+
     sidecar_config = await load_sidecar_config()
-    if sidecar_config is not None and is_sidecar_model(effective_model, sidecar_config):
-        reservation = await _enforce_request_limits(
-            api_key,
-            request_model=effective_model,
-            request_service_tier=payload.service_tier,
-            request_usage_budget=None,
-        )
-        return await proxy_chat_to_sidecar(
-            request,
-            payload,
-            effective_model=effective_model,
-            api_key=api_key,
-            reservation=reservation,
-            rate_limit_headers=rate_limit_headers,
-            sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
-            client=ClaudeSidecarClient(sidecar_config),
-            cursor_compat=cursor_compat_client,
-        )
-
     openrouter_config = await load_openrouter_sidecar_config()
-    if openrouter_config is not None and is_openrouter_sidecar_model(effective_model, openrouter_config):
-        reservation = await _enforce_request_limits(
-            api_key,
-            request_model=effective_model,
-            request_service_tier=payload.service_tier,
-            request_usage_budget=None,
-        )
-        return await proxy_chat_to_openrouter(
-            request,
-            payload,
-            effective_model=effective_model,
-            api_key=api_key,
-            reservation=reservation,
-            rate_limit_headers=rate_limit_headers,
-            sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
-            client=OpenRouterSidecarClient(openrouter_config),
-            cursor_compat=cursor_compat_client,
-        )
-
     omniroute_config = await load_omniroute_sidecar_config()
-    if omniroute_config is not None and is_omniroute_sidecar_model(effective_model, omniroute_config):
+
+    routing_entries: list[SidecarRoutingEntry] = []
+    if sidecar_config is not None and sidecar_config.enabled:
+        routing_entries.append(claude_routing_entry(sidecar_config))
+    if openrouter_config is not None and openrouter_config.enabled:
+        routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if omniroute_config is not None and omniroute_config.enabled:
+        routing_entries.append(omniroute_routing_entry(omniroute_config))
+
+    decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
+    if decision is not None:
         reservation = await _enforce_request_limits(
             api_key,
             request_model=effective_model,
             request_service_tier=payload.service_tier,
             request_usage_budget=None,
         )
+        if decision.provider == "claude":
+            assert sidecar_config is not None
+            return await proxy_chat_to_sidecar(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=ClaudeSidecarClient(sidecar_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if decision.provider == "openrouter":
+            assert openrouter_config is not None
+            return await proxy_chat_to_openrouter(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OpenRouterSidecarClient(openrouter_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        assert omniroute_config is not None
         return await proxy_chat_to_omniroute(
             request,
             payload,
@@ -2177,6 +2200,7 @@ async def v1_chat_completions(
             sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
             client=OmniRouteSidecarClient(omniroute_config),
             cursor_compat=cursor_compat_client,
+            wire_model=decision.wire_model,
         )
 
     try:
