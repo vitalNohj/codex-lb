@@ -42,7 +42,7 @@ export function DashboardPage() {
   const dashboardQuery = useDashboard(overviewTimeframe);
   const projectionsQuery = useDashboardProjections(Boolean(dashboardQuery.data));
   const { filters, logsQuery, optionsQuery, updateFilters } = useRequestLogs();
-  const { resumeMutation, limitWarmupMutation } = useAccountMutations();
+  const { pauseMutation, resumeMutation, limitWarmupMutation } = useAccountMutations();
 
   const isRefreshing = dashboardQuery.isFetching || projectionsQuery.isFetching || logsQuery.isFetching;
 
@@ -69,6 +69,9 @@ export function DashboardPage() {
         case "details":
           navigate(`/accounts?selected=${account.accountId}`);
           break;
+        case "pause":
+          void pauseMutation.mutateAsync(account.accountId);
+          break;
         case "resume":
           void resumeMutation.mutateAsync(account.accountId);
           break;
@@ -83,7 +86,7 @@ export function DashboardPage() {
           break;
       }
     },
-    [limitWarmupMutation, navigate, resumeMutation],
+    [limitWarmupMutation, navigate, pauseMutation, resumeMutation],
   );
 
   const overview = dashboardQuery.data;

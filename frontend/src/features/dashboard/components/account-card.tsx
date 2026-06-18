@@ -1,4 +1,4 @@
-import { Clock, ExternalLink, Play, RotateCcw, Zap } from "lucide-react";
+import { Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,7 @@ import {
 } from "@/utils/account-status";
 import { formatCurrency, formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
 
-type AccountAction = "details" | "resume" | "reauth" | "warmup-toggle";
+type AccountAction = "details" | "pause" | "resume" | "reauth" | "warmup-toggle";
 
 export type AccountCardProps = {
   account: AccountSummary;
@@ -186,7 +186,7 @@ export function AccountCard({ account, showAccountId = false, onAction }: Accoun
           <ExternalLink className="h-3 w-3" />
           Details
         </Button>
-        {status === "paused" && (
+        {status === "paused" ? (
           <Button
             type="button"
             size="sm"
@@ -196,6 +196,17 @@ export function AccountCard({ account, showAccountId = false, onAction }: Accoun
           >
             <Play className="h-3 w-3" />
             Resume
+          </Button>
+        ) : status === "reauth" || status === "deactivated" ? null : (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
+            onClick={() => onAction?.(account, "pause")}
+          >
+            <Pause className="h-3 w-3" />
+            Pause
           </Button>
         )}
         {(status === "reauth" || status === "deactivated") && (
