@@ -1,4 +1,4 @@
-import { Bot, Check, Pencil, User, X } from "lucide-react";
+import { Bot, Check, Pencil, X } from "lucide-react";
 import { useState } from "react";
 
 import { isEmailLabel } from "@/components/blur-email";

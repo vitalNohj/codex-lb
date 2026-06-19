@@ -75,6 +75,8 @@ const BASE_SETTINGS = {
   ollamaSidecarConnectTimeoutSeconds: 8,
   ollamaSidecarRequestTimeoutSeconds: 600,
   ollamaSidecarModelsCacheTtlSeconds: 60,
+  guestAccessEnabled: false,
+  guestPasswordConfigured: false,
 } as DashboardSettings;
 
 function renderCard(settings: DashboardSettings) {

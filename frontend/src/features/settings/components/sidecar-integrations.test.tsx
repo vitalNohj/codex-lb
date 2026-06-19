@@ -70,6 +70,8 @@ const BASE_SETTINGS = {
   omnirouteSidecarConnectTimeoutSeconds: 8,
   omnirouteSidecarRequestTimeoutSeconds: 600,
   omnirouteSidecarModelsCacheTtlSeconds: 60,
+  guestAccessEnabled: false,
+  guestPasswordConfigured: false,
 } as DashboardSettings;
 
 function renderWithQueryClient(ui: React.ReactElement) {

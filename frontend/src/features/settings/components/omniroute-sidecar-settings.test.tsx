@@ -51,6 +51,8 @@ const BASE_SETTINGS: DashboardSettings = {
   omnirouteSidecarLastHealthMessage: "OmniRoute sidecar reachable",
   omnirouteSidecarLastCheckedAt: "2026-01-01T00:00:00Z",
   omnirouteSidecarLastModelCount: 1,
+  guestAccessEnabled: false,
+  guestPasswordConfigured: false,
 };
 
 const ENABLED_SETTINGS: DashboardSettings = {
