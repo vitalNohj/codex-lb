@@ -17,8 +17,6 @@ from app.modules.api_keys.service import ApiKeysService
 from app.modules.audit.repository import AuditRepository
 from app.modules.audit.service import AuditLogsService
 from app.modules.claude_sidecar.service import ClaudeSidecarService
-from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
-from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.dashboard.repository import DashboardRepository
 from app.modules.dashboard.service import DashboardService
@@ -32,6 +30,9 @@ from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.oauth.service import OauthService
+from app.modules.ollama_sidecar.service import OllamaSidecarService
+from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
+from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.proxy.service import ProxyService
 from app.modules.proxy.sticky_repository import StickySessionsRepository
@@ -131,6 +132,13 @@ class OmniRouteSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OmniRouteSidecarService
+
+
+@dataclass(slots=True)
+class OllamaSidecarContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: OllamaSidecarService
 
 
 @dataclass(slots=True)
@@ -322,6 +330,14 @@ def get_omniroute_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OmniRouteSidecarService(settings_repository)
     return OmniRouteSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_ollama_sidecar_context(
+    session: AsyncSession = Depends(get_session),
+) -> OllamaSidecarContext:
+    settings_repository = SettingsRepository(session)
+    service = OllamaSidecarService(settings_repository)
+    return OllamaSidecarContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_dashboard_context(

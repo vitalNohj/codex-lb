@@ -38,6 +38,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
+from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.proxy import ProxyResponseError
@@ -123,6 +124,11 @@ from app.modules.proxy.cursor_chat_compat import (
 )
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
+from app.modules.proxy.ollama_sidecar_dispatch import (
+    load_ollama_sidecar_config,
+    ollama_routing_entry,
+    proxy_chat_to_ollama,
+)
 from app.modules.proxy.omniroute_sidecar_dispatch import (
     load_omniroute_sidecar_config,
     omniroute_routing_entry,
@@ -509,6 +515,7 @@ async def _omniroute_responses_dispatch_or_none(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
+    ollama_config = await load_ollama_sidecar_config()
 
     routing_entries: list[SidecarRoutingEntry] = []
     if sidecar_config is not None and sidecar_config.enabled:
@@ -517,6 +524,8 @@ async def _omniroute_responses_dispatch_or_none(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
+    if ollama_config is not None and ollama_config.enabled:
+        routing_entries.append(ollama_routing_entry(ollama_config))
 
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     # Only OmniRoute supports Responses dispatch today; other sidecars fall
@@ -1870,6 +1879,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
+    ollama_config = await load_ollama_sidecar_config()
 
     routing_entries: list[SidecarRoutingEntry] = []
     if sidecar_config is not None and sidecar_config.enabled:
@@ -1878,6 +1888,8 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
+    if ollama_config is not None and ollama_config.enabled:
+        routing_entries.append(ollama_routing_entry(ollama_config))
     routing_entry_tuple = tuple(routing_entries)
 
     if sidecar_config is not None and sidecar_config.enabled:
@@ -1945,6 +1957,30 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": "omniroute",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+    if ollama_config is not None and ollama_config.enabled:
+        discovered_models = await OllamaSidecarClient(ollama_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in ollama_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "ollama":
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "ollama",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -2165,6 +2201,7 @@ async def v1_chat_completions(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
+    ollama_config = await load_ollama_sidecar_config()
 
     routing_entries: list[SidecarRoutingEntry] = []
     if sidecar_config is not None and sidecar_config.enabled:
@@ -2173,6 +2210,8 @@ async def v1_chat_completions(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
+    if ollama_config is not None and ollama_config.enabled:
+        routing_entries.append(ollama_routing_entry(ollama_config))
 
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:
@@ -2207,6 +2246,20 @@ async def v1_chat_completions(
                 rate_limit_headers=rate_limit_headers,
                 sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
                 client=OpenRouterSidecarClient(openrouter_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if decision.provider == "ollama":
+            assert ollama_config is not None
+            return await proxy_chat_to_ollama(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OllamaSidecarClient(ollama_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
             )

@@ -156,4 +156,37 @@ describe("buildSettingsUpdateRequest", () => {
     expect(payload.claudeSidecarUsageQueueBatchSize).toBe(50);
     expect(payload.claudeSidecarUsageCollectionEnabled).toBe(false);
   });
+
+  it("preserves Ollama sidecar settings when saving unrelated fields", () => {
+    const settings = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      ollamaSidecarEnabled: true,
+      ollamaSidecarBaseUrl: "https://ollama.com",
+      ollamaSidecarModelPrefixes: [{ prefix: "ollama-", strip: true }],
+      ollamaSidecarFullModels: ["gpt-oss:120b-cloud"],
+      ollamaSidecarConnectTimeoutSeconds: 3,
+      ollamaSidecarRequestTimeoutSeconds: 120,
+      ollamaSidecarModelsCacheTtlSeconds: 30,
+    });
+
+    const payload = buildSettingsUpdateRequest(settings, { dashboardSessionTtlSeconds: 7200 });
+
+    expect(payload.dashboardSessionTtlSeconds).toBe(7200);
+    expect(payload.ollamaSidecarEnabled).toBe(true);
+    expect(payload.ollamaSidecarBaseUrl).toBe("https://ollama.com");
+    expect(payload.ollamaSidecarModelPrefixes).toEqual([{ prefix: "ollama-", strip: true }]);
+    expect(payload.ollamaSidecarFullModels).toEqual(["gpt-oss:120b-cloud"]);
+    expect(payload.ollamaSidecarConnectTimeoutSeconds).toBe(3);
+    expect(payload.ollamaSidecarRequestTimeoutSeconds).toBe(120);
+    expect(payload.ollamaSidecarModelsCacheTtlSeconds).toBe(30);
+  });
 });

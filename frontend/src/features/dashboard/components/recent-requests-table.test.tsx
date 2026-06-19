@@ -262,6 +262,35 @@ describe("RecentRequestsTable", () => {
             costBreakdown: null,
             latencyMs: 50,
           },
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: "Ollama Key",
+            apiKeyId: "key-ollama",
+            requestId: "req-ollama",
+            requestKind: "normal",
+            model: "gpt-oss:120b-cloud",
+            source: "ollama_sidecar",
+            sidecarAccountLabel: null,
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 15,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            costUsd: 0,
+            costBreakdown: null,
+            latencyMs: 50,
+          },
         ]}
       />,
     );
@@ -291,6 +320,16 @@ describe("RecentRequestsTable", () => {
     expect(omniRouteCells[4]).not.toHaveTextContent("OmniRoute sidecar");
     expect(omniRouteCells[5]).toHaveTextContent("HTTP");
     expect(omniRouteCells[5]).not.toHaveTextContent("Sidecar HTTP");
+
+    const ollamaRow = screen.getByText("gpt-oss:120b-cloud").closest("tr");
+    expect(ollamaRow).not.toBeNull();
+    const ollamaCells = within(ollamaRow as HTMLElement).getAllByRole("cell");
+    expect(ollamaCells[1]).toHaveTextContent("Ollama");
+    expect(ollamaCells[1]).not.toHaveTextContent("Ollama sidecar");
+    expect(ollamaCells[4]).toHaveTextContent("gpt-oss:120b-cloud");
+    expect(ollamaCells[4]).not.toHaveTextContent("Ollama sidecar");
+    expect(ollamaCells[5]).toHaveTextContent("HTTP");
+    expect(ollamaCells[5]).not.toHaveTextContent("Sidecar HTTP");
     expect(screen.queryByText("Sidecar HTTP")).not.toBeInTheDocument();
 
     const dialog = openRequestDetails();

@@ -605,9 +605,15 @@ class DashboardSettings(Base):
     claude_sidecar_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     claude_sidecar_model_prefixes_json: Mapped[str] = mapped_column(
         Text,
-        default='[{"prefix": "claude", "strip": false}, {"prefix": "cp-", "strip": true}, {"prefix": "cp_", "strip": true}]',
+        default=(
+            '[{"prefix": "claude", "strip": false}, '
+            '{"prefix": "cp-", "strip": true}, '
+            '{"prefix": "cp_", "strip": true}]'
+        ),
         server_default=text(
-            "'[{\"prefix\": \"claude\", \"strip\": false}, {\"prefix\": \"cp-\", \"strip\": true}, {\"prefix\": \"cp_\", \"strip\": true}]'"
+            "'[{\"prefix\": \"claude\", \"strip\": false}, "
+            "{\"prefix\": \"cp-\", \"strip\": true}, "
+            "{\"prefix\": \"cp_\", \"strip\": true}]'"
         ),
         nullable=False,
     )

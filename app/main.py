@@ -20,8 +20,6 @@ from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
 from app.core.auth.guardian import build_auth_guardian_scheduler
-from app.modules.claude_sidecar.quota_poller import build_claude_sidecar_quota_poller
-from app.modules.claude_sidecar.usage_collector import build_claude_sidecar_usage_collector
 from app.core.bootstrap import ensure_auto_bootstrap_token, log_bootstrap_token
 from app.core.clients.http import close_http_client, init_http_client
 from app.core.config.settings import _bridge_advertise_hostname_is_replica_specific, get_settings
@@ -49,14 +47,17 @@ from app.modules.api_keys import api as api_keys_api
 from app.modules.api_keys.reset_scheduler import build_api_key_limit_reset_scheduler
 from app.modules.audit import api as audit_api
 from app.modules.claude_sidecar import api as claude_sidecar_api
-from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
-from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
+from app.modules.claude_sidecar.quota_poller import build_claude_sidecar_quota_poller
+from app.modules.claude_sidecar.usage_collector import build_claude_sidecar_usage_collector
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
 from app.modules.firewall import api as firewall_api
 from app.modules.health import api as health_api
 from app.modules.oauth import api as oauth_api
+from app.modules.ollama_sidecar import api as ollama_sidecar_api
+from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
+from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.durable_bridge_repository import missing_durable_bridge_tables
 from app.modules.proxy.rate_limit_cache import get_rate_limit_headers_cache
@@ -402,6 +403,7 @@ def create_app() -> FastAPI:
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
     app.include_router(omniroute_sidecar_api.router)
+    app.include_router(ollama_sidecar_api.router)
     app.include_router(usage_api.router)
     app.include_router(request_logs_api.router)
     app.include_router(quota_planner_api.router)

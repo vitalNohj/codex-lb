@@ -67,6 +67,14 @@ const BASE_SETTINGS = {
   omnirouteSidecarConnectTimeoutSeconds: 8,
   omnirouteSidecarRequestTimeoutSeconds: 600,
   omnirouteSidecarModelsCacheTtlSeconds: 60,
+  ollamaSidecarEnabled: false,
+  ollamaSidecarBaseUrl: "https://ollama.com",
+  ollamaSidecarApiKeyConfigured: true,
+  ollamaSidecarModelPrefixes: [],
+  ollamaSidecarFullModels: ["gpt-oss:120b-cloud"],
+  ollamaSidecarConnectTimeoutSeconds: 8,
+  ollamaSidecarRequestTimeoutSeconds: 600,
+  ollamaSidecarModelsCacheTtlSeconds: 60,
 } as DashboardSettings;
 
 function renderCard(settings: DashboardSettings) {
@@ -88,6 +96,7 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getByRole("tab", { name: /CLIProxyAPI/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OpenRouter/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OmniRoute/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Ollama/ })).toBeInTheDocument();
   });
 
   it("defaults to the first enabled integration's tab", () => {
@@ -110,6 +119,20 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getByRole("tab", { name: "CLIProxyAPI" })).toHaveAttribute("data-state", "active");
   });
 
+  it("defaults to the Ollama tab when only Ollama is enabled", () => {
+    renderCard({
+      ...BASE_SETTINGS,
+      openrouterSidecarEnabled: false,
+      ollamaSidecarEnabled: true,
+    });
+
+    expect(screen.getByRole("tab", { name: "Ollama (enabled)" })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(screen.getByRole("switch", { name: "Enable Ollama Integration" })).toBeInTheDocument();
+  });
+
   it("switches the visible integration when another tab is selected", async () => {
     const user = userEvent.setup();
     renderCard(BASE_SETTINGS);
@@ -120,5 +143,14 @@ describe("SidecarIntegrationsCard", () => {
     await user.click(screen.getByRole("tab", { name: "CLIProxyAPI" }));
 
     expect(screen.getByRole("switch", { name: "Enable CLI Proxy integration" })).toBeInTheDocument();
+  });
+
+  it("shows the Ollama integration when the Ollama tab is selected", async () => {
+    const user = userEvent.setup();
+    renderCard(BASE_SETTINGS);
+
+    await user.click(screen.getByRole("tab", { name: "Ollama" }));
+
+    expect(screen.getByRole("switch", { name: "Enable Ollama Integration" })).toBeInTheDocument();
   });
 });

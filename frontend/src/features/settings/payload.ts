@@ -60,6 +60,13 @@ export function buildSettingsUpdateRequest(
     omnirouteSidecarConnectTimeoutSeconds: settings.omnirouteSidecarConnectTimeoutSeconds,
     omnirouteSidecarRequestTimeoutSeconds: settings.omnirouteSidecarRequestTimeoutSeconds,
     omnirouteSidecarModelsCacheTtlSeconds: settings.omnirouteSidecarModelsCacheTtlSeconds,
+    ollamaSidecarEnabled: settings.ollamaSidecarEnabled,
+    ollamaSidecarBaseUrl: settings.ollamaSidecarBaseUrl,
+    ollamaSidecarModelPrefixes: settings.ollamaSidecarModelPrefixes,
+    ollamaSidecarFullModels: settings.ollamaSidecarFullModels,
+    ollamaSidecarConnectTimeoutSeconds: settings.ollamaSidecarConnectTimeoutSeconds,
+    ollamaSidecarRequestTimeoutSeconds: settings.ollamaSidecarRequestTimeoutSeconds,
+    ollamaSidecarModelsCacheTtlSeconds: settings.ollamaSidecarModelsCacheTtlSeconds,
     ...patch,
   };
   if (

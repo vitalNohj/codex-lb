@@ -9,8 +9,8 @@ from app.core.clients.omniroute_sidecar import (
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.omniroute_sidecar.schemas import (
-    OmniRouteSidecarModelSummary,
     OmniRouteSidecarModelsResponse,
+    OmniRouteSidecarModelSummary,
     OmniRouteSidecarStatus,
     OmniRouteSidecarStatusResponse,
     OmniRouteSidecarTestResponse,
@@ -139,7 +139,9 @@ def _classify_status(settings) -> tuple[OmniRouteSidecarStatus, str | None]:
 
 
 def _model_summaries(models) -> list[OmniRouteSidecarModelSummary]:
-    return [OmniRouteSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models]
+    return [
+        OmniRouteSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models
+    ]
 
 
 def _sanitize_message(message: str) -> str:

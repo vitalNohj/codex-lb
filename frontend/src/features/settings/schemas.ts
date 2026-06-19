@@ -38,6 +38,14 @@ const LimitWarmupPromptSchema = z.string().min(1).max(512);
 const WeeklyPaceWorkingDaysValueSchema = z.string().regex(/^[0-6](,[0-6])*$/);
 const WeeklyPaceWorkingDaysSchema = WeeklyPaceWorkingDaysValueSchema.default("0,1,2,3,4,5,6");
 const ClaudeSidecarStatusValueSchema = z.enum(["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]);
+const ThirdPartySidecarStatusValueSchema = z.enum([
+  "disabled",
+  "missing_api_key",
+  "unreachable",
+  "unauthorized",
+  "healthy",
+  "error",
+]);
 export const SidecarModelPrefixSchema = z.object({
   prefix: z.string().trim().min(1).max(64).transform((value) => value.toLowerCase()),
   strip: z.boolean().optional().default(false),
@@ -157,6 +165,18 @@ export const DashboardSettingsSchema = z
     omnirouteSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     omnirouteSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     omnirouteSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    ollamaSidecarEnabled: z.boolean().optional().default(false),
+    ollamaSidecarBaseUrl: z.string().trim().min(1).optional().default("https://ollama.com"),
+    ollamaSidecarApiKeyConfigured: z.boolean().optional().default(false),
+    ollamaSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
+    ollamaSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
+    ollamaSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
+    ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
+    ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+    ollamaSidecarLastHealthStatus: z.string().nullable().optional().default(null),
+    ollamaSidecarLastHealthMessage: z.string().nullable().optional().default(null),
+    ollamaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
+    ollamaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -255,6 +275,15 @@ export const SettingsUpdateRequestSchema = z.object({
   omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  ollamaSidecarEnabled: z.boolean().optional(),
+  ollamaSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+  ollamaSidecarApiKey: z.string().trim().max(4096).optional(),
+  ollamaSidecarClearApiKey: z.boolean().optional(),
+  ollamaSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+  ollamaSidecarFullModels: SidecarFullModelsSchema.optional(),
+  ollamaSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+  ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+  ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
 });
 
 export const ClaudeSidecarModelSummarySchema = z.object({
@@ -279,14 +308,7 @@ export const ClaudeSidecarModelsResponseSchema = z.object({
   models: z.array(ClaudeSidecarModelSummarySchema).default([]),
 });
 
-const OpenRouterSidecarStatusValueSchema = z.enum([
-  "disabled",
-  "missing_api_key",
-  "unreachable",
-  "unauthorized",
-  "healthy",
-  "error",
-]);
+const OpenRouterSidecarStatusValueSchema = ThirdPartySidecarStatusValueSchema;
 
 export const OpenRouterSidecarModelSummarySchema = z.object({
   id: z.string(),
@@ -312,14 +334,7 @@ export const OpenRouterSidecarModelsResponseSchema = z.object({
   models: z.array(OpenRouterSidecarModelSummarySchema).default([]),
 });
 
-const OmniRouteSidecarStatusValueSchema = z.enum([
-  "disabled",
-  "missing_api_key",
-  "unreachable",
-  "unauthorized",
-  "healthy",
-  "error",
-]);
+const OmniRouteSidecarStatusValueSchema = ThirdPartySidecarStatusValueSchema;
 
 export const OmniRouteSidecarModelSummarySchema = z.object({
   id: z.string(),
@@ -343,6 +358,30 @@ export const OmniRouteSidecarTestResponseSchema = OmniRouteSidecarStatusResponse
 
 export const OmniRouteSidecarModelsResponseSchema = z.object({
   models: z.array(OmniRouteSidecarModelSummarySchema).default([]),
+});
+
+export const OllamaSidecarModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+});
+
+export const OllamaSidecarStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: ThirdPartySidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+export const OllamaSidecarTestResponseSchema = OllamaSidecarStatusResponseSchema.extend({
+  models: z.array(OllamaSidecarModelSummarySchema).default([]),
+});
+
+export const OllamaSidecarModelsResponseSchema = z.object({
+  models: z.array(OllamaSidecarModelSummarySchema).default([]),
 });
 
 const ClaudeSidecarQuotaStatusSchema = z.enum([
@@ -431,6 +470,22 @@ type OmniRouteSidecarSettingsFields = Pick<
   | "omnirouteSidecarLastModelCount"
 >;
 
+type OllamaSidecarSettingsFields = Pick<
+  ParsedDashboardSettings,
+  | "ollamaSidecarEnabled"
+  | "ollamaSidecarBaseUrl"
+  | "ollamaSidecarApiKeyConfigured"
+  | "ollamaSidecarModelPrefixes"
+  | "ollamaSidecarFullModels"
+  | "ollamaSidecarConnectTimeoutSeconds"
+  | "ollamaSidecarRequestTimeoutSeconds"
+  | "ollamaSidecarModelsCacheTtlSeconds"
+  | "ollamaSidecarLastHealthStatus"
+  | "ollamaSidecarLastHealthMessage"
+  | "ollamaSidecarLastCheckedAt"
+  | "ollamaSidecarLastModelCount"
+>;
+
 type ClaudeSidecarSettingsFields = Pick<
   ParsedDashboardSettings,
   | "claudeSidecarEnabled"
@@ -460,12 +515,14 @@ export type DashboardSettings = Omit<
   | keyof ClaudeSidecarSettingsFields
   | keyof OpenRouterSidecarSettingsFields
   | keyof OmniRouteSidecarSettingsFields
+  | keyof OllamaSidecarSettingsFields
 > &
   Partial<StickyThresholdPresenceFlags> &
   Partial<StickyThresholdValues> &
   Partial<ClaudeSidecarSettingsFields> &
   Partial<OpenRouterSidecarSettingsFields> &
-  Partial<OmniRouteSidecarSettingsFields>;
+  Partial<OmniRouteSidecarSettingsFields> &
+  Partial<OllamaSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 export type SidecarModelPrefix = z.infer<typeof SidecarModelPrefixSchema>;
 export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
@@ -484,6 +541,10 @@ export type OmniRouteSidecarModelSummary = z.infer<typeof OmniRouteSidecarModelS
 export type OmniRouteSidecarStatusResponse = z.infer<typeof OmniRouteSidecarStatusResponseSchema>;
 export type OmniRouteSidecarTestResponse = z.infer<typeof OmniRouteSidecarTestResponseSchema>;
 export type OmniRouteSidecarModelsResponse = z.infer<typeof OmniRouteSidecarModelsResponseSchema>;
+export type OllamaSidecarModelSummary = z.infer<typeof OllamaSidecarModelSummarySchema>;
+export type OllamaSidecarStatusResponse = z.infer<typeof OllamaSidecarStatusResponseSchema>;
+export type OllamaSidecarTestResponse = z.infer<typeof OllamaSidecarTestResponseSchema>;
+export type OllamaSidecarModelsResponse = z.infer<typeof OllamaSidecarModelsResponseSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({

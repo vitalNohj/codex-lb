@@ -3,6 +3,7 @@ import { Boxes } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
+import { OllamaSidecarSettings } from "@/features/settings/components/ollama-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -40,6 +41,12 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
       label: "OmniRoute",
       enabled: settings.omnirouteSidecarEnabled ?? false,
       render: () => <OmniRouteSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
+    },
+    {
+      value: "ollama",
+      label: "Ollama",
+      enabled: settings.ollamaSidecarEnabled ?? false,
+      render: () => <OllamaSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
   ];
 
