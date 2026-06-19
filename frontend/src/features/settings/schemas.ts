@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const RoutingStrategySchema = z.enum([
+const RoutingStrategySchema = z.enum([
   "usage_weighted",
   "round_robin",
   "capacity_weighted",
@@ -10,24 +10,24 @@ export const RoutingStrategySchema = z.enum([
   "relative_availability",
   "fill_first",
 ]);
-export const UpstreamStreamTransportSchema = z.enum([
+const UpstreamStreamTransportSchema = z.enum([
   "default",
   "auto",
   "http",
   "websocket",
 ]);
-export const LimitWarmupWindowsSchema = z.enum([
+const LimitWarmupWindowsSchema = z.enum([
   "primary",
   "secondary",
   "both",
 ]);
-export const AdditionalQuotaRoutingPolicySchema = z.enum([
+const AdditionalQuotaRoutingPolicySchema = z.enum([
   "inherit",
   "normal",
   "burn_first",
   "preserve",
 ]);
-export const AdditionalQuotaPolicySchema = z.object({
+const AdditionalQuotaPolicySchema = z.object({
   quotaKey: z.string(),
   displayLabel: z.string(),
   routingPolicy: AdditionalQuotaRoutingPolicySchema,
@@ -177,6 +177,8 @@ export const DashboardSettingsSchema = z
     ollamaSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     ollamaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     ollamaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    guestAccessEnabled: z.boolean().optional().default(false),
+    guestPasswordConfigured: z.boolean().optional().default(false),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -284,6 +286,7 @@ export const SettingsUpdateRequestSchema = z.object({
   ollamaSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  guestAccessEnabled: z.boolean().optional(),
 });
 
 export const ClaudeSidecarModelSummarySchema = z.object({

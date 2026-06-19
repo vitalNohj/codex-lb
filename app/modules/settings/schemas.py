@@ -271,6 +271,8 @@ class DashboardSettingsResponse(DashboardModel):
     ollama_sidecar_last_health_message: str | None = None
     ollama_sidecar_last_checked_at: datetime | None = None
     ollama_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    guest_access_enabled: bool
+    guest_password_configured: bool
 
 
 class DashboardSettingsUpdateRequest(DashboardModel):
@@ -353,6 +355,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     ollama_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     ollama_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     ollama_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    guest_access_enabled: bool | None = None
 
     @field_validator("warmup_model")
     @classmethod

@@ -356,4 +356,15 @@ describe("AccountCard", () => {
     expect(screen.getByText("Requests")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
   });
+
+  it("disables the limit warm-up toggle for read-only guests", () => {
+    const account = createAccountSummary({
+      displayName: "Read Only Account",
+      limitWarmupEnabled: false,
+    });
+
+    render(<AccountCard account={account} readOnly />);
+
+    expect(screen.getByRole("button", { name: "Enable limit warm-up for Read Only Account" })).toBeDisabled();
+  });
 });
