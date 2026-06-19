@@ -67,58 +67,14 @@ describe("OpenRouterSidecarSettings", () => {
     expect(screen.getByRole("heading", { name: "OpenRouter Integration" })).toBeInTheDocument();
   });
 
-  it("saves integration config and can clear a configured key", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
-
-    await user.click(screen.getByRole("switch", { name: "Enable OpenRouter Integration" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ openrouterSidecarEnabled: true }));
-
-    await user.type(screen.getByLabelText(/API key/), "new-key");
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
-
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        openrouterSidecarApiKey: "new-key",
-        openrouterSidecarModelPrefixes: [{ prefix: "deepseek/", strip: false }],
-        openrouterSidecarBaseUrl: "https://openrouter.ai/api/v1",
-      }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Clear API key" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ openrouterSidecarClearApiKey: true }));
-  });
-
-  it("saves edited model prefixes", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
-
-    await user.click(screen.getByRole("button", { name: "Remove deepseek/" }));
-    await user.type(screen.getByLabelText("New prefix for OpenRouter Integration"), "google/");
-    await user.click(screen.getByRole("button", { name: "Add prefix" }));
-    await user.type(screen.getByLabelText("New prefix for OpenRouter Integration"), "meta-llama/");
-    await user.click(screen.getByRole("button", { name: "Add prefix" }));
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
-
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        openrouterSidecarModelPrefixes: [
-          { prefix: "google/", strip: false },
-          { prefix: "meta-llama/", strip: false },
-        ],
-      }),
-    );
-  });
-
-  it("does not render a manual Test connection button", () => {
+  it("does not render Save or Clear buttons", () => {
     renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
 
-    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Save$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear API key" })).not.toBeInTheDocument();
   });
 
-  it("runs the connection test after a successful save", async () => {
+  it("adds an API key and runs the connection test after the save", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     const testSpy = vi.fn();
@@ -139,9 +95,43 @@ describe("OpenRouterSidecarSettings", () => {
     );
     renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await user.type(screen.getByLabelText(/API key/), "new-key");
+    await user.click(screen.getByRole("button", { name: "Add API key" }));
 
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ openrouterSidecarApiKey: "new-key" })),
+    );
+    expect(screen.getByLabelText(/API key/)).toHaveValue("");
     await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
+  });
+
+  it("persists edited model prefixes immediately", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.click(screen.getByRole("button", { name: "Remove deepseek/" }));
+    await user.type(screen.getByLabelText("New prefix for OpenRouter Integration"), "google/");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await user.type(screen.getByLabelText("New prefix for OpenRouter Integration"), "meta-llama/");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          openrouterSidecarModelPrefixes: [
+            { prefix: "google/", strip: false },
+            { prefix: "meta-llama/", strip: false },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("does not render a manual Test connection button", () => {
+    renderWithQueryClient(<OpenRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
   });
 
   it("adds a discovered model as a full model", async () => {
@@ -160,15 +150,15 @@ describe("OpenRouterSidecarSettings", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps discovered models collapsed inside the configuration card above actions", async () => {
+  it("keeps discovered models collapsed inside the configuration card above the timeout fields", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OpenRouterSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
 
     const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
-    const saveButton = screen.getByRole("button", { name: /^Save$/ });
+    const cacheTtlField = screen.getByLabelText(/Model cache TTL/);
 
-    expect(disclosure.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure.compareDocumentPosition(cacheTtlField) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("Search models")).not.toBeInTheDocument();
 

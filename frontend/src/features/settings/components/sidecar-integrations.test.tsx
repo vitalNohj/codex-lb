@@ -80,18 +80,19 @@ function renderWithQueryClient(ui: React.ReactElement) {
 }
 
 describe("shared sidecar integration settings", () => {
-  it("persists per-prefix strip toggle changes", async () => {
+  it("persists per-prefix strip toggle changes immediately", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("checkbox", { name: "Remove prefix claude before forwarding" }));
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        claudeSidecarModelPrefixes: [{ prefix: "claude", strip: true }],
-      }),
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          claudeSidecarModelPrefixes: [{ prefix: "claude", strip: true }],
+        }),
+      ),
     );
   });
 
@@ -106,7 +107,7 @@ describe("shared sidecar integration settings", () => {
     expect(screen.queryByRole("checkbox", { name: "Remove prefix deepseek/ before forwarding" })).not.toBeInTheDocument();
   });
 
-  it("adds a discovered model to the full-model list outside the browser", async () => {
+  it("adds a discovered model to the full-model list outside the browser and persists immediately", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
@@ -124,15 +125,16 @@ describe("shared sidecar integration settings", () => {
     const fullModels = screen.getByLabelText("Configured full models for OpenRouter Integration");
     expect(within(fullModels).getByText("deepseek/deepseek-chat")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        openrouterSidecarFullModels: ["deepseek/deepseek-chat"],
-      }),
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          openrouterSidecarFullModels: ["deepseek/deepseek-chat"],
+        }),
+      ),
     );
   });
 
-  it("blocks save while a full-model conflict is unresolved", async () => {
+  it("does not persist a full model while a cross-integration conflict is unresolved", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
       <OpenRouterSidecarSettings
@@ -148,7 +150,6 @@ describe("shared sidecar integration settings", () => {
     );
 
     expect(screen.getByText("Full model omniroute/test-chat is already used by OmniRoute.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
     expect(onSave).not.toHaveBeenCalled();
   });
 
@@ -182,7 +183,6 @@ describe("shared sidecar integration settings", () => {
 
     await user.type(screen.getByLabelText("New prefix for OmniRoute Integration"), "deepseek/");
     await user.click(screen.getByRole("button", { name: "Add prefix" }));
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     await waitFor(() => {
       expect(

@@ -51,7 +51,7 @@ export function DiscoveredModelsBrowser({
         <div className="space-y-2 border-t p-2">
           {models.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              {isLoading ? "Loading models..." : "No models loaded - save API key and test connection"}
+              {isLoading ? "Loading models..." : "No models loaded - add an API key to discover models"}
             </p>
           ) : (
             <>
