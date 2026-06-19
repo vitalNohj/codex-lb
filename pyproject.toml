@@ -60,6 +60,7 @@ dependencies = [
     "urllib3>=2.7.0",
     "websockets>=16.0",
     "zstandard>=0.25.0",
+    "ollama>=0.6.2",
 ]
 
 [project.optional-dependencies]

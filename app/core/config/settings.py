@@ -202,6 +202,14 @@ class Settings(BaseSettings):
     omniroute_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     omniroute_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     omniroute_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    ollama_sidecar_enabled: bool = False
+    ollama_sidecar_base_url: str = "https://ollama.com"
+    ollama_sidecar_api_key: str = ""
+    ollama_sidecar_model_prefixes: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    ollama_sidecar_full_models: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    ollama_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    ollama_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    ollama_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)

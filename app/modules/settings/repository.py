@@ -116,6 +116,28 @@ class SettingsRepository:
             omniroute_sidecar_connect_timeout_seconds=static_settings.omniroute_sidecar_connect_timeout_seconds,
             omniroute_sidecar_request_timeout_seconds=static_settings.omniroute_sidecar_request_timeout_seconds,
             omniroute_sidecar_models_cache_ttl_seconds=static_settings.omniroute_sidecar_models_cache_ttl_seconds,
+            ollama_sidecar_enabled=static_settings.ollama_sidecar_enabled,
+            ollama_sidecar_base_url=static_settings.ollama_sidecar_base_url,
+            ollama_sidecar_api_key_encrypted=(
+                TokenEncryptor().encrypt(static_settings.ollama_sidecar_api_key.strip())
+                if static_settings.ollama_sidecar_api_key.strip()
+                else None
+            ),
+            ollama_sidecar_model_prefixes_json=json.dumps(
+                [
+                    {"prefix": prefix.strip().lower(), "strip": prefix.strip().endswith(("-", "_"))}
+                    for prefix in static_settings.ollama_sidecar_model_prefixes
+                    if prefix.strip()
+                ],
+                separators=(",", ":"),
+            ),
+            ollama_sidecar_full_models_json=json.dumps(
+                static_settings.ollama_sidecar_full_models,
+                separators=(",", ":"),
+            ),
+            ollama_sidecar_connect_timeout_seconds=static_settings.ollama_sidecar_connect_timeout_seconds,
+            ollama_sidecar_request_timeout_seconds=static_settings.ollama_sidecar_request_timeout_seconds,
+            ollama_sidecar_models_cache_ttl_seconds=static_settings.ollama_sidecar_models_cache_ttl_seconds,
         )
         self._session.add(row)
         try:
@@ -205,6 +227,18 @@ class SettingsRepository:
         omniroute_sidecar_last_health_message: str | None | object = _UNSET,
         omniroute_sidecar_last_checked_at: datetime | None | object = _UNSET,
         omniroute_sidecar_last_model_count: int | None | object = _UNSET,
+        ollama_sidecar_enabled: bool | None = None,
+        ollama_sidecar_base_url: str | None = None,
+        ollama_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        ollama_sidecar_model_prefixes_json: str | None = None,
+        ollama_sidecar_full_models_json: str | None = None,
+        ollama_sidecar_connect_timeout_seconds: float | None = None,
+        ollama_sidecar_request_timeout_seconds: float | None = None,
+        ollama_sidecar_models_cache_ttl_seconds: float | None = None,
+        ollama_sidecar_last_health_status: str | None | object = _UNSET,
+        ollama_sidecar_last_health_message: str | None | object = _UNSET,
+        ollama_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        ollama_sidecar_last_model_count: int | None | object = _UNSET,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
@@ -357,6 +391,30 @@ class SettingsRepository:
             settings.omniroute_sidecar_last_checked_at = omniroute_sidecar_last_checked_at
         if omniroute_sidecar_last_model_count is not _UNSET:
             settings.omniroute_sidecar_last_model_count = omniroute_sidecar_last_model_count
+        if ollama_sidecar_enabled is not None:
+            settings.ollama_sidecar_enabled = ollama_sidecar_enabled
+        if ollama_sidecar_base_url is not None:
+            settings.ollama_sidecar_base_url = ollama_sidecar_base_url
+        if ollama_sidecar_api_key_encrypted is not _UNSET:
+            settings.ollama_sidecar_api_key_encrypted = ollama_sidecar_api_key_encrypted
+        if ollama_sidecar_model_prefixes_json is not None:
+            settings.ollama_sidecar_model_prefixes_json = ollama_sidecar_model_prefixes_json
+        if ollama_sidecar_full_models_json is not None:
+            settings.ollama_sidecar_full_models_json = ollama_sidecar_full_models_json
+        if ollama_sidecar_connect_timeout_seconds is not None:
+            settings.ollama_sidecar_connect_timeout_seconds = ollama_sidecar_connect_timeout_seconds
+        if ollama_sidecar_request_timeout_seconds is not None:
+            settings.ollama_sidecar_request_timeout_seconds = ollama_sidecar_request_timeout_seconds
+        if ollama_sidecar_models_cache_ttl_seconds is not None:
+            settings.ollama_sidecar_models_cache_ttl_seconds = ollama_sidecar_models_cache_ttl_seconds
+        if ollama_sidecar_last_health_status is not _UNSET:
+            settings.ollama_sidecar_last_health_status = ollama_sidecar_last_health_status
+        if ollama_sidecar_last_health_message is not _UNSET:
+            settings.ollama_sidecar_last_health_message = ollama_sidecar_last_health_message
+        if ollama_sidecar_last_checked_at is not _UNSET:
+            settings.ollama_sidecar_last_checked_at = ollama_sidecar_last_checked_at
+        if ollama_sidecar_last_model_count is not _UNSET:
+            settings.ollama_sidecar_last_model_count = ollama_sidecar_last_model_count
         await self.commit_refresh(settings)
         return settings
 

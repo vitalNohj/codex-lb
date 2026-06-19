@@ -188,6 +188,18 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         omniroute_sidecar_last_health_message=settings.omniroute_sidecar_last_health_message,
         omniroute_sidecar_last_checked_at=settings.omniroute_sidecar_last_checked_at,
         omniroute_sidecar_last_model_count=settings.omniroute_sidecar_last_model_count,
+        ollama_sidecar_enabled=settings.ollama_sidecar_enabled,
+        ollama_sidecar_base_url=settings.ollama_sidecar_base_url,
+        ollama_sidecar_api_key_configured=settings.ollama_sidecar_api_key_configured,
+        ollama_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.ollama_sidecar_model_prefixes],
+        ollama_sidecar_full_models=settings.ollama_sidecar_full_models,
+        ollama_sidecar_connect_timeout_seconds=settings.ollama_sidecar_connect_timeout_seconds,
+        ollama_sidecar_request_timeout_seconds=settings.ollama_sidecar_request_timeout_seconds,
+        ollama_sidecar_models_cache_ttl_seconds=settings.ollama_sidecar_models_cache_ttl_seconds,
+        ollama_sidecar_last_health_status=settings.ollama_sidecar_last_health_status,
+        ollama_sidecar_last_health_message=settings.ollama_sidecar_last_health_message,
+        ollama_sidecar_last_checked_at=settings.ollama_sidecar_last_checked_at,
+        ollama_sidecar_last_model_count=settings.ollama_sidecar_last_model_count,
     )
 
 
@@ -772,6 +784,41 @@ async def update_settings(
                     if payload.omniroute_sidecar_models_cache_ttl_seconds is not None
                     else current.omniroute_sidecar_models_cache_ttl_seconds
                 ),
+                ollama_sidecar_enabled=(
+                    payload.ollama_sidecar_enabled
+                    if payload.ollama_sidecar_enabled is not None
+                    else current.ollama_sidecar_enabled
+                ),
+                ollama_sidecar_base_url=payload.ollama_sidecar_base_url or current.ollama_sidecar_base_url,
+                ollama_sidecar_api_key=(
+                    payload.ollama_sidecar_api_key if "ollama_sidecar_api_key" in payload.model_fields_set else None
+                ),
+                ollama_sidecar_clear_api_key=payload.ollama_sidecar_clear_api_key is True,
+                ollama_sidecar_model_prefixes=(
+                    [_sidecar_prefix_data(prefix) for prefix in payload.ollama_sidecar_model_prefixes]
+                    if payload.ollama_sidecar_model_prefixes is not None
+                    else current.ollama_sidecar_model_prefixes
+                ),
+                ollama_sidecar_full_models=(
+                    payload.ollama_sidecar_full_models
+                    if payload.ollama_sidecar_full_models is not None
+                    else current.ollama_sidecar_full_models
+                ),
+                ollama_sidecar_connect_timeout_seconds=(
+                    payload.ollama_sidecar_connect_timeout_seconds
+                    if payload.ollama_sidecar_connect_timeout_seconds is not None
+                    else current.ollama_sidecar_connect_timeout_seconds
+                ),
+                ollama_sidecar_request_timeout_seconds=(
+                    payload.ollama_sidecar_request_timeout_seconds
+                    if payload.ollama_sidecar_request_timeout_seconds is not None
+                    else current.ollama_sidecar_request_timeout_seconds
+                ),
+                ollama_sidecar_models_cache_ttl_seconds=(
+                    payload.ollama_sidecar_models_cache_ttl_seconds
+                    if payload.ollama_sidecar_models_cache_ttl_seconds is not None
+                    else current.ollama_sidecar_models_cache_ttl_seconds
+                ),
             )
         )
     except SidecarRoutingConflictError as exc:
@@ -867,6 +914,18 @@ async def update_settings(
             "omniroute_sidecar_last_health_message",
             "omniroute_sidecar_last_checked_at",
             "omniroute_sidecar_last_model_count",
+            "ollama_sidecar_enabled",
+            "ollama_sidecar_base_url",
+            "ollama_sidecar_api_key_configured",
+            "ollama_sidecar_model_prefixes",
+            "ollama_sidecar_full_models",
+            "ollama_sidecar_connect_timeout_seconds",
+            "ollama_sidecar_request_timeout_seconds",
+            "ollama_sidecar_models_cache_ttl_seconds",
+            "ollama_sidecar_last_health_status",
+            "ollama_sidecar_last_health_message",
+            "ollama_sidecar_last_checked_at",
+            "ollama_sidecar_last_model_count",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]
