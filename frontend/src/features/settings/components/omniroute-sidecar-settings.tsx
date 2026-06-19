@@ -59,7 +59,6 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ omnirouteSidecarEnabled: enabled })}
-      buildClearApiKeyPatch={() => ({ omnirouteSidecarClearApiKey: true })}
       buildPatch={(state) => ({
         omnirouteSidecarBaseUrl: state.baseUrl,
         omnirouteSidecarModelPrefixes: state.prefixes,
@@ -82,7 +81,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
           <SidecarIntegrationCard.Timeouts />
-          <SidecarIntegrationCard.Actions />
+          <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>

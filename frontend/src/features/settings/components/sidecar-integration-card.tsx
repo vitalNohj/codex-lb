@@ -70,9 +70,9 @@ type SidecarIntegrationActions = {
   setPrefixStrip: (prefix: string, strip: boolean) => void;
   addFullModel: (modelId?: string) => void;
   removeFullModel: (modelId: string) => void;
-  saveConfig: () => Promise<void>;
-  clearApiKey: () => Promise<void>;
-  clearManagementKey: () => Promise<void>;
+  persistField: () => void;
+  addApiKey: () => void;
+  addManagementKey: () => void;
 };
 
 type SidecarIntegrationContextValue = {
@@ -125,8 +125,6 @@ type SidecarIntegrationCardProviderProps = {
     pollInterval: number | null;
   }) => Partial<SettingsUpdateRequest>;
   buildEnablePatch: (enabled: boolean) => Partial<SettingsUpdateRequest>;
-  buildClearApiKeyPatch: () => Partial<SettingsUpdateRequest>;
-  buildClearManagementKeyPatch?: () => Partial<SettingsUpdateRequest>;
   children: ReactNode;
 };
 
@@ -321,8 +319,6 @@ function SidecarIntegrationCardProvider({
   onTestConnection,
   buildPatch,
   buildEnablePatch,
-  buildClearApiKeyPatch,
-  buildClearManagementKeyPatch,
   children,
 }: SidecarIntegrationCardProviderProps) {
   const [enabled, setEnabledState] = useState(initial.enabled);
@@ -367,6 +363,50 @@ function SidecarIntegrationCardProvider({
     parsedCacheTtl >= 0 &&
     (initial.pollInterval === undefined || (Number.isFinite(parsedPollInterval) && parsedPollInterval > 0));
 
+  type PersistOverrides = {
+    prefixes?: SidecarModelPrefix[];
+    fullModels?: string[];
+    apiKey?: string;
+    managementKey?: string;
+  };
+
+  const persistConfig = async (overrides: PersistOverrides = {}) => {
+    const nextPrefixes = overrides.prefixes ?? prefixes;
+    const nextFullModels = overrides.fullModels ?? fullModels;
+    const hasConflict = Boolean(currentConflict(settings, { id: meta.id, name: meta.conflictName, prefixes: nextPrefixes, fullModels: nextFullModels }));
+    if (!formValid || hasConflict) {
+      return;
+    }
+    setSaveError(null);
+    setSavePending(true);
+    try {
+      await onSave(
+        buildSettingsUpdateRequest(
+          settings,
+          buildPatch({
+            baseUrl: baseUrl.trim(),
+            apiKey: (overrides.apiKey ?? "").trim(),
+            managementKey: (overrides.managementKey ?? "").trim(),
+            prefixes: nextPrefixes,
+            fullModels: nextFullModels,
+            connectTimeout: parsedConnectTimeout,
+            requestTimeout: parsedRequestTimeout,
+            cacheTtl: parsedCacheTtl,
+            pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
+          }),
+        ),
+      );
+      await onTestConnection().catch(() => null);
+    } catch (error) {
+      setSaveError(
+        backendConflictMessage(error, meta.conflictName) ??
+          (error instanceof Error ? error.message : "Failed to save settings"),
+      );
+    } finally {
+      setSavePending(false);
+    }
+  };
+
   const setEnabled = (nextEnabled: boolean) => {
     setEnabledState(nextEnabled);
     void onSave(buildSettingsUpdateRequest(settings, buildEnablePatch(nextEnabled)));
@@ -390,18 +430,22 @@ function SidecarIntegrationCardProvider({
       return;
     }
     setInlineError(null);
-    setPrefixes((currentPrefixes) => normalizePrefixes([...currentPrefixes, { prefix, strip: false }]));
+    const nextPrefixes = normalizePrefixes([...prefixes, { prefix, strip: false }]);
+    setPrefixes(nextPrefixes);
     setManualPrefix("");
+    void persistConfig({ prefixes: nextPrefixes });
   };
 
   const removePrefix = (prefix: string) => {
-    setPrefixes((currentPrefixes) => currentPrefixes.filter((entry) => entry.prefix !== prefix));
+    const nextPrefixes = prefixes.filter((entry) => entry.prefix !== prefix);
+    setPrefixes(nextPrefixes);
+    void persistConfig({ prefixes: nextPrefixes });
   };
 
   const setPrefixStrip = (prefix: string, strip: boolean) => {
-    setPrefixes((currentPrefixes) =>
-      currentPrefixes.map((entry) => (entry.prefix === prefix ? { ...entry, strip } : entry)),
-    );
+    const nextPrefixes = prefixes.map((entry) => (entry.prefix === prefix ? { ...entry, strip } : entry));
+    setPrefixes(nextPrefixes);
+    void persistConfig({ prefixes: nextPrefixes });
   };
 
   const addFullModel = (modelId?: string) => {
@@ -422,55 +466,40 @@ function SidecarIntegrationCardProvider({
       return;
     }
     setInlineError(null);
-    setFullModels((currentModels) => normalizeFullModels([...currentModels, fullModel]));
+    const nextFullModels = normalizeFullModels([...fullModels, fullModel]);
+    setFullModels(nextFullModels);
     if (!modelId) {
       setManualFullModel("");
     }
+    void persistConfig({ fullModels: nextFullModels });
   };
 
   const removeFullModel = (modelId: string) => {
-    setFullModels((currentModels) => currentModels.filter((candidate) => candidate !== modelId));
+    const nextFullModels = fullModels.filter((candidate) => candidate !== modelId);
+    setFullModels(nextFullModels);
+    void persistConfig({ fullModels: nextFullModels });
   };
 
-  const saveConfig = async () => {
-    if (!formValid || conflict) {
-      return;
-    }
-    setSaveError(null);
-    setSavePending(true);
-    try {
-      await onSave(
-        buildSettingsUpdateRequest(
-          settings,
-          buildPatch({
-            baseUrl: baseUrl.trim(),
-            apiKey: apiKey.trim(),
-            managementKey: managementKey.trim(),
-            prefixes,
-            fullModels,
-            connectTimeout: parsedConnectTimeout,
-            requestTimeout: parsedRequestTimeout,
-            cacheTtl: parsedCacheTtl,
-            pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
-          }),
-        ),
-      );
-      setApiKey("");
-      setManagementKey("");
-      await onTestConnection().catch(() => null);
-    } catch (error) {
-      setSaveError(backendConflictMessage(error, meta.conflictName) ?? (error instanceof Error ? error.message : "Failed to save settings"));
-    } finally {
-      setSavePending(false);
-    }
+  const persistField = () => {
+    void persistConfig();
   };
 
-  const clearApiKey = () => onSave(buildSettingsUpdateRequest(settings, buildClearApiKeyPatch()));
-  const clearManagementKey = async () => {
-    if (!buildClearManagementKeyPatch) {
+  const addApiKey = () => {
+    const key = apiKey.trim();
+    if (!key) {
       return;
     }
-    await onSave(buildSettingsUpdateRequest(settings, buildClearManagementKeyPatch()));
+    setApiKey("");
+    void persistConfig({ apiKey: key });
+  };
+
+  const addManagementKey = () => {
+    const key = managementKey.trim();
+    if (!key) {
+      return;
+    }
+    setManagementKey("");
+    void persistConfig({ managementKey: key });
   };
 
   const value: SidecarIntegrationContextValue = {
@@ -509,9 +538,9 @@ function SidecarIntegrationCardProvider({
       setPrefixStrip,
       addFullModel,
       removeFullModel,
-      saveConfig,
-      clearApiKey,
-      clearManagementKey,
+      persistField,
+      addApiKey,
+      addManagementKey,
     },
     models,
     form: {
@@ -600,6 +629,13 @@ function BaseUrl() {
         id={`${meta.sectionId}-base-url`}
         value={state.baseUrl}
         onChange={(event) => actions.setBaseUrl(event.target.value)}
+        onBlur={() => actions.persistField()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            actions.persistField();
+          }
+        }}
         placeholder={meta.baseUrlPlaceholder}
         disabled={busy}
         className="h-8 text-xs"
@@ -609,34 +645,70 @@ function BaseUrl() {
 }
 
 function Secrets({ showManagementKey = false }: { showManagementKey?: boolean }) {
-  const { busy, meta, state, actions } = useSidecarIntegration();
+  const { busy, meta, state, actions, form } = useSidecarIntegration();
   return (
     <div className={showManagementKey ? "grid gap-2 sm:grid-cols-2" : "grid gap-2"}>
       <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-api-key`}>
         API key
-        <Input
-          id={`${meta.sectionId}-api-key`}
-          type="password"
-          value={state.apiKey}
-          onChange={(event) => actions.setApiKey(event.target.value)}
-          placeholder={meta.apiKeyConfigured ? "Configured" : meta.apiKeyPlaceholder}
-          disabled={busy}
-          className="h-8 text-xs"
-        />
-        <span className="block font-normal text-muted-foreground">Saved keys are encrypted and never shown again.</span>
+        <div className="flex gap-2">
+          <Input
+            id={`${meta.sectionId}-api-key`}
+            type="password"
+            value={state.apiKey}
+            onChange={(event) => actions.setApiKey(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                actions.addApiKey();
+              }
+            }}
+            placeholder={meta.apiKeyConfigured ? "Configured" : meta.apiKeyPlaceholder}
+            disabled={busy}
+            className="h-8 text-xs"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 shrink-0 text-xs"
+            disabled={busy || !state.apiKey.trim() || form.savePending}
+            onClick={() => actions.addApiKey()}
+          >
+            Add API key
+          </Button>
+        </div>
+        <span className="block font-normal text-muted-foreground">Adding a key overwrites the stored key. Saved keys are encrypted and never shown again.</span>
       </label>
       {showManagementKey ? (
         <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-management-key`}>
           Management key
-          <Input
-            id={`${meta.sectionId}-management-key`}
-            type="password"
-            value={state.managementKey}
-            onChange={(event) => actions.setManagementKey(event.target.value)}
-            placeholder={meta.managementKeyConfigured ? "Configured" : "Not configured"}
-            disabled={busy}
-            className="h-8 text-xs"
-          />
+          <div className="flex gap-2">
+            <Input
+              id={`${meta.sectionId}-management-key`}
+              type="password"
+              value={state.managementKey}
+              onChange={(event) => actions.setManagementKey(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  actions.addManagementKey();
+                }
+              }}
+              placeholder={meta.managementKeyConfigured ? "Configured" : "Not configured"}
+              disabled={busy}
+              className="h-8 text-xs"
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 shrink-0 text-xs"
+              disabled={busy || !state.managementKey.trim() || form.savePending}
+              onClick={() => actions.addManagementKey()}
+            >
+              Add management key
+            </Button>
+          </div>
           <span className="block font-normal text-muted-foreground">Must match `remote-management.secret-key`.</span>
         </label>
       ) : null}
@@ -791,6 +863,12 @@ function DiscoveredModels() {
 
 function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) {
   const { busy, meta, state, actions } = useSidecarIntegration();
+  const persistOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      actions.persistField();
+    }
+  };
   return (
     <div className={showPollInterval ? "grid gap-2 sm:grid-cols-4" : "grid gap-2 sm:grid-cols-3"}>
       {showPollInterval ? (
@@ -804,6 +882,8 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
             value={state.pollInterval}
             disabled={busy}
             onChange={(event) => actions.setPollInterval(event.target.value)}
+            onBlur={() => actions.persistField()}
+            onKeyDown={persistOnEnter}
             className="h-8 text-xs"
           />
         </label>
@@ -818,6 +898,8 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
           value={state.connectTimeout}
           disabled={busy}
           onChange={(event) => actions.setConnectTimeout(event.target.value)}
+          onBlur={() => actions.persistField()}
+          onKeyDown={persistOnEnter}
           className="h-8 text-xs"
         />
       </label>
@@ -831,6 +913,8 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
           value={state.requestTimeout}
           disabled={busy}
           onChange={(event) => actions.setRequestTimeout(event.target.value)}
+          onBlur={() => actions.persistField()}
+          onKeyDown={persistOnEnter}
           className="h-8 text-xs"
         />
       </label>
@@ -844,6 +928,8 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
           value={state.cacheTtl}
           disabled={busy}
           onChange={(event) => actions.setCacheTtl(event.target.value)}
+          onBlur={() => actions.persistField()}
+          onKeyDown={persistOnEnter}
           className="h-8 text-xs"
         />
       </label>
@@ -851,46 +937,12 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
   );
 }
 
-function Actions({ showManagementKey = false }: { showManagementKey?: boolean }) {
-  const { busy, meta, state, actions, form } = useSidecarIntegration();
-  return (
-    <div className="space-y-2">
-      {state.saveError ? <AlertMessage variant="error">{state.saveError}</AlertMessage> : null}
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 text-xs"
-          disabled={busy || !form.isValid || form.hasConflict || form.savePending}
-          onClick={() => void actions.saveConfig()}
-        >
-          Save
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 text-xs"
-          disabled={busy || !meta.apiKeyConfigured}
-          onClick={() => void actions.clearApiKey()}
-        >
-          Clear API key
-        </Button>
-        {showManagementKey ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 text-xs"
-            disabled={busy || !meta.managementKeyConfigured}
-            onClick={() => void actions.clearManagementKey()}
-          >
-            Clear management key
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  );
+function Status() {
+  const { state } = useSidecarIntegration();
+  if (!state.saveError) {
+    return null;
+  }
+  return <AlertMessage variant="error">{state.saveError}</AlertMessage>;
 }
 
 export const SidecarIntegrationCard = {
@@ -906,5 +958,5 @@ export const SidecarIntegrationCard = {
   FullModels,
   DiscoveredModels,
   Timeouts,
-  Actions,
+  Status,
 };

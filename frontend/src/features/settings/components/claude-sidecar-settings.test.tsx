@@ -67,53 +67,15 @@ describe("ClaudeSidecarSettings", () => {
     expect(screen.getByRole("heading", { name: "CLIProxyAPI Integration" })).toBeInTheDocument();
   });
 
-  it("saves sidecar config and can clear a configured key", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
-
-    await user.click(screen.getByRole("switch", { name: "Enable CLI Proxy integration" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ claudeSidecarEnabled: true }));
-
-    await user.clear(screen.getByLabelText(/Base URL/));
-    await user.type(screen.getByLabelText(/Base URL/), "http://127.0.0.1:9000");
-    await user.clear(screen.getByLabelText(/API key/));
-    await user.type(screen.getByLabelText(/API key/), "new-key");
-    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
-    await user.click(screen.getByRole("button", { name: "Add prefix" }));
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
-
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        claudeSidecarBaseUrl: "http://127.0.0.1:9000",
-        claudeSidecarApiKey: "new-key",
-        claudeSidecarModelPrefixes: [
-          { prefix: "claude", strip: false },
-          { prefix: "anthropic", strip: false },
-        ],
-      }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Clear API key" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ claudeSidecarClearApiKey: true }));
-  });
-
-  it("disables save for invalid timeout", async () => {
-    const user = userEvent.setup();
+  it("does not render Save or Clear buttons", () => {
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
 
-    await user.clear(screen.getByLabelText(/Connect timeout/));
-    await user.type(screen.getByLabelText(/Connect timeout/), "0");
-    expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^Save$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear API key" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear management key" })).not.toBeInTheDocument();
   });
 
-  it("does not render a manual Test connection button", () => {
-    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
-
-    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
-  });
-
-  it("runs the connection test after a successful save", async () => {
+  it("persists the enabled toggle immediately without an auto-test", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     const testSpy = vi.fn();
@@ -134,8 +96,93 @@ describe("ClaudeSidecarSettings", () => {
     );
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await user.click(screen.getByRole("switch", { name: "Enable CLI Proxy integration" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ claudeSidecarEnabled: true }));
+    expect(testSpy).not.toHaveBeenCalled();
+  });
 
+  it("persists the base URL on blur", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.clear(screen.getByLabelText(/Base URL/));
+    await user.type(screen.getByLabelText(/Base URL/), "http://127.0.0.1:9000");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({ claudeSidecarBaseUrl: "http://127.0.0.1:9000" }),
+      ),
+    );
+  });
+
+  it("persists a new prefix immediately", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          claudeSidecarModelPrefixes: [
+            { prefix: "claude", strip: false },
+            { prefix: "anthropic", strip: false },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("does not persist while a timeout is invalid", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.clear(screen.getByLabelText(/Connect timeout/));
+    await user.type(screen.getByLabelText(/Connect timeout/), "0");
+    await user.tab();
+
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("does not render a manual Test connection button", () => {
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+  });
+
+  it("adds an API key and runs the connection test after the save", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const testSpy = vi.fn();
+    server.use(
+      http.post("*/api/claude-sidecar/test", () => {
+        testSpy();
+        return HttpResponse.json({
+          enabled: true,
+          configured: true,
+          status: "healthy",
+          message: "Claude sidecar reachable",
+          baseUrl: "http://127.0.0.1:8317",
+          modelCount: 1,
+          lastCheckedAt: "2026-01-01T00:00:00Z",
+          models: [],
+        });
+      }),
+    );
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.type(screen.getByLabelText(/API key/), "new-key");
+    await user.click(screen.getByRole("button", { name: "Add API key" }));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ claudeSidecarApiKey: "new-key" })),
+    );
+    expect(screen.getByLabelText(/API key/)).toHaveValue("");
     await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
   });
 
@@ -146,34 +193,20 @@ describe("ClaudeSidecarSettings", () => {
     expect(screen.queryByRole("button", { name: "Save quota estimates" })).not.toBeInTheDocument();
   });
 
-  it("saves the management key when provided", async () => {
+  it("adds the management key when provided", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.type(screen.getByLabelText(/Management key/), "mgmt-secret");
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await user.click(screen.getByRole("button", { name: "Add management key" }));
 
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({ claudeSidecarManagementKey: "mgmt-secret" }),
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({ claudeSidecarManagementKey: "mgmt-secret" }),
+      ),
     );
-  });
-
-  it("clears the management key when configured", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(
-      <ClaudeSidecarSettings
-        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
-        busy={false}
-        onSave={onSave}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Clear management key" }));
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({ claudeSidecarClearManagementKey: true }),
-    );
+    expect(screen.getByLabelText(/Management key/)).toHaveValue("");
   });
 
   it("shows placeholder when management key is configured", () => {

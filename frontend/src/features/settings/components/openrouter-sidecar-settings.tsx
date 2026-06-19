@@ -57,7 +57,6 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ openrouterSidecarEnabled: enabled })}
-      buildClearApiKeyPatch={() => ({ openrouterSidecarClearApiKey: true })}
       buildPatch={(state) => ({
         openrouterSidecarBaseUrl: state.baseUrl,
         openrouterSidecarModelPrefixes: state.prefixes,
@@ -79,7 +78,7 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
           <SidecarIntegrationCard.Timeouts />
-          <SidecarIntegrationCard.Actions />
+          <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>

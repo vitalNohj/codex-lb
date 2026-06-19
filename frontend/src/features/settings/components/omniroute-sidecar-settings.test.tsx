@@ -70,78 +70,14 @@ describe("OmniRouteSidecarSettings", () => {
     expect(screen.getByRole("heading", { name: "OmniRoute Integration" })).toBeInTheDocument();
   });
 
-  it("saves integration config and can clear a configured key", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
-
-    await user.click(screen.getByRole("switch", { name: "Enable OmniRoute Integration" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ omnirouteSidecarEnabled: true }));
-
-    await user.type(screen.getByLabelText(/API key/), "new-key");
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
-
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        omnirouteSidecarApiKey: "new-key",
-        omnirouteSidecarFullModels: ["omniroute/test-chat"],
-        omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
-      }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Clear API key" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ omnirouteSidecarClearApiKey: true }));
-  });
-
-  it("adds and removes exact model IDs", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
-
-    await user.type(screen.getByLabelText("New full model for OmniRoute Integration"), "manual/model");
-    await user.click(screen.getByRole("button", { name: "Add full model" }));
-    expect(screen.getByText("manual/model")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
-    expect(onSave).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        omnirouteSidecarFullModels: ["omniroute/test-chat", "manual/model"],
-        omnirouteSidecarSelectedModels: ["omniroute/test-chat", "manual/model"],
-      }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Remove manual/model" }));
-    expect(screen.queryByText("manual/model")).not.toBeInTheDocument();
-  });
-
-  it("keeps discovered models collapsed inside the configuration card above actions", async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<OmniRouteSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
-
-    const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
-    const saveButton = screen.getByRole("button", { name: /^Save$/ });
-
-    expect(disclosure.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByLabelText("Search OmniRoute models")).not.toBeInTheDocument();
-    expect(screen.getByText("omniroute/test-chat")).toBeInTheDocument();
-
-    await user.click(disclosure);
-
-    expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    expect(await screen.findByLabelText("Search models")).toBeInTheDocument();
-    await screen.findAllByText("omniroute/test-chat");
-    expect(screen.getByRole("button", { name: /Added omniroute\/test-chat/ })).toBeDisabled();
-  });
-
-  it("does not render a manual Test connection button", () => {
+  it("does not render Save or Clear buttons", () => {
     renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
 
-    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Save$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear API key" })).not.toBeInTheDocument();
   });
 
-  it("runs the connection test after a successful save", async () => {
+  it("adds an API key and runs the connection test after the save", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     const testSpy = vi.fn();
@@ -162,9 +98,71 @@ describe("OmniRouteSidecarSettings", () => {
     );
     renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
-    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await user.type(screen.getByLabelText(/API key/), "new-key");
+    await user.click(screen.getByRole("button", { name: "Add API key" }));
 
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ omnirouteSidecarApiKey: "new-key" })),
+    );
+    expect(screen.getByLabelText(/API key/)).toHaveValue("");
     await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
+  });
+
+  it("adds and removes exact model IDs with immediate persistence", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.type(screen.getByLabelText("New full model for OmniRoute Integration"), "manual/model");
+    await user.click(screen.getByRole("button", { name: "Add full model" }));
+    expect(screen.getByText("manual/model")).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          omnirouteSidecarFullModels: ["omniroute/test-chat", "manual/model"],
+          omnirouteSidecarSelectedModels: ["omniroute/test-chat", "manual/model"],
+        }),
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Remove manual/model" }));
+    expect(screen.queryByText("manual/model")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          omnirouteSidecarFullModels: ["omniroute/test-chat"],
+          omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
+        }),
+      ),
+    );
+  });
+
+  it("keeps discovered models collapsed inside the configuration card above the timeout fields", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
+
+    const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
+    const cacheTtlField = screen.getByLabelText(/Model cache TTL/);
+
+    expect(disclosure.compareDocumentPosition(cacheTtlField) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Search OmniRoute models")).not.toBeInTheDocument();
+    expect(screen.getByText("omniroute/test-chat")).toBeInTheDocument();
+
+    await user.click(disclosure);
+
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByLabelText("Search models")).toBeInTheDocument();
+    await screen.findAllByText("omniroute/test-chat");
+    expect(screen.getByRole("button", { name: /Added omniroute\/test-chat/ })).toBeDisabled();
+  });
+
+  it("does not render a manual Test connection button", () => {
+    renderWithQueryClient(<OmniRouteSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
   });
 
   it("opens the OmniRoute link in a new tab", () => {

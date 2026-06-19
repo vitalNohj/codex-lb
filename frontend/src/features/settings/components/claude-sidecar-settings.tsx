@@ -65,8 +65,6 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ claudeSidecarEnabled: enabled })}
-      buildClearApiKeyPatch={() => ({ claudeSidecarClearApiKey: true })}
-      buildClearManagementKeyPatch={() => ({ claudeSidecarClearManagementKey: true })}
       buildPatch={(state) => ({
         claudeSidecarBaseUrl: state.baseUrl,
         claudeSidecarModelPrefixes: state.prefixes,
@@ -90,7 +88,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
           <SidecarIntegrationCard.Timeouts showPollInterval />
-          <SidecarIntegrationCard.Actions showManagementKey />
+          <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>

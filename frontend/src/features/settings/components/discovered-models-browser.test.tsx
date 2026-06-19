@@ -54,6 +54,6 @@ describe("DiscoveredModelsBrowser", () => {
 
     await user.click(screen.getByRole("button", { name: /Discovered models/i }));
 
-    expect(screen.getByText("No models loaded - save API key and test connection")).toBeInTheDocument();
+    expect(screen.getByText("No models loaded - add an API key to discover models")).toBeInTheDocument();
   });
 });
