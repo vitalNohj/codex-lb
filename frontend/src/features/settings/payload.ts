@@ -67,6 +67,7 @@ export function buildSettingsUpdateRequest(
     ollamaSidecarConnectTimeoutSeconds: settings.ollamaSidecarConnectTimeoutSeconds,
     ollamaSidecarRequestTimeoutSeconds: settings.ollamaSidecarRequestTimeoutSeconds,
     ollamaSidecarModelsCacheTtlSeconds: settings.ollamaSidecarModelsCacheTtlSeconds,
+    guestAccessEnabled: settings.guestAccessEnabled,
     ...patch,
   };
   if (

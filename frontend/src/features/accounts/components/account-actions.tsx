@@ -27,6 +27,7 @@ import type {
 export type AccountActionsProps = {
   account: AccountSummary;
   busy: boolean;
+  readOnly?: boolean;
   onPause: (accountId: string) => void;
   onResume: (accountId: string) => void;
   onProbe: (accountId: string) => void;
@@ -44,6 +45,7 @@ export type AccountActionsProps = {
 export function AccountActions({
   account,
   busy,
+  readOnly = false,
   onPause,
   onResume,
   onProbe,
@@ -68,7 +70,7 @@ export function AccountActions({
   const showOperatorRecoveryAction =
     account.status === "reauth_required" || account.status === "deactivated";
   const probeDisabled =
-    busy || account.status === "paused" || showOperatorRecoveryAction;
+    busy || readOnly || account.status === "paused" || showOperatorRecoveryAction;
 
   return (
     <div className="space-y-3 border-t pt-4">
@@ -86,12 +88,12 @@ export function AccountActions({
                 value as AccountRoutingPolicy,
               )
             }
-            disabled={busy}
+            disabled={busy || readOnly}
           >
             <SelectTrigger
               aria-label="Routing policy"
               size="sm"
-              className="h-8 w-44 text-xs"
+              className="h-8 min-w-32 flex-1 text-xs"
             >
               <SelectValue />
             </SelectTrigger>
@@ -104,14 +106,18 @@ export function AccountActions({
         </div>
       ) : null}
 
-      <label className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+      <label
+        htmlFor={`security-work-authorized-${account.accountId}`}
+        className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+      >
         <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
           <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="truncate">Trusted Access for Cyber</span>
         </span>
         <Switch
+          id={`security-work-authorized-${account.accountId}`}
           checked={account.securityWorkAuthorized ?? false}
-          disabled={busy}
+          disabled={busy || readOnly}
           onCheckedChange={(checked) =>
             onSecurityWorkAuthorizedChange(account.accountId, checked)
           }
@@ -125,7 +131,7 @@ export function AccountActions({
             size="sm"
             className="h-8 gap-1.5 text-xs"
             onClick={() => onResume(account.accountId)}
-            disabled={busy}
+            disabled={busy || readOnly}
           >
             <Play className="h-3.5 w-3.5" />
             Resume
@@ -137,7 +143,7 @@ export function AccountActions({
             variant="outline"
             className="h-8 gap-1.5 text-xs"
             onClick={() => onPause(account.accountId)}
-            disabled={busy}
+            disabled={busy || readOnly}
           >
             <Pause className="h-3.5 w-3.5" />
             Pause
@@ -151,7 +157,7 @@ export function AccountActions({
             variant="outline"
             className="h-8 gap-1.5 text-xs"
             onClick={onReauth}
-            disabled={busy}
+            disabled={busy || readOnly}
           >
             <RefreshCw className="h-3.5 w-3.5" />
             Re-authenticate
@@ -178,7 +184,7 @@ export function AccountActions({
           onClick={() =>
             onLimitWarmupChange(account.accountId, !account.limitWarmupEnabled)
           }
-          disabled={busy}
+          disabled={busy || readOnly}
         >
           <Zap className="h-3.5 w-3.5" />
           {account.limitWarmupEnabled ? "Disable warm-up" : "Enable warm-up"}
@@ -190,7 +196,7 @@ export function AccountActions({
           variant="outline"
           className="h-8 gap-1.5 text-xs"
           onClick={() => onExportAuth(account.accountId)}
-          disabled={busy}
+          disabled={busy || readOnly}
         >
           <Download className="h-3.5 w-3.5" />
           Export
@@ -202,7 +208,7 @@ export function AccountActions({
           variant="destructive"
           className="h-8 gap-1.5 text-xs"
           onClick={() => onDelete(account.accountId)}
-          disabled={busy}
+          disabled={busy || readOnly}
         >
           <Trash2 className="h-3.5 w-3.5" />
           Delete

@@ -110,6 +110,8 @@ class DashboardSettingsData:
     ollama_sidecar_last_health_message: str | None
     ollama_sidecar_last_checked_at: datetime | None
     ollama_sidecar_last_model_count: int | None
+    guest_access_enabled: bool
+    guest_password_configured: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +189,7 @@ class DashboardSettingsUpdateData:
     ollama_sidecar_connect_timeout_seconds: float
     ollama_sidecar_request_timeout_seconds: float
     ollama_sidecar_models_cache_ttl_seconds: float
+    guest_access_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +339,7 @@ class SettingsService:
             ollama_sidecar_connect_timeout_seconds=payload.ollama_sidecar_connect_timeout_seconds,
             ollama_sidecar_request_timeout_seconds=payload.ollama_sidecar_request_timeout_seconds,
             ollama_sidecar_models_cache_ttl_seconds=payload.ollama_sidecar_models_cache_ttl_seconds,
+            guest_access_enabled=payload.guest_access_enabled,
         )
         return self._to_data(row)
 
@@ -450,6 +454,8 @@ class SettingsService:
             ollama_sidecar_last_health_message=row.ollama_sidecar_last_health_message,
             ollama_sidecar_last_checked_at=row.ollama_sidecar_last_checked_at,
             ollama_sidecar_last_model_count=row.ollama_sidecar_last_model_count,
+            guest_access_enabled=row.guest_access_enabled,
+            guest_password_configured=row.guest_password_hash is not None,
         )
 
 

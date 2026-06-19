@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.audit.service import AuditService
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
@@ -200,6 +204,8 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         ollama_sidecar_last_health_message=settings.ollama_sidecar_last_health_message,
         ollama_sidecar_last_checked_at=settings.ollama_sidecar_last_checked_at,
         ollama_sidecar_last_model_count=settings.ollama_sidecar_last_model_count,
+        guest_access_enabled=settings.guest_access_enabled,
+        guest_password_configured=settings.guest_password_configured,
     )
 
 
@@ -272,6 +278,7 @@ async def get_upstream_proxy_admin(
 @router.post("/upstream-proxy/endpoints", response_model=UpstreamProxyEndpointResponse)
 async def create_upstream_proxy_endpoint(
     payload: UpstreamProxyEndpointCreateRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyEndpointResponse:
     encryptor = TokenEncryptor()
@@ -293,6 +300,7 @@ async def create_upstream_proxy_endpoint(
 @router.post("/upstream-proxy/pools", response_model=UpstreamProxyPoolResponse)
 async def create_upstream_proxy_pool(
     payload: UpstreamProxyPoolCreateRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyPoolResponse:
     endpoint_ids = list(dict.fromkeys(payload.endpoint_ids))
@@ -322,6 +330,7 @@ async def create_upstream_proxy_pool(
 async def add_upstream_proxy_pool_member(
     pool_id: str,
     payload: UpstreamProxyPoolMemberRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyPoolResponse:
     pool = await context.session.get(ProxyPool, pool_id)
@@ -436,6 +445,7 @@ def _duplicate_proxy_pool_member_error() -> DashboardBadRequestError:
 async def put_account_proxy_binding(
     account_id: str,
     payload: AccountProxyBindingRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> AccountProxyBindingResponse:
     await _validate_account_id(context, account_id)
@@ -476,6 +486,7 @@ def _proxy_endpoint_response(row: ProxyEndpoint) -> UpstreamProxyEndpointRespons
 async def update_settings(
     request: Request,
     payload: DashboardSettingsUpdateRequest = Body(...),
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> DashboardSettingsResponse:
     current = await context.service.get_settings()
@@ -819,6 +830,11 @@ async def update_settings(
                     if payload.ollama_sidecar_models_cache_ttl_seconds is not None
                     else current.ollama_sidecar_models_cache_ttl_seconds
                 ),
+                guest_access_enabled=(
+                    payload.guest_access_enabled
+                    if payload.guest_access_enabled is not None
+                    else current.guest_access_enabled
+                ),
             )
         )
     except SidecarRoutingConflictError as exc:
@@ -926,6 +942,7 @@ async def update_settings(
             "ollama_sidecar_last_health_message",
             "ollama_sidecar_last_checked_at",
             "ollama_sidecar_last_model_count",
+            "guest_access_enabled",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]
