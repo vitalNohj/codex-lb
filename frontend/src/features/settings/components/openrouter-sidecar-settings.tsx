@@ -8,6 +8,7 @@ export type OpenRouterSidecarSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
   onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  bare?: boolean;
 };
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
@@ -15,7 +16,7 @@ const DEFAULT_CONNECT_TIMEOUT_SECONDS = 8;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS = 600;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
 
-export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouterSidecarSettingsProps) {
+export function OpenRouterSidecarSettings({ settings, busy, onSave, bare = false }: OpenRouterSidecarSettingsProps) {
   const sidecarEnabled = settings.openrouterSidecarEnabled ?? false;
   const sidecarApiKeyConfigured = settings.openrouterSidecarApiKeyConfigured ?? false;
   const { modelsQuery, testMutation } = useOpenRouterSidecar({
@@ -67,7 +68,7 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave }: OpenRouter
         ...(state.apiKey ? { openrouterSidecarApiKey: state.apiKey } : {}),
       })}
     >
-      <SidecarIntegrationCard.Frame>
+      <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
         <SidecarIntegrationCard.EnableToggle />
         <SidecarIntegrationCard.Callout />

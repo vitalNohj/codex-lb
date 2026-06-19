@@ -11,6 +11,7 @@ export type ClaudeSidecarSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
   onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  bare?: boolean;
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8317";
@@ -24,7 +25,7 @@ const DEFAULT_REQUEST_TIMEOUT_SECONDS = 600;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
 const DEFAULT_QUOTA_POLL_INTERVAL_SECONDS = 60;
 
-export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarSettingsProps) {
+export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: ClaudeSidecarSettingsProps) {
   const { modelsQuery, testMutation } = useClaudeSidecar();
 
   return (
@@ -77,7 +78,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave }: ClaudeSidecarS
         ...(state.managementKey ? { claudeSidecarManagementKey: state.managementKey } : {}),
       })}
     >
-      <SidecarIntegrationCard.Frame>
+      <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
         <SidecarIntegrationCard.EnableToggle />
         <SidecarIntegrationCard.Callout />
