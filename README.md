@@ -10,150 +10,142 @@ Resources
 
 # codex-lb fork
 
-This repository is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). It keeps the upstream goal of pooling ChatGPT/Codex accounts behind an OpenAI-compatible proxy, then adds fork-specific integration work for CLIProxyAPI, OpenRouter, OmniRoute, richer cost tracking, Cursor/Codex compatibility fixes, and dashboard polish.
+<p align="center">
+  <strong>One OpenAI-compatible gateway for Codex accounts, external model providers, routing prefixes, cost visibility, and a dashboard operators can actually use.</strong>
+</p>
 
-This README is a draft for the fork. Until fork-specific release artifacts are published, build from this source checkout when you want the features described here. Upstream package and image names may not include these changes.
+<p align="center">
+  <a href="https://github.com/Soju06/codex-lb"><img alt="Fork of Soju06/codex-lb" src="https://img.shields.io/badge/fork%20of-Soju06%2Fcodex--lb-2563eb"></a>
+  <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111827">
+  <img alt="Codex and Cursor ready" src="https://img.shields.io/badge/Codex%20%2B%20Cursor-ready-7c3aed">
+  <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OmniRoute%20%7C%20Ollama-059669">
+  <img alt="Dashboard included" src="https://img.shields.io/badge/dashboard-included-f97316">
+</p>
 
-Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, route selected models to integrations, and view everything in a dashboard.
+> This is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). Upstream gives you the core Codex account load balancer. This fork turns it into a model-routing command center: native ChatGPT/Codex accounts, CLIProxyAPI, OpenRouter, OmniRoute, and Ollama Cloud can all sit behind one proxy, one API-key layer, one request log, and one dashboard.
 
-| ![dashboard](docs/screenshots/dashboard.jpg) | ![accounts](docs/screenshots/accounts.jpg) |
-|:---:|:---:|
+Build from this repository when you want the fork-only routing and integration work. Upstream package names, images, and charts may not include these features until this fork publishes its own artifacts.
 
-<details>
-<summary>More screenshots</summary>
+## The Headline
 
-| Settings | Login |
-|:---:|:---:|
-| ![settings](docs/screenshots/settings.jpg) | ![login](docs/screenshots/login.jpg) |
+codex-lb is no longer just "pool a few ChatGPT accounts and hope the right one gets picked."
 
-| Dashboard (dark) | Accounts (dark) | Settings (dark) |
-|:---:|:---:|:---:|
-| ![dashboard-dark](docs/screenshots/dashboard-dark.jpg) | ![accounts-dark](docs/screenshots/accounts-dark.jpg) | ![settings-dark](docs/screenshots/settings-dark.jpg) |
+This fork makes codex-lb the control plane for your AI clients:
 
-</details>
+```text
+Codex CLI / Cursor / OpenCode / OpenAI SDKs
+                    |
+                    v
+            codex-lb fork gateway
+                    |
+       +-------------+--------------+-------------+-------------+--------------+
+       |             |              |             |             |              |
+ Native Codex    CLIProxyAPI    OpenRouter    OmniRoute    Ollama Cloud
+ accounts        models         models        models       models
+```
 
-## What This Fork Adds
+Use the same client endpoint. Pick the model name. codex-lb decides whether that request should use a pooled Codex account or leave through an external integration.
 
-| Area | What changed |
+## What This Fork Improves
+
+| Upgrade | What you get |
 | --- | --- |
-| **CLIProxyAPI Integration** | Routes configured Claude-family models through CLIProxyAPI, keeps per-auth usage visible, maps Codex/Cursor tool shapes for sidecar requests, and exposes test/usage controls in the dashboard. |
-| **OpenRouter Integration** | Routes configured model prefixes to OpenRouter, discovers models, monitors health, detects free models, and uses live model pricing for reference-cost lookups. |
-| **OmniRoute Integration** | Routes exact selected model IDs to OmniRoute, merges those models into OpenAI-compatible model lists, preserves API-key model restrictions, and surfaces OmniRoute as a synthetic dashboard account. |
-| **Cost Savings Tracking** | Stores actual spend separately from paid-equivalent reference cost, then derives savings for free or discounted sidecar models. |
-| **Cursor/Codex Compatibility** | Keeps Codex control endpoints raw, accepts the official compact response shape, advertises sidecar context windows, and includes a Codex session provider retag command. |
-| **Dashboard Polish** | Uses provider-specific integration language, cleaner synthetic account cards, normal request-log rows for sidecar traffic, and connection controls in the Accounts tab. |
+| **Unified provider routing** | Exact model matches and configurable prefixes route traffic to CLIProxyAPI, OpenRouter, OmniRoute, Ollama, or native Codex without changing client base URLs. |
+| **Prefix stripping controls** | Use ergonomic client-facing names like `or-deepseek/deepseek-chat` or `ollama-gpt-oss:120b-cloud`, then strip the prefix only on the upstream wire request. |
+| **External Integrations dashboard** | Configure CLIProxyAPI, OpenRouter, OmniRoute, and Ollama from one tabbed dashboard card with provider-specific labels, connection tests, discovered models, prefixes, and full-model rules. |
+| **OmniRoute first-class support** | Route selected OmniRoute models through codex-lb while keeping API-key restrictions, request logs, cost tracking, and model discovery in one place. |
+| **Cost and savings telemetry** | Track actual spend, paid-equivalent reference cost, and derived savings for free or discounted external models. |
+| **Cursor and Codex compatibility** | Preserve raw Codex control endpoints, compaction behavior, context-window metadata, model aliases, and sidecar tool/reasoning quirks that real clients depend on. |
+| **Cleaner operator UI** | Synthetic provider accounts, normal request-log rows, provider names without noisy "sidecar" badges, and account-level controls for the integrations that need them. |
 
-## Features
+## The Routing Engine
 
-<table>
-<tr>
-<td><b>Account Pooling</b><br>Load balance across multiple ChatGPT/Codex accounts</td>
-<td><b>Usage Tracking</b><br>Per-account tokens, cost, trends, and sidecar savings</td>
-<td><b>API Keys</b><br>Per-key rate limits by token, cost, window, model</td>
-</tr>
-<tr>
-<td><b>Dashboard Auth</b><br>Password/TOTP, trusted reverse-proxy headers, or disabled mode</td>
-<td><b>OpenAI-compatible</b><br>Codex CLI, OpenCode, any OpenAI client</td>
-<td><b>Model Discovery</b><br>Native Codex models plus configured sidecar catalogs</td>
-</tr>
-<tr>
-<td><b>Sidecar Routing</b><br>CLIProxyAPI, OpenRouter, and OmniRoute dispatch paths</td>
-<td><b>Request Observability</b><br>Unified logs with provider, model, transport, cost, and savings</td>
-<td><b>Deployment Options</b><br>Local source, Docker, Docker Compose, and Helm</td>
-</tr>
-</table>
+The fork ships a shared resolver for all external integrations. The rules are simple and predictable:
 
-## Sidecar Integrations
+1. **Full model exact match wins globally.** If `oc/big-pickle` is configured as an OmniRoute full model, it routes to OmniRoute even if another provider owns a broader prefix.
+2. **Longest prefix wins next.** If one provider owns `deepseek/` and another owns `deepseek/deepseek-`, the more specific prefix gets the request.
+3. **Each prefix chooses whether to strip.** `or-deepseek/deepseek-chat` can be logged and rate-limited as `or-deepseek/deepseek-chat`, while OpenRouter receives `deepseek/deepseek-chat`.
+4. **Full model matches are never stripped.** Exact model IDs are forwarded as the operator configured them.
+5. **The client-facing model stays visible.** API-key restrictions, request-limit reservations, request logs, and quota accounting use the effective model the client asked for.
 
-Sidecar integrations let codex-lb keep owning API-key authentication, request logging, model allowlists, and dashboard observability while routing selected models to another backend.
+That means one model list can safely mix official Codex models, external provider models, friendly aliases, and provider-prefixed names.
 
-Routing order for Chat Completions traffic is:
+## Integration Lineup
 
-1. CLIProxyAPI / Claude sidecar checks.
-2. OpenRouter sidecar checks.
-3. OmniRoute exact selected-model checks.
-4. Native Codex/ChatGPT path.
+| Provider lane | Use it for | Routing style | Fork extras |
+| --- | --- | --- | --- |
+| **Native Codex accounts** | Official ChatGPT/Codex models across multiple accounts | Default fallback when no integration matches | Account pooling, usage refresh, sticky sessions, quota-aware routing, WebSocket/HTTP Responses support |
+| **CLIProxyAPI Integration** | Claude-family and CLIProxyAPI-backed models | Prefixes and full models | Per-auth usage panels, quota estimates, management-key support, Codex/Cursor tool-shape handling |
+| **OpenRouter Integration** | Direct OpenRouter model access | Prefixes and full models | Model discovery, live pricing import, free-model detection, reference-cost savings |
+| **OmniRoute Integration** | Local or remote OmniRoute routing | Prefixes and full models | Selected model exposure, request-log/cost visibility, OmniRoute model catalog merging |
+| **Ollama Integration** | Ollama Cloud chat models | Prefixes and full models | Cloud model filtering, Ollama SDK dispatch, OpenAI-compatible chat response shaping |
 
-### CLIProxyAPI Integration
+## Routing Examples
 
-Use this for Claude-family model routing through CLIProxyAPI.
+| Client model | Configuration | Upstream lane | Wire model |
+| --- | --- | --- | --- |
+| `gpt-5.4` | no external match | Native Codex account pool | `gpt-5.4` |
+| `claude-sonnet-4-5` | CLIProxyAPI prefix `claude`, strip off | CLIProxyAPI | `claude-sonnet-4-5` |
+| `or-deepseek/deepseek-chat` | OpenRouter prefix `or-`, strip on | OpenRouter | `deepseek/deepseek-chat` |
+| `oc/big-pickle` | OmniRoute full model `oc/big-pickle` | OmniRoute | `oc/big-pickle` |
+| `ollama-gpt-oss:120b-cloud` | Ollama prefix `ollama-`, strip on | Ollama Cloud | `gpt-oss:120b-cloud` |
 
-Primary configuration:
+## What You Can Do With It
+
+- Put Codex CLI, Cursor, OpenCode, OpenClaw, and OpenAI SDK clients behind one local or hosted endpoint.
+- Keep official Codex account pooling for GPT/Codex models while sending selected models to external providers.
+- Give each API key its own model allowlist, expiration, and token/cost limits without caring which provider eventually handles the request.
+- Test, enable, disable, and tune external integrations from the dashboard instead of editing client configs everywhere.
+- Compare free and discounted external model usage against paid-equivalent reference cost.
+- See native and external requests in one log stream with provider, model, transport, usage, errors, and savings.
+
+## External Integrations
+
+Configure integrations in **Settings -> External Integrations**. Each provider gets its own tab, but the routing rules are shared.
+
+Primary defaults:
 
 ```bash
+# CLIProxyAPI Integration
 CODEX_LB_CLAUDE_SIDECAR_ENABLED=false
 CODEX_LB_CLAUDE_SIDECAR_BASE_URL=http://127.0.0.1:8317
 CODEX_LB_CLAUDE_SIDECAR_MODEL_PREFIXES=claude
-CODEX_LB_CLAUDE_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
-CODEX_LB_CLAUDE_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
-CODEX_LB_CLAUDE_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
-```
 
-Dashboard surfaces use the label `CLIProxyAPI Integration`. The Accounts tab shows per-auth usage panels and exposes connection testing plus quota-estimation controls. Settings can still hold integration configuration and run connection checks on save.
-
-Claude sidecar usage estimates prefer authoritative OAuth-reported percentages over local token-budget math when a Pro or Team plan is configured.
-
-### OpenRouter Integration
-
-Use this for direct OpenRouter Chat Completions routing.
-
-Primary configuration:
-
-```bash
+# OpenRouter Integration
 CODEX_LB_OPENROUTER_SIDECAR_ENABLED=false
 CODEX_LB_OPENROUTER_SIDECAR_BASE_URL=https://openrouter.ai/api/v1
-CODEX_LB_OPENROUTER_SIDECAR_MODEL_PREFIXES=deepseek/,google/
-CODEX_LB_OPENROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
-CODEX_LB_OPENROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
-CODEX_LB_OPENROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
-```
 
-The sidecar discovers models from OpenRouter, merges them into `/v1/models`, and parses OpenRouter pricing so free models can still show paid-equivalent reference cost.
-
-Free-model detection uses explicit markers such as `:free`, `-free`, and `_free`.
-
-### OmniRoute Integration
-
-Use this for a local or remote OmniRoute instance.
-
-Primary configuration exists in the dashboard under `OmniRoute Integration`; environment variables can seed defaults:
-
-```bash
+# OmniRoute Integration
 CODEX_LB_OMNIROUTE_SIDECAR_ENABLED=false
 CODEX_LB_OMNIROUTE_SIDECAR_BASE_URL=http://127.0.0.1:20128/v1
 CODEX_LB_OMNIROUTE_SIDECAR_SELECTED_MODELS=oc/big-pickle,oc/deepseek-v4-flash-free
-CODEX_LB_OMNIROUTE_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
-CODEX_LB_OMNIROUTE_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
-CODEX_LB_OMNIROUTE_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
+
+# Ollama Integration
+CODEX_LB_OLLAMA_SIDECAR_ENABLED=false
+CODEX_LB_OLLAMA_SIDECAR_BASE_URL=https://ollama.com
 ```
 
-OmniRoute routing uses exact selected model IDs. This avoids accidentally stealing native Codex models or broad provider prefixes. OmniRoute models are merged into OpenAI-compatible model lists and dashboard model lists, while Codex-native model endpoints remain native.
-
-OmniRoute owns its own provider cooling and dashboard at `/omni`; codex-lb does not manage the OmniRoute process lifecycle.
+The dashboard stores API keys encrypted at rest, runs connection tests, shows discovered models, and prevents duplicate full-model or prefix ownership across providers. OmniRoute owns its own provider cooling and dashboard; codex-lb routes to it and records the traffic, but does not manage the OmniRoute process lifecycle.
 
 ## Cost, Reference Cost, And Savings
 
-Actual spend and reference value are tracked separately.
+This fork separates actual spend from reference value:
 
-- `cost_usd` is actual spend.
-- `reference_cost_usd` is the paid-equivalent price for the same usage when a reference price can be resolved.
-- `savings_usd` is derived from `reference_cost_usd - cost_usd` and is floored at zero.
+- `cost_usd` is what the request actually cost.
+- `reference_cost_usd` is the paid-equivalent price when codex-lb can resolve one.
+- `savings_usd` is `reference_cost_usd - cost_usd`, floored at zero.
 
-For free OpenRouter or OmniRoute sidecar models, actual cost can be `$0.00` while reference cost shows what the same token usage would have cost on a paid equivalent. If no reference price can be resolved, reference cost stays null instead of pretending the request was free.
+Free OpenRouter, OmniRoute, and curated opaque-free models can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
 
-OmniRoute also supports opaque free models that do not include a textual free marker. Those are handled through a curated allowlist in `app/core/usage/pricing.py`.
+## Cursor And Codex Compatibility
 
-## Cursor And Codex Compatibility Notes
+This fork includes practical compatibility work for Codex CLI, Cursor, and OpenAI-style clients:
 
-This fork includes compatibility work for Cursor, Codex CLI, and OpenAI-style clients.
-
-Important behavior:
-
-- Codex control endpoints are raw pass-through routes. `POST /backend-api/codex/memories/trace_summarize` forwards the original request body unchanged and does not apply Responses policy, model alias normalization, API-key model enforcement, reasoning injection, or service-tier injection.
-- Compact response handling accepts the official Codex compact shape `{"output": [...]}` as well as older object-discriminated shapes.
-- Sidecar models advertise context-window metadata in model lists so Cursor local-provider discovery can make better compaction decisions.
-- Context-limit and terminal-compaction handling is tuned so clients can compact long conversations instead of misclassifying the event as an API-key or rate-limit failure.
-- Cursor-style GPT-5 model aliases are normalized on the Responses/API-key paths where policy is supposed to apply, not on raw Codex control payloads.
+- Raw Codex control endpoints, including `POST /backend-api/codex/memories/trace_summarize`, pass through without model rewriting, reasoning injection, API-key model enforcement, or service-tier injection.
+- Compact response handling accepts the official Codex compact shape `{"output": [...]}`.
+- External model entries advertise context-window metadata so local-provider clients can make better compaction decisions.
+- Context-limit and terminal-compaction paths are tuned so clients can compact long conversations instead of misclassifying the event as an API-key or rate-limit failure.
+- DeepSeek V4 thinking-mode repair is handled server-side for the external chat-completions dispatch paths that need it.
 
 ## Quick Start From This Fork
 
@@ -161,7 +153,7 @@ Important behavior:
 git clone https://github.com/vitalNohj/codex-lb.git
 cd codex-lb
 
-# Docker (recommended while this fork is draft/published-from-source)
+# Docker from this source checkout
 docker build -t codex-lb-fork:local .
 docker volume create codex-lb-data
 
