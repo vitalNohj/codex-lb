@@ -554,8 +554,15 @@ function SidecarIntegrationCardProvider({
   return <SidecarIntegrationContext value={value}>{children}</SidecarIntegrationContext>;
 }
 
-function Frame({ children }: { children: ReactNode }) {
+function Frame({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
   const { meta } = useSidecarIntegration();
+  if (bare) {
+    return (
+      <div id={meta.sectionId} className="space-y-3">
+        {children}
+      </div>
+    );
+  }
   return (
     <section id={meta.sectionId} className="rounded-xl border bg-card p-5">
       <div className="space-y-3">{children}</div>

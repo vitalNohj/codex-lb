@@ -8,6 +8,7 @@ export type OmniRouteSidecarSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
   onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  bare?: boolean;
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:20128/v1";
@@ -15,7 +16,7 @@ const DEFAULT_CONNECT_TIMEOUT_SECONDS = 8;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS = 600;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
 
-export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSidecarSettingsProps) {
+export function OmniRouteSidecarSettings({ settings, busy, onSave, bare = false }: OmniRouteSidecarSettingsProps) {
   const sidecarEnabled = settings.omnirouteSidecarEnabled ?? false;
   const sidecarApiKeyConfigured = settings.omnirouteSidecarApiKeyConfigured ?? false;
   const { modelsQuery, testMutation } = useOmniRouteSidecar({
@@ -70,7 +71,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave }: OmniRouteSi
         ...(state.apiKey ? { omnirouteSidecarApiKey: state.apiKey } : {}),
       })}
     >
-      <SidecarIntegrationCard.Frame>
+      <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
         <SidecarIntegrationCard.EnableToggle />
         <SidecarIntegrationCard.Callout />
