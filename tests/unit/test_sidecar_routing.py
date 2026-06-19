@@ -94,3 +94,31 @@ def test_no_match_falls_through() -> None:
         )
         is None
     )
+
+
+def test_ollama_participates_in_full_model_matching() -> None:
+    decision = resolve_sidecar_route(
+        "gpt-oss:120b-cloud",
+        (
+            _entry("openrouter", prefixes=(SidecarPrefix(prefix="gpt-", strip=False),)),
+            _entry("ollama", full_models=("gpt-oss:120b-cloud",)),
+        ),
+    )
+
+    assert decision is not None
+    assert decision.provider == "ollama"
+    assert decision.wire_model == "gpt-oss:120b-cloud"
+
+
+def test_ollama_participates_in_longest_prefix_matching() -> None:
+    decision = resolve_sidecar_route(
+        "ollama-gpt-oss:120b-cloud",
+        (
+            _entry("openrouter", prefixes=(SidecarPrefix(prefix="ollama-", strip=True),)),
+            _entry("ollama", prefixes=(SidecarPrefix(prefix="ollama-gpt-", strip=True),)),
+        ),
+    )
+
+    assert decision is not None
+    assert decision.provider == "ollama"
+    assert decision.wire_model == "oss:120b-cloud"

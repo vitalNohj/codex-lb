@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.db.models import DashboardSettings
+from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 
@@ -123,3 +124,36 @@ def test_omniroute_summary_ignores_stale_missing_key_health_when_configured() ->
     assert summary is not None
     assert summary.status == "active"
     assert summary.health_status == "healthy"
+
+
+def test_ollama_summary_active_when_enabled_and_configured() -> None:
+    settings = _settings(
+        ollama_sidecar_enabled=True,
+        ollama_sidecar_api_key_encrypted=b"key",
+        ollama_sidecar_base_url="https://ollama.com",
+        ollama_sidecar_last_model_count=2,
+    )
+
+    summary = build_ollama_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.account_id == "ollama-sidecar"
+    assert summary.display_name == "Ollama"
+    assert summary.provider == "ollama"
+    assert summary.plan_type == "ollama"
+    assert summary.status == "active"
+    assert summary.model_count == 2
+    assert summary.base_url == "https://ollama.com"
+
+
+def test_ollama_summary_paused_when_missing_api_key() -> None:
+    settings = _settings(
+        ollama_sidecar_enabled=True,
+        ollama_sidecar_api_key_encrypted=None,
+        ollama_sidecar_base_url="https://ollama.com",
+    )
+
+    summary = build_ollama_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.status == "paused"

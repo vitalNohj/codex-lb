@@ -9,8 +9,8 @@ from app.core.clients.openrouter_sidecar import (
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.openrouter_sidecar.schemas import (
-    OpenRouterSidecarModelSummary,
     OpenRouterSidecarModelsResponse,
+    OpenRouterSidecarModelSummary,
     OpenRouterSidecarStatus,
     OpenRouterSidecarStatusResponse,
     OpenRouterSidecarTestResponse,

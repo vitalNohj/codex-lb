@@ -449,6 +449,14 @@ export function createDashboardSettings(
 		claudeSidecarUsagePollIntervalSeconds: 15,
 		claudeSidecarUsageQueueBatchSize: 100,
 		claudeSidecarUsageCollectionEnabled: true,
+		ollamaSidecarEnabled: false,
+		ollamaSidecarBaseUrl: "https://ollama.com",
+		ollamaSidecarApiKeyConfigured: false,
+		ollamaSidecarModelPrefixes: [],
+		ollamaSidecarFullModels: [],
+		ollamaSidecarConnectTimeoutSeconds: 8,
+		ollamaSidecarRequestTimeoutSeconds: 600,
+		ollamaSidecarModelsCacheTtlSeconds: 60,
 		...overrides,
 	});
 }

@@ -52,12 +52,14 @@ const SIDECAR_SOURCE_LABELS: Record<string, string> = {
   claude_sidecar: "Claude sidecar",
   openrouter_sidecar: "OpenRouter sidecar",
   omniroute_sidecar: "OmniRoute sidecar",
+  ollama_sidecar: "Ollama sidecar",
 };
 
 const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
   claude_sidecar: "CLIProxyAPI",
   openrouter_sidecar: "OpenRouter",
   omniroute_sidecar: "OmniRoute",
+  ollama_sidecar: "Ollama",
 };
 
 function sidecarSourceLabel(source: string | null | undefined): string | null {

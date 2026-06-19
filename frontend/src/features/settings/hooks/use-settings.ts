@@ -7,15 +7,18 @@ import {
   createUpstreamProxyPool,
   getClaudeSidecarQuota,
   getClaudeSidecarStatus,
+  getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
   getOpenRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
+  listOllamaSidecarModels,
   listOmniRouteSidecarModels,
   listOpenRouterSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
   testClaudeSidecarConnection,
+  testOllamaSidecarConnection,
   testOmniRouteSidecarConnection,
   testOpenRouterSidecarConnection,
   updateSettings,
@@ -122,7 +125,7 @@ export function useUpstreamProxyAdmin() {
   };
 }
 
-export type SidecarConnectionProvider = "claude" | "openrouter" | "omniroute";
+export type SidecarConnectionProvider = "claude" | "openrouter" | "omniroute" | "ollama";
 
 const SIDECAR_TEST_CONFIG: Record<
   SidecarConnectionProvider,
@@ -150,6 +153,12 @@ const SIDECAR_TEST_CONFIG: Record<
     testConnection: testOmniRouteSidecarConnection,
     successMessage: "OmniRoute sidecar tested",
     errorMessage: "OmniRoute sidecar test failed",
+  },
+  ollama: {
+    queryKey: "ollama-sidecar",
+    testConnection: testOllamaSidecarConnection,
+    successMessage: "Ollama sidecar tested",
+    errorMessage: "Ollama sidecar test failed",
   },
 };
 
@@ -227,5 +236,19 @@ export function useOmniRouteSidecar(options?: { modelsEnabled?: boolean }) {
     enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useSidecarConnectionTest("omniroute");
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useOllamaSidecar(options?: { modelsEnabled?: boolean }) {
+  const statusQuery = useQuery({
+    queryKey: ["settings", "ollama-sidecar", "status"],
+    queryFn: getOllamaSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "ollama-sidecar", "models"],
+    queryFn: listOllamaSidecarModels,
+    enabled: options?.modelsEnabled ?? true,
+  });
+  const testMutation = useSidecarConnectionTest("ollama");
   return { statusQuery, modelsQuery, testMutation };
 }

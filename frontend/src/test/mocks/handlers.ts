@@ -240,6 +240,11 @@ const omnirouteSidecarModels = [
   { id: "local/qwen-coder", created: 224, ownedBy: "local" },
 ];
 
+const ollamaSidecarModels = [
+  { id: "gpt-oss:120b-cloud", created: 323, ownedBy: "ollama" },
+  { id: "llama3.3:70b-cloud", created: 324, ownedBy: "ollama" },
+];
+
 function parseDateValue(value: string | null): number | null {
   if (!value) {
     return null;
@@ -1477,6 +1482,35 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/ollama-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "Ollama sidecar reachable",
+      baseUrl: "https://ollama.com",
+      modelCount: ollamaSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/ollama-sidecar/models", () => {
+    return HttpResponse.json({ models: ollamaSidecarModels });
+  }),
+
+  http.post("*/api/ollama-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "Ollama sidecar reachable",
+      baseUrl: "https://ollama.com",
+      modelCount: ollamaSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: ollamaSidecarModels,
+    });
+  }),
+
   http.get("*/api/models", () => {
     return HttpResponse.json({
       models: [
@@ -1485,6 +1519,7 @@ export const handlers = [
         { id: "gpt-4o-mini", name: "GPT 4o Mini" },
         { id: "claude-sonnet", name: "Claude: claude-sonnet" },
         { id: "omniroute/test-chat", name: "OmniRoute: omniroute/test-chat" },
+        { id: "gpt-oss:120b-cloud", name: "Ollama: gpt-oss:120b-cloud" },
       ],
     });
   }),

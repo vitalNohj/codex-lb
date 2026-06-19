@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from app.core.clients.claude_sidecar import SidecarPrefix
 
 # Deterministic tiebreak order. Lower index wins.
-SIDECAR_PROVIDER_ORDER: tuple[str, ...] = ("claude", "openrouter", "omniroute")
+SIDECAR_PROVIDER_ORDER: tuple[str, ...] = ("claude", "openrouter", "omniroute", "ollama")
 
 
 @dataclass(frozen=True, slots=True)

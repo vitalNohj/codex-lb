@@ -15,7 +15,7 @@ import type {
 } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
 
-export type SidecarIntegrationId = "claude" | "openrouter" | "omniroute";
+export type SidecarIntegrationId = "claude" | "openrouter" | "omniroute" | "ollama";
 
 type SidecarIntegrationMeta = {
   id: SidecarIntegrationId;
@@ -132,6 +132,7 @@ const INTEGRATION_NAMES: Record<SidecarIntegrationId, string> = {
   claude: "CLIProxyAPI",
   openrouter: "OpenRouter",
   omniroute: "OmniRoute",
+  ollama: "Ollama",
 };
 
 const SidecarIntegrationContext = createContext<SidecarIntegrationContextValue | null>(null);
@@ -199,6 +200,12 @@ function integrationValues(settings: DashboardSettings, current?: IntegrationVal
       name: INTEGRATION_NAMES.omniroute,
       prefixes: settings.omnirouteSidecarModelPrefixes ?? [],
       fullModels: settings.omnirouteSidecarFullModels ?? settings.omnirouteSidecarSelectedModels ?? [],
+    },
+    {
+      id: "ollama",
+      name: INTEGRATION_NAMES.ollama,
+      prefixes: settings.ollamaSidecarModelPrefixes ?? [],
+      fullModels: settings.ollamaSidecarFullModels ?? [],
     },
   ];
   if (!current) {

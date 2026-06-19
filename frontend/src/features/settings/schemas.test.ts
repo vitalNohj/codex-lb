@@ -80,6 +80,16 @@ describe("DashboardSettingsSchema", () => {
       omnirouteSidecarModelPrefixes: [{ prefix: "local/", strip: true }],
       omnirouteSidecarFullModels: ["omniroute/test-chat"],
       omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
+      ollamaSidecarEnabled: true,
+      ollamaSidecarBaseUrl: "https://ollama.com",
+      ollamaSidecarApiKeyConfigured: true,
+      ollamaSidecarModelPrefixes: [{ prefix: "ollama-", strip: true }],
+      ollamaSidecarFullModels: ["gpt-oss:120b-cloud"],
+      ollamaSidecarConnectTimeoutSeconds: 3,
+      ollamaSidecarRequestTimeoutSeconds: 120,
+      ollamaSidecarModelsCacheTtlSeconds: 30,
+      ollamaSidecarLastHealthStatus: "healthy",
+      ollamaSidecarLastModelCount: 2,
       claudeSidecarConnectTimeoutSeconds: 2,
       claudeSidecarRequestTimeoutSeconds: 60,
       claudeSidecarModelsCacheTtlSeconds: 5,
@@ -109,6 +119,9 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.openrouterSidecarFullModels).toEqual(["deepseek/deepseek-chat"]);
     expect(parsed.omnirouteSidecarFullModels).toEqual(["omniroute/test-chat"]);
     expect(parsed.omnirouteSidecarSelectedModels).toEqual(["omniroute/test-chat"]);
+    expect(parsed.ollamaSidecarEnabled).toBe(true);
+    expect(parsed.ollamaSidecarFullModels).toEqual(["gpt-oss:120b-cloud"]);
+    expect(parsed.ollamaSidecarLastModelCount).toBe(2);
     expect(parsed.claudeSidecarLastModelCount).toBe(3);
     expect(parsed.claudeSidecarAuthPlans[0]?.planType).toBe("max5");
     expect(parsed.claudeSidecarUsagePollIntervalSeconds).toBe(20);
@@ -248,6 +261,15 @@ describe("SettingsUpdateRequestSchema", () => {
       omnirouteSidecarModelPrefixes: [{ prefix: "local/", strip: true }],
       omnirouteSidecarFullModels: ["omniroute/test-chat"],
       omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
+      ollamaSidecarEnabled: true,
+      ollamaSidecarBaseUrl: "https://ollama.com",
+      ollamaSidecarApiKey: "ollama-secret",
+      ollamaSidecarClearApiKey: false,
+      ollamaSidecarModelPrefixes: [{ prefix: "ollama-", strip: true }],
+      ollamaSidecarFullModels: ["gpt-oss:120b-cloud"],
+      ollamaSidecarConnectTimeoutSeconds: 3,
+      ollamaSidecarRequestTimeoutSeconds: 120,
+      ollamaSidecarModelsCacheTtlSeconds: 30,
       claudeSidecarConnectTimeoutSeconds: 2,
       claudeSidecarRequestTimeoutSeconds: 60,
       claudeSidecarModelsCacheTtlSeconds: 5,
@@ -270,6 +292,8 @@ describe("SettingsUpdateRequestSchema", () => {
     expect(parsed.claudeSidecarFullModels).toEqual(["cp-claude-sonnet-4"]);
     expect(parsed.openrouterSidecarFullModels).toEqual(["deepseek/deepseek-chat"]);
     expect(parsed.omnirouteSidecarFullModels).toEqual(["omniroute/test-chat"]);
+    expect(parsed.ollamaSidecarApiKey).toBe("ollama-secret");
+    expect(parsed.ollamaSidecarFullModels).toEqual(["gpt-oss:120b-cloud"]);
     expect(parsed.claudeSidecarAuthPlans?.[0]?.planType).toBe("custom");
     expect(parsed.claudeSidecarUsageQueueBatchSize).toBe(50);
   });
