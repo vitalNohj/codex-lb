@@ -70,7 +70,6 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave, bare = false
     >
       <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
-        <SidecarIntegrationCard.EnableToggle />
         <SidecarIntegrationCard.Callout />
         <SidecarIntegrationCard.Fields>
           <SidecarIntegrationCard.BaseUrl />

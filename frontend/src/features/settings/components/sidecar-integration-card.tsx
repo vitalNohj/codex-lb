@@ -571,10 +571,10 @@ function Frame({ children, bare = false }: { children: ReactNode; bare?: boolean
 }
 
 function Header() {
-  const { meta } = useSidecarIntegration();
+  const { busy, meta, state, actions } = useSidecarIntegration();
   const Icon = meta.icon;
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
           <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
@@ -584,39 +584,38 @@ function Header() {
           <p className="text-xs text-muted-foreground">{meta.description}</p>
         </div>
       </div>
-      {meta.externalLink ? (
-        <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
-          <a href={meta.externalLink.href} target="_blank" rel="noopener noreferrer">
-            {meta.externalLink.label}
-            <ExternalLink className="size-3" aria-hidden="true" />
-          </a>
-        </Button>
-      ) : null}
-    </div>
-  );
-}
-
-function EnableToggle() {
-  const { busy, meta, state, actions } = useSidecarIntegration();
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
-      <div>
-        <p className="text-sm font-medium">{meta.enableLabel}</p>
-        <p className="text-xs text-muted-foreground">{meta.enableDescription}</p>
+      <div className="flex items-center gap-3">
+        {meta.externalLink ? (
+          <Button asChild type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
+            <a href={meta.externalLink.href} target="_blank" rel="noopener noreferrer">
+              {meta.externalLink.label}
+              <ExternalLink className="size-3" aria-hidden="true" />
+            </a>
+          </Button>
+        ) : null}
+        <label className="flex items-center gap-2 text-xs font-medium" htmlFor={`${meta.sectionId}-enable`}>
+          {meta.enableLabel}
+          <Switch
+            id={`${meta.sectionId}-enable`}
+            aria-label={meta.enableLabel}
+            checked={state.enabled}
+            disabled={busy}
+            onCheckedChange={(checked) => actions.setEnabled(checked)}
+          />
+        </label>
       </div>
-      <Switch
-        aria-label={meta.enableLabel}
-        checked={state.enabled}
-        disabled={busy}
-        onCheckedChange={(checked) => actions.setEnabled(checked)}
-      />
     </div>
   );
 }
 
 function Callout() {
   const { meta } = useSidecarIntegration();
-  return <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">{meta.callout}</div>;
+  return (
+    <div className="space-y-1.5 rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <p className="font-medium text-foreground">{meta.enableDescription}</p>
+      <p>{meta.callout}</p>
+    </div>
+  );
 }
 
 function Fields({ children }: { children: ReactNode }) {
@@ -956,7 +955,6 @@ export const SidecarIntegrationCard = {
   Provider: SidecarIntegrationCardProvider,
   Frame,
   Header,
-  EnableToggle,
   Callout,
   Fields,
   BaseUrl,
