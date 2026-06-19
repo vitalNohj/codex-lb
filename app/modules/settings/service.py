@@ -98,6 +98,18 @@ class DashboardSettingsData:
     omniroute_sidecar_last_health_message: str | None
     omniroute_sidecar_last_checked_at: datetime | None
     omniroute_sidecar_last_model_count: int | None
+    ollama_sidecar_enabled: bool
+    ollama_sidecar_base_url: str
+    ollama_sidecar_api_key_configured: bool
+    ollama_sidecar_model_prefixes: list[SidecarPrefix]
+    ollama_sidecar_full_models: list[str]
+    ollama_sidecar_connect_timeout_seconds: float
+    ollama_sidecar_request_timeout_seconds: float
+    ollama_sidecar_models_cache_ttl_seconds: float
+    ollama_sidecar_last_health_status: str | None
+    ollama_sidecar_last_health_message: str | None
+    ollama_sidecar_last_checked_at: datetime | None
+    ollama_sidecar_last_model_count: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +178,15 @@ class DashboardSettingsUpdateData:
     omniroute_sidecar_connect_timeout_seconds: float
     omniroute_sidecar_request_timeout_seconds: float
     omniroute_sidecar_models_cache_ttl_seconds: float
+    ollama_sidecar_enabled: bool
+    ollama_sidecar_base_url: str
+    ollama_sidecar_api_key: str | None
+    ollama_sidecar_clear_api_key: bool
+    ollama_sidecar_model_prefixes: list[SidecarPrefix]
+    ollama_sidecar_full_models: list[str]
+    ollama_sidecar_connect_timeout_seconds: float
+    ollama_sidecar_request_timeout_seconds: float
+    ollama_sidecar_models_cache_ttl_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +250,12 @@ class SettingsService:
             omniroute_api_key_encrypted = (
                 self._encryptor.encrypt(omniroute_api_key_value) if omniroute_api_key_value else None
             )
+        ollama_api_key_encrypted = current.ollama_sidecar_api_key_encrypted
+        if payload.ollama_sidecar_clear_api_key:
+            ollama_api_key_encrypted = None
+        elif payload.ollama_sidecar_api_key is not None:
+            ollama_api_key_value = payload.ollama_sidecar_api_key.strip()
+            ollama_api_key_encrypted = self._encryptor.encrypt(ollama_api_key_value) if ollama_api_key_value else None
         row = await self._repository.update(
             sticky_threads_enabled=payload.sticky_threads_enabled,
             upstream_stream_transport=payload.upstream_stream_transport,
@@ -299,6 +326,16 @@ class SettingsService:
             omniroute_sidecar_connect_timeout_seconds=payload.omniroute_sidecar_connect_timeout_seconds,
             omniroute_sidecar_request_timeout_seconds=payload.omniroute_sidecar_request_timeout_seconds,
             omniroute_sidecar_models_cache_ttl_seconds=payload.omniroute_sidecar_models_cache_ttl_seconds,
+            ollama_sidecar_enabled=payload.ollama_sidecar_enabled,
+            ollama_sidecar_base_url=payload.ollama_sidecar_base_url,
+            ollama_sidecar_api_key_encrypted=ollama_api_key_encrypted,
+            ollama_sidecar_model_prefixes_json=_dump_ollama_sidecar_model_prefixes(
+                payload.ollama_sidecar_model_prefixes
+            ),
+            ollama_sidecar_full_models_json=_dump_sidecar_full_models(payload.ollama_sidecar_full_models),
+            ollama_sidecar_connect_timeout_seconds=payload.ollama_sidecar_connect_timeout_seconds,
+            ollama_sidecar_request_timeout_seconds=payload.ollama_sidecar_request_timeout_seconds,
+            ollama_sidecar_models_cache_ttl_seconds=payload.ollama_sidecar_models_cache_ttl_seconds,
         )
         return self._to_data(row)
 
@@ -399,6 +436,20 @@ class SettingsService:
             omniroute_sidecar_last_health_message=row.omniroute_sidecar_last_health_message,
             omniroute_sidecar_last_checked_at=row.omniroute_sidecar_last_checked_at,
             omniroute_sidecar_last_model_count=row.omniroute_sidecar_last_model_count,
+            ollama_sidecar_enabled=row.ollama_sidecar_enabled,
+            ollama_sidecar_base_url=row.ollama_sidecar_base_url,
+            ollama_sidecar_api_key_configured=row.ollama_sidecar_api_key_encrypted is not None,
+            ollama_sidecar_model_prefixes=_parse_ollama_sidecar_model_prefixes(
+                row.ollama_sidecar_model_prefixes_json
+            ),
+            ollama_sidecar_full_models=_parse_sidecar_full_models(row.ollama_sidecar_full_models_json),
+            ollama_sidecar_connect_timeout_seconds=row.ollama_sidecar_connect_timeout_seconds,
+            ollama_sidecar_request_timeout_seconds=row.ollama_sidecar_request_timeout_seconds,
+            ollama_sidecar_models_cache_ttl_seconds=row.ollama_sidecar_models_cache_ttl_seconds,
+            ollama_sidecar_last_health_status=row.ollama_sidecar_last_health_status,
+            ollama_sidecar_last_health_message=row.ollama_sidecar_last_health_message,
+            ollama_sidecar_last_checked_at=row.ollama_sidecar_last_checked_at,
+            ollama_sidecar_last_model_count=row.ollama_sidecar_last_model_count,
         )
 
 
@@ -521,6 +572,14 @@ def _dump_omniroute_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str
     return _dump_sidecar_model_prefixes(prefixes)
 
 
+def _parse_ollama_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
+    return _parse_sidecar_model_prefixes(raw)
+
+
+def _dump_ollama_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str:
+    return _dump_sidecar_model_prefixes(prefixes)
+
+
 def _parse_sidecar_full_models(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -567,6 +626,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
             ("OmniRoute", payload.omniroute_sidecar_model_prefixes),
+            ("Ollama", payload.ollama_sidecar_model_prefixes),
         )
     )
     _validate_unique_sidecar_full_models(
@@ -574,6 +634,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
             ("OmniRoute", payload.omniroute_sidecar_full_models),
+            ("Ollama", payload.ollama_sidecar_full_models),
         )
     )
 

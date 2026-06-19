@@ -573,6 +573,46 @@ async def test_settings_api_saves_redacts_preserves_and_clears_omniroute_sidecar
 
 
 @pytest.mark.asyncio
+async def test_settings_api_saves_redacts_preserves_and_clears_ollama_sidecar_api_key(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "ollamaSidecarEnabled": True,
+            "ollamaSidecarBaseUrl": "https://ollama.com/",
+            "ollamaSidecarApiKey": " ollama-secret ",
+            "ollamaSidecarModelPrefixes": [{"prefix": "Ollama-", "strip": True}],
+            "ollamaSidecarFullModels": ["gpt-oss:120b-cloud", " GPT-OSS:120B-CLOUD "],
+            "ollamaSidecarConnectTimeoutSeconds": 2.5,
+            "ollamaSidecarRequestTimeoutSeconds": 45,
+            "ollamaSidecarModelsCacheTtlSeconds": 10,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ollamaSidecarEnabled"] is True
+    assert payload["ollamaSidecarBaseUrl"] == "https://ollama.com"
+    assert payload["ollamaSidecarApiKeyConfigured"] is True
+    assert "ollama-secret" not in response.text
+    assert payload["ollamaSidecarModelPrefixes"] == [{"prefix": "ollama-", "strip": True}]
+    assert payload["ollamaSidecarFullModels"] == ["gpt-oss:120b-cloud"]
+    assert payload["ollamaSidecarConnectTimeoutSeconds"] == 2.5
+    assert payload["ollamaSidecarRequestTimeoutSeconds"] == 45.0
+    assert payload["ollamaSidecarModelsCacheTtlSeconds"] == 10.0
+
+    response = await async_client.put("/api/settings", json={"ollamaSidecarEnabled": False})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ollamaSidecarEnabled"] is False
+    assert payload["ollamaSidecarApiKeyConfigured"] is True
+    assert payload["ollamaSidecarFullModels"] == ["gpt-oss:120b-cloud"]
+    assert "ollama-secret" not in response.text
+
+    response = await async_client.put("/api/settings", json={"ollamaSidecarClearApiKey": True})
+    assert response.status_code == 200
+    assert response.json()["ollamaSidecarApiKeyConfigured"] is False
+
+
+@pytest.mark.asyncio
 async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_management_key(async_client):
     response = await async_client.put(
         "/api/settings",

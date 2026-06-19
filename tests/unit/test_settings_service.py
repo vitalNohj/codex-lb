@@ -85,9 +85,11 @@ def _settings_update(
     claude_prefixes: list[SidecarPrefix] | None = None,
     openrouter_prefixes: list[SidecarPrefix] | None = None,
     omniroute_prefixes: list[SidecarPrefix] | None = None,
+    ollama_prefixes: list[SidecarPrefix] | None = None,
     claude_models: list[str] | None = None,
     openrouter_models: list[str] | None = None,
     omniroute_models: list[str] | None = None,
+    ollama_models: list[str] | None = None,
 ) -> DashboardSettingsUpdateData:
     return DashboardSettingsUpdateData(
         sticky_threads_enabled=True,
@@ -154,6 +156,15 @@ def _settings_update(
         omniroute_sidecar_connect_timeout_seconds=8.0,
         omniroute_sidecar_request_timeout_seconds=600.0,
         omniroute_sidecar_models_cache_ttl_seconds=60.0,
+        ollama_sidecar_enabled=False,
+        ollama_sidecar_base_url="https://ollama.com",
+        ollama_sidecar_api_key=None,
+        ollama_sidecar_clear_api_key=False,
+        ollama_sidecar_model_prefixes=ollama_prefixes or [],
+        ollama_sidecar_full_models=ollama_models or [],
+        ollama_sidecar_connect_timeout_seconds=8.0,
+        ollama_sidecar_request_timeout_seconds=600.0,
+        ollama_sidecar_models_cache_ttl_seconds=60.0,
     )
 
 
@@ -206,10 +217,39 @@ def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
     assert exc_info.value.conflict.owner == "OpenRouter"
 
 
+def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
+    payload = _settings_update(
+        openrouter_prefixes=[SidecarPrefix(prefix="cloud/", strip=False)],
+        ollama_prefixes=[SidecarPrefix(prefix="cloud/", strip=False)],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "prefix"
+    assert exc_info.value.conflict.value == "cloud/"
+    assert exc_info.value.conflict.owner == "OpenRouter"
+    assert exc_info.value.conflict.challenger == "Ollama"
+
+
+def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
+    payload = _settings_update(
+        omniroute_models=["gpt-oss:120b-cloud"],
+        ollama_models=["GPT-OSS:120B-CLOUD"],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "full_model"
+    assert exc_info.value.conflict.owner == "OmniRoute"
+    assert exc_info.value.conflict.challenger == "Ollama"
+
+
 def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence() -> None:
     payload = _settings_update(
         openrouter_prefixes=[SidecarPrefix(prefix="cp-", strip=True)],
-        omniroute_models=["cp-"],
+        ollama_models=["cp-"],
     )
 
     _validate_unique_sidecar_routes(payload)
@@ -234,3 +274,21 @@ def test_settings_update_request_accepts_legacy_string_prefix_arrays() -> None:
     assert [prefix.model_dump() for prefix in payload.openrouter_sidecar_model_prefixes] == [
         {"prefix": "or_", "strip": True},
     ]
+
+
+def test_settings_update_request_accepts_ollama_string_prefix_arrays() -> None:
+    from app.modules.settings.schemas import DashboardSettingsUpdateRequest
+
+    payload = DashboardSettingsUpdateRequest.model_validate(
+        {
+            "ollamaSidecarModelPrefixes": ["Ollama-", "ollama_"],
+            "ollamaSidecarFullModels": [" gpt-oss:120b-cloud ", "GPT-OSS:120B-CLOUD"],
+        }
+    )
+
+    assert payload.ollama_sidecar_model_prefixes is not None
+    assert [prefix.model_dump() for prefix in payload.ollama_sidecar_model_prefixes] == [
+        {"prefix": "ollama-", "strip": True},
+        {"prefix": "ollama_", "strip": True},
+    ]
+    assert payload.ollama_sidecar_full_models == ["gpt-oss:120b-cloud"]

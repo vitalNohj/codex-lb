@@ -75,7 +75,17 @@ def _normalize_sidecar_full_models(value: list[str] | None, *, field_name: str) 
         return None
     # Preserve case for the forwarded model; normalize only for comparison in
     # the routing resolver and uniqueness validator.
-    models = list(dict.fromkeys(entry.strip() for entry in value if entry.strip()))
+    models: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        normalized = entry.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        models.append(normalized)
     if any(len(entry) > 256 for entry in models):
         raise ValueError(f"{field_name} entries must be 256 characters or fewer")
     return models
@@ -103,6 +113,18 @@ def _normalize_omniroute_sidecar_base_url(value: str | None) -> str | None:
     parsed = urlparse(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("omniroute_sidecar_base_url must be an http(s) URL")
+    return normalized
+
+
+def _normalize_ollama_sidecar_base_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("ollama_sidecar_base_url must not be blank")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("ollama_sidecar_base_url must be an http(s) URL")
     return normalized
 
 
@@ -237,6 +259,18 @@ class DashboardSettingsResponse(DashboardModel):
     omniroute_sidecar_last_health_message: str | None = None
     omniroute_sidecar_last_checked_at: datetime | None = None
     omniroute_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    ollama_sidecar_enabled: bool = False
+    ollama_sidecar_base_url: str = Field(default="https://ollama.com", min_length=1)
+    ollama_sidecar_api_key_configured: bool = False
+    ollama_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(default_factory=list, max_length=32)
+    ollama_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
+    ollama_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    ollama_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    ollama_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    ollama_sidecar_last_health_status: str | None = None
+    ollama_sidecar_last_health_message: str | None = None
+    ollama_sidecar_last_checked_at: datetime | None = None
+    ollama_sidecar_last_model_count: int | None = Field(default=None, ge=0)
 
 
 class DashboardSettingsUpdateRequest(DashboardModel):
@@ -310,6 +344,15 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     omniroute_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     omniroute_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     omniroute_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    ollama_sidecar_enabled: bool | None = None
+    ollama_sidecar_base_url: str | None = Field(default=None, max_length=2048)
+    ollama_sidecar_api_key: str | None = Field(default=None, max_length=4096)
+    ollama_sidecar_clear_api_key: bool | None = None
+    ollama_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, max_length=32)
+    ollama_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
+    ollama_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    ollama_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
+    ollama_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
 
     @field_validator("warmup_model")
     @classmethod
@@ -426,6 +469,36 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator("omniroute_sidecar_api_key")
     @classmethod
     def _normalize_omniroute_sidecar_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("ollama_sidecar_base_url")
+    @classmethod
+    def _normalize_ollama_sidecar_base_url(cls, value: str | None) -> str | None:
+        return _normalize_ollama_sidecar_base_url(value)
+
+    @field_validator("ollama_sidecar_model_prefixes")
+    @classmethod
+    def _normalize_ollama_sidecar_prefixes(
+        cls,
+        value: list[SidecarModelPrefix] | None,
+    ) -> list[SidecarModelPrefix] | None:
+        return _normalize_sidecar_model_prefixes(value, field_name="ollama_sidecar_model_prefixes")
+
+    @field_validator("ollama_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _coerce_ollama_sidecar_prefixes(cls, value: object) -> object:
+        return _coerce_sidecar_model_prefixes(value)
+
+    @field_validator("ollama_sidecar_full_models")
+    @classmethod
+    def _normalize_ollama_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_sidecar_full_models(value, field_name="ollama_sidecar_full_models")
+
+    @field_validator("ollama_sidecar_api_key")
+    @classmethod
+    def _normalize_ollama_sidecar_api_key(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip()
