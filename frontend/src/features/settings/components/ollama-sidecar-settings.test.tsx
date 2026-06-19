@@ -63,6 +63,8 @@ const BASE_SETTINGS: DashboardSettings = {
   ollamaSidecarConnectTimeoutSeconds: 8,
   ollamaSidecarRequestTimeoutSeconds: 600,
   ollamaSidecarModelsCacheTtlSeconds: 60,
+  guestAccessEnabled: false,
+  guestPasswordConfigured: false,
 };
 
 const ENABLED_SETTINGS: DashboardSettings = {
