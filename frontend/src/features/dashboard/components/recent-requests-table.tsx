@@ -205,7 +205,7 @@ export function RecentRequestsTable({
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-28 pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Time</TableHead>
-              <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Account</TableHead>
+              <TableHead className="w-48 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Account</TableHead>
               <TableHead className="w-24 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Plan</TableHead>
               <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">API Key</TableHead>
               <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Model</TableHead>
@@ -242,11 +242,15 @@ export function RecentRequestsTable({
                       <div className="text-xs text-muted-foreground">{time.date}</div>
                     </div>
                   </TableCell>
-                  <TableCell className="truncate align-top text-sm">
+                  <TableCell className="max-w-48 align-top text-sm">
                     {isEmailLabel && blurred ? (
-                      <span className="privacy-blur">{accountLabel}</span>
+                      <span className="privacy-blur block truncate" title={accountLabel}>
+                        {accountLabel}
+                      </span>
                     ) : (
-                      accountLabel
+                      <span className="block truncate" title={accountLabel}>
+                        {accountLabel}
+                      </span>
                     )}
                   </TableCell>
                   <TableCell className="align-top">
