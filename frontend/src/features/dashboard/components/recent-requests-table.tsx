@@ -248,7 +248,7 @@ export function RecentRequestsTable({
                         {accountLabel}
                       </span>
                     ) : (
-                      <span className="block truncate" title={accountLabel}>
+                      <span className="block truncate" title={sidecarLabel ?? accountLabel}>
                         {accountLabel}
                       </span>
                     )}
