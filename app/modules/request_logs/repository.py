@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast as typing_cast
 
 import anyio
@@ -16,6 +16,11 @@ from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
 from app.db.session import sqlite_writer_section
+
+
+# CLIProxyAPI records its usage event within a couple of seconds of the
+# codex-lb request; allow a small window when correlating the two by timestamp.
+_SIDECAR_LABEL_MATCH_WINDOW = timedelta(seconds=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,25 +490,64 @@ class RequestLogsRepository:
         result = await self._session.execute(select(ApiKey.id, ApiKey.name).where(ApiKey.id.in_(unique_ids)))
         return {key_id: name for key_id, name in result.all() if key_id and name}
 
-    async def get_claude_sidecar_account_labels_by_request_ids(
+    async def get_claude_sidecar_account_labels_for_logs(
         self,
-        request_ids: list[str],
+        logs: list[tuple[str, datetime]],
     ) -> dict[str, str]:
-        unique_ids = sorted({request_id for request_id in request_ids if request_id})
-        if not unique_ids:
+        """Correlate Claude sidecar request logs to CLIProxyAPI usage events by timestamp.
+
+        codex-lb logs requests under its own UUID while CLIProxyAPI reports
+        per-account usage under its own short request id, so the two share no
+        common key. The usage event is recorded within a couple of seconds of
+        the codex-lb request, so each log row is matched to the nearest usage
+        event within ``_SIDECAR_LABEL_MATCH_WINDOW`` and that event is consumed
+        so it cannot be reused for another row.
+        """
+        entries = [(request_id, requested_at) for request_id, requested_at in logs if request_id and requested_at]
+        if not entries:
             return {}
+
+        window_start = min(requested_at for _, requested_at in entries) - _SIDECAR_LABEL_MATCH_WINDOW
+        window_end = max(requested_at for _, requested_at in entries) + _SIDECAR_LABEL_MATCH_WINDOW
         result = await self._session.execute(
             select(
-                ClaudeSidecarUsageEvent.request_id,
+                ClaudeSidecarUsageEvent.timestamp,
                 ClaudeSidecarUsageEvent.source,
                 ClaudeSidecarUsageEvent.auth_index,
-            ).where(ClaudeSidecarUsageEvent.request_id.in_(unique_ids))
+            )
+            .where(
+                ClaudeSidecarUsageEvent.timestamp >= window_start,
+                ClaudeSidecarUsageEvent.timestamp <= window_end,
+            )
+            .order_by(ClaudeSidecarUsageEvent.timestamp.asc())
         )
+        events = [
+            (timestamp, _sidecar_account_label(source, auth_index))
+            for timestamp, source, auth_index in result.all()
+            if timestamp is not None
+        ]
+        events = [(timestamp, label) for timestamp, label in events if label]
+        if not events:
+            return {}
+
         labels: dict[str, str] = {}
-        for request_id, source, auth_index in result.all():
-            label = _sidecar_account_label(source, auth_index)
-            if request_id and label:
-                labels[request_id] = label
+        used_indices: set[int] = set()
+        tolerance = _SIDECAR_LABEL_MATCH_WINDOW.total_seconds()
+        # Match newest logs first so the most recent (most visible) rows win the
+        # closest events under contention.
+        for request_id, requested_at in sorted(entries, key=lambda item: item[1], reverse=True):
+            best_index: int | None = None
+            best_delta = tolerance
+            for index, (timestamp, _label) in enumerate(events):
+                if index in used_indices:
+                    continue
+                delta = abs((timestamp - requested_at).total_seconds())
+                if delta <= best_delta:
+                    best_delta = delta
+                    best_index = index
+            if best_index is not None:
+                used_indices.add(best_index)
+                labels[request_id] = events[best_index][1]
         return labels
 
     async def get_api_key_details_by_ids(self, api_key_ids: list[str]) -> dict[str, tuple[str, str | None]]:

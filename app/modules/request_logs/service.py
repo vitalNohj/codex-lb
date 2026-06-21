@@ -88,14 +88,14 @@ class RequestLogsService:
             error_codes_excluding=status_filter.error_codes_excluding,
         )
         api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
-        claude_sidecar_request_ids = [
-            log.request_id
+        claude_sidecar_logs = [
+            (log.request_id, log.requested_at)
             for log in logs
             if log.source == "claude_sidecar"
         ]
         api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids)
         sidecar_account_label_by_request_id = (
-            await self._repo.get_claude_sidecar_account_labels_by_request_ids(claude_sidecar_request_ids)
+            await self._repo.get_claude_sidecar_account_labels_for_logs(claude_sidecar_logs)
         )
         requests = [
             to_request_log_entry(
