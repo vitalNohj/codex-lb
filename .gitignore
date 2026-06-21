@@ -51,6 +51,7 @@ certs/
 .agents/.personality_migration
 .agents/version.json
 .agents/log/
+.agents/plans/
 .venv
 
 .omx/
