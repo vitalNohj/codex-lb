@@ -53,6 +53,7 @@ from app.modules.proxy.omniroute_responses_dispatch import (
     omniroute_chat_to_responses_result,
     responses_to_omniroute_chat_request,
 )
+from app.modules.proxy.sidecar_model_profiles import set_reasoning_effort_if_absent
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -98,6 +99,7 @@ def omniroute_sidecar_config_from_settings(settings: DashboardSettings) -> OmniR
         connect_timeout_seconds=settings.omniroute_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.omniroute_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.omniroute_sidecar_models_cache_ttl_seconds,
+        default_reasoning_effort=settings.omniroute_sidecar_default_reasoning_effort,
     )
 
 
@@ -114,9 +116,11 @@ def _decrypt_omniroute_secret(encrypted: bytes | None) -> str | None:
 def build_omniroute_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
+    default_reasoning_effort: str | None = None,
 ) -> OmniRouteChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     body["model"] = effective_model.strip()
+    set_reasoning_effort_if_absent(body, default_reasoning_effort)
     return OmniRouteChatPayload(body=body)
 
 
@@ -133,7 +137,9 @@ async def proxy_chat_to_omniroute(
     cursor_compat: bool = False,
     wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_omniroute_chat_payload(payload, wire_model or effective_model)
+    sidecar_payload = build_omniroute_chat_payload(
+        payload, wire_model or effective_model, client.config.default_reasoning_effort
+    )
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="omniroute",

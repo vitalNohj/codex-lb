@@ -686,3 +686,49 @@ async def test_settings_api_rejects_invalid_sidecar_inputs(async_client):
 
     response = await async_client.put("/api/settings", json={"claudeSidecarConnectTimeoutSeconds": 0})
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_settings_api_sidecar_default_reasoning_effort_roundtrip(async_client):
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claudeSidecarDefaultReasoningEffort"] is None
+    assert payload["openrouterSidecarDefaultReasoningEffort"] is None
+    assert payload["omnirouteSidecarDefaultReasoningEffort"] is None
+    assert payload["ollamaSidecarDefaultReasoningEffort"] is None
+
+    # Mixed-case input is lowercased; each provider stores independently.
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarDefaultReasoningEffort": "XHIGH",
+            "openrouterSidecarDefaultReasoningEffort": "high",
+            "ollamaSidecarDefaultReasoningEffort": "low",
+        },
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["claudeSidecarDefaultReasoningEffort"] == "xhigh"
+    assert updated["openrouterSidecarDefaultReasoningEffort"] == "high"
+    assert updated["omnirouteSidecarDefaultReasoningEffort"] is None
+    assert updated["ollamaSidecarDefaultReasoningEffort"] == "low"
+
+    # Sending null clears a previously-set value (the _UNSET regression).
+    response = await async_client.put(
+        "/api/settings",
+        json={"claudeSidecarDefaultReasoningEffort": None},
+    )
+    assert response.status_code == 200
+    cleared = response.json()
+    assert cleared["claudeSidecarDefaultReasoningEffort"] is None
+    # Untouched providers keep their stored values.
+    assert cleared["openrouterSidecarDefaultReasoningEffort"] == "high"
+    assert cleared["ollamaSidecarDefaultReasoningEffort"] == "low"
+
+    # Invalid effort values are rejected.
+    response = await async_client.put(
+        "/api/settings",
+        json={"openrouterSidecarDefaultReasoningEffort": "bogus"},
+    )
+    assert response.status_code == 422

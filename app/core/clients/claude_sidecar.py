@@ -36,6 +36,7 @@ class ClaudeSidecarConfig:
     models_cache_ttl_seconds: float
     full_models: tuple[str, ...] = ()
     management_key: str | None = None
+    default_reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

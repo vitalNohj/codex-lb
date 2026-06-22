@@ -5,12 +5,24 @@ import { AlertMessage } from "@/components/alert-message";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
+import {
+  REASONING_EFFORT_OPTIONS,
+  REASONING_EFFORT_UNSET,
+} from "@/features/settings/reasoning-effort";
 import type {
   DashboardSettings,
   SettingsUpdateRequest,
+  SidecarReasoningEffort,
   SidecarModelPrefix,
 } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
@@ -50,6 +62,7 @@ type SidecarIntegrationState = {
   pollInterval: string;
   manualPrefix: string;
   manualFullModel: string;
+  defaultReasoningEffort: SidecarReasoningEffort | null;
   inlineError: string | null;
   saveError: string | null;
 };
@@ -70,6 +83,7 @@ type SidecarIntegrationActions = {
   setPrefixStrip: (prefix: string, strip: boolean) => void;
   addFullModel: (modelId?: string) => void;
   removeFullModel: (modelId: string) => void;
+  setDefaultReasoningEffort: (effort: SidecarReasoningEffort | null) => void;
   persistField: () => void;
   addApiKey: () => void;
   addManagementKey: () => void;
@@ -106,6 +120,7 @@ type SidecarIntegrationCardProviderProps = {
     requestTimeout: number;
     cacheTtl: number;
     pollInterval?: number;
+    defaultReasoningEffort?: SidecarReasoningEffort | null;
   };
   models: {
     rows: DiscoveredModelSummary[];
@@ -125,6 +140,9 @@ type SidecarIntegrationCardProviderProps = {
     pollInterval: number | null;
   }) => Partial<SettingsUpdateRequest>;
   buildEnablePatch: (enabled: boolean) => Partial<SettingsUpdateRequest>;
+  buildEffortPatch: (
+    effort: SidecarReasoningEffort | null,
+  ) => Partial<SettingsUpdateRequest>;
   children: ReactNode;
 };
 
@@ -326,6 +344,7 @@ function SidecarIntegrationCardProvider({
   onTestConnection,
   buildPatch,
   buildEnablePatch,
+  buildEffortPatch,
   children,
 }: SidecarIntegrationCardProviderProps) {
   const [enabled, setEnabledState] = useState(initial.enabled);
@@ -340,6 +359,9 @@ function SidecarIntegrationCardProvider({
   const [pollInterval, setPollInterval] = useState(String(initial.pollInterval ?? 0));
   const [manualPrefix, setManualPrefix] = useState("");
   const [manualFullModel, setManualFullModel] = useState("");
+  const [defaultReasoningEffort, setDefaultReasoningEffortState] = useState<
+    SidecarReasoningEffort | null
+  >(initial.defaultReasoningEffort ?? null);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savePending, setSavePending] = useState(false);
@@ -417,6 +439,11 @@ function SidecarIntegrationCardProvider({
   const setEnabled = (nextEnabled: boolean) => {
     setEnabledState(nextEnabled);
     void onSave(buildSettingsUpdateRequest(settings, buildEnablePatch(nextEnabled)));
+  };
+
+  const setDefaultReasoningEffort = (effort: SidecarReasoningEffort | null) => {
+    setDefaultReasoningEffortState(effort);
+    void onSave(buildSettingsUpdateRequest(settings, buildEffortPatch(effort)));
   };
 
   const addPrefix = () => {
@@ -526,6 +553,7 @@ function SidecarIntegrationCardProvider({
       pollInterval,
       manualPrefix,
       manualFullModel,
+      defaultReasoningEffort,
       inlineError,
       saveError,
     },
@@ -545,6 +573,7 @@ function SidecarIntegrationCardProvider({
       setPrefixStrip,
       addFullModel,
       removeFullModel,
+      setDefaultReasoningEffort,
       persistField,
       addApiKey,
       addManagementKey,
@@ -950,6 +979,38 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
   );
 }
 
+function ReasoningEffort() {
+  const { busy, meta, state, actions } = useSidecarIntegration();
+  return (
+    <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-default-effort`}>
+      Default reasoning effort
+      <Select
+        value={state.defaultReasoningEffort ?? REASONING_EFFORT_UNSET}
+        onValueChange={(value) =>
+          actions.setDefaultReasoningEffort(
+            value === REASONING_EFFORT_UNSET ? null : (value as SidecarReasoningEffort),
+          )
+        }
+      >
+        <SelectTrigger id={`${meta.sectionId}-default-effort`} className="h-8 text-xs" disabled={busy}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={REASONING_EFFORT_UNSET}>Use client / model default</SelectItem>
+          {REASONING_EFFORT_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <span className="block font-normal text-muted-foreground">
+        Injected only when the request does not already specify an effort.
+      </span>
+    </label>
+  );
+}
+
 function Status() {
   const { state } = useSidecarIntegration();
   if (!state.saveError) {
@@ -970,5 +1031,6 @@ export const SidecarIntegrationCard = {
   FullModels,
   DiscoveredModels,
   Timeouts,
+  ReasoningEffort,
   Status,
 };

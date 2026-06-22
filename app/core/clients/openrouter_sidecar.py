@@ -31,6 +31,7 @@ class OpenRouterSidecarConfig:
     request_timeout_seconds: float
     models_cache_ttl_seconds: float
     full_models: tuple[str, ...] = ()
+    default_reasoning_effort: str | None = None
 
 
 class OpenRouterSidecarError(Exception):

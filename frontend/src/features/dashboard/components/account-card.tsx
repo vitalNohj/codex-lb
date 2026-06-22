@@ -3,6 +3,7 @@ import { Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { StatusBadge } from "@/components/status-badge";
 import { cn } from "@/lib/utils";
 import type { AccountSummary } from "@/features/dashboard/schemas";
@@ -350,6 +351,10 @@ function SyntheticAccountCard({
           ) : null}
         </div>
       )}
+
+      <div className="mt-3">
+        <SidecarEffortSelect provider={account.provider} />
+      </div>
 
       <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
         <Button

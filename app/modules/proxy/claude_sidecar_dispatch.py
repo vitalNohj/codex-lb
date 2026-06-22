@@ -51,7 +51,10 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
-from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile
+from app.modules.proxy.sidecar_model_profiles import (
+    apply_sidecar_model_profile,
+    set_reasoning_effort_if_absent,
+)
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -121,6 +124,7 @@ def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarCo
         models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
         full_models=parse_sidecar_full_models(settings.claude_sidecar_full_models_json),
         management_key=management_key,
+        default_reasoning_effort=settings.claude_sidecar_default_reasoning_effort,
     )
 
 
@@ -501,6 +505,9 @@ def build_sidecar_chat_payload(
     # the matched prefix's strip flag); apply the canonical-model + reasoning
     # effort profile to that wire model.
     apply_sidecar_model_profile(body, stripped_model=effective_model)
+    # Provider default fills in only after client effort and model-suffix effort
+    # have had their chance (set_reasoning_effort_if_absent is a no-op otherwise).
+    set_reasoning_effort_if_absent(body, config.default_reasoning_effort)
     sanitize_sidecar_forward_payload(body)
     normalize_sidecar_cursor_tool_history(body)
     sanitize_sidecar_chat_tool_ids(body)

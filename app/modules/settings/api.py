@@ -163,6 +163,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         claude_sidecar_usage_poll_interval_seconds=settings.claude_sidecar_usage_poll_interval_seconds,
         claude_sidecar_usage_queue_batch_size=settings.claude_sidecar_usage_queue_batch_size,
         claude_sidecar_usage_collection_enabled=settings.claude_sidecar_usage_collection_enabled,
+        claude_sidecar_default_reasoning_effort=settings.claude_sidecar_default_reasoning_effort,
         openrouter_sidecar_enabled=settings.openrouter_sidecar_enabled,
         openrouter_sidecar_base_url=settings.openrouter_sidecar_base_url,
         openrouter_sidecar_api_key_configured=settings.openrouter_sidecar_api_key_configured,
@@ -177,6 +178,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_last_health_message=settings.openrouter_sidecar_last_health_message,
         openrouter_sidecar_last_checked_at=settings.openrouter_sidecar_last_checked_at,
         openrouter_sidecar_last_model_count=settings.openrouter_sidecar_last_model_count,
+        openrouter_sidecar_default_reasoning_effort=settings.openrouter_sidecar_default_reasoning_effort,
         omniroute_sidecar_enabled=settings.omniroute_sidecar_enabled,
         omniroute_sidecar_base_url=settings.omniroute_sidecar_base_url,
         omniroute_sidecar_api_key_configured=settings.omniroute_sidecar_api_key_configured,
@@ -192,6 +194,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         omniroute_sidecar_last_health_message=settings.omniroute_sidecar_last_health_message,
         omniroute_sidecar_last_checked_at=settings.omniroute_sidecar_last_checked_at,
         omniroute_sidecar_last_model_count=settings.omniroute_sidecar_last_model_count,
+        omniroute_sidecar_default_reasoning_effort=settings.omniroute_sidecar_default_reasoning_effort,
         ollama_sidecar_enabled=settings.ollama_sidecar_enabled,
         ollama_sidecar_base_url=settings.ollama_sidecar_base_url,
         ollama_sidecar_api_key_configured=settings.ollama_sidecar_api_key_configured,
@@ -204,6 +207,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         ollama_sidecar_last_health_message=settings.ollama_sidecar_last_health_message,
         ollama_sidecar_last_checked_at=settings.ollama_sidecar_last_checked_at,
         ollama_sidecar_last_model_count=settings.ollama_sidecar_last_model_count,
+        ollama_sidecar_default_reasoning_effort=settings.ollama_sidecar_default_reasoning_effort,
         guest_access_enabled=settings.guest_access_enabled,
         guest_password_configured=settings.guest_password_configured,
     )
@@ -708,6 +712,11 @@ async def update_settings(
                     if payload.claude_sidecar_usage_collection_enabled is not None
                     else current.claude_sidecar_usage_collection_enabled
                 ),
+                claude_sidecar_default_reasoning_effort=(
+                    payload.claude_sidecar_default_reasoning_effort
+                    if "claude_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.claude_sidecar_default_reasoning_effort
+                ),
                 openrouter_sidecar_enabled=(
                     payload.openrouter_sidecar_enabled
                     if payload.openrouter_sidecar_enabled is not None
@@ -744,6 +753,11 @@ async def update_settings(
                     payload.openrouter_sidecar_models_cache_ttl_seconds
                     if payload.openrouter_sidecar_models_cache_ttl_seconds is not None
                     else current.openrouter_sidecar_models_cache_ttl_seconds
+                ),
+                openrouter_sidecar_default_reasoning_effort=(
+                    payload.openrouter_sidecar_default_reasoning_effort
+                    if "openrouter_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.openrouter_sidecar_default_reasoning_effort
                 ),
                 omniroute_sidecar_enabled=(
                     payload.omniroute_sidecar_enabled
@@ -795,6 +809,11 @@ async def update_settings(
                     if payload.omniroute_sidecar_models_cache_ttl_seconds is not None
                     else current.omniroute_sidecar_models_cache_ttl_seconds
                 ),
+                omniroute_sidecar_default_reasoning_effort=(
+                    payload.omniroute_sidecar_default_reasoning_effort
+                    if "omniroute_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.omniroute_sidecar_default_reasoning_effort
+                ),
                 ollama_sidecar_enabled=(
                     payload.ollama_sidecar_enabled
                     if payload.ollama_sidecar_enabled is not None
@@ -829,6 +848,11 @@ async def update_settings(
                     payload.ollama_sidecar_models_cache_ttl_seconds
                     if payload.ollama_sidecar_models_cache_ttl_seconds is not None
                     else current.ollama_sidecar_models_cache_ttl_seconds
+                ),
+                ollama_sidecar_default_reasoning_effort=(
+                    payload.ollama_sidecar_default_reasoning_effort
+                    if "ollama_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.ollama_sidecar_default_reasoning_effort
                 ),
                 guest_access_enabled=(
                     payload.guest_access_enabled
@@ -905,6 +929,7 @@ async def update_settings(
             "claude_sidecar_usage_poll_interval_seconds",
             "claude_sidecar_usage_queue_batch_size",
             "claude_sidecar_usage_collection_enabled",
+            "claude_sidecar_default_reasoning_effort",
             "openrouter_sidecar_enabled",
             "openrouter_sidecar_base_url",
             "openrouter_sidecar_api_key_configured",
@@ -917,6 +942,7 @@ async def update_settings(
             "openrouter_sidecar_last_health_message",
             "openrouter_sidecar_last_checked_at",
             "openrouter_sidecar_last_model_count",
+            "openrouter_sidecar_default_reasoning_effort",
             "omniroute_sidecar_enabled",
             "omniroute_sidecar_base_url",
             "omniroute_sidecar_api_key_configured",
@@ -930,6 +956,7 @@ async def update_settings(
             "omniroute_sidecar_last_health_message",
             "omniroute_sidecar_last_checked_at",
             "omniroute_sidecar_last_model_count",
+            "omniroute_sidecar_default_reasoning_effort",
             "ollama_sidecar_enabled",
             "ollama_sidecar_base_url",
             "ollama_sidecar_api_key_configured",
@@ -942,6 +969,7 @@ async def update_settings(
             "ollama_sidecar_last_health_message",
             "ollama_sidecar_last_checked_at",
             "ollama_sidecar_last_model_count",
+            "ollama_sidecar_default_reasoning_effort",
             "guest_access_enabled",
         )
         if getattr(current, field_name) != getattr(updated, field_name)

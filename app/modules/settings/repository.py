@@ -205,6 +205,7 @@ class SettingsRepository:
         claude_sidecar_usage_poll_interval_seconds: float | None = None,
         claude_sidecar_usage_queue_batch_size: int | None = None,
         claude_sidecar_usage_collection_enabled: bool | None = None,
+        claude_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         openrouter_sidecar_enabled: bool | None = None,
         openrouter_sidecar_base_url: str | None = None,
         openrouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -217,6 +218,7 @@ class SettingsRepository:
         openrouter_sidecar_last_health_message: str | None | object = _UNSET,
         openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         openrouter_sidecar_last_model_count: int | None | object = _UNSET,
+        openrouter_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         omniroute_sidecar_enabled: bool | None = None,
         omniroute_sidecar_base_url: str | None = None,
         omniroute_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -229,6 +231,7 @@ class SettingsRepository:
         omniroute_sidecar_last_health_message: str | None | object = _UNSET,
         omniroute_sidecar_last_checked_at: datetime | None | object = _UNSET,
         omniroute_sidecar_last_model_count: int | None | object = _UNSET,
+        omniroute_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         ollama_sidecar_enabled: bool | None = None,
         ollama_sidecar_base_url: str | None = None,
         ollama_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -241,6 +244,7 @@ class SettingsRepository:
         ollama_sidecar_last_health_message: str | None | object = _UNSET,
         ollama_sidecar_last_checked_at: datetime | None | object = _UNSET,
         ollama_sidecar_last_model_count: int | None | object = _UNSET,
+        ollama_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         guest_access_enabled: bool | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
@@ -346,6 +350,8 @@ class SettingsRepository:
             settings.claude_sidecar_usage_queue_batch_size = claude_sidecar_usage_queue_batch_size
         if claude_sidecar_usage_collection_enabled is not None:
             settings.claude_sidecar_usage_collection_enabled = claude_sidecar_usage_collection_enabled
+        if claude_sidecar_default_reasoning_effort is not _UNSET:
+            settings.claude_sidecar_default_reasoning_effort = claude_sidecar_default_reasoning_effort
         if openrouter_sidecar_enabled is not None:
             settings.openrouter_sidecar_enabled = openrouter_sidecar_enabled
         if openrouter_sidecar_base_url is not None:
@@ -370,6 +376,8 @@ class SettingsRepository:
             settings.openrouter_sidecar_last_checked_at = openrouter_sidecar_last_checked_at
         if openrouter_sidecar_last_model_count is not _UNSET:
             settings.openrouter_sidecar_last_model_count = openrouter_sidecar_last_model_count
+        if openrouter_sidecar_default_reasoning_effort is not _UNSET:
+            settings.openrouter_sidecar_default_reasoning_effort = openrouter_sidecar_default_reasoning_effort
         if omniroute_sidecar_enabled is not None:
             settings.omniroute_sidecar_enabled = omniroute_sidecar_enabled
         if omniroute_sidecar_base_url is not None:
@@ -394,6 +402,8 @@ class SettingsRepository:
             settings.omniroute_sidecar_last_checked_at = omniroute_sidecar_last_checked_at
         if omniroute_sidecar_last_model_count is not _UNSET:
             settings.omniroute_sidecar_last_model_count = omniroute_sidecar_last_model_count
+        if omniroute_sidecar_default_reasoning_effort is not _UNSET:
+            settings.omniroute_sidecar_default_reasoning_effort = omniroute_sidecar_default_reasoning_effort
         if ollama_sidecar_enabled is not None:
             settings.ollama_sidecar_enabled = ollama_sidecar_enabled
         if ollama_sidecar_base_url is not None:
@@ -418,6 +428,8 @@ class SettingsRepository:
             settings.ollama_sidecar_last_checked_at = ollama_sidecar_last_checked_at
         if ollama_sidecar_last_model_count is not _UNSET:
             settings.ollama_sidecar_last_model_count = ollama_sidecar_last_model_count
+        if ollama_sidecar_default_reasoning_effort is not _UNSET:
+            settings.ollama_sidecar_default_reasoning_effort = ollama_sidecar_default_reasoning_effort
         if guest_access_enabled is not None:
             settings.guest_access_enabled = guest_access_enabled
         await self.commit_refresh(settings)
