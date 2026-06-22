@@ -84,11 +84,6 @@ function sidecarAccountLabel(request: RequestLog): string | null {
   return providerLabel;
 }
 
-const TRANSPORT_CLASS_MAP: Record<string, string> = {
-  http: "bg-slate-500/10 text-slate-700 border-slate-500/20 hover:bg-slate-500/15 dark:text-slate-300",
-  websocket: "bg-sky-500/15 text-sky-700 border-sky-500/20 hover:bg-sky-500/20 dark:text-sky-300",
-};
-
 const PLAN_CLASS_MAP: Record<string, string> = {
   free: "bg-zinc-500/10 text-zinc-700 border-zinc-500/20 hover:bg-zinc-500/15 dark:text-zinc-300",
   plus: "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 hover:bg-emerald-500/20 dark:text-emerald-400",
@@ -201,19 +196,17 @@ export function RecentRequestsTable({
     <div className="space-y-3">
     <div className="rounded-xl border bg-card">
       <div className="relative overflow-x-auto">
-        <Table className="min-w-[1240px] table-fixed">
+        <Table className="min-w-[960px] table-fixed">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-28 pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Time</TableHead>
-              <TableHead className="w-48 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Account</TableHead>
-              <TableHead className="w-24 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Plan</TableHead>
-              <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">API Key</TableHead>
-              <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Model</TableHead>
-              <TableHead className="w-20 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Transport</TableHead>
-              <TableHead className="w-24 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Status</TableHead>
-              <TableHead className="w-24 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Tokens</TableHead>
-              <TableHead className="w-16 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Cost</TableHead>
-              <TableHead className="w-72 pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Details</TableHead>
+              <TableHead className="w-[10%] pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Time</TableHead>
+              <TableHead className="w-[18%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Account</TableHead>
+              <TableHead className="w-[14%] pr-8 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">API Key</TableHead>
+              <TableHead className="w-[16%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Model</TableHead>
+              <TableHead className="w-[10%] text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Tokens</TableHead>
+              <TableHead className="w-[8%] pr-8 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Cost</TableHead>
+              <TableHead className="w-[10%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Status</TableHead>
+              <TableHead className="w-[14%] pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Details</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -252,20 +245,16 @@ export function RecentRequestsTable({
                         {accountLabel}
                       </span>
                     )}
-                  </TableCell>
-                  <TableCell className="align-top">
                     {planType ? (
                       <Badge
                         variant="outline"
-                        className={PLAN_CLASS_MAP[planType] ?? PLAN_CLASS_MAP.free}
+                        className={`mt-1 ${PLAN_CLASS_MAP[planType] ?? PLAN_CLASS_MAP.free}`}
                       >
                         {planLabel}
                       </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">--</span>
-                    )}
+                    ) : null}
                   </TableCell>
-                  <TableCell className="truncate align-top text-xs text-muted-foreground">
+                  <TableCell className="truncate align-top pr-8 text-xs text-muted-foreground">
                     {request.apiKeyName || "--"}
                   </TableCell>
                   <TableCell className="truncate align-top">
@@ -285,26 +274,6 @@ export function RecentRequestsTable({
                       ) : null}
                     </div>
                   </TableCell>
-                  <TableCell className="align-top">
-                    {request.transport ? (
-                      <Badge
-                        variant="outline"
-                        className={TRANSPORT_CLASS_MAP[request.transport] ?? TRANSPORT_CLASS_MAP.http}
-                      >
-                        {TRANSPORT_LABELS[request.transport] ?? request.transport}
-                      </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">--</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <Badge
-                      variant="outline"
-                      className={STATUS_CLASS_MAP[request.status] ?? STATUS_CLASS_MAP.error}
-                    >
-                      {REQUEST_STATUS_LABELS[request.status] ?? request.status}
-                    </Badge>
-                  </TableCell>
                   <TableCell className="text-right align-top font-mono text-xs tabular-nums">
                     <div className="leading-tight">
                       <div>{formatCompactNumber(request.tokens)}</div>
@@ -315,8 +284,16 @@ export function RecentRequestsTable({
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-right align-top font-mono text-xs tabular-nums">
+                  <TableCell className="text-right align-top pr-8 font-mono text-xs tabular-nums">
                     {formatCurrency(request.costUsd)}
+                  </TableCell>
+                  <TableCell className="align-top">
+                    <Badge
+                      variant="outline"
+                      className={STATUS_CLASS_MAP[request.status] ?? STATUS_CLASS_MAP.error}
+                    >
+                      {REQUEST_STATUS_LABELS[request.status] ?? request.status}
+                    </Badge>
                   </TableCell>
                   <TableCell className="pr-4 align-top whitespace-normal">
                     {hasError ? (

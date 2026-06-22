@@ -134,11 +134,10 @@ describe("RecentRequestsTable", () => {
     );
 
     expect(screen.getByText("Primary Account")).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "Plus" })).toBeInTheDocument();
+    expect(screen.getByText("Plus")).toBeInTheDocument();
     expect(screen.getByText("Key Alpha")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.1 (high, default)")).toBeInTheDocument();
     expect(screen.getByText("Requested priority")).toBeInTheDocument();
-    expect(screen.getByText("WS")).toBeInTheDocument();
     expect(screen.getByText("Rate limit")).toBeInTheDocument();
     expect(screen.getByText("rate_limit_exceeded")).toBeInTheDocument();
 
@@ -300,10 +299,8 @@ describe("RecentRequestsTable", () => {
     const claudeCells = within(claudeRow as HTMLElement).getAllByRole("cell");
     expect(claudeCells[1]).toHaveTextContent("CLIProxyAPI: claude@example.com");
     expect(claudeCells[1]).not.toHaveTextContent("Claude sidecar");
-    expect(claudeCells[4]).toHaveTextContent("claude-sonnet");
-    expect(claudeCells[4]).not.toHaveTextContent("Claude sidecar");
-    expect(claudeCells[5]).toHaveTextContent("HTTP");
-    expect(claudeCells[5]).not.toHaveTextContent("Sidecar HTTP");
+    expect(claudeCells[3]).toHaveTextContent("claude-sonnet");
+    expect(claudeCells[3]).not.toHaveTextContent("Claude sidecar");
 
     const openRouterRow = screen.getByText("openrouter/test-chat").closest("tr");
     expect(openRouterRow).not.toBeNull();
@@ -316,20 +313,16 @@ describe("RecentRequestsTable", () => {
     const omniRouteCells = within(omniRouteRow as HTMLElement).getAllByRole("cell");
     expect(omniRouteCells[1]).toHaveTextContent("OmniRoute");
     expect(omniRouteCells[1]).not.toHaveTextContent("OmniRoute sidecar");
-    expect(omniRouteCells[4]).toHaveTextContent("omniroute/test-chat");
-    expect(omniRouteCells[4]).not.toHaveTextContent("OmniRoute sidecar");
-    expect(omniRouteCells[5]).toHaveTextContent("HTTP");
-    expect(omniRouteCells[5]).not.toHaveTextContent("Sidecar HTTP");
+    expect(omniRouteCells[3]).toHaveTextContent("omniroute/test-chat");
+    expect(omniRouteCells[3]).not.toHaveTextContent("OmniRoute sidecar");
 
     const ollamaRow = screen.getByText("gpt-oss:120b-cloud").closest("tr");
     expect(ollamaRow).not.toBeNull();
     const ollamaCells = within(ollamaRow as HTMLElement).getAllByRole("cell");
     expect(ollamaCells[1]).toHaveTextContent("Ollama");
     expect(ollamaCells[1]).not.toHaveTextContent("Ollama sidecar");
-    expect(ollamaCells[4]).toHaveTextContent("gpt-oss:120b-cloud");
-    expect(ollamaCells[4]).not.toHaveTextContent("Ollama sidecar");
-    expect(ollamaCells[5]).toHaveTextContent("HTTP");
-    expect(ollamaCells[5]).not.toHaveTextContent("Sidecar HTTP");
+    expect(ollamaCells[3]).toHaveTextContent("gpt-oss:120b-cloud");
+    expect(ollamaCells[3]).not.toHaveTextContent("Ollama sidecar");
     expect(screen.queryByText("Sidecar HTTP")).not.toBeInTheDocument();
 
     const dialog = openRequestDetails();
