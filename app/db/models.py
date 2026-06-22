@@ -680,6 +680,7 @@ class DashboardSettings(Base):
         server_default=true(),
         nullable=False,
     )
+    claude_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     openrouter_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -727,6 +728,7 @@ class DashboardSettings(Base):
     openrouter_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     openrouter_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     openrouter_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    openrouter_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     omniroute_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -774,6 +776,7 @@ class DashboardSettings(Base):
     omniroute_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     omniroute_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     omniroute_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    omniroute_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     ollama_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -821,6 +824,7 @@ class DashboardSettings(Base):
     ollama_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     ollama_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ollama_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ollama_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     warmup_model: Mapped[str] = mapped_column(
         String,
         default="gpt-5.4-mini",

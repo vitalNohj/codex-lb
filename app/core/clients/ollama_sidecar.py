@@ -39,6 +39,7 @@ class OllamaSidecarConfig:
     connect_timeout_seconds: float
     request_timeout_seconds: float
     models_cache_ttl_seconds: float
+    default_reasoning_effort: str | None = None
 
 
 class OllamaSidecarError(Exception):

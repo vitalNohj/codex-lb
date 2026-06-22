@@ -46,6 +46,17 @@ const ThirdPartySidecarStatusValueSchema = z.enum([
   "healthy",
   "error",
 ]);
+export const SidecarReasoningEffortSchema = z.enum([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
+const SidecarDefaultReasoningEffortSchema = SidecarReasoningEffortSchema.nullable()
+  .optional()
+  .default(null);
 export const SidecarModelPrefixSchema = z.object({
   prefix: z.string().trim().min(1).max(64).transform((value) => value.toLowerCase()),
   strip: z.boolean().optional().default(false),
@@ -140,6 +151,7 @@ export const DashboardSettingsSchema = z
     claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional().default(15),
     claudeSidecarUsageQueueBatchSize: z.number().int().positive().optional().default(100),
     claudeSidecarUsageCollectionEnabled: z.boolean().optional().default(true),
+    claudeSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     openrouterSidecarEnabled: z.boolean().optional().default(false),
     openrouterSidecarBaseUrl: z.string().trim().min(1).optional().default("https://openrouter.ai/api/v1"),
     openrouterSidecarApiKeyConfigured: z.boolean().optional().default(false),
@@ -152,6 +164,7 @@ export const DashboardSettingsSchema = z
     openrouterSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     openrouterSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     openrouterSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    openrouterSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     omnirouteSidecarEnabled: z.boolean().optional().default(false),
     omnirouteSidecarBaseUrl: z.string().trim().min(1).optional().default("http://127.0.0.1:20128/v1"),
     omnirouteSidecarApiKeyConfigured: z.boolean().optional().default(false),
@@ -165,6 +178,7 @@ export const DashboardSettingsSchema = z
     omnirouteSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     omnirouteSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     omnirouteSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    omnirouteSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     ollamaSidecarEnabled: z.boolean().optional().default(false),
     ollamaSidecarBaseUrl: z.string().trim().min(1).optional().default("https://ollama.com"),
     ollamaSidecarApiKeyConfigured: z.boolean().optional().default(false),
@@ -177,6 +191,7 @@ export const DashboardSettingsSchema = z
     ollamaSidecarLastHealthMessage: z.string().nullable().optional().default(null),
     ollamaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     ollamaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    ollamaSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     guestAccessEnabled: z.boolean().optional().default(false),
     guestPasswordConfigured: z.boolean().optional().default(false),
   })
@@ -258,6 +273,7 @@ export const SettingsUpdateRequestSchema = z.object({
   claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional(),
   claudeSidecarUsageQueueBatchSize: z.number().int().positive().max(1000).optional(),
   claudeSidecarUsageCollectionEnabled: z.boolean().optional(),
+  claudeSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
   openrouterSidecarEnabled: z.boolean().optional(),
   openrouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
   openrouterSidecarApiKey: z.string().trim().max(4096).optional(),
@@ -267,6 +283,7 @@ export const SettingsUpdateRequestSchema = z.object({
   openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  openrouterSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
   omnirouteSidecarEnabled: z.boolean().optional(),
   omnirouteSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
   omnirouteSidecarApiKey: z.string().trim().max(4096).optional(),
@@ -277,6 +294,7 @@ export const SettingsUpdateRequestSchema = z.object({
   omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  omnirouteSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
   ollamaSidecarEnabled: z.boolean().optional(),
   ollamaSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
   ollamaSidecarApiKey: z.string().trim().max(4096).optional(),
@@ -286,6 +304,7 @@ export const SettingsUpdateRequestSchema = z.object({
   ollamaSidecarConnectTimeoutSeconds: z.number().positive().optional(),
   ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
   ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+  ollamaSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
   guestAccessEnabled: z.boolean().optional(),
 });
 
@@ -454,6 +473,7 @@ type OpenRouterSidecarSettingsFields = Pick<
   | "openrouterSidecarLastHealthMessage"
   | "openrouterSidecarLastCheckedAt"
   | "openrouterSidecarLastModelCount"
+  | "openrouterSidecarDefaultReasoningEffort"
 >;
 
 type OmniRouteSidecarSettingsFields = Pick<
@@ -471,6 +491,7 @@ type OmniRouteSidecarSettingsFields = Pick<
   | "omnirouteSidecarLastHealthMessage"
   | "omnirouteSidecarLastCheckedAt"
   | "omnirouteSidecarLastModelCount"
+  | "omnirouteSidecarDefaultReasoningEffort"
 >;
 
 type OllamaSidecarSettingsFields = Pick<
@@ -487,6 +508,7 @@ type OllamaSidecarSettingsFields = Pick<
   | "ollamaSidecarLastHealthMessage"
   | "ollamaSidecarLastCheckedAt"
   | "ollamaSidecarLastModelCount"
+  | "ollamaSidecarDefaultReasoningEffort"
 >;
 
 type ClaudeSidecarSettingsFields = Pick<
@@ -509,6 +531,7 @@ type ClaudeSidecarSettingsFields = Pick<
   | "claudeSidecarUsagePollIntervalSeconds"
   | "claudeSidecarUsageQueueBatchSize"
   | "claudeSidecarUsageCollectionEnabled"
+  | "claudeSidecarDefaultReasoningEffort"
 >;
 
 export type DashboardSettings = Omit<
@@ -528,6 +551,7 @@ export type DashboardSettings = Omit<
   Partial<OllamaSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 export type SidecarModelPrefix = z.infer<typeof SidecarModelPrefixSchema>;
+export type SidecarReasoningEffort = z.infer<typeof SidecarReasoningEffortSchema>;
 export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
 export type ClaudeSidecarStatusResponse = z.infer<typeof ClaudeSidecarStatusResponseSchema>;
 export type ClaudeSidecarTestResponse = z.infer<typeof ClaudeSidecarTestResponseSchema>;

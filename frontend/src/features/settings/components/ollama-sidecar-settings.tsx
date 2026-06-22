@@ -62,11 +62,13 @@ export function OllamaSidecarSettings({ settings, busy, onSave, bare = false }: 
         connectTimeout: settings.ollamaSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS,
         requestTimeout: settings.ollamaSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
         cacheTtl: settings.ollamaSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS,
+        defaultReasoningEffort: settings.ollamaSidecarDefaultReasoningEffort ?? null,
       }}
       models={{ rows: modelsQuery.data?.models ?? [], isLoading: modelsQuery.isLoading }}
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ ollamaSidecarEnabled: enabled })}
+      buildEffortPatch={(effort) => ({ ollamaSidecarDefaultReasoningEffort: effort })}
       buildPatch={(state) => ({
         ollamaSidecarBaseUrl: state.baseUrl,
         ollamaSidecarModelPrefixes: state.prefixes,
@@ -86,6 +88,7 @@ export function OllamaSidecarSettings({ settings, busy, onSave, bare = false }: 
           <SidecarIntegrationCard.Prefixes />
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
+          <SidecarIntegrationCard.ReasoningEffort />
           <SidecarIntegrationCard.Timeouts />
           <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>

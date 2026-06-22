@@ -152,3 +152,18 @@ def _set_reasoning_effort(body: dict[str, JsonValue], effort: str) -> None:
         if isinstance(existing_effort, str) and existing_effort.strip():
             return
     body["reasoning_effort"] = effort
+
+
+def set_reasoning_effort_if_absent(body: dict[str, JsonValue], effort: str | None) -> None:
+    """Set a default top-level ``reasoning_effort`` only when none is present.
+
+    A client-provided top-level ``reasoning_effort`` or nested
+    ``reasoning.effort`` always wins; a blank/None ``effort`` is a no-op.
+    """
+
+    if effort is None:
+        return
+    normalized = effort.strip()
+    if not normalized:
+        return
+    _set_reasoning_effort(body, normalized)

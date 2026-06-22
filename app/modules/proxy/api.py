@@ -148,7 +148,6 @@ from app.modules.proxy.request_policy import (
     normalize_responses_request_payload,
     openai_client_payload_error,
     openai_validation_error,
-    resolve_model_alias,
     strip_terminal_compaction_trigger_input,
     validate_model_access,
 )

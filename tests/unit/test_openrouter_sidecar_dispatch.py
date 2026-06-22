@@ -16,6 +16,7 @@ def _config(
     *,
     enabled: bool = True,
     prefixes: tuple[SidecarPrefix, ...] = (SidecarPrefix(prefix="deepseek/", strip=False),),
+    default_reasoning_effort: str | None = None,
 ) -> OpenRouterSidecarConfig:
     return OpenRouterSidecarConfig(
         enabled=enabled,
@@ -25,6 +26,7 @@ def _config(
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
+        default_reasoning_effort=default_reasoning_effort,
     )
 
 
@@ -44,6 +46,51 @@ def test_build_openrouter_chat_payload_preserves_extra_fields_and_effective_mode
     assert payload.body["model"] == "deepseek/deepseek-chat"
     assert payload.body["messages"] == [{"role": "user", "content": "hi"}]
     assert payload.body["custom_flag"] == "kept"
+
+
+def test_build_openrouter_chat_payload_injects_default_effort_when_absent() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
+    )
+
+    payload = build_openrouter_chat_payload(
+        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
+    )
+
+    assert payload.body["reasoning_effort"] == "high"
+
+
+def test_build_openrouter_chat_payload_default_effort_preserves_client_effort() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "low",
+        }
+    )
+
+    payload = build_openrouter_chat_payload(
+        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
+    )
+
+    assert payload.body["reasoning_effort"] == "low"
+
+
+def test_build_openrouter_chat_payload_default_effort_preserves_nested_reasoning() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "minimal"},
+        }
+    )
+
+    payload = build_openrouter_chat_payload(
+        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
+    )
+
+    assert payload.body["reasoning"]["effort"] == "minimal"
+    assert "reasoning_effort" not in payload.body
 
 
 @pytest.mark.asyncio

@@ -61,11 +61,13 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
         requestTimeout: settings.claudeSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
         cacheTtl: settings.claudeSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS,
         pollInterval: settings.claudeSidecarQuotaPollIntervalSeconds ?? DEFAULT_QUOTA_POLL_INTERVAL_SECONDS,
+        defaultReasoningEffort: settings.claudeSidecarDefaultReasoningEffort ?? null,
       }}
       models={{ rows: modelsQuery.data?.models ?? [], isLoading: modelsQuery.isLoading }}
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ claudeSidecarEnabled: enabled })}
+      buildEffortPatch={(effort) => ({ claudeSidecarDefaultReasoningEffort: effort })}
       buildPatch={(state) => ({
         claudeSidecarBaseUrl: state.baseUrl,
         claudeSidecarModelPrefixes: state.prefixes,
@@ -87,6 +89,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
           <SidecarIntegrationCard.Prefixes />
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
+          <SidecarIntegrationCard.ReasoningEffort />
           <SidecarIntegrationCard.Timeouts showPollInterval />
           <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>

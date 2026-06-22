@@ -128,6 +128,24 @@ def _normalize_ollama_sidecar_base_url(value: str | None) -> str | None:
     return normalized
 
 
+_SIDECAR_REASONING_EFFORT_VALUES: frozenset[str] = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh"}
+)
+
+
+def _normalize_sidecar_default_reasoning_effort(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in _SIDECAR_REASONING_EFFORT_VALUES:
+        raise ValueError(
+            "default_reasoning_effort must be one of none, minimal, low, medium, high, xhigh"
+        )
+    return normalized
+
+
 class AdditionalQuotaPolicy(DashboardModel):
     quota_key: str
     display_label: str
@@ -234,6 +252,7 @@ class DashboardSettingsResponse(DashboardModel):
     claude_sidecar_usage_poll_interval_seconds: float = Field(default=15.0, gt=0)
     claude_sidecar_usage_queue_batch_size: int = Field(default=100, gt=0)
     claude_sidecar_usage_collection_enabled: bool = True
+    claude_sidecar_default_reasoning_effort: str | None = None
     openrouter_sidecar_enabled: bool = False
     openrouter_sidecar_base_url: str = Field(default="https://openrouter.ai/api/v1", min_length=1)
     openrouter_sidecar_api_key_configured: bool = False
@@ -246,6 +265,7 @@ class DashboardSettingsResponse(DashboardModel):
     openrouter_sidecar_last_health_message: str | None = None
     openrouter_sidecar_last_checked_at: datetime | None = None
     openrouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    openrouter_sidecar_default_reasoning_effort: str | None = None
     omniroute_sidecar_enabled: bool = False
     omniroute_sidecar_base_url: str = Field(default="http://127.0.0.1:20128/v1", min_length=1)
     omniroute_sidecar_api_key_configured: bool = False
@@ -259,6 +279,7 @@ class DashboardSettingsResponse(DashboardModel):
     omniroute_sidecar_last_health_message: str | None = None
     omniroute_sidecar_last_checked_at: datetime | None = None
     omniroute_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    omniroute_sidecar_default_reasoning_effort: str | None = None
     ollama_sidecar_enabled: bool = False
     ollama_sidecar_base_url: str = Field(default="https://ollama.com", min_length=1)
     ollama_sidecar_api_key_configured: bool = False
@@ -271,6 +292,7 @@ class DashboardSettingsResponse(DashboardModel):
     ollama_sidecar_last_health_message: str | None = None
     ollama_sidecar_last_checked_at: datetime | None = None
     ollama_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    ollama_sidecar_default_reasoning_effort: str | None = None
     guest_access_enabled: bool
     guest_password_configured: bool
 
@@ -327,6 +349,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     claude_sidecar_usage_poll_interval_seconds: float | None = Field(default=None, gt=0)
     claude_sidecar_usage_queue_batch_size: int | None = Field(default=None, gt=0, le=1000)
     claude_sidecar_usage_collection_enabled: bool | None = None
+    claude_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     openrouter_sidecar_enabled: bool | None = None
     openrouter_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     openrouter_sidecar_api_key: str | None = Field(default=None, max_length=4096)
@@ -336,6 +359,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     openrouter_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    openrouter_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     omniroute_sidecar_enabled: bool | None = None
     omniroute_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     omniroute_sidecar_api_key: str | None = Field(default=None, max_length=4096)
@@ -346,6 +370,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     omniroute_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     omniroute_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     omniroute_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    omniroute_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     ollama_sidecar_enabled: bool | None = None
     ollama_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     ollama_sidecar_api_key: str | None = Field(default=None, max_length=4096)
@@ -355,6 +380,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     ollama_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
     ollama_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     ollama_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    ollama_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     guest_access_enabled: bool | None = None
 
     @field_validator("warmup_model")
@@ -505,6 +531,16 @@ class DashboardSettingsUpdateRequest(DashboardModel):
         if value is None:
             return None
         return value.strip()
+
+    @field_validator(
+        "claude_sidecar_default_reasoning_effort",
+        "openrouter_sidecar_default_reasoning_effort",
+        "omniroute_sidecar_default_reasoning_effort",
+        "ollama_sidecar_default_reasoning_effort",
+    )
+    @classmethod
+    def _normalize_default_reasoning_effort(cls, value: str | None) -> str | None:
+        return _normalize_sidecar_default_reasoning_effort(value)
 
 
 class RuntimeConnectAddressResponse(DashboardModel):

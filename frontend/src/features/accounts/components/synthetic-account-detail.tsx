@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { ClaudeSidecarQuotaEstimation } from "@/features/accounts/components/claude-sidecar-quota-estimation";
+import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import {
   useSidecarConnectionTest,
@@ -134,6 +135,8 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
       ) : null}
 
       {isClaude ? <ClaudeSidecarQuotaEstimation /> : null}
+
+      <SidecarEffortSelect provider={account.provider} />
 
       {account.healthMessage ? (
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">

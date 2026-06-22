@@ -81,6 +81,7 @@ def ollama_sidecar_config_from_settings(settings: DashboardSettings) -> OllamaSi
         connect_timeout_seconds=settings.ollama_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.ollama_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.ollama_sidecar_models_cache_ttl_seconds,
+        default_reasoning_effort=settings.ollama_sidecar_default_reasoning_effort,
     )
 
 
@@ -94,7 +95,11 @@ def _decrypt_ollama_secret(encrypted: bytes | None) -> str | None:
         return None
 
 
-def build_ollama_chat_payload(payload: ChatCompletionsRequest, effective_model: str) -> OllamaChatPayload:
+def build_ollama_chat_payload(
+    payload: ChatCompletionsRequest,
+    effective_model: str,
+    default_reasoning_effort: str | None = None,
+) -> OllamaChatPayload:
     body: dict[str, JsonValue] = {
         "model": effective_model.strip(),
         "stream": bool(payload.stream),
@@ -111,6 +116,10 @@ def build_ollama_chat_payload(payload: ChatCompletionsRequest, effective_model: 
     if options:
         body["options"] = options
     thinking = _ollama_thinking(payload)
+    if thinking is None and default_reasoning_effort:
+        # Provider default maps to Ollama's ``think`` field only when the request
+        # did not already enable thinking; the client's effort always wins.
+        thinking = default_reasoning_effort.strip() or None
     if thinking is not None:
         body["think"] = thinking
     return OllamaChatPayload(body=body)
@@ -129,7 +138,9 @@ async def proxy_chat_to_ollama(
     cursor_compat: bool = False,
     wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_ollama_chat_payload(payload, wire_model or effective_model)
+    sidecar_payload = build_ollama_chat_payload(
+        payload, wire_model or effective_model, client.config.default_reasoning_effort
+    )
     requested_at = time.monotonic()
     if payload.stream:
         _ensure_ollama_stream_usage_requested(sidecar_payload.body)
