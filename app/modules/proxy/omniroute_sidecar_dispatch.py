@@ -53,7 +53,7 @@ from app.modules.proxy.omniroute_responses_dispatch import (
     omniroute_chat_to_responses_result,
     responses_to_omniroute_chat_request,
 )
-from app.modules.proxy.sidecar_model_profiles import set_reasoning_effort_if_absent
+from app.modules.proxy.sidecar_model_profiles import set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -120,7 +120,7 @@ def build_omniroute_chat_payload(
 ) -> OmniRouteChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     body["model"] = effective_model.strip()
-    set_reasoning_effort_if_absent(body, default_reasoning_effort)
+    set_reasoning_effort_override(body, default_reasoning_effort)
     return OmniRouteChatPayload(body=body)
 
 

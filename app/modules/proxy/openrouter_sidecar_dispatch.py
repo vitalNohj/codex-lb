@@ -47,7 +47,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
-from app.modules.proxy.sidecar_model_profiles import set_reasoning_effort_if_absent
+from app.modules.proxy.sidecar_model_profiles import set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -116,7 +116,7 @@ def build_openrouter_chat_payload(
     # ``effective_model`` is the wire model already resolved (and stripped per
     # the matched prefix's flag) by the unified resolver.
     body["model"] = effective_model.strip()
-    set_reasoning_effort_if_absent(body, config.default_reasoning_effort)
+    set_reasoning_effort_override(body, config.default_reasoning_effort)
     return OpenRouterChatPayload(body=body)
 
 

@@ -41,7 +41,7 @@ def test_build_omniroute_chat_payload_preserves_extra_fields_and_effective_model
     assert payload.body["custom_flag"] == "kept"
 
 
-def test_build_omniroute_chat_payload_injects_default_effort_when_absent() -> None:
+def test_build_omniroute_chat_payload_injects_override_effort_when_absent() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
@@ -51,7 +51,7 @@ def test_build_omniroute_chat_payload_injects_default_effort_when_absent() -> No
     assert payload.body["reasoning_effort"] == "high"
 
 
-def test_build_omniroute_chat_payload_default_effort_preserves_client_effort() -> None:
+def test_build_omniroute_chat_payload_override_replaces_client_effort() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "gpt-5.4",
@@ -62,4 +62,4 @@ def test_build_omniroute_chat_payload_default_effort_preserves_client_effort() -
 
     payload = build_omniroute_chat_payload(request, "omniroute/test-chat", "high")
 
-    assert payload.body["reasoning_effort"] == "low"
+    assert payload.body["reasoning_effort"] == "high"

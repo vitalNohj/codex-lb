@@ -52,8 +52,8 @@ from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
 from app.modules.proxy.sidecar_model_profiles import (
-    apply_sidecar_model_profile,
-    set_reasoning_effort_if_absent,
+    apply_sidecar_model_profile_with_suffix_effort,
+    set_reasoning_effort_override,
 )
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -504,10 +504,14 @@ def build_sidecar_chat_payload(
     # The unified resolver already produced the wire model (prefix stripped per
     # the matched prefix's strip flag); apply the canonical-model + reasoning
     # effort profile to that wire model.
-    apply_sidecar_model_profile(body, stripped_model=effective_model)
-    # Provider default fills in only after client effort and model-suffix effort
-    # have had their chance (set_reasoning_effort_if_absent is a no-op otherwise).
-    set_reasoning_effort_if_absent(body, config.default_reasoning_effort)
+    _, suffix_effort_applied = apply_sidecar_model_profile_with_suffix_effort(
+        body, stripped_model=effective_model
+    )
+    # The configured override forces the provider effort over any client-sent
+    # value, but an explicit model-name suffix is the highest precedence, so the
+    # override only applies when the model name carried no effort suffix.
+    if not suffix_effort_applied:
+        set_reasoning_effort_override(body, config.default_reasoning_effort)
     sanitize_sidecar_forward_payload(body)
     normalize_sidecar_cursor_tool_history(body)
     sanitize_sidecar_chat_tool_ids(body)

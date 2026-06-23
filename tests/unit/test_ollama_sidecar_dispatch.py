@@ -115,7 +115,7 @@ def test_build_ollama_chat_payload_converts_chat_request_to_sdk_shape() -> None:
     }
 
 
-def test_build_ollama_chat_payload_injects_default_effort_as_think() -> None:
+def test_build_ollama_chat_payload_injects_override_effort_as_think() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-oss:120b-cloud", "messages": [{"role": "user", "content": "hi"}]}
     )
@@ -126,7 +126,7 @@ def test_build_ollama_chat_payload_injects_default_effort_as_think() -> None:
     assert "reasoning_effort" not in payload.body
 
 
-def test_build_ollama_chat_payload_default_effort_does_not_override_client_thinking() -> None:
+def test_build_ollama_chat_payload_override_effort_replaces_client_thinking() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "gpt-oss:120b-cloud",
@@ -137,10 +137,10 @@ def test_build_ollama_chat_payload_default_effort_does_not_override_client_think
 
     payload = build_ollama_chat_payload(request, "gpt-oss:120b-cloud", "low")
 
-    assert payload.body["think"] == "high"
+    assert payload.body["think"] == "low"
 
 
-def test_build_ollama_chat_payload_without_default_effort_omits_think() -> None:
+def test_build_ollama_chat_payload_without_override_effort_omits_think() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-oss:120b-cloud", "messages": [{"role": "user", "content": "hi"}]}
     )

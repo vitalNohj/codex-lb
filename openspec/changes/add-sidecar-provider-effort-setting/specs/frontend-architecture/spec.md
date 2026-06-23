@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Sidecar provider default effort is editable from Settings and account cards
+### Requirement: Sidecar provider effort override is editable from Settings and account cards
 
-The Settings page sidecar integration cards and the Accounts/Dashboard synthetic account cards SHALL expose the same per-provider default reasoning effort value and both SHALL persist changes through the settings update endpoint. Each sidecar provider (CLIProxyAPI/Claude, OpenRouter, OmniRoute, Ollama) renders a labeled effort dropdown with options `Default`, `None`, `Minimal`, `Low`, `Medium`, `High`, and `Extra high`, where `Default` corresponds to a null stored value and `Extra high` corresponds to `xhigh`. The Settings dropdown and the matching account-card dropdown MUST read and write the same settings field for that provider, so editing one reflects in the other after settings reload.
+The Settings page sidecar integration cards and the Accounts/Dashboard synthetic account cards SHALL expose the same per-provider reasoning effort override value and both SHALL persist changes through the settings update endpoint. Each sidecar provider (CLIProxyAPI/Claude, OpenRouter, OmniRoute, Ollama) renders a dropdown labeled `Reasoning effort override` with options `Default`, `None`, `Minimal`, `Low`, `Medium`, `High`, and `Extra high`, where `Default` corresponds to a null stored value and `Extra high` corresponds to `xhigh`. The Settings dropdown and the matching account-card dropdown MUST read and write the same settings field for that provider, so editing one reflects in the other after settings reload.
 
 #### Scenario: Settings dropdown saves the selected effort
 

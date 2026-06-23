@@ -48,7 +48,7 @@ def test_build_openrouter_chat_payload_preserves_extra_fields_and_effective_mode
     assert payload.body["custom_flag"] == "kept"
 
 
-def test_build_openrouter_chat_payload_injects_default_effort_when_absent() -> None:
+def test_build_openrouter_chat_payload_injects_override_effort_when_absent() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
@@ -60,7 +60,7 @@ def test_build_openrouter_chat_payload_injects_default_effort_when_absent() -> N
     assert payload.body["reasoning_effort"] == "high"
 
 
-def test_build_openrouter_chat_payload_default_effort_preserves_client_effort() -> None:
+def test_build_openrouter_chat_payload_override_replaces_client_effort() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "gpt-5.4",
@@ -73,10 +73,10 @@ def test_build_openrouter_chat_payload_default_effort_preserves_client_effort() 
         request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
     )
 
-    assert payload.body["reasoning_effort"] == "low"
+    assert payload.body["reasoning_effort"] == "high"
 
 
-def test_build_openrouter_chat_payload_default_effort_preserves_nested_reasoning() -> None:
+def test_build_openrouter_chat_payload_override_replaces_nested_reasoning() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "gpt-5.4",
@@ -89,8 +89,8 @@ def test_build_openrouter_chat_payload_default_effort_preserves_nested_reasoning
         request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
     )
 
-    assert payload.body["reasoning"]["effort"] == "minimal"
-    assert "reasoning_effort" not in payload.body
+    assert payload.body["reasoning_effort"] == "high"
+    assert "reasoning" not in payload.body
 
 
 @pytest.mark.asyncio

@@ -55,11 +55,25 @@ def sidecar_prefixed_model_ids(model_id: str, config: ClaudeSidecarConfig) -> tu
 
 
 def apply_sidecar_model_profile(body: dict[str, JsonValue], *, stripped_model: str) -> str:
+    wire_model, _ = apply_sidecar_model_profile_with_suffix_effort(body, stripped_model=stripped_model)
+    return wire_model
+
+
+def apply_sidecar_model_profile_with_suffix_effort(
+    body: dict[str, JsonValue], *, stripped_model: str
+) -> tuple[str, bool]:
+    """Apply the canonical-model + suffix-effort profile.
+
+    Returns the resolved wire model and whether a model-name suffix effort was
+    applied. The boolean lets callers keep an explicit suffix as the highest
+    precedence (it must beat a configured override).
+    """
+
     wire_model, suffix_effort = _resolve_sidecar_wire_model_and_effort(stripped_model.strip())
     body["model"] = wire_model
     if suffix_effort is not None:
         _set_reasoning_effort(body, suffix_effort)
-    return wire_model
+    return wire_model, suffix_effort is not None
 
 
 def _resolve_sidecar_wire_model_and_effort(model: str) -> tuple[str, str | None]:
@@ -154,11 +168,14 @@ def _set_reasoning_effort(body: dict[str, JsonValue], effort: str) -> None:
     body["reasoning_effort"] = effort
 
 
-def set_reasoning_effort_if_absent(body: dict[str, JsonValue], effort: str | None) -> None:
-    """Set a default top-level ``reasoning_effort`` only when none is present.
+def set_reasoning_effort_override(body: dict[str, JsonValue], effort: str | None) -> None:
+    """Force the configured ``reasoning_effort`` onto the forwarded payload.
 
-    A client-provided top-level ``reasoning_effort`` or nested
-    ``reasoning.effort`` always wins; a blank/None ``effort`` is a no-op.
+    Unlike a fill-when-absent default, this overrides any client-supplied
+    top-level ``reasoning_effort`` and any nested ``reasoning.effort``: the
+    configured value is written to the top level and the nested effort is
+    stripped so a downstream promotion of ``reasoning.effort`` cannot win. A
+    blank/None ``effort`` is a no-op (override unset).
     """
 
     if effort is None:
@@ -166,4 +183,10 @@ def set_reasoning_effort_if_absent(body: dict[str, JsonValue], effort: str | Non
     normalized = effort.strip()
     if not normalized:
         return
-    _set_reasoning_effort(body, normalized)
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        reasoning_dict = cast(dict[str, JsonValue], reasoning)
+        reasoning_dict.pop("effort", None)
+        if not reasoning_dict:
+            body.pop("reasoning", None)
+    body["reasoning_effort"] = normalized

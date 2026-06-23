@@ -983,7 +983,7 @@ function ReasoningEffort() {
   const { busy, meta, state, actions } = useSidecarIntegration();
   return (
     <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-default-effort`}>
-      Default reasoning effort
+      Reasoning effort override
       <Select
         value={state.defaultReasoningEffort ?? REASONING_EFFORT_UNSET}
         onValueChange={(value) =>
@@ -1005,7 +1005,7 @@ function ReasoningEffort() {
         </SelectContent>
       </Select>
       <span className="block font-normal text-muted-foreground">
-        Injected only when the request does not already specify an effort.
+        Forces this effort on every request, overriding what the client sends (an explicit model-name suffix still wins).
       </span>
     </label>
   );
