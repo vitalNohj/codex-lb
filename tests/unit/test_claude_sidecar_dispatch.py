@@ -53,7 +53,7 @@ def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model()
     assert payload.body["custom_flag"] == "kept"
 
 
-def test_build_sidecar_chat_payload_injects_default_effort_when_absent() -> None:
+def test_build_sidecar_chat_payload_injects_override_effort_when_absent() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
@@ -65,7 +65,7 @@ def test_build_sidecar_chat_payload_injects_default_effort_when_absent() -> None
     assert payload.body["reasoning_effort"] == "medium"
 
 
-def test_build_sidecar_chat_payload_default_effort_preserves_client_effort() -> None:
+def test_build_sidecar_chat_payload_override_replaces_client_effort() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "gpt-5.4",
@@ -78,10 +78,27 @@ def test_build_sidecar_chat_payload_default_effort_preserves_client_effort() -> 
         request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
     )
 
-    assert payload.body["reasoning_effort"] == "low"
+    assert payload.body["reasoning_effort"] == "medium"
 
 
-def test_build_sidecar_chat_payload_model_suffix_effort_beats_default() -> None:
+def test_build_sidecar_chat_payload_override_replaces_nested_reasoning() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "minimal"},
+        }
+    )
+
+    payload = build_sidecar_chat_payload(
+        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
+    )
+
+    assert payload.body["reasoning_effort"] == "medium"
+    assert "reasoning" not in payload.body
+
+
+def test_build_sidecar_chat_payload_model_suffix_effort_beats_override() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )

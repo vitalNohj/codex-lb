@@ -60,7 +60,7 @@ export function SidecarEffortSelect({
   return (
     <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/20 px-2.5 py-2 text-xs">
       <label htmlFor="sidecar-effort-select" className="font-medium">
-        Default reasoning effort
+        Reasoning effort override
       </label>
       <Select value={current ?? REASONING_EFFORT_UNSET} onValueChange={handleChange}>
         <SelectTrigger id="sidecar-effort-select" className="h-7 w-40 text-xs" disabled={busy}>

@@ -116,10 +116,11 @@ def build_ollama_chat_payload(
     if options:
         body["options"] = options
     thinking = _ollama_thinking(payload)
-    if thinking is None and default_reasoning_effort:
-        # Provider default maps to Ollama's ``think`` field only when the request
-        # did not already enable thinking; the client's effort always wins.
-        thinking = default_reasoning_effort.strip() or None
+    override = default_reasoning_effort.strip() if default_reasoning_effort else None
+    if override:
+        # Configured override maps to Ollama's ``think`` field and forces the
+        # value over any client-supplied thinking.
+        thinking = override
     if thinking is not None:
         body["think"] = thinking
     return OllamaChatPayload(body=body)

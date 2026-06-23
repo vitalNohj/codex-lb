@@ -9,10 +9,10 @@
 ## 2. Sidecar dispatch injection
 
 - [ ] 2.1 Add `default_reasoning_effort: str | None = None` to the four sidecar config dataclasses and populate them from settings.
-- [ ] 2.2 Add a reusable `set_reasoning_effort_if_absent(body, effort)` helper preserving "client effort wins".
-- [ ] 2.3 Inject the provider default in Claude (after suffix profile), OpenRouter, and OmniRoute builders.
-- [ ] 2.4 Inject the Ollama default through the `think` field only when thinking is not already enabled; update callers.
-- [ ] 2.5 Add per-provider tests proving default injection, explicit-effort preservation, Claude suffix precedence, and Ollama `think` mapping.
+- [ ] 2.2 Add a reusable `set_reasoning_effort_override(body, effort)` helper that forces the configured value over client effort and strips nested `reasoning.effort`.
+- [ ] 2.3 Apply the provider override in Claude (only when no model-name suffix effort), OpenRouter, and OmniRoute builders.
+- [ ] 2.4 Apply the Ollama override through the `think` field even when thinking is already enabled; update callers.
+- [ ] 2.5 Add per-provider tests proving override injection, client-effort override, nested-effort stripping, Claude suffix precedence, and Ollama `think` mapping.
 
 ## 3. Settings UI dropdown
 
