@@ -273,6 +273,8 @@ async def test_log_ollama_request_records_source_tokens_and_null_cost(monkeypatc
             "status": "success",
             "error_code": None,
             "error_message": None,
+            "reasoning_effort": None,
+            "requested_reasoning_effort": None,
             "transport": "http",
             "api_key_id": None,
             "source": OLLAMA_SIDECAR_SOURCE,

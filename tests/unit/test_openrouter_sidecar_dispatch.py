@@ -171,3 +171,48 @@ async def test_log_openrouter_free_request_records_reference_cost(monkeypatch: p
     # Free model: actual spend is 0 but reference (paid-equivalent) cost is recorded.
     assert calls[0]["cost_usd"] == 0.0
     assert calls[0]["reference_cost_usd"] == pytest.approx(0.016)
+
+
+def test_build_openrouter_chat_payload_captures_requested_and_effective_with_override() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "medium",
+        }
+    )
+
+    payload = build_openrouter_chat_payload(
+        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
+    )
+
+    assert payload.requested_reasoning_effort == "medium"
+    assert payload.effective_reasoning_effort == "high"
+
+
+def test_build_openrouter_chat_payload_requested_equals_effective_without_override() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high",
+        }
+    )
+
+    payload = build_openrouter_chat_payload(request, "deepseek/deepseek-chat", _config())
+
+    assert payload.requested_reasoning_effort == "high"
+    assert payload.effective_reasoning_effort == "high"
+
+
+def test_build_openrouter_chat_payload_requested_none_effective_override() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
+    )
+
+    payload = build_openrouter_chat_payload(
+        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="low")
+    )
+
+    assert payload.requested_reasoning_effort is None
+    assert payload.effective_reasoning_effort == "low"

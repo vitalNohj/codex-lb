@@ -190,3 +190,21 @@ def set_reasoning_effort_override(body: dict[str, JsonValue], effort: str | None
         if not reasoning_dict:
             body.pop("reasoning", None)
     body["reasoning_effort"] = normalized
+
+
+def read_reasoning_effort(body: dict[str, JsonValue]) -> str | None:
+    """Return the reasoning effort present on a chat payload body, or ``None``.
+
+    Reads top-level ``reasoning_effort`` first, then a nested ``reasoning.effort``.
+    Used to capture the client-requested effort before any override is applied.
+    """
+
+    top_level = body.get("reasoning_effort")
+    if isinstance(top_level, str) and top_level.strip():
+        return top_level.strip()
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = cast(dict[str, JsonValue], reasoning).get("effort")
+        if isinstance(effort, str) and effort.strip():
+            return effort.strip()
+    return None
