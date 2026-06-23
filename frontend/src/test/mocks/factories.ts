@@ -328,6 +328,7 @@ export function createRequestLogEntry(
 		outputTokens: 600,
 		cachedInputTokens: 320,
 		reasoningEffort: null,
+		requestedReasoningEffort: null,
 		costUsd: 0.0132,
 		costBreakdown: {
 			inputUsd: 0.0054,

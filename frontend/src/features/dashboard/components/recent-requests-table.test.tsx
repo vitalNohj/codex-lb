@@ -120,6 +120,7 @@ describe("RecentRequestsTable", () => {
              outputTokens: 200,
              cachedInputTokens: 200,
              reasoningEffort: "high",
+             requestedReasoningEffort: "medium",
              costUsd: 0.01,
              costBreakdown: {
                inputUsd: 0.004,
@@ -138,6 +139,7 @@ describe("RecentRequestsTable", () => {
     expect(screen.getByText("Key Alpha")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.1 (high, default)")).toBeInTheDocument();
     expect(screen.getByText("Requested priority")).toBeInTheDocument();
+    expect(screen.getByText("Requested effort medium")).toBeInTheDocument();
     expect(screen.getByText("Rate limit")).toBeInTheDocument();
     expect(screen.getByText("rate_limit_exceeded")).toBeInTheDocument();
 

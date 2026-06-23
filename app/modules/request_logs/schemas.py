@@ -45,6 +45,7 @@ class RequestLogEntry(DashboardModel):
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
     reasoning_effort: str | None = None
+    requested_reasoning_effort: str | None = None
     cost_usd: float | None = None
     cost_breakdown: RequestLogCostBreakdown = Field(default_factory=RequestLogCostBreakdown)
     reference_cost_usd: float | None = None

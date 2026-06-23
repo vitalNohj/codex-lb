@@ -224,6 +224,9 @@ export function RecentRequestsTable({
               const visibleServiceTier = request.actualServiceTier ?? request.serviceTier;
               const showRequestedTier =
                 !!request.requestedServiceTier && request.requestedServiceTier !== visibleServiceTier;
+              const showRequestedEffort =
+                !!request.requestedReasoningEffort &&
+                request.requestedReasoningEffort !== request.reasoningEffort;
               const planType = request.planType?.trim().toLowerCase() || null;
               const planLabel = planType ? formatSlug(planType) : "--";
 
@@ -270,6 +273,11 @@ export function RecentRequestsTable({
                       {showRequestedTier ? (
                         <div className="text-[11px] text-muted-foreground">
                           Requested {request.requestedServiceTier}
+                        </div>
+                      ) : null}
+                      {showRequestedEffort ? (
+                        <div className="text-[11px] text-muted-foreground">
+                          Requested effort {request.requestedReasoningEffort}
                         </div>
                       ) : null}
                     </div>
@@ -368,6 +376,10 @@ export function RecentRequestsTable({
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label="Status" value={selectedRequest ? (REQUEST_STATUS_LABELS[selectedRequest.status] ?? selectedRequest.status) : "—"} />
                 <RequestDetailField label="Model" value={selectedRequest ? formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier) : "—"} mono />
+                {selectedRequest?.requestedReasoningEffort &&
+                selectedRequest.requestedReasoningEffort !== selectedRequest.reasoningEffort ? (
+                  <RequestDetailField label="Requested effort" value={selectedRequest.requestedReasoningEffort} mono />
+                ) : null}
                 <RequestDetailField label="Request kind" value={selectedRequest ? (REQUEST_KIND_LABELS[selectedRequest.requestKind] ?? selectedRequest.requestKind) : "—"} />
                 <RequestDetailField label="Plan" value={selectedRequest?.planType ? formatSlug(selectedRequest.planType) : "—"} />
               </div>
