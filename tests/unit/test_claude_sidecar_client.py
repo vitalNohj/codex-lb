@@ -7,6 +7,7 @@ from app.core.clients.claude_sidecar import (
     ClaudeSidecarConfig,
     ClaudeSidecarError,
     ClaudeSidecarUnavailableError,
+    SidecarPrefix,
 )
 
 pytestmark = pytest.mark.unit
@@ -18,7 +19,7 @@ def _config(**overrides) -> ClaudeSidecarConfig:
         "enabled": True,
         "base_url": "http://127.0.0.1:8317",
         "api_key": None,
-        "model_prefixes": ("claude",),
+        "prefixes": (SidecarPrefix(prefix="claude", strip=False),),
         "connect_timeout_seconds": 8.0,
         "request_timeout_seconds": 600.0,
         "models_cache_ttl_seconds": 60.0,
@@ -222,6 +223,64 @@ async def test_pop_usage_queue_transport_failure_unavailable(monkeypatch) -> Non
 
     with pytest.raises(ClaudeSidecarUnavailableError):
         await client.pop_usage_queue(10)
+
+
+@pytest.mark.asyncio
+async def test_api_call_posts_passthrough_and_returns_body_json(monkeypatch) -> None:
+    session = _FakeSession(
+        post_response=_FakeResponse(
+            200,
+            '{"status_code":200,"body":"{\\"five_hour\\":{\\"utilization\\":0.25}}"}',
+        )
+    )
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    body = await client.api_call(
+        auth_index="0",
+        method="GET",
+        url="https://api.anthropic.com/api/oauth/usage",
+        header={"Authorization": "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20"},
+    )
+
+    assert session.last_headers["Authorization"] == "Bearer mgmt"
+    assert session.last_json["auth_index"] == "0"
+    assert session.last_json["url"] == "https://api.anthropic.com/api/oauth/usage"
+    assert session.last_json["header"]["Authorization"] == "Bearer $TOKEN$"
+    assert body == {"five_hour": {"utilization": 0.25}}
+
+
+@pytest.mark.asyncio
+async def test_api_call_upstream_4xx_becomes_error(monkeypatch) -> None:
+    session = _FakeSession(
+        post_response=_FakeResponse(200, '{"status_code":429,"body":"rate limited"}')
+    )
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.api_call(
+            auth_index="0",
+            method="GET",
+            url="https://api.anthropic.com/api/oauth/usage",
+            header={"Authorization": "Bearer $TOKEN$"},
+        )
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_api_call_transport_failure_unavailable(monkeypatch) -> None:
+    session = _FakeSession(post_response=OSError("boom"))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarUnavailableError):
+        await client.api_call(
+            auth_index="0",
+            method="GET",
+            url="https://api.anthropic.com/api/oauth/usage",
+            header={"Authorization": "Bearer $TOKEN$"},
+        )
 
 
 @pytest.mark.asyncio
