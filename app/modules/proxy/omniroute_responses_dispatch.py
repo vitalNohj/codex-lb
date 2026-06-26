@@ -71,27 +71,76 @@ def _input_item_to_message(item: JsonValue) -> JsonValue | None:
     role_name = role if isinstance(role, str) and role else "user"
     if role_name not in ("system", "developer", "user", "assistant", "tool"):
         role_name = "user"
-    text = _extract_item_text(item.get("content"))
-    if text is None:
+    content = _extract_item_content(item.get("content"))
+    if content is None:
         return None
-    return {"role": role_name, "content": text}
+    return {"role": role_name, "content": content}
 
 
-def _extract_item_text(content: JsonValue) -> str | None:
+def _extract_item_content(content: JsonValue) -> JsonValue | None:
+    """Translate a Responses content value into OpenAI chat content.
+
+    Text-only content collapses to a plain string so simple turns stay
+    compact, but multimodal content (images) is preserved as an OpenAI chat
+    content-parts array (``text`` + ``image_url`` parts). Dropping the image
+    parts here is what previously made images invisible to OmniRoute when a
+    request arrived on the Responses endpoints.
+    """
+
     if isinstance(content, str):
         return content
     if not is_json_list(content):
         return None
-    parts: list[str] = []
+    text_parts: list[str] = []
+    chat_parts: list[JsonValue] = []
+    has_image = False
     for part in content:
         if not is_json_mapping(part):
             continue
         text_value = part.get("text")
         if isinstance(text_value, str):
-            parts.append(text_value)
-    if not parts:
+            text_parts.append(text_value)
+            chat_parts.append({"type": "text", "text": text_value})
+            continue
+        image_part = _responses_image_part_to_chat(part)
+        if image_part is not None:
+            has_image = True
+            chat_parts.append(image_part)
+    if has_image:
+        return chat_parts
+    if not text_parts:
         return None
-    return "".join(parts)
+    return "".join(text_parts)
+
+
+def _responses_image_part_to_chat(part: Mapping[str, JsonValue]) -> JsonValue | None:
+    """Map a Responses ``input_image``/``image_url`` part to a chat image part.
+
+    Returns the OpenAI chat ``{"type": "image_url", "image_url": {...}}`` shape
+    accepted by OmniRoute, or ``None`` when the part has no usable image URL.
+    """
+
+    part_type = part.get("type")
+    if part_type not in ("input_image", "image_url"):
+        return None
+    image_url = part.get("image_url")
+    if isinstance(image_url, str):
+        url = image_url
+    elif is_json_mapping(image_url):
+        url = image_url.get("url")
+    else:
+        url = None
+    if not isinstance(url, str) or not url:
+        return None
+    image_payload: JsonObject = {"url": url}
+    detail = part.get("detail")
+    if isinstance(detail, str) and detail:
+        image_payload["detail"] = detail
+    elif is_json_mapping(image_url):
+        detail_value = image_url.get("detail")
+        if isinstance(detail_value, str) and detail_value:
+            image_payload["detail"] = detail_value
+    return {"type": "image_url", "image_url": image_payload}
 
 
 def omniroute_chat_to_responses_result(chat_body: JsonValue, *, model: str) -> JsonObject:
