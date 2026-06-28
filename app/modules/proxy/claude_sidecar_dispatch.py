@@ -51,7 +51,11 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
-from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile
+from app.modules.proxy.sidecar_model_profiles import (
+    apply_sidecar_model_profile_with_suffix_effort,
+    read_reasoning_effort,
+    set_reasoning_effort_override,
+)
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -87,6 +91,8 @@ class SidecarUsage:
 class SidecarChatPayload:
     body: dict[str, JsonValue]
     reverse_tool_names: dict[str, str]
+    requested_reasoning_effort: str | None = None
+    effective_reasoning_effort: str | None = None
 
 
 def claude_routing_entry(config: ClaudeSidecarConfig) -> SidecarRoutingEntry:
@@ -121,6 +127,7 @@ def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarCo
         models_cache_ttl_seconds=settings.claude_sidecar_models_cache_ttl_seconds,
         full_models=parse_sidecar_full_models(settings.claude_sidecar_full_models_json),
         management_key=management_key,
+        default_reasoning_effort=settings.claude_sidecar_default_reasoning_effort,
     )
 
 
@@ -270,7 +277,40 @@ def _normalize_sidecar_content_part(part: JsonValue) -> JsonValue:
     part_type = part_dict.get("type")
     if part_type in {"input_text", "output_text"}:
         part_dict["type"] = "text"
+    elif part_type == "image":
+        converted = _sidecar_image_part_to_image_url(part_dict)
+        if converted is not None:
+            return converted
     return cast(JsonValue, part_dict)
+
+
+def _sidecar_image_part_to_image_url(part: dict[str, JsonValue]) -> JsonValue | None:
+    """Convert an Anthropic-native image block into the OpenAI ``image_url``
+    data-URL shape that CLIProxyAPI accepts.
+
+    Anthropic shape (sent by Cursor vision input):
+        {"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}
+        {"type": "image", "source": {"type": "url", "url": ...}}
+    Returns ``None`` if the source is unrecognized so the caller leaves the
+    part untouched.
+    """
+    source = part.get("source")
+    if not is_json_mapping(source):
+        return None
+    source_dict = cast(dict[str, JsonValue], source)
+    source_type = source_dict.get("type")
+    if source_type == "base64":
+        media_type = source_dict.get("media_type")
+        data = source_dict.get("data")
+        if not isinstance(media_type, str) or not isinstance(data, str):
+            return None
+        return {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}}
+    if source_type == "url":
+        url = source_dict.get("url")
+        if not isinstance(url, str):
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
+    return None
 
 
 def _sidecar_text_from_content_parts(parts: list[JsonValue]) -> str:
@@ -497,16 +537,32 @@ def build_sidecar_chat_payload(
     config: ClaudeSidecarConfig,
 ) -> SidecarChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
+    # Capture the client-requested effort before the model profile or override
+    # mutates it, so request logs can record requested-vs-effective.
+    requested_reasoning_effort = read_reasoning_effort(body)
     # The unified resolver already produced the wire model (prefix stripped per
     # the matched prefix's strip flag); apply the canonical-model + reasoning
     # effort profile to that wire model.
-    apply_sidecar_model_profile(body, stripped_model=effective_model)
+    _, suffix_effort_applied = apply_sidecar_model_profile_with_suffix_effort(
+        body, stripped_model=effective_model
+    )
+    # The configured override forces the provider effort over any client-sent
+    # value, but an explicit model-name suffix is the highest precedence, so the
+    # override only applies when the model name carried no effort suffix.
+    if not suffix_effort_applied:
+        set_reasoning_effort_override(body, config.default_reasoning_effort)
     sanitize_sidecar_forward_payload(body)
+    effective_reasoning_effort = read_reasoning_effort(body)
     normalize_sidecar_cursor_tool_history(body)
     sanitize_sidecar_chat_tool_ids(body)
     sanitize_sidecar_chat_messages(body)
     tool_map = map_sidecar_chat_tool_names(body)
-    return SidecarChatPayload(body=body, reverse_tool_names=tool_map.reverse_tool_names)
+    return SidecarChatPayload(
+        body=body,
+        reverse_tool_names=tool_map.reverse_tool_names,
+        requested_reasoning_effort=requested_reasoning_effort,
+        effective_reasoning_effort=effective_reasoning_effort,
+    )
 
 
 def _sanitize_sidecar_tool_id(tool_id: str, *, cache: dict[str, str], used: set[str]) -> str:
@@ -650,6 +706,8 @@ async def proxy_chat_to_sidecar(
             cursor_compat=cursor_compat,
             rate_limit_headers=rate_limit_headers,
             deepseek_scope=deepseek_scope,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         if cursor_compat:
             stream = stream_bytes_with_cursor_usage_fallback(
@@ -677,6 +735,8 @@ async def proxy_chat_to_sidecar(
             status="error",
             error_code="claude_sidecar_unavailable",
             error_message="Claude sidecar unavailable",
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -702,6 +762,8 @@ async def proxy_chat_to_sidecar(
             status="error",
             error_code="claude_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=exc.status_code,
@@ -722,6 +784,8 @@ async def proxy_chat_to_sidecar(
         started_at=requested_at,
         status="success",
         usage=usage,
+        reasoning_effort=sidecar_payload.effective_reasoning_effort,
+        requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
     )
     if deepseek_scope is not None:
         deepseek_capture_non_streaming(deepseek_scope, response_body)
@@ -751,6 +815,8 @@ async def _sidecar_stream_iterator(
     cursor_compat: bool,
     rate_limit_headers: Mapping[str, str],
     deepseek_scope: DeepSeekScope | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -794,6 +860,8 @@ async def _sidecar_stream_iterator(
             status="error",
             error_code="claude_sidecar_unavailable",
             error_message="Claude sidecar unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(
@@ -820,6 +888,8 @@ async def _sidecar_stream_iterator(
             status="error",
             error_code="claude_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(_openai_error_content(exc))
@@ -833,6 +903,8 @@ async def _sidecar_stream_iterator(
             status="error",
             error_code="claude_sidecar_stream_interrupted",
             error_message=str(exc) or exc.__class__.__name__,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         raise
@@ -854,6 +926,8 @@ async def _sidecar_stream_iterator(
                 status="success" if completed else "error",
                 error_code=None if completed else "claude_sidecar_stream_incomplete",
                 usage=usage_to_settle,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )
 
 
@@ -1006,6 +1080,8 @@ async def _log_sidecar_request(
     error_code: str | None = None,
     error_message: str | None = None,
     usage: SidecarUsage | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
         async with get_background_session() as session:
@@ -1021,6 +1097,8 @@ async def _log_sidecar_request(
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
                 transport="http",
                 api_key_id=api_key.id if api_key else None,
                 source="claude_sidecar",

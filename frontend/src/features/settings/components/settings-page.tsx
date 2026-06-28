@@ -11,6 +11,7 @@ import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
 import { SidecarIntegrationsCard } from "@/features/settings/components/sidecar-integrations";
 import { ImportSettings } from "@/features/settings/components/import-settings";
+import { GuestAccessSettings } from "@/features/settings/components/guest-access-settings";
 import { PasswordSettings } from "@/features/settings/components/password-settings";
 import { RoutingSettings } from "@/features/settings/components/routing-settings";
 import { SessionSettings } from "@/features/settings/components/session-settings";
@@ -38,6 +39,7 @@ export function SettingsPage() {
   const authMode = useAuthStore((state) => state.authMode);
   const passwordManagementEnabled = useAuthStore((state) => state.passwordManagementEnabled);
   const passwordSessionActive = useAuthStore((state) => state.passwordSessionActive);
+  const canWrite = useAuthStore((state) => state.canWrite);
 
   const settings = settingsQuery.data;
   const busy =
@@ -45,6 +47,7 @@ export function SettingsPage() {
     createEndpointMutation.isPending ||
     createPoolMutation.isPending ||
     addPoolMemberMutation.isPending;
+  const controlsDisabled = busy || !canWrite;
   const error =
     getErrorMessageOrNull(settingsQuery.error) ||
     getErrorMessageOrNull(upstreamProxyQuery.error) ||
@@ -73,6 +76,11 @@ export function SettingsPage() {
       ) : (
         <>
           {error ? <AlertMessage variant="error">{error}</AlertMessage> : null}
+          {!canWrite ? (
+            <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
+              You are viewing the dashboard with read-only guest access. Admin controls are disabled.
+            </div>
+          ) : null}
 
           {authMode === "trusted_header" ? (
             <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
@@ -101,14 +109,14 @@ export function SettingsPage() {
               settings={settings}
               accounts={accountsQuery.data ?? []}
               accountsLoading={accountsQuery.isLoading}
-              busy={busy}
+              busy={controlsDisabled}
               onSave={handleSave}
             />
             <SidecarIntegrationsCard settings={settings} busy={busy} onSave={handleSave} />
             {upstreamProxyQuery.data ? (
               <UpstreamProxySettings
                 admin={upstreamProxyQuery.data}
-                busy={busy}
+                busy={controlsDisabled}
                 onSaveSettings={handleSave}
                 onCreateEndpoint={(payload) => createEndpointMutation.mutateAsync(payload)}
                 onCreatePool={(payload) => createPoolMutation.mutateAsync(payload)}
@@ -117,12 +125,20 @@ export function SettingsPage() {
                 }
               />
             ) : null}
-            <ImportSettings settings={settings} busy={busy} onSave={handleSave} />
-            <PasswordSettings disabled={busy} />
-            {passwordManagementEnabled ? (
+            <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
+            {canWrite ? (
+              <GuestAccessSettings
+                settings={settings}
+                busy={busy}
+                onSave={handleSave}
+                onRefresh={() => settingsQuery.refetch()}
+              />
+            ) : null}
+            {canWrite ? <PasswordSettings disabled={busy} /> : null}
+            {canWrite && passwordManagementEnabled ? (
               <SessionSettings settings={settings} busy={busy} onSave={handleSave} />
             ) : null}
-            {passwordManagementEnabled && passwordSessionActive ? (
+            {canWrite && passwordManagementEnabled && passwordSessionActive ? (
               <Suspense fallback={null}>
                 <TotpSettings settings={settings} disabled={busy} onSave={handleSave} />
               </Suspense>
@@ -130,14 +146,14 @@ export function SettingsPage() {
 
             <ApiKeysSection
               apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
-              disabled={busy}
+              disabled={controlsDisabled}
               onApiKeyAuthEnabledChange={(enabled) =>
                 void handleSave(buildSettingsUpdateRequest(settings, { apiKeyAuthEnabled: enabled }))
               }
             />
-            <FirewallSection />
-            <QuotaPlannerSection />
-            <StickySessionsSection />
+            <FirewallSection disabled={controlsDisabled} />
+            <QuotaPlannerSection disabled={controlsDisabled} />
+            <StickySessionsSection disabled={controlsDisabled} />
           </div>
 
           <LoadingOverlay visible={!!settings && busy} label="Saving settings..." />

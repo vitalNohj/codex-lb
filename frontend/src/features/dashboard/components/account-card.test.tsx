@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountCard } from "@/features/dashboard/components/account-card";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { createAccountSummary } from "@/test/mocks/factories";
+import { renderWithProviders } from "@/test/utils";
 
 afterEach(() => {
   act(() => {
@@ -178,7 +179,7 @@ describe("AccountCard", () => {
       },
     });
 
-    render(<AccountCard account={account} />);
+    renderWithProviders(<AccountCard account={account} />);
 
     expect(screen.getAllByText("CLI Proxy API")).toHaveLength(1);
     expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
@@ -227,7 +228,7 @@ describe("AccountCard", () => {
       ],
     });
 
-    const { container } = render(<AccountCard account={account} />);
+    const { container } = renderWithProviders(<AccountCard account={account} />);
 
     expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
     expect(container.querySelector(".privacy-blur")).not.toBeNull();
@@ -254,7 +255,7 @@ describe("AccountCard", () => {
       windowMinutesSecondary: 10080,
     });
 
-    render(<AccountCard account={account} />);
+    renderWithProviders(<AccountCard account={account} />);
 
     expect(screen.getByText("Claude Usage")).toBeInTheDocument();
     expect(screen.getByText("Estimated")).toBeInTheDocument();
@@ -286,7 +287,7 @@ describe("AccountCard", () => {
       },
     });
 
-    render(<AccountCard account={openRouter} />);
+    renderWithProviders(<AccountCard account={openRouter} />);
 
     expect(screen.getAllByText("OpenRouter")).toHaveLength(1);
     expect(screen.getByText("Health")).toBeInTheDocument();
@@ -318,7 +319,7 @@ describe("AccountCard", () => {
       },
     });
 
-    render(<AccountCard account={openRouter} />);
+    renderWithProviders(<AccountCard account={openRouter} />);
 
     expect(screen.queryByText("Saved")).toBeNull();
   });
@@ -346,7 +347,7 @@ describe("AccountCard", () => {
       },
     });
 
-    render(<AccountCard account={omniRoute} />);
+    renderWithProviders(<AccountCard account={omniRoute} />);
 
     expect(screen.getAllByText("OmniRoute")).toHaveLength(1);
     expect(screen.getByText("Health")).toBeInTheDocument();
@@ -355,5 +356,16 @@ describe("AccountCard", () => {
     expect(screen.queryByText("117")).not.toBeInTheDocument();
     expect(screen.getByText("Requests")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  });
+
+  it("disables the limit warm-up toggle for read-only guests", () => {
+    const account = createAccountSummary({
+      displayName: "Read Only Account",
+      limitWarmupEnabled: false,
+    });
+
+    render(<AccountCard account={account} readOnly />);
+
+    expect(screen.getByRole("button", { name: "Enable limit warm-up for Read Only Account" })).toBeDisabled();
   });
 });

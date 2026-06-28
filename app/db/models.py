@@ -202,6 +202,7 @@ class RequestLog(Base):
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     reference_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
+    requested_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latency_first_token_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
@@ -493,6 +494,13 @@ class DashboardSettings(Base):
         nullable=False,
     )
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    guest_access_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    guest_password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     bootstrap_token_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     bootstrap_token_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     api_key_auth_enabled: Mapped[bool] = mapped_column(
@@ -544,6 +552,12 @@ class DashboardSettings(Base):
         nullable=False,
     )
     additional_quota_routing_policies_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+        nullable=False,
+    )
+    model_aliases_json: Mapped[str] = mapped_column(
         Text,
         default="{}",
         server_default=text("'{}'"),
@@ -673,6 +687,7 @@ class DashboardSettings(Base):
         server_default=true(),
         nullable=False,
     )
+    claude_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     openrouter_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -720,6 +735,7 @@ class DashboardSettings(Base):
     openrouter_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     openrouter_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     openrouter_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    openrouter_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     omniroute_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -767,6 +783,7 @@ class DashboardSettings(Base):
     omniroute_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     omniroute_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     omniroute_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    omniroute_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     ollama_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -814,6 +831,7 @@ class DashboardSettings(Base):
     ollama_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     ollama_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ollama_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ollama_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     warmup_model: Mapped[str] = mapped_column(
         String,
         default="gpt-5.4-mini",

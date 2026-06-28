@@ -53,11 +53,13 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave, bare = false
         connectTimeout: settings.openrouterSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS,
         requestTimeout: settings.openrouterSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
         cacheTtl: settings.openrouterSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS,
+        defaultReasoningEffort: settings.openrouterSidecarDefaultReasoningEffort ?? null,
       }}
       models={{ rows: modelsQuery.data?.models ?? [], isLoading: modelsQuery.isLoading }}
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ openrouterSidecarEnabled: enabled })}
+      buildEffortPatch={(effort) => ({ openrouterSidecarDefaultReasoningEffort: effort })}
       buildPatch={(state) => ({
         openrouterSidecarBaseUrl: state.baseUrl,
         openrouterSidecarModelPrefixes: state.prefixes,
@@ -77,6 +79,7 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave, bare = false
           <SidecarIntegrationCard.Prefixes />
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
+          <SidecarIntegrationCard.ReasoningEffort />
           <SidecarIntegrationCard.Timeouts />
           <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>

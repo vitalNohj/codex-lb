@@ -53,6 +53,7 @@ from app.modules.proxy.omniroute_responses_dispatch import (
     omniroute_chat_to_responses_result,
     responses_to_omniroute_chat_request,
 )
+from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -68,6 +69,8 @@ OMNIROUTE_SIDECAR_SOURCE = "omniroute_sidecar"
 @dataclass(frozen=True, slots=True)
 class OmniRouteChatPayload:
     body: dict[str, JsonValue]
+    requested_reasoning_effort: str | None = None
+    effective_reasoning_effort: str | None = None
 
 
 def omniroute_routing_entry(config: OmniRouteSidecarConfig) -> SidecarRoutingEntry:
@@ -98,6 +101,7 @@ def omniroute_sidecar_config_from_settings(settings: DashboardSettings) -> OmniR
         connect_timeout_seconds=settings.omniroute_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.omniroute_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.omniroute_sidecar_models_cache_ttl_seconds,
+        default_reasoning_effort=settings.omniroute_sidecar_default_reasoning_effort,
     )
 
 
@@ -114,10 +118,17 @@ def _decrypt_omniroute_secret(encrypted: bytes | None) -> str | None:
 def build_omniroute_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
+    default_reasoning_effort: str | None = None,
 ) -> OmniRouteChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
+    requested_reasoning_effort = read_reasoning_effort(body)
     body["model"] = effective_model.strip()
-    return OmniRouteChatPayload(body=body)
+    set_reasoning_effort_override(body, default_reasoning_effort)
+    return OmniRouteChatPayload(
+        body=body,
+        requested_reasoning_effort=requested_reasoning_effort,
+        effective_reasoning_effort=read_reasoning_effort(body),
+    )
 
 
 async def proxy_chat_to_omniroute(
@@ -133,7 +144,9 @@ async def proxy_chat_to_omniroute(
     cursor_compat: bool = False,
     wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_omniroute_chat_payload(payload, wire_model or effective_model)
+    sidecar_payload = build_omniroute_chat_payload(
+        payload, wire_model or effective_model, client.config.default_reasoning_effort
+    )
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="omniroute",
@@ -150,6 +163,8 @@ async def proxy_chat_to_omniroute(
             model=effective_model,
             started_at=requested_at,
             client=client,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         if deepseek_scope is not None:
             stream = deepseek_observe_stream(deepseek_scope, stream)
@@ -179,6 +194,8 @@ async def proxy_chat_to_omniroute(
             status="error",
             error_code="omniroute_sidecar_unavailable",
             error_message="OmniRoute sidecar unavailable",
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -198,6 +215,8 @@ async def proxy_chat_to_omniroute(
             status="error",
             error_code="omniroute_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=exc.status_code,
@@ -218,6 +237,8 @@ async def proxy_chat_to_omniroute(
         started_at=requested_at,
         status="success",
         usage=usage,
+        reasoning_effort=sidecar_payload.effective_reasoning_effort,
+        requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
     )
     if deepseek_scope is not None:
         deepseek_capture_non_streaming(deepseek_scope, response_body)
@@ -238,6 +259,8 @@ async def _omniroute_stream_iterator(
     model: str,
     started_at: float,
     client: OmniRouteSidecarClient,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -270,6 +293,8 @@ async def _omniroute_stream_iterator(
             status="error",
             error_code="omniroute_sidecar_unavailable",
             error_message="OmniRoute sidecar unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(
@@ -289,6 +314,8 @@ async def _omniroute_stream_iterator(
             status="error",
             error_code="omniroute_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(_openai_error_content(exc))
@@ -302,6 +329,8 @@ async def _omniroute_stream_iterator(
             status="error",
             error_code="omniroute_sidecar_stream_interrupted",
             error_message=str(exc) or exc.__class__.__name__,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         raise
@@ -321,6 +350,8 @@ async def _omniroute_stream_iterator(
                 status="success" if completed else "error",
                 error_code=None if completed else "omniroute_sidecar_stream_incomplete",
                 usage=usage_to_settle,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )
 
 
@@ -395,6 +426,8 @@ async def _log_omniroute_request(
     error_code: str | None = None,
     error_message: str | None = None,
     usage: SidecarUsage | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
         async with get_background_session() as session:
@@ -410,6 +443,8 @@ async def _log_omniroute_request(
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
                 transport="http",
                 api_key_id=api_key.id if api_key else None,
                 source=OMNIROUTE_SIDECAR_SOURCE,
@@ -497,7 +532,10 @@ async def proxy_responses_to_omniroute(
 
     forward_model = wire_model or effective_model
     chat_request = responses_to_omniroute_chat_request(payload, forward_model)
-    chat_body = build_omniroute_chat_payload(chat_request, forward_model).body
+    chat_payload = build_omniroute_chat_payload(chat_request, forward_model)
+    chat_body = chat_payload.body
+    requested_reasoning_effort = chat_payload.requested_reasoning_effort
+    effective_reasoning_effort = chat_payload.effective_reasoning_effort
     requested_at = time.monotonic()
     stream = bool(payload.stream)
 
@@ -512,6 +550,8 @@ async def proxy_responses_to_omniroute(
                     model=effective_model,
                     started_at=requested_at,
                     client=client,
+                    reasoning_effort=effective_reasoning_effort,
+                    requested_reasoning_effort=requested_reasoning_effort,
                 ),
                 sse_keepalive_interval_seconds,
             ),
@@ -530,6 +570,8 @@ async def proxy_responses_to_omniroute(
             status="error",
             error_code="omniroute_sidecar_unavailable",
             error_message="OmniRoute sidecar unavailable",
+            reasoning_effort=effective_reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -549,6 +591,8 @@ async def proxy_responses_to_omniroute(
             status="error",
             error_code="omniroute_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=effective_reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=exc.status_code,
@@ -569,6 +613,8 @@ async def proxy_responses_to_omniroute(
         started_at=requested_at,
         status="success",
         usage=usage,
+        reasoning_effort=effective_reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
     )
     result = omniroute_chat_to_responses_result(response_body, model=effective_model)
     return JSONResponse(content=result, status_code=200, headers=dict(rate_limit_headers))
@@ -582,6 +628,8 @@ async def _omniroute_responses_stream_iterator(
     model: str,
     started_at: float,
     client: OmniRouteSidecarClient,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -621,6 +669,8 @@ async def _omniroute_responses_stream_iterator(
             status="error",
             error_code="omniroute_sidecar_unavailable",
             error_message="OmniRoute sidecar unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(
@@ -640,6 +690,8 @@ async def _omniroute_responses_stream_iterator(
             status="error",
             error_code="omniroute_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(_openai_error_content(exc))
@@ -653,6 +705,8 @@ async def _omniroute_responses_stream_iterator(
             status="error",
             error_code="omniroute_sidecar_stream_interrupted",
             error_message=str(exc) or exc.__class__.__name__,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         raise
@@ -672,4 +726,6 @@ async def _omniroute_responses_stream_iterator(
                 status="success" if completed else "error",
                 error_code=None if completed else "omniroute_sidecar_stream_incomplete",
                 usage=usage_to_settle,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )

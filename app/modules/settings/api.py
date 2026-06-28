@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.audit.service import AuditService
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
@@ -125,6 +129,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         sticky_reallocation_primary_budget_threshold_pct=settings.sticky_reallocation_primary_budget_threshold_pct,
         sticky_reallocation_secondary_budget_threshold_pct=settings.sticky_reallocation_secondary_budget_threshold_pct,
         additional_quota_routing_policies=settings.additional_quota_routing_policies,
+        model_aliases=settings.model_aliases,
         additional_quota_policies=additional_quota_policies,
         warmup_model=settings.warmup_model,
         import_without_overwrite=settings.import_without_overwrite,
@@ -159,6 +164,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         claude_sidecar_usage_poll_interval_seconds=settings.claude_sidecar_usage_poll_interval_seconds,
         claude_sidecar_usage_queue_batch_size=settings.claude_sidecar_usage_queue_batch_size,
         claude_sidecar_usage_collection_enabled=settings.claude_sidecar_usage_collection_enabled,
+        claude_sidecar_default_reasoning_effort=settings.claude_sidecar_default_reasoning_effort,
         openrouter_sidecar_enabled=settings.openrouter_sidecar_enabled,
         openrouter_sidecar_base_url=settings.openrouter_sidecar_base_url,
         openrouter_sidecar_api_key_configured=settings.openrouter_sidecar_api_key_configured,
@@ -173,6 +179,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_last_health_message=settings.openrouter_sidecar_last_health_message,
         openrouter_sidecar_last_checked_at=settings.openrouter_sidecar_last_checked_at,
         openrouter_sidecar_last_model_count=settings.openrouter_sidecar_last_model_count,
+        openrouter_sidecar_default_reasoning_effort=settings.openrouter_sidecar_default_reasoning_effort,
         omniroute_sidecar_enabled=settings.omniroute_sidecar_enabled,
         omniroute_sidecar_base_url=settings.omniroute_sidecar_base_url,
         omniroute_sidecar_api_key_configured=settings.omniroute_sidecar_api_key_configured,
@@ -188,6 +195,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         omniroute_sidecar_last_health_message=settings.omniroute_sidecar_last_health_message,
         omniroute_sidecar_last_checked_at=settings.omniroute_sidecar_last_checked_at,
         omniroute_sidecar_last_model_count=settings.omniroute_sidecar_last_model_count,
+        omniroute_sidecar_default_reasoning_effort=settings.omniroute_sidecar_default_reasoning_effort,
         ollama_sidecar_enabled=settings.ollama_sidecar_enabled,
         ollama_sidecar_base_url=settings.ollama_sidecar_base_url,
         ollama_sidecar_api_key_configured=settings.ollama_sidecar_api_key_configured,
@@ -200,6 +208,9 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         ollama_sidecar_last_health_message=settings.ollama_sidecar_last_health_message,
         ollama_sidecar_last_checked_at=settings.ollama_sidecar_last_checked_at,
         ollama_sidecar_last_model_count=settings.ollama_sidecar_last_model_count,
+        ollama_sidecar_default_reasoning_effort=settings.ollama_sidecar_default_reasoning_effort,
+        guest_access_enabled=settings.guest_access_enabled,
+        guest_password_configured=settings.guest_password_configured,
     )
 
 
@@ -272,6 +283,7 @@ async def get_upstream_proxy_admin(
 @router.post("/upstream-proxy/endpoints", response_model=UpstreamProxyEndpointResponse)
 async def create_upstream_proxy_endpoint(
     payload: UpstreamProxyEndpointCreateRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyEndpointResponse:
     encryptor = TokenEncryptor()
@@ -293,6 +305,7 @@ async def create_upstream_proxy_endpoint(
 @router.post("/upstream-proxy/pools", response_model=UpstreamProxyPoolResponse)
 async def create_upstream_proxy_pool(
     payload: UpstreamProxyPoolCreateRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyPoolResponse:
     endpoint_ids = list(dict.fromkeys(payload.endpoint_ids))
@@ -322,6 +335,7 @@ async def create_upstream_proxy_pool(
 async def add_upstream_proxy_pool_member(
     pool_id: str,
     payload: UpstreamProxyPoolMemberRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyPoolResponse:
     pool = await context.session.get(ProxyPool, pool_id)
@@ -436,6 +450,7 @@ def _duplicate_proxy_pool_member_error() -> DashboardBadRequestError:
 async def put_account_proxy_binding(
     account_id: str,
     payload: AccountProxyBindingRequest,
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> AccountProxyBindingResponse:
     await _validate_account_id(context, account_id)
@@ -476,6 +491,7 @@ def _proxy_endpoint_response(row: ProxyEndpoint) -> UpstreamProxyEndpointRespons
 async def update_settings(
     request: Request,
     payload: DashboardSettingsUpdateRequest = Body(...),
+    _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> DashboardSettingsResponse:
     current = await context.service.get_settings()
@@ -590,6 +606,11 @@ async def update_settings(
                     if payload.additional_quota_routing_policies is not None
                     else current.additional_quota_routing_policies
                 ),
+                model_aliases=(
+                    payload.model_aliases
+                    if payload.model_aliases is not None
+                    else current.model_aliases
+                ),
                 warmup_model=(payload.warmup_model if payload.warmup_model is not None else current.warmup_model),
                 import_without_overwrite=(
                     payload.import_without_overwrite
@@ -697,6 +718,11 @@ async def update_settings(
                     if payload.claude_sidecar_usage_collection_enabled is not None
                     else current.claude_sidecar_usage_collection_enabled
                 ),
+                claude_sidecar_default_reasoning_effort=(
+                    payload.claude_sidecar_default_reasoning_effort
+                    if "claude_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.claude_sidecar_default_reasoning_effort
+                ),
                 openrouter_sidecar_enabled=(
                     payload.openrouter_sidecar_enabled
                     if payload.openrouter_sidecar_enabled is not None
@@ -733,6 +759,11 @@ async def update_settings(
                     payload.openrouter_sidecar_models_cache_ttl_seconds
                     if payload.openrouter_sidecar_models_cache_ttl_seconds is not None
                     else current.openrouter_sidecar_models_cache_ttl_seconds
+                ),
+                openrouter_sidecar_default_reasoning_effort=(
+                    payload.openrouter_sidecar_default_reasoning_effort
+                    if "openrouter_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.openrouter_sidecar_default_reasoning_effort
                 ),
                 omniroute_sidecar_enabled=(
                     payload.omniroute_sidecar_enabled
@@ -784,6 +815,11 @@ async def update_settings(
                     if payload.omniroute_sidecar_models_cache_ttl_seconds is not None
                     else current.omniroute_sidecar_models_cache_ttl_seconds
                 ),
+                omniroute_sidecar_default_reasoning_effort=(
+                    payload.omniroute_sidecar_default_reasoning_effort
+                    if "omniroute_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.omniroute_sidecar_default_reasoning_effort
+                ),
                 ollama_sidecar_enabled=(
                     payload.ollama_sidecar_enabled
                     if payload.ollama_sidecar_enabled is not None
@@ -818,6 +854,16 @@ async def update_settings(
                     payload.ollama_sidecar_models_cache_ttl_seconds
                     if payload.ollama_sidecar_models_cache_ttl_seconds is not None
                     else current.ollama_sidecar_models_cache_ttl_seconds
+                ),
+                ollama_sidecar_default_reasoning_effort=(
+                    payload.ollama_sidecar_default_reasoning_effort
+                    if "ollama_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.ollama_sidecar_default_reasoning_effort
+                ),
+                guest_access_enabled=(
+                    payload.guest_access_enabled
+                    if payload.guest_access_enabled is not None
+                    else current.guest_access_enabled
                 ),
             )
         )
@@ -860,6 +906,7 @@ async def update_settings(
             "sticky_reallocation_primary_budget_threshold_pct",
             "sticky_reallocation_secondary_budget_threshold_pct",
             "additional_quota_routing_policies",
+            "model_aliases",
             "warmup_model",
             "import_without_overwrite",
             "totp_required_on_login",
@@ -889,6 +936,7 @@ async def update_settings(
             "claude_sidecar_usage_poll_interval_seconds",
             "claude_sidecar_usage_queue_batch_size",
             "claude_sidecar_usage_collection_enabled",
+            "claude_sidecar_default_reasoning_effort",
             "openrouter_sidecar_enabled",
             "openrouter_sidecar_base_url",
             "openrouter_sidecar_api_key_configured",
@@ -901,6 +949,7 @@ async def update_settings(
             "openrouter_sidecar_last_health_message",
             "openrouter_sidecar_last_checked_at",
             "openrouter_sidecar_last_model_count",
+            "openrouter_sidecar_default_reasoning_effort",
             "omniroute_sidecar_enabled",
             "omniroute_sidecar_base_url",
             "omniroute_sidecar_api_key_configured",
@@ -914,6 +963,7 @@ async def update_settings(
             "omniroute_sidecar_last_health_message",
             "omniroute_sidecar_last_checked_at",
             "omniroute_sidecar_last_model_count",
+            "omniroute_sidecar_default_reasoning_effort",
             "ollama_sidecar_enabled",
             "ollama_sidecar_base_url",
             "ollama_sidecar_api_key_configured",
@@ -926,6 +976,8 @@ async def update_settings(
             "ollama_sidecar_last_health_message",
             "ollama_sidecar_last_checked_at",
             "ollama_sidecar_last_model_count",
+            "ollama_sidecar_default_reasoning_effort",
+            "guest_access_enabled",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

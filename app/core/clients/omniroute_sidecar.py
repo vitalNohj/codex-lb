@@ -29,6 +29,7 @@ class OmniRouteSidecarConfig:
     request_timeout_seconds: float
     models_cache_ttl_seconds: float
     prefixes: tuple[SidecarPrefix, ...] = ()
+    default_reasoning_effort: str | None = None
 
 
 class OmniRouteSidecarError(Exception):

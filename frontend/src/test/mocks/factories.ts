@@ -92,6 +92,7 @@ export function createAccountSummary(
 ): AccountSummary {
 	return AccountSummarySchema.parse({
 		accountId: "acc_primary",
+		chatgptAccountId: "chatgpt_acc_primary",
 		email: "primary@example.com",
 		alias: null,
 		displayName: "primary@example.com",
@@ -327,6 +328,7 @@ export function createRequestLogEntry(
 		outputTokens: 600,
 		cachedInputTokens: 320,
 		reasoningEffort: null,
+		requestedReasoningEffort: null,
 		costUsd: 0.0132,
 		costBreakdown: {
 			inputUsd: 0.0054,
@@ -408,8 +410,15 @@ export function createDashboardAuthSession(
 		passwordRequired: true,
 		totpRequiredOnLogin: false,
 		totpConfigured: true,
+		bootstrapRequired: false,
+		bootstrapTokenConfigured: false,
 		authMode: "standard",
 		passwordManagementEnabled: true,
+		passwordSessionActive: false,
+		role: "admin",
+		permissions: ["read", "write"],
+		guestAccessEnabled: false,
+		guestPasswordRequired: false,
 		...overrides,
 	});
 }
@@ -457,6 +466,8 @@ export function createDashboardSettings(
 		ollamaSidecarConnectTimeoutSeconds: 8,
 		ollamaSidecarRequestTimeoutSeconds: 600,
 		ollamaSidecarModelsCacheTtlSeconds: 60,
+		guestAccessEnabled: false,
+		guestPasswordConfigured: false,
 		...overrides,
 	});
 }

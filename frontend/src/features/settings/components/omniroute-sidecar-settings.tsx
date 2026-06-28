@@ -55,11 +55,13 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave, bare = false 
         connectTimeout: settings.omnirouteSidecarConnectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS,
         requestTimeout: settings.omnirouteSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
         cacheTtl: settings.omnirouteSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS,
+        defaultReasoningEffort: settings.omnirouteSidecarDefaultReasoningEffort ?? null,
       }}
       models={{ rows: modelsQuery.data?.models ?? [], isLoading: modelsQuery.isLoading }}
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ omnirouteSidecarEnabled: enabled })}
+      buildEffortPatch={(effort) => ({ omnirouteSidecarDefaultReasoningEffort: effort })}
       buildPatch={(state) => ({
         omnirouteSidecarBaseUrl: state.baseUrl,
         omnirouteSidecarModelPrefixes: state.prefixes,
@@ -80,6 +82,7 @@ export function OmniRouteSidecarSettings({ settings, busy, onSave, bare = false 
           <SidecarIntegrationCard.Prefixes />
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />
+          <SidecarIntegrationCard.ReasoningEffort />
           <SidecarIntegrationCard.Timeouts />
           <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>

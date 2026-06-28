@@ -140,6 +140,7 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
+from app.modules.proxy.model_aliasing import resolve_request_model_alias
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
     apply_api_key_enforcement,
@@ -586,6 +587,10 @@ async def responses(
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
 
+    aliased_model = await resolve_request_model_alias(responses_payload.model)
+    if aliased_model is not None and aliased_model != responses_payload.model:
+        responses_payload.model = aliased_model
+
     omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
     if omniroute_response is not None:
         return omniroute_response
@@ -669,6 +674,10 @@ async def v1_responses(
     except ValidationError as exc:
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
+
+    aliased_model = await resolve_request_model_alias(responses_payload.model)
+    if aliased_model is not None and aliased_model != responses_payload.model:
+        responses_payload.model = aliased_model
 
     omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
     if omniroute_response is not None:
@@ -2193,6 +2202,9 @@ async def v1_chat_completions(
 ) -> Response:
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
+    aliased_model = await resolve_request_model_alias(payload.model)
+    if aliased_model is not None and aliased_model != payload.model:
+        payload.model = aliased_model
     effective_model = _effective_model_for_api_key(api_key, payload.model)
     validate_model_access(api_key, effective_model)
 

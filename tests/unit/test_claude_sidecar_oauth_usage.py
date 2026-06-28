@@ -1,55 +1,43 @@
 from __future__ import annotations
 
-import json
+from collections.abc import Mapping
 
 import pytest
 
+from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError
+from app.core.types import JsonValue
 from app.modules.claude_sidecar.oauth_usage import (
-    ClaudeOAuthCredential,
+    ClaudeOAuthUsageError,
     fetch_claude_oauth_usage,
-    load_claude_oauth_credential,
     parse_claude_oauth_usage,
 )
 
 pytestmark = pytest.mark.unit
 
 
-class _FakeResponse:
-    status = 200
+class _FakeClient:
+    def __init__(self, *, result: JsonValue | Exception) -> None:
+        self._result = result
+        self.last_auth_index: str | None = None
+        self.last_method: str | None = None
+        self.last_url: str | None = None
+        self.last_header: Mapping[str, str] | None = None
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    async def json(self, *, content_type):
-        return {
-            "five_hour": {"utilization": 0.25, "resets_at": "2026-05-05T17:00:00Z"},
-            "seven_day": {"utilization": 0.5, "resets_at": "2026-05-12T12:00:00Z"},
-        }
-
-
-class _FakeSession:
-    def __init__(self) -> None:
-        self.last_url = None
-        self.last_headers = None
-
-    def get(self, url: str, *, headers, timeout):
+    async def api_call(
+        self,
+        *,
+        auth_index: str,
+        method: str,
+        url: str,
+        header: Mapping[str, str],
+    ) -> JsonValue:
+        self.last_auth_index = auth_index
+        self.last_method = method
         self.last_url = url
-        self.last_headers = headers
-        return _FakeResponse()
-
-
-class _Lease:
-    def __init__(self, session: _FakeSession) -> None:
-        self.session = session
-
-    async def __aenter__(self) -> _FakeSession:
-        return self.session
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
+        self.last_header = header
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
 
 
 def test_parse_claude_oauth_usage_converts_utilization_to_remaining_percent() -> None:
@@ -74,42 +62,45 @@ def test_parse_claude_oauth_usage_converts_utilization_to_remaining_percent() ->
 
 
 @pytest.mark.asyncio
-async def test_fetch_claude_oauth_usage_uses_leased_session(monkeypatch) -> None:
-    session = _FakeSession()
-    monkeypatch.setattr("app.modules.claude_sidecar.oauth_usage.lease_http_session", lambda: _Lease(session))
+async def test_fetch_claude_oauth_usage_routes_through_api_call() -> None:
+    client = _FakeClient(
+        result={
+            "five_hour": {"utilization": 0.25, "resets_at": "2026-05-05T17:00:00Z"},
+            "seven_day": {"utilization": 0.5, "resets_at": "2026-05-12T12:00:00Z"},
+        }
+    )
 
-    usage = await fetch_claude_oauth_usage(ClaudeOAuthCredential(access_token="oauth-token"))
+    usage = await fetch_claude_oauth_usage(client, "0")
 
-    assert session.last_url == "https://api.anthropic.com/api/oauth/usage"
-    assert session.last_headers["Authorization"] == "Bearer oauth-token"
+    assert client.last_auth_index == "0"
+    assert client.last_method == "GET"
+    assert client.last_url == "https://api.anthropic.com/api/oauth/usage"
+    assert client.last_header is not None
+    assert client.last_header["Authorization"] == "Bearer $TOKEN$"
+    assert client.last_header["anthropic-beta"] == "oauth-2025-04-20"
     assert usage.five_hour is not None
     assert usage.five_hour.remaining_percent == 75.0
 
 
 @pytest.mark.asyncio
-async def test_load_claude_oauth_credential_reads_cli_proxy_api_token(tmp_path) -> None:
-    auth_file = tmp_path / "claude-user@example.com.json"
-    auth_file.write_text(
-        json.dumps(
-            {
-                "access_token": "sk-ant-oat01-token",
-                "refresh_token": "sk-ant-ort01-token",
-                "email": "user@example.com",
-                "type": "claude",
-            }
-        ),
-        encoding="utf-8",
-    )
+async def test_fetch_claude_oauth_usage_wraps_upstream_error() -> None:
+    client = _FakeClient(result=ClaudeSidecarError(429, "rate limited"))
 
-    credential = await load_claude_oauth_credential(str(auth_file))
-
-    assert credential is not None
-    assert credential.access_token == "sk-ant-oat01-token"
+    with pytest.raises(ClaudeOAuthUsageError):
+        await fetch_claude_oauth_usage(client, "0")
 
 
 @pytest.mark.asyncio
-async def test_load_claude_oauth_credential_ignores_missing_token(tmp_path) -> None:
-    auth_file = tmp_path / "claude-user@example.com.json"
-    auth_file.write_text(json.dumps({"email": "user@example.com", "type": "claude"}), encoding="utf-8")
+async def test_fetch_claude_oauth_usage_wraps_unavailable_error() -> None:
+    client = _FakeClient(result=ClaudeSidecarUnavailableError("down"))
 
-    assert await load_claude_oauth_credential(str(auth_file)) is None
+    with pytest.raises(ClaudeOAuthUsageError):
+        await fetch_claude_oauth_usage(client, "0")
+
+
+@pytest.mark.asyncio
+async def test_fetch_claude_oauth_usage_rejects_non_object_body() -> None:
+    client = _FakeClient(result=[1, 2, 3])
+
+    with pytest.raises(ClaudeOAuthUsageError):
+        await fetch_claude_oauth_usage(client, "0")

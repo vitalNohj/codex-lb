@@ -1,18 +1,18 @@
 {
     "files": [
         {
-            "account": "jvwarrior@gmail.com",
+            "account": "account1@example.com",
             "account_type": "oauth",
             "auth_index": "6ba7c2f90269474b",
             "created_at": "2026-06-10T21:21:55.198308875Z",
             "disabled": false,
-            "email": "jvwarrior@gmail.com",
+            "email": "account1@example.com",
             "failed": 0,
-            "id": "claude-jvwarrior@gmail.com.json",
-            "label": "jvwarrior@gmail.com",
+            "id": "claude-account1@example.com.json",
+            "label": "account1@example.com",
             "modtime": "2026-06-10T21:21:55.198308875Z",
-            "name": "claude-jvwarrior@gmail.com.json",
-            "path": "/home/nohj/.cli-proxy-api/claude-jvwarrior@gmail.com.json",
+            "name": "claude-account1@example.com.json",
+            "path": "/home/user/.cli-proxy-api/claude-account1@example.com.json",
             "provider": "claude",
             "recent_requests": [
                 {

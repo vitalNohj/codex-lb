@@ -53,6 +53,8 @@ const BASE_SETTINGS: DashboardSettings = {
   claudeSidecarUsagePollIntervalSeconds: 15,
   claudeSidecarUsageQueueBatchSize: 100,
   claudeSidecarUsageCollectionEnabled: true,
+  guestAccessEnabled: false,
+  guestPasswordConfigured: false,
 };
 
 function renderWithQueryClient(ui: React.ReactElement) {

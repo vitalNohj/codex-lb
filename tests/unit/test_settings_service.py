@@ -110,6 +110,7 @@ def _settings_update(
         sticky_reallocation_primary_budget_threshold_pct=95.0,
         sticky_reallocation_secondary_budget_threshold_pct=100.0,
         additional_quota_routing_policies={},
+        model_aliases={},
         warmup_model="auto",
         import_without_overwrite=True,
         totp_required_on_login=False,
@@ -137,6 +138,7 @@ def _settings_update(
         claude_sidecar_usage_poll_interval_seconds=15.0,
         claude_sidecar_usage_queue_batch_size=100,
         claude_sidecar_usage_collection_enabled=True,
+        claude_sidecar_default_reasoning_effort=None,
         openrouter_sidecar_enabled=False,
         openrouter_sidecar_base_url="https://openrouter.ai/api/v1",
         openrouter_sidecar_api_key=None,
@@ -146,6 +148,7 @@ def _settings_update(
         openrouter_sidecar_connect_timeout_seconds=8.0,
         openrouter_sidecar_request_timeout_seconds=600.0,
         openrouter_sidecar_models_cache_ttl_seconds=60.0,
+        openrouter_sidecar_default_reasoning_effort=None,
         omniroute_sidecar_enabled=False,
         omniroute_sidecar_base_url="http://127.0.0.1:20128/v1",
         omniroute_sidecar_api_key=None,
@@ -156,6 +159,7 @@ def _settings_update(
         omniroute_sidecar_connect_timeout_seconds=8.0,
         omniroute_sidecar_request_timeout_seconds=600.0,
         omniroute_sidecar_models_cache_ttl_seconds=60.0,
+        omniroute_sidecar_default_reasoning_effort=None,
         ollama_sidecar_enabled=False,
         ollama_sidecar_base_url="https://ollama.com",
         ollama_sidecar_api_key=None,
@@ -165,6 +169,8 @@ def _settings_update(
         ollama_sidecar_connect_timeout_seconds=8.0,
         ollama_sidecar_request_timeout_seconds=600.0,
         ollama_sidecar_models_cache_ttl_seconds=60.0,
+        ollama_sidecar_default_reasoning_effort=None,
+        guest_access_enabled=False,
     )
 
 

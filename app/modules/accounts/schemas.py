@@ -96,6 +96,7 @@ class SidecarAuthAccount(DashboardModel):
 
 class AccountSummary(DashboardModel):
     account_id: str
+    chatgpt_account_id: str | None = None
     email: str
     alias: str | None = None
     display_name: str

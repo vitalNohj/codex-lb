@@ -1,4 +1,4 @@
-import { ExternalLink, Eye, EyeOff, LogOut, Menu } from "lucide-react";
+import { ExternalLink, Eye, EyeOff, LogIn, LogOut, Menu } from "lucide-react";
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -20,12 +20,16 @@ const OMNIROUTE_PATH = "/omni";
 
 export type AppHeaderProps = {
   onLogout: () => void;
+  onAdminLogin?: () => void;
+  showAdminLogin?: boolean;
   showLogout?: boolean;
   className?: string;
 };
 
 export function AppHeader({
   onLogout,
+  onAdminLogin,
+  showAdminLogin = false,
   showLogout = true,
   className,
 }: AppHeaderProps) {
@@ -105,6 +109,18 @@ export function AppHeader({
               Logout
             </Button>
           )}
+          {showAdminLogin && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onAdminLogin}
+              className="press-scale hidden h-8 gap-1.5 rounded-lg text-xs sm:inline-flex"
+            >
+              <LogIn className="h-3.5 w-3.5" aria-hidden="true" />
+              Admin
+            </Button>
+          )}
 
           {/* Mobile menu */}
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -169,6 +185,19 @@ export function AppHeader({
                   >
                     <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
                     Logout
+                  </button>
+                )}
+                {showAdminLogin && (
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      onAdminLogin?.();
+                    }}
+                  >
+                    <LogIn className="h-3.5 w-3.5" aria-hidden="true" />
+                    Admin Sign In
                   </button>
                 )}
               </nav>

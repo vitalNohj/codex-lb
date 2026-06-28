@@ -47,6 +47,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
+from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -62,6 +63,8 @@ OPENROUTER_SIDECAR_SOURCE = "openrouter_sidecar"
 @dataclass(frozen=True, slots=True)
 class OpenRouterChatPayload:
     body: dict[str, JsonValue]
+    requested_reasoning_effort: str | None = None
+    effective_reasoning_effort: str | None = None
 
 
 def openrouter_routing_entry(config: OpenRouterSidecarConfig) -> SidecarRoutingEntry:
@@ -92,6 +95,7 @@ def openrouter_sidecar_config_from_settings(settings: DashboardSettings) -> Open
         request_timeout_seconds=settings.openrouter_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.openrouter_sidecar_models_cache_ttl_seconds,
         full_models=parse_sidecar_full_models(settings.openrouter_sidecar_full_models_json),
+        default_reasoning_effort=settings.openrouter_sidecar_default_reasoning_effort,
     )
 
 
@@ -111,10 +115,16 @@ def build_openrouter_chat_payload(
     config: OpenRouterSidecarConfig,
 ) -> OpenRouterChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
+    requested_reasoning_effort = read_reasoning_effort(body)
     # ``effective_model`` is the wire model already resolved (and stripped per
     # the matched prefix's flag) by the unified resolver.
     body["model"] = effective_model.strip()
-    return OpenRouterChatPayload(body=body)
+    set_reasoning_effort_override(body, config.default_reasoning_effort)
+    return OpenRouterChatPayload(
+        body=body,
+        requested_reasoning_effort=requested_reasoning_effort,
+        effective_reasoning_effort=read_reasoning_effort(body),
+    )
 
 
 async def proxy_chat_to_openrouter(
@@ -147,6 +157,8 @@ async def proxy_chat_to_openrouter(
             model=effective_model,
             started_at=requested_at,
             client=client,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         if deepseek_scope is not None:
             stream = deepseek_observe_stream(deepseek_scope, stream)
@@ -176,6 +188,8 @@ async def proxy_chat_to_openrouter(
             status="error",
             error_code="openrouter_sidecar_unavailable",
             error_message="OpenRouter sidecar unavailable",
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -195,6 +209,8 @@ async def proxy_chat_to_openrouter(
             status="error",
             error_code="openrouter_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=exc.status_code,
@@ -215,6 +231,8 @@ async def proxy_chat_to_openrouter(
         started_at=requested_at,
         status="success",
         usage=usage,
+        reasoning_effort=sidecar_payload.effective_reasoning_effort,
+        requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
     )
     if deepseek_scope is not None:
         deepseek_capture_non_streaming(deepseek_scope, response_body)
@@ -235,6 +253,8 @@ async def _openrouter_stream_iterator(
     model: str,
     started_at: float,
     client: OpenRouterSidecarClient,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -267,6 +287,8 @@ async def _openrouter_stream_iterator(
             status="error",
             error_code="openrouter_sidecar_unavailable",
             error_message="OpenRouter sidecar unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(
@@ -286,6 +308,8 @@ async def _openrouter_stream_iterator(
             status="error",
             error_code="openrouter_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(_openai_error_content(exc))
@@ -299,6 +323,8 @@ async def _openrouter_stream_iterator(
             status="error",
             error_code="openrouter_sidecar_stream_interrupted",
             error_message=str(exc) or exc.__class__.__name__,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         raise
@@ -318,6 +344,8 @@ async def _openrouter_stream_iterator(
                 status="success" if completed else "error",
                 error_code=None if completed else "openrouter_sidecar_stream_incomplete",
                 usage=usage_to_settle,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )
 
 
@@ -392,6 +420,8 @@ async def _log_openrouter_request(
     error_code: str | None = None,
     error_message: str | None = None,
     usage: SidecarUsage | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
         async with get_background_session() as session:
@@ -407,6 +437,8 @@ async def _log_openrouter_request(
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
                 transport="http",
                 api_key_id=api_key.id if api_key else None,
                 source=OPENROUTER_SIDECAR_SOURCE,
