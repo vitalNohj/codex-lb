@@ -58,6 +58,6 @@ def create_sqlite_pre_migration_backup(
     excess = len(backups) - max_files
     if excess > 0:
         for old_backup in backups[:excess]:
-            old_backup.unlink()
+            old_backup.unlink(missing_ok=True)
 
     return backup_path

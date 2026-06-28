@@ -389,6 +389,24 @@ def _validate_user_content(content: JsonValue) -> None:
             if file_info is None:
                 raise ValueError("File content parts must include file metadata.")
             continue
+        if part_type == "image":
+            # Anthropic-native image block (e.g. Cursor vision input):
+            # {"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}
+            # or a URL source. Accept it here; it is converted to the OpenAI
+            # ``image_url`` data-URL shape before being forwarded to the sidecar.
+            source = _json_mapping(part_mapping.get("source"))
+            if source is None:
+                raise ValueError("Image content parts must include a source.")
+            source_type = source.get("type")
+            if source_type == "base64":
+                if not isinstance(source.get("data"), str):
+                    raise ValueError("Base64 image source must include string 'data'.")
+            elif source_type == "url":
+                if not isinstance(source.get("url"), str):
+                    raise ValueError("URL image source must include string 'url'.")
+            else:
+                raise ValueError("Image source.type must be 'base64' or 'url'.")
+            continue
         if part_type in _USER_TOOL_RESULT_CONTENT_PART_TYPES:
             _validate_user_tool_result_content_part(part_mapping)
             continue
