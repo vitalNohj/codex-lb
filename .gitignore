@@ -37,6 +37,9 @@ frontend/coverage/
 *.swo
 *~
 
+# MCP
+.serena/
+
 # Local
 .local/
 .worktrees/
