@@ -77,6 +77,8 @@ type RoutingSettingsDraft = {
   limitWarmupCooldown: string;
   additionalQuotaKey: string;
   additionalQuotaPolicy: AdditionalQuotaRoutingPolicy;
+  modelAliasTarget: string;
+  modelAliasName: string;
 };
 
 function createRoutingSettingsDraft(settings: DashboardSettings): RoutingSettingsDraft {
@@ -92,6 +94,8 @@ function createRoutingSettingsDraft(settings: DashboardSettings): RoutingSetting
     limitWarmupCooldown: String(settings.limitWarmupCooldownSeconds),
     additionalQuotaKey: "",
     additionalQuotaPolicy: "inherit",
+    modelAliasTarget: "",
+    modelAliasName: "",
   };
 }
 
@@ -136,6 +140,24 @@ export function RoutingSettings({
     const next = { ...(settings.additionalQuotaRoutingPolicies ?? {}) };
     delete next[quotaKey];
     save({ additionalQuotaRoutingPolicies: next });
+  };
+  const saveModelAlias = (targetModel: string, aliasName: string) => {
+    const normalizedTarget = targetModel.trim();
+    const normalizedAlias = aliasName.trim();
+    if (!normalizedTarget || !normalizedAlias) {
+      return;
+    }
+    save({
+      modelAliases: {
+        ...(settings.modelAliases ?? {}),
+        [normalizedAlias]: normalizedTarget,
+      },
+    });
+  };
+  const removeModelAlias = (aliasName: string) => {
+    const next = { ...(settings.modelAliases ?? {}) };
+    delete next[aliasName];
+    save({ modelAliases: next });
   };
 
   const parsedCacheAffinityTtl = Number.parseInt(draft.cacheAffinityTtl, 10);
@@ -202,6 +224,19 @@ export function RoutingSettings({
       return rows;
     }, []),
   ];
+  const modelAliasRows = Object.entries(settings.modelAliases ?? {})
+    .map(([alias, target]) => ({ alias, target }))
+    .sort((a, b) => a.alias.localeCompare(b.alias));
+  const trimmedModelAliasName = draft.modelAliasName.trim();
+  const trimmedModelAliasTarget = draft.modelAliasTarget.trim();
+  const modelAliasNameConflict = modelAliasRows.some(
+    (row) => row.alias.toLowerCase() === trimmedModelAliasName.toLowerCase(),
+  );
+  const modelAliasAddValid =
+    trimmedModelAliasName.length > 0 &&
+    trimmedModelAliasTarget.length > 0 &&
+    !modelAliasNameConflict;
+
   const parsedStickyPrimaryThreshold = Number.parseFloat(draft.stickyPrimaryThreshold);
   const stickyPrimaryThresholdValid =
     Number.isFinite(parsedStickyPrimaryThreshold) &&
@@ -811,6 +846,78 @@ export function RoutingSettings({
               >
                 Save TTL
               </Button>
+            </div>
+          </div>
+
+          <div className="space-y-3 p-3">
+            <div>
+              <p className="text-sm font-medium">Model aliasing</p>
+              <p className="text-xs text-muted-foreground">
+                Map a real upstream model (left) to an alias name (right). Requests for the alias resolve to the
+                real model before routing, so prefix and full-model matchers still apply.
+              </p>
+            </div>
+            <div className="space-y-2">
+              {modelAliasRows.map(({ alias, target }) => (
+                <div key={alias} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="min-w-0 flex-1 truncate rounded-md border bg-muted/20 px-2 py-1.5 text-xs">
+                    {target}
+                  </div>
+                  <span className="text-xs text-muted-foreground sm:px-1" aria-hidden="true">
+                    →
+                  </span>
+                  <div className="min-w-0 flex-1 truncate rounded-md border bg-muted/20 px-2 py-1.5 text-xs">
+                    {alias}
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs sm:w-20"
+                    disabled={busy}
+                    onClick={() => removeModelAlias(alias)}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  value={draft.modelAliasTarget}
+                  disabled={busy}
+                  onChange={(event) => updateDraft({ modelAliasTarget: event.target.value })}
+                  className="h-8 flex-1 text-xs"
+                  aria-label="Real model"
+                  placeholder="Real model (e.g. cx/claude-opus-4.8)"
+                />
+                <span className="text-xs text-muted-foreground sm:px-1" aria-hidden="true">
+                  →
+                </span>
+                <Input
+                  value={draft.modelAliasName}
+                  disabled={busy}
+                  onChange={(event) => updateDraft({ modelAliasName: event.target.value })}
+                  className="h-8 flex-1 text-xs"
+                  aria-label="Alias name"
+                  placeholder="Alias (e.g. custom_r1)"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs sm:w-24"
+                  disabled={busy || !modelAliasAddValid}
+                  onClick={() => {
+                    saveModelAlias(draft.modelAliasTarget, draft.modelAliasName);
+                    updateDraft({ modelAliasTarget: "", modelAliasName: "" });
+                  }}
+                >
+                  Add alias
+                </Button>
+              </div>
+              {modelAliasNameConflict ? (
+                <p className="text-xs text-destructive">An alias with this name already exists.</p>
+              ) : null}
             </div>
           </div>
 

@@ -226,6 +226,7 @@ class DashboardSettingsResponse(DashboardModel):
     limit_warmup_min_available_percent: float = Field(gt=0.0, le=100.0)
     weekly_pace_working_days: str = _DEFAULT_WEEKLY_PACE_WORKING_DAYS
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
+    model_aliases: dict[str, str] = Field(default_factory=dict)
     additional_quota_policies: list[AdditionalQuotaPolicy] = Field(default_factory=list)
     claude_sidecar_enabled: bool = False
     claude_sidecar_base_url: str = Field(default="http://127.0.0.1:8317", min_length=1)
@@ -322,6 +323,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     sticky_reallocation_primary_budget_threshold_pct: float | None = Field(default=None, ge=0.0, le=100.0)
     sticky_reallocation_secondary_budget_threshold_pct: float | None = Field(default=None, ge=0.0, le=100.0)
     additional_quota_routing_policies: dict[str, str] | None = None
+    model_aliases: dict[str, str] | None = Field(default=None, max_length=256)
     warmup_model: str | None = Field(default=None, min_length=1)
     import_without_overwrite: bool | None = None
     totp_required_on_login: bool | None = None
@@ -382,6 +384,27 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     ollama_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     ollama_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     guest_access_enabled: bool | None = None
+
+    @field_validator("model_aliases")
+    @classmethod
+    def _normalize_model_aliases(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        aliases: dict[str, str] = {}
+        seen: set[str] = set()
+        for alias, target in value.items():
+            normalized_alias = alias.strip()
+            normalized_target = target.strip()
+            if not normalized_alias or not normalized_target:
+                continue
+            if len(normalized_alias) > 256 or len(normalized_target) > 256:
+                raise ValueError("model_aliases entries must be 256 characters or fewer")
+            key = normalized_alias.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            aliases[normalized_alias] = normalized_target
+        return aliases
 
     @field_validator("warmup_model")
     @classmethod

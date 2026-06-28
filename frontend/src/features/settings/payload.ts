@@ -23,6 +23,7 @@ export function buildSettingsUpdateRequest(
     stickyReallocationPrimaryBudgetThresholdPct: settings.stickyReallocationPrimaryBudgetThresholdPct,
     stickyReallocationSecondaryBudgetThresholdPct: settings.stickyReallocationSecondaryBudgetThresholdPct,
     additionalQuotaRoutingPolicies: settings.additionalQuotaRoutingPolicies ?? {},
+    modelAliases: settings.modelAliases ?? {},
     importWithoutOverwrite: settings.importWithoutOverwrite,
     totpRequiredOnLogin: settings.totpRequiredOnLogin,
     apiKeyAuthEnabled: settings.apiKeyAuthEnabled,
