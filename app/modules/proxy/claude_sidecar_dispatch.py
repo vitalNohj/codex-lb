@@ -277,7 +277,40 @@ def _normalize_sidecar_content_part(part: JsonValue) -> JsonValue:
     part_type = part_dict.get("type")
     if part_type in {"input_text", "output_text"}:
         part_dict["type"] = "text"
+    elif part_type == "image":
+        converted = _sidecar_image_part_to_image_url(part_dict)
+        if converted is not None:
+            return converted
     return cast(JsonValue, part_dict)
+
+
+def _sidecar_image_part_to_image_url(part: dict[str, JsonValue]) -> JsonValue | None:
+    """Convert an Anthropic-native image block into the OpenAI ``image_url``
+    data-URL shape that CLIProxyAPI accepts.
+
+    Anthropic shape (sent by Cursor vision input):
+        {"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}
+        {"type": "image", "source": {"type": "url", "url": ...}}
+    Returns ``None`` if the source is unrecognized so the caller leaves the
+    part untouched.
+    """
+    source = part.get("source")
+    if not is_json_mapping(source):
+        return None
+    source_dict = cast(dict[str, JsonValue], source)
+    source_type = source_dict.get("type")
+    if source_type == "base64":
+        media_type = source_dict.get("media_type")
+        data = source_dict.get("data")
+        if not isinstance(media_type, str) or not isinstance(data, str):
+            return None
+        return {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}}
+    if source_type == "url":
+        url = source_dict.get("url")
+        if not isinstance(url, str):
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
+    return None
 
 
 def _sidecar_text_from_content_parts(parts: list[JsonValue]) -> str:
