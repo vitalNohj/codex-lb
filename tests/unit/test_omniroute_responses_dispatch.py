@@ -43,6 +43,58 @@ def test_request_translation_handles_string_input():
     assert chat.messages == [{"role": "user", "content": "just text"}]
 
 
+def test_request_translation_preserves_input_image_parts():
+    request = _responses_request(
+        instructions="",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe this"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ],
+    )
+
+    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+
+    assert chat.messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        }
+    ]
+
+
+def test_request_translation_preserves_image_url_object_with_detail():
+    request = _responses_request(
+        instructions="",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "look"},
+                    {
+                        "type": "input_image",
+                        "image_url": {"url": "data:image/png;base64,BBBB", "detail": "high"},
+                    },
+                ],
+            }
+        ],
+    )
+
+    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+
+    assert chat.messages[0]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,BBBB", "detail": "high"},
+    }
+
+
 def test_request_translation_carries_tools_and_stream():
     request = _responses_request(
         stream=True,

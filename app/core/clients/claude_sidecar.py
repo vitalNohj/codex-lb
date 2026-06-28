@@ -36,6 +36,7 @@ class ClaudeSidecarConfig:
     models_cache_ttl_seconds: float
     full_models: tuple[str, ...] = ()
     management_key: str | None = None
+    default_reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +187,64 @@ class ClaudeSidecarClient:
             if is_json_mapping(entry):
                 records.append(cast(Mapping[str, JsonValue], entry))
         return records
+
+    async def api_call(
+        self,
+        *,
+        auth_index: str,
+        method: str,
+        url: str,
+        header: Mapping[str, str],
+    ) -> JsonValue:
+        """Perform an upstream HTTP request through CLIProxyAPI's management passthrough.
+
+        CLIProxyAPI resolves the credential by ``auth_index``, substitutes the
+        ``$TOKEN$`` marker in headers with that credential's token, and routes the
+        request through the account's configured ``proxy-url``. codex-lb therefore
+        never reads the credential file nor calls the upstream host directly.
+        """
+        endpoint = f"{self.base_url}/v0/management/api-call"
+        payload: dict[str, JsonValue] = {
+            "auth_index": auth_index,
+            "method": method,
+            "url": url,
+            "header": dict(header),
+        }
+        try:
+            async with lease_http_session() as session:
+                async with session.post(
+                    endpoint,
+                    headers=self._management_headers(),
+                    json=payload,
+                    timeout=self._timeout(),
+                ) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            message = _transport_message(exc, "call Claude sidecar management api-call")
+            raise ClaudeSidecarUnavailableError(message) from exc
+
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, "Invalid response format from Claude sidecar api-call", body=data)
+        status_code = data.get("status_code")
+        if not isinstance(status_code, int) or isinstance(status_code, bool):
+            raise ClaudeSidecarError(502, "Missing 'status_code' in Claude sidecar api-call response", body=data)
+        body = data.get("body")
+        if status_code >= 400:
+            raise ClaudeSidecarError(
+                status_code,
+                f"Claude sidecar api-call upstream returned HTTP {status_code}",
+                body=body,
+            )
+        if not isinstance(body, str):
+            raise ClaudeSidecarError(502, "Missing 'body' in Claude sidecar api-call response", body=data)
+        try:
+            return cast(JsonValue, json.loads(body))
+        except json.JSONDecodeError as exc:
+            raise ClaudeSidecarError(502, "Claude sidecar api-call body was not valid JSON", body=body) from exc
 
     async def list_models_cached(self) -> list[SidecarModel]:
         now = time.monotonic()

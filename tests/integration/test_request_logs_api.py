@@ -128,12 +128,15 @@ async def test_request_logs_api_returns_recent(async_client, db_setup):
 
 @pytest.mark.asyncio
 async def test_request_logs_api_returns_claude_sidecar_account_label(async_client, db_setup):
+    # The request log uses codex-lb's UUID while the usage event uses
+    # CLIProxyAPI's own short id (they never match); correlation is by
+    # nearby timestamp, so the usage event lands a couple seconds later.
     now = utcnow()
     async with SessionLocal() as session:
         logs_repo = RequestLogsRepository(session)
         await logs_repo.add_log(
             account_id=None,
-            request_id="req_claude_sidecar_label",
+            request_id="codexlb-uuid-claude-sidecar",
             model="claude-sonnet",
             input_tokens=10,
             output_tokens=5,
@@ -146,8 +149,8 @@ async def test_request_logs_api_returns_claude_sidecar_account_label(async_clien
         )
         session.add(
             ClaudeSidecarUsageEvent(
-                request_id="req_claude_sidecar_label",
-                timestamp=now,
+                request_id="cpa12345",
+                timestamp=now + timedelta(seconds=2),
                 auth_index="0",
                 source="claude@example.com",
                 total_tokens=15,
@@ -162,6 +165,71 @@ async def test_request_logs_api_returns_claude_sidecar_account_label(async_clien
     latest = response.json()["requests"][0]
     assert latest["source"] == "claude_sidecar"
     assert latest["sidecarAccountLabel"] == "claude@example.com"
+
+
+@pytest.mark.asyncio
+async def test_request_logs_api_assigns_distinct_sidecar_labels_per_account(async_client, db_setup):
+    # Two concurrent CLIProxyAPI accounts must each get their own email label,
+    # matched to the nearest usage event by timestamp.
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="codexlb-uuid-account-a",
+            model="claude-opus-4-8",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            transport="http",
+            source="claude_sidecar",
+        )
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="codexlb-uuid-account-b",
+            model="claude-opus-4-8",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now + timedelta(seconds=12),
+            transport="http",
+            source="claude_sidecar",
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="cpaaaaa1",
+                timestamp=now + timedelta(seconds=1),
+                auth_index="6ba7c2f9",
+                source="jvwarrior@gmail.com",
+                total_tokens=15,
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="cpabbbb2",
+                timestamp=now + timedelta(seconds=13),
+                auth_index="8956369a",
+                source="vitalnohj@gmail.com",
+                total_tokens=15,
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=10")
+    assert response.status_code == 200
+    rows = response.json()["requests"]
+    labels = {row["requestId"]: row.get("sidecarAccountLabel") for row in rows}
+    assert labels["codexlb-uuid-account-a"] == "jvwarrior@gmail.com"
+    assert labels["codexlb-uuid-account-b"] == "vitalnohj@gmail.com"
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,6 @@ from app.db.session import get_background_session
 from app.modules.claude_sidecar.oauth_usage import (
     ClaudeOAuthUsageError,
     fetch_claude_oauth_usage,
-    load_claude_oauth_credential,
 )
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -157,7 +156,7 @@ async def _classify_poll_result(
             accounts=(),
         )
 
-    accounts = await _attach_oauth_usage(parse_auth_files(raw_files), previous_snapshot)
+    accounts = await _attach_oauth_usage(client, parse_auth_files(raw_files), previous_snapshot)
     return SidecarQuotaSnapshot(
         checked_at=now,
         status="healthy",
@@ -167,6 +166,7 @@ async def _classify_poll_result(
 
 
 async def _attach_oauth_usage(
+    client: ClaudeSidecarClient,
     accounts: list[SidecarAuthQuota],
     previous_snapshot: SidecarQuotaSnapshot | None = None,
 ) -> list[SidecarAuthQuota]:
@@ -174,10 +174,9 @@ async def _attach_oauth_usage(
     enriched: list[SidecarAuthQuota] = []
     for account in accounts:
         usage = None
-        credential = await load_claude_oauth_credential(account.credential_path)
-        if credential is not None:
+        if account.auth_index:
             try:
-                usage = await fetch_claude_oauth_usage(credential)
+                usage = await fetch_claude_oauth_usage(client, account.auth_index)
             except ClaudeOAuthUsageError as exc:
                 logger.debug(
                     "failed to fetch Claude OAuth usage for %s: %s",

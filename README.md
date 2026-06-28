@@ -10,150 +10,142 @@ Resources
 
 # codex-lb fork
 
-This repository is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). It keeps the upstream goal of pooling ChatGPT/Codex accounts behind an OpenAI-compatible proxy, then adds fork-specific integration work for CLIProxyAPI, OpenRouter, OmniRoute, richer cost tracking, Cursor/Codex compatibility fixes, and dashboard polish.
+<p align="center">
+  <strong>One OpenAI-compatible gateway for Codex accounts, external model providers, routing prefixes, cost visibility, and a dashboard operators can actually use.</strong>
+</p>
 
-This README is a draft for the fork. Until fork-specific release artifacts are published, build from this source checkout when you want the features described here. Upstream package and image names may not include these changes.
+<p align="center">
+  <a href="https://github.com/Soju06/codex-lb"><img alt="Fork of Soju06/codex-lb" src="https://img.shields.io/badge/fork%20of-Soju06%2Fcodex--lb-2563eb"></a>
+  <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111827">
+  <img alt="Codex and Cursor ready" src="https://img.shields.io/badge/Codex%20%2B%20Cursor-ready-7c3aed">
+  <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OmniRoute%20%7C%20Ollama-059669">
+  <img alt="Dashboard included" src="https://img.shields.io/badge/dashboard-included-f97316">
+</p>
 
-Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, route selected models to integrations, and view everything in a dashboard.
+> This is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). Upstream gives you the core Codex account load balancer. This fork turns it into a model-routing command center: native ChatGPT/Codex accounts, CLIProxyAPI, OpenRouter, OmniRoute, and Ollama Cloud can all sit behind one proxy, one API-key layer, one request log, and one dashboard.
 
-| ![dashboard](docs/screenshots/dashboard.jpg) | ![accounts](docs/screenshots/accounts.jpg) |
-|:---:|:---:|
+Build from this repository when you want the fork-only routing and integration work. Upstream package names, images, and charts may not include these features until this fork publishes its own artifacts.
 
-<details>
-<summary>More screenshots</summary>
+## The Headline
 
-| Settings | Login |
-|:---:|:---:|
-| ![settings](docs/screenshots/settings.jpg) | ![login](docs/screenshots/login.jpg) |
+codex-lb is no longer just "pool a few ChatGPT accounts and hope the right one gets picked."
 
-| Dashboard (dark) | Accounts (dark) | Settings (dark) |
-|:---:|:---:|:---:|
-| ![dashboard-dark](docs/screenshots/dashboard-dark.jpg) | ![accounts-dark](docs/screenshots/accounts-dark.jpg) | ![settings-dark](docs/screenshots/settings-dark.jpg) |
+This fork makes codex-lb the control plane for your AI clients:
 
-</details>
+```text
+Codex CLI / Cursor / OpenCode / OpenAI SDKs
+                    |
+                    v
+            codex-lb fork gateway
+                    |
+       +-------------+--------------+-------------+-------------+--------------+
+       |             |              |             |             |              |
+ Native Codex    CLIProxyAPI    OpenRouter    OmniRoute    Ollama Cloud
+ accounts        models         models        models       models
+```
 
-## What This Fork Adds
+Use the same client endpoint. Pick the model name. codex-lb decides whether that request should use a pooled Codex account or leave through an external integration.
 
-| Area | What changed |
+## What This Fork Improves
+
+| Upgrade | What you get |
 | --- | --- |
-| **CLIProxyAPI Integration** | Routes configured Claude-family models through CLIProxyAPI, keeps per-auth usage visible, maps Codex/Cursor tool shapes for sidecar requests, and exposes test/usage controls in the dashboard. |
-| **OpenRouter Integration** | Routes configured model prefixes to OpenRouter, discovers models, monitors health, detects free models, and uses live model pricing for reference-cost lookups. |
-| **OmniRoute Integration** | Routes exact selected model IDs to OmniRoute, merges those models into OpenAI-compatible model lists, preserves API-key model restrictions, and surfaces OmniRoute as a synthetic dashboard account. |
-| **Cost Savings Tracking** | Stores actual spend separately from paid-equivalent reference cost, then derives savings for free or discounted sidecar models. |
-| **Cursor/Codex Compatibility** | Keeps Codex control endpoints raw, accepts the official compact response shape, advertises sidecar context windows, and includes a Codex session provider retag command. |
-| **Dashboard Polish** | Uses provider-specific integration language, cleaner synthetic account cards, normal request-log rows for sidecar traffic, and connection controls in the Accounts tab. |
+| **Unified provider routing** | Exact model matches and configurable prefixes route traffic to CLIProxyAPI, OpenRouter, OmniRoute, Ollama, or native Codex without changing client base URLs. |
+| **Prefix stripping controls** | Use ergonomic client-facing names like `or-deepseek/deepseek-chat` or `ollama-gpt-oss:120b-cloud`, then strip the prefix only on the upstream wire request. |
+| **External Integrations dashboard** | Configure CLIProxyAPI, OpenRouter, OmniRoute, and Ollama from one tabbed dashboard card with provider-specific labels, connection tests, discovered models, prefixes, and full-model rules. |
+| **OmniRoute first-class support** | Route selected OmniRoute models through codex-lb while keeping API-key restrictions, request logs, cost tracking, and model discovery in one place. |
+| **Cost and savings telemetry** | Track actual spend, paid-equivalent reference cost, and derived savings for free or discounted external models. |
+| **Cursor and Codex compatibility** | Preserve raw Codex control endpoints, compaction behavior, context-window metadata, model aliases, and sidecar tool/reasoning quirks that real clients depend on. |
+| **Cleaner operator UI** | Synthetic provider accounts, normal request-log rows, provider names without noisy "sidecar" badges, and account-level controls for the integrations that need them. |
 
-## Features
+## The Routing Engine
 
-<table>
-<tr>
-<td><b>Account Pooling</b><br>Load balance across multiple ChatGPT/Codex accounts</td>
-<td><b>Usage Tracking</b><br>Per-account tokens, cost, trends, and sidecar savings</td>
-<td><b>API Keys</b><br>Per-key rate limits by token, cost, window, model</td>
-</tr>
-<tr>
-<td><b>Dashboard Auth</b><br>Password/TOTP, trusted reverse-proxy headers, or disabled mode</td>
-<td><b>OpenAI-compatible</b><br>Codex CLI, OpenCode, any OpenAI client</td>
-<td><b>Model Discovery</b><br>Native Codex models plus configured sidecar catalogs</td>
-</tr>
-<tr>
-<td><b>Sidecar Routing</b><br>CLIProxyAPI, OpenRouter, and OmniRoute dispatch paths</td>
-<td><b>Request Observability</b><br>Unified logs with provider, model, transport, cost, and savings</td>
-<td><b>Deployment Options</b><br>Local source, Docker, Docker Compose, and Helm</td>
-</tr>
-</table>
+The fork ships a shared resolver for all external integrations. The rules are simple and predictable:
 
-## Sidecar Integrations
+1. **Full model exact match wins globally.** If `oc/big-pickle` is configured as an OmniRoute full model, it routes to OmniRoute even if another provider owns a broader prefix.
+2. **Longest prefix wins next.** If one provider owns `deepseek/` and another owns `deepseek/deepseek-`, the more specific prefix gets the request.
+3. **Each prefix chooses whether to strip.** `or-deepseek/deepseek-chat` can be logged and rate-limited as `or-deepseek/deepseek-chat`, while OpenRouter receives `deepseek/deepseek-chat`.
+4. **Full model matches are never stripped.** Exact model IDs are forwarded as the operator configured them.
+5. **The client-facing model stays visible.** API-key restrictions, request-limit reservations, request logs, and quota accounting use the effective model the client asked for.
 
-Sidecar integrations let codex-lb keep owning API-key authentication, request logging, model allowlists, and dashboard observability while routing selected models to another backend.
+That means one model list can safely mix official Codex models, external provider models, friendly aliases, and provider-prefixed names.
 
-Routing order for Chat Completions traffic is:
+## Integration Lineup
 
-1. CLIProxyAPI / Claude sidecar checks.
-2. OpenRouter sidecar checks.
-3. OmniRoute exact selected-model checks.
-4. Native Codex/ChatGPT path.
+| Provider lane | Use it for | Routing style | Fork extras |
+| --- | --- | --- | --- |
+| **Native Codex accounts** | Official ChatGPT/Codex models across multiple accounts | Default fallback when no integration matches | Account pooling, usage refresh, sticky sessions, quota-aware routing, WebSocket/HTTP Responses support |
+| **CLIProxyAPI Integration** | Claude-family and CLIProxyAPI-backed models | Prefixes and full models | Per-auth usage panels, quota estimates, management-key support, Codex/Cursor tool-shape handling |
+| **OpenRouter Integration** | Direct OpenRouter model access | Prefixes and full models | Model discovery, live pricing import, free-model detection, reference-cost savings |
+| **OmniRoute Integration** | Local or remote OmniRoute routing | Prefixes and full models | Selected model exposure, request-log/cost visibility, OmniRoute model catalog merging |
+| **Ollama Integration** | Ollama Cloud chat models | Prefixes and full models | Cloud model filtering, Ollama SDK dispatch, OpenAI-compatible chat response shaping |
 
-### CLIProxyAPI Integration
+## Routing Examples
 
-Use this for Claude-family model routing through CLIProxyAPI.
+| Client model | Configuration | Upstream lane | Wire model |
+| --- | --- | --- | --- |
+| `gpt-5.4` | no external match | Native Codex account pool | `gpt-5.4` |
+| `claude-sonnet-4-5` | CLIProxyAPI prefix `claude`, strip off | CLIProxyAPI | `claude-sonnet-4-5` |
+| `or-deepseek/deepseek-chat` | OpenRouter prefix `or-`, strip on | OpenRouter | `deepseek/deepseek-chat` |
+| `oc/big-pickle` | OmniRoute full model `oc/big-pickle` | OmniRoute | `oc/big-pickle` |
+| `ollama-gpt-oss:120b-cloud` | Ollama prefix `ollama-`, strip on | Ollama Cloud | `gpt-oss:120b-cloud` |
 
-Primary configuration:
+## What You Can Do With It
+
+- Put Codex CLI, Cursor, OpenCode, OpenClaw, and OpenAI SDK clients behind one local or hosted endpoint.
+- Keep official Codex account pooling for GPT/Codex models while sending selected models to external providers.
+- Give each API key its own model allowlist, expiration, and token/cost limits without caring which provider eventually handles the request.
+- Test, enable, disable, and tune external integrations from the dashboard instead of editing client configs everywhere.
+- Compare free and discounted external model usage against paid-equivalent reference cost.
+- See native and external requests in one log stream with provider, model, transport, usage, errors, and savings.
+
+## External Integrations
+
+Configure integrations in **Settings -> External Integrations**. Each provider gets its own tab, but the routing rules are shared.
+
+Primary defaults:
 
 ```bash
+# CLIProxyAPI Integration
 CODEX_LB_CLAUDE_SIDECAR_ENABLED=false
 CODEX_LB_CLAUDE_SIDECAR_BASE_URL=http://127.0.0.1:8317
 CODEX_LB_CLAUDE_SIDECAR_MODEL_PREFIXES=claude
-CODEX_LB_CLAUDE_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
-CODEX_LB_CLAUDE_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
-CODEX_LB_CLAUDE_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
-```
 
-Dashboard surfaces use the label `CLIProxyAPI Integration`. The Accounts tab shows per-auth usage panels and exposes connection testing plus quota-estimation controls. Settings can still hold integration configuration and run connection checks on save.
-
-Claude sidecar usage estimates prefer authoritative OAuth-reported percentages over local token-budget math when a Pro or Team plan is configured.
-
-### OpenRouter Integration
-
-Use this for direct OpenRouter Chat Completions routing.
-
-Primary configuration:
-
-```bash
+# OpenRouter Integration
 CODEX_LB_OPENROUTER_SIDECAR_ENABLED=false
 CODEX_LB_OPENROUTER_SIDECAR_BASE_URL=https://openrouter.ai/api/v1
-CODEX_LB_OPENROUTER_SIDECAR_MODEL_PREFIXES=deepseek/,google/
-CODEX_LB_OPENROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
-CODEX_LB_OPENROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
-CODEX_LB_OPENROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
-```
 
-The sidecar discovers models from OpenRouter, merges them into `/v1/models`, and parses OpenRouter pricing so free models can still show paid-equivalent reference cost.
-
-Free-model detection uses explicit markers such as `:free`, `-free`, and `_free`.
-
-### OmniRoute Integration
-
-Use this for a local or remote OmniRoute instance.
-
-Primary configuration exists in the dashboard under `OmniRoute Integration`; environment variables can seed defaults:
-
-```bash
+# OmniRoute Integration
 CODEX_LB_OMNIROUTE_SIDECAR_ENABLED=false
 CODEX_LB_OMNIROUTE_SIDECAR_BASE_URL=http://127.0.0.1:20128/v1
 CODEX_LB_OMNIROUTE_SIDECAR_SELECTED_MODELS=oc/big-pickle,oc/deepseek-v4-flash-free
-CODEX_LB_OMNIROUTE_SIDECAR_CONNECT_TIMEOUT_SECONDS=8
-CODEX_LB_OMNIROUTE_SIDECAR_REQUEST_TIMEOUT_SECONDS=600
-CODEX_LB_OMNIROUTE_SIDECAR_MODELS_CACHE_TTL_SECONDS=60
+
+# Ollama Integration
+CODEX_LB_OLLAMA_SIDECAR_ENABLED=false
+CODEX_LB_OLLAMA_SIDECAR_BASE_URL=https://ollama.com
 ```
 
-OmniRoute routing uses exact selected model IDs. This avoids accidentally stealing native Codex models or broad provider prefixes. OmniRoute models are merged into OpenAI-compatible model lists and dashboard model lists, while Codex-native model endpoints remain native.
-
-OmniRoute owns its own provider cooling and dashboard at `/omni`; codex-lb does not manage the OmniRoute process lifecycle.
+The dashboard stores API keys encrypted at rest, runs connection tests, shows discovered models, and prevents duplicate full-model or prefix ownership across providers. OmniRoute owns its own provider cooling and dashboard; codex-lb routes to it and records the traffic, but does not manage the OmniRoute process lifecycle.
 
 ## Cost, Reference Cost, And Savings
 
-Actual spend and reference value are tracked separately.
+This fork separates actual spend from reference value:
 
-- `cost_usd` is actual spend.
-- `reference_cost_usd` is the paid-equivalent price for the same usage when a reference price can be resolved.
-- `savings_usd` is derived from `reference_cost_usd - cost_usd` and is floored at zero.
+- `cost_usd` is what the request actually cost.
+- `reference_cost_usd` is the paid-equivalent price when codex-lb can resolve one.
+- `savings_usd` is `reference_cost_usd - cost_usd`, floored at zero.
 
-For free OpenRouter or OmniRoute sidecar models, actual cost can be `$0.00` while reference cost shows what the same token usage would have cost on a paid equivalent. If no reference price can be resolved, reference cost stays null instead of pretending the request was free.
+Free OpenRouter, OmniRoute, and curated opaque-free models can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
 
-OmniRoute also supports opaque free models that do not include a textual free marker. Those are handled through a curated allowlist in `app/core/usage/pricing.py`.
+## Cursor And Codex Compatibility
 
-## Cursor And Codex Compatibility Notes
+This fork includes practical compatibility work for Codex CLI, Cursor, and OpenAI-style clients:
 
-This fork includes compatibility work for Cursor, Codex CLI, and OpenAI-style clients.
-
-Important behavior:
-
-- Codex control endpoints are raw pass-through routes. `POST /backend-api/codex/memories/trace_summarize` forwards the original request body unchanged and does not apply Responses policy, model alias normalization, API-key model enforcement, reasoning injection, or service-tier injection.
-- Compact response handling accepts the official Codex compact shape `{"output": [...]}` as well as older object-discriminated shapes.
-- Sidecar models advertise context-window metadata in model lists so Cursor local-provider discovery can make better compaction decisions.
-- Context-limit and terminal-compaction handling is tuned so clients can compact long conversations instead of misclassifying the event as an API-key or rate-limit failure.
-- Cursor-style GPT-5 model aliases are normalized on the Responses/API-key paths where policy is supposed to apply, not on raw Codex control payloads.
+- Raw Codex control endpoints, including `POST /backend-api/codex/memories/trace_summarize`, pass through without model rewriting, reasoning injection, API-key model enforcement, or service-tier injection.
+- Compact response handling accepts the official Codex compact shape `{"output": [...]}`.
+- External model entries advertise context-window metadata so local-provider clients can make better compaction decisions.
+- Context-limit and terminal-compaction paths are tuned so clients can compact long conversations instead of misclassifying the event as an API-key or rate-limit failure.
+- DeepSeek V4 thinking-mode repair is handled server-side for the external chat-completions dispatch paths that need it.
 
 ## Quick Start From This Fork
 
@@ -161,7 +153,7 @@ Important behavior:
 git clone https://github.com/vitalNohj/codex-lb.git
 cd codex-lb
 
-# Docker (recommended while this fork is draft/published-from-source)
+# Docker from this source checkout
 docker build -t codex-lb-fork:local .
 docker volume create codex-lb-data
 
@@ -624,79 +616,90 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/e
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/dwnmf"><img src="https://avatars.githubusercontent.com/u/56194792?v=4?s=100" width="100px;" alt="LYA⚚CAP⚚OCEAN"/><br /><sub><b>LYA⚚CAP⚚OCEAN</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=dwnmf" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=dwnmf" title="Tests">⚠️</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/diogenesc"><img src="https://avatars.githubusercontent.com/u/22321454?v=4?s=100" width="100px;" alt="Diógenes Castro"/><br /><sub><b>Diógenes Castro</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=diogenesc" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=diogenesc" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/azkore"><img src="https://avatars.githubusercontent.com/u/7746783?v=4?s=100" width="100px;" alt="Eugene Korekin"/><br /><sub><b>Eugene Korekin</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=azkore" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Aazkore" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=azkore" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/JordxnBN"><img src="https://avatars.githubusercontent.com/u/259802500?v=4?s=100" width="100px;" alt="jordan"/><br /><sub><b>jordan</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=JordxnBN" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3AJordxnBN" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=JordxnBN" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/DOCaCola"><img src="https://avatars.githubusercontent.com/u/2077396?v=4?s=100" width="100px;" alt="DOCaCola"/><br /><sub><b>DOCaCola</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/issues?q=author%3ADOCaCola" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=DOCaCola" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/commits?author=DOCaCola" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/joeblack2k"><img src="https://avatars.githubusercontent.com/u/3456102?v=4?s=100" width="100px;" alt="JoeBlack2k"/><br /><sub><b>JoeBlack2k</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=joeblack2k" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Ajoeblack2k" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=joeblack2k" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/ink-splatters"><img src="https://avatars.githubusercontent.com/u/2706884?v=4?s=100" width="100px;" alt="Peter A."/><br /><sub><b>Peter A.</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=ink-splatters" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=ink-splatters" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Aink-splatters" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/xCatalitY"><img src="https://avatars.githubusercontent.com/u/74815681?v=4?s=100" width="100px;" alt="Hannah Markfort"/><br /><sub><b>Hannah Markfort</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=xCatalitY" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=xCatalitY" title="Tests">⚠️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/mws-weekend-projects"><img src="https://avatars.githubusercontent.com/u/255546191?v=4?s=100" width="100px;" alt="mws-weekend-projects"/><br /><sub><b>mws-weekend-projects</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=mws-weekend-projects" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mws-weekend-projects" title="Tests">⚠️</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/mws-weekend-projects"><img src="https://avatars.githubusercontent.com/u/255546191?v=4?s=100" width="100px;" alt="mws-weekend-projects"/><br /><sub><b>mws-weekend-projects</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=mws-weekend-projects" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mws-weekend-projects" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://hextra.us"><img src="https://avatars.githubusercontent.com/u/88663250?v=4?s=100" width="100px;" alt="Quang Do"/><br /><sub><b>Quang Do</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=quangdo126" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=quangdo126" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/aaiyer"><img src="https://avatars.githubusercontent.com/u/426027?v=4?s=100" width="100px;" alt="Anand Aiyer"/><br /><sub><b>Anand Aiyer</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/issues?q=author%3Aaaiyer" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=aaiyer" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=aaiyer" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/defin85"><img src="https://avatars.githubusercontent.com/u/31535407?v=4?s=100" width="100px;" alt="defin85"/><br /><sub><b>defin85</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=defin85" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Adefin85" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=defin85" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://linktree.huzky.dev/"><img src="https://avatars.githubusercontent.com/u/194083329?v=4?s=100" width="100px;" alt="Jacky Fong"/><br /><sub><b>Jacky Fong</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=huzky-v" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Ahuzky-v" title="Bug reports">🐛</a> <a href="#question-huzky-v" title="Answering Questions">💬</a> <a href="#maintenance-huzky-v" title="Maintenance">🚧</a> <a href="https://github.com/Soju06/codex-lb/commits?author=huzky-v" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/flokosti96"><img src="https://avatars.githubusercontent.com/u/144428350?v=4?s=100" width="100px;" alt="flokosti96"/><br /><sub><b>flokosti96</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=flokosti96" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=flokosti96" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/minpeter"><img src="https://avatars.githubusercontent.com/u/62207008?v=4?s=100" width="100px;" alt="Woonggi Min"/><br /><sub><b>Woonggi Min</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=minpeter" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=minpeter" title="Tests">⚠️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://www.linkedin.com/in/yigitkonur/"><img src="https://avatars.githubusercontent.com/u/9989650?v=4?s=100" width="100px;" alt="Yigit Konur"/><br /><sub><b>Yigit Konur</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/issues?q=author%3Ayigitkonur" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=yigitkonur" title="Code">💻</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://www.linkedin.com/in/yigitkonur/"><img src="https://avatars.githubusercontent.com/u/9989650?v=4?s=100" width="100px;" alt="Yigit Konur"/><br /><sub><b>Yigit Konur</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/issues?q=author%3Ayigitkonur" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=yigitkonur" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Daltonganger"><img src="https://avatars.githubusercontent.com/u/17501732?v=4?s=100" width="100px;" alt="Ruben"/><br /><sub><b>Ruben</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Daltonganger" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Daltonganger" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3ADaltonganger" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/L1st3r"><img src="https://avatars.githubusercontent.com/u/336408?v=4?s=100" width="100px;" alt="Steve Santacroce"/><br /><sub><b>Steve Santacroce</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=L1st3r" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=L1st3r" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3AL1st3r" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/mhughdo"><img src="https://avatars.githubusercontent.com/u/15611134?v=4?s=100" width="100px;" alt="Hugh Do"/><br /><sub><b>Hugh Do</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=mhughdo" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mhughdo" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/salwinh"><img src="https://avatars.githubusercontent.com/u/6965142?v=4?s=100" width="100px;" alt="Hubert Salwin"/><br /><sub><b>Hubert Salwin</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=salwinh" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=salwinh" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Daeroni"><img src="https://avatars.githubusercontent.com/u/1648961?v=4?s=100" width="100px;" alt="Teemu Koskinen"/><br /><sub><b>Teemu Koskinen</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Daeroni" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://felixypz.me"><img src="https://avatars.githubusercontent.com/u/151984457?v=4?s=100" width="100px;" alt="Yu Peng Zheng"/><br /><sub><b>Yu Peng Zheng</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Felix201209" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Felix201209" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/embogomolov"><img src="https://avatars.githubusercontent.com/u/185256086?v=4?s=100" width="100px;" alt="embogomolov"/><br /><sub><b>embogomolov</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=embogomolov" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=embogomolov" title="Tests">⚠️</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/embogomolov"><img src="https://avatars.githubusercontent.com/u/185256086?v=4?s=100" width="100px;" alt="embogomolov"/><br /><sub><b>embogomolov</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=embogomolov" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=embogomolov" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/SHAREN"><img src="https://avatars.githubusercontent.com/u/6128858?v=4?s=100" width="100px;" alt="Renat Sharipov"/><br /><sub><b>Renat Sharipov</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=SHAREN" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=SHAREN" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://ximatai.net"><img src="https://avatars.githubusercontent.com/u/1785495?v=4?s=100" width="100px;" alt="Liu Rui"/><br /><sub><b>Liu Rui</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=aruis" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=aruis" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=aruis" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Aaruis" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/OverHash"><img src="https://avatars.githubusercontent.com/u/46231745?v=4?s=100" width="100px;" alt="OverHash"/><br /><sub><b>OverHash</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=OverHash" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=OverHash" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Kazet111"><img src="https://avatars.githubusercontent.com/u/21245898?v=4?s=100" width="100px;" alt="Kazet"/><br /><sub><b>Kazet</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Kazet111" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Kazet111" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://balakumar.dev"><img src="https://avatars.githubusercontent.com/u/20134279?v=4?s=100" width="100px;" alt="Bala Kumar"/><br /><sub><b>Bala Kumar</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=balakumardev" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=balakumardev" title="Tests">⚠️</a> <a href="#ideas-balakumardev" title="Ideas, Planning, & Feedback">🤔</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/ihazgithub"><img src="https://avatars.githubusercontent.com/u/129220128?v=4?s=100" width="100px;" alt="ihazgithub"/><br /><sub><b>ihazgithub</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=ihazgithub" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=ihazgithub" title="Tests">⚠️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/stemirkhan"><img src="https://avatars.githubusercontent.com/u/99467693?v=4?s=100" width="100px;" alt="Temirkhan"/><br /><sub><b>Temirkhan</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=stemirkhan" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=stemirkhan" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/commits?author=stemirkhan" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Astemirkhan" title="Bug reports">🐛</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/stemirkhan"><img src="https://avatars.githubusercontent.com/u/99467693?v=4?s=100" width="100px;" alt="Temirkhan"/><br /><sub><b>Temirkhan</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=stemirkhan" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=stemirkhan" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/commits?author=stemirkhan" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Astemirkhan" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/tobwen"><img src="https://avatars.githubusercontent.com/u/1864057?v=4?s=100" width="100px;" alt="tobwen"/><br /><sub><b>tobwen</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=tobwen" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=tobwen" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Atobwen" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/rio-jeong"><img src="https://avatars.githubusercontent.com/u/193858009?v=4?s=100" width="100px;" alt="Rio"/><br /><sub><b>Rio</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=rio-jeong" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3Ario-jeong" title="Bug reports">🐛</a> <a href="https://github.com/Soju06/codex-lb/commits?author=rio-jeong" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://mikabytes.com"><img src="https://avatars.githubusercontent.com/u/1054229?v=4?s=100" width="100px;" alt="Mika"/><br /><sub><b>Mika</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=mikabytes" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mikabytes" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mikabytes" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://maumap.com/"><img src="https://avatars.githubusercontent.com/u/810638?v=4?s=100" width="100px;" alt="Darafei Praliaskouski"/><br /><sub><b>Darafei Praliaskouski</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Komzpa" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Komzpa" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Komzpa" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3AKomzpa" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://t.me/e1ektr0"><img src="https://avatars.githubusercontent.com/u/6214170?v=4?s=100" width="100px;" alt="Maxim Feofilov"/><br /><sub><b>Maxim Feofilov</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=e1ektr0" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=e1ektr0" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/JeffKandt"><img src="https://avatars.githubusercontent.com/u/31992445?v=4?s=100" width="100px;" alt="JeffKandt"/><br /><sub><b>JeffKandt</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=JeffKandt" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/pulls?q=is%3Apr+reviewed-by%3AJeffKandt" title="Reviewed Pull Requests">👀</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/klaascommerce"><img src="https://avatars.githubusercontent.com/u/264425820?v=4?s=100" width="100px;" alt="klaascommerce"/><br /><sub><b>klaascommerce</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=klaascommerce" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=klaascommerce" title="Tests">⚠️</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/klaascommerce"><img src="https://avatars.githubusercontent.com/u/264425820?v=4?s=100" width="100px;" alt="klaascommerce"/><br /><sub><b>klaascommerce</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=klaascommerce" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=klaascommerce" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/ozpool"><img src="https://avatars.githubusercontent.com/u/151670776?v=4?s=100" width="100px;" alt="ozpool"/><br /><sub><b>ozpool</b></sub></a><br /><a href="#ideas-ozpool" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/Soju06/codex-lb/commits?author=ozpool" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=ozpool" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=ozpool" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/mgwals"><img src="https://avatars.githubusercontent.com/u/155856544?v=4?s=100" width="100px;" alt="Manu"/><br /><sub><b>Manu</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=mgwals" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/pulls?q=is%3Apr+reviewed-by%3Amgwals" title="Reviewed Pull Requests">👀</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://pgflow.dev"><img src="https://avatars.githubusercontent.com/u/9126?v=4?s=100" width="100px;" alt="Wojtek Majewski"/><br /><sub><b>Wojtek Majewski</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=jumski" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://www.linkedin.com/in/andrewnoblescm"><img src="https://avatars.githubusercontent.com/u/211227905?v=4?s=100" width="100px;" alt="Andrew Noble"/><br /><sub><b>Andrew Noble</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=AnobleSCM" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=AnobleSCM" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://jgorostegui.github.io/"><img src="https://avatars.githubusercontent.com/u/9865435?v=4?s=100" width="100px;" alt="Josu Gorostegui"/><br /><sub><b>Josu Gorostegui</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=jgorostegui" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=jgorostegui" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/linusmixson"><img src="https://avatars.githubusercontent.com/u/7087013?v=4?s=100" width="100px;" alt="Linus Mixson"/><br /><sub><b>Linus Mixson</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=linusmixson" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=linusmixson" title="Tests">⚠️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Lotfree618"><img src="https://avatars.githubusercontent.com/u/91266981?v=4?s=100" width="100px;" alt="Lotfree"/><br /><sub><b>Lotfree</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Lotfree618" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Lotfree618" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Lotfree618" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3ALotfree618" title="Bug reports">🐛</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Lotfree618"><img src="https://avatars.githubusercontent.com/u/91266981?v=4?s=100" width="100px;" alt="Lotfree"/><br /><sub><b>Lotfree</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Lotfree618" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Lotfree618" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Lotfree618" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/issues?q=author%3ALotfree618" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/timefox"><img src="https://avatars.githubusercontent.com/u/5635109?v=4?s=100" width="100px;" alt="timefox"/><br /><sub><b>timefox</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=timefox" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=timefox" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Pablosinyores"><img src="https://avatars.githubusercontent.com/u/150948502?v=4?s=100" width="100px;" alt="Nikhil"/><br /><sub><b>Nikhil</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Pablosinyores" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Pablosinyores" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/kramarb"><img src="https://avatars.githubusercontent.com/u/9120027?v=4?s=100" width="100px;" alt="Miha Orazem"/><br /><sub><b>Miha Orazem</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=kramarb" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=kramarb" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/minh-dng"><img src="https://avatars.githubusercontent.com/u/73318601?v=4?s=100" width="100px;" alt="Steven (Minh) Dang"/><br /><sub><b>Steven (Minh) Dang</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=minh-dng" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/onlysdesign-ui"><img src="https://avatars.githubusercontent.com/u/251030415?v=4?s=100" width="100px;" alt="onlysdesign-ui"/><br /><sub><b>onlysdesign-ui</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=onlysdesign-ui" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=onlysdesign-ui" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://www.linkedin.com/in/mahir-ozdin/"><img src="https://avatars.githubusercontent.com/u/9491185?v=4?s=100" width="100px;" alt="Mahir Taha Özdin"/><br /><sub><b>Mahir Taha Özdin</b></sub></a><br /><a href="#ideas-mahirozdin" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mahirozdin" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mahirozdin" title="Tests">⚠️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://datfooldive.github.io/"><img src="https://avatars.githubusercontent.com/u/110718021?v=4?s=100" width="100px;" alt="hikki"/><br /><sub><b>hikki</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=datfooldive" title="Code">💻</a> <a href="#design-datfooldive" title="Design">🎨</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://datfooldive.github.io/"><img src="https://avatars.githubusercontent.com/u/110718021?v=4?s=100" width="100px;" alt="hikki"/><br /><sub><b>hikki</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=datfooldive" title="Code">💻</a> <a href="#design-datfooldive" title="Design">🎨</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/1llu5ion"><img src="https://avatars.githubusercontent.com/u/23450032?v=4?s=100" width="100px;" alt="Nataprom"/><br /><sub><b>Nataprom</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=1llu5ion" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=1llu5ion" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Iweisc"><img src="https://avatars.githubusercontent.com/u/179300695?v=4?s=100" width="100px;" alt="Iweisc"/><br /><sub><b>Iweisc</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Iweisc" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=Iweisc" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/ramhaidar"><img src="https://avatars.githubusercontent.com/u/49301219?v=4?s=100" width="100px;" alt="ram/haidar"/><br /><sub><b>ram/haidar</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=ramhaidar" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://rtx09x.github.io/"><img src="https://avatars.githubusercontent.com/u/187954595?v=4?s=100" width="100px;" alt="Rudra Tiwari"/><br /><sub><b>Rudra Tiwari</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=Rtx09x" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/wuchao05"><img src="https://avatars.githubusercontent.com/u/97175999?v=4?s=100" width="100px;" alt="Wu Chao"/><br /><sub><b>Wu Chao</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=wuchao05" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/zwd0313"><img src="https://avatars.githubusercontent.com/u/159164983?v=4?s=100" width="100px;" alt="zwd0313"/><br /><sub><b>zwd0313</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=zwd0313" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/jhordanjw123"><img src="https://avatars.githubusercontent.com/u/123907587?v=4?s=100" width="100px;" alt="jhordanjw123"/><br /><sub><b>jhordanjw123</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=jhordanjw123" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=jhordanjw123" title="Tests">⚠️</a></td>
     </tr>
     <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/jhordanjw123"><img src="https://avatars.githubusercontent.com/u/123907587?v=4?s=100" width="100px;" alt="jhordanjw123"/><br /><sub><b>jhordanjw123</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=jhordanjw123" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=jhordanjw123" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/mastertyko"><img src="https://avatars.githubusercontent.com/u/11311479?v=4?s=100" width="100px;" alt="mastertyko"/><br /><sub><b>mastertyko</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=mastertyko" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=mastertyko" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/NeoClaw"><img src="https://avatars.githubusercontent.com/u/261536598?v=4?s=100" width="100px;" alt="NeoClaw"/><br /><sub><b>NeoClaw</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=neoclaw" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/abarsegov"><img src="https://avatars.githubusercontent.com/u/181010154?v=4?s=100" width="100px;" alt="abarsegov"/><br /><sub><b>abarsegov</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=abarsegov" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/KakatkarAkshay"><img src="https://avatars.githubusercontent.com/u/49910222?v=4?s=100" width="100px;" alt="Akshay Kakatkar"/><br /><sub><b>Akshay Kakatkar</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=KakatkarAkshay" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=KakatkarAkshay" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/softkleenex"><img src="https://avatars.githubusercontent.com/u/92619941?v=4?s=100" width="100px;" alt="softkleenex"/><br /><sub><b>softkleenex</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=softkleenex" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=softkleenex" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/plastictaste"><img src="https://avatars.githubusercontent.com/u/261646970?v=4?s=100" width="100px;" alt="plastictaste"/><br /><sub><b>plastictaste</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=plastictaste" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=plastictaste" title="Tests">⚠️</a> <a href="https://github.com/Soju06/codex-lb/commits?author=plastictaste" title="Documentation">📖</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/n3crosis"><img src="https://avatars.githubusercontent.com/u/11072158?v=4?s=100" width="100px;" alt="n3crosis"/><br /><sub><b>n3crosis</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=n3crosis" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=n3crosis" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/copilot"><img src="https://github.com/copilot.png?s=100" width="100px;" alt="copilot"/><br /><sub><b>copilot</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=copilot" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/geoHeil"><img src="https://avatars.githubusercontent.com/u/1694964?v=4?s=100" width="100px;" alt="geoHeil"/><br /><sub><b>geoHeil</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=geoHeil" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=geoHeil" title="Tests">⚠️</a></td>
     </tr>
   </tbody>
 </table>

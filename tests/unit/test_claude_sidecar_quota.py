@@ -31,7 +31,7 @@ def test_parse_live_fixture_keeps_claude_entry_without_quota_block():
     assert len(accounts) == 1
     only = accounts[0]
     assert isinstance(only, SidecarAuthQuota)
-    assert only.email == "jvwarrior@gmail.com"
+    assert only.email == "account1@example.com"
     assert only.quota_exceeded is False
     assert only.next_recover_at is None
     assert only.model_states == ()

@@ -58,6 +58,7 @@ def to_request_log_entry(
         requested_service_tier=log.requested_service_tier,
         actual_service_tier=log.actual_service_tier,
         reasoning_effort=log.reasoning_effort,
+        requested_reasoning_effort=log.requested_reasoning_effort,
         status=log_status(log),
         error_code=log.error_code,
         error_message=log.error_message,

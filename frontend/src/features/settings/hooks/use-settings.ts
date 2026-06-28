@@ -34,10 +34,11 @@ import type {
 export function useSettings() {
   const queryClient = useQueryClient();
 
-  const settingsQuery = useQuery({
+  const { data, error, isFetching, isLoading, isPending, isSuccess, refetch } = useQuery({
     queryKey: ["settings", "detail"],
     queryFn: getSettings,
   });
+  const settingsQuery = { data, error, isFetching, isLoading, isPending, isSuccess, refetch };
 
   const updateSettingsMutation = useMutation({
     mutationFn: (payload: SettingsUpdateRequest) => updateSettings(payload),
@@ -60,21 +61,34 @@ export function useSettings() {
 export function useUpstreamProxyAdmin() {
   const queryClient = useQueryClient();
 
-  const upstreamProxyQuery = useQuery({
+  const {
+    data: upstreamProxyData,
+    error: upstreamProxyError,
+    isFetching: upstreamProxyIsFetching,
+    isLoading: upstreamProxyIsLoading,
+    isPending: upstreamProxyIsPending,
+    isSuccess: upstreamProxyIsSuccess,
+    refetch: refetchUpstreamProxy,
+  } = useQuery({
     queryKey: ["settings", "upstream-proxy"],
     queryFn: getUpstreamProxyAdmin,
   });
-
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
-    void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+  const upstreamProxyQuery = {
+    data: upstreamProxyData,
+    error: upstreamProxyError,
+    isFetching: upstreamProxyIsFetching,
+    isLoading: upstreamProxyIsLoading,
+    isPending: upstreamProxyIsPending,
+    isSuccess: upstreamProxyIsSuccess,
+    refetch: refetchUpstreamProxy,
   };
 
   const createEndpointMutation = useMutation({
     mutationFn: (payload: UpstreamProxyEndpointCreateRequest) => createUpstreamProxyEndpoint(payload),
     onSuccess: () => {
       toast.success("Proxy endpoint created");
-      invalidate();
+      void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
       toast.error(error.message || "Proxy endpoint creation failed");
@@ -85,7 +99,8 @@ export function useUpstreamProxyAdmin() {
     mutationFn: (payload: UpstreamProxyPoolCreateRequest) => createUpstreamProxyPool(payload),
     onSuccess: () => {
       toast.success("Proxy pool created");
-      invalidate();
+      void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
       toast.error(error.message || "Proxy pool creation failed");
@@ -97,7 +112,8 @@ export function useUpstreamProxyAdmin() {
       addUpstreamProxyPoolMember(poolId, payload),
     onSuccess: () => {
       toast.success("Proxy pool member added");
-      invalidate();
+      void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
       toast.error(error.message || "Proxy pool update failed");
@@ -109,7 +125,8 @@ export function useUpstreamProxyAdmin() {
       putAccountProxyBinding(accountId, payload),
     onSuccess: () => {
       toast.success("Account proxy binding saved");
-      invalidate();
+      void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
       toast.error(error.message || "Account proxy binding failed");
@@ -206,7 +223,7 @@ export function useClaudeSidecarQuota() {
   const quotaQuery = useQuery({
     queryKey: ["settings", "claude-sidecar", "quota"],
     queryFn: getClaudeSidecarQuota,
-    refetchInterval: 60_000,
+    refetchInterval: 180_000,
   });
   return { quotaQuery };
 }

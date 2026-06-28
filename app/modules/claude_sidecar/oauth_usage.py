@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import asyncio
-import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import aiohttp
-
-from app.core.clients.http import lease_http_session
+from app.core.clients.claude_sidecar import ClaudeSidecarError
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.modules.claude_sidecar.quota import (
     SidecarOAuthUsage,
     SidecarOAuthUsageBucket,
 )
+
+if TYPE_CHECKING:
+    from app.core.clients.claude_sidecar import ClaudeSidecarClient
 
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_USAGE_BETA = "oauth-2025-04-20"
@@ -25,46 +23,26 @@ class ClaudeOAuthUsageError(Exception):
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class ClaudeOAuthCredential:
-    access_token: str
+async def fetch_claude_oauth_usage(client: ClaudeSidecarClient, auth_index: str) -> SidecarOAuthUsage:
+    """Fetch Anthropic OAuth usage for an auth through CLIProxyAPI.
 
-
-async def load_claude_oauth_credential(path: str | None) -> ClaudeOAuthCredential | None:
-    if not path:
-        return None
-    return await asyncio.to_thread(_load_claude_oauth_credential_sync, path)
-
-
-def _load_claude_oauth_credential_sync(path: str) -> ClaudeOAuthCredential | None:
+    The request is issued via CLIProxyAPI's ``/v0/management/api-call`` passthrough
+    so the upstream call uses the account's stored token (``$TOKEN$`` substitution)
+    and its configured ``proxy-url``. codex-lb never reads credential files nor
+    contacts ``api.anthropic.com`` directly.
+    """
     try:
-        text = Path(path).expanduser().read_text(encoding="utf-8")
-        parsed = json.loads(text)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not is_json_mapping(parsed):
-        return None
-    access_token = parsed.get("access_token")
-    if not isinstance(access_token, str) or not access_token.strip():
-        return None
-    return ClaudeOAuthCredential(access_token=access_token.strip())
-
-
-async def fetch_claude_oauth_usage(credential: ClaudeOAuthCredential) -> SidecarOAuthUsage:
-    headers = {
-        "Authorization": f"Bearer {credential.access_token}",
-        "anthropic-beta": CLAUDE_OAUTH_USAGE_BETA,
-    }
-    timeout = aiohttp.ClientTimeout(total=10.0)
-    async with lease_http_session() as http:
-        try:
-            async with http.get(CLAUDE_OAUTH_USAGE_URL, headers=headers, timeout=timeout) as response:
-                status = response.status
-                data = await response.json(content_type=None) if status < 400 else None
-        except (aiohttp.ClientError, ValueError) as exc:
-            raise ClaudeOAuthUsageError("failed to fetch Claude OAuth usage") from exc
-    if status >= 400:
-        raise ClaudeOAuthUsageError(f"Claude OAuth usage returned HTTP {status}")
+        data = await client.api_call(
+            auth_index=auth_index,
+            method="GET",
+            url=CLAUDE_OAUTH_USAGE_URL,
+            header={
+                "Authorization": "Bearer $TOKEN$",
+                "anthropic-beta": CLAUDE_OAUTH_USAGE_BETA,
+            },
+        )
+    except ClaudeSidecarError as exc:
+        raise ClaudeOAuthUsageError("failed to fetch Claude OAuth usage") from exc
     if not is_json_mapping(data):
         raise ClaudeOAuthUsageError("Claude OAuth usage response was not a JSON object")
     return parse_claude_oauth_usage(data)

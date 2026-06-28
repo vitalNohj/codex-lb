@@ -129,10 +129,24 @@ class _FakeClient:
                 "provider": "claude",
                 "email": "ok@example.com",
                 "path": "/tmp/claude-ok@example.com.json",
+                "auth_index": "0",
                 "status": "active",
                 "quota": {"exceeded": False, "next_recover_at": None},
             }
         ]
+
+    async def api_call(
+        self,
+        *,
+        auth_index: str,
+        method: str,
+        url: str,
+        header: Mapping[str, str],
+    ) -> Any:
+        return {
+            "five_hour": {"utilization": 0.25, "resets_at": None},
+            "seven_day": {"utilization": 0.5, "resets_at": None},
+        }
 
 
 class _UnauthorizedClient:
@@ -198,20 +212,13 @@ async def test_poll_once_enriches_oauth_usage_without_storing_token(monkeypatch)
         repo_holder=repo_holder,
     )
 
-    class _Credential:
-        access_token = "sk-ant-oat01-secret"
-
-    async def _load_credential(path: str | None):
-        assert path == "/tmp/claude-ok@example.com.json"
-        return _Credential()
-
-    async def _fetch_usage(_credential: _Credential) -> SidecarOAuthUsage:
+    async def _fetch_usage(client: Any, auth_index: str) -> SidecarOAuthUsage:
+        assert auth_index == "0"
         return SidecarOAuthUsage(
             five_hour=SidecarOAuthUsageBucket(remaining_percent=57.0, resets_at=None),
             seven_day=SidecarOAuthUsageBucket(remaining_percent=82.0, resets_at=None),
         )
 
-    monkeypatch.setattr(quota_poller_module, "load_claude_oauth_credential", _load_credential)
     monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_usage)
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_FakeClient)
 
@@ -243,6 +250,7 @@ def _snapshot_json_with_usage(five_hour: float, seven_day: float) -> str:
                     "provider": "claude",
                     "email": "ok@example.com",
                     "path": "/tmp/claude-ok@example.com.json",
+                    "auth_index": "0",
                     "status": "active",
                     "quota": {"exceeded": False, "next_recover_at": None},
                     "oauth_usage": {
@@ -265,18 +273,11 @@ async def test_poll_once_retains_previous_oauth_usage_on_fetch_failure(monkeypat
         repo_holder=repo_holder,
     )
 
-    class _Credential:
-        access_token = "sk-ant-oat01-secret"
-
-    async def _load_credential(path: str | None):
-        return _Credential()
-
-    async def _fetch_usage(_credential: _Credential) -> SidecarOAuthUsage:
+    async def _fetch_usage(client: Any, auth_index: str) -> SidecarOAuthUsage:
         from app.modules.claude_sidecar.oauth_usage import ClaudeOAuthUsageError
 
         raise ClaudeOAuthUsageError("Anthropic OAuth usage endpoint returned HTTP 429")
 
-    monkeypatch.setattr(quota_poller_module, "load_claude_oauth_credential", _load_credential)
     monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_usage)
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_FakeClient)
 
@@ -302,19 +303,12 @@ async def test_poll_once_replaces_previous_oauth_usage_on_fetch_success(monkeypa
         repo_holder=repo_holder,
     )
 
-    class _Credential:
-        access_token = "sk-ant-oat01-secret"
-
-    async def _load_credential(path: str | None):
-        return _Credential()
-
-    async def _fetch_usage(_credential: _Credential) -> SidecarOAuthUsage:
+    async def _fetch_usage(client: Any, auth_index: str) -> SidecarOAuthUsage:
         return SidecarOAuthUsage(
             five_hour=SidecarOAuthUsageBucket(remaining_percent=12.0, resets_at=None),
             seven_day=SidecarOAuthUsageBucket(remaining_percent=88.0, resets_at=None),
         )
 
-    monkeypatch.setattr(quota_poller_module, "load_claude_oauth_credential", _load_credential)
     monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_usage)
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_FakeClient)
 
@@ -338,18 +332,11 @@ async def test_poll_once_leaves_oauth_usage_none_without_prior_data(monkeypatch)
         repo_holder=repo_holder,
     )
 
-    class _Credential:
-        access_token = "sk-ant-oat01-secret"
-
-    async def _load_credential(path: str | None):
-        return _Credential()
-
-    async def _fetch_usage(_credential: _Credential) -> SidecarOAuthUsage:
+    async def _fetch_usage(client: Any, auth_index: str) -> SidecarOAuthUsage:
         from app.modules.claude_sidecar.oauth_usage import ClaudeOAuthUsageError
 
         raise ClaudeOAuthUsageError("Anthropic OAuth usage endpoint returned HTTP 429")
 
-    monkeypatch.setattr(quota_poller_module, "load_claude_oauth_credential", _load_credential)
     monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_usage)
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_FakeClient)
 

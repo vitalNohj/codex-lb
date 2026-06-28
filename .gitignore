@@ -37,6 +37,9 @@ frontend/coverage/
 *.swo
 *~
 
+# MCP
+.serena/
+
 # Local
 .local/
 .worktrees/
@@ -51,6 +54,7 @@ certs/
 .agents/.personality_migration
 .agents/version.json
 .agents/log/
+.agents/plans/
 .venv
 
 .omx/

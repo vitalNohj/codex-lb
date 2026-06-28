@@ -51,6 +51,8 @@ OLLAMA_SIDECAR_SOURCE = "ollama_sidecar"
 @dataclass(frozen=True, slots=True)
 class OllamaChatPayload:
     body: dict[str, JsonValue]
+    requested_reasoning_effort: str | None = None
+    effective_reasoning_effort: str | None = None
 
 
 def ollama_routing_entry(config: OllamaSidecarConfig) -> SidecarRoutingEntry:
@@ -81,6 +83,7 @@ def ollama_sidecar_config_from_settings(settings: DashboardSettings) -> OllamaSi
         connect_timeout_seconds=settings.ollama_sidecar_connect_timeout_seconds,
         request_timeout_seconds=settings.ollama_sidecar_request_timeout_seconds,
         models_cache_ttl_seconds=settings.ollama_sidecar_models_cache_ttl_seconds,
+        default_reasoning_effort=settings.ollama_sidecar_default_reasoning_effort,
     )
 
 
@@ -94,7 +97,11 @@ def _decrypt_ollama_secret(encrypted: bytes | None) -> str | None:
         return None
 
 
-def build_ollama_chat_payload(payload: ChatCompletionsRequest, effective_model: str) -> OllamaChatPayload:
+def build_ollama_chat_payload(
+    payload: ChatCompletionsRequest,
+    effective_model: str,
+    default_reasoning_effort: str | None = None,
+) -> OllamaChatPayload:
     body: dict[str, JsonValue] = {
         "model": effective_model.strip(),
         "stream": bool(payload.stream),
@@ -111,9 +118,22 @@ def build_ollama_chat_payload(payload: ChatCompletionsRequest, effective_model: 
     if options:
         body["options"] = options
     thinking = _ollama_thinking(payload)
+    # Capture the client-requested effort (a string ``think``/effort value) for
+    # request-log observability; a boolean ``think`` is not an effort label.
+    requested_reasoning_effort = thinking.strip() if isinstance(thinking, str) and thinking.strip() else None
+    override = default_reasoning_effort.strip() if default_reasoning_effort else None
+    if override:
+        # Configured override maps to Ollama's ``think`` field and forces the
+        # value over any client-supplied thinking.
+        thinking = override
     if thinking is not None:
         body["think"] = thinking
-    return OllamaChatPayload(body=body)
+    effective_reasoning_effort = thinking.strip() if isinstance(thinking, str) and thinking.strip() else None
+    return OllamaChatPayload(
+        body=body,
+        requested_reasoning_effort=requested_reasoning_effort,
+        effective_reasoning_effort=effective_reasoning_effort,
+    )
 
 
 async def proxy_chat_to_ollama(
@@ -129,7 +149,9 @@ async def proxy_chat_to_ollama(
     cursor_compat: bool = False,
     wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_ollama_chat_payload(payload, wire_model or effective_model)
+    sidecar_payload = build_ollama_chat_payload(
+        payload, wire_model or effective_model, client.config.default_reasoning_effort
+    )
     requested_at = time.monotonic()
     if payload.stream:
         _ensure_ollama_stream_usage_requested(sidecar_payload.body)
@@ -140,6 +162,8 @@ async def proxy_chat_to_ollama(
             model=effective_model,
             started_at=requested_at,
             client=client,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         if cursor_compat:
             stream = stream_bytes_with_cursor_usage_fallback(
@@ -164,6 +188,8 @@ async def proxy_chat_to_ollama(
             status="error",
             error_code="ollama_sidecar_unavailable",
             error_message="Ollama sidecar unavailable",
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -183,6 +209,8 @@ async def proxy_chat_to_ollama(
             status="error",
             error_code="ollama_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=exc.status_code,
@@ -204,6 +232,8 @@ async def proxy_chat_to_ollama(
         started_at=requested_at,
         status="success",
         usage=usage,
+        reasoning_effort=sidecar_payload.effective_reasoning_effort,
+        requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
     )
     if cursor_compat and is_json_mapping(response_body):
         response_body = apply_cursor_usage_fallback_to_response(
@@ -251,6 +281,8 @@ async def _ollama_stream_iterator(
     model: str,
     started_at: float,
     client: OllamaSidecarClient,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -327,6 +359,8 @@ async def _ollama_stream_iterator(
             status="error",
             error_code="ollama_sidecar_unavailable",
             error_message="Ollama sidecar unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(
@@ -346,6 +380,8 @@ async def _ollama_stream_iterator(
             status="error",
             error_code="ollama_sidecar_error",
             error_message=exc.message,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         yield _error_sse(_openai_error_content(exc))
@@ -359,6 +395,8 @@ async def _ollama_stream_iterator(
             status="error",
             error_code="ollama_sidecar_stream_interrupted",
             error_message=str(exc) or exc.__class__.__name__,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         raise
@@ -378,6 +416,8 @@ async def _ollama_stream_iterator(
                 status="success" if completed else "error",
                 error_code=None if completed else "ollama_sidecar_stream_incomplete",
                 usage=usage_to_settle,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )
 
 
@@ -655,6 +695,8 @@ async def _log_ollama_request(
     error_code: str | None = None,
     error_message: str | None = None,
     usage: SidecarUsage | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
         async with get_background_session() as session:
@@ -670,6 +712,8 @@ async def _log_ollama_request(
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
                 transport="http",
                 api_key_id=api_key.id if api_key else None,
                 source=OLLAMA_SIDECAR_SOURCE,
