@@ -18,11 +18,12 @@ Resources
   <a href="https://github.com/Soju06/codex-lb"><img alt="Fork of Soju06/codex-lb" src="https://img.shields.io/badge/fork%20of-Soju06%2Fcodex--lb-2563eb"></a>
   <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111827">
   <img alt="Codex and Cursor ready" src="https://img.shields.io/badge/Codex%20%2B%20Cursor-ready-7c3aed">
+  <img alt="Vision input" src="https://img.shields.io/badge/vision-image%20input-0ea5e9">
   <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OmniRoute%20%7C%20Ollama-059669">
   <img alt="Dashboard included" src="https://img.shields.io/badge/dashboard-included-f97316">
 </p>
 
-> This is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). Upstream gives you the core Codex account load balancer. This fork turns it into a model-routing command center: native ChatGPT/Codex accounts, CLIProxyAPI, OpenRouter, OmniRoute, and Ollama Cloud can all sit behind one proxy, one API-key layer, one request log, and one dashboard.
+> This is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). Upstream gives you the core Codex account load balancer. This fork turns it into a model-routing command center: native ChatGPT/Codex accounts, CLIProxyAPI, OpenRouter, OmniRoute, and Ollama Cloud can all sit behind one proxy, one API-key layer, one request log, and one dashboard — with first-class Cursor support including image (vision) input, model aliasing, and per-provider reasoning-effort control.
 
 Build from this repository when you want the fork-only routing and integration work. Upstream package names, images, and charts may not include these features until this fork publishes its own artifacts.
 
@@ -52,6 +53,9 @@ Use the same client endpoint. Pick the model name. codex-lb decides whether that
 | --- | --- |
 | **Unified provider routing** | Exact model matches and configurable prefixes route traffic to CLIProxyAPI, OpenRouter, OmniRoute, Ollama, or native Codex without changing client base URLs. |
 | **Prefix stripping controls** | Use ergonomic client-facing names like `or-deepseek/deepseek-chat` or `ollama-gpt-oss:120b-cloud`, then strip the prefix only on the upstream wire request. |
+| **Cursor image (vision) input** | Accepts the Anthropic-native `image` content parts Cursor sends and converts them to the shape CLIProxyAPI expects, so screenshots and pasted images work against Claude models without breaking tool calls. |
+| **User-configurable model aliases** | Map friendly client-facing names to concrete sidecar models (for example `custom_r1` → `cc/claude-opus-4-8`) from the dashboard. |
+| **Per-provider reasoning effort** | Set a default reasoning effort per integration (Claude / OmniRoute / OpenRouter / Ollama) that acts as a true override, while an explicit model-name effort suffix still wins. Requested-vs-effective effort is captured in request logs. |
 | **External Integrations dashboard** | Configure CLIProxyAPI, OpenRouter, OmniRoute, and Ollama from one tabbed dashboard card with provider-specific labels, connection tests, discovered models, prefixes, and full-model rules. |
 | **OmniRoute first-class support** | Route selected OmniRoute models through codex-lb while keeping API-key restrictions, request logs, cost tracking, and model discovery in one place. |
 | **Cost and savings telemetry** | Track actual spend, paid-equivalent reference cost, and derived savings for free or discounted external models. |
@@ -141,6 +145,9 @@ Free OpenRouter, OmniRoute, and curated opaque-free models can show `$0.00` actu
 
 This fork includes practical compatibility work for Codex CLI, Cursor, and OpenAI-style clients:
 
+- **Image (vision) input from Cursor works.** Cursor sends vision content as Anthropic-native parts (`{"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}`). The fork accepts these in request validation and converts them to the OpenAI `image_url` data-URL shape (`data:<media_type>;base64,<data>`) before forwarding to the Claude sidecar, so screenshots and pasted images reach Claude without disturbing the tool-call path. Both `base64` and `url` sources are supported for any image media type.
+- **Model aliasing.** Map friendly client-facing model names to concrete sidecar models (for example `custom_r1` → `cc/claude-opus-4-8`) so Cursor can target a stable name regardless of the underlying upstream model.
+- **Reasoning-effort overrides per provider.** Each integration can set a default effort that overrides client-sent values, while an explicit model-name suffix still takes precedence; logs record both the requested and effective effort.
 - Raw Codex control endpoints, including `POST /backend-api/codex/memories/trace_summarize`, pass through without model rewriting, reasoning injection, API-key model enforcement, or service-tier injection.
 - Compact response handling accepts the official Codex compact shape `{"output": [...]}`.
 - External model entries advertise context-window metadata so local-provider clients can make better compaction decisions.
