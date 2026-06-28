@@ -223,7 +223,7 @@ export function useClaudeSidecarQuota() {
   const quotaQuery = useQuery({
     queryKey: ["settings", "claude-sidecar", "quota"],
     queryFn: getClaudeSidecarQuota,
-    refetchInterval: 60_000,
+    refetchInterval: 180_000,
   });
   return { quotaQuery };
 }
