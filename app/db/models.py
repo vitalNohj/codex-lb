@@ -557,6 +557,12 @@ class DashboardSettings(Base):
         server_default=text("'{}'"),
         nullable=False,
     )
+    model_aliases_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+        nullable=False,
+    )
     limit_warmup_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

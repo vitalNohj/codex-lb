@@ -43,6 +43,7 @@ class DashboardSettingsData:
     sticky_reallocation_primary_budget_threshold_pct: float
     sticky_reallocation_secondary_budget_threshold_pct: float
     additional_quota_routing_policies: dict[str, str]
+    model_aliases: dict[str, str]
     warmup_model: str
     import_without_overwrite: bool
     totp_required_on_login: bool
@@ -138,6 +139,7 @@ class DashboardSettingsUpdateData:
     sticky_reallocation_primary_budget_threshold_pct: float
     sticky_reallocation_secondary_budget_threshold_pct: float
     additional_quota_routing_policies: dict[str, str]
+    model_aliases: dict[str, str]
     warmup_model: str
     import_without_overwrite: bool
     totp_required_on_login: bool
@@ -290,6 +292,7 @@ class SettingsService:
             additional_quota_routing_policies_json=_dump_additional_quota_routing_policies(
                 payload.additional_quota_routing_policies
             ),
+            model_aliases_json=_dump_model_aliases(payload.model_aliases),
             warmup_model=payload.warmup_model,
             import_without_overwrite=payload.import_without_overwrite,
             totp_required_on_login=payload.totp_required_on_login,
@@ -389,6 +392,7 @@ class SettingsService:
             additional_quota_routing_policies=_parse_additional_quota_routing_policies(
                 row.additional_quota_routing_policies_json
             ),
+            model_aliases=_parse_model_aliases(row.model_aliases_json),
             warmup_model=row.warmup_model,
             import_without_overwrite=row.import_without_overwrite,
             totp_required_on_login=row.totp_required_on_login,
@@ -521,6 +525,61 @@ def _dump_additional_quota_routing_policies(policies: dict[str, str]) -> str:
         normalized_policy = policy.strip().lower()
         if normalized_quota_key is not None and normalized_policy in _ROUTING_POLICIES:
             normalized[normalized_quota_key] = normalized_policy
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def _parse_model_aliases(raw: str | None) -> dict[str, str]:
+    """Parse the stored alias map ``{alias: target_model}``.
+
+    Keyed by the alias the client sends (e.g. ``custom_r1``); the value is the
+    real upstream model id it resolves to (e.g. ``cc/claude``). Blank or
+    non-string entries are dropped; aliases are de-duplicated case-insensitively.
+    """
+
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    seen: set[str] = set()
+    for alias, target in parsed.items():
+        if not isinstance(alias, str) or not isinstance(target, str):
+            continue
+        normalized_alias = alias.strip()
+        normalized_target = target.strip()
+        if not normalized_alias or not normalized_target:
+            continue
+        key = normalized_alias.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        aliases[normalized_alias] = normalized_target
+    return aliases
+
+
+def parse_model_aliases(raw: str | None) -> dict[str, str]:
+    return _parse_model_aliases(raw)
+
+
+def _dump_model_aliases(aliases: dict[str, str]) -> str:
+    normalized: dict[str, str] = {}
+    seen: set[str] = set()
+    for alias, target in aliases.items():
+        if not isinstance(alias, str) or not isinstance(target, str):
+            continue
+        normalized_alias = alias.strip()
+        normalized_target = target.strip()
+        if not normalized_alias or not normalized_target:
+            continue
+        key = normalized_alias.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized[normalized_alias] = normalized_target
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 

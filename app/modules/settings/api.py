@@ -129,6 +129,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         sticky_reallocation_primary_budget_threshold_pct=settings.sticky_reallocation_primary_budget_threshold_pct,
         sticky_reallocation_secondary_budget_threshold_pct=settings.sticky_reallocation_secondary_budget_threshold_pct,
         additional_quota_routing_policies=settings.additional_quota_routing_policies,
+        model_aliases=settings.model_aliases,
         additional_quota_policies=additional_quota_policies,
         warmup_model=settings.warmup_model,
         import_without_overwrite=settings.import_without_overwrite,
@@ -605,6 +606,11 @@ async def update_settings(
                     if payload.additional_quota_routing_policies is not None
                     else current.additional_quota_routing_policies
                 ),
+                model_aliases=(
+                    payload.model_aliases
+                    if payload.model_aliases is not None
+                    else current.model_aliases
+                ),
                 warmup_model=(payload.warmup_model if payload.warmup_model is not None else current.warmup_model),
                 import_without_overwrite=(
                     payload.import_without_overwrite
@@ -900,6 +906,7 @@ async def update_settings(
             "sticky_reallocation_primary_budget_threshold_pct",
             "sticky_reallocation_secondary_budget_threshold_pct",
             "additional_quota_routing_policies",
+            "model_aliases",
             "warmup_model",
             "import_without_overwrite",
             "totp_required_on_login",

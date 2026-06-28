@@ -111,6 +111,7 @@ export const DashboardSettingsSchema = z
     additionalQuotaRoutingPolicies: z
       .record(z.string(), AdditionalQuotaRoutingPolicySchema)
       .optional(),
+    modelAliases: z.record(z.string(), z.string()).optional(),
     additionalQuotaPolicies: z.array(AdditionalQuotaPolicySchema).optional().default([]),
     warmupModel: z.string().trim().min(1).optional().default("gpt-5.4-mini"),
     importWithoutOverwrite: z.boolean(),
@@ -246,6 +247,7 @@ export const SettingsUpdateRequestSchema = z.object({
   additionalQuotaRoutingPolicies: z
     .record(z.string(), AdditionalQuotaRoutingPolicySchema)
     .optional(),
+  modelAliases: z.record(z.string(), z.string()).optional(),
   warmupModel: z.string().trim().min(1).optional(),
   importWithoutOverwrite: z.boolean().optional(),
   totpRequiredOnLogin: z.boolean().optional(),
