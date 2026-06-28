@@ -25,7 +25,7 @@ function createWrapper(queryClient: QueryClient) {
 }
 
 describe("useDashboard", () => {
-  it("loads dashboard overview via MSW and configures 30s refetch", async () => {
+  it("loads dashboard overview via MSW without background polling", async () => {
     const queryClient = createTestQueryClient();
     const { result } = renderHook(() => useDashboard("30d"), {
       wrapper: createWrapper(queryClient),
@@ -37,9 +37,11 @@ describe("useDashboard", () => {
     expect(result.current.data?.accounts.length).toBeGreaterThan(0);
 
     const query = queryClient.getQueryCache().find({ queryKey: ["dashboard", "overview", "30d"] });
-    const refetchInterval = (query?.options as { refetchInterval?: unknown } | undefined)
-      ?.refetchInterval;
-    expect(refetchInterval).toBe(30_000);
+    const options = query?.options as
+      | { refetchInterval?: unknown; refetchOnWindowFocus?: unknown }
+      | undefined;
+    expect(options?.refetchInterval).toBeUndefined();
+    expect(options?.refetchOnWindowFocus).toBe(false);
   });
 
   it("passes timeframe to the overview endpoint", async () => {
