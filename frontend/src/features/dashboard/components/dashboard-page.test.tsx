@@ -3,7 +3,12 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders } from "@/test/utils";
-import { createDashboardOverview, createDashboardProjections } from "@/test/mocks/factories";
+import {
+  createAccountSummary,
+  createDashboardOverview,
+  createDashboardProjections,
+  type DashboardOverview,
+} from "@/test/mocks/factories";
 import { useAccountMutations } from "@/features/accounts/hooks/use-accounts";
 import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { useRequestLogs } from "@/features/dashboard/hooks/use-request-logs";
@@ -33,6 +38,24 @@ vi.mock("@/features/dashboard/hooks/use-request-logs", () => ({
 
 vi.mock("@/features/dashboard/utils", () => ({
   buildDashboardView: vi.fn(),
+  accountTypeKey: (account: {
+    synthetic?: boolean;
+    provider?: string | null;
+  }) => {
+    if (!account.synthetic) {
+      return "codex";
+    }
+    if (account.provider === "openrouter") {
+      return "openrouter";
+    }
+    if (account.provider === "omniroute") {
+      return "omniroute";
+    }
+    if (account.provider === "claude") {
+      return "cliproxy";
+    }
+    return "other";
+  },
 }));
 
 vi.mock("@/features/dashboard/components/account-cards", () => ({
@@ -103,12 +126,13 @@ describe("DashboardPage", () => {
     useDashboardPreferencesStore.setState({
       accountBurnrateEnabled: true,
       accountViewMode: "cards",
+      accountTypeVisibility: { codex: true, cliproxy: true, openrouter: true, omniroute: true },
       initialized: true,
     });
   });
 
-  function mockReadyDashboard() {
-    const overview = createDashboardOverview();
+  function mockReadyDashboard(overviewOverride?: DashboardOverview) {
+    const overview = overviewOverride ?? createDashboardOverview();
 
     useAccountMutationsMock.mockReturnValue({
       resumeMutation: { mutateAsync: vi.fn() },
@@ -214,5 +238,32 @@ describe("DashboardPage", () => {
     expect(screen.queryByTestId("account-cards")).not.toBeInTheDocument();
     expect(accountListSpy).toHaveBeenCalledWith(overview.accounts);
     expect(useDashboardPreferencesStore.getState().accountViewMode).toBe("list");
+  });
+
+  it("hides accounts of a disabled type from the cards while keeping summary counts intact", async () => {
+    const user = userEvent.setup();
+    const codexAccount = createAccountSummary({ accountId: "acc_codex" });
+    const openRouterAccount = createAccountSummary({
+      accountId: "acc_openrouter",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "openrouter",
+      displayName: "OpenRouter",
+    });
+    const overview = createDashboardOverview({
+      accounts: [codexAccount, openRouterAccount],
+    });
+    mockReadyDashboard(overview);
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, openRouterAccount]);
+
+    await user.click(screen.getByRole("button", { name: "Hide OpenRouter accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.openrouter).toBe(false);
+    // Summary line keeps using the full, unfiltered account list.
+    expect(accountSummaryLineSpy).toHaveBeenLastCalledWith(overview.accounts);
   });
 });

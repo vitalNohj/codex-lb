@@ -8,6 +8,7 @@ import { useAccountMutations } from "@/features/accounts/hooks/use-accounts";
 import { AccountCards } from "@/features/dashboard/components/account-cards";
 import { AccountList } from "@/features/dashboard/components/account-list";
 import { AccountSummaryLine } from "@/features/dashboard/components/account-summary-line";
+import { AccountTypeFilterToggle } from "@/features/dashboard/components/account-type-filter-toggle";
 import { AccountViewModeToggle } from "@/features/dashboard/components/account-view-mode-toggle";
 import { DashboardSkeleton } from "@/features/dashboard/components/dashboard-skeleton";
 import { OverviewTimeframeSelect } from "@/features/dashboard/components/filters/overview-timeframe-select";
@@ -19,7 +20,7 @@ import { WeeklyCreditsPaceCard } from "@/features/dashboard/components/weekly-cr
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { useRequestLogs } from "@/features/dashboard/hooks/use-request-logs";
-import { buildDashboardView } from "@/features/dashboard/utils";
+import { accountTypeKey, buildDashboardView } from "@/features/dashboard/utils";
 import {
   DEFAULT_OVERVIEW_TIMEFRAME,
   parseOverviewTimeframe,
@@ -41,6 +42,8 @@ export function DashboardPage() {
   const showAccountBurnrate = useDashboardPreferencesStore((s) => s.accountBurnrateEnabled);
   const accountViewMode = useDashboardPreferencesStore((s) => s.accountViewMode);
   const setAccountViewMode = useDashboardPreferencesStore((s) => s.setAccountViewMode);
+  const accountTypeVisibility = useDashboardPreferencesStore((s) => s.accountTypeVisibility);
+  const setAccountTypeVisibility = useDashboardPreferencesStore((s) => s.setAccountTypeVisibility);
   const canWrite = useAuthStore((state) => state.canWrite);
   const overviewTimeframe = useMemo(
     () => parseOverviewTimeframe(searchParams.get("overviewTimeframe")),
@@ -117,6 +120,15 @@ export function DashboardPage() {
       projectionsQuery.data,
     );
   }, [overview, logPage, isDark, showAccountBurnrate, projectionsQuery.data]);
+
+  const visibleAccounts = useMemo(
+    () =>
+      (overview?.accounts ?? []).filter((account) => {
+        const key = accountTypeKey(account);
+        return key === "other" || accountTypeVisibility[key];
+      }),
+    [overview?.accounts, accountTypeVisibility],
+  );
 
   const accountOptions = useMemo(() => {
     const entries = new Map<string, { label: string; isEmail: boolean }>();
@@ -237,12 +249,16 @@ export function DashboardPage() {
                 <AccountSummaryLine accounts={overview?.accounts ?? []} />
               </div>
               <div className="h-px min-w-8 flex-1 bg-border" />
+              <AccountTypeFilterToggle
+                value={accountTypeVisibility}
+                onToggle={(key) => setAccountTypeVisibility(key, !accountTypeVisibility[key])}
+              />
               <AccountViewModeToggle value={accountViewMode} onChange={setAccountViewMode} />
             </div>
             {accountViewMode === "list" ? (
-              <AccountList accounts={overview?.accounts ?? []} readOnly={!canWrite} onAction={handleAccountAction} />
+              <AccountList accounts={visibleAccounts} readOnly={!canWrite} onAction={handleAccountAction} />
             ) : (
-              <AccountCards accounts={overview?.accounts ?? []} readOnly={!canWrite} onAction={handleAccountAction} />
+              <AccountCards accounts={visibleAccounts} readOnly={!canWrite} onAction={handleAccountAction} />
             )}
           </section>
 
