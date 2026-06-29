@@ -9,6 +9,7 @@ import type {
   TrendPoint,
   UsageWindow,
 } from "@/features/dashboard/schemas";
+import type { AccountTypeKey } from "@/hooks/use-dashboard-preferences";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import { buildDonutPalette } from "@/utils/colors";
 import {
@@ -18,6 +19,22 @@ import {
   formatRate,
   formatWindowMinutes,
 } from "@/utils/formatters";
+
+export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other" {
+  if (!account.synthetic) {
+    return "codex";
+  }
+  if (account.provider === "openrouter") {
+    return "openrouter";
+  }
+  if (account.provider === "omniroute") {
+    return "omniroute";
+  }
+  if (account.provider === "claude") {
+    return "cliproxy";
+  }
+  return "other";
+}
 
 export type RemainingItem = {
   accountId: string;
