@@ -166,6 +166,73 @@ class ClaudeSidecarClient:
                 files.append(cast(Mapping[str, JsonValue], entry))
         return files
 
+    async def get_routing_strategy(self) -> str:
+        url = f'{self.base_url}/v0/management/routing/strategy'
+        try:
+            async with lease_http_session() as session:
+                async with session.get(url, headers=self._management_headers(), timeout=self._timeout()) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(
+                _transport_message(exc, 'fetch CLIProxyAPI routing strategy')
+            ) from exc
+
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, 'Invalid response format from CLIProxyAPI routing strategy API', body=data)
+        strategy = data.get('strategy')
+        if not isinstance(strategy, str) or not strategy:
+            raise ClaudeSidecarError(502, "Missing 'strategy' key in CLIProxyAPI routing strategy response", body=data)
+        return strategy
+
+    async def set_routing_strategy(self, value: str) -> str:
+        url = f'{self.base_url}/v0/management/routing/strategy'
+        try:
+            async with lease_http_session() as session:
+                async with session.put(
+                    url,
+                    headers=self._management_headers(),
+                    json={'value': value},
+                    timeout=self._timeout(),
+                ) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(
+                _transport_message(exc, 'update CLIProxyAPI routing strategy')
+            ) from exc
+
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, 'Invalid response format from CLIProxyAPI routing strategy API', body=data)
+        strategy = data.get('strategy')
+        return strategy if isinstance(strategy, str) and strategy else value
+
+    async def patch_auth_file_priority(self, name: str, priority: int) -> None:
+        url = f'{self.base_url}/v0/management/auth-files/fields'
+        try:
+            async with lease_http_session() as session:
+                async with session.patch(
+                    url,
+                    headers=self._management_headers(),
+                    json={'name': name, 'priority': priority},
+                    timeout=self._timeout(),
+                ) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(
+                _transport_message(exc, 'update CLIProxyAPI auth-file priority')
+            ) from exc
+
     async def pop_usage_queue(self, count: int) -> list[Mapping[str, JsonValue]]:
         count = max(1, int(count))
         url = f"{self.base_url}/v0/management/usage-queue?count={count}"

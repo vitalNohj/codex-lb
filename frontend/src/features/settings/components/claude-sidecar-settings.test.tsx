@@ -211,6 +211,93 @@ describe("ClaudeSidecarSettings", () => {
     expect(screen.getByLabelText(/Management key/)).toHaveValue("");
   });
 
+  it("renders CLIProxyAPI routing controls when management key is configured", async () => {
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("CLIProxyAPI routing")).toBeInTheDocument();
+    const firstPriority = await screen.findByLabelText("Priority for a@example.com");
+    const secondPriority = await screen.findByLabelText("Priority for b@example.com");
+    expect(screen.getByText("a@example.com")).toBeInTheDocument();
+    expect(screen.getByText("b@example.com")).toBeInTheDocument();
+    expect(firstPriority).toHaveValue(0);
+    expect(secondPriority).toHaveValue(10);
+  });
+
+  it("hides CLIProxyAPI routing controls without a management key", () => {
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.queryByText("CLIProxyAPI routing")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Priority for a@example.com")).not.toBeInTheDocument();
+  });
+
+  it("updates the routing strategy immediately", async () => {
+    const user = userEvent.setup();
+    let receivedStrategy: string | undefined;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/strategy", async ({ request }) => {
+        const body = (await request.json()) as { strategy?: string };
+        receivedStrategy = body.strategy;
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: body.strategy,
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("CLIProxyAPI routing");
+    await user.click(screen.getByRole("combobox", { name: /Routing strategy/ }));
+    await user.click(await screen.findByRole("option", { name: "Round robin" }));
+
+    await waitFor(() => expect(receivedStrategy).toBe("round_robin"));
+  });
+
+  it("updates account priority on blur", async () => {
+    const user = userEvent.setup();
+    let receivedBody: unknown;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/priority", async ({ request }) => {
+        receivedBody = await request.json();
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    const priorityInput = await screen.findByLabelText("Priority for a@example.com");
+    await user.clear(priorityInput);
+    await user.type(priorityInput, "100");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(receivedBody).toEqual({ name: "claude-a@example.com.json", priority: 100 }),
+    );
+  });
+
   it("shows placeholder when management key is configured", () => {
     renderWithQueryClient(
       <ClaudeSidecarSettings

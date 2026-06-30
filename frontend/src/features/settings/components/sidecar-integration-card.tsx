@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, use, useMemo, useState } from "react";
+import { createContext, type ReactNode, use, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
@@ -24,6 +24,8 @@ import type {
   SettingsUpdateRequest,
   SidecarReasoningEffort,
   SidecarModelPrefix,
+  ClaudeSidecarRoutingAccount,
+  ClaudeSidecarRoutingStrategy,
 } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
 
@@ -1011,6 +1013,124 @@ function ReasoningEffort() {
   );
 }
 
+type RoutingProps = {
+  strategy?: ClaudeSidecarRoutingStrategy | null;
+  accounts: ClaudeSidecarRoutingAccount[];
+  busy: boolean;
+  isLoading?: boolean;
+  message?: string | null;
+  onStrategyChange: (strategy: ClaudeSidecarRoutingStrategy) => void;
+  onPriorityChange: (name: string, priority: number) => void;
+};
+
+type PriorityInputProps = {
+  account: ClaudeSidecarRoutingAccount;
+  disabled: boolean;
+  onCommit: (priority: number) => void;
+};
+
+function PriorityInput({ account, disabled, onCommit }: PriorityInputProps) {
+  const [value, setValue] = useState(String(account.priority));
+  const lastCommitted = useRef(account.priority);
+
+  useEffect(() => {
+    setValue(String(account.priority));
+    lastCommitted.current = account.priority;
+  }, [account.priority]);
+
+  const commit = () => {
+    const next = Number.parseInt(value, 10);
+    if (!Number.isFinite(next) || next < 0 || next === lastCommitted.current) {
+      setValue(String(lastCommitted.current));
+      return;
+    }
+    lastCommitted.current = next;
+    onCommit(next);
+  };
+
+  return (
+    <Input
+      aria-label={`Priority for ${account.email || account.name}`}
+      type="number"
+      min={0}
+      value={value}
+      disabled={disabled}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+      }}
+      className="h-8 w-24 text-xs"
+    />
+  );
+}
+
+function Routing({
+  strategy,
+  accounts,
+  busy,
+  isLoading = false,
+  message,
+  onStrategyChange,
+  onPriorityChange,
+}: RoutingProps) {
+  return (
+    <div className="space-y-3 rounded-md border bg-muted/10 p-3" aria-label="CLIProxyAPI routing controls">
+      <div>
+        <p className="text-sm font-medium">CLIProxyAPI routing</p>
+        <p className="text-xs text-muted-foreground">
+          Choose how CLIProxyAPI rotates Claude accounts and tune priority live. Higher number = preferred.
+        </p>
+      </div>
+      <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-routing-strategy">
+        Routing strategy
+        <Select
+          value={strategy ?? undefined}
+          onValueChange={(value) => onStrategyChange(value as ClaudeSidecarRoutingStrategy)}
+          disabled={busy || isLoading || !strategy}
+        >
+          <SelectTrigger id="claude-sidecar-routing-strategy" className="h-8 text-xs">
+            <SelectValue placeholder={isLoading ? "Loading routing..." : "Unknown strategy"} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="round_robin">Round robin</SelectItem>
+            <SelectItem value="fill_first">Fill first</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Fill first burns the highest-priority available account until it cools down; round robin spreads requests within the top-priority group.
+      </p>
+      {message ? <p className="text-xs text-muted-foreground">{message}</p> : null}
+      <div className="space-y-2">
+        {isLoading ? <p className="text-xs text-muted-foreground">Loading accounts...</p> : null}
+        {!isLoading && accounts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No Claude accounts reported by CLIProxyAPI.</p>
+        ) : null}
+        {accounts.map((account) => (
+          <div
+            key={account.name}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background/60 px-2 py-1.5"
+          >
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium">{account.email || account.name}</p>
+              <p className="truncate font-mono text-[11px] text-muted-foreground">{account.name}</p>
+            </div>
+            <PriorityInput
+              account={account}
+              disabled={busy || isLoading}
+              onCommit={(priority) => onPriorityChange(account.name, priority)}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Status() {
   const { state } = useSidecarIntegration();
   if (!state.saveError) {
@@ -1032,5 +1152,6 @@ export const SidecarIntegrationCard = {
   DiscoveredModels,
   Timeouts,
   ReasoningEffort,
+  Routing,
   Status,
 };

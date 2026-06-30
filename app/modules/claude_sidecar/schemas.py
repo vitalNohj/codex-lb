@@ -12,6 +12,8 @@ ClaudeSidecarStatus = Literal["disabled", "missing_api_key", "unreachable", "una
 ClaudeSidecarQuotaStatus = Literal[
     "healthy", "unauthorized", "unreachable", "error", "unknown", "disabled", "not_configured"
 ]
+ClaudeSidecarRoutingStatus = Literal["healthy", "disabled", "not_configured", "unreachable", "unauthorized", "error"]
+ClaudeSidecarRoutingStrategy = Literal["round_robin", "fill_first"]
 
 
 class ClaudeSidecarModelSummary(DashboardModel):
@@ -43,3 +45,26 @@ class ClaudeSidecarQuotaResponse(DashboardModel):
     message: str | None = None
     checked_at: datetime | None = None
     accounts: list[SidecarAuthAccount] = Field(default_factory=list)
+
+
+class ClaudeSidecarRoutingAccount(DashboardModel):
+    name: str
+    auth_index: str | None = None
+    email: str | None = None
+    priority: int = 0
+
+
+class ClaudeSidecarRoutingResponse(DashboardModel):
+    status: ClaudeSidecarRoutingStatus
+    message: str | None = None
+    strategy: ClaudeSidecarRoutingStrategy | None = None
+    accounts: list[ClaudeSidecarRoutingAccount] = Field(default_factory=list)
+
+
+class ClaudeSidecarRoutingStrategyUpdate(DashboardModel):
+    strategy: ClaudeSidecarRoutingStrategy
+
+
+class ClaudeSidecarAccountPriorityUpdate(DashboardModel):
+    name: str = Field(min_length=1)
+    priority: int = Field(ge=0, le=1_000_000)

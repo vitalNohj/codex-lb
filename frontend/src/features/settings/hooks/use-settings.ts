@@ -6,6 +6,7 @@ import {
   createUpstreamProxyEndpoint,
   createUpstreamProxyPool,
   getClaudeSidecarQuota,
+  getClaudeSidecarRouting,
   getClaudeSidecarStatus,
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
@@ -17,13 +18,15 @@ import {
   listOpenRouterSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
+  setClaudeSidecarAccountPriority,
+  setClaudeSidecarRoutingStrategy,
   testClaudeSidecarConnection,
   testOllamaSidecarConnection,
   testOmniRouteSidecarConnection,
   testOpenRouterSidecarConnection,
   updateSettings,
 } from "@/features/settings/api";
-import type { SettingsUpdateRequest } from "@/features/settings/schemas";
+import type { ClaudeSidecarRoutingStrategy, SettingsUpdateRequest } from "@/features/settings/schemas";
 import type {
   AccountProxyBindingRequest,
   UpstreamProxyEndpointCreateRequest,
@@ -206,7 +209,9 @@ export function useSidecarConnectionTest(provider: SidecarConnectionProvider) {
   });
 }
 
-export function useClaudeSidecar() {
+export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
+  const queryClient = useQueryClient();
+  const routingQueryKey = ["settings", "claude-sidecar", "routing"] as const;
   const statusQuery = useQuery({
     queryKey: ["settings", "claude-sidecar", "status"],
     queryFn: getClaudeSidecarStatus,
@@ -215,8 +220,32 @@ export function useClaudeSidecar() {
     queryKey: ["settings", "claude-sidecar", "models"],
     queryFn: listClaudeSidecarModels,
   });
+  const routingQuery = useQuery({
+    queryKey: routingQueryKey,
+    queryFn: getClaudeSidecarRouting,
+    enabled: options?.routingEnabled ?? false,
+  });
+  const strategyMutation = useMutation({
+    mutationFn: (strategy: ClaudeSidecarRoutingStrategy) => setClaudeSidecarRoutingStrategy(strategy),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update CLIProxyAPI routing strategy");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: routingQueryKey });
+    },
+  });
+  const priorityMutation = useMutation({
+    mutationFn: ({ name, priority }: { name: string; priority: number }) =>
+      setClaudeSidecarAccountPriority(name, priority),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update CLIProxyAPI account priority");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: routingQueryKey });
+    },
+  });
   const testMutation = useSidecarConnectionTest("claude");
-  return { statusQuery, modelsQuery, testMutation };
+  return { statusQuery, modelsQuery, routingQuery, strategyMutation, priorityMutation, testMutation };
 }
 
 export function useClaudeSidecarQuota() {

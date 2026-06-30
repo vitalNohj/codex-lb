@@ -1461,6 +1461,47 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/claude-sidecar/routing", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      strategy: "fill_first",
+      accounts: [
+        {
+          name: "claude-a@example.com.json",
+          authIndex: "0",
+          email: "a@example.com",
+          priority: 0,
+        },
+        {
+          name: "claude-b@example.com.json",
+          authIndex: "1",
+          email: "b@example.com",
+          priority: 10,
+        },
+      ],
+    });
+  }),
+
+  http.put("*/api/claude-sidecar/routing/strategy", async ({ request }) => {
+    const body = (await request.json()) as { strategy?: string };
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      strategy: body.strategy ?? "fill_first",
+      accounts: [],
+    });
+  }),
+
+  http.put("*/api/claude-sidecar/routing/priority", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      strategy: "fill_first",
+      accounts: [],
+    });
+  }),
+
   http.get("*/api/openrouter-sidecar/status", () => {
     return HttpResponse.json({
       enabled: true,
