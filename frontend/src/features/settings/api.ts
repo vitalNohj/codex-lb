@@ -4,6 +4,7 @@ import {
   AccountProxyBindingSchema,
   ClaudeSidecarModelsResponseSchema,
   ClaudeSidecarQuotaResponseSchema,
+  ClaudeSidecarRoutingResponseSchema,
   ClaudeSidecarStatusResponseSchema,
   ClaudeSidecarTestResponseSchema,
   DashboardSettingsSchema,
@@ -24,6 +25,7 @@ import {
   UpstreamProxyPoolMemberRequestSchema,
   UpstreamProxyPoolSchema,
 } from "@/features/settings/schemas";
+import type { ClaudeSidecarRoutingStrategy } from "@/features/settings/schemas";
 
 const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
@@ -89,6 +91,22 @@ export function listClaudeSidecarModels() {
 
 export function getClaudeSidecarQuota() {
   return get(`${CLAUDE_SIDECAR_PATH}/quota`, ClaudeSidecarQuotaResponseSchema);
+}
+
+export function getClaudeSidecarRouting() {
+  return get(`${CLAUDE_SIDECAR_PATH}/routing`, ClaudeSidecarRoutingResponseSchema);
+}
+
+export function setClaudeSidecarRoutingStrategy(strategy: ClaudeSidecarRoutingStrategy) {
+  return put(`${CLAUDE_SIDECAR_PATH}/routing/strategy`, ClaudeSidecarRoutingResponseSchema, {
+    body: { strategy },
+  });
+}
+
+export function setClaudeSidecarAccountPriority(name: string, priority: number) {
+  return put(`${CLAUDE_SIDECAR_PATH}/routing/priority`, ClaudeSidecarRoutingResponseSchema, {
+    body: { name, priority },
+  });
 }
 
 export function getOpenRouterSidecarStatus() {

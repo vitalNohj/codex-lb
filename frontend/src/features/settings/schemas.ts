@@ -448,6 +448,28 @@ export const ClaudeSidecarQuotaResponseSchema = z.object({
   accounts: z.array(ClaudeSidecarQuotaAuthSchema).default([]),
 });
 
+export const ClaudeSidecarRoutingStrategySchema = z.enum(["round_robin", "fill_first"]);
+export const ClaudeSidecarRoutingStatusSchema = z.enum([
+  "healthy",
+  "disabled",
+  "not_configured",
+  "unreachable",
+  "unauthorized",
+  "error",
+]);
+export const ClaudeSidecarRoutingAccountSchema = z.object({
+  name: z.string(),
+  authIndex: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
+  priority: z.number().int().default(0),
+});
+export const ClaudeSidecarRoutingResponseSchema = z.object({
+  status: ClaudeSidecarRoutingStatusSchema,
+  message: z.string().nullable().optional(),
+  strategy: ClaudeSidecarRoutingStrategySchema.nullable().optional(),
+  accounts: z.array(ClaudeSidecarRoutingAccountSchema).default([]),
+});
+
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;
 type StickyThresholdPresenceFlags = Pick<
   ParsedDashboardSettings,
@@ -560,6 +582,9 @@ export type ClaudeSidecarTestResponse = z.infer<typeof ClaudeSidecarTestResponse
 export type ClaudeSidecarModelsResponse = z.infer<typeof ClaudeSidecarModelsResponseSchema>;
 export type ClaudeSidecarQuotaResponse = z.infer<typeof ClaudeSidecarQuotaResponseSchema>;
 export type ClaudeSidecarQuotaAuth = z.infer<typeof ClaudeSidecarQuotaAuthSchema>;
+export type ClaudeSidecarRoutingStrategy = z.infer<typeof ClaudeSidecarRoutingStrategySchema>;
+export type ClaudeSidecarRoutingResponse = z.infer<typeof ClaudeSidecarRoutingResponseSchema>;
+export type ClaudeSidecarRoutingAccount = z.infer<typeof ClaudeSidecarRoutingAccountSchema>;
 export type ClaudeSidecarAuthPlan = z.infer<typeof ClaudeSidecarAuthPlanSchema>;
 export type ClaudeSidecarPlanType = z.infer<typeof ClaudeSidecarPlanTypeSchema>;
 export type OpenRouterSidecarModelSummary = z.infer<typeof OpenRouterSidecarModelSummarySchema>;

@@ -10,6 +10,10 @@ from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
     ClaudeSidecarModelSummary,
     ClaudeSidecarQuotaResponse,
+    ClaudeSidecarRoutingAccount,
+    ClaudeSidecarRoutingResponse,
+    ClaudeSidecarRoutingStatus,
+    ClaudeSidecarRoutingStrategy,
     ClaudeSidecarStatus,
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
@@ -23,6 +27,15 @@ from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageReposi
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import parse_claude_sidecar_auth_plans
+
+
+_STRATEGY_TO_WIRE: dict[ClaudeSidecarRoutingStrategy, str] = {
+    "round_robin": "round-robin",
+    "fill_first": "fill-first",
+}
+_WIRE_TO_STRATEGY: dict[str, ClaudeSidecarRoutingStrategy] = {
+    value: key for key, value in _STRATEGY_TO_WIRE.items()
+}
 
 
 class ClaudeSidecarService:
@@ -138,6 +151,67 @@ class ClaudeSidecarService:
             ],
         )
 
+    async def get_routing(self) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            wire_strategy = await client.get_routing_strategy()
+            auth_files = await client.list_auth_files()
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            return ClaudeSidecarRoutingResponse(status=status, message=_sanitize_message(exc.message))
+
+        return ClaudeSidecarRoutingResponse(
+            status="healthy",
+            strategy=_WIRE_TO_STRATEGY.get(wire_strategy),
+            accounts=_routing_accounts(auth_files),
+        )
+
+    async def set_routing_strategy(
+        self,
+        strategy: ClaudeSidecarRoutingStrategy,
+    ) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.set_routing_strategy(_STRATEGY_TO_WIRE[strategy])
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            return ClaudeSidecarRoutingResponse(status=status, message=_sanitize_message(exc.message))
+        return await self.get_routing()
+
+    async def set_account_priority(self, name: str, priority: int) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.patch_auth_file_priority(name, priority)
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+        return await self.get_routing()
+
     async def list_models(self) -> ClaudeSidecarModelsResponse:
         settings = await self._settings_repository.get_or_create()
         status, _message = _classify_static_status(settings)
@@ -171,6 +245,52 @@ class ClaudeSidecarService:
             last_checked_at=checked_at,
             models=models,
         )
+
+
+def _routing_guard(settings) -> tuple[ClaudeSidecarRoutingStatus, str] | None:
+    if not settings.claude_sidecar_enabled:
+        return "disabled", "Claude sidecar is disabled"
+    if not settings.claude_sidecar_management_key_encrypted:
+        return "not_configured", "Claude sidecar management key is not configured"
+    return None
+
+
+def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
+    accounts: list[ClaudeSidecarRoutingAccount] = []
+    for entry in auth_files:
+        provider = entry.get("provider")
+        auth_type = entry.get("type")
+        if provider != "claude" and auth_type != "claude":
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        auth_index = entry.get("auth_index")
+        email = entry.get("email")
+        accounts.append(
+            ClaudeSidecarRoutingAccount(
+                name=name,
+                auth_index=auth_index if isinstance(auth_index, str) else None,
+                email=email if isinstance(email, str) else None,
+                priority=_priority_value(entry.get("priority")),
+            )
+        )
+    return accounts
+
+
+def _priority_value(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _classify_static_status(settings) -> tuple[ClaudeSidecarStatus, str | None]:

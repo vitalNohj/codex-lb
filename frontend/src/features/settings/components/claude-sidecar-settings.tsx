@@ -3,6 +3,7 @@ import { Bot } from "lucide-react";
 import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
 import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
 import type {
+  ClaudeSidecarRoutingStrategy,
   DashboardSettings,
   SettingsUpdateRequest,
 } from "@/features/settings/schemas";
@@ -26,7 +27,10 @@ const DEFAULT_MODELS_CACHE_TTL_SECONDS = 60;
 const DEFAULT_QUOTA_POLL_INTERVAL_SECONDS = 60;
 
 export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: ClaudeSidecarSettingsProps) {
-  const { modelsQuery, testMutation } = useClaudeSidecar();
+  const managementKeyConfigured = settings.claudeSidecarManagementKeyConfigured ?? false;
+  const { modelsQuery, routingQuery, strategyMutation, priorityMutation, testMutation } = useClaudeSidecar({
+    routingEnabled: managementKeyConfigured,
+  });
 
   return (
     <SidecarIntegrationCard.Provider
@@ -50,7 +54,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
         baseUrlPlaceholder: DEFAULT_BASE_URL,
         apiKeyPlaceholder: "Not configured",
         apiKeyConfigured: settings.claudeSidecarApiKeyConfigured ?? false,
-        managementKeyConfigured: settings.claudeSidecarManagementKeyConfigured ?? false,
+        managementKeyConfigured,
       }}
       initial={{
         enabled: settings.claudeSidecarEnabled ?? false,
@@ -86,6 +90,17 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
         <SidecarIntegrationCard.Fields>
           <SidecarIntegrationCard.BaseUrl />
           <SidecarIntegrationCard.Secrets showManagementKey />
+          {managementKeyConfigured ? (
+            <SidecarIntegrationCard.Routing
+              strategy={routingQuery.data?.strategy ?? null}
+              accounts={routingQuery.data?.accounts ?? []}
+              busy={busy || strategyMutation.isPending || priorityMutation.isPending}
+              isLoading={routingQuery.isLoading || routingQuery.isFetching}
+              message={routingQuery.data?.status !== "healthy" ? routingQuery.data?.message : null}
+              onStrategyChange={(strategy: ClaudeSidecarRoutingStrategy) => strategyMutation.mutate(strategy)}
+              onPriorityChange={(name: string, priority: number) => priorityMutation.mutate({ name, priority })}
+            />
+          ) : null}
           <SidecarIntegrationCard.Prefixes />
           <SidecarIntegrationCard.FullModels />
           <SidecarIntegrationCard.DiscoveredModels />

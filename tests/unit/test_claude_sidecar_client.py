@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.core.clients.claude_sidecar import (
@@ -59,9 +61,13 @@ class _FakeSession:
         *,
         get_response: _FakeResponse | Exception | None = None,
         post_response: _FakeResponse | Exception | None = None,
+        put_response: _FakeResponse | Exception | None = None,
+        patch_response: _FakeResponse | Exception | None = None,
     ) -> None:
         self.get_response = get_response
         self.post_response = post_response
+        self.put_response = put_response
+        self.patch_response = patch_response
         self.last_url = None
         self.last_headers = None
         self.last_json = None
@@ -74,13 +80,24 @@ class _FakeSession:
         assert self.get_response is not None
         return self.get_response
 
-    def post(self, _url: str, *, headers, json, timeout):
+    def post(self, url: str, *, headers, json, timeout):
+        return self._request_with_json("post_response", url, headers=headers, json=json)
+
+    def put(self, url: str, *, headers, json, timeout):
+        return self._request_with_json("put_response", url, headers=headers, json=json)
+
+    def patch(self, url: str, *, headers, json, timeout):
+        return self._request_with_json("patch_response", url, headers=headers, json=json)
+
+    def _request_with_json(self, response_attr: str, url: str, *, headers, json):
+        self.last_url = url
         self.last_headers = headers
         self.last_json = json
-        if isinstance(self.post_response, Exception):
-            raise self.post_response
-        assert self.post_response is not None
-        return self.post_response
+        response = getattr(self, response_attr)
+        if isinstance(response, Exception):
+            raise response
+        assert response is not None
+        return response
 
 
 class _Lease:
@@ -173,6 +190,66 @@ async def test_list_auth_files_transport_failure_unavailable(monkeypatch) -> Non
 
     with pytest.raises(ClaudeSidecarUnavailableError):
         await client.list_auth_files()
+
+
+@pytest.mark.asyncio
+async def test_get_routing_strategy_uses_management_key(monkeypatch) -> None:
+    session = _FakeSession(
+        get_response=_FakeResponse(200, json.dumps({'strategy': 'fill-first'}))
+    )
+    monkeypatch.setattr('app.core.clients.claude_sidecar.lease_http_session', lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key='mgmt'))
+
+    strategy = await client.get_routing_strategy()
+
+    assert strategy == 'fill-first'
+    assert session.last_url == 'http://127.0.0.1:8317/v0/management/routing/strategy'
+    assert session.last_headers['Authorization'] == 'Bearer mgmt'
+
+
+@pytest.mark.asyncio
+async def test_set_routing_strategy_sends_value(monkeypatch) -> None:
+    session = _FakeSession(
+        put_response=_FakeResponse(200, json.dumps({'status': 'ok'}))
+    )
+    monkeypatch.setattr('app.core.clients.claude_sidecar.lease_http_session', lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key='mgmt'))
+
+    strategy = await client.set_routing_strategy('fill-first')
+
+    assert strategy == 'fill-first'
+    assert session.last_url == 'http://127.0.0.1:8317/v0/management/routing/strategy'
+    assert session.last_headers['Authorization'] == 'Bearer mgmt'
+    assert session.last_json == {'value': 'fill-first'}
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_file_priority_sends_name_and_priority(monkeypatch) -> None:
+    session = _FakeSession(
+        patch_response=_FakeResponse(200, json.dumps({'status': 'ok'}))
+    )
+    monkeypatch.setattr('app.core.clients.claude_sidecar.lease_http_session', lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key='mgmt'))
+
+    await client.patch_auth_file_priority('claude-x.json', 100)
+
+    assert session.last_url == 'http://127.0.0.1:8317/v0/management/auth-files/fields'
+    assert session.last_headers['Authorization'] == 'Bearer mgmt'
+    assert session.last_json == {'name': 'claude-x.json', 'priority': 100}
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_file_priority_relays_not_found(monkeypatch) -> None:
+    session = _FakeSession(
+        patch_response=_FakeResponse(404, json.dumps({'error': 'auth file not found'}))
+    )
+    monkeypatch.setattr('app.core.clients.claude_sidecar.lease_http_session', lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key='mgmt'))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.patch_auth_file_priority('missing.json', 100)
+
+    assert exc_info.value.status_code == 404
 
 
 @pytest.mark.asyncio

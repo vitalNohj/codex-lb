@@ -5,8 +5,11 @@ from fastapi import APIRouter, Depends
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.dependencies import ClaudeSidecarContext, get_claude_sidecar_context
 from app.modules.claude_sidecar.schemas import (
+    ClaudeSidecarAccountPriorityUpdate,
     ClaudeSidecarModelsResponse,
     ClaudeSidecarQuotaResponse,
+    ClaudeSidecarRoutingResponse,
+    ClaudeSidecarRoutingStrategyUpdate,
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
 )
@@ -44,3 +47,26 @@ async def get_quota(
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
 ) -> ClaudeSidecarQuotaResponse:
     return await context.service.get_quota()
+
+
+@router.get("/routing", response_model=ClaudeSidecarRoutingResponse)
+async def get_routing(
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarRoutingResponse:
+    return await context.service.get_routing()
+
+
+@router.put("/routing/strategy", response_model=ClaudeSidecarRoutingResponse)
+async def set_routing_strategy(
+    body: ClaudeSidecarRoutingStrategyUpdate,
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarRoutingResponse:
+    return await context.service.set_routing_strategy(body.strategy)
+
+
+@router.put("/routing/priority", response_model=ClaudeSidecarRoutingResponse)
+async def set_account_priority(
+    body: ClaudeSidecarAccountPriorityUpdate,
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarRoutingResponse:
+    return await context.service.set_account_priority(body.name, body.priority)
