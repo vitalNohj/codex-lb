@@ -128,7 +128,7 @@ describe("formatters", () => {
     expect(formatLocalDateTimeSeconds(iso)).toBe(expected);
     expect(formatLocalDateTimeSeconds("bad-date")).toBe("--");
   });
-  
+
 it("formats elapsed latency values", () => {
     expect(formatElapsed(500)).toBe("500 ms");
     expect(formatElapsed(999)).toBe("999 ms");
