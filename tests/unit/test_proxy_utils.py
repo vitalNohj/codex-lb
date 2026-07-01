@@ -11670,6 +11670,7 @@ async def test_prepare_websocket_response_create_request_injects_anchor_for_code
 
     historical_input: list[JsonValue] = [
         {"role": "user", "content": [{"type": "input_text", "text": "old question"}]},
+        {"type": "function_call", "name": "shell_command", "call_id": "call_old", "arguments": "{}"},
         {"type": "function_call_output", "call_id": "call_old", "output": "old output"},
     ]
     new_input: JsonValue = {"role": "user", "content": [{"type": "input_text", "text": "next question"}]}
@@ -11706,7 +11707,7 @@ async def test_prepare_websocket_response_create_request_injects_anchor_for_code
     assert upstream_payload["input"] == [new_input]
     assert prepared.request_state.previous_response_id == "resp_completed_anchor"
     assert prepared.request_state.proxy_injected_previous_response_id is True
-    assert prepared.request_state.input_item_count == 3
+    assert prepared.request_state.input_item_count == 4
     assert prepared.request_state.input_full_fingerprint == proxy_service._fingerprint_input_items(
         [*historical_input, new_input]
     )
@@ -11715,6 +11716,74 @@ async def test_prepare_websocket_response_create_request_injects_anchor_for_code
     fresh_payload = json.loads(prepared.request_state.fresh_upstream_request_text)
     assert "previous_response_id" not in fresh_payload
     assert fresh_payload["input"] == [*historical_input, new_input]
+
+
+@pytest.mark.asyncio
+async def test_prepare_websocket_response_create_request_does_not_fresh_retry_injected_tool_output_delta(
+    monkeypatch,
+):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    reserve_usage = AsyncMock(return_value=None)
+    api_key = ApiKeyData(
+        id="key_ws_trim_tool_delta",
+        name="ws-trim-tool-delta",
+        key_prefix="sk-ws-trim-tool",
+        allowed_models=["gpt-5.1"],
+        enforced_model=None,
+        enforced_reasoning_effort=None,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=utcnow(),
+        last_used_at=None,
+    )
+
+    class Settings:
+        log_proxy_request_payload = False
+        log_proxy_request_shape = False
+        log_proxy_request_shape_raw_cache_key = False
+        log_proxy_service_tier_trace = False
+        openai_prompt_cache_key_derivation_enabled = True
+
+    historical_input: list[JsonValue] = [
+        {"type": "function_call_output", "call_id": "call_delta", "output": "ok"},
+    ]
+    new_input: JsonValue = {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+    continuity_state = proxy_service._WebSocketContinuityState(
+        last_completed_input_count=len(historical_input),
+        last_completed_response_id="resp_completed_anchor",
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(historical_input),
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
+    monkeypatch.setattr(service, "_reserve_websocket_api_key_usage", reserve_usage)
+    monkeypatch.setattr(service, "_refresh_websocket_api_key_policy", AsyncMock(return_value=api_key))
+
+    prepared = await service._prepare_websocket_response_create_request(
+        cast(
+            dict[str, JsonValue],
+            {
+                "type": "response.create",
+                "model": "gpt-5.1",
+                "input": [*historical_input, new_input],
+            },
+        ),
+        headers={"session_id": "turn_ws_trim_tool_delta"},
+        codex_session_affinity=True,
+        openai_cache_affinity=True,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=300,
+        api_key=api_key,
+        continuity_state=continuity_state,
+    )
+
+    upstream_payload = json.loads(prepared.text_data)
+    assert upstream_payload["previous_response_id"] == "resp_completed_anchor"
+    assert upstream_payload["input"] == [new_input]
+    assert prepared.request_state.proxy_injected_previous_response_id is True
+    assert prepared.request_state.fresh_upstream_request_text is None
+    assert prepared.request_state.fresh_upstream_request_is_retry_safe is False
 
 
 @pytest.mark.asyncio
@@ -11788,6 +11857,69 @@ async def test_prepare_websocket_response_create_request_captures_client_full_re
     assert fresh_payload["input"] == full_resend_input
 
 
+@pytest.mark.asyncio
+async def test_prepare_websocket_response_create_request_does_not_fresh_retry_tool_output_delta(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    reserve_usage = AsyncMock(return_value=None)
+    api_key = ApiKeyData(
+        id="key_ws_tool_delta",
+        name="ws-tool-delta",
+        key_prefix="sk-ws-tool-delta",
+        allowed_models=["gpt-5.1"],
+        enforced_model=None,
+        enforced_reasoning_effort=None,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=utcnow(),
+        last_used_at=None,
+    )
+
+    class Settings:
+        log_proxy_request_payload = False
+        log_proxy_request_shape = False
+        log_proxy_request_shape_raw_cache_key = False
+        log_proxy_service_tier_trace = False
+        openai_prompt_cache_key_derivation_enabled = True
+
+    tool_output_delta: list[JsonValue] = [
+        {"type": "function_call_output", "call_id": "call_delta_a", "output": "ok"},
+        {"type": "function_call_output", "call_id": "call_delta_b", "output": "ok"},
+        {"type": "function_call_output", "call_id": "call_delta_c", "output": "ok"},
+    ]
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
+    monkeypatch.setattr(service, "_reserve_websocket_api_key_usage", reserve_usage)
+    monkeypatch.setattr(service, "_refresh_websocket_api_key_policy", AsyncMock(return_value=api_key))
+
+    prepared = await service._prepare_websocket_response_create_request(
+        cast(
+            dict[str, JsonValue],
+            {
+                "type": "response.create",
+                "model": "gpt-5.1",
+                "previous_response_id": "resp_client_anchor",
+                "input": tool_output_delta,
+            },
+        ),
+        headers={"session_id": "turn_ws_tool_delta"},
+        codex_session_affinity=True,
+        openai_cache_affinity=True,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=300,
+        api_key=api_key,
+        continuity_state=None,
+    )
+
+    upstream_payload = json.loads(prepared.text_data)
+    assert upstream_payload["previous_response_id"] == "resp_client_anchor"
+    assert upstream_payload["input"] == tool_output_delta
+    assert prepared.request_state.previous_response_id == "resp_client_anchor"
+    assert prepared.request_state.fresh_upstream_request_is_retry_safe is False
+    assert prepared.request_state.fresh_upstream_request_text is None
+
+
 def test_websocket_client_previous_response_full_resend_retry_requires_matching_prefix() -> None:
     stored_prefix: list[JsonValue] = [{"role": "user", "content": [{"type": "input_text", "text": "old question"}]}]
     continuity_state = proxy_service._WebSocketContinuityState(
@@ -11808,6 +11940,56 @@ def test_websocket_client_previous_response_full_resend_retry_requires_matching_
             continuity_state=continuity_state,
         )
         is False
+    )
+
+
+def test_websocket_client_previous_response_full_resend_retry_rejects_tool_output_delta() -> None:
+    tool_output_delta: list[JsonValue] = [
+        {"type": "function_call_output", "call_id": "call_a", "output": "ok"},
+        {"type": "function_call_output", "call_id": "call_b", "output": "ok"},
+    ]
+
+    assert (
+        proxy_service._websocket_client_previous_response_full_resend_is_retry_safe(
+            previous_response_id="resp_client_anchor",
+            input_value=tool_output_delta,
+            continuity_state=None,
+        )
+        is False
+    )
+
+
+def test_websocket_client_previous_response_full_resend_retry_rejects_output_before_call() -> None:
+    reordered_tool_history: list[JsonValue] = [
+        {"type": "function_call_output", "call_id": "call_late", "output": "ok"},
+        {"type": "function_call", "name": "shell_command", "call_id": "call_late", "arguments": "{}"},
+    ]
+
+    assert (
+        proxy_service._websocket_client_previous_response_full_resend_is_retry_safe(
+            previous_response_id="resp_client_anchor",
+            input_value=reordered_tool_history,
+            continuity_state=None,
+        )
+        is False
+    )
+
+
+def test_websocket_client_previous_response_full_resend_retry_allows_self_contained_tool_history() -> None:
+    self_contained_tool_history: list[JsonValue] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "run a command"}]},
+        {"type": "function_call", "name": "shell_command", "call_id": "call_ok", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_ok", "output": "ok"},
+        {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+    ]
+
+    assert (
+        proxy_service._websocket_client_previous_response_full_resend_is_retry_safe(
+            previous_response_id="resp_client_anchor",
+            input_value=self_contained_tool_history,
+            continuity_state=None,
+        )
+        is True
     )
 
 
@@ -14536,6 +14718,81 @@ async def test_process_upstream_websocket_text_transparently_retries_precreated_
     assert pending_request.error_code_override is None
     assert pending_request.error_message_override is None
     assert pending_request.error_http_status_override is None
+    assert list(pending_requests) == []
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_text_does_not_fresh_retry_injected_tool_output_previous_response_not_found(
+    monkeypatch,
+):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    finalize_request_state = AsyncMock()
+    handle_stream_error = AsyncMock()
+    account = _make_account("acc_ws_tool_delta_prev_nf")
+
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+
+    trimmed_payload = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "previous_response_id": "resp_completed_anchor",
+        "input": [{"type": "function_call_output", "call_id": "call_delta", "output": "ok"}],
+    }
+    full_retry_payload = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [
+            {"type": "function_call_output", "call_id": "call_delta", "output": "ok"},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+    }
+    pending_request = proxy_service._WebSocketRequestState(
+        request_id="ws_req_tool_delta_prev_nf",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        request_text=json.dumps(trimmed_payload, separators=(",", ":")),
+        previous_response_id="resp_completed_anchor",
+        proxy_injected_previous_response_id=True,
+        fresh_upstream_request_text=json.dumps(full_retry_payload, separators=(",", ":")),
+        fresh_upstream_request_is_retry_safe=False,
+    )
+    pending_requests = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    upstream_payload = {
+        "type": "error",
+        "status": 400,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "previous_response_not_found",
+            "message": "Previous response with id 'resp_completed_anchor' not found.",
+            "param": "previous_response_id",
+        },
+    }
+
+    downstream_text = await service._process_upstream_websocket_text(
+        json.dumps(upstream_payload, separators=(",", ":")),
+        account=account,
+        account_id_value=account.id,
+        pending_requests=pending_requests,
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=upstream_control,
+        response_create_gate=asyncio.Semaphore(1),
+    )
+
+    assert '"type":"response.failed"' in downstream_text
+    assert '"code":"stream_incomplete"' in downstream_text
+    assert "previous_response_not_found" not in downstream_text
+    finalize_request_state.assert_awaited_once()
+    handle_stream_error.assert_not_awaited()
+    assert upstream_control.suppress_downstream_event is False
+    assert upstream_control.replay_request_state is None
     assert list(pending_requests) == []
 
 
