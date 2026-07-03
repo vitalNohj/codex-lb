@@ -53,6 +53,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 )
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile_with_suffix_effort,
+    canonical_sidecar_model,
     read_reasoning_effort,
     set_reasoning_effort_override,
 )
@@ -77,6 +78,22 @@ _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
     {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
 )
 _SIDECAR_MESSAGE_CONTINUATION = "Continue."
+
+# Per-model output-token (floor, cap) applied to client-supplied ``max_tokens``.
+# Cursor's BYOK chat-completions path sends a generic ``max_tokens: 4096`` on
+# every agent turn; thinking-heavy Claude models can burn that entire budget on
+# thinking alone, so the forwarded value is raised to a floor and clamped to
+# the model's published maximum output (Anthropic models overview). Keys are
+# canonical model ids from ``canonical_sidecar_model()``.
+_SIDECAR_MAX_TOKENS_BOUNDS: dict[str, tuple[int, int]] = {
+    "claude-fable-5": (32_768, 128_000),
+    "claude-mythos-5": (32_768, 128_000),
+    "claude-opus-4-8": (32_768, 128_000),
+    "claude-sonnet-5": (32_768, 128_000),
+    "claude-haiku-4-5": (32_768, 64_000),
+    "claude-sonnet-4-5": (32_768, 64_000),
+}
+_SIDECAR_MAX_TOKENS_FIELDS = ("max_tokens", "max_completion_tokens")
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +548,28 @@ def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
         body.pop(key, None)
 
 
+def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: str) -> None:
+    """Raise a client-supplied output-token limit to the model floor and clamp
+    to the model's published maximum output.
+
+    Only mutates limits the client actually sent (``max_tokens`` /
+    ``max_completion_tokens``); an absent field stays absent, and a model with
+    no configured bounds is forwarded unchanged.
+    """
+    canonical = canonical_sidecar_model(wire_model)
+    if canonical is None:
+        return
+    bounds = _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical)
+    if bounds is None:
+        return
+    floor, cap = bounds
+    for field in _SIDECAR_MAX_TOKENS_FIELDS:
+        value = body.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        body[field] = min(max(value, floor), cap)
+
+
 def build_sidecar_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
@@ -543,7 +582,7 @@ def build_sidecar_chat_payload(
     # The unified resolver already produced the wire model (prefix stripped per
     # the matched prefix's strip flag); apply the canonical-model + reasoning
     # effort profile to that wire model.
-    _, suffix_effort_applied = apply_sidecar_model_profile_with_suffix_effort(
+    wire_model, suffix_effort_applied = apply_sidecar_model_profile_with_suffix_effort(
         body, stripped_model=effective_model
     )
     # The configured override forces the provider effort over any client-sent
@@ -551,6 +590,7 @@ def build_sidecar_chat_payload(
     # override only applies when the model name carried no effort suffix.
     if not suffix_effort_applied:
         set_reasoning_effort_override(body, config.default_reasoning_effort)
+    apply_sidecar_max_tokens_bounds(body, wire_model=wire_model)
     sanitize_sidecar_forward_payload(body)
     effective_reasoning_effort = read_reasoning_effort(body)
     normalize_sidecar_cursor_tool_history(body)
