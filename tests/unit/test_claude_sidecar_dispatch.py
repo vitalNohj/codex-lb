@@ -127,6 +127,109 @@ def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() ->
     assert payload.body["model"] == "claude-fable-5"
 
 
+def test_build_sidecar_chat_payload_raises_cursor_max_tokens_to_model_floor() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-fable-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-fable-5", _config())
+
+    assert payload.body["max_tokens"] == 32_768
+
+
+def test_build_sidecar_chat_payload_preserves_max_tokens_above_floor() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-fable-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64_000,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-fable-5", _config())
+
+    assert payload.body["max_tokens"] == 64_000
+
+
+def test_build_sidecar_chat_payload_clamps_max_tokens_to_model_cap() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-fable-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 200_000,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-fable-5", _config())
+
+    assert payload.body["max_tokens"] == 128_000
+
+
+def test_build_sidecar_chat_payload_keeps_absent_max_tokens_absent() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-fable-5",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-fable-5", _config())
+
+    assert "max_tokens" not in payload.body
+    assert "max_completion_tokens" not in payload.body
+
+
+def test_build_sidecar_chat_payload_leaves_unknown_model_max_tokens_unchanged() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-mystery-99",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-mystery-99", _config())
+
+    assert payload.body["max_tokens"] == 4096
+
+
+def test_build_sidecar_chat_payload_applies_bounds_to_max_completion_tokens() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-opus-4-8", _config())
+
+    assert payload.body["max_completion_tokens"] == 32_768
+
+
+def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cp-claude-fable-5-high",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(
+        request,
+        "claude-fable-5-high",
+        _config(prefixes=(SidecarPrefix(prefix="cp-", strip=True),)),
+    )
+
+    assert payload.body["model"] == "claude-fable-5"
+    assert payload.body["max_tokens"] == 32_768
+
+
 def test_sanitize_sidecar_forward_payload_normalizes_reasoning_and_drops_responses_fields() -> None:
     body = {
         "model": "claude-opus-4-7",
