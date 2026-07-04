@@ -488,6 +488,64 @@ async def test_put_routing_paused_round_trips(async_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_put_routing_paused_patches_stored_snapshot(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    checked_at = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a@example.com.json",
+                auth_index="0",
+                email="a@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
+        )
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/paused",
+        json={"name": "claude-a@example.com.json", "paused": True},
+    )
+    assert response.status_code == 200
+
+    # Dashboard reads `paused` from the stored snapshot; it must reflect the
+    # change immediately without waiting for the next quota poll.
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    accounts = {acct["name"]: acct for acct in response.json()["accounts"]}
+    assert accounts["claude-a@example.com.json"]["paused"] is True
+
+
+@pytest.mark.asyncio
 async def test_put_routing_paused_without_management_key(async_client, monkeypatch):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()

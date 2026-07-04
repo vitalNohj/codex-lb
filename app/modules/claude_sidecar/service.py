@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
-from app.modules.claude_sidecar.quota import SidecarAuthQuota, snapshot_from_json
+from app.modules.claude_sidecar.quota import SidecarAuthQuota, snapshot_from_json, snapshot_to_json
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
     ClaudeSidecarModelSummary,
@@ -27,7 +28,6 @@ from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageReposi
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import parse_claude_sidecar_auth_plans
-
 
 _STRATEGY_TO_WIRE: dict[ClaudeSidecarRoutingStrategy, str] = {
     "round_robin": "round-robin",
@@ -228,7 +228,30 @@ class ClaudeSidecarService:
             status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
             message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
             return ClaudeSidecarRoutingResponse(status=status, message=message)
+        await self._patch_snapshot_disabled(settings.claude_sidecar_quota_state_json, name, paused)
         return await self.get_routing()
+
+    async def _patch_snapshot_disabled(self, snapshot_json: str | None, name: str, paused: bool) -> None:
+        """Reflect a pause/resume in the stored quota snapshot immediately.
+
+        The dashboard reads ``disabled`` from the polled snapshot (refreshed on
+        an interval), not from live auth files, so without this patch the
+        dashboard card would not reflect the change until the next poll.
+        """
+        snapshot = snapshot_from_json(snapshot_json)
+        if snapshot is None:
+            return
+        updated = [
+            replace(auth, disabled=paused) if auth.name == name else auth
+            for auth in snapshot.accounts
+        ]
+        if updated == list(snapshot.accounts):
+            return
+        patched = replace(snapshot, accounts=tuple(updated))
+        await self._settings_repository.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(patched),
+        )
+        await get_settings_cache().invalidate()
 
     async def list_models(self) -> ClaudeSidecarModelsResponse:
         settings = await self._settings_repository.get_or_create()
