@@ -212,6 +212,24 @@ class ClaudeSidecarService:
             return ClaudeSidecarRoutingResponse(status=status, message=message)
         return await self.get_routing()
 
+    async def set_account_paused(self, name: str, paused: bool) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.patch_auth_file_disabled(name, paused)
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+        return await self.get_routing()
+
     async def list_models(self) -> ClaudeSidecarModelsResponse:
         settings = await self._settings_repository.get_or_create()
         status, _message = _classify_static_status(settings)
@@ -273,6 +291,7 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
                 auth_index=auth_index if isinstance(auth_index, str) else None,
                 email=email if isinstance(email, str) else None,
                 priority=_priority_value(entry.get("priority")),
+                paused=bool(entry.get("disabled")),
             )
         )
     return accounts
@@ -331,6 +350,7 @@ def _to_auth_account(
         auth_index=auth.auth_index,
         email=auth.email,
         status=auth.status,
+        paused=auth.disabled,
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

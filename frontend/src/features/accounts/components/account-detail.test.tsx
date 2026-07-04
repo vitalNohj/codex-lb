@@ -120,6 +120,7 @@ describe("AccountDetail", () => {
           authIndex: "0",
           email: "exceeded@example.com",
           status: "active",
+          paused: false,
           quotaExceeded: true,
           nextRecoverAt: "2026-06-10T17:00:00+00:00",
           modelsExceeded: ["claude-opus-4"],

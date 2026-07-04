@@ -18,6 +18,7 @@ import {
   listOpenRouterSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
+  setClaudeSidecarAccountPaused,
   setClaudeSidecarAccountPriority,
   setClaudeSidecarRoutingStrategy,
   testClaudeSidecarConnection,
@@ -209,6 +210,23 @@ export function useSidecarConnectionTest(provider: SidecarConnectionProvider) {
   });
 }
 
+export function useClaudeSidecarAccountPause() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, paused }: { name: string; paused: boolean }) =>
+      setClaudeSidecarAccountPaused(name, paused),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update CLIProxyAPI account pause state");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "routing"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "quota"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
   const queryClient = useQueryClient();
   const routingQueryKey = ["settings", "claude-sidecar", "routing"] as const;
@@ -244,8 +262,9 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
       void queryClient.invalidateQueries({ queryKey: routingQueryKey });
     },
   });
+  const pausedMutation = useClaudeSidecarAccountPause();
   const testMutation = useSidecarConnectionTest("claude");
-  return { statusQuery, modelsQuery, routingQuery, strategyMutation, priorityMutation, testMutation };
+  return { statusQuery, modelsQuery, routingQuery, strategyMutation, priorityMutation, pausedMutation, testMutation };
 }
 
 export function useClaudeSidecarQuota() {

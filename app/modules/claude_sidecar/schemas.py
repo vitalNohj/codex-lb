@@ -52,6 +52,7 @@ class ClaudeSidecarRoutingAccount(DashboardModel):
     auth_index: str | None = None
     email: str | None = None
     priority: int = 0
+    paused: bool = False
 
 
 class ClaudeSidecarRoutingResponse(DashboardModel):
@@ -68,3 +69,8 @@ class ClaudeSidecarRoutingStrategyUpdate(DashboardModel):
 class ClaudeSidecarAccountPriorityUpdate(DashboardModel):
     name: str = Field(min_length=1)
     priority: int = Field(ge=0, le=1_000_000)
+
+
+class ClaudeSidecarAccountPausedUpdate(DashboardModel):
+    name: str = Field(min_length=1)
+    paused: bool

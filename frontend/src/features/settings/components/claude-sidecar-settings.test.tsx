@@ -298,6 +298,39 @@ describe("ClaudeSidecarSettings", () => {
     );
   });
 
+  it("renders pause state and toggles account pause", async () => {
+    const user = userEvent.setup();
+    let receivedBody: unknown;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/paused", async ({ request }) => {
+        receivedBody = await request.json();
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    // default mock: a@example.com active, b@example.com paused
+    const pauseButton = await screen.findByRole("button", { name: "Pause a@example.com" });
+    expect(screen.getByRole("button", { name: "Resume b@example.com" })).toBeInTheDocument();
+
+    await user.click(pauseButton);
+
+    await waitFor(() =>
+      expect(receivedBody).toEqual({ name: "claude-a@example.com.json", paused: true }),
+    );
+  });
+
   it("shows placeholder when management key is configured", () => {
     renderWithQueryClient(
       <ClaudeSidecarSettings

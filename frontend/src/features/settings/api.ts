@@ -109,6 +109,12 @@ export function setClaudeSidecarAccountPriority(name: string, priority: number) 
   });
 }
 
+export function setClaudeSidecarAccountPaused(name: string, paused: boolean) {
+  return put(`${CLAUDE_SIDECAR_PATH}/routing/paused`, ClaudeSidecarRoutingResponseSchema, {
+    body: { name, paused },
+  });
+}
+
 export function getOpenRouterSidecarStatus() {
   return get(`${OPENROUTER_SIDECAR_PATH}/status`, OpenRouterSidecarStatusResponseSchema);
 }

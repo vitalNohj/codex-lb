@@ -39,6 +39,7 @@ class _FakeSidecarClient:
     ]
     strategy_updates: list[str] = []
     priority_updates: list[tuple[str, int]] = []
+    disabled_updates: list[tuple[str, bool]] = []
 
     def __init__(self, _config) -> None:
         pass
@@ -73,6 +74,11 @@ class _FakeSidecarClient:
             raise self.error
         self.__class__.priority_updates.append((name, priority))
 
+    async def patch_auth_file_disabled(self, name: str, disabled: bool):
+        if self.error is not None:
+            raise self.error
+        self.__class__.disabled_updates.append((name, disabled))
+
 
 def _reset_fake_sidecar_client() -> None:
     _FakeSidecarClient.error = None
@@ -91,10 +97,12 @@ def _reset_fake_sidecar_client() -> None:
             "provider": "claude",
             "email": "b@example.com",
             "priority": 10,
+            "disabled": True,
         },
     ]
     _FakeSidecarClient.strategy_updates = []
     _FakeSidecarClient.priority_updates = []
+    _FakeSidecarClient.disabled_updates = []
 
 
 @pytest.mark.asyncio
@@ -361,12 +369,14 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
             "authIndex": "0",
             "email": "a@example.com",
             "priority": 0,
+            "paused": False,
         },
         {
             "name": "claude-b@example.com.json",
             "authIndex": "1",
             "email": "b@example.com",
             "priority": 10,
+            "paused": True,
         },
     ]
 
@@ -440,3 +450,62 @@ async def test_put_routing_priority_round_trips(async_client, monkeypatch):
     assert response.status_code == 200
     assert _FakeSidecarClient.priority_updates == [("claude-a@example.com.json", 100)]
     assert response.json()["status"] == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_put_routing_paused_round_trips(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/paused",
+        json={"name": "claude-a@example.com.json", "paused": True},
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.disabled_updates == [("claude-a@example.com.json", True)]
+    assert response.json()["status"] == "healthy"
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/paused",
+        json={"name": "claude-a@example.com.json", "paused": False},
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.disabled_updates == [
+        ("claude-a@example.com.json", True),
+        ("claude-a@example.com.json", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_put_routing_paused_without_management_key(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarClearManagementKey": True,
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/paused",
+        json={"name": "claude-a@example.com.json", "paused": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "not_configured"
+    assert _FakeSidecarClient.disabled_updates == []
