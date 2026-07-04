@@ -28,7 +28,7 @@ const DEFAULT_QUOTA_POLL_INTERVAL_SECONDS = 60;
 
 export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: ClaudeSidecarSettingsProps) {
   const managementKeyConfigured = settings.claudeSidecarManagementKeyConfigured ?? false;
-  const { modelsQuery, routingQuery, strategyMutation, priorityMutation, testMutation } = useClaudeSidecar({
+  const { modelsQuery, routingQuery, strategyMutation, priorityMutation, pausedMutation, testMutation } = useClaudeSidecar({
     routingEnabled: managementKeyConfigured,
   });
 
@@ -94,11 +94,12 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
             <SidecarIntegrationCard.Routing
               strategy={routingQuery.data?.strategy ?? null}
               accounts={routingQuery.data?.accounts ?? []}
-              busy={busy || strategyMutation.isPending || priorityMutation.isPending}
+              busy={busy || strategyMutation.isPending || priorityMutation.isPending || pausedMutation.isPending}
               isLoading={routingQuery.isLoading || routingQuery.isFetching}
               message={routingQuery.data?.status !== "healthy" ? routingQuery.data?.message : null}
               onStrategyChange={(strategy: ClaudeSidecarRoutingStrategy) => strategyMutation.mutate(strategy)}
               onPriorityChange={(name: string, priority: number) => priorityMutation.mutate({ name, priority })}
+              onPausedChange={(name: string, paused: boolean) => pausedMutation.mutate({ name, paused })}
             />
           ) : null}
           <SidecarIntegrationCard.Prefixes />

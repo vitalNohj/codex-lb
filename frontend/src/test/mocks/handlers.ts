@@ -1472,12 +1472,14 @@ export const handlers = [
           authIndex: "0",
           email: "a@example.com",
           priority: 0,
+          paused: false,
         },
         {
           name: "claude-b@example.com.json",
           authIndex: "1",
           email: "b@example.com",
           priority: 10,
+          paused: true,
         },
       ],
     });
@@ -1494,6 +1496,15 @@ export const handlers = [
   }),
 
   http.put("*/api/claude-sidecar/routing/priority", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      strategy: "fill_first",
+      accounts: [],
+    });
+  }),
+
+  http.put("*/api/claude-sidecar/routing/paused", () => {
     return HttpResponse.json({
       status: "healthy",
       message: null,

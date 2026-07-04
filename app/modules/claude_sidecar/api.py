@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.dependencies import ClaudeSidecarContext, get_claude_sidecar_context
 from app.modules.claude_sidecar.schemas import (
+    ClaudeSidecarAccountPausedUpdate,
     ClaudeSidecarAccountPriorityUpdate,
     ClaudeSidecarModelsResponse,
     ClaudeSidecarQuotaResponse,
@@ -70,3 +71,11 @@ async def set_account_priority(
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
 ) -> ClaudeSidecarRoutingResponse:
     return await context.service.set_account_priority(body.name, body.priority)
+
+
+@router.put("/routing/paused", response_model=ClaudeSidecarRoutingResponse)
+async def set_account_paused(
+    body: ClaudeSidecarAccountPausedUpdate,
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarRoutingResponse:
+    return await context.service.set_account_paused(body.name, body.paused)

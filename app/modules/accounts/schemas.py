@@ -76,6 +76,7 @@ class SidecarAuthAccount(DashboardModel):
     auth_index: str | None = None
     email: str | None = None
     status: str | None = None
+    paused: bool = False
     quota_exceeded: bool = False
     next_recover_at: datetime | None = None
     models_exceeded: list[str] = Field(default_factory=list)

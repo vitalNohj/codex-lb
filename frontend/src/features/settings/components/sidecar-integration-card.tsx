@@ -1,5 +1,5 @@
 import { createContext, type ReactNode, use, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, X, type LucideIcon } from "lucide-react";
+import { ExternalLink, Pause, Play, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
 import { Button } from "@/components/ui/button";
@@ -1021,6 +1021,7 @@ type RoutingProps = {
   message?: string | null;
   onStrategyChange: (strategy: ClaudeSidecarRoutingStrategy) => void;
   onPriorityChange: (name: string, priority: number) => void;
+  onPausedChange: (name: string, paused: boolean) => void;
 };
 
 type PriorityInputProps = {
@@ -1076,6 +1077,7 @@ function Routing({
   message,
   onStrategyChange,
   onPriorityChange,
+  onPausedChange,
 }: RoutingProps) {
   return (
     <div className="space-y-3 rounded-md border bg-muted/10 p-3" aria-label="CLIProxyAPI routing controls">
@@ -1116,14 +1118,33 @@ function Routing({
             className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background/60 px-2 py-1.5"
           >
             <div className="min-w-0">
-              <p className="truncate text-xs font-medium">{account.email || account.name}</p>
-              <p className="truncate font-mono text-[11px] text-muted-foreground">{account.name}</p>
+              <p className={`truncate text-xs font-medium ${account.paused ? "text-muted-foreground line-through" : ""}`}>
+                {account.email || account.name}
+              </p>
+              <p className="truncate font-mono text-[11px] text-muted-foreground">
+                {account.name}
+                {account.paused ? " | paused" : ""}
+              </p>
             </div>
-            <PriorityInput
-              account={account}
-              disabled={busy || isLoading}
-              onCommit={(priority) => onPriorityChange(account.name, priority)}
-            />
+            <div className="flex items-center gap-1.5">
+              <PriorityInput
+                account={account}
+                disabled={busy || isLoading}
+                onCommit={(priority) => onPriorityChange(account.name, priority)}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={`h-8 gap-1 text-xs ${account.paused ? "text-emerald-600 hover:text-emerald-700" : "text-amber-600 hover:text-amber-700"}`}
+                disabled={busy || isLoading}
+                aria-label={`${account.paused ? "Resume" : "Pause"} ${account.email || account.name}`}
+                onClick={() => onPausedChange(account.name, !account.paused)}
+              >
+                {account.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                {account.paused ? "Resume" : "Pause"}
+              </Button>
+            </div>
           </div>
         ))}
       </div>

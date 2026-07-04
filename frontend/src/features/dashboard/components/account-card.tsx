@@ -4,6 +4,7 @@ import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
+import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import { StatusBadge } from "@/components/status-badge";
 import { cn } from "@/lib/utils";
 import type { AccountSummary } from "@/features/dashboard/schemas";
@@ -239,6 +240,7 @@ function SyntheticAccountCard({
   onAction?: (account: AccountSummary, action: AccountAction) => void;
 }) {
   const blurred = usePrivacyStore((s) => s.blurred);
+  const pauseMutation = useClaudeSidecarAccountPause();
   const isOpenRouter = account.provider === "openrouter";
   const isOmniRoute = account.provider === "omniroute";
   const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLI Proxy API";
@@ -283,10 +285,32 @@ function SyntheticAccountCard({
               return (
                 <div key={`${auth.name}-${idx}`} className="space-y-2 rounded-lg border bg-muted/20 p-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate text-xs font-medium">
+                    <span className={cn("min-w-0 truncate text-xs font-medium", auth.paused && "text-muted-foreground line-through")}>
                       <span className={blurred ? "privacy-blur" : undefined}>{authLabel}</span> Usage
                     </span>
-                    <Badge variant="outline" className="shrink-0 text-[11px]">{authUsageSource}</Badge>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {auth.paused ? (
+                        <Badge variant="outline" className="text-[11px] text-amber-600">Paused</Badge>
+                      ) : null}
+                      <Badge variant="outline" className="text-[11px]">{authUsageSource}</Badge>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className={cn(
+                          "h-6 gap-1 px-1.5 text-[11px]",
+                          auth.paused
+                            ? "text-emerald-600 hover:text-emerald-700"
+                            : "text-amber-600 hover:text-amber-700",
+                        )}
+                        disabled={pauseMutation.isPending}
+                        aria-label={`${auth.paused ? "Resume" : "Pause"} ${authLabel}`}
+                        onClick={() => pauseMutation.mutate({ name: auth.name, paused: !auth.paused })}
+                      >
+                        {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                        {auth.paused ? "Resume" : "Pause"}
+                      </Button>
+                    </div>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <QuotaBar

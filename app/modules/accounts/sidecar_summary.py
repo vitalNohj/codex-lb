@@ -159,6 +159,7 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         auth_index=auth.auth_index,
         email=auth.email,
         status=auth.status,
+        paused=auth.disabled,
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

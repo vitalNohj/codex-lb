@@ -76,6 +76,7 @@ const EXPECTED_ENDPOINTS = [
 	"GET */api/claude-sidecar/routing",
 	"PUT */api/claude-sidecar/routing/strategy",
 	"PUT */api/claude-sidecar/routing/priority",
+	"PUT */api/claude-sidecar/routing/paused",
 	"GET */api/openrouter-sidecar/status",
 	"GET */api/openrouter-sidecar/models",
 	"POST */api/openrouter-sidecar/test",

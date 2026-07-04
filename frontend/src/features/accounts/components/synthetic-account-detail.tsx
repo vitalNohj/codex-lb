@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, PlugZap, Settings as SettingsIcon } from "lucide-react";
+import { Bot, ExternalLink, Pause, Play, PlugZap, Settings as SettingsIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,7 @@ import { ClaudeSidecarQuotaEstimation } from "@/features/accounts/components/cla
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import {
+  useClaudeSidecarAccountPause,
   useSidecarConnectionTest,
   type SidecarConnectionProvider,
 } from "@/features/settings/hooks/use-settings";
@@ -27,6 +28,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const isClaude = !isOpenRouter && !isOmniRoute;
   const testProvider = testProviderFor(account.provider);
   const testMutation = useSidecarConnectionTest(testProvider);
+  const pauseMutation = useClaudeSidecarAccountPause();
   const settingsAnchor = isOpenRouter
     ? "/settings#openrouter-sidecar"
     : isOmniRoute
@@ -96,16 +98,20 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                   <span
                     aria-hidden="true"
                     className={`inline-block h-2 w-2 rounded-full ${
-                      auth.quotaExceeded ? "bg-amber-500" : "bg-emerald-500"
+                      auth.paused ? "bg-zinc-400" : auth.quotaExceeded ? "bg-amber-500" : "bg-emerald-500"
                     }`}
                   />
                   <div className="min-w-0 leading-tight">
-                    <div className="truncate text-sm font-medium">{auth.email ?? auth.name}</div>
+                    <div className={`truncate text-sm font-medium ${auth.paused ? "text-muted-foreground line-through" : ""}`}>
+                      {auth.email ?? auth.name}
+                    </div>
                     <div className="truncate text-[11px] text-muted-foreground">
                       {auth.authIndex ? `auth_index ${auth.authIndex} | ` : ""}
-                      {auth.quotaExceeded
-                        ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
-                        : "Ready"}
+                      {auth.paused
+                        ? "Paused"
+                        : auth.quotaExceeded
+                          ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
+                          : "Ready"}
                       {auth.modelsExceeded && auth.modelsExceeded.length > 0
                         ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
                         : ""}
@@ -124,9 +130,25 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                     </div>
                   </div>
                 </div>
-                <div className="shrink-0 text-right text-[11px] text-muted-foreground">
-                  <div>OK {auth.success}</div>
-                  <div>Failed {auth.failed}</div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="text-right text-[11px] text-muted-foreground">
+                    <div>OK {auth.success}</div>
+                    <div>Failed {auth.failed}</div>
+                  </div>
+                  {isClaude ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className={`h-7 gap-1 text-xs ${auth.paused ? "text-emerald-600 hover:text-emerald-700" : "text-amber-600 hover:text-amber-700"}`}
+                      disabled={busy || pauseMutation.isPending}
+                      aria-label={`${auth.paused ? "Resume" : "Pause"} ${auth.email ?? auth.name}`}
+                      onClick={() => pauseMutation.mutate({ name: auth.name, paused: !auth.paused })}
+                    >
+                      {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                      {auth.paused ? "Resume" : "Pause"}
+                    </Button>
+                  ) : null}
                 </div>
               </li>
             ))}
