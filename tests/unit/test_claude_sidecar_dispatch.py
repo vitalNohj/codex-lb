@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import (
@@ -227,6 +229,88 @@ def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() ->
     )
 
     assert payload.body["model"] == "claude-fable-5"
+    assert payload.body["max_tokens"] == 32_768
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_cap"),
+    [
+        ("claude-opus-4-7", 128_000),
+        ("claude-opus-4-6", 128_000),
+        ("claude-sonnet-5", 128_000),
+        ("claude-sonnet-4-6", 64_000),
+        ("claude-sonnet-4-5", 64_000),
+        ("claude-haiku-4-5", 64_000),
+        ("claude-opus-4-5", 32_768),
+    ],
+)
+def test_build_sidecar_chat_payload_raises_floor_for_all_thinking_models(
+    model: str, expected_cap: int
+) -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": f"cc/{model}",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, model, _config())
+
+    # Small input: the floor applies and stays within the model cap.
+    assert payload.body["max_tokens"] == min(32_768, expected_cap)
+
+
+def test_build_sidecar_chat_payload_context_window_guard_lowers_raise() -> None:
+    # ~170k tokens of input on a 200k-context model: raising to the 32768 floor
+    # would exceed the window, so the guard lowers the raise to fit.
+    big_input = "x" * (170_000 * 4)
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": big_input}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    forwarded = payload.body["max_tokens"]
+    assert isinstance(forwarded, int)
+    # Lowered below the floor to fit the window, but never below the client's ask.
+    assert 4096 <= forwarded < 32_768
+
+
+def test_build_sidecar_chat_payload_context_window_guard_never_below_client() -> None:
+    # Input so large the window headroom is under the client's own request; the
+    # guard must not shrink the forwarded value below what the client sent.
+    huge_input = "x" * (210_000 * 4)
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": huge_input}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    assert payload.body["max_tokens"] == 4096
+
+
+def test_build_sidecar_chat_payload_large_window_model_ignores_input_size() -> None:
+    # A 1M-context model with ~170k input still raises to the full floor.
+    big_input = "x" * (170_000 * 4)
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-fable-5",
+            "messages": [{"role": "user", "content": big_input}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-fable-5", _config())
+
     assert payload.body["max_tokens"] == 32_768
 
 

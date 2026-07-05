@@ -79,19 +79,43 @@ _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
 )
 _SIDECAR_MESSAGE_CONTINUATION = "Continue."
 
-# Per-model output-token (floor, cap) applied to client-supplied ``max_tokens``.
+# Per-model output-token bounds applied to a client-supplied ``max_tokens``.
 # Cursor's BYOK chat-completions path sends a generic ``max_tokens: 4096`` on
 # every agent turn; thinking-heavy Claude models can burn that entire budget on
-# thinking alone, so the forwarded value is raised to a floor and clamped to
-# the model's published maximum output (Anthropic models overview). Keys are
-# canonical model ids from ``canonical_sidecar_model()``.
-_SIDECAR_MAX_TOKENS_BOUNDS: dict[str, tuple[int, int]] = {
-    "claude-fable-5": (32_768, 128_000),
-    "claude-mythos-5": (32_768, 128_000),
-    "claude-opus-4-8": (32_768, 128_000),
-    "claude-sonnet-5": (32_768, 128_000),
-    "claude-haiku-4-5": (32_768, 64_000),
-    "claude-sonnet-4-5": (32_768, 64_000),
+# thinking alone, so the forwarded value is raised to ``floor`` and clamped to
+# ``cap`` (the model's published maximum output). ``context_window`` guards the
+# raise so ``estimated_input + max_tokens`` cannot exceed the model window and
+# trip an upstream 400 on the smaller 200k-context models. Values are the
+# authoritative per-model limits from Anthropic's models overview, cross-checked
+# against OmniRoute's model-capability registry. Keys are canonical model ids
+# from ``canonical_sidecar_model()``.
+_SIDECAR_OUTPUT_FLOOR = 32_768
+# Rough chars-per-token ratio for the defensive input estimate (overestimating
+# input is safe: it only lowers the effective output ceiling).
+_SIDECAR_CHARS_PER_TOKEN = 4
+
+
+@dataclass(frozen=True, slots=True)
+class _OutputBounds:
+    floor: int
+    cap: int
+    context_window: int
+
+
+_SIDECAR_MAX_TOKENS_BOUNDS: dict[str, _OutputBounds] = {
+    # 1M context, 128k max output.
+    "claude-fable-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-mythos-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-opus-4-8": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-opus-4-7": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-opus-4-6": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-sonnet-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    # 1M context, 64k max output.
+    "claude-sonnet-4-6": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 64_000, 1_000_000),
+    # 200k context.
+    "claude-sonnet-4-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 64_000, 200_000),
+    "claude-haiku-4-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 64_000, 200_000),
+    "claude-opus-4-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 32_768, 200_000),
 }
 _SIDECAR_MAX_TOKENS_FIELDS = ("max_tokens", "max_completion_tokens")
 
@@ -552,9 +576,11 @@ def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: s
     """Raise a client-supplied output-token limit to the model floor and clamp
     to the model's published maximum output.
 
-    Only mutates limits the client actually sent (``max_tokens`` /
-    ``max_completion_tokens``); an absent field stays absent, and a model with
-    no configured bounds is forwarded unchanged.
+    The raise is additionally bounded so ``estimated_input + max_tokens`` cannot
+    exceed the model's context window, which would trip an upstream 400 on the
+    smaller 200k-context models. Only mutates limits the client actually sent
+    (``max_tokens`` / ``max_completion_tokens``); an absent field stays absent,
+    and a model with no configured bounds is forwarded unchanged.
     """
     canonical = canonical_sidecar_model(wire_model)
     if canonical is None:
@@ -562,12 +588,29 @@ def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: s
     bounds = _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical)
     if bounds is None:
         return
-    floor, cap = bounds
+    window_room = max(bounds.context_window - _estimate_sidecar_input_tokens(body), 0)
     for field in _SIDECAR_MAX_TOKENS_FIELDS:
         value = body.get(field)
         if isinstance(value, bool) or not isinstance(value, int):
             continue
-        body[field] = min(max(value, floor), cap)
+        # Raise to the floor, clamp to the model cap, then let the context-window
+        # headroom lower a raise only — never below the client's own value (also
+        # never above cap), so the guard can shrink a raise but never a request.
+        raised = min(max(value, bounds.floor), bounds.cap)
+        body[field] = max(min(raised, window_room), min(value, bounds.cap))
+
+
+def _estimate_sidecar_input_tokens(body: dict[str, JsonValue]) -> int:
+    """Rough upper-ish estimate of prompt tokens from the serialized messages.
+
+    Only used to keep a raised ``max_tokens`` inside the context window, so a
+    coarse chars/token ratio is sufficient; overestimating is safe.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    char_count = len(json.dumps(messages, ensure_ascii=False, separators=(",", ":")))
+    return char_count // _SIDECAR_CHARS_PER_TOKEN
 
 
 def build_sidecar_chat_payload(

@@ -5,8 +5,9 @@ Cursor's BYOK custom-model path sends `max_tokens: 4096` on every `/v1/chat/comp
 ## What Changes
 
 - `build_sidecar_chat_payload()` (Claude sidecar chat-completions forward path) raises a client-supplied `max_tokens` (and `max_completion_tokens`) to a per-model floor and clamps it to the model's published maximum output.
-- Floors/caps are keyed by the canonical Claude model (via `canonical_sidecar_model()`), starting conservative: 32k floor; 128k cap for Fable 5 / Opus 4.8, 64k cap for Haiku 4.5 / Sonnet 4.5.
-- Requests without a client `max_tokens` are unchanged (no value injected). Models without a configured cap are unchanged.
+- Bounds are keyed by the canonical Claude model (via `canonical_sidecar_model()`) with a 32k floor and authoritative per-model caps (128k for Fable 5 / Opus 4.6–4.8 / Sonnet 5; 64k for Sonnet 4.5/4.6 and Haiku 4.5; 32k for Opus 4.5), sourced from Anthropic's models overview and cross-checked against OmniRoute's model-capability registry (which applies the same class of thinking-aware output-token buffer).
+- A context-window guard lowers the raise when estimated input plus `max_tokens` would exceed the model window (protecting the 200k-context models), but never below the client's original request.
+- Requests without a client `max_tokens` are unchanged (no value injected). Models without configured bounds are unchanged.
 - Native Codex Responses path, OpenRouter/OmniRoute/Ollama sidecars: untouched.
 
 ## Capabilities
