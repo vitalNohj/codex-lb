@@ -55,6 +55,7 @@ class SettingsRepository:
             sticky_reallocation_secondary_budget_threshold_pct=100.0,
             additional_quota_routing_policies_json="{}",
             model_aliases_json="{}",
+            custom_alias_catalog_json="{}",
             limit_warmup_enabled=False,
             limit_warmup_windows="both",
             limit_warmup_model="auto",
@@ -176,6 +177,7 @@ class SettingsRepository:
         sticky_reallocation_secondary_budget_threshold_pct: float | None = None,
         additional_quota_routing_policies_json: str | None = None,
         model_aliases_json: str | None = None,
+        custom_alias_catalog_json: str | None = None,
         warmup_model: str | None = None,
         import_without_overwrite: bool | None = None,
         totp_required_on_login: bool | None = None,
@@ -292,6 +294,8 @@ class SettingsRepository:
             settings.additional_quota_routing_policies_json = additional_quota_routing_policies_json
         if model_aliases_json is not None:
             settings.model_aliases_json = model_aliases_json
+        if custom_alias_catalog_json is not None:
+            settings.custom_alias_catalog_json = custom_alias_catalog_json
         if warmup_model is not None:
             settings.warmup_model = warmup_model
         if import_without_overwrite is not None:

@@ -140,6 +140,10 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
+from app.modules.proxy.custom_alias_catalog import (
+    apply_custom_alias_catalog_overrides,
+    load_custom_alias_catalog,
+)
 from app.modules.proxy.model_aliasing import (
     append_discoverable_alias_models,
     load_model_aliases,
@@ -2000,17 +2004,20 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                 )
             )
     model_aliases = await load_model_aliases()
-    if model_aliases:
+    catalog = await load_custom_alias_catalog()
+    if model_aliases or catalog:
         serialized_items = [item.model_dump(mode="json") for item in items]
-        augmented_items = append_discoverable_alias_models(
-            serialized_items,
-            model_aliases,
-            created=created,
-            is_target_visible=lambda model: _model_visible_for_api_key(model, allowed_models),
-            default_entry_fields=_sidecar_model_list_fields,
-        )
-        if len(augmented_items) != len(serialized_items):
-            items = [ModelListItem.model_validate(entry) for entry in augmented_items]
+        if model_aliases:
+            serialized_items = append_discoverable_alias_models(
+                serialized_items,
+                model_aliases,
+                created=created,
+                is_target_visible=lambda model: _model_visible_for_api_key(model, allowed_models),
+                default_entry_fields=_sidecar_model_list_fields,
+            )
+        if catalog:
+            serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
+        items = [ModelListItem.model_validate(entry) for entry in serialized_items]
     await _release_reservation(reservation)
     return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
 

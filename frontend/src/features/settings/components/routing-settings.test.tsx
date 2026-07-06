@@ -415,4 +415,59 @@ describe("RoutingSettings", () => {
 
     expect(screen.getAllByText("Fill first").length).toBeGreaterThan(0);
   });
+
+  it("saves custom alias catalog context length overrides", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <RoutingSettings
+        settings={{
+          ...BASE_SETTINGS,
+          modelAliases: { "north-mini-code": "or/cohere/north-mini-code" },
+          customAliasCatalog: {},
+        }}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    await user.click(screen.getByRole("combobox", { name: "Context length for north-mini-code" }));
+    await user.click(await screen.findByRole("option", { name: "1,000,000" }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customAliasCatalog: {
+          "north-mini-code": { contextLength: 1_000_000 },
+        },
+      }),
+    );
+  });
+
+  it("removes custom alias catalog rows when an alias is deleted", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <RoutingSettings
+        settings={{
+          ...BASE_SETTINGS,
+          modelAliases: { "north-mini-code": "or/cohere/north-mini-code" },
+          customAliasCatalog: {
+            "north-mini-code": { contextLength: 1_000_000 },
+          },
+        }}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelAliases: {},
+        customAliasCatalog: {},
+      }),
+    );
+  });
 });

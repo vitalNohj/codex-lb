@@ -25,6 +25,7 @@ from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
     AccountProxyBindingResponse,
     AdditionalQuotaPolicy,
+    CustomAliasCatalogEntrySchema,
     DashboardSettingsResponse,
     DashboardSettingsUpdateRequest,
     RuntimeConnectAddressResponse,
@@ -35,6 +36,7 @@ from app.modules.settings.schemas import (
     UpstreamProxyPoolMemberRequest,
     UpstreamProxyPoolResponse,
 )
+from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
 from app.modules.settings.service import (
     ClaudeSidecarAuthPlanData,
     DashboardSettingsUpdateData,
@@ -90,6 +92,27 @@ def _resolve_runtime_connect_address(request: Request) -> str:
     return "<codex-lb-ip-or-dns>"
 
 
+def _custom_alias_catalog_to_service(
+    catalog: dict[str, CustomAliasCatalogEntrySchema],
+) -> dict[str, dict[str, int]]:
+    normalized: dict[str, dict[str, int]] = {}
+    for alias, entry in catalog.items():
+        if entry.context_length is None:
+            continue
+        normalized[alias] = {"context_length": entry.context_length}
+    return normalized
+
+
+def _custom_alias_catalog_from_service(
+    catalog: dict[str, dict[str, int]],
+) -> dict[str, CustomAliasCatalogEntrySchema]:
+    return {
+        alias: CustomAliasCatalogEntrySchema(context_length=entry["context_length"])
+        for alias, entry in catalog.items()
+        if isinstance(entry.get("context_length"), int) and not isinstance(entry.get("context_length"), bool)
+    }
+
+
 router = APIRouter(
     prefix="/api/settings",
     tags=["dashboard"],
@@ -130,6 +153,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         sticky_reallocation_secondary_budget_threshold_pct=settings.sticky_reallocation_secondary_budget_threshold_pct,
         additional_quota_routing_policies=settings.additional_quota_routing_policies,
         model_aliases=settings.model_aliases,
+        custom_alias_catalog=_custom_alias_catalog_from_service(settings.custom_alias_catalog),
         additional_quota_policies=additional_quota_policies,
         warmup_model=settings.warmup_model,
         import_without_overwrite=settings.import_without_overwrite,
@@ -538,6 +562,17 @@ async def update_settings(
         single_account_id = (
             payload.single_account_id if "single_account_id" in payload.model_fields_set else current.single_account_id
         )
+        resolved_model_aliases = (
+            payload.model_aliases if payload.model_aliases is not None else current.model_aliases
+        )
+        if payload.custom_alias_catalog is not None:
+            resolved_custom_alias_catalog = _custom_alias_catalog_to_service(payload.custom_alias_catalog)
+        else:
+            resolved_custom_alias_catalog = current.custom_alias_catalog
+        resolved_custom_alias_catalog = reconcile_custom_alias_catalog(
+            resolved_custom_alias_catalog,
+            resolved_model_aliases,
+        )
         updated = await context.service.update_settings(
             DashboardSettingsUpdateData(
                 sticky_threads_enabled=(
@@ -606,11 +641,8 @@ async def update_settings(
                     if payload.additional_quota_routing_policies is not None
                     else current.additional_quota_routing_policies
                 ),
-                model_aliases=(
-                    payload.model_aliases
-                    if payload.model_aliases is not None
-                    else current.model_aliases
-                ),
+                model_aliases=resolved_model_aliases,
+                custom_alias_catalog=resolved_custom_alias_catalog,
                 warmup_model=(payload.warmup_model if payload.warmup_model is not None else current.warmup_model),
                 import_without_overwrite=(
                     payload.import_without_overwrite
@@ -907,6 +939,7 @@ async def update_settings(
             "sticky_reallocation_secondary_budget_threshold_pct",
             "additional_quota_routing_policies",
             "model_aliases",
+            "custom_alias_catalog",
             "warmup_model",
             "import_without_overwrite",
             "totp_required_on_login",

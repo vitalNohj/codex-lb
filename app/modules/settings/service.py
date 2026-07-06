@@ -44,6 +44,7 @@ class DashboardSettingsData:
     sticky_reallocation_secondary_budget_threshold_pct: float
     additional_quota_routing_policies: dict[str, str]
     model_aliases: dict[str, str]
+    custom_alias_catalog: dict[str, dict[str, int]]
     warmup_model: str
     import_without_overwrite: bool
     totp_required_on_login: bool
@@ -140,6 +141,7 @@ class DashboardSettingsUpdateData:
     sticky_reallocation_secondary_budget_threshold_pct: float
     additional_quota_routing_policies: dict[str, str]
     model_aliases: dict[str, str]
+    custom_alias_catalog: dict[str, dict[str, int]]
     warmup_model: str
     import_without_overwrite: bool
     totp_required_on_login: bool
@@ -293,6 +295,7 @@ class SettingsService:
                 payload.additional_quota_routing_policies
             ),
             model_aliases_json=_dump_model_aliases(payload.model_aliases),
+            custom_alias_catalog_json=_dump_custom_alias_catalog(payload.custom_alias_catalog),
             warmup_model=payload.warmup_model,
             import_without_overwrite=payload.import_without_overwrite,
             totp_required_on_login=payload.totp_required_on_login,
@@ -393,6 +396,7 @@ class SettingsService:
                 row.additional_quota_routing_policies_json
             ),
             model_aliases=_parse_model_aliases(row.model_aliases_json),
+            custom_alias_catalog=_parse_custom_alias_catalog(row.custom_alias_catalog_json),
             warmup_model=row.warmup_model,
             import_without_overwrite=row.import_without_overwrite,
             totp_required_on_login=row.totp_required_on_login,
@@ -563,6 +567,48 @@ def _parse_model_aliases(raw: str | None) -> dict[str, str]:
 
 def parse_model_aliases(raw: str | None) -> dict[str, str]:
     return _parse_model_aliases(raw)
+
+
+def _parse_custom_alias_catalog(raw: str | None) -> dict[str, dict[str, int]]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    catalog: dict[str, dict[str, int]] = {}
+    for alias, entry in parsed.items():
+        if not isinstance(alias, str) or not isinstance(entry, dict):
+            continue
+        normalized_alias = alias.strip()
+        if not normalized_alias:
+            continue
+        context_length = entry.get("context_length", entry.get("contextLength"))
+        if not isinstance(context_length, int) or isinstance(context_length, bool) or context_length <= 0:
+            continue
+        catalog[normalized_alias] = {"context_length": context_length}
+    return catalog
+
+
+def parse_custom_alias_catalog(raw: str | None) -> dict[str, dict[str, int]]:
+    return _parse_custom_alias_catalog(raw)
+
+
+def _dump_custom_alias_catalog(catalog: dict[str, dict[str, int]]) -> str:
+    normalized: dict[str, dict[str, int]] = {}
+    for alias, entry in catalog.items():
+        if not isinstance(alias, str) or not isinstance(entry, dict):
+            continue
+        normalized_alias = alias.strip()
+        if not normalized_alias:
+            continue
+        context_length = entry.get("context_length", entry.get("contextLength"))
+        if not isinstance(context_length, int) or isinstance(context_length, bool) or context_length <= 0:
+            continue
+        normalized[normalized_alias] = {"context_length": context_length}
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 def _dump_model_aliases(aliases: dict[str, str]) -> str:

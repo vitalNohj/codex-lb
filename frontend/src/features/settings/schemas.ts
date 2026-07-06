@@ -33,6 +33,9 @@ const AdditionalQuotaPolicySchema = z.object({
   routingPolicy: AdditionalQuotaRoutingPolicySchema,
   modelIds: z.array(z.string()).optional().default([]),
 });
+const CustomAliasCatalogEntrySchema = z.object({
+  contextLength: z.number().int().positive().optional(),
+});
 const LimitWarmupModelSchema = z.string().min(1).max(128);
 const LimitWarmupPromptSchema = z.string().min(1).max(512);
 const WeeklyPaceWorkingDaysValueSchema = z.string().regex(/^[0-6](,[0-6])*$/);
@@ -112,6 +115,7 @@ export const DashboardSettingsSchema = z
       .record(z.string(), AdditionalQuotaRoutingPolicySchema)
       .optional(),
     modelAliases: z.record(z.string(), z.string()).optional(),
+    customAliasCatalog: z.record(z.string(), CustomAliasCatalogEntrySchema).optional().default({}),
     additionalQuotaPolicies: z.array(AdditionalQuotaPolicySchema).optional().default([]),
     warmupModel: z.string().trim().min(1).optional().default("gpt-5.4-mini"),
     importWithoutOverwrite: z.boolean(),
@@ -248,6 +252,7 @@ export const SettingsUpdateRequestSchema = z.object({
     .record(z.string(), AdditionalQuotaRoutingPolicySchema)
     .optional(),
   modelAliases: z.record(z.string(), z.string()).optional(),
+  customAliasCatalog: z.record(z.string(), CustomAliasCatalogEntrySchema).optional(),
   warmupModel: z.string().trim().min(1).optional(),
   importWithoutOverwrite: z.boolean().optional(),
   totpRequiredOnLogin: z.boolean().optional(),
@@ -601,6 +606,7 @@ export type OllamaSidecarStatusResponse = z.infer<typeof OllamaSidecarStatusResp
 export type OllamaSidecarTestResponse = z.infer<typeof OllamaSidecarTestResponseSchema>;
 export type OllamaSidecarModelsResponse = z.infer<typeof OllamaSidecarModelsResponseSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
+export type CustomAliasCatalogEntry = z.infer<typeof CustomAliasCatalogEntrySchema>;
 
 export const UpstreamProxyEndpointSchema = z.object({
   id: z.string(),
