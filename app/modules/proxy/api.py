@@ -140,7 +140,11 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
-from app.modules.proxy.model_aliasing import resolve_request_model_alias
+from app.modules.proxy.model_aliasing import (
+    append_discoverable_alias_models,
+    load_model_aliases,
+    resolve_request_model_alias,
+)
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
     apply_api_key_enforcement,
@@ -1995,6 +1999,18 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                     }
                 )
             )
+    model_aliases = await load_model_aliases()
+    if model_aliases:
+        serialized_items = [item.model_dump(mode="json") for item in items]
+        augmented_items = append_discoverable_alias_models(
+            serialized_items,
+            model_aliases,
+            created=created,
+            is_target_visible=lambda model: _model_visible_for_api_key(model, allowed_models),
+            default_entry_fields=_sidecar_model_list_fields,
+        )
+        if len(augmented_items) != len(serialized_items):
+            items = [ModelListItem.model_validate(entry) for entry in augmented_items]
     await _release_reservation(reservation)
     return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
 
@@ -2202,6 +2218,7 @@ async def v1_chat_completions(
 ) -> Response:
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
+    validate_model_access(api_key, payload.model)
     aliased_model = await resolve_request_model_alias(payload.model)
     if aliased_model is not None and aliased_model != payload.model:
         payload.model = aliased_model
