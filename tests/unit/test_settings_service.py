@@ -111,6 +111,7 @@ def _settings_update(
         sticky_reallocation_secondary_budget_threshold_pct=100.0,
         additional_quota_routing_policies={},
         model_aliases={},
+        custom_alias_catalog={},
         warmup_model="auto",
         import_without_overwrite=True,
         totp_required_on_login=False,

@@ -193,6 +193,10 @@ class SidecarModelPrefix(DashboardModel):
         return normalized
 
 
+class CustomAliasCatalogEntrySchema(DashboardModel):
+    context_length: int | None = Field(default=None, gt=0)
+
+
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
     upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
@@ -227,6 +231,7 @@ class DashboardSettingsResponse(DashboardModel):
     weekly_pace_working_days: str = _DEFAULT_WEEKLY_PACE_WORKING_DAYS
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
     model_aliases: dict[str, str] = Field(default_factory=dict)
+    custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] = Field(default_factory=dict)
     additional_quota_policies: list[AdditionalQuotaPolicy] = Field(default_factory=list)
     claude_sidecar_enabled: bool = False
     claude_sidecar_base_url: str = Field(default="http://127.0.0.1:8317", min_length=1)
@@ -324,6 +329,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     sticky_reallocation_secondary_budget_threshold_pct: float | None = Field(default=None, ge=0.0, le=100.0)
     additional_quota_routing_policies: dict[str, str] | None = None
     model_aliases: dict[str, str] | None = Field(default=None, max_length=256)
+    custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] | None = Field(default=None, max_length=256)
     warmup_model: str | None = Field(default=None, min_length=1)
     import_without_overwrite: bool | None = None
     totp_required_on_login: bool | None = None
@@ -405,6 +411,25 @@ class DashboardSettingsUpdateRequest(DashboardModel):
             seen.add(key)
             aliases[normalized_alias] = normalized_target
         return aliases
+
+    @field_validator("custom_alias_catalog")
+    @classmethod
+    def _normalize_custom_alias_catalog(
+        cls, value: dict[str, CustomAliasCatalogEntrySchema] | None
+    ) -> dict[str, CustomAliasCatalogEntrySchema] | None:
+        if value is None:
+            return None
+        catalog: dict[str, CustomAliasCatalogEntrySchema] = {}
+        for alias, entry in value.items():
+            normalized_alias = alias.strip()
+            if not normalized_alias:
+                continue
+            if len(normalized_alias) > 256:
+                raise ValueError("custom_alias_catalog keys must be 256 characters or fewer")
+            if entry.context_length is None:
+                continue
+            catalog[normalized_alias] = entry
+        return catalog
 
     @field_validator("warmup_model")
     @classmethod

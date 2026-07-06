@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { AccountSummary } from "@/features/accounts/schemas";
+import { ModelAliasRow } from "@/features/settings/components/model-alias-row";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type {
   AdditionalQuotaRoutingPolicy,
@@ -154,10 +155,21 @@ export function RoutingSettings({
       },
     });
   };
+  const saveModelAliasCatalog = (aliasName: string, contextLength: number | null) => {
+    const nextCatalog = { ...(settings.customAliasCatalog ?? {}) };
+    if (contextLength === null) {
+      delete nextCatalog[aliasName];
+    } else {
+      nextCatalog[aliasName] = { contextLength };
+    }
+    save({ customAliasCatalog: nextCatalog });
+  };
   const removeModelAlias = (aliasName: string) => {
     const next = { ...(settings.modelAliases ?? {}) };
     delete next[aliasName];
-    save({ modelAliases: next });
+    const nextCatalog = { ...(settings.customAliasCatalog ?? {}) };
+    delete nextCatalog[aliasName];
+    save({ modelAliases: next, customAliasCatalog: nextCatalog });
   };
 
   const parsedCacheAffinityTtl = Number.parseInt(draft.cacheAffinityTtl, 10);
@@ -860,27 +872,15 @@ export function RoutingSettings({
             </div>
             <div className="space-y-2">
               {modelAliasRows.map(({ alias, target }) => (
-                <div key={alias} className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <div className="min-w-0 flex-1 truncate rounded-md border bg-muted/20 px-2 py-1.5 text-xs">
-                    {target}
-                  </div>
-                  <span className="text-xs text-muted-foreground sm:px-1" aria-hidden="true">
-                    →
-                  </span>
-                  <div className="min-w-0 flex-1 truncate rounded-md border bg-muted/20 px-2 py-1.5 text-xs">
-                    {alias}
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-xs sm:w-20"
-                    disabled={busy}
-                    onClick={() => removeModelAlias(alias)}
-                  >
-                    Remove
-                  </Button>
-                </div>
+                <ModelAliasRow
+                  key={alias}
+                  alias={alias}
+                  target={target}
+                  catalogEntry={settings.customAliasCatalog?.[alias]}
+                  busy={busy}
+                  onRemove={() => removeModelAlias(alias)}
+                  onContextLengthChange={(contextLength) => saveModelAliasCatalog(alias, contextLength)}
+                />
               ))}
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <Input

@@ -773,3 +773,39 @@ async def test_v1_models_hides_alias_when_target_not_allowed(async_client):
     assert "gpt-5.4" not in ids
     assert "alias-gpt" not in ids
 
+
+@pytest.mark.asyncio
+async def test_v1_models_applies_custom_alias_catalog_context_length(async_client):
+    registry = get_model_registry()
+    models = [_make_upstream_model("gpt-5.4")]
+    await registry.update({"pro": models})
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "modelAliases": {
+                "alias-gpt": "gpt-5.4",
+            },
+            "customAliasCatalog": {
+                "alias-gpt": {
+                    "contextLength": 1_000_000,
+                },
+            },
+        },
+    )
+    assert response.status_code == 200
+
+    models_response = await async_client.get("/v1/models")
+    assert models_response.status_code == 200
+    data = models_response.json()["data"]
+
+    alias_entry = next(item for item in data if item["id"] == "alias-gpt")
+    target_entry = next(item for item in data if item["id"] == "gpt-5.4")
+
+    assert alias_entry["context_length"] == 1_000_000
+    assert alias_entry["contextLength"] == 1_000_000
+    assert alias_entry["capabilities"]["context_length"] == 1_000_000
+    assert alias_entry["metadata"]["context_window"] == 1_000_000
+    assert alias_entry["metadata"]["input_context_window"] == 1_000_000
+    assert target_entry["context_length"] == 272_000
+
