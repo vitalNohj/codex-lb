@@ -407,3 +407,33 @@ async def test_openrouter_sidecar_non_cursor_stream_does_not_apply_usage_fallbac
     assert response.status_code == 200
     assert _usage_chunks(_chat_sse_payloads(body)) == []
     assert body.rstrip().endswith(b"data: [DONE]")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_sidecar_alias_is_discoverable_and_routes(async_client, openrouter_enabled, fake_openrouter):
+    await async_client.put(
+        "/api/settings",
+        json={
+            "openrouterSidecarEnabled": True,
+            "openrouterSidecarApiKey": "openrouter-key",
+            "openrouterSidecarFullModels": ["deepseek/deepseek-chat"],
+            "modelAliases": {
+                "alias-deepseek": "deepseek/deepseek-chat",
+            },
+        },
+    )
+
+    models_response = await async_client.get("/v1/models")
+    assert models_response.status_code == 200
+    ids = {item["id"] for item in models_response.json()["data"]}
+    assert "alias-deepseek" in ids
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "alias-deepseek", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_openrouter.chat_payloads
+    assert fake_openrouter.chat_payloads[0]["model"] == "deepseek/deepseek-chat"
+

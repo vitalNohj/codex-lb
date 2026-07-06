@@ -854,7 +854,8 @@ export function RoutingSettings({
               <p className="text-sm font-medium">Model aliasing</p>
               <p className="text-xs text-muted-foreground">
                 Map a real upstream model (left) to an alias name (right). Requests for the alias resolve to the
-                real model before routing, so prefix and full-model matchers still apply.
+                real model before routing, so prefix and full-model matchers still apply. Aliases are also listed on
+                GET /v1/models so discovery-only clients can select them.
               </p>
             </div>
             <div className="space-y-2">

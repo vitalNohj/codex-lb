@@ -702,3 +702,74 @@ async def test_v1_models_does_not_promote_raw_max_context_window(async_client):
     assert entry["metadata"]["context_window"] == 272_000
     assert entry["metadata"]["input_context_window"] == 272_000
     assert entry["metadata"].get("max_output_tokens") is None
+
+
+@pytest.mark.asyncio
+async def test_v1_models_lists_configured_aliases(async_client):
+    registry = get_model_registry()
+    models = [_make_upstream_model("gpt-5.4")]
+    await registry.update({"pro": models})
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "modelAliases": {
+                "alias-gpt": "gpt-5.4",
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    models_response = await async_client.get("/v1/models")
+    assert models_response.status_code == 200
+    data = models_response.json()["data"]
+    ids = {item["id"] for item in data}
+
+    assert "alias-gpt" in ids
+    assert "gpt-5.4" in ids
+
+    alias_entry = next(item for item in data if item["id"] == "alias-gpt")
+    target_entry = next(item for item in data if item["id"] == "gpt-5.4")
+
+    assert alias_entry["owned_by"] == "codex-lb"
+    assert alias_entry["context_length"] == target_entry["context_length"]
+    assert alias_entry["capabilities"] == target_entry["capabilities"]
+
+
+@pytest.mark.asyncio
+async def test_v1_models_hides_alias_when_target_not_allowed(async_client):
+    registry = get_model_registry()
+    models = [_make_upstream_model("gpt-5.4"), _make_upstream_model("gpt-5.5")]
+    await registry.update({"pro": models})
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "apiKeyAuthEnabled": True,
+            "modelAliases": {
+                "alias-gpt": "gpt-5.4",
+            },
+        },
+    )
+
+    from app.db.session import SessionLocal
+    from app.modules.api_keys.repository import ApiKeysRepository
+    from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService
+
+    async with SessionLocal() as session:
+        service = ApiKeysService(ApiKeysRepository(session))
+        created = await service.create_key(
+            ApiKeyCreateData(name="alias-models-key", allowed_models=["gpt-5.5"])
+        )
+
+    models_response = await async_client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {created.key}"},
+    )
+    assert models_response.status_code == 200
+    ids = {item["id"] for item in models_response.json()["data"]}
+
+    assert "gpt-5.5" in ids
+    assert "gpt-5.4" not in ids
+    assert "alias-gpt" not in ids
+
