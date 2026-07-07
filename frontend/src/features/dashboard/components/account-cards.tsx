@@ -1,8 +1,17 @@
 import { Users } from "lucide-react";
 
 import { EmptyState } from "@/components/empty-state";
-import { AccountCard, type AccountCardProps } from "@/features/dashboard/components/account-card";
+import { AccountCard, ClaudeAuthCard, type AccountCardProps } from "@/features/dashboard/components/account-card";
 import type { AccountSummary } from "@/features/dashboard/schemas";
+
+function isClaudeSidecar(account: AccountSummary): boolean {
+  return (
+    account.synthetic === true &&
+    account.provider !== "openrouter" &&
+    account.provider !== "omniroute" &&
+    (account.sidecarAuths?.length ?? 0) > 0
+  );
+}
 
 const ACCOUNT_CARD_VISIBLE_ROWS = 2;
 // Account cards can grow when the optional email row is rendered.
@@ -34,16 +43,29 @@ export function AccountCards({ accounts, readOnly = false, onAction }: AccountCa
         maxHeight: `calc(${ACCOUNT_CARD_VISIBLE_ROWS} * ${ACCOUNT_CARD_ROW_HEIGHT_REM}rem + ${(ACCOUNT_CARD_VISIBLE_ROWS - 1) * ACCOUNT_CARD_ROW_GAP_REM}rem)`,
       }}
     >
-      {accounts.map((account, index) => (
-        <div key={account.accountId} className="animate-fade-in-up" style={{ animationDelay: `${index * 75}ms` }}>
-          <AccountCard
-            account={account}
-            showAccountId={account.isEmailDuplicate === true}
-            readOnly={readOnly}
-            onAction={onAction}
-          />
-        </div>
-      ))}
+      {accounts.flatMap((account, index) => {
+        if (isClaudeSidecar(account)) {
+          return (account.sidecarAuths ?? []).map((auth, authIndex) => (
+            <div
+              key={`${account.accountId}-${auth.name}`}
+              className="animate-fade-in-up"
+              style={{ animationDelay: `${(index + authIndex) * 75}ms` }}
+            >
+              <ClaudeAuthCard account={account} auth={auth} onAction={onAction} />
+            </div>
+          ));
+        }
+        return (
+          <div key={account.accountId} className="animate-fade-in-up" style={{ animationDelay: `${index * 75}ms` }}>
+            <AccountCard
+              account={account}
+              showAccountId={account.isEmailDuplicate === true}
+              readOnly={readOnly}
+              onAction={onAction}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

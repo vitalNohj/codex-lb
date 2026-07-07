@@ -75,6 +75,7 @@ class SidecarAuthAccount(DashboardModel):
     name: str
     auth_index: str | None = None
     email: str | None = None
+    provider: str | None = None
     status: str | None = None
     paused: bool = False
     quota_exceeded: bool = False

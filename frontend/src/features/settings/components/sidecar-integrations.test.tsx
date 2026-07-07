@@ -39,6 +39,7 @@ const BASE_SETTINGS = {
   limitWarmupMinAvailablePercent: 100,
   additionalQuotaRoutingPolicies: {},
   additionalQuotaPolicies: [],
+  customAliasCatalog: {},
   claudeSidecarEnabled: true,
   claudeSidecarBaseUrl: "http://127.0.0.1:8317",
   claudeSidecarApiKeyConfigured: true,

@@ -32,6 +32,7 @@ def test_parse_live_fixture_keeps_claude_entry_without_quota_block():
     only = accounts[0]
     assert isinstance(only, SidecarAuthQuota)
     assert only.email == "account1@example.com"
+    assert only.provider == "claude"
     assert only.quota_exceeded is False
     assert only.next_recover_at is None
     assert only.model_states == ()
@@ -79,6 +80,7 @@ def test_snapshot_round_trips_through_json():
     assert len(decoded.accounts) == 1
     decoded_only = decoded.accounts[0]
     assert decoded_only.email == "exceeded@example.com"
+    assert decoded_only.provider == accounts[0].provider
     assert decoded_only.quota_exceeded is True
     assert decoded_only.next_recover_at == datetime(2026, 6, 10, 23, 30, tzinfo=timezone.utc)
     assert any(

@@ -61,6 +61,7 @@ export const SidecarAuthAccountSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
+  provider: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
   paused: z.boolean().default(false),
   quotaExceeded: z.boolean().default(false),

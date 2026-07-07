@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountList } from "@/features/dashboard/components/account-list";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { createAccountSummary } from "@/test/mocks/factories";
+import { renderWithProviders } from "@/test/utils";
 
 afterEach(() => {
   act(() => {
@@ -214,5 +215,59 @@ describe("AccountList", () => {
     await user.click(screen.getByRole("button", { name: "Credits, sorted ascending" }));
 
     expect(rowNames()).toEqual(["Low Account", "Empty Account", "Unknown Account"]);
+  });
+
+  it("expands a Claude sidecar account into one list row per auth account", () => {
+    renderWithProviders(
+      <AccountList
+        accounts={[
+          createAccountSummary({
+            accountId: "claude-sidecar",
+            displayName: "CLI Proxy API",
+            planType: "claude",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "claude",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "claude-1",
+                authIndex: "0",
+                email: "one@example.com",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+                usageSource: "oauth_usage",
+                primaryRemainingPercent: 75,
+                secondaryRemainingPercent: 96,
+              },
+              {
+                name: "claude-2",
+                authIndex: "1",
+                email: "two@example.com",
+                paused: true,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+                usageSource: "oauth_usage",
+                primaryRemainingPercent: 100,
+                secondaryRemainingPercent: 38,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByTestId("account-list-row")).toHaveLength(2);
+    expect(screen.getByText("one@example.com")).toBeInTheDocument();
+    expect(screen.getByText("two@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume two@example.com" })).toBeInTheDocument();
   });
 });

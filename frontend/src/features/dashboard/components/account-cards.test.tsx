@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AccountCards } from "@/features/dashboard/components/account-cards";
 import { createAccountSummary } from "@/test/mocks/factories";
+import { renderWithProviders } from "@/test/utils";
 
 describe("AccountCards", () => {
   it("caps the dashboard account grid at two visible rows without clipping taller cards", () => {
@@ -87,5 +88,58 @@ describe("AccountCards", () => {
 
     expect(screen.queryByText((_content, el) => el?.tagName === "P" && !!el.textContent?.match(/dup@example\.com .* ID d48f0bfc\.\.\.12b5d5/))).not.toBeInTheDocument();
     expect(screen.getByText((_content, el) => el?.tagName === "P" && !!el.textContent?.match(/dup@example\.com .* ID 7f9de2ad\.\.\.a95cee/))).toBeInTheDocument();
+  });
+
+  it("expands a Claude sidecar account into one card per auth account", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "claude-sidecar",
+            displayName: "CLI Proxy API",
+            planType: "claude",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "claude",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "claude-1",
+                authIndex: "0",
+                email: "one@example.com",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+                usageSource: "oauth_usage",
+                primaryRemainingPercent: 75,
+                secondaryRemainingPercent: 96,
+              },
+              {
+                name: "claude-2",
+                authIndex: "1",
+                email: "two@example.com",
+                paused: true,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+                usageSource: "oauth_usage",
+                primaryRemainingPercent: 100,
+                secondaryRemainingPercent: 38,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("one@example.com")).toBeInTheDocument();
+    expect(screen.getByText("two@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume two@example.com" })).toBeInTheDocument();
   });
 });

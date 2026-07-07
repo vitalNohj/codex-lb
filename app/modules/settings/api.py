@@ -21,6 +21,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardBadRequestError
 from app.db.models import Account, AccountProxyBinding, ProxyEndpoint, ProxyPool, ProxyPoolMember
 from app.dependencies import SettingsContext, get_settings_context
+from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
 from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
     AccountProxyBindingResponse,
@@ -36,7 +37,6 @@ from app.modules.settings.schemas import (
     UpstreamProxyPoolMemberRequest,
     UpstreamProxyPoolResponse,
 )
-from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
 from app.modules.settings.service import (
     ClaudeSidecarAuthPlanData,
     DashboardSettingsUpdateData,

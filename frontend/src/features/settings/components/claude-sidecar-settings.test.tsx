@@ -29,6 +29,7 @@ const BASE_SETTINGS: DashboardSettings = {
   apiKeyAuthEnabled: true,
   additionalQuotaRoutingPolicies: {},
   additionalQuotaPolicies: [],
+  customAliasCatalog: {},
   limitWarmupEnabled: false,
   limitWarmupWindows: "both",
   limitWarmupModel: "auto",

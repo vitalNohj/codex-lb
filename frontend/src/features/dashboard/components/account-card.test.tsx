@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountCard } from "@/features/dashboard/components/account-card";
+import { AccountCard, ClaudeAuthCard } from "@/features/dashboard/components/account-card";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { createAccountSummary } from "@/test/mocks/factories";
 import { renderWithProviders } from "@/test/utils";
@@ -133,75 +133,7 @@ describe("AccountCard", () => {
     expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
   });
 
-  it("renders CLI Proxy API card with per-auth usage and no metadata rows", () => {
-    const account = createAccountSummary({
-      accountId: "claude-sidecar",
-      email: "cliproxyapi.local",
-      displayName: "CLI Proxy API",
-      planType: "claude",
-      status: "rate_limited",
-      synthetic: true,
-      readOnly: true,
-      kind: "sidecar",
-      provider: "claude",
-      healthStatus: "healthy",
-      baseUrl: "http://127.0.0.1:8317",
-      modelCount: 4,
-      resetAtPrimary: "2026-06-10T17:00:00+00:00",
-      usage: null,
-      capacityCreditsPrimary: null,
-      remainingCreditsPrimary: null,
-      capacityCreditsSecondary: null,
-      remainingCreditsSecondary: null,
-      creditsHas: null,
-      creditsBalance: null,
-      sidecarAuths: [
-        {
-          name: "claude-1",
-          authIndex: "0",
-          email: "claude-one@example.com",
-          paused: false,
-          quotaExceeded: false,
-          modelsExceeded: [],
-          success: 0,
-          failed: 0,
-          usageSource: "oauth_usage",
-          primaryRemainingPercent: 75,
-          secondaryRemainingPercent: 96,
-          resetAtPrimary: "2026-06-10T17:00:00+00:00",
-          resetAtSecondary: "2026-06-17T12:00:00+00:00",
-        },
-      ],
-      requestUsage: {
-        requestCount: 12,
-        totalTokens: 5000,
-        cachedInputTokens: 0,
-        totalCostUsd: 0,
-      },
-    });
-
-    renderWithProviders(<AccountCard account={account} />);
-
-    expect(screen.getAllByText("CLI Proxy API")).toHaveLength(1);
-    expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
-    expect(screen.getByText(/Usage/)).toBeInTheDocument();
-    expect(screen.getByText("OAuth")).toBeInTheDocument();
-    expect(screen.getByText("5h")).toBeInTheDocument();
-    expect(screen.getByText("Weekly")).toBeInTheDocument();
-    expect(screen.queryByText("Health")).toBeNull();
-    expect(screen.queryByText("Quota")).toBeNull();
-    expect(screen.queryByText("Models")).toBeNull();
-    expect(screen.queryByText("Requests")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Warm-up/i })).toBeNull();
-    expect(screen.queryByText("Credits:")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-  });
-
-  it("blurs the CLI Proxy API auth label when privacy mode is enabled", () => {
-    act(() => {
-      usePrivacyStore.setState({ blurred: true });
-    });
+  it("renders a per-auth CLI Proxy API card with codex-style layout and pause action", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
       email: "cliproxyapi.local",
@@ -212,25 +144,134 @@ describe("AccountCard", () => {
       readOnly: true,
       kind: "sidecar",
       provider: "claude",
+      healthStatus: "healthy",
+      baseUrl: "http://127.0.0.1:8317",
       usage: null,
-      sidecarAuths: [
-        {
-          name: "claude-1",
-          authIndex: "0",
-          email: "claude-one@example.com",
-          paused: false,
-          quotaExceeded: false,
-          modelsExceeded: [],
-          success: 0,
-          failed: 0,
-          usageSource: "oauth_usage",
-          primaryRemainingPercent: 75,
-          secondaryRemainingPercent: 96,
-        },
-      ],
     });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      provider: "claude",
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      usageSource: "oauth_usage",
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+      resetAtPrimary: "2026-06-10T17:00:00+00:00",
+      resetAtSecondary: "2026-06-17T12:00:00+00:00",
+    };
 
-    const { container } = renderWithProviders(<AccountCard account={account} />);
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/Claude/)).toBeInTheDocument();
+    expect(screen.getByText("5h")).toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Details" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause claude-one@example.com" })).toBeInTheDocument();
+    expect(screen.queryByText("Health")).toBeNull();
+    expect(screen.queryByText("Requests")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Warm-up/i })).toBeNull();
+    expect(screen.queryByText("Credits:")).toBeNull();
+  });
+
+  it("shows Resume for a paused CLI Proxy API auth card", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      paused: true,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      usageSource: "oauth_usage",
+      primaryRemainingPercent: 100,
+      secondaryRemainingPercent: 38,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByRole("button", { name: "Resume claude-one@example.com" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause claude-one@example.com" })).toBeNull();
+  });
+
+  it("falls back to CLIProxyAPI in the subtitle when the auth provider is unknown", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      provider: null,
+      planType: "max20",
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      usageSource: "oauth_usage",
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByText(/CLIProxyAPI/)).toBeInTheDocument();
+    expect(screen.queryByText(/Claude/)).toBeNull();
+  });
+
+  it("blurs the CLI Proxy API auth title when privacy mode is enabled", () => {
+    act(() => {
+      usePrivacyStore.setState({ blurred: true });
+    });
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      usageSource: "oauth_usage",
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+    };
+
+    const { container } = renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
 
     expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
     expect(container.querySelector(".privacy-blur")).not.toBeNull();
