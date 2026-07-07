@@ -38,8 +38,10 @@ function fieldForProvider(provider: string | null | undefined): EffortFieldKey {
 
 export function SidecarEffortSelect({
   provider,
+  compact = false,
 }: {
   provider: string | null | undefined;
+  compact?: boolean;
 }) {
   const { settingsQuery, updateSettingsMutation } = useSettings();
   const settings = settingsQuery.data;
@@ -57,6 +59,27 @@ export function SidecarEffortSelect({
       buildSettingsUpdateRequest(settings, patch),
     );
   };
+  if (compact) {
+    return (
+      <Select value={current ?? REASONING_EFFORT_UNSET} onValueChange={handleChange}>
+        <SelectTrigger
+          aria-label="Reasoning effort override"
+          className="h-7 w-full text-xs"
+          disabled={busy}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="end">
+          <SelectItem value={REASONING_EFFORT_UNSET}>Use client / model default</SelectItem>
+          {REASONING_EFFORT_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
   return (
     <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/20 px-2.5 py-2 text-xs">
       <label htmlFor="sidecar-effort-select" className="font-medium">

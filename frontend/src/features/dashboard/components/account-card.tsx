@@ -8,6 +8,7 @@ import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-sett
 import { StatusBadge } from "@/components/status-badge";
 import { cn } from "@/lib/utils";
 import type { AccountSummary } from "@/features/dashboard/schemas";
+import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import {
   normalizeStatus,
@@ -73,6 +74,10 @@ export function AccountCard({ account, showAccountId = false, readOnly = false, 
   if (account.synthetic) {
     return <SyntheticAccountCard account={account} onAction={onAction} />;
   }
+  return <NativeAccountCard account={account} showAccountId={showAccountId} readOnly={readOnly} onAction={onAction} />;
+}
+
+function NativeAccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
   const blurred = usePrivacyStore((s) => s.blurred);
   const status = normalizeStatus(account.status);
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
@@ -227,6 +232,94 @@ export function AccountCard({ account, showAccountId = false, readOnly = false, 
             Re-auth
           </Button>
         )}
+      </div>
+    </div>
+  );
+}
+
+export function ClaudeAuthCard({
+  account,
+  auth,
+  onAction,
+}: {
+  account: AccountSummary;
+  auth: SidecarAuthAccount;
+  onAction?: (account: AccountSummary, action: AccountAction) => void;
+}) {
+  const blurred = usePrivacyStore((s) => s.blurred);
+  const pauseMutation = useClaudeSidecarAccountPause();
+  const title = auth.email ?? auth.name;
+  const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
+  const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
+  const providerLabel = auth.provider === "claude"
+    ? "Claude"
+    : auth.provider
+      ? formatSlug(auth.provider)
+      : "CLIProxyAPI";
+
+  return (
+    <div className="card-hover rounded-xl border bg-card p-4">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold leading-tight">
+            {blurred ? <span className="privacy-blur">{title}</span> : title}
+          </p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {planLabel} | {providerLabel}
+          </p>
+        </div>
+        <StatusBadge status={status} />
+      </div>
+
+      {/* Quota bars */}
+      <div className="mt-3.5 grid grid-cols-2 gap-3">
+        <QuotaBar
+          label="5h"
+          percent={auth.primaryRemainingPercent ?? null}
+          resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
+        />
+        <QuotaBar
+          label="Weekly"
+          percent={auth.secondaryRemainingPercent ?? null}
+          resetLabel={formatQuotaResetLabel(auth.resetAtSecondary ?? null)}
+        />
+      </div>
+
+      {/* Reasoning effort override occupies the warm-up slot */}
+      <div className="mt-3">
+        <SidecarEffortSelect provider={account.provider} />
+      </div>
+
+      {/* Actions */}
+      <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+          onClick={() => onAction?.(account, "details")}
+        >
+          <ExternalLink className="h-3 w-3" />
+          Details
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className={cn(
+            "h-7 gap-1.5 rounded-lg text-xs",
+            auth.paused
+              ? "text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
+              : "text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300",
+          )}
+          disabled={pauseMutation.isPending}
+          aria-label={`${auth.paused ? "Resume" : "Pause"} ${title}`}
+          onClick={() => pauseMutation.mutate({ name: auth.name, paused: !auth.paused })}
+        >
+          {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+          {auth.paused ? "Resume" : "Pause"}
+        </Button>
       </div>
     </div>
   );

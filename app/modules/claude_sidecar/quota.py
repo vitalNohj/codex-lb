@@ -51,6 +51,7 @@ class SidecarAuthQuota:
     last_refresh: datetime | None
     credential_path: str | None = None
     oauth_usage: SidecarOAuthUsage | None = None
+    provider: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,21 @@ def _is_claude_entry(entry: Mapping[str, JsonValue]) -> bool:
     return False
 
 
+def _auth_provider(entry: Mapping[str, JsonValue]) -> str | None:
+    """Derive the CLIProxyAPI credential provider (e.g. ``claude``) from an auth
+    file entry, or ``None`` when it cannot be identified."""
+    provider = _str(entry.get("provider"))
+    if provider:
+        return provider.strip().lower()
+    entry_type = _str(entry.get("type"))
+    if entry_type:
+        return entry_type.strip().lower()
+    account_type = _str(entry.get("account_type"))
+    if account_type and account_type.strip().lower() == "anthropic":
+        return "claude"
+    return None
+
+
 def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
     name = _str(entry.get("name")) or _str(entry.get("id")) or _str(entry.get("label")) or ""
     quota_field = entry.get("quota")
@@ -99,6 +115,7 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         name=name,
         auth_index=_str(entry.get("auth_index")),
         email=_str(entry.get("email")) or _str(entry.get("account")),
+        provider=_auth_provider(entry),
         credential_path=_str(entry.get("path")),
         status=_str(entry.get("status")),
         status_message=_str(entry.get("status_message")),
@@ -242,6 +259,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "name": account.name,
                 "auth_index": account.auth_index,
                 "email": account.email,
+                "provider": account.provider,
                 "credential_path": account.credential_path,
                 "status": account.status,
                 "status_message": account.status_message,
@@ -313,6 +331,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     name=_str(entry.get("name")) or "",
                     auth_index=_str(entry.get("auth_index")),
                     email=_str(entry.get("email")),
+                    provider=_str(entry.get("provider")),
                     credential_path=_str(entry.get("credential_path")),
                     status=_str(entry.get("status")),
                     status_message=_str(entry.get("status_message")),

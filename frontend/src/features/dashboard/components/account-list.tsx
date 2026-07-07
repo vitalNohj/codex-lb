@@ -1,16 +1,28 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Clock, ExternalLink, List, Play, RotateCcw, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Clock, ExternalLink, List, Pause, Play, RotateCcw, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import type { AccountAction } from "@/features/dashboard/components/account-card";
+import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
+import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import type { AccountSummary } from "@/features/dashboard/schemas";
+import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { cn } from "@/lib/utils";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import { normalizeStatus, quotaBarColor, quotaBarTrack } from "@/utils/account-status";
 import { formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
+
+function isClaudeSidecar(account: AccountSummary): boolean {
+  return (
+    account.synthetic === true &&
+    account.provider !== "openrouter" &&
+    account.provider !== "omniroute" &&
+    (account.sidecarAuths?.length ?? 0) > 0
+  );
+}
 
 const ACCOUNT_LIST_VISIBLE_ROWS = 8;
 const ACCOUNT_LIST_ROW_HEIGHT_REM = 4.5;
@@ -294,7 +306,19 @@ export function AccountList({ accounts, readOnly = false, onAction }: AccountLis
           ))}
           <span className="text-right">Actions</span>
         </div>
-        {sortedAccounts.map((account, index) => {
+        {sortedAccounts.flatMap((account, index) => {
+          if (isClaudeSidecar(account)) {
+            return (account.sidecarAuths ?? []).map((auth, authIndex) => (
+              <ClaudeAuthListRow
+                key={`${account.accountId}-${auth.name}`}
+                account={account}
+                auth={auth}
+                index={index + authIndex}
+                readOnly={readOnly}
+                onAction={onAction}
+              />
+            ));
+          }
           const status = normalizeStatus(account.status);
           const title = accountTitle(account);
           const emailSubtitle =
@@ -397,6 +421,98 @@ export function AccountList({ accounts, readOnly = false, onAction }: AccountLis
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function ClaudeAuthListRow({
+  account,
+  auth,
+  index,
+  readOnly = false,
+  onAction,
+}: {
+  account: AccountSummary;
+  auth: SidecarAuthAccount;
+  index: number;
+  readOnly?: boolean;
+  onAction?: (account: AccountSummary, action: AccountAction) => void;
+}) {
+  const blurred = usePrivacyStore((s) => s.blurred);
+  const pauseMutation = useClaudeSidecarAccountPause();
+  const title = auth.email ?? auth.name;
+  const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
+  const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
+  const providerLabel = auth.provider === "claude"
+    ? "Claude"
+    : auth.provider
+      ? formatSlug(auth.provider)
+      : "CLIProxyAPI";
+  const quotas = [
+    quotaLabel("5h", auth.primaryRemainingPercent ?? null, auth.resetAtPrimary),
+    quotaLabel("Weekly", auth.secondaryRemainingPercent ?? null, auth.resetAtSecondary),
+  ];
+  return (
+    <div
+      data-testid="account-list-row"
+      className="grid min-h-[4.5rem] items-center gap-3 px-3 py-2 text-sm"
+      style={{ animationDelay: `${index * 50}ms`, gridTemplateColumns: ACCOUNT_LIST_COLUMNS }}
+    >
+      <div className="min-w-0">
+        <p className="truncate font-medium leading-tight">
+          <span className={blurred ? "privacy-blur" : undefined}>{title}</span>
+        </p>
+        <p className="mt-1 truncate text-xs text-muted-foreground">{providerLabel}</p>
+      </div>
+      <StatusBadge status={status} />
+      <span className="text-xs text-muted-foreground">{planLabel}</span>
+      <div className="grid gap-1.5 text-xs">
+        {quotas.map((quota) => (
+          <div key={quota.label} className="grid grid-cols-[2.75rem_minmax(3rem,auto)_minmax(2.75rem,0.45fr)_minmax(0,1fr)] items-center gap-2">
+            <span className="text-muted-foreground">{quota.label}</span>
+            <span className="font-medium tabular-nums text-foreground">{quota.percentLabel}</span>
+            <QuotaMeter percent={quota.percent} />
+            <span className="inline-flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+              <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">{quota.resetLabel}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      <span className="text-muted-foreground">-</span>
+      <div className="min-w-0">
+        <SidecarEffortSelect provider={account.provider} compact />
+      </div>
+      <div className="flex justify-end gap-1">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 rounded-md p-0 text-muted-foreground hover:text-foreground"
+          aria-label={`View details for ${title}`}
+          title="Details"
+          onClick={() => onAction?.(account, "details")}
+        >
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className={cn(
+            "h-7 w-7 rounded-md p-0",
+            auth.paused
+              ? "text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
+              : "text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300",
+          )}
+          aria-label={`${auth.paused ? "Resume" : "Pause"} ${title}`}
+          title={auth.paused ? "Resume" : "Pause"}
+          disabled={readOnly || pauseMutation.isPending}
+          onClick={() => pauseMutation.mutate({ name: auth.name, paused: !auth.paused })}
+        >
+          {auth.paused ? <Play className="h-3.5 w-3.5" aria-hidden="true" /> : <Pause className="h-3.5 w-3.5" aria-hidden="true" />}
+        </Button>
       </div>
     </div>
   );

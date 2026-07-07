@@ -26,6 +26,7 @@ const BASE_SETTINGS: DashboardSettings = {
   stickyReallocationSecondaryBudgetThresholdPct: 100,
   additionalQuotaRoutingPolicies: {},
   additionalQuotaPolicies: [],
+  customAliasCatalog: {},
   warmupModel: "gpt-5.4-mini",
   importWithoutOverwrite: true,
   totpRequiredOnLogin: false,
