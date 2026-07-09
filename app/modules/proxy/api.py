@@ -61,7 +61,12 @@ from app.core.errors import (
     openai_error,
     response_failed_event,
 )
-from app.core.exceptions import ProxyAuthError, ProxyRateLimitError, ProxyUpstreamError
+from app.core.exceptions import (
+    ProxyAuthError,
+    ProxyModelNotAllowed,
+    ProxyRateLimitError,
+    ProxyUpstreamError,
+)
 from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, bridge_public_contract_error_total
 from app.core.middleware.api_firewall import _parse_trusted_proxy_networks, resolve_connection_client_ip
 from app.core.openai.chat_requests import ChatCompletionsRequest
@@ -153,6 +158,7 @@ from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
+from app.modules.proxy.images_observability import record_images_route_observability
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
     apply_api_key_enforcement_to_chat_payload,
@@ -1559,6 +1565,28 @@ async def v1_images_generations(
     )
 
 
+def _coerce_image_form_stream_for_observability(stream: str | None) -> bool:
+    if stream is None:
+        return False
+    return stream.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _record_images_edit_early_rejection(
+    *,
+    model: str | None,
+    stream: bool,
+    started_at: float,
+) -> None:
+    record_images_route_observability(
+        route="edits",
+        model=model,
+        stream=stream,
+        status=400,
+        outcome="invalid_request",
+        started_at=started_at,
+    )
+
+
 @v1_router.post("/images/edits", response_model=None)
 async def v1_images_edits(
     request: Request,
@@ -1590,6 +1618,7 @@ async def v1_images_edits(
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    started_at = time.perf_counter()
     raw_form: dict[str, object] = {
         "model": model,
         "prompt": prompt,
@@ -1622,6 +1651,11 @@ async def v1_images_edits(
     try:
         form_payload = V1ImagesEditsForm.model_validate(raw_form)
     except ValidationError as exc:
+        _record_images_edit_early_rejection(
+            model=model,
+            stream=_coerce_image_form_stream_for_observability(stream),
+            started_at=started_at,
+        )
         return _logged_error_json_response(request, 400, openai_validation_error(exc))
 
     # Merge ``image`` and ``image[]`` into a single ordered list. Both
@@ -1633,6 +1667,11 @@ async def v1_images_edits(
     if image_brackets:
         merged_images.extend(image_brackets)
     if not merged_images:
+        _record_images_edit_early_rejection(
+            model=form_payload.model,
+            stream=bool(form_payload.stream),
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1649,6 +1688,11 @@ async def v1_images_edits(
         finally:
             await upload.close()
         if not data:
+            _record_images_edit_early_rejection(
+                model=form_payload.model,
+                stream=bool(form_payload.stream),
+                started_at=started_at,
+            )
             return _logged_error_json_response(
                 request,
                 400,
@@ -1666,6 +1710,11 @@ async def v1_images_edits(
         finally:
             await mask.close()
         if not data:
+            _record_images_edit_early_rejection(
+                model=form_payload.model,
+                stream=bool(form_payload.stream),
+                started_at=started_at,
+            )
             return _logged_error_json_response(
                 request,
                 400,
@@ -1683,6 +1732,7 @@ async def v1_images_edits(
         mask=mask_payload,
         context=context,
         api_key=api_key,
+        started_at=started_at,
     )
 
 
@@ -1755,6 +1805,9 @@ async def _proxy_images_generation_request(
     context: ProxyContext,
     api_key: ApiKeyData | None,
 ) -> Response:
+    started_at = time.perf_counter()
+    route: Literal["generations"] = "generations"
+    stream_requested = bool(payload.stream)
     # Apply the API key's enforced model BEFORE running the cross-field
     # validation matrix. Otherwise a request that passes validation
     # under the client-supplied ``model`` (e.g. gpt-image-2 with a 16-
@@ -1769,6 +1822,14 @@ async def _proxy_images_generation_request(
         requested_model or settings.images_default_model,
     )
     if not images_service_module.is_supported_image_model(effective_model):
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1788,6 +1849,14 @@ async def _proxy_images_generation_request(
     try:
         payload = images_service_module.validate_generations_payload(payload)
     except ClientPayloadError as exc:
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(request, 400, openai_client_payload_error(exc))
 
     public_model = payload.model
@@ -1796,21 +1865,47 @@ async def _proxy_images_generation_request(
 
     try:
         validate_model_access(api_key, effective_model)
-    except Exception:
-        # Re-raise so the global handler maps to 403.
+    except ProxyModelNotAllowed:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=403,
+            outcome="model_not_allowed",
+            started_at=started_at,
+        )
         raise
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=effective_model,
-        request_service_tier=None,
-    )
+    try:
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=None,
+        )
+    except ProxyRateLimitError:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=429,
+            outcome="rate_limited",
+            started_at=started_at,
+        )
+        raise
 
     try:
         responses_payload = images_service_module.images_generation_to_responses_request(payload, host_model=host_model)
     except ValidationError as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1860,6 +1955,14 @@ async def _proxy_images_generation_request(
         on_error=lambda: _release_reservation(reservation),
     )
     if prime_error is not None:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=prime_error.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return prime_error
     assert primed_upstream is not None
 
@@ -1872,6 +1975,9 @@ async def _proxy_images_generation_request(
             try:
                 async for chunk in translated:
                     yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            except ProxyResponseError:
+                captured["image_stream_outcome"] = "upstream_error"
+                raise
             finally:
                 # Run the request-log model rewrite even when the stream
                 # is cancelled mid-flight (e.g. client disconnect). Without
@@ -1896,6 +2002,17 @@ async def _proxy_images_generation_request(
                     output_tokens=_output if isinstance(_output, int) else None,
                     cached_input_tokens=_cached if isinstance(_cached, int) else None,
                 )
+                stream_outcome = captured.get("image_stream_outcome")
+                if not isinstance(stream_outcome, str):
+                    stream_outcome = "stream_closed"
+                record_images_route_observability(
+                    route=route,
+                    model=public_model,
+                    stream=True,
+                    status=200,
+                    outcome=stream_outcome,
+                    started_at=started_at,
+                )
 
         return StreamingResponse(
             _stream_with_log_rewrite(),
@@ -1910,6 +2027,14 @@ async def _proxy_images_generation_request(
         )
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=exc.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             exc.status_code,
@@ -1932,21 +2057,47 @@ async def _proxy_images_generation_request(
     )
 
     if error_envelope is not None:
+        error_status = _status_for_image_error_envelope(error_envelope)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=error_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(error_envelope),
+            error_status,
             error_envelope,
             headers=rate_limit_headers,
         )
     assert response_payload is not None
     images_result = images_service_module.images_response_from_responses(response_payload)
     if not isinstance(images_result, V1ImageResponse):
+        image_status = _status_for_image_error_envelope(images_result)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=image_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(images_result),
+            image_status,
             images_result,
             headers=rate_limit_headers,
         )
+    record_images_route_observability(
+        route=route,
+        model=public_model,
+        stream=False,
+        status=200,
+        outcome="success",
+        started_at=started_at,
+    )
     return JSONResponse(
         content=images_result.model_dump(mode="json", exclude_none=True),
         headers=rate_limit_headers,
@@ -1961,7 +2112,10 @@ async def _proxy_images_edit_request(
     mask: tuple[bytes, str | None] | None,
     context: ProxyContext,
     api_key: ApiKeyData | None,
+    started_at: float,
 ) -> Response:
+    route: Literal["edits"] = "edits"
+    stream_requested = bool(payload.stream)
     # Apply the API key's enforced model BEFORE validating the
     # cross-field matrix, so the matrix is checked against the model we
     # will actually send upstream. See the matching comment in
@@ -1973,6 +2127,14 @@ async def _proxy_images_edit_request(
         requested_model or settings.images_default_model,
     )
     if not images_service_module.is_supported_image_model(effective_model):
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1989,20 +2151,50 @@ async def _proxy_images_edit_request(
     try:
         payload = images_service_module.validate_edits_payload(payload)
     except ClientPayloadError as exc:
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(request, 400, openai_client_payload_error(exc))
 
     public_model = payload.model
     assert public_model is not None
     host_model = settings.images_host_model
 
-    validate_model_access(api_key, effective_model)
+    try:
+        validate_model_access(api_key, effective_model)
+    except ProxyModelNotAllowed:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=403,
+            outcome="model_not_allowed",
+            started_at=started_at,
+        )
+        raise
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=effective_model,
-        request_service_tier=None,
-    )
+    try:
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=None,
+        )
+    except ProxyRateLimitError:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=429,
+            outcome="rate_limited",
+            started_at=started_at,
+        )
+        raise
 
     try:
         responses_payload = images_service_module.images_edit_to_responses_request(
@@ -2013,6 +2205,14 @@ async def _proxy_images_edit_request(
         )
     except (ValidationError, ValueError) as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         if isinstance(exc, ValidationError):
             return _logged_error_json_response(
                 request,
@@ -2050,6 +2250,14 @@ async def _proxy_images_edit_request(
         on_error=lambda: _release_reservation(reservation),
     )
     if prime_error is not None:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=prime_error.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return prime_error
     assert primed_upstream is not None
 
@@ -2062,6 +2270,9 @@ async def _proxy_images_edit_request(
             try:
                 async for chunk in translated:
                     yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            except ProxyResponseError:
+                captured["image_stream_outcome"] = "upstream_error"
+                raise
             finally:
                 # Run the request-log model rewrite even when the stream
                 # is cancelled mid-flight (e.g. client disconnect). Without
@@ -2086,6 +2297,17 @@ async def _proxy_images_edit_request(
                     output_tokens=_output if isinstance(_output, int) else None,
                     cached_input_tokens=_cached if isinstance(_cached, int) else None,
                 )
+                stream_outcome = captured.get("image_stream_outcome")
+                if not isinstance(stream_outcome, str):
+                    stream_outcome = "stream_closed"
+                record_images_route_observability(
+                    route=route,
+                    model=public_model,
+                    stream=True,
+                    status=200,
+                    outcome=stream_outcome,
+                    started_at=started_at,
+                )
 
         return StreamingResponse(
             _stream_with_log_rewrite(),
@@ -2100,6 +2322,14 @@ async def _proxy_images_edit_request(
         )
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=exc.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             exc.status_code,
@@ -2122,21 +2352,47 @@ async def _proxy_images_edit_request(
     )
 
     if error_envelope is not None:
+        error_status = _status_for_image_error_envelope(error_envelope)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=error_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(error_envelope),
+            error_status,
             error_envelope,
             headers=rate_limit_headers,
         )
     assert response_payload is not None
     images_result = images_service_module.images_response_from_responses(response_payload)
     if not isinstance(images_result, V1ImageResponse):
+        image_status = _status_for_image_error_envelope(images_result)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=image_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(images_result),
+            image_status,
             images_result,
             headers=rate_limit_headers,
         )
+    record_images_route_observability(
+        route=route,
+        model=public_model,
+        stream=False,
+        status=200,
+        outcome="success",
+        started_at=started_at,
+    )
     return JSONResponse(
         content=images_result.model_dump(mode="json", exclude_none=True),
         headers=rate_limit_headers,
