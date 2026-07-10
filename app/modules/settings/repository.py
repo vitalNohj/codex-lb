@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.db.models import DashboardSettings
@@ -30,6 +31,7 @@ class SettingsRepository:
             id=_SETTINGS_ID,
             sticky_threads_enabled=True,
             upstream_stream_transport="default",
+            http_downstream_transport_policy=get_settings().http_downstream_transport_policy,
             upstream_proxy_routing_enabled=False,
             upstream_proxy_default_pool_id=None,
             prefer_earlier_reset_accounts=True,
@@ -39,7 +41,7 @@ class SettingsRepository:
             relative_availability_top_k=5,
             single_account_id=None,
             openai_cache_affinity_max_age_seconds=static_settings.openai_cache_affinity_max_age_seconds,
-            dashboard_session_ttl_seconds=43200,
+            dashboard_session_ttl_seconds=DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
             warmup_model=static_settings.warmup_model,
             import_without_overwrite=True,
             totp_required_on_login=False,
@@ -49,6 +51,7 @@ class SettingsRepository:
             bootstrap_token_encrypted=None,
             bootstrap_token_hash=None,
             api_key_auth_enabled=False,
+            hide_upstream_quota_from_api_keys=False,
             totp_secret_encrypted=None,
             totp_last_verified_step=None,
             sticky_reallocation_primary_budget_threshold_pct=95.0,
@@ -61,8 +64,10 @@ class SettingsRepository:
             limit_warmup_model="auto",
             limit_warmup_prompt="Say OK.",
             limit_warmup_cooldown_seconds=3600,
+            limit_warmup_exhausted_threshold_percent=99.0,
             limit_warmup_min_available_percent=100.0,
             weekly_pace_working_days="0,1,2,3,4,5,6",
+            weekly_pace_smoothing_minutes=30,
             claude_sidecar_enabled=static_settings.claude_sidecar_enabled,
             claude_sidecar_base_url=static_settings.claude_sidecar_base_url,
             claude_sidecar_api_key_encrypted=TokenEncryptor().encrypt(sidecar_api_key) if sidecar_api_key else None,
@@ -142,6 +147,7 @@ class SettingsRepository:
             ollama_sidecar_connect_timeout_seconds=static_settings.ollama_sidecar_connect_timeout_seconds,
             ollama_sidecar_request_timeout_seconds=static_settings.ollama_sidecar_request_timeout_seconds,
             ollama_sidecar_models_cache_ttl_seconds=static_settings.ollama_sidecar_models_cache_ttl_seconds,
+            limit_warmup_staggered_idle_enabled=False,
         )
         self._session.add(row)
         try:
@@ -160,6 +166,7 @@ class SettingsRepository:
         *,
         sticky_threads_enabled: bool | None = None,
         upstream_stream_transport: str | None = None,
+        http_downstream_transport_policy: str | None = None,
         upstream_proxy_routing_enabled: bool | None = None,
         upstream_proxy_default_pool_id: str | None | object = _UNSET,
         prefer_earlier_reset_accounts: bool | None = None,
@@ -182,13 +189,16 @@ class SettingsRepository:
         import_without_overwrite: bool | None = None,
         totp_required_on_login: bool | None = None,
         api_key_auth_enabled: bool | None = None,
+        hide_upstream_quota_from_api_keys: bool | None = None,
         limit_warmup_enabled: bool | None = None,
         limit_warmup_windows: str | None = None,
         limit_warmup_model: str | None = None,
         limit_warmup_prompt: str | None = None,
         limit_warmup_cooldown_seconds: int | None = None,
+        limit_warmup_exhausted_threshold_percent: float | None = None,
         limit_warmup_min_available_percent: float | None = None,
         weekly_pace_working_days: str | None = None,
+        weekly_pace_smoothing_minutes: int | None = None,
         claude_sidecar_enabled: bool | None = None,
         claude_sidecar_base_url: str | None = None,
         claude_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -250,12 +260,15 @@ class SettingsRepository:
         ollama_sidecar_last_model_count: int | None | object = _UNSET,
         ollama_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         guest_access_enabled: bool | None = None,
+        limit_warmup_staggered_idle_enabled: bool | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
         if sticky_threads_enabled is not None:
             settings.sticky_threads_enabled = sticky_threads_enabled
         if upstream_stream_transport is not None:
             settings.upstream_stream_transport = upstream_stream_transport
+        if http_downstream_transport_policy is not None:
+            settings.http_downstream_transport_policy = http_downstream_transport_policy
         if upstream_proxy_routing_enabled is not None:
             settings.upstream_proxy_routing_enabled = upstream_proxy_routing_enabled
         if upstream_proxy_default_pool_id is not _UNSET:
@@ -304,6 +317,8 @@ class SettingsRepository:
             settings.totp_required_on_login = totp_required_on_login
         if api_key_auth_enabled is not None:
             settings.api_key_auth_enabled = api_key_auth_enabled
+        if hide_upstream_quota_from_api_keys is not None:
+            settings.hide_upstream_quota_from_api_keys = hide_upstream_quota_from_api_keys
         if limit_warmup_enabled is not None:
             settings.limit_warmup_enabled = limit_warmup_enabled
         if limit_warmup_windows is not None:
@@ -314,10 +329,14 @@ class SettingsRepository:
             settings.limit_warmup_prompt = limit_warmup_prompt
         if limit_warmup_cooldown_seconds is not None:
             settings.limit_warmup_cooldown_seconds = limit_warmup_cooldown_seconds
+        if limit_warmup_exhausted_threshold_percent is not None:
+            settings.limit_warmup_exhausted_threshold_percent = limit_warmup_exhausted_threshold_percent
         if limit_warmup_min_available_percent is not None:
             settings.limit_warmup_min_available_percent = limit_warmup_min_available_percent
         if weekly_pace_working_days is not None:
             settings.weekly_pace_working_days = weekly_pace_working_days
+        if weekly_pace_smoothing_minutes is not None:
+            settings.weekly_pace_smoothing_minutes = weekly_pace_smoothing_minutes
         if claude_sidecar_enabled is not None:
             settings.claude_sidecar_enabled = claude_sidecar_enabled
         if claude_sidecar_base_url is not None:
@@ -440,6 +459,8 @@ class SettingsRepository:
             settings.ollama_sidecar_default_reasoning_effort = ollama_sidecar_default_reasoning_effort
         if guest_access_enabled is not None:
             settings.guest_access_enabled = guest_access_enabled
+        if limit_warmup_staggered_idle_enabled is not None:
+            settings.limit_warmup_staggered_idle_enabled = limit_warmup_staggered_idle_enabled
         await self.commit_refresh(settings)
         return settings
 

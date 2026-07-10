@@ -21,6 +21,7 @@ import {
   UpstreamProxyAdminSchema,
   UpstreamProxyEndpointCreateRequestSchema,
   UpstreamProxyEndpointSchema,
+  UpstreamProxyEndpointTestResponseSchema,
   UpstreamProxyPoolCreateRequestSchema,
   UpstreamProxyPoolMemberRequestSchema,
   UpstreamProxyPoolSchema,
@@ -54,6 +55,13 @@ export function createUpstreamProxyEndpoint(payload: unknown) {
   return post(`${UPSTREAM_PROXY_PATH}/endpoints`, UpstreamProxyEndpointSchema, {
     body: validated,
   });
+}
+
+export function testUpstreamProxyEndpoint(endpointId: string) {
+  return post(
+    `${UPSTREAM_PROXY_PATH}/endpoints/${encodeURIComponent(endpointId)}/test`,
+    UpstreamProxyEndpointTestResponseSchema,
+  );
 }
 
 export function createUpstreamProxyPool(payload: unknown) {

@@ -62,9 +62,27 @@ if PROMETHEUS_AVAILABLE:
         ["account_id", "status"],
         registry=REGISTRY,
     )
+    upstream_transport_decisions_total = Counter(
+        "codex_lb_upstream_transport_decisions_total",
+        "Total upstream transport decisions for streaming Responses requests",
+        ["downstream_transport", "upstream_transport", "policy", "sticky", "status"],
+        registry=REGISTRY,
+    )
     upstream_request_duration_seconds = Histogram(
         "codex_lb_upstream_request_duration_seconds",
         "Upstream request duration",
+        registry=REGISTRY,
+    )
+    image_requests_total = Counter(
+        "codex_lb_image_requests_total",
+        "Total OpenAI-compatible image route requests",
+        ["route", "model", "stream", "status", "outcome"],
+        registry=REGISTRY,
+    )
+    image_request_duration_seconds = Histogram(
+        "codex_lb_image_request_duration_seconds",
+        "OpenAI-compatible image route request duration",
+        ["route", "model", "stream", "status", "outcome"],
         registry=REGISTRY,
     )
 
@@ -201,10 +219,35 @@ if PROMETHEUS_AVAILABLE:
         ["kind"],
         registry=REGISTRY,
     )
+    account_inflight_leases = Gauge(
+        "codex_lb_account_inflight_leases",
+        "Current in-process account pressure leases by account and kind",
+        ["account_id", "kind"],
+        registry=REGISTRY,
+        **_gauge_kwargs,
+    )
     account_cap_rejections_total = Counter(
         "codex_lb_account_cap_rejections_total",
         "Total account-local cap rejections by kind",
         ["kind"],
+        registry=REGISTRY,
+    )
+    proxy_phase_latency_seconds = Histogram(
+        "codex_lb_proxy_phase_latency_seconds",
+        "Proxy phase latency by low-cardinality phase and transport labels",
+        ["phase", "transport", "upstream_transport", "model_class"],
+        registry=REGISTRY,
+    )
+    http_bridge_prewarm_total = Counter(
+        "codex_lb_http_bridge_prewarm_total",
+        "Total HTTP bridge Codex prewarm outcomes by cohort and canary bucket",
+        ["outcome", "cohort", "bucket"],
+        registry=REGISTRY,
+    )
+    http_bridge_stuck_retire_total = Counter(
+        "codex_lb_http_bridge_stuck_retire_total",
+        "Total HTTP bridge stuck-session retirements",
+        ["reason", "affinity_kind", "model_class"],
         registry=REGISTRY,
     )
 
@@ -229,7 +272,10 @@ else:
     requests_total: CounterLike | None = None
     request_duration_seconds: HistogramLike | None = None
     upstream_requests_total: CounterLike | None = None
+    upstream_transport_decisions_total: CounterLike | None = None
     upstream_request_duration_seconds: HistogramLike | None = None
+    image_requests_total: CounterLike | None = None
+    image_request_duration_seconds: HistogramLike | None = None
     active_connections: GaugeLike | None = None
     rate_limit_hits_total: CounterLike | None = None
     circuit_breaker_state: GaugeLike | None = None
@@ -252,7 +298,11 @@ else:
     account_lease_acquired_total: CounterLike | None = None
     account_lease_released_total: CounterLike | None = None
     account_lease_stale_reclaimed_total: CounterLike | None = None
+    account_inflight_leases: GaugeLike | None = None
     account_cap_rejections_total: CounterLike | None = None
+    proxy_phase_latency_seconds: HistogramLike | None = None
+    http_bridge_prewarm_total: CounterLike | None = None
+    http_bridge_stuck_retire_total: CounterLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -267,6 +317,7 @@ __all__ = [
     "REGISTRY",
     "active_connections",
     "account_cap_rejections_total",
+    "account_inflight_leases",
     "account_lease_acquired_total",
     "account_lease_released_total",
     "account_lease_stale_reclaimed_total",
@@ -287,12 +338,18 @@ __all__ = [
     "circuit_breaker_state",
     "continuity_fail_closed_total",
     "continuity_owner_resolution_total",
+    "http_bridge_prewarm_total",
+    "http_bridge_stuck_retire_total",
+    "image_request_duration_seconds",
+    "image_requests_total",
     "make_scrape_registry",
     "mark_process_dead",
     "prometheus_client",
+    "proxy_phase_latency_seconds",
     "rate_limit_hits_total",
     "request_duration_seconds",
     "requests_total",
     "upstream_request_duration_seconds",
     "upstream_requests_total",
+    "upstream_transport_decisions_total",
 ]

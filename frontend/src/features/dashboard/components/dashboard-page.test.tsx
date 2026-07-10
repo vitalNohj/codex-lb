@@ -66,9 +66,25 @@ vi.mock("@/features/dashboard/components/account-cards", () => ({
 }));
 
 vi.mock("@/features/dashboard/components/account-list", () => ({
-  AccountList: ({ accounts }: { accounts: Array<{ accountId: string }> }) => {
-    accountListSpy(accounts);
-    return <div data-testid="account-list">List for {accounts.length} accounts</div>;
+  AccountList: ({
+    accounts,
+    sort,
+    onSortChange,
+  }: {
+    accounts: Array<{ accountId: string }>;
+    sort: { key: string; direction: string } | null;
+    onSortChange: (sort: { key: string; direction: string }) => void;
+  }) => {
+    accountListSpy({ accounts, sort });
+    return (
+      <button
+        type="button"
+        data-testid="account-list"
+        onClick={() => onSortChange({ key: "credits", direction: "desc" })}
+      >
+        List for {accounts.length} accounts
+      </button>
+    );
   },
 }));
 
@@ -127,6 +143,7 @@ describe("DashboardPage", () => {
       accountBurnrateEnabled: true,
       accountViewMode: "cards",
       accountTypeVisibility: { codex: true, cliproxy: true, openrouter: true, omniroute: true },
+      accountListSort: null,
       initialized: true,
     });
   });
@@ -135,6 +152,7 @@ describe("DashboardPage", () => {
     const overview = overviewOverride ?? createDashboardOverview();
 
     useAccountMutationsMock.mockReturnValue({
+      pauseMutation: { mutateAsync: vi.fn() },
       resumeMutation: { mutateAsync: vi.fn() },
       limitWarmupMutation: { mutateAsync: vi.fn() },
     } as unknown as ReturnType<typeof useAccountMutations>);
@@ -236,7 +254,7 @@ describe("DashboardPage", () => {
 
     expect(screen.getByTestId("account-list")).toHaveTextContent("List for 2 accounts");
     expect(screen.queryByTestId("account-cards")).not.toBeInTheDocument();
-    expect(accountListSpy).toHaveBeenCalledWith(overview.accounts);
+    expect(accountListSpy).toHaveBeenCalledWith({ accounts: overview.accounts, sort: null });
     expect(useDashboardPreferencesStore.getState().accountViewMode).toBe("list");
   });
 
@@ -265,5 +283,28 @@ describe("DashboardPage", () => {
     expect(useDashboardPreferencesStore.getState().accountTypeVisibility.openrouter).toBe(false);
     // Summary line keeps using the full, unfiltered account list.
     expect(accountSummaryLineSpy).toHaveBeenLastCalledWith(overview.accounts);
+  });
+
+  it("passes persisted account list sort through and updates it from the list", async () => {
+    const user = userEvent.setup();
+    const overview = mockReadyDashboard();
+    useDashboardPreferencesStore.setState({
+      accountBurnrateEnabled: true,
+      accountViewMode: "list",
+      accountListSort: { key: "quota", direction: "asc" },
+      initialized: true,
+    });
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(screen.getByTestId("account-list")).toHaveTextContent("List for 2 accounts");
+    expect(accountListSpy).toHaveBeenCalledWith({
+      accounts: overview.accounts,
+      sort: { key: "quota", direction: "asc" },
+    });
+
+    await user.click(screen.getByTestId("account-list"));
+
+    expect(useDashboardPreferencesStore.getState().accountListSort).toEqual({ key: "credits", direction: "desc" });
   });
 });
