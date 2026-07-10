@@ -591,6 +591,78 @@ def test_responses_input_system_message_moves_to_instructions():
     assert request.input == [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
 
 
+def test_responses_input_preserves_additional_tools_lite_prefix():
+    additional_tools = {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [{"type": "custom", "name": "exec", "format": {"type": "grammar", "syntax": "lark"}}],
+    }
+    developer_instructions = {
+        "type": "message",
+        "role": "developer",
+        "content": [{"type": "input_text", "text": "You are Codex."}],
+    }
+    user_message = {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "list files"}],
+    }
+    payload = {
+        "model": "gpt-5.6-sol",
+        "instructions": "top-level",
+        "input": [additional_tools, developer_instructions, user_message],
+    }
+    request = ResponsesRequest.model_validate(payload)
+
+    assert request.instructions == "top-level"
+    assert request.input == [additional_tools, developer_instructions, user_message]
+
+
+def test_responses_compact_input_preserves_additional_tools_lite_prefix():
+    additional_tools = {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [{"type": "custom", "name": "exec"}],
+    }
+    developer_instructions = {
+        "type": "message",
+        "role": "developer",
+        "content": "You are Codex.",
+    }
+    user_message = {"type": "message", "role": "user", "content": "compact me"}
+    payload = {
+        "model": "gpt-5.6-sol",
+        "instructions": "top-level",
+        "input": [additional_tools, developer_instructions, user_message],
+    }
+    request = ResponsesCompactRequest.model_validate(payload)
+
+    assert request.instructions == "top-level"
+    assert request.input == [additional_tools, developer_instructions, user_message]
+
+
+def test_responses_input_preserves_non_message_developer_directive():
+    # Non-message developer items must survive the hoist loop even when they are
+    # not the Lite additional_tools marker (which takes the early-return path).
+    directive = {"type": "session_directive", "role": "developer", "payload": {"mode": "code"}}
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "primary",
+        "input": [
+            directive,
+            {"type": "message", "role": "system", "content": "sys"},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        ],
+    }
+    request = ResponsesRequest.model_validate(payload)
+
+    assert request.instructions == "primary\nsys"
+    assert request.input == [
+        directive,
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ]
+
+
 def test_responses_input_system_message_keeps_user_text_parts():
     payload = {
         "model": "gpt-5.1",
