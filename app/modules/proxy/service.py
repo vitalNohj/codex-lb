@@ -223,6 +223,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_previous_response_error_envelope as _http_bridge_previous_response_error_envelope,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_prewarm_canary_bucket as _http_bridge_prewarm_canary_bucket,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_request_counts_against_queue as _http_bridge_request_counts_against_queue,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
@@ -302,6 +305,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _record_bridge_reattach as _record_bridge_reattach,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
+    _record_http_bridge_stuck_retire as _record_http_bridge_stuck_retire,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _trim_http_bridge_previous_response_input_items as _trim_http_bridge_previous_response_input_items,
@@ -430,6 +436,9 @@ from app.modules.proxy._service.response_create import (
     _response_create_text as _response_create_text,
 )
 from app.modules.proxy._service.response_create import (
+    _response_create_text_with_account_installation_id as _response_create_text_with_account_installation_id,
+)
+from app.modules.proxy._service.response_create import (
     _response_create_text_with_size_guard as _response_create_text_with_size_guard,
 )
 from app.modules.proxy._service.response_create import (
@@ -522,6 +531,12 @@ from app.modules.proxy._service.streaming.helpers import (
 from app.modules.proxy._service.streaming.helpers import (
     _upstream_turn_state_from_socket as _upstream_turn_state_from_socket,
 )
+from app.modules.proxy._service.streaming.retry import (
+    _http_downstream_request_is_sticky as _http_downstream_request_is_sticky,
+)
+from app.modules.proxy._service.streaming.retry import (
+    _resolve_http_downstream_transport as _resolve_http_downstream_transport,
+)
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
@@ -555,7 +570,13 @@ from app.modules.proxy._service.support import (
     _WebSocketUpstreamControl,  # noqa: F401
 )
 from app.modules.proxy._service.support import (
+    _call_with_supported_optional_kwargs as _support_call_with_supported_optional_kwargs,
+)
+from app.modules.proxy._service.support import (
     _HTTPBridgeOwnerForward as _HTTPBridgeOwnerForward,
+)
+from app.modules.proxy._service.support import (
+    _supported_optional_kwargs as _support_supported_optional_kwargs,
 )
 from app.modules.proxy._service.support import (
     _websocket_route_log_kwargs as _websocket_route_log_kwargs,
@@ -619,6 +640,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _prepare_websocket_request_state_for_auth_replay,  # noqa: F401
     _prepare_websocket_request_state_for_visible_output_replay,  # noqa: F401
     _record_websocket_continuity_completion,  # noqa: F401
+    _record_websocket_responses_lite_acceptance,  # noqa: F401
     _refresh_websocket_request_input_fingerprint_from_text,  # noqa: F401
     _release_websocket_response_create_gate,  # noqa: F401
     _rewrite_websocket_continuity_corruption_event,  # noqa: F401
@@ -1241,6 +1263,7 @@ class ProxyService(
     ) -> None:
         timeout_seconds = _proxy_admission_wait_timeout_seconds()
         request_state.response_create_gate = response_create_gate
+        request_state.response_create_gate_wait_started_at = time.monotonic()
         if account_id is not None:
             request_state.account_response_create_lease = await self._acquire_account_response_create_lease_or_overload(
                 account_id=account_id,
@@ -1259,6 +1282,7 @@ class ProxyService(
             queued_count = None
             pending_request_ids: list[str] | None = None
             pending_request_ages_seconds: list[float] | None = None
+            should_retire_stuck_session = False
             if bridge_session is not None:
                 now = time.monotonic()
                 async with bridge_session.pending_lock:
@@ -1267,6 +1291,24 @@ class ProxyService(
                     queued_count = bridge_session.queued_request_count
                 pending_request_ids = [state.request_log_id or state.request_id for state in pending_states]
                 pending_request_ages_seconds = [max(0.0, now - state.started_at) for state in pending_states]
+                threshold_seconds = float(
+                    getattr(
+                        get_settings(),
+                        "http_responses_session_bridge_stuck_gate_retire_after_seconds",
+                        300.0,
+                    )
+                )
+                should_retire_stuck_session = any(
+                    state.transport == _REQUEST_TRANSPORT_HTTP
+                    and not state.skip_request_log
+                    and state.response_create_gate_acquired
+                    and state.awaiting_response_created
+                    and not state.downstream_visible
+                    and state.latency_first_upstream_event_ms is None
+                    and state.latency_response_created_ms is None
+                    and max(0.0, now - state.started_at) >= threshold_seconds
+                    for state in pending_states
+                )
             _log_http_bridge_startup_wait_timeout(
                 stage="response_create_gate",
                 timeout_seconds=timeout_seconds,
@@ -1279,6 +1321,15 @@ class ProxyService(
                 pending_request_ids=pending_request_ids,
                 pending_request_ages_seconds=pending_request_ages_seconds,
             )
+            if bridge_session is not None and should_retire_stuck_session:
+                _record_http_bridge_stuck_retire(
+                    reason="response_create_gate_timeout_stuck_pending",
+                    session=bridge_session,
+                )
+                await self._retire_stale_pending_http_bridge_session(
+                    bridge_session,
+                    detail="response_create_gate_timeout_stuck_pending",
+                )
             raise _http_bridge_startup_wait_timeout_error(
                 "http_bridge_response_create_gate",
                 code="response_create_gate_timeout",
@@ -1291,6 +1342,10 @@ class ProxyService(
             raise
         request_state.response_create_gate_acquired = True
         request_state.awaiting_response_created = True
+        if request_state.response_create_gate_wait_started_at is not None:
+            request_state.latency_response_create_gate_wait_ms = int(
+                max(0.0, time.monotonic() - request_state.response_create_gate_wait_started_at) * 1000
+            )
         try:
             request_state.response_create_admission = await self._get_work_admission().acquire_response_create(
                 compact=compact
@@ -1389,7 +1444,10 @@ class ProxyService(
                     acquire_refresh_admission=self._get_work_admission().acquire_token_refresh,
                     refresh_repo_factory=self._accounts_refresh_scope,
                 )
-                return await auth_manager.ensure_fresh(account, force=force)
+                refresh = auth_manager.ensure_fresh(account, force=force)
+                if timeout_seconds is None:
+                    return await refresh
+                return await asyncio.wait_for(refresh, timeout=max(0.001, timeout_seconds))
         finally:
             pop_token_refresh_timeout_override(token)
 
@@ -1615,6 +1673,7 @@ class ProxyService(
         prefer_earlier_reset_window: ResetPreferenceWindow = "secondary",
         routing_strategy: RoutingStrategy = "capacity_weighted",
         model: str | None = None,
+        service_tier: str | None = None,
         additional_limit_name: str | None = None,
         exclude_account_ids: Collection[str] | None = None,
         preferred_account_id: str | None = None,
@@ -1725,6 +1784,7 @@ class ProxyService(
                         relative_availability_power=_relative_availability_power(settings),
                         relative_availability_top_k=_relative_availability_top_k(settings),
                         model=model,
+                        service_tier=service_tier,
                         additional_limit_name=additional_limit_name,
                         account_ids={preferred_account_id},
                         require_security_work_authorized=require_security_work_authorized,
@@ -1766,6 +1826,7 @@ class ProxyService(
                     relative_availability_power=_relative_availability_power(settings),
                     relative_availability_top_k=_relative_availability_top_k(settings),
                     model=model,
+                    service_tier=service_tier,
                     additional_limit_name=additional_limit_name,
                     account_ids=scoped_account_ids,
                     exclude_account_ids=excluded_account_ids_set,
@@ -2165,7 +2226,12 @@ async def _call_with_supported_optional_kwargs(
     optional_kwargs: Mapping[str, Any],
     **required_kwargs: Any,
 ) -> Any:
-    return await func(*args, **_supported_optional_kwargs(func, optional_kwargs, required_kwargs))
+    return await _support_call_with_supported_optional_kwargs(
+        func,
+        *args,
+        optional_kwargs=optional_kwargs,
+        **required_kwargs,
+    )
 
 
 def _supported_optional_kwargs(
@@ -2173,21 +2239,7 @@ def _supported_optional_kwargs(
     optional_kwargs: Mapping[str, Any],
     required_kwargs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    kwargs = dict(required_kwargs)
-    kwargs.update(optional_kwargs)
-    if optional_kwargs:
-        try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
-            signature = None
-        accepts_var_keyword = signature is not None and any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
-        )
-        if signature is not None and not accepts_var_keyword:
-            for name in optional_kwargs:
-                if name not in signature.parameters:
-                    kwargs.pop(name, None)
-    return kwargs
+    return _support_supported_optional_kwargs(func, optional_kwargs, required_kwargs)
 
 
 def _relative_availability_power(settings: DashboardSettings) -> float:

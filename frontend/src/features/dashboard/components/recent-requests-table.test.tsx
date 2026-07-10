@@ -15,6 +15,7 @@ const NULL_FAILURE_METADATA = {
 const NULL_USERAGENT_METADATA = {
   useragent: null,
   useragentGroup: null,
+  clientIp: null,
 };
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
@@ -103,6 +104,7 @@ describe("RecentRequestsTable", () => {
             apiKeyName: "Key Alpha",
             apiKeyId: "key-alpha",
             requestId: "req-1",
+            archiveRequestId: "archive-req-1",
             requestKind: "normal",
             model: "gpt-5.1",
             source: null,
@@ -115,6 +117,7 @@ describe("RecentRequestsTable", () => {
              errorMessage: longError,
             ...NULL_FAILURE_METADATA,
             ...NULL_USERAGENT_METADATA,
+            upstreamTransport: "auto",
              tokens: 1200,
              inputTokens: 1000,
              outputTokens: 200,
@@ -140,6 +143,8 @@ describe("RecentRequestsTable", () => {
     expect(screen.getByText("gpt-5.1 (high, default)")).toBeInTheDocument();
     expect(screen.getByText("Requested priority")).toBeInTheDocument();
     expect(screen.getByText("Requested effort medium")).toBeInTheDocument();
+    expect(screen.getByText("WS")).toBeInTheDocument();
+    expect(screen.getByText("Up Auto")).toBeInTheDocument();
     expect(screen.getByText("Rate limit")).toBeInTheDocument();
     expect(screen.getByText("rate_limit_exceeded")).toBeInTheDocument();
 
@@ -147,9 +152,10 @@ describe("RecentRequestsTable", () => {
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText("Request Details")).toBeInTheDocument();
     expect(within(dialog).getByText("req-1")).toBeInTheDocument();
-    expect(within(dialog).getByTestId("request-archive-panel")).toHaveTextContent("Archive for req-1");
+    expect(within(dialog).getByTestId("request-archive-panel")).toHaveTextContent("Archive for archive-req-1");
     expect(within(dialog).getByText("rate_limit_exceeded")).toBeInTheDocument();
     expect(dialog.textContent).toContain("Rate limit reached while processing this request");
+    expect(within(dialog).getByText("1.0 s")).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Copy Request ID" }));
@@ -582,6 +588,7 @@ describe("RecentRequestsTable", () => {
             transport: "http",
             useragent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36",
             useragentGroup: "Mozilla",
+            clientIp: "203.0.113.7",
             status: "ok",
             errorCode: null,
             errorMessage: null,
@@ -604,14 +611,19 @@ describe("RecentRequestsTable", () => {
     const dialogText = dialog.textContent ?? "";
     const errorCodeIndex = dialogText.indexOf("Error Code");
     const userAgentIndex = dialogText.indexOf("User Agent");
+    const clientIpIndex = dialogText.indexOf("Client IP");
 
     expect(within(dialog).getByText("User Agent")).toBeInTheDocument();
     expect(
       within(dialog).getByText("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36"),
     ).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Client IP")).toBeInTheDocument();
+    expect(within(dialog).getByText("203.0.113.7")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Copy User Agent" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Copy Client IP" })).toBeInTheDocument();
     expect(errorCodeIndex).toBeGreaterThanOrEqual(0);
     expect(userAgentIndex).toBeGreaterThan(errorCodeIndex);
+    expect(clientIpIndex).toBeGreaterThan(userAgentIndex);
   });
 
   it("shows an em dash for missing user agent in request details", () => {
@@ -636,6 +648,7 @@ describe("RecentRequestsTable", () => {
             transport: "http",
             useragent: null,
             useragentGroup: null,
+            clientIp: null,
             status: "ok",
             errorCode: null,
             errorMessage: null,
@@ -656,10 +669,14 @@ describe("RecentRequestsTable", () => {
 
     const dialog = openRequestDetails();
     const userAgentField = within(dialog).getByText("User Agent").closest("div.space-y-1");
+    const clientIpField = within(dialog).getByText("Client IP").closest("div.space-y-1");
 
     expect(userAgentField).not.toBeNull();
     expect(userAgentField).toHaveTextContent("User Agent");
     expect(userAgentField).toHaveTextContent("—");
+    expect(clientIpField).not.toBeNull();
+    expect(clientIpField).toHaveTextContent("Client IP");
+    expect(clientIpField).toHaveTextContent("—");
     expect(within(dialog).queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
   });
 
@@ -842,6 +859,7 @@ describe("RecentRequestsTable", () => {
             transport: "http",
             useragent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36",
             useragentGroup: "Mozilla",
+            clientIp: "203.0.113.7",
             status: "ok",
             errorCode: null,
             errorMessage: null,
@@ -864,13 +882,17 @@ describe("RecentRequestsTable", () => {
     const dialogText = dialog.textContent ?? "";
     const errorCodeIndex = dialogText.indexOf("Error Code");
     const userAgentIndex = dialogText.indexOf("User Agent");
+    const clientIpIndex = dialogText.indexOf("Client IP");
 
     expect(within(dialog).getByText("User Agent")).toBeInTheDocument();
     expect(
       within(dialog).getByText("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36"),
     ).toBeInTheDocument();
+    expect(within(dialog).getByText("Client IP")).toBeInTheDocument();
+    expect(within(dialog).getByText("203.0.113.7")).toBeInTheDocument();
     expect(errorCodeIndex).toBeGreaterThanOrEqual(0);
     expect(userAgentIndex).toBeGreaterThan(errorCodeIndex);
+    expect(clientIpIndex).toBeGreaterThan(userAgentIndex);
   });
 
   it("shows an em dash for missing user agent in request details", () => {
@@ -895,6 +917,7 @@ describe("RecentRequestsTable", () => {
             transport: "http",
             useragent: null,
             useragentGroup: null,
+            clientIp: null,
             status: "ok",
             errorCode: null,
             errorMessage: null,
@@ -915,10 +938,15 @@ describe("RecentRequestsTable", () => {
 
     const dialog = openRequestDetails();
     const userAgentField = within(dialog).getByText("User Agent").closest("div.space-y-1");
+    const clientIpField = within(dialog).getByText("Client IP").closest("div.space-y-1");
 
     expect(userAgentField).not.toBeNull();
     expect(userAgentField).toHaveTextContent("User Agent");
     expect(userAgentField).toHaveTextContent("—");
+    expect(clientIpField).not.toBeNull();
+    expect(clientIpField).toHaveTextContent("Client IP");
+    expect(clientIpField).toHaveTextContent("—");
+    expect(within(dialog).getByText("1 ms")).toBeInTheDocument();
   });
 
   it("hides the cost section for total-only cost breakdown rows", () => {
@@ -943,6 +971,7 @@ describe("RecentRequestsTable", () => {
             transport: "http",
             useragent: null,
             useragentGroup: null,
+            clientIp: null,
             status: "ok",
             errorCode: null,
             errorMessage: null,

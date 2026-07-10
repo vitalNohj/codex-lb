@@ -9,12 +9,15 @@ from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.openai.model_registry import get_model_registry, is_public_model
+from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import DashboardContext, get_dashboard_context
 from app.modules.dashboard.schemas import (
     DashboardOverviewResponse,
     DashboardOverviewTimeframeKey,
     DashboardProjectionsResponse,
 )
+from app.modules.model_sources.catalog import source_models_to_upstream_models
+from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
@@ -47,8 +50,30 @@ async def get_projections(
 async def list_models() -> dict:
     registry = get_model_registry()
     models_by_slug = registry.get_models_with_fallback()
+    allowed_efforts = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
+    def _normalize_effort(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        if normalized in allowed_efforts:
+            return normalized
+        return None
+
     models = [
-        {"id": slug, "name": model.display_name or slug}
+        {
+            "id": slug,
+            "name": model.display_name or slug,
+            "sourceOnly": False,
+            "supportedReasoningEfforts": list(
+                dict.fromkeys(
+                    effort
+                    for effort in (_normalize_effort(level.effort) for level in model.supported_reasoning_levels)
+                    if effort is not None
+                )
+            ),
+            "defaultReasoningEffort": _normalize_effort(model.default_reasoning_level),
+        }
         for slug, model in models_by_slug.items()
         if is_public_model(model, None)
     ]
@@ -64,7 +89,7 @@ async def list_models() -> dict:
             if sidecar_model.id in seen_model_ids:
                 continue
             seen_model_ids.add(sidecar_model.id)
-            models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}"})
+            models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}", "sourceOnly": False})
     openrouter_config = await load_openrouter_sidecar_config()
     if openrouter_config is not None and openrouter_config.enabled:
         try:
@@ -76,7 +101,7 @@ async def list_models() -> dict:
             if sidecar_model.id in seen_model_ids:
                 continue
             seen_model_ids.add(sidecar_model.id)
-            models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}"})
+            models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}", "sourceOnly": False})
     omniroute_config = await load_omniroute_sidecar_config()
     if omniroute_config is not None and omniroute_config.enabled:
         try:
@@ -87,5 +112,21 @@ async def list_models() -> dict:
             if model_id in seen_model_ids:
                 continue
             seen_model_ids.add(model_id)
-            models.append({"id": model_id, "name": f"OmniRoute: {model_id}"})
+            models.append({"id": model_id, "name": f"OmniRoute: {model_id}", "sourceOnly": False})
+    # The API-key "allowed models" picker must offer OpenAI-compatible source
+    # models too, or source-scoped allowlists cannot be configured in the UI.
+    async with get_background_session() as session:
+        sources = await ModelSourcesRepository(session).list_enabled_sources()
+        detach_session_objects(session)
+    for source_model in source_models_to_upstream_models(sources):
+        if source_model.slug in seen_model_ids:
+            continue
+        seen_model_ids.add(source_model.slug)
+        models.append(
+            {
+                "id": source_model.slug,
+                "name": source_model.display_name or source_model.slug,
+                "sourceOnly": True,
+            }
+        )
     return {"models": models}

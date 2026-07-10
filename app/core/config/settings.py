@@ -173,6 +173,7 @@ class Settings(BaseSettings):
     database_alembic_auto_remap_enabled: bool = True
     upstream_base_url: str = "https://chatgpt.com/backend-api"
     upstream_stream_transport: Literal["http", "websocket", "auto"] = "auto"
+    http_downstream_transport_policy: Literal["smart", "always_http", "always_websocket", "pinned"] = "smart"
     upstream_connect_timeout_seconds: float = 8.0
     upstream_compact_timeout_seconds: float | None = None
     upstream_websocket_trust_env: bool = Field(default_factory=_default_upstream_websocket_trust_env)
@@ -213,7 +214,7 @@ class Settings(BaseSettings):
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
     compact_request_budget_seconds: float = Field(default=180.0, gt=0)
-    stream_idle_timeout_seconds: float = 600.0
+    stream_idle_timeout_seconds: float = Field(default=7200.0, gt=0)
     sse_keepalive_interval_seconds: float = Field(default=10.0, ge=0)
     proxy_downstream_websocket_idle_timeout_seconds: float = Field(default=120.0, gt=0)
     # Applies to both upstream SSE event buffering and upstream websocket message
@@ -245,6 +246,7 @@ class Settings(BaseSettings):
     usage_fetch_max_retries: int = 2
     usage_refresh_enabled: bool = True
     usage_refresh_interval_seconds: int = Field(default=60, gt=0)
+    rate_limit_reset_credits_refresh_interval_seconds: int = Field(default=60, gt=0)
     openai_cache_affinity_max_age_seconds: int = Field(default=1800, gt=0)
     warmup_model: str = "gpt-5.4-mini"
     openai_prompt_cache_key_derivation_enabled: bool = True
@@ -253,6 +255,18 @@ class Settings(BaseSettings):
     http_responses_session_bridge_idle_ttl_seconds: float = Field(default=120.0, gt=0)
     http_responses_session_bridge_codex_idle_ttl_seconds: float = Field(default=900.0, gt=0)
     http_responses_session_bridge_codex_prewarm_enabled: bool = False
+    http_responses_session_bridge_codex_prewarm_canary_percent: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+    )
+    http_responses_session_bridge_codex_prewarm_allow_api_key_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    http_responses_session_bridge_codex_prewarm_deny_api_key_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    http_responses_session_bridge_stuck_gate_retire_after_seconds: float = Field(default=300.0, gt=0)
     http_responses_session_bridge_max_sessions: int = Field(default=256, gt=0)
     http_responses_session_bridge_queue_limit: int = Field(default=8, gt=0)
     http_responses_session_bridge_gateway_safe_mode: bool = False
@@ -263,6 +277,8 @@ class Settings(BaseSettings):
     sticky_session_cleanup_interval_seconds: int = Field(default=300, gt=0)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
+    automations_scheduler_enabled: bool = True
+    automations_scheduler_interval_seconds: int = Field(default=30, gt=0)
     encryption_key_file: Path = DEFAULT_ENCRYPTION_KEY_FILE
     database_migrations_fail_fast: bool = True
     log_proxy_request_shape: bool = False
@@ -293,7 +309,14 @@ class Settings(BaseSettings):
     # cap is lifted in the same change that introduces fan-out.
     model_registry_enabled: bool = True
     model_registry_refresh_interval_seconds: int = Field(default=300, gt=0)
-    model_registry_client_version: str = "0.101.0"
+    # Fallback Codex client version used when the live release lookup fails.
+    # Must stay >= the highest ``minimal_client_version`` in the bootstrap
+    # catalog (GPT-5.6 requires 0.144.0) or a degraded-startup refresh would
+    # receive an upstream catalog without those models.
+    model_registry_client_version: str = "0.144.0"
+    codex_fingerprint_os: str = "Mac OS 26.5.0"
+    codex_fingerprint_arch: str = "arm64"
+    codex_fingerprint_terminal: str = "iTerm.app/3.6.10"
     model_context_window_overrides: Annotated[dict[str, int], NoDecode] = Field(default_factory=dict)
     proxy_unauthenticated_client_cidrs: Annotated[list[str], NoDecode] = Field(default_factory=list)
     firewall_trust_proxy_headers: bool = False
@@ -302,6 +325,7 @@ class Settings(BaseSettings):
     )
     firewall_ip_cache_ttl_seconds: int = Field(default=30, gt=0)
     dashboard_auth_mode: DashboardAuthMode = DashboardAuthMode.STANDARD
+    dashboard_trust_loopback_host_header_for_long_sessions: bool = False
 
     def upstream_websocket_proxy_env(self) -> Mapping[str, str | None]:
         return _configured_outbound_proxy_env()
@@ -471,6 +495,28 @@ class Settings(BaseSettings):
                         normalized.append(instance_id)
             return normalized
         raise TypeError("http_responses_session_bridge_instance_ring must be a list or comma-separated string")
+
+    @field_validator(
+        "http_responses_session_bridge_codex_prewarm_allow_api_key_ids",
+        "http_responses_session_bridge_codex_prewarm_deny_api_key_ids",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_http_bridge_prewarm_api_key_ids(cls, value: StringListInput) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            entries = [entry.strip() for entry in value.split(",")]
+            return [entry for entry in entries if entry]
+        if isinstance(value, list):
+            normalized: list[str] = []
+            for entry in value:
+                if isinstance(entry, str):
+                    api_key_id = entry.strip()
+                    if api_key_id:
+                        normalized.append(api_key_id)
+            return normalized
+        raise TypeError("prewarm api key ids must be a list or comma-separated string")
 
     @field_validator("http_responses_session_bridge_advertise_base_url", mode="before")
     @classmethod

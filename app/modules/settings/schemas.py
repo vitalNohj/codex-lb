@@ -8,6 +8,8 @@ from pydantic import Field, field_validator, model_validator
 from app.modules.shared.schemas import DashboardModel
 
 _DEFAULT_WEEKLY_PACE_WORKING_DAYS = "0,1,2,3,4,5,6"
+_WEEKLY_PACE_SMOOTHING_MINUTES = (15, 30, 60, 120, 240)
+_HTTP_DOWNSTREAM_TRANSPORT_POLICY_PATTERN = r"^(smart|always_http|always_websocket|pinned)$"
 
 
 def _normalize_weekly_pace_working_days(value: str | None) -> str | None:
@@ -200,6 +202,7 @@ class CustomAliasCatalogEntrySchema(DashboardModel):
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
     upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
+    http_downstream_transport_policy: str = Field(pattern=_HTTP_DOWNSTREAM_TRANSPORT_POLICY_PATTERN)
     upstream_proxy_routing_enabled: bool
     upstream_proxy_default_pool_id: str | None = None
     prefer_earlier_reset_accounts: bool
@@ -222,13 +225,17 @@ class DashboardSettingsResponse(DashboardModel):
     totp_required_on_login: bool
     totp_configured: bool
     api_key_auth_enabled: bool
+    hide_upstream_quota_from_api_keys: bool
     limit_warmup_enabled: bool
     limit_warmup_windows: str = Field(pattern=r"^(primary|secondary|both)$")
     limit_warmup_model: str = Field(min_length=1, max_length=128)
     limit_warmup_prompt: str = Field(min_length=1, max_length=512)
     limit_warmup_cooldown_seconds: int = Field(ge=60)
+    limit_warmup_exhausted_threshold_percent: float = Field(gt=0.0, le=100.0)
     limit_warmup_min_available_percent: float = Field(gt=0.0, le=100.0)
     weekly_pace_working_days: str = _DEFAULT_WEEKLY_PACE_WORKING_DAYS
+    weekly_pace_smoothing_minutes: int = Field(default=30)
+    limit_warmup_staggered_idle_enabled: bool
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
     model_aliases: dict[str, str] = Field(default_factory=dict)
     custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] = Field(default_factory=dict)
@@ -309,6 +316,10 @@ class DashboardSettingsUpdateRequest(DashboardModel):
         default=None,
         pattern=r"^(default|auto|http|websocket)$",
     )
+    http_downstream_transport_policy: str | None = Field(
+        default=None,
+        pattern=_HTTP_DOWNSTREAM_TRANSPORT_POLICY_PATTERN,
+    )
     upstream_proxy_routing_enabled: bool | None = None
     upstream_proxy_default_pool_id: str | None = None
     prefer_earlier_reset_accounts: bool | None = None
@@ -334,13 +345,16 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     import_without_overwrite: bool | None = None
     totp_required_on_login: bool | None = None
     api_key_auth_enabled: bool | None = None
+    hide_upstream_quota_from_api_keys: bool | None = None
     limit_warmup_enabled: bool | None = None
     limit_warmup_windows: str | None = Field(default=None, pattern=r"^(primary|secondary|both)$")
     limit_warmup_model: str | None = Field(default=None, min_length=1, max_length=128)
     limit_warmup_prompt: str | None = Field(default=None, min_length=1, max_length=512)
     limit_warmup_cooldown_seconds: int | None = Field(default=None, ge=60)
+    limit_warmup_exhausted_threshold_percent: float | None = Field(default=None, gt=0.0, le=100.0)
     limit_warmup_min_available_percent: float | None = Field(default=None, gt=0.0, le=100.0)
     weekly_pace_working_days: str | None = None
+    weekly_pace_smoothing_minutes: int | None = None
     claude_sidecar_enabled: bool | None = None
     claude_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     claude_sidecar_api_key: str | None = Field(default=None, max_length=4096)
@@ -390,6 +404,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     ollama_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     ollama_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     guest_access_enabled: bool | None = None
+    limit_warmup_staggered_idle_enabled: bool | None = None
 
     @field_validator("model_aliases")
     @classmethod
@@ -445,6 +460,15 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @classmethod
     def _normalize_weekly_pace_days(cls, value: str | None) -> str | None:
         return _normalize_weekly_pace_working_days(value)
+
+    @field_validator("weekly_pace_smoothing_minutes")
+    @classmethod
+    def _validate_weekly_pace_smoothing_minutes(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value not in _WEEKLY_PACE_SMOOTHING_MINUTES:
+            raise ValueError("weekly_pace_smoothing_minutes must be one of 15, 30, 60, 120, 240")
+        return value
 
 
     @field_validator("claude_sidecar_base_url")
@@ -613,6 +637,14 @@ class UpstreamProxyEndpointResponse(DashboardModel):
     port: int
     username: str | None
     is_active: bool
+
+
+class UpstreamProxyEndpointTestResponse(DashboardModel):
+    endpoint_id: str
+    ok: bool
+    status_code: int | None = None
+    elapsed_ms: int | None = None
+    error: str | None = None
 
 
 class UpstreamProxyPoolCreateRequest(DashboardModel):
