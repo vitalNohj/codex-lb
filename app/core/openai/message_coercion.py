@@ -215,12 +215,10 @@ def _convert_tool_message(message: OpenAIMessage) -> FunctionCallOutputInputItem
     if isinstance(content, str):
         output = content
     elif is_json_list(content):
-        output = _concat_text_parts(content)
-        if not output and content:
-            raise ClientPayloadError(
-                "tool message content array contains no valid text parts.",
-                param="messages",
-            )
+        # Match Responses `_normalize_tool_output_value`: join string text
+        # parts (including empty strings); if none, JSON-serialize the array
+        # so image-only / structured Cursor tool results are not rejected.
+        output = _tool_message_array_output(content)
     elif content is None:
         raise ClientPayloadError("tool message content is required.", param="messages")
     else:
@@ -229,6 +227,25 @@ def _convert_tool_message(message: OpenAIMessage) -> FunctionCallOutputInputItem
             param="messages",
         )
     return FunctionCallOutputInputItem(type="function_call_output", call_id=resolved_call_id, output=output)
+
+
+def _tool_message_array_output(content: list[JsonValue]) -> str:
+    text_parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            text_parts.append(part)
+            continue
+        part_dict = _json_dict_or_none(part)
+        if part_dict is None:
+            continue
+        text = part_dict.get("text")
+        if isinstance(text, str):
+            text_parts.append(text)
+    if text_parts:
+        return "".join(text_parts)
+    if not content:
+        return ""
+    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
 
 
 def _decompose_user_message(message: OpenAIMessage) -> list[JsonValue]:

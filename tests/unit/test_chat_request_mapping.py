@@ -650,7 +650,7 @@ def test_chat_tool_message_null_content_rejected():
         ChatCompletionsRequest.model_validate(payload).to_responses_request()
 
 
-def test_chat_tool_message_malformed_text_parts_rejected():
+def test_chat_tool_message_malformed_text_parts_json_fallback():
     payload = {
         "model": "gpt-5.2",
         "messages": [
@@ -662,8 +662,61 @@ def test_chat_tool_message_malformed_text_parts_rejected():
             },
         ],
     }
-    with pytest.raises(ValueError, match="no valid text parts"):
-        ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    items = responses.input
+    assert isinstance(items, list)
+    assert items[1] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '[{"type":"text"}]',
+    }
+
+
+def test_chat_tool_message_image_only_content_json_fallback():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    }
+                ],
+            },
+        ],
+    }
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    items = responses.input
+    assert isinstance(items, list)
+    assert items[1] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": (
+            '[{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]'
+        ),
+    }
+
+
+def test_chat_tool_message_empty_text_part_produces_empty_output():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": [{"type": "text", "text": ""}],
+            },
+        ],
+    }
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    items = responses.input
+    assert isinstance(items, list)
+    assert items[1] == {"type": "function_call_output", "call_id": "call_1", "output": ""}
 
 
 def test_chat_assistant_non_string_tool_call_arguments_coerced_to_json_string():
