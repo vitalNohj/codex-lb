@@ -666,7 +666,7 @@ def test_chat_tool_message_malformed_text_parts_rejected():
         ChatCompletionsRequest.model_validate(payload).to_responses_request()
 
 
-def test_chat_assistant_non_string_tool_call_arguments_rejected():
+def test_chat_assistant_non_string_tool_call_arguments_coerced_to_json_string():
     payload = {
         "model": "gpt-5.2",
         "messages": [
@@ -684,8 +684,33 @@ def test_chat_assistant_non_string_tool_call_arguments_rejected():
             },
         ],
     }
-    with pytest.raises(ValueError, match="arguments must be a string"):
-        ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    assert isinstance(responses.input, list)
+    function_call = next(item for item in responses.input if isinstance(item, dict) and item.get("type") == "function_call")
+    assert function_call["arguments"] == '{"a":1}'
+
+
+def test_chat_assistant_missing_tool_call_arguments_default_to_empty_object():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fn"},
+                    }
+                ],
+            },
+        ],
+    }
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    assert isinstance(responses.input, list)
+    function_call = next(item for item in responses.input if isinstance(item, dict) and item.get("type") == "function_call")
+    assert function_call["arguments"] == "{}"
 
 
 @pytest.mark.parametrize(

@@ -168,12 +168,7 @@ def _decompose_assistant_tool_calls(message: OpenAIMessage) -> list[JsonValue]:
             name = function.get("name")
             if not isinstance(name, str) or not name:
                 raise ClientPayloadError("tool_calls[].function.name is required.", param="messages")
-            arguments = function.get("arguments")
-            if not isinstance(arguments, str):
-                raise ClientPayloadError(
-                    "tool_calls[].function.arguments must be a string.",
-                    param="messages",
-                )
+            arguments = _coerce_tool_call_arguments(function.get("arguments"))
             items.append(
                 cast(
                     JsonValue,
@@ -181,6 +176,28 @@ def _decompose_assistant_tool_calls(message: OpenAIMessage) -> list[JsonValue]:
                 )
             )
     return items
+
+
+def _coerce_tool_call_arguments(arguments: JsonValue) -> str:
+    """Normalize chat ``tool_calls[].function.arguments`` to a JSON string.
+
+    OpenAI's chat schema types arguments as a string, but several
+    OpenAI-compatible clients (including Cursor BYOK relay paths) send a
+    JSON object/array instead. Responses ``function_call`` items require a
+    string, so coerce here rather than rejecting with a generic messages
+    payload error.
+    """
+    if arguments is None:
+        return "{}"
+    if isinstance(arguments, str):
+        return arguments
+    try:
+        return json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise ClientPayloadError(
+            "tool_calls[].function.arguments must be a string or JSON value.",
+            param="messages",
+        ) from exc
 
 
 def _convert_tool_message(message: OpenAIMessage) -> FunctionCallOutputInputItem:

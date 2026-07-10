@@ -6,10 +6,14 @@ from typing import cast
 import pytest
 
 from app.core.exceptions import ProxyModelNotAllowed
+from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.requests import ResponsesRequest
 from app.modules.api_keys.service import ApiKeyData
-from app.modules.proxy.request_policy import apply_api_key_enforcement, validate_model_access
-
+from app.modules.proxy.request_policy import (
+    apply_api_key_enforcement,
+    openai_client_payload_error,
+    validate_model_access,
+)
 
 @pytest.mark.parametrize(
     ("alias", "canonical", "expected_effort", "expected_service_tier"),
@@ -149,3 +153,14 @@ def test_model_access_accepts_wire_claude_model_when_cp_alias_allowed() -> None:
     api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cp-claude-fable-5"})))
 
     validate_model_access(api_key, "claude-fable-5")
+
+
+def test_openai_client_payload_error_preserves_specific_message() -> None:
+    exc = ClientPayloadError("tool messages must include 'tool_call_id'.", param="messages")
+
+    envelope = openai_client_payload_error(exc)
+
+    assert envelope["error"]["message"] == "tool messages must include 'tool_call_id'."
+    assert envelope["error"]["param"] == "messages"
+    assert envelope["error"]["code"] == "invalid_request_error"
+    assert envelope["error"]["type"] == "invalid_request_error"

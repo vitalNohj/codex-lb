@@ -456,14 +456,16 @@ def openai_invalid_payload_error(param: str | None = None) -> OpenAIErrorEnvelop
 def openai_client_payload_error(exc: ClientPayloadError) -> OpenAIErrorEnvelope:
     """Render a ``ClientPayloadError`` as an OpenAI error envelope.
 
-    Falls back to ``openai_invalid_payload_error`` for legacy callsites
-    that raise ``ClientPayloadError`` without ``code`` / ``error_type``.
+    Legacy callsites that omit ``code`` / ``error_type`` still get an
+    ``invalid_request_error`` envelope, but the exception message is
+    preserved so clients and operators see the concrete validation failure
+    (for example non-string tool-call arguments) instead of only the
+    generic ``Invalid request payload`` phrase.
     """
-    if exc.code is None and exc.error_type is None:
-        return openai_invalid_payload_error(exc.param)
+    message = str(exc).strip() or "Invalid request payload"
     code = exc.code or "invalid_request_error"
     error_type = exc.error_type or "invalid_request_error"
-    error = openai_error(code, str(exc), error_type=error_type)
+    error = openai_error(code, message, error_type=error_type)
     if exc.param:
         error["error"]["param"] = exc.param
     return error

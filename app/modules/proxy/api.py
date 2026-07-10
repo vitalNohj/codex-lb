@@ -3361,6 +3361,13 @@ async def v1_chat_completions(
         error = openai_client_payload_error(exc)
         return _logged_error_json_response(request, 400, error, headers=rate_limit_headers)
     except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        first_msg = first.get("msg") if isinstance(first, dict) else None
+        logger.warning(
+            "chat_completions_validation_error request_id=%s detail=%s",
+            getattr(request.state, "request_id", None),
+            first_msg or str(exc),
+        )
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error, headers=rate_limit_headers)
     apply_api_key_enforcement(responses_payload, api_key)
