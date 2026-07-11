@@ -812,8 +812,23 @@ async def internal_bridge_responses(
     api_key, auth_error = await _validate_internal_bridge_api_key(request)
     if auth_error is not None:
         return auth_error
+    if forwarded_request_context.context.signature_version is None:
+        try:
+            await context.service.validate_http_bridge_legacy_forward_anchor(
+                original_affinity_kind=forwarded_request_context.context.original_affinity_kind,
+                original_affinity_key=forwarded_request_context.context.original_affinity_key,
+                downstream_turn_state=forwarded_request_context.context.downstream_turn_state,
+                previous_response_id=payload.previous_response_id,
+                api_key=api_key,
+            )
+        except ProxyResponseError as exc:
+            return _logged_error_json_response(request, exc.status_code, exc.payload)
     skip_limit_enforcement = api_key is None or forwarded_request_context.context.reservation is not None
     forwarded_headers = _strip_internal_bridge_headers(request.headers)
+    if forwarded_request_context.context.original_request_unanchored:
+        forwarded_headers = {
+            key: value for key, value in forwarded_headers.items() if key.lower() != "x-codex-turn-state"
+        }
     return await _stream_responses(
         request,
         payload,
@@ -826,6 +841,8 @@ async def internal_bridge_responses(
         api_key_reservation_override=forwarded_request_context.context.reservation,
         include_rate_limit_headers=False,
         forwarded_request=True,
+        forwarded_original_request_unanchored=forwarded_request_context.context.original_request_unanchored,
+        forwarded_legacy_signature=forwarded_request_context.context.signature_version is None,
         forwarded_headers=forwarded_headers,
         forwarded_downstream_turn_state=forwarded_request_context.context.downstream_turn_state,
         forwarded_affinity_kind=forwarded_request_context.context.original_affinity_kind,
@@ -4053,6 +4070,8 @@ async def _stream_responses(
     api_key_reservation_override: ApiKeyUsageReservationData | None = None,
     include_rate_limit_headers: bool = True,
     forwarded_request: bool = False,
+    forwarded_original_request_unanchored: bool = False,
+    forwarded_legacy_signature: bool = False,
     forwarded_headers: Mapping[str, str] | None = None,
     forwarded_downstream_turn_state: str | None = None,
     forwarded_affinity_kind: str | None = None,
@@ -4200,6 +4219,8 @@ async def _stream_responses(
             suppress_text_done_events=suppress_text_done_events,
             downstream_turn_state=downstream_turn_state,
             forwarded_request=forwarded_request,
+            forwarded_original_request_unanchored=forwarded_original_request_unanchored,
+            forwarded_legacy_signature=forwarded_legacy_signature,
             forwarded_affinity_kind=forwarded_affinity_kind,
             forwarded_affinity_key=forwarded_affinity_key,
             client_ip=client_ip,
