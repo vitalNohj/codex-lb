@@ -199,7 +199,7 @@
       "warmupModel": {
         "label": "Warmup model",
         "description": "Set the model used by the normal warmup endpoint.",
-        "save": "Save warmup model"
+        "save": "Save"
       },
       "additionalQuota": {
         "title": "Additional quota routing policies",
@@ -281,6 +281,30 @@
         "cooldownAria": "Warm-up cooldown",
         "promptAria": "Warm-up prompt",
         "save": "Save",
+        "saveAria": "Save warm-up settings",
+        "shared": {
+          "windowsLabel": "Windows",
+          "windowsAria": "Warm-up windows",
+          "modelLabel": "Model",
+          "cooldownLabel": "Cooldown (sec)",
+          "promptLabel": "Prompt"
+        },
+        "resetConfirmed": {
+          "badge": "After reset",
+          "title": "Reset-confirmed warm-up",
+          "description": "Fires when an exhausted account's quota resets. Accounts at or above this usage before reset qualify.",
+          "thresholdLabel": "Min usage %",
+          "thresholdAria": "Min usage percent"
+        },
+        "staggeredIdle": {
+          "badge": "Proactive",
+          "title": "Staggered idle warm-up",
+          "description": "Pre-starts the 5h window for idle accounts before traffic arrives. Accounts at or below this usage are considered idle.",
+          "disabledDescription": "Pre-starts the 5h window for idle accounts before traffic arrives. Enable to configure.",
+          "thresholdLabel": "Max usage %",
+          "thresholdAria": "Max usage percent",
+          "toggleAria": "Enable staggered idle warm-up"
+        },
         "windows": {
           "both": "5h + weekly",
           "primary": "5h only",

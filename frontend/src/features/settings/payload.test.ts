@@ -136,13 +136,16 @@ describe("buildSettingsUpdateRequest", () => {
       totpConfigured: false,
       apiKeyAuthEnabled: true,
       limitWarmupExhaustedThresholdPercent: 99,
+      limitWarmupIdleThresholdPercent: 1,
     });
 
     const payload = buildSettingsUpdateRequest(settings, {
       limitWarmupExhaustedThresholdPercent: 98.5,
+      limitWarmupIdleThresholdPercent: 2.5,
     });
 
     expect(payload.limitWarmupExhaustedThresholdPercent).toBe(98.5);
+    expect(payload.limitWarmupIdleThresholdPercent).toBe(2.5);
   });
 
   it("does not materialize inherited account capacity limits on unrelated updates", () => {
