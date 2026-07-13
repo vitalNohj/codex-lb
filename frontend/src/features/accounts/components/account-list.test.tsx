@@ -476,6 +476,7 @@ describe("AccountList", () => {
           status: "active",
           limitWarmupEnabled: false,
           additionalQuotas: [],
+          sidecarAuths: [],
         }))}
         selectedAccountId={null}
         onSelect={() => {}}
