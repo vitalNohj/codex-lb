@@ -26,6 +26,7 @@ NAMESPACE_FIREWALL = "firewall"
 NAMESPACE_ACCOUNT_ROUTING = "account_routing"
 NAMESPACE_ACCOUNT_SELECTION = "account_selection"
 NAMESPACE_SETTINGS = "settings"
+NAMESPACE_RESET_CREDITS = "reset_credits"
 type InvalidationCallback = Callable[[], None | Awaitable[None]]
 
 # Log-safe labels for namespace values. Static analyzers (CodeQL) classify the
@@ -39,6 +40,7 @@ _NAMESPACE_LOG_LABELS: dict[str, str] = {
     "account_routing": "account_routing",
     "account_selection": "account_selection",
     "settings": "settings",
+    "reset_credits": "reset_credits",
 }
 
 _BUMP_RETRY_ATTEMPTS = 3
@@ -136,6 +138,42 @@ class CacheInvalidationPoller:
                 return False
         return False
 
+    async def bump_local(self, namespace: str) -> bool:
+        """Bump a namespace this replica has ALREADY invalidated locally.
+
+        For callers that both mutate their own in-memory state AND want peers
+        to react (e.g. the reset-credit redeem path evicts the affected
+        account's snapshot locally, then bumps so peers clear their stores).
+        After the shared bump succeeds this records the resulting version as
+        already-observed on THIS poller, so the originating replica does NOT
+        re-run its (possibly whole-store) callback for a bump it already
+        accounted for locally. Peer replicas still observe the bump and fire.
+
+        A peer bump that lands between our commit and the acknowledging read is
+        acknowledged here without firing on this replica; that degrades to the
+        per-replica refresh fallback the reset-credits design already documents
+        for a lost bump, and never affects peers. ``_known_versions`` is only
+        advanced (``max``), never rewound, so a concurrent poll cannot be forced
+        to re-fire by this method.
+        """
+        if not await self.bump(namespace):
+            return False
+        session = self._session_factory()
+        try:
+            version = await session.scalar(
+                select(CacheInvalidation.version).where(CacheInvalidation.namespace == namespace)
+            )
+        except Exception:
+            # Failing to acknowledge only risks one redundant self-invalidation
+            # on the next poll; the bump itself already succeeded for peers.
+            logger.debug("cache_invalidation bump_local acknowledge read failed", exc_info=True)
+            return True
+        finally:
+            await close_session(session)
+        if version is not None:
+            self._known_versions[namespace] = max(self._known_versions.get(namespace, 0), version)
+        return True
+
     async def _bump_once(self, namespace: str) -> None:
         session = self._session_factory()
         try:
@@ -223,17 +261,26 @@ class CacheInvalidationPoller:
         self._consecutive_poll_failures = 0
 
         for namespace, version in rows:
+            # Re-read the acknowledged version for THIS namespace immediately
+            # before comparing: a concurrent bump_local() may have advanced it
+            # (recording a local self-suppression) after this cycle's snapshot
+            # read but before we reach this row. Using the freshly-read value
+            # keeps the local ack authoritative.
             prev = self._known_versions.get(namespace)
-            changed = (prev is not None and version != prev) or (
-                prev is None and self._poll_initialized and version > 0
-            )
+            # Only a STRICTLY newer version is a change. A stale snapshot whose
+            # version is <= the acknowledged version (e.g. read before a
+            # concurrent local bump advanced _known_versions) must neither fire
+            # the callback nor rewind the acknowledged version.
+            changed = (prev is not None and version > prev) or (prev is None and self._poll_initialized and version > 0)
             if changed and not await self._run_callbacks(namespace):
                 # Do not acknowledge the observed version: a failed callback
                 # (e.g. a transient DB error during a snapshot refresh) must be
                 # retried on the next cycle, or a replica would permanently
                 # miss the invalidation.
                 continue
-            self._known_versions[namespace] = version
+            # Never lower an acknowledged version: a concurrent bump_local()
+            # advance must survive an older in-flight poll observation.
+            self._known_versions[namespace] = max(self._known_versions.get(namespace, 0), version)
         self._poll_initialized = True
 
     async def _run_callbacks(self, namespace: str) -> bool:
@@ -282,3 +329,23 @@ def get_cache_invalidation_poller() -> CacheInvalidationPoller | None:
 def set_cache_invalidation_poller(poller: CacheInvalidationPoller | None) -> None:
     global _poller
     _poller = poller
+
+
+async def bump_cache_invalidation(namespace: str) -> None:
+    """Best-effort version bump; a no-op outside the lifespan poller's lifetime."""
+    poller = _poller
+    if poller is None:
+        return
+    await poller.bump(namespace)
+
+
+async def bump_cache_invalidation_local(namespace: str) -> None:
+    """Best-effort bump for a namespace already invalidated locally by the caller.
+
+    Notifies peers while suppressing this replica's own re-invalidation for the
+    bump it just issued. A no-op outside the lifespan poller's lifetime.
+    """
+    poller = _poller
+    if poller is None:
+        return
+    await poller.bump_local(namespace)

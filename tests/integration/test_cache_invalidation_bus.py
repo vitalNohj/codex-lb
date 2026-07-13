@@ -25,6 +25,7 @@ from app.core.cache.invalidation import (
     NAMESPACE_ACCOUNT_SELECTION,
     NAMESPACE_API_KEY,
     NAMESPACE_FIREWALL,
+    NAMESPACE_RESET_CREDITS,
     NAMESPACE_SETTINGS,
     CacheInvalidationPoller,
     get_cache_invalidation_poller,
@@ -321,6 +322,7 @@ def test_namespace_log_labels_cover_all_namespaces() -> None:
             NAMESPACE_ACCOUNT_ROUTING,
             NAMESPACE_ACCOUNT_SELECTION,
             NAMESPACE_SETTINGS,
+            NAMESPACE_RESET_CREDITS,
         )
     }
 
@@ -600,3 +602,112 @@ async def test_initialize_failure_leaves_poller_uninitialized(db_setup) -> None:
         await poller.initialize()
     assert poller._poll_initialized is False
     assert poller._known_versions == {}
+
+
+@pytest.mark.asyncio
+async def test_bump_local_suppresses_source_callback_but_peer_still_fires(db_setup) -> None:
+    """A replica that has already invalidated locally uses ``bump_local`` so its
+    OWN poller does not re-fire the (whole-store) callback for the bump it just
+    issued, while a peer replica still observes it and fires. This is the
+    reset-credit self-clear regression: without ``bump_local`` the source poller
+    would clear its entire reset-credit store on its own bump."""
+    source_calls: list[str] = []
+    peer_calls: list[str] = []
+
+    source = CacheInvalidationPoller(SessionLocal)
+    source.on_invalidation(NAMESPACE_RESET_CREDITS, lambda: source_calls.append("cleared"))
+    peer = CacheInvalidationPoller(SessionLocal)
+    peer.on_invalidation(NAMESPACE_RESET_CREDITS, lambda: peer_calls.append("cleared"))
+
+    # Both replicas seed their baselines before anything is bumped.
+    await source._poll_once()
+    await peer._poll_once()
+
+    # The source has already invalidated the affected account locally; it only
+    # needs peers to react.
+    assert await source.bump_local(NAMESPACE_RESET_CREDITS) is True
+
+    # The source poll does NOT re-run its whole-store callback for its own bump.
+    await source._poll_once()
+    assert source_calls == []
+
+    # The peer observes the bump and clears its store exactly once.
+    await peer._poll_once()
+    assert peer_calls == ["cleared"]
+
+    # A genuine peer bump still fires on the source (self-suppression only
+    # cancels the source's own contribution, never a peer's).
+    assert await peer.bump(NAMESPACE_RESET_CREDITS) is True
+    await source._poll_once()
+    assert source_calls == ["cleared"]
+
+
+class _BumpLocalMidPollSession:
+    """Session wrapper that runs a one-shot ``bump_local`` on the owning poller
+    right after that poller's snapshot SELECT returns.
+
+    This reproduces the interleaving where ``bump_local()`` advances
+    ``_known_versions`` (recording a local self-suppression) after ``_poll_once``
+    has already read the pre-bump snapshot but before it processes that stale row.
+    """
+
+    def __init__(self, inner: AsyncSession, hook: _BumpLocalMidPollHook) -> None:
+        self._inner = inner
+        self._hook = hook
+
+    async def execute(self, *args, **kwargs):
+        result = await self._inner.execute(*args, **kwargs)
+        if self._hook.armed:
+            self._hook.armed = False
+            assert self._hook.poller is not None
+            await self._hook.poller.bump_local(NAMESPACE_RESET_CREDITS)
+        return result
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+class _BumpLocalMidPollHook:
+    def __init__(self) -> None:
+        self.poller: CacheInvalidationPoller | None = None
+        self.armed = False
+
+    def __call__(self) -> AsyncSession:
+        return cast(AsyncSession, _BumpLocalMidPollSession(SessionLocal(), self))
+
+
+@pytest.mark.asyncio
+async def test_inflight_poll_does_not_clobber_concurrent_local_bump(db_setup) -> None:
+    """A ``bump_local`` that advances ``_known_versions`` while a poll cycle is in
+    flight (snapshot already read) must not be clobbered: the older in-flight poll
+    observation must neither re-fire the whole-store callback nor rewind the
+    acknowledged version back below the local ack."""
+    source_calls: list[str] = []
+    hook = _BumpLocalMidPollHook()
+    source = CacheInvalidationPoller(hook)
+    hook.poller = source
+    source.on_invalidation(NAMESPACE_RESET_CREDITS, lambda: source_calls.append("cleared"))
+
+    # Seed a baseline and acknowledge version 1 without the race in play.
+    await source._poll_once()
+    assert await source.bump(NAMESPACE_RESET_CREDITS) is True
+    await source._poll_once()
+    assert source._known_versions.get(NAMESPACE_RESET_CREDITS) == 1
+    source_calls.clear()
+
+    # Arm the race: the next poll's snapshot SELECT reads version 1, then a
+    # concurrent bump_local advances the DB and _known_versions to 2 before the
+    # poll processes its stale row.
+    hook.armed = True
+    await source._poll_once()
+
+    # The stale (version 1) observation must NOT re-run the whole-store callback
+    # for a bump the source already acknowledged locally as version 2.
+    assert source_calls == []
+    # The acknowledged version must not be rewound below the local ack.
+    assert source._known_versions.get(NAMESPACE_RESET_CREDITS) == 2
+
+    # A subsequent clean poll observes no new change and stays quiet.
+    await source._poll_once()
+    assert source_calls == []
+    assert source._known_versions.get(NAMESPACE_RESET_CREDITS) == 2
