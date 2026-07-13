@@ -76,6 +76,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Rows written by the same upstream fetch land within milliseconds of each
+# other; a sibling row only proves a *later* fetch (one that no longer
+# reported the stale window) when it is newer by more than this margin.
+_SIBLING_FETCH_MARGIN_SECONDS = 5.0
+
 _UsageWindowEntry = UsageHistory | AdditionalUsageHistory
 
 _MAX_SELECTION_ATTEMPTS = 4
@@ -1971,6 +1976,19 @@ def _state_from_account(
     if primary_used is not None and primary_reset is not None and primary_reset <= now_epoch:
         primary_used = 0.0
         primary_reset = None
+    # A strictly newer long-window row proves a later fetch no longer
+    # reported the short window: drop the stale duration — whether or not
+    # the stale row's reset has elapsed — so phase planning stops treating
+    # the account as having a short phase window.
+    if (
+        primary_window_minutes is not None
+        and primary_entry is not None
+        and effective_secondary_entry is not None
+        and effective_secondary_entry is not primary_entry
+        and (effective_secondary_entry.recorded_at - primary_entry.recorded_at).total_seconds()
+        > _SIBLING_FETCH_MARGIN_SECONDS
+    ):
+        primary_window_minutes = None
     if secondary_used is not None and secondary_reset is not None and secondary_reset <= now_epoch:
         secondary_used = 0.0
         secondary_reset = None
@@ -2212,6 +2230,7 @@ def _state_from_account(
         used_percent=effective_used_percent,
         reset_at=reset_at,
         primary_reset_at=primary_reset,
+        primary_window_minutes=primary_window_minutes,
         blocked_at=next_blocked_at,
         cooldown_until=runtime.cooldown_until,
         secondary_used_percent=effective_secondary_used_percent,
