@@ -1713,6 +1713,57 @@ def test_state_from_account_zeroes_stale_exhausted_secondary_usage_after_reset(m
     assert state.secondary_reset_at is None
 
 
+def test_state_from_account_expires_stale_partial_primary_usage_after_reset(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    state = _state_from_account(
+        account=_make_test_account(status=AccountStatus.ACTIVE),
+        primary_entry=_make_test_usage(
+            window="primary",
+            used_percent=87.0,
+            reset_at=int(now - 10),
+            recorded_at=_epoch_to_naive_utc(now - 3600),
+        ),
+        secondary_entry=_make_test_usage(
+            window="secondary",
+            used_percent=40.0,
+            reset_at=int(now + 5 * 24 * 3600),
+            recorded_at=_epoch_to_naive_utc(now - 30),
+        ),
+        runtime=RuntimeState(),
+    )
+
+    assert state.used_percent == 0.0
+    assert state.reset_at is None
+    # A frozen sub-100% sample from a window upstream no longer reports must
+    # not hold the account in the soft-drain tier.
+    assert state.health_tier == HEALTH_TIER_HEALTHY
+    assert state.secondary_used_percent == 40.0
+
+
+def test_state_from_account_expires_stale_partial_secondary_usage_after_reset(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    state = _state_from_account(
+        account=_make_test_account(status=AccountStatus.ACTIVE),
+        primary_entry=None,
+        secondary_entry=_make_test_usage(
+            window="secondary",
+            used_percent=60.0,
+            reset_at=int(now - 10),
+            recorded_at=_epoch_to_naive_utc(now - 3600),
+        ),
+        runtime=RuntimeState(),
+    )
+
+    assert state.secondary_used_percent == 0.0
+    assert state.secondary_reset_at is None
+
+
 def test_state_from_account_treats_monthly_usage_as_advisory_long_window_pressure(monkeypatch):
     now = 1_700_000_000.0
     future_reset = int(now + 30 * 24 * 3600)
@@ -2702,6 +2753,246 @@ def test_background_recovery_state_prefers_fresh_monthly_over_stale_primary(monk
 
     assert state.status == AccountStatus.ACTIVE
     assert state.reset_at is None
+
+
+def test_background_recovery_state_recovers_when_upstream_stops_reporting_primary(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 7200.0
+    past_reset = int(now - 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=past_reset,
+        blocked_at=int(blocked),
+        plan_type="plus",
+    )
+    # The primary row was never rewritten after the block because upstream
+    # stopped reporting the short window; the weekly row proves the
+    # post-block refresh happened.
+    stale_primary = _make_test_usage(
+        window="primary",
+        used_percent=100.0,
+        reset_at=past_reset,
+        recorded_at=_epoch_to_naive_utc(blocked - 30),
+    )
+    fresh_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=40.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 30),
+    )
+
+    state = background_recovery_state_from_account(
+        account=account,
+        primary_entry=stale_primary,
+        secondary_entry=fresh_secondary,
+    )
+
+    assert state.status == AccountStatus.ACTIVE
+
+
+def test_background_recovery_state_recovers_without_any_primary_row(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 7200.0
+    past_reset = int(now - 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=past_reset,
+        blocked_at=int(blocked),
+        plan_type="plus",
+    )
+    # Upstream never wrote a primary row for this account; the post-block
+    # refresh recorded only the weekly window with fresh capacity.
+    fresh_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=40.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 30),
+    )
+
+    state = background_recovery_state_from_account(
+        account=account,
+        primary_entry=None,
+        secondary_entry=fresh_secondary,
+    )
+
+    assert state.status == AccountStatus.ACTIVE
+
+
+def test_state_from_account_keeps_resetless_rate_limit_without_primary_row(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    # A resetless 429 whose runtime cooldown was lost to a restart: an old
+    # sub-100% weekly row is not fresh recovery evidence, and with no reset
+    # deadline to expire the block must be preserved.
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=None,
+        blocked_at=None,
+    )
+    stale_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=40.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 2 * 24 * 3600),
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=None,
+        secondary_entry=stale_secondary,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+
+
+def test_background_recovery_state_keeps_rate_limited_without_primary_row_and_stale_secondary(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 7200.0
+    past_reset = int(now - 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=past_reset,
+        blocked_at=int(blocked),
+        plan_type="plus",
+    )
+    stale_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=40.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(blocked - 30),
+    )
+
+    state = background_recovery_state_from_account(
+        account=account,
+        primary_entry=None,
+        secondary_entry=stale_secondary,
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+
+
+def test_background_recovery_state_keeps_rate_limited_when_long_window_exhausted(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 7200.0
+    past_reset = int(now - 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=past_reset,
+        blocked_at=int(blocked),
+        plan_type="plus",
+    )
+    stale_primary = _make_test_usage(
+        window="primary",
+        used_percent=100.0,
+        reset_at=past_reset,
+        recorded_at=_epoch_to_naive_utc(blocked - 30),
+    )
+    # The post-block weekly row is itself exhausted: it must not act as
+    # recovery evidence and route traffic to an account with no long quota.
+    exhausted_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=100.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 30),
+    )
+
+    state = background_recovery_state_from_account(
+        account=account,
+        primary_entry=stale_primary,
+        secondary_entry=exhausted_secondary,
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+
+
+def test_background_recovery_state_keeps_rate_limited_when_primary_reset_metadata_missing(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 7200.0
+    past_reset = int(now - 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=past_reset,
+        blocked_at=int(blocked),
+        plan_type="plus",
+    )
+    # The primary sample omits reset metadata entirely: it has not provably
+    # expired, so a newer weekly row must not supersede it as evidence.
+    stale_primary = _make_test_usage(
+        window="primary",
+        used_percent=100.0,
+        reset_at=None,
+        recorded_at=_epoch_to_naive_utc(blocked - 30),
+    )
+    fresh_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=40.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 30),
+    )
+
+    state = background_recovery_state_from_account(
+        account=account,
+        primary_entry=stale_primary,
+        secondary_entry=fresh_secondary,
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+
+
+def test_background_recovery_state_keeps_rate_limited_when_all_rows_predate_block(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 7200.0
+    past_reset = int(now - 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=past_reset,
+        blocked_at=int(blocked),
+        plan_type="plus",
+    )
+    stale_primary = _make_test_usage(
+        window="primary",
+        used_percent=100.0,
+        reset_at=past_reset,
+        recorded_at=_epoch_to_naive_utc(blocked - 30),
+    )
+    stale_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=40.0,
+        reset_at=int(now + 5 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(blocked - 20),
+    )
+
+    state = background_recovery_state_from_account(
+        account=account,
+        primary_entry=stale_primary,
+        secondary_entry=stale_secondary,
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.reset_at == pytest.approx(past_reset)
 
 
 def test_background_recovery_state_keeps_rate_limited_when_primary_predates_block(monkeypatch):
