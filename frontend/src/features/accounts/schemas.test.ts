@@ -103,6 +103,9 @@ describe("AccountSummarySchema", () => {
         {
           name: "claude-1",
           email: "ok@example.com",
+          provider: "claude",
+          quotaWindows: ["five_hour", "weekly"],
+          supportsManualPlan: true,
           status: "active",
           quotaExceeded: false,
           modelsExceeded: [],
@@ -112,6 +115,9 @@ describe("AccountSummarySchema", () => {
         {
           name: "claude-2",
           email: "exceeded@example.com",
+          provider: "claude",
+          quotaWindows: ["five_hour", "weekly"],
+          supportsManualPlan: true,
           status: "active",
           quotaExceeded: true,
           nextRecoverAt: ISO,

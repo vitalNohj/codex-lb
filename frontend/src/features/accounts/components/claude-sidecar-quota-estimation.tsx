@@ -3,6 +3,11 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  CLIPROXY_QUOTA_WINDOWS,
+  cliproxyProviderLabel,
+  type CLIProxyQuotaWindow,
+} from "@/features/settings/cliproxy";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { useClaudeSidecarQuota, useSettings } from "@/features/settings/hooks/use-settings";
 import type { ClaudeSidecarAuthPlan, ClaudeSidecarPlanType } from "@/features/settings/schemas";
@@ -18,7 +23,9 @@ type PlanDraft = {
   authIndex?: string | null;
   email?: string | null;
   source?: string | null;
+  provider: string;
   planType: ClaudeSidecarPlanType;
+  quotaWindows: CLIProxyQuotaWindow[];
   primaryTokenBudget: string;
   secondaryTokenBudget: string;
 };
@@ -28,22 +35,34 @@ function authPlanKey(value: {
   email?: string | null;
   source?: string | null;
   name?: string | null;
+  provider?: string | null;
 }): string {
+  const provider = value.provider ?? "claude";
   if (value.authIndex) {
-    return `auth:${value.authIndex}`;
+    return `${provider}:auth:${value.authIndex}`;
   }
-  return `source:${(value.email ?? value.source ?? value.name ?? "unknown").toLowerCase()}`;
+  return `${provider}:source:${(value.email ?? value.source ?? value.name ?? "unknown").toLowerCase()}`;
 }
 
 function planDraftFromPlan(plan: ClaudeSidecarAuthPlan): PlanDraft {
-  const defaults = PLAN_DEFAULTS[plan.planType];
+  const provider = plan.provider ?? "claude";
+  const isClaude = provider === "claude";
+  const defaults = isClaude ? PLAN_DEFAULTS[plan.planType] : null;
+  const quotaWindows = isClaude
+    ? [...CLIPROXY_QUOTA_WINDOWS]
+    : [
+        ...(plan.primaryTokenBudget ? ["five_hour" as const] : []),
+        ...(plan.secondaryTokenBudget ? ["weekly" as const] : []),
+      ];
   return {
     authIndex: plan.authIndex,
     email: plan.email,
     source: plan.source,
-    planType: plan.planType,
-    primaryTokenBudget: String(plan.primaryTokenBudget ?? defaults.primary),
-    secondaryTokenBudget: String(plan.secondaryTokenBudget ?? defaults.secondary),
+    provider,
+    planType: isClaude ? plan.planType : "custom",
+    quotaWindows: quotaWindows.length > 0 ? quotaWindows : ["weekly"],
+    primaryTokenBudget: String(plan.primaryTokenBudget ?? defaults?.primary ?? ""),
+    secondaryTokenBudget: String(plan.secondaryTokenBudget ?? defaults?.secondary ?? ""),
   };
 }
 
@@ -63,16 +82,28 @@ export function ClaudeSidecarQuotaEstimation() {
       next[authPlanKey(plan)] = planDraftFromPlan(plan);
     }
     for (const account of quotaAccounts ?? []) {
+      if (!account.supportsManualPlan) {
+        continue;
+      }
       const key = authPlanKey(account);
+      const provider = account.provider;
+      const isClaude = provider === "claude";
+      const quotaWindows = account.quotaWindows.length > 0 ? account.quotaWindows : ["weekly" as const];
+      if (next[key]) {
+        next[key] = { ...next[key], provider, quotaWindows };
+        continue;
+      }
       if (!next[key]) {
-        const defaults = PLAN_DEFAULTS.pro;
+        const defaults = isClaude ? PLAN_DEFAULTS.pro : null;
         next[key] = {
           authIndex: account.authIndex,
           email: account.email,
           source: account.email ?? account.name,
-          planType: "pro",
-          primaryTokenBudget: String(account.primaryTokenBudget ?? defaults.primary),
-          secondaryTokenBudget: String(account.secondaryTokenBudget ?? defaults.secondary),
+          provider,
+          planType: isClaude ? "pro" : "custom",
+          quotaWindows,
+          primaryTokenBudget: String(account.primaryTokenBudget ?? defaults?.primary ?? ""),
+          secondaryTokenBudget: String(account.secondaryTokenBudget ?? defaults?.secondary ?? ""),
         };
       }
     }
@@ -112,16 +143,21 @@ export function ClaudeSidecarQuotaEstimation() {
         authIndex: draft.authIndex ?? undefined,
         email: draft.email ?? undefined,
         source: draft.source ?? draft.email ?? undefined,
+        provider: draft.provider,
         planType: draft.planType,
-        primaryTokenBudget: Number(draft.primaryTokenBudget),
-        secondaryTokenBudget: Number(draft.secondaryTokenBudget),
+        primaryTokenBudget: draft.quotaWindows.includes("five_hour")
+          ? Number(draft.primaryTokenBudget)
+          : undefined,
+        secondaryTokenBudget: draft.quotaWindows.includes("weekly")
+          ? Number(draft.secondaryTokenBudget)
+          : undefined,
       }))
       .filter(
-        (plan) =>
-          Number.isFinite(plan.primaryTokenBudget) &&
-          Number.isFinite(plan.secondaryTokenBudget) &&
-          plan.primaryTokenBudget > 0 &&
-          plan.secondaryTokenBudget > 0,
+        (plan) => (plan.primaryTokenBudget === undefined || (
+          Number.isFinite(plan.primaryTokenBudget) && plan.primaryTokenBudget > 0
+        )) && (plan.secondaryTokenBudget === undefined || (
+          Number.isFinite(plan.secondaryTokenBudget) && plan.secondaryTokenBudget > 0
+        )),
       );
     await updateSettingsMutation
       .mutateAsync(buildSettingsUpdateRequest(settings, { claudeSidecarAuthPlans: plans }))
@@ -143,8 +179,9 @@ export function ClaudeSidecarQuotaEstimation() {
           {estimationRows.map(([key, draft]) => (
             <div key={key} className="grid gap-2 rounded-md border bg-background/60 p-2 sm:grid-cols-[1.4fr_8rem_9rem_9rem]">
               <div className="min-w-0">
-                <div className="truncate text-xs font-medium">{draft.email ?? draft.source ?? draft.authIndex ?? "Claude auth"}</div>
+                <div className="truncate text-xs font-medium">{draft.email ?? draft.source ?? draft.authIndex ?? "CLIProxyAPI auth"}</div>
                 <div className="truncate text-[11px] text-muted-foreground">
+                  {cliproxyProviderLabel(draft.provider)} |{" "}
                   {draft.authIndex ? `auth_index ${draft.authIndex}` : draft.source ?? "source unknown"}
                 </div>
               </div>
@@ -155,37 +192,45 @@ export function ClaudeSidecarQuotaEstimation() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="pro">Pro</SelectItem>
-                    <SelectItem value="max5">Max 5x</SelectItem>
-                    <SelectItem value="max20">Max 20x</SelectItem>
+                    {draft.provider === "claude" ? (
+                      <>
+                        <SelectItem value="pro">Pro</SelectItem>
+                        <SelectItem value="max5">Max 5x</SelectItem>
+                        <SelectItem value="max20">Max 20x</SelectItem>
+                      </>
+                    ) : null}
                     <SelectItem value="custom">Custom</SelectItem>
                   </SelectContent>
                 </Select>
               </label>
-              <label className="space-y-1 text-xs font-medium">
-                5-hour tokens
-                <Input
-                  type="number"
-                  min={1}
-                  step={1000}
-                  value={draft.primaryTokenBudget}
-                  disabled={saving}
-                  onChange={(event) => updatePlanDraft(key, { primaryTokenBudget: event.target.value })}
-                  className="h-8 text-xs"
-                />
-              </label>
-              <label className="space-y-1 text-xs font-medium">
-                Weekly tokens
-                <Input
-                  type="number"
-                  min={1}
-                  step={1000}
-                  value={draft.secondaryTokenBudget}
-                  disabled={saving}
-                  onChange={(event) => updatePlanDraft(key, { secondaryTokenBudget: event.target.value })}
-                  className="h-8 text-xs"
-                />
-              </label>
+              {draft.quotaWindows.includes("five_hour") ? (
+                <label className="space-y-1 text-xs font-medium">
+                  5-hour tokens
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1000}
+                    value={draft.primaryTokenBudget}
+                    disabled={saving}
+                    onChange={(event) => updatePlanDraft(key, { primaryTokenBudget: event.target.value })}
+                    className="h-8 text-xs"
+                  />
+                </label>
+              ) : null}
+              {draft.quotaWindows.includes("weekly") ? (
+                <label className="space-y-1 text-xs font-medium">
+                  Weekly tokens
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1000}
+                    value={draft.secondaryTokenBudget}
+                    disabled={saving}
+                    onChange={(event) => updatePlanDraft(key, { secondaryTokenBudget: event.target.value })}
+                    className="h-8 text-xs"
+                  />
+                </label>
+              ) : null}
             </div>
           ))}
           <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={saving} onClick={() => void saveEstimationPlans()}>
@@ -194,7 +239,7 @@ export function ClaudeSidecarQuotaEstimation() {
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">
-          No Claude auths discovered yet. Save the Management key and wait for one quota poll.
+          No CLIProxyAPI auths supporting manual quota plans discovered yet. Save the Management key and wait for one quota poll.
         </p>
       )}
     </div>

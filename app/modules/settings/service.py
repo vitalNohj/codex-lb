@@ -6,6 +6,10 @@ from datetime import datetime
 
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.crypto import TokenEncryptor
+from app.modules.claude_sidecar.provider_adapters import (
+    manual_plan_budget_error,
+    normalize_provider,
+)
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
     canonicalize_additional_quota_key,
@@ -21,6 +25,7 @@ class ClaudeSidecarAuthPlanData:
     plan_type: str
     primary_token_budget: int | None
     secondary_token_budget: int | None
+    provider: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,6 +856,8 @@ def _parse_claude_sidecar_auth_plans(raw: str | None) -> list[ClaudeSidecarAuthP
         auth_index = _optional_str(entry.get("auth_index"))
         email = _optional_str(entry.get("email"))
         source = _optional_str(entry.get("source"))
+        raw_provider = _optional_str(entry.get("provider"))
+        provider = normalize_provider(raw_provider) if raw_provider is not None else None
         plan_type = _optional_str(entry.get("plan_type"))
         if plan_type not in {"pro", "max5", "max20", "custom"}:
             continue
@@ -858,13 +865,21 @@ def _parse_claude_sidecar_auth_plans(raw: str | None) -> list[ClaudeSidecarAuthP
             continue
         primary_budget = _optional_positive_int(entry.get("primary_token_budget"))
         secondary_budget = _optional_positive_int(entry.get("secondary_token_budget"))
-        if plan_type == "custom" and (primary_budget is None or secondary_budget is None):
+        effective_provider = provider or "claude"
+        if effective_provider != "claude" and plan_type != "custom":
+            continue
+        if plan_type == "custom" and manual_plan_budget_error(
+            effective_provider,
+            primary_budget,
+            secondary_budget,
+        ) is not None:
             continue
         plans.append(
             ClaudeSidecarAuthPlanData(
                 auth_index=auth_index,
                 email=email,
                 source=source,
+                provider=provider,
                 plan_type=plan_type,
                 primary_token_budget=primary_budget,
                 secondary_token_budget=secondary_budget,
@@ -879,9 +894,9 @@ def parse_claude_sidecar_auth_plans(raw: str | None) -> list[ClaudeSidecarAuthPl
 
 def _dump_claude_sidecar_auth_plans(plans: list[ClaudeSidecarAuthPlanData]) -> str:
     payload: list[dict[str, int | str | None]] = []
-    seen: set[tuple[str | None, str | None, str | None]] = set()
+    seen: set[tuple[str | None, str | None, str | None, str | None]] = set()
     for plan in plans:
-        key = (plan.auth_index, plan.email, plan.source)
+        key = (plan.auth_index, plan.email, plan.source, plan.provider)
         if key in seen:
             continue
         seen.add(key)
@@ -889,15 +904,23 @@ def _dump_claude_sidecar_auth_plans(plans: list[ClaudeSidecarAuthPlanData]) -> s
             continue
         if plan.plan_type not in {"pro", "max5", "max20", "custom"}:
             continue
-        if plan.plan_type == "custom" and (
-            plan.primary_token_budget is None or plan.secondary_token_budget is None
-        ):
-            raise ValueError("custom Claude auth plan requires both token budgets")
+        effective_provider = plan.provider or "claude"
+        if effective_provider != "claude" and plan.plan_type != "custom":
+            continue
+        if plan.plan_type == "custom":
+            budget_error = manual_plan_budget_error(
+                effective_provider,
+                plan.primary_token_budget,
+                plan.secondary_token_budget,
+            )
+            if budget_error is not None:
+                raise ValueError(budget_error)
         payload.append(
             {
                 "auth_index": plan.auth_index,
                 "email": plan.email,
                 "source": plan.source,
+                "provider": plan.provider,
                 "plan_type": plan.plan_type,
                 "primary_token_budget": plan.primary_token_budget,
                 "secondary_token_budget": plan.secondary_token_budget,

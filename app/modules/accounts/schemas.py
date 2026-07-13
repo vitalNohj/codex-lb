@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, Literal
 
 from pydantic import Field, field_validator
 
@@ -84,7 +84,9 @@ class SidecarAuthAccount(DashboardModel):
     name: str
     auth_index: str | None = None
     email: str | None = None
-    provider: str | None = None
+    provider: str = "unknown"
+    quota_windows: list[Literal["five_hour", "weekly"]] = Field(default_factory=list)
+    supports_manual_plan: bool = True
     status: str | None = None
     paused: bool = False
     quota_exceeded: bool = False

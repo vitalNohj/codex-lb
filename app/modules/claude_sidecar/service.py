@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
+from app.modules.claude_sidecar.provider_adapters import (
+    adapter_for_auth_entry,
+    adapter_for_provider,
+    normalize_provider,
+)
 from app.modules.claude_sidecar.quota import SidecarAuthQuota, snapshot_from_json, snapshot_to_json
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
@@ -299,18 +304,16 @@ def _routing_guard(settings) -> tuple[ClaudeSidecarRoutingStatus, str] | None:
 def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
     accounts: list[ClaudeSidecarRoutingAccount] = []
     for entry in auth_files:
-        provider = entry.get("provider")
-        auth_type = entry.get("type")
-        if provider != "claude" and auth_type != "claude":
-            continue
         name = entry.get("name")
-        if not isinstance(name, str) or not name:
+        if not isinstance(name, str) or not name.strip():
             continue
+        adapter = adapter_for_auth_entry(entry)
         auth_index = entry.get("auth_index")
         email = entry.get("email")
         accounts.append(
             ClaudeSidecarRoutingAccount(
-                name=name,
+                name=name.strip(),
+                provider=adapter.provider,
                 auth_index=auth_index if isinstance(auth_index, str) else None,
                 email=email if isinstance(email, str) else None,
                 priority=_priority_value(entry.get("priority")),
@@ -368,10 +371,14 @@ def _to_auth_account(
     auth: SidecarAuthQuota,
     estimate: ClaudeAuthUsageEstimate | None = None,
 ) -> SidecarAuthAccount:
+    adapter = adapter_for_provider(auth.provider)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
+        provider=adapter.provider,
+        quota_windows=list(estimate.quota_windows if estimate else adapter.quota_windows),
+        supports_manual_plan=adapter.supports_manual_plan,
         status=auth.status,
         paused=auth.disabled,
         quota_exceeded=auth.quota_exceeded,
@@ -394,18 +401,20 @@ def _to_auth_account(
 
 
 def _auth_key(auth: SidecarAuthQuota) -> str | None:
+    provider = normalize_provider(auth.provider)
     if auth.auth_index:
-        return f"auth:{auth.auth_index}"
+        return f"{provider}|auth:{auth.auth_index}"
     if auth.email:
-        return f"source:{auth.email.lower()}"
+        return f"{provider}|source:{auth.email.lower()}"
     return None
 
 
 def _estimate_key(estimate: ClaudeAuthUsageEstimate) -> str | None:
+    provider = normalize_provider(estimate.provider)
     if estimate.auth_index:
-        return f"auth:{estimate.auth_index}"
+        return f"{provider}|auth:{estimate.auth_index}"
     if estimate.email:
-        return f"source:{estimate.email.lower()}"
+        return f"{provider}|source:{estimate.email.lower()}"
     if estimate.source:
-        return f"source:{estimate.source.lower()}"
+        return f"{provider}|source:{estimate.source.lower()}"
     return None

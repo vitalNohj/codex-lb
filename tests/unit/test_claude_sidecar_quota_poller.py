@@ -126,6 +126,7 @@ class _FakeClient:
     async def list_auth_files(self) -> list[Mapping[str, Any]]:
         return [
             {
+                "name": "claude-ok@example.com.json",
                 "provider": "claude",
                 "email": "ok@example.com",
                 "path": "/tmp/claude-ok@example.com.json",
@@ -155,6 +156,20 @@ class _UnauthorizedClient:
 
     async def list_auth_files(self) -> list[Mapping[str, Any]]:
         raise ClaudeSidecarError(401, "unauthorized")
+
+
+class _MixedProviderClient(_FakeClient):
+    async def list_auth_files(self) -> list[Mapping[str, Any]]:
+        return [
+            *(await super().list_auth_files()),
+            {
+                "name": "xai-grok@example.com.json",
+                "provider": "xai",
+                "email": "grok@example.com",
+                "auth_index": "1",
+                "status": "active",
+            },
+        ]
 
 
 class _UnreachableClient:
@@ -235,6 +250,40 @@ async def test_poll_once_enriches_oauth_usage_without_storing_token(monkeypatch)
     assert usage.five_hour.remaining_percent == 57.0
     assert usage.seven_day is not None
     assert usage.seven_day.remaining_percent == 82.0
+
+
+@pytest.mark.asyncio
+async def test_poll_once_never_fetches_anthropic_oauth_for_xai(monkeypatch) -> None:
+    repo_holder: list[_FakeRepo] = []
+    _patch_environment(
+        monkeypatch,
+        settings=_FakeSettings(),
+        client_factory=_MixedProviderClient,
+        repo_holder=repo_holder,
+    )
+    requested_auth_indices: list[str] = []
+
+    async def _fetch_usage(client: Any, auth_index: str) -> SidecarOAuthUsage:
+        requested_auth_indices.append(auth_index)
+        return SidecarOAuthUsage(five_hour=None, seven_day=None)
+
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_usage)
+    poller = ClaudeSidecarQuotaPoller(
+        interval_seconds=60.0,
+        enabled=True,
+        _client_factory=_MixedProviderClient,
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    assert [(account.provider, account.email) for account in snapshot.accounts] == [
+        ("claude", "ok@example.com"),
+        ("xai", "grok@example.com"),
+    ]
+    assert requested_auth_indices == ["0"]
+    assert snapshot.accounts[1].oauth_usage is None
 
 
 def _snapshot_json_with_usage(five_hour: float, seven_day: float) -> str:

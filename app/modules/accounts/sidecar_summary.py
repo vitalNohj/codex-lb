@@ -7,6 +7,7 @@ from app.modules.accounts.schemas import (
     AccountUsage,
     SidecarAuthAccount,
 )
+from app.modules.claude_sidecar.provider_adapters import adapter_for_provider, normalize_provider
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
@@ -48,7 +49,12 @@ def build_claude_sidecar_summary(
         quota_checked_at=settings.claude_sidecar_quota_checked_at,
     )
     sidecar_auths = _build_auth_rows(snapshot, usage_estimates)
-    aggregate_usage = usage_estimates.aggregate if usage_estimates is not None else None
+    providers = {auth.provider for auth in sidecar_auths}
+    aggregate_usage = (
+        usage_estimates.aggregate
+        if usage_estimates is not None and len(providers) <= 1
+        else None
+    )
     usage = (
         AccountUsage(
             primary_remaining_percent=aggregate_usage.primary_remaining_percent,
@@ -154,11 +160,14 @@ def _build_auth_rows(
 
 
 def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) -> SidecarAuthAccount:
+    adapter = adapter_for_provider(auth.provider)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
-        provider=auth.provider,
+        provider=adapter.provider,
+        quota_windows=list(estimate.quota_windows if estimate else adapter.quota_windows),
+        supports_manual_plan=adapter.supports_manual_plan,
         status=auth.status,
         paused=auth.disabled,
         quota_exceeded=auth.quota_exceeded,
@@ -186,7 +195,9 @@ def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAcc
         name=name,
         auth_index=estimate.auth_index,
         email=estimate.email,
-        provider="claude",
+        provider=estimate.provider,
+        quota_windows=list(estimate.quota_windows),
+        supports_manual_plan=adapter_for_provider(estimate.provider).supports_manual_plan,
         status=None,
         quota_exceeded=False,
         plan_type=estimate.plan_type,
@@ -204,18 +215,20 @@ def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAcc
 
 
 def _auth_key(auth: SidecarAuthQuota) -> str | None:
+    provider = normalize_provider(auth.provider)
     if auth.auth_index:
-        return f"auth:{auth.auth_index}"
+        return f"{provider}|auth:{auth.auth_index}"
     if auth.email:
-        return f"source:{auth.email.lower()}"
+        return f"{provider}|source:{auth.email.lower()}"
     return None
 
 
 def _estimate_key(estimate: ClaudeAuthUsageEstimate) -> str | None:
+    provider = normalize_provider(estimate.provider)
     if estimate.auth_index:
-        return f"auth:{estimate.auth_index}"
+        return f"{provider}|auth:{estimate.auth_index}"
     if estimate.email:
-        return f"source:{estimate.email.lower()}"
+        return f"{provider}|source:{estimate.email.lower()}"
     if estimate.source:
-        return f"source:{estimate.source.lower()}"
+        return f"{provider}|source:{estimate.source.lower()}"
     return None

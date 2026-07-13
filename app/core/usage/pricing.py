@@ -596,6 +596,11 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
+    # xAI/Grok ids must only use explicit provider pricing. Generic aliases
+    # (for example an embedded GPT family name) are not provider-safe.
+    if "grok" in normalized or normalized.startswith(("xai/", "xai-", "xai_")):
+        return None
+
     alias = resolve_model_alias(normalized, aliases)
     if not alias:
         return None

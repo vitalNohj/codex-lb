@@ -6,6 +6,10 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import type { AccountAction } from "@/features/dashboard/components/account-card";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
+import {
+  cliproxyProviderLabel,
+  hasCLIProxyQuotaWindow,
+} from "@/features/settings/cliproxy";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import type { AccountSummary } from "@/features/dashboard/schemas";
 import type { SidecarAuthAccount } from "@/features/accounts/schemas";
@@ -500,15 +504,15 @@ function ClaudeAuthListRow({
   const pauseMutation = useClaudeSidecarAccountPause();
   const title = auth.email ?? auth.name;
   const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
-  const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
-  const providerLabel = auth.provider === "claude"
-    ? "Claude"
-    : auth.provider
-      ? formatSlug(auth.provider)
-      : "CLIProxyAPI";
+  const planLabel = auth.planType ? formatSlug(auth.planType) : "Plan required";
+  const providerLabel = cliproxyProviderLabel(auth.provider);
   const quotas = [
-    quotaLabel("5h", auth.primaryRemainingPercent ?? null, auth.resetAtPrimary),
-    quotaLabel("Weekly", auth.secondaryRemainingPercent ?? null, auth.resetAtSecondary),
+    ...(hasCLIProxyQuotaWindow(auth.quotaWindows, "five_hour")
+      ? [quotaLabel("5h", auth.primaryRemainingPercent ?? null, auth.resetAtPrimary)]
+      : []),
+    ...(hasCLIProxyQuotaWindow(auth.quotaWindows, "weekly")
+      ? [quotaLabel("Weekly", auth.secondaryRemainingPercent ?? null, auth.resetAtSecondary)]
+      : []),
   ];
   return (
     <div

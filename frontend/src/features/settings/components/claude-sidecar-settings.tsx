@@ -40,15 +40,15 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
         id: "claude",
         title: "CLIProxyAPI Integration",
         conflictName: "CLIProxyAPI",
-        description: "Configure CLIProxyAPI for Claude chat-completions routing.",
+        description: "Configure CLIProxyAPI for multi-provider chat-completions routing.",
         icon: Bot,
         sectionId: "claude-sidecar",
         enableLabel: "Enable CLI Proxy integration",
-        enableDescription: "When enabled, matching Claude model requests route to CLIProxyAPI.",
+        enableDescription: "When enabled, requests matching configured models or prefixes route to CLIProxyAPI.",
         callout: (
           <>
-            Run CLIProxyAPI separately, log in with `cli-proxy-api --claude-login`, then point codex-lb at its
-            local base URL.
+            Run CLIProxyAPI separately, add upstream auths such as `cli-proxy-api --claude-login` or
+            `cli-proxy-api --xai-login`, then point codex-lb at its local base URL.
           </>
         ),
         baseUrlPlaceholder: DEFAULT_BASE_URL,

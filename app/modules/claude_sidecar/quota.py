@@ -9,6 +9,7 @@ from typing import Literal
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.modules.claude_sidecar.provider_adapters import adapter_for_auth_entry, adapter_for_provider
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class SidecarAuthQuota:
     last_refresh: datetime | None
     credential_path: str | None = None
     oauth_usage: SidecarOAuthUsage | None = None
-    provider: str | None = None
+    provider: str = "claude"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,42 +68,14 @@ def parse_auth_files(raw: Iterable[Mapping[str, JsonValue]]) -> list[SidecarAuth
     for entry in raw:
         if not is_json_mapping(entry):
             continue
-        if not _is_claude_entry(entry):
+        name = _str(entry.get("name"))
+        if name is None:
             continue
-        accounts.append(_parse_one(entry))
+        accounts.append(_parse_one(entry, name=name))
     return accounts
 
 
-def _is_claude_entry(entry: Mapping[str, JsonValue]) -> bool:
-    provider = entry.get("provider")
-    if isinstance(provider, str) and provider.strip().lower() == "claude":
-        return True
-    entry_type = entry.get("type")
-    if isinstance(entry_type, str) and entry_type.strip().lower() == "claude":
-        return True
-    account_type = entry.get("account_type")
-    if isinstance(account_type, str) and account_type.strip().lower() == "anthropic":
-        return True
-    return False
-
-
-def _auth_provider(entry: Mapping[str, JsonValue]) -> str | None:
-    """Derive the CLIProxyAPI credential provider (e.g. ``claude``) from an auth
-    file entry, or ``None`` when it cannot be identified."""
-    provider = _str(entry.get("provider"))
-    if provider:
-        return provider.strip().lower()
-    entry_type = _str(entry.get("type"))
-    if entry_type:
-        return entry_type.strip().lower()
-    account_type = _str(entry.get("account_type"))
-    if account_type and account_type.strip().lower() == "anthropic":
-        return "claude"
-    return None
-
-
-def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
-    name = _str(entry.get("name")) or _str(entry.get("id")) or _str(entry.get("label")) or ""
+def _parse_one(entry: Mapping[str, JsonValue], *, name: str) -> SidecarAuthQuota:
     quota_field = entry.get("quota")
     quota_exceeded = False
     next_recover_at: datetime | None = None
@@ -115,7 +88,7 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         name=name,
         auth_index=_str(entry.get("auth_index")),
         email=_str(entry.get("email")) or _str(entry.get("account")),
-        provider=_auth_provider(entry),
+        provider=adapter_for_auth_entry(entry).provider,
         credential_path=_str(entry.get("path")),
         status=_str(entry.get("status")),
         status_message=_str(entry.get("status_message")),
@@ -331,7 +304,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     name=_str(entry.get("name")) or "",
                     auth_index=_str(entry.get("auth_index")),
                     email=_str(entry.get("email")),
-                    provider=_str(entry.get("provider")),
+                    provider=adapter_for_provider(_str(entry.get("provider"))).provider,
                     credential_path=_str(entry.get("credential_path")),
                     status=_str(entry.get("status")),
                     status_message=_str(entry.get("status_message")),

@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
+from app.modules.claude_sidecar.provider_adapters import (
+    QuotaWindow,
+    infer_model_provider,
+    normalize_provider,
+    quota_windows_for_plan,
+)
 from app.modules.claude_sidecar.quota import SidecarOAuthUsage, SidecarQuotaSnapshot
 from app.modules.settings.service import ClaudeSidecarAuthPlanData
 
@@ -32,6 +38,8 @@ class UsageEventLike(Protocol):
     timestamp: datetime
     auth_index: str | None
     source: str | None
+    provider: str | None
+    model: str | None
     total_tokens: int
     failed: bool
 
@@ -41,6 +49,8 @@ class ClaudeAuthUsageEstimate:
     auth_index: str | None
     email: str | None
     source: str | None
+    provider: str
+    quota_windows: tuple[QuotaWindow, ...]
     plan_type: str | None
     usage_source: str
     primary_remaining_percent: float | None
@@ -81,23 +91,33 @@ def build_claude_usage_estimates(
     now: datetime | None = None,
 ) -> ClaudeUsageEstimates:
     reference_time = _utc(now or datetime.now(timezone.utc))
+    provider_by_identity: dict[str, str] = {}
+    if snapshot is not None:
+        for auth in snapshot.accounts:
+            identity = _identity_key(auth.auth_index, auth.email or auth.name)
+            if identity is not None:
+                provider = normalize_provider(auth.provider)
+                existing = provider_by_identity.get(identity)
+                provider_by_identity[identity] = provider if existing in {None, provider} else "unknown"
     events_by_key: dict[str, list[UsageEventLike]] = {}
     for event in events:
-        key = _event_key(event)
+        key = _event_key(event, provider_by_identity)
         if key is not None:
             events_by_key.setdefault(key, []).append(event)
 
     plans_by_key = {_plan_key(plan): plan for plan in plans if _plan_key(plan) is not None}
-    auths_by_key: dict[str, tuple[str | None, str | None]] = {}
+    auths_by_key: dict[str, tuple[str | None, str | None, str]] = {}
     oauth_usage_by_key: dict[str, SidecarOAuthUsage] = {}
     exceeded_keys: set[str] = set()
     recover_at_by_key: dict[str, datetime] = {}
     if snapshot is not None:
         for auth in snapshot.accounts:
-            key = _identity_key(auth.auth_index, auth.email or auth.name)
+            provider = normalize_provider(auth.provider)
+            identity = _identity_key(auth.auth_index, auth.email or auth.name)
+            key = _provider_key(provider, identity)
             if key is None:
                 continue
-            auths_by_key[key] = (auth.auth_index, auth.email)
+            auths_by_key[key] = (auth.auth_index, auth.email, provider)
             if auth.oauth_usage is not None:
                 oauth_usage_by_key[key] = auth.oauth_usage
             if auth.quota_exceeded:
@@ -109,18 +129,31 @@ def build_claude_usage_estimates(
     estimates: list[ClaudeAuthUsageEstimate] = []
     for key in keys:
         plan = plans_by_key.get(key)
-        auth_index, email = auths_by_key.get(key, _split_key(key))
+        auth_index, email, provider = auths_by_key.get(key, _split_provider_key(key))
         source = _source_for_key(key, events_by_key.get(key, []), plan)
         primary_budget, secondary_budget, plan_type = _budgets_for_plan(plan)
+        quota_windows = list(
+            quota_windows_for_plan(
+                provider,
+                primary_budget if plan is not None else None,
+                secondary_budget if plan is not None else None,
+            )
+        )
+        has_primary = "five_hour" in quota_windows
+        has_secondary = "weekly" in quota_windows
+        if not has_primary:
+            primary_budget = None
+        if not has_secondary:
+            secondary_budget = None
         auth_events = sorted(events_by_key.get(key, []), key=lambda event: _utc(event.timestamp))
-        primary_start = _active_window_start(auth_events, PRIMARY_WINDOW, reference_time)
-        secondary_start = _active_window_start(auth_events, SECONDARY_WINDOW, reference_time)
+        primary_start = _active_window_start(auth_events, PRIMARY_WINDOW, reference_time) if has_primary else None
+        secondary_start = _active_window_start(auth_events, SECONDARY_WINDOW, reference_time) if has_secondary else None
         primary_reset = primary_start + PRIMARY_WINDOW if primary_start else None
         secondary_reset = secondary_start + SECONDARY_WINDOW if secondary_start else None
         primary_used = _used_tokens(auth_events, primary_start, primary_reset)
         secondary_used = _used_tokens(auth_events, secondary_start, secondary_reset)
-        primary_remaining = _remaining_percent(primary_used, primary_budget)
-        secondary_remaining = _remaining_percent(secondary_used, secondary_budget)
+        primary_remaining = _remaining_percent(primary_used, primary_budget) if has_primary else None
+        secondary_remaining = _remaining_percent(secondary_used, secondary_budget) if has_secondary else None
         usage_source = "usage_queue"
         oauth_usage = oauth_usage_by_key.get(key)
         if oauth_usage is not None:
@@ -131,7 +164,7 @@ def build_claude_usage_estimates(
             if oauth_usage.seven_day is not None:
                 secondary_remaining = oauth_usage.seven_day.remaining_percent
                 secondary_reset = oauth_usage.seven_day.resets_at
-        if key in exceeded_keys:
+        if has_primary and key in exceeded_keys:
             primary_remaining = 0.0
             if key in recover_at_by_key:
                 primary_reset = recover_at_by_key[key]
@@ -146,6 +179,8 @@ def build_claude_usage_estimates(
                 auth_index=auth_index,
                 email=email,
                 source=source,
+                provider=provider,
+                quota_windows=tuple(quota_windows),
                 plan_type=plan_type,
                 usage_source=usage_source,
                 primary_remaining_percent=primary_remaining,
@@ -165,7 +200,8 @@ def build_claude_usage_estimates(
 def _budgets_for_plan(plan: ClaudeSidecarAuthPlanData | None) -> tuple[int | None, int | None, str | None]:
     if plan is None:
         return None, None, None
-    preset = PLAN_PRESETS.get(plan.plan_type)
+    provider = plan.provider or "claude"
+    preset = PLAN_PRESETS.get(plan.plan_type) if provider == "claude" else None
     primary_budget = plan.primary_token_budget or (preset.primary_token_budget if preset else None)
     secondary_budget = plan.secondary_token_budget or (preset.secondary_token_budget if preset else None)
     return primary_budget, secondary_budget, plan.plan_type
@@ -273,12 +309,35 @@ def _aggregate_confidence(
     return "unknown"
 
 
-def _event_key(event: UsageEventLike) -> str | None:
-    return _identity_key(event.auth_index, event.source)
+def _event_key(
+    event: UsageEventLike,
+    provider_by_identity: dict[str, str],
+) -> str | None:
+    identity = _identity_key(event.auth_index, event.source)
+    if identity is None:
+        return None
+    provider = normalize_provider(event.provider)
+    if provider == "unknown":
+        provider = infer_model_provider(event.model)
+    if provider == "unknown":
+        provider = provider_by_identity.get(identity, "unknown")
+    return _provider_key(provider, identity)
 
 
 def _plan_key(plan: ClaudeSidecarAuthPlanData) -> str | None:
-    return _identity_key(plan.auth_index, plan.email or plan.source)
+    return _provider_key(plan.provider or "claude", _identity_key(plan.auth_index, plan.email or plan.source))
+
+
+def _provider_key(provider: str, identity: str | None) -> str | None:
+    if identity is None:
+        return None
+    return f"{normalize_provider(provider)}|{identity}"
+
+
+def _split_provider_key(key: str) -> tuple[str | None, str | None, str]:
+    provider, _, identity = key.partition("|")
+    auth_index, email = _split_key(identity)
+    return auth_index, email, normalize_provider(provider)
 
 
 def _identity_key(auth_index: str | None, fallback: str | None) -> str | None:
@@ -309,8 +368,9 @@ def _source_for_key(
     for event in events:
         if event.source:
             return event.source
-    if key.startswith("source:"):
-        return key.removeprefix("source:")
+    _provider, _, identity = key.partition("|")
+    if identity.startswith("source:"):
+        return identity.removeprefix("source:")
     return None
 
 

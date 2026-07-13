@@ -22,6 +22,7 @@ pytestmark = pytest.mark.integration
 class _FakeModel:
     id: str
     created: int | None = 123
+    owned_by: str | None = None
 
 
 class _FakeSidecarClient:
@@ -29,7 +30,10 @@ class _FakeSidecarClient:
         self.config = config
         self.chat_payloads: list[dict] = []
         self.stream_payloads: list[dict] = []
-        self.models = [_FakeModel("claude-sonnet-4-5-20250929")]
+        self.models = [
+            _FakeModel("claude-sonnet-4-5-20250929", owned_by="anthropic"),
+            _FakeModel("grok-4", owned_by="xai"),
+        ]
         self.chat_error: Exception | None = None
         self.stream_error: Exception | None = None
         self.stream_include_usage = True
@@ -137,7 +141,8 @@ async def fake_sidecar(monkeypatch):
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
-        full_models=("claude-sonnet-4-5-20250929",),
+        full_models=("claude-sonnet-4-5-20250929", "grok-4"),
+        default_reasoning_effort="high",
     )
     client = _FakeSidecarClient(config)
 
@@ -264,6 +269,41 @@ async def test_custom_prefixed_opus_alias_routes_to_sidecar_with_unprefixed_wire
 
 
 @pytest.mark.asyncio
+async def test_grok_full_model_routes_through_existing_sidecar_with_shared_effort(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "grok-4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "low",
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "grok-4"
+    assert fake_sidecar.chat_payloads[-1]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_grok_prefixed_model_uses_configured_strip_behavior(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "cp-grok-4-fast", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "grok-4-fast"
+
+
+@pytest.mark.asyncio
 async def test_claude_stream_routes_to_sidecar_and_requests_usage(async_client, sidecar_enabled, fake_sidecar):
     await _enable_api_key_auth(async_client)
     key = await _create_api_key(
@@ -320,6 +360,19 @@ async def test_sidecar_model_list_merges_and_filters(async_client, sidecar_enabl
 
 
 @pytest.mark.asyncio
+async def test_grok_sidecar_model_list_uses_non_anthropic_owner(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    response = await async_client.get("/v1/models")
+
+    assert response.status_code == 200
+    grok = next(item for item in response.json()["data"] if item["id"] == "grok-4")
+    assert grok["owned_by"] == "xai"
+
+
+@pytest.mark.asyncio
 async def test_gpt_request_does_not_hit_sidecar(async_client, sidecar_enabled, fake_sidecar):
     response = await async_client.post(
         "/v1/chat/completions",
@@ -329,6 +382,17 @@ async def test_gpt_request_does_not_hit_sidecar(async_client, sidecar_enabled, f
     assert response.status_code in {502, 503}
     assert fake_sidecar.chat_payloads == []
     assert fake_sidecar.stream_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_unmatched_grok_model_does_not_force_sidecar(async_client, sidecar_enabled, fake_sidecar):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "grok-unconfigured-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code in {502, 503}
+    assert fake_sidecar.chat_payloads == []
 
 
 @pytest.mark.asyncio

@@ -252,6 +252,91 @@ async def test_dashboard_overview_sidecar_estimated_usage_does_not_change_aggreg
 
 
 @pytest.mark.asyncio
+async def test_dashboard_overview_mixed_provider_sidecar_omits_parent_usage(async_client, db_setup):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "shared-auth",
+                    "provider": "claude",
+                    "planType": "custom",
+                    "primaryTokenBudget": 100,
+                    "secondaryTokenBudget": 700,
+                },
+                {
+                    "authIndex": "shared-auth",
+                    "provider": "xai",
+                    "planType": "custom",
+                    "secondaryTokenBudget": 1_000,
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    now = utcnow().replace(microsecond=0)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=now,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-user.json",
+                auth_index="shared-auth",
+                email="claude@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=1,
+                failed=0,
+                last_refresh=None,
+                provider="claude",
+            ),
+            SidecarAuthQuota(
+                name="xai-user.json",
+                auth_index="shared-auth",
+                email="grok@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=1,
+                failed=0,
+                last_refresh=None,
+                provider="xai",
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=now.replace(tzinfo=None),
+        )
+
+    overview = await async_client.get("/api/dashboard/overview")
+
+    assert overview.status_code == 200
+    sidecar = next(
+        account for account in overview.json()["accounts"] if account["accountId"] == "claude-sidecar"
+    )
+    assert sidecar["usage"] is None
+    auths = {auth["provider"]: auth for auth in sidecar["sidecarAuths"]}
+    assert auths["claude"]["quotaWindows"] == ["five_hour", "weekly"]
+    assert auths["xai"]["quotaWindows"] == ["weekly"]
+    assert auths["xai"]["supportsManualPlan"] is True
+
+
+@pytest.mark.asyncio
 async def test_dashboard_overview_metrics_keep_soft_deleted_request_logs(async_client, db_setup):
     now = utcnow().replace(microsecond=0)
 

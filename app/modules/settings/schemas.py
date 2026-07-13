@@ -5,6 +5,10 @@ from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 
+from app.modules.claude_sidecar.provider_adapters import (
+    manual_plan_budget_error,
+    normalize_provider,
+)
 from app.modules.shared.schemas import DashboardModel
 
 _DEFAULT_WEEKLY_PACE_WORKING_DAYS = "0,1,2,3,4,5,6"
@@ -159,6 +163,7 @@ class ClaudeSidecarAuthPlan(DashboardModel):
     auth_index: str | None = Field(default=None, max_length=255)
     email: str | None = Field(default=None, max_length=255)
     source: str | None = Field(default=None, max_length=255)
+    provider: str | None = Field(default=None, max_length=32)
     plan_type: str = Field(pattern=r"^(pro|max5|max20|custom)$")
     primary_token_budget: int | None = Field(default=None, gt=0)
     secondary_token_budget: int | None = Field(default=None, gt=0)
@@ -171,14 +176,26 @@ class ClaudeSidecarAuthPlan(DashboardModel):
         normalized = value.strip()
         return normalized or None
 
+    @field_validator("provider")
+    @classmethod
+    def _normalize_provider(cls, value: str | None) -> str | None:
+        return normalize_provider(value) if value is not None else None
+
     @model_validator(mode="after")
     def _validate_identity_and_budget(self) -> "ClaudeSidecarAuthPlan":
         if not (self.auth_index or self.email or self.source):
             raise ValueError("Claude auth plan must include auth_index, email, or source")
-        if self.plan_type == "custom" and (
-            self.primary_token_budget is None or self.secondary_token_budget is None
-        ):
-            raise ValueError("custom Claude auth plan requires both token budgets")
+        provider = self.provider or "claude"
+        if provider != "claude" and self.plan_type != "custom":
+            raise ValueError("non-Claude auth plans must use custom plan type")
+        if self.plan_type == "custom":
+            budget_error = manual_plan_budget_error(
+                provider,
+                self.primary_token_budget,
+                self.secondary_token_budget,
+            )
+            if budget_error is not None:
+                raise ValueError(budget_error)
         return self
 
 

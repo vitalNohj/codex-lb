@@ -833,6 +833,7 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_managemen
             "authIndex": "auth-1",
             "email": "claude@example.com",
             "source": "claude@example.com",
+            "provider": None,
             "planType": "max5",
             "primaryTokenBudget": 88_000,
             "secondaryTokenBudget": 616_000,
@@ -857,6 +858,74 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_managemen
     response = await async_client.put("/api/settings", json={"claudeSidecarClearManagementKey": True})
     assert response.status_code == 200
     assert response.json()["claudeSidecarManagementKeyConfigured"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("primary_budget", "secondary_budget"),
+    [
+        (1_000, None),
+        (None, 7_000),
+        (1_000, 7_000),
+    ],
+)
+async def test_settings_api_accepts_xai_custom_plan_manual_windows(
+    async_client,
+    primary_budget,
+    secondary_budget,
+):
+    plan = {
+        "authIndex": "xai-1",
+        "provider": "xai",
+        "planType": "custom",
+    }
+    if primary_budget is not None:
+        plan["primaryTokenBudget"] = primary_budget
+    if secondary_budget is not None:
+        plan["secondaryTokenBudget"] = secondary_budget
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"claudeSidecarAuthPlans": [plan]},
+    )
+
+    assert response.status_code == 200
+    saved = response.json()["claudeSidecarAuthPlans"][0]
+    assert saved["provider"] == "xai"
+    assert saved["primaryTokenBudget"] == primary_budget
+    assert saved["secondaryTokenBudget"] == secondary_budget
+
+
+@pytest.mark.asyncio
+async def test_settings_api_requires_budget_for_xai_and_both_budgets_for_claude(async_client):
+    no_xai_budget = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "xai-1",
+                    "provider": "xai",
+                    "planType": "custom",
+                }
+            ]
+        },
+    )
+    one_claude_budget = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "claude-1",
+                    "provider": "claude",
+                    "planType": "custom",
+                    "primaryTokenBudget": 1_000,
+                }
+            ]
+        },
+    )
+
+    assert no_xai_budget.status_code == 422
+    assert one_claude_budget.status_code == 422
 
 
 @pytest.mark.asyncio

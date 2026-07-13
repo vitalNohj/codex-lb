@@ -49,6 +49,7 @@ class ClaudeSidecarQuotaResponse(DashboardModel):
 
 class ClaudeSidecarRoutingAccount(DashboardModel):
     name: str
+    provider: str
     auth_index: str | None = None
     email: str | None = None
     priority: int = 0

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountCard, ClaudeAuthCard } from "@/features/dashboard/components/account-card";
+import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { createAccountSummary } from "@/test/mocks/factories";
 import { renderWithProviders } from "@/test/utils";
@@ -171,11 +172,13 @@ describe("AccountCard", () => {
       baseUrl: "http://127.0.0.1:8317",
       usage: null,
     });
-    const auth = {
+    const auth: SidecarAuthAccount = {
       name: "claude-1",
       authIndex: "0",
       email: "claude-one@example.com",
       provider: "claude",
+      quotaWindows: ["five_hour", "weekly"],
+      supportsManualPlan: true,
       paused: false,
       quotaExceeded: false,
       modelsExceeded: [],
@@ -213,10 +216,13 @@ describe("AccountCard", () => {
       provider: "claude",
       usage: null,
     });
-    const auth = {
+    const auth: SidecarAuthAccount = {
       name: "claude-1",
       authIndex: "0",
       email: "claude-one@example.com",
+      provider: "claude",
+      quotaWindows: ["five_hour", "weekly"],
+      supportsManualPlan: true,
       paused: true,
       quotaExceeded: false,
       modelsExceeded: [],
@@ -233,6 +239,40 @@ describe("AccountCard", () => {
     expect(screen.queryByRole("button", { name: "Pause claude-one@example.com" })).toBeNull();
   });
 
+  it("renders only declared quota windows for a Grok CLIProxyAPI auth", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth: SidecarAuthAccount = {
+      name: "xai-1",
+      authIndex: "1",
+      email: "grok@example.com",
+      provider: "xai",
+      quotaWindows: ["weekly"],
+      supportsManualPlan: true,
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      planType: "custom",
+      secondaryRemainingPercent: 82,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByText(/Custom \| Grok/)).toBeInTheDocument();
+    expect(screen.queryByText("5h")).not.toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+  });
+
   it("falls back to CLIProxyAPI in the subtitle when the auth provider is unknown", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
@@ -244,11 +284,13 @@ describe("AccountCard", () => {
       provider: "claude",
       usage: null,
     });
-    const auth = {
+    const auth: SidecarAuthAccount = {
       name: "claude-1",
       authIndex: "0",
       email: "claude-one@example.com",
-      provider: null,
+      provider: "unknown",
+      quotaWindows: ["five_hour", "weekly"],
+      supportsManualPlan: true,
       planType: "max20",
       paused: false,
       quotaExceeded: false,
@@ -280,10 +322,13 @@ describe("AccountCard", () => {
       provider: "claude",
       usage: null,
     });
-    const auth = {
+    const auth: SidecarAuthAccount = {
       name: "claude-1",
       authIndex: "0",
       email: "claude-one@example.com",
+      provider: "claude",
+      quotaWindows: ["five_hour", "weekly"],
+      supportsManualPlan: true,
       paused: false,
       quotaExceeded: false,
       modelsExceeded: [],

@@ -6,6 +6,10 @@ import { ClaudeSidecarQuotaEstimation } from "@/features/accounts/components/cla
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import {
+  cliproxyProviderLabel,
+  hasCLIProxyQuotaWindow,
+} from "@/features/settings/cliproxy";
+import {
   useClaudeSidecarAccountPause,
   useSidecarConnectionTest,
   type SidecarConnectionProvider,
@@ -43,7 +47,13 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
     : primaryRemaining !== null || secondaryRemaining !== null
       ? "Estimated"
       : "Unavailable";
-  const showQuotaUsage = isClaude;
+  const showPrimaryQuota = isClaude && (account.sidecarAuths ?? []).some((auth) =>
+    hasCLIProxyQuotaWindow(auth.quotaWindows, "five_hour")
+  );
+  const showSecondaryQuota = isClaude && (account.sidecarAuths ?? []).some((auth) =>
+    hasCLIProxyQuotaWindow(auth.quotaWindows, "weekly")
+  );
+  const showQuotaUsage = showPrimaryQuota || showSecondaryQuota;
   const testDisabled = busy || testMutation.isPending;
   return (
     <div
@@ -60,7 +70,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
             ? "Read-only OpenRouter sidecar account"
             : isOmniRoute
               ? "Read-only OmniRoute sidecar account"
-              : "Read-only Claude sidecar account"}
+              : "Read-only CLIProxyAPI multi-provider account"}
         </p>
       </div>
 
@@ -74,22 +84,26 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
       </div>
 
       {showQuotaUsage ? (
-      <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
-        <SyntheticField
-          label={`${usageSourceLabel} 5h remaining`}
-          value={`${formatPercentNullable(primaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`}
-        />
-        <SyntheticField
-          label={`${usageSourceLabel} weekly remaining`}
-          value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
-        />
-      </div>
+        <div className="grid gap-3 rounded-lg border bg-muted/10 p-4 text-sm sm:grid-cols-2">
+          {showPrimaryQuota ? (
+            <SyntheticField
+              label={`${usageSourceLabel} 5h remaining`}
+              value={`${formatPercentNullable(primaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtPrimary ?? null)}`}
+            />
+          ) : null}
+          {showSecondaryQuota ? (
+            <SyntheticField
+              label={`${usageSourceLabel} weekly remaining`}
+              value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
+            />
+          ) : null}
+        </div>
       ) : null}
 
       {account.sidecarAuths && account.sidecarAuths.length > 0 ? (
         <div className="space-y-1 rounded-lg border bg-card/40 p-3 text-sm">
           <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
-            Sidecar accounts
+            CLIProxyAPI upstream accounts
           </div>
           <ul className="divide-y">
             {account.sidecarAuths.map((auth, idx) => (
@@ -107,6 +121,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                     </div>
                     <div className="truncate text-[11px] text-muted-foreground">
                       {auth.authIndex ? `auth_index ${auth.authIndex} | ` : ""}
+                      {cliproxyProviderLabel(auth.provider)} |{" "}
                       {auth.paused
                         ? "Paused"
                         : auth.quotaExceeded
@@ -116,18 +131,29 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                         ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
                         : ""}
                     </div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {auth.planType ? `${formatSlug(auth.planType)} | ` : "Plan required | "}
-                      5h {formatPercentNullable(auth.primaryRemainingPercent ?? null)}
-                      {auth.primaryUsedTokens != null && auth.primaryTokenBudget != null
-                        ? ` (${auth.primaryUsedTokens.toLocaleString()} / ${auth.primaryTokenBudget.toLocaleString()} tok)`
-                        : ""}
-                      {" | "}
-                      weekly {formatPercentNullable(auth.secondaryRemainingPercent ?? null)}
-                      {auth.secondaryUsedTokens != null && auth.secondaryTokenBudget != null
-                        ? ` (${auth.secondaryUsedTokens.toLocaleString()} / ${auth.secondaryTokenBudget.toLocaleString()} tok)`
-                        : ""}
-                    </div>
+                    {(auth.quotaWindows?.length ?? 0) > 0 ? (
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {auth.planType ? `${formatSlug(auth.planType)} | ` : "Plan required | "}
+                        {hasCLIProxyQuotaWindow(auth.quotaWindows, "five_hour") ? (
+                          <>
+                            5h {formatPercentNullable(auth.primaryRemainingPercent ?? null)}
+                            {auth.primaryUsedTokens != null && auth.primaryTokenBudget != null
+                              ? ` (${auth.primaryUsedTokens.toLocaleString()} / ${auth.primaryTokenBudget.toLocaleString()} tok)`
+                              : ""}
+                          </>
+                        ) : null}
+                        {hasCLIProxyQuotaWindow(auth.quotaWindows, "five_hour")
+                        && hasCLIProxyQuotaWindow(auth.quotaWindows, "weekly") ? " | " : null}
+                        {hasCLIProxyQuotaWindow(auth.quotaWindows, "weekly") ? (
+                          <>
+                            weekly {formatPercentNullable(auth.secondaryRemainingPercent ?? null)}
+                            {auth.secondaryUsedTokens != null && auth.secondaryTokenBudget != null
+                              ? ` (${auth.secondaryUsedTokens.toLocaleString()} / ${auth.secondaryTokenBudget.toLocaleString()} tok)`
+                              : ""}
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">

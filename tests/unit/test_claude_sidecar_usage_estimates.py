@@ -36,14 +36,16 @@ def _event(
     timestamp: datetime | None = None,
     *,
     failed: bool = False,
+    provider: str | None = "claude",
+    model: str | None = "claude-sonnet",
 ) -> ClaudeSidecarUsageRecord:
     return ClaudeSidecarUsageRecord(
         request_id=f"{auth_index}-{total_tokens}-{timestamp or NOW}",
         timestamp=timestamp or NOW - timedelta(minutes=30),
         auth_index=auth_index,
         source=f"{auth_index}@example.com",
-        provider="claude",
-        model="claude-sonnet",
+        provider=provider,
+        model=model,
         alias="claude",
         endpoint="POST /v1/chat/completions",
         auth_type="oauth",
@@ -62,6 +64,7 @@ def _snapshot(
     *,
     exceeded: bool = False,
     oauth_usage: SidecarOAuthUsage | None = None,
+    provider: str = "claude",
 ) -> SidecarQuotaSnapshot:
     return SidecarQuotaSnapshot(
         checked_at=NOW,
@@ -83,6 +86,7 @@ def _snapshot(
                 failed=0,
                 last_refresh=NOW,
                 oauth_usage=oauth_usage,
+                provider=provider,
             ),
         ),
     )
@@ -230,3 +234,89 @@ def test_oauth_usage_overrides_aggregate_even_with_plan_budget() -> None:
     assert estimates.aggregate.primary_remaining_percent == 33.0
     assert estimates.aggregate.secondary_remaining_percent == 98.0
     assert estimates.aggregate.confidence == "oauth"
+
+
+def test_xai_plan_uses_weekly_only_without_claude_window_math() -> None:
+    plan = ClaudeSidecarAuthPlanData(
+        auth_index="xai-1",
+        email="grok@example.com",
+        source="grok@example.com",
+        provider="xai",
+        plan_type="custom",
+        primary_token_budget=None,
+        secondary_token_budget=1_000,
+    )
+    estimates = build_claude_usage_estimates(
+        events=[
+            _event(
+                "xai-1",
+                250,
+                provider="xai",
+                model="grok-4",
+            )
+        ],
+        plans=[plan],
+        snapshot=_snapshot("xai-1", provider="xai"),
+        now=NOW,
+    )
+
+    account = estimates.accounts[0]
+    assert account.provider == "xai"
+    assert account.quota_windows == ("weekly",)
+    assert account.primary_used_tokens == 0
+    assert account.primary_remaining_percent is None
+    assert account.primary_token_budget is None
+    assert account.secondary_used_tokens == 250
+    assert account.secondary_remaining_percent == 75.0
+
+
+@pytest.mark.parametrize(
+    ("primary_budget", "secondary_budget", "expected_windows"),
+    [
+        (1_000, None, ("five_hour",)),
+        (None, 1_000, ("weekly",)),
+        (1_000, 1_000, ("five_hour", "weekly")),
+    ],
+)
+def test_xai_manual_budgets_declare_only_supplied_windows(
+    primary_budget: int | None,
+    secondary_budget: int | None,
+    expected_windows: tuple[str, ...],
+) -> None:
+    plan = ClaudeSidecarAuthPlanData(
+        auth_index="xai-1",
+        email="grok@example.com",
+        source="grok@example.com",
+        provider="xai",
+        plan_type="custom",
+        primary_token_budget=primary_budget,
+        secondary_token_budget=secondary_budget,
+    )
+    estimates = build_claude_usage_estimates(
+        events=[_event("xai-1", 250, provider="xai", model="grok-4")],
+        plans=[plan],
+        snapshot=_snapshot("xai-1", provider="xai"),
+        now=NOW,
+    )
+
+    account = estimates.accounts[0]
+    assert account.quota_windows == expected_windows
+    assert account.primary_token_budget == primary_budget
+    assert account.secondary_token_budget == secondary_budget
+    assert account.primary_used_tokens == (250 if primary_budget else 0)
+    assert account.secondary_used_tokens == (250 if secondary_budget else 0)
+
+
+def test_legacy_event_without_provider_or_model_joins_snapshot_provider() -> None:
+    estimates = build_claude_usage_estimates(
+        events=[_event("auth-1", 25, provider=None, model=None)],
+        plans=[_plan("auth-1")],
+        snapshot=_snapshot("auth-1", provider="claude"),
+        now=NOW,
+    )
+
+    assert len(estimates.accounts) == 1
+    account = estimates.accounts[0]
+    assert account.provider == "claude"
+    assert account.primary_used_tokens == 25
+    assert account.primary_remaining_percent == 75.0

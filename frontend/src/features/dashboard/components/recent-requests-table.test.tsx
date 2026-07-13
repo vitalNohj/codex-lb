@@ -347,6 +347,53 @@ describe("RecentRequestsTable", () => {
     expect(within(dialog).queryByText("Sidecar HTTP")).not.toBeInTheDocument();
   });
 
+  it("keeps Grok CLIProxyAPI account labels provider-agnostic", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: "Grok Key",
+            apiKeyId: "key-grok",
+            requestId: "req-grok-sidecar",
+            requestKind: "normal",
+            model: "grok-4",
+            source: "claude_sidecar",
+            sidecarAccountLabel: "grok@example.com",
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 15,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            requestedReasoningEffort: null,
+            costUsd: null,
+            costBreakdown: null,
+            latencyMs: 50,
+          },
+        ]}
+      />,
+    );
+
+    const row = screen.getByText("grok-4").closest("tr");
+    const accountCell = within(row as HTMLElement).getAllByRole("cell")[1];
+    expect(accountCell).toHaveTextContent("CLIProxyAPI: grok@example.com");
+    expect(accountCell).not.toHaveTextContent("Grok");
+    expect(accountCell).not.toHaveTextContent("xAI");
+  });
+
   it("blurs CLIProxyAPI account emails in privacy mode", () => {
     usePrivacyStore.setState({ blurred: true });
 

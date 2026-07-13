@@ -173,6 +173,128 @@ async def test_request_logs_api_returns_claude_sidecar_account_label(async_clien
 
 
 @pytest.mark.asyncio
+async def test_request_logs_correlation_prefers_matching_provider(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="codexlb-uuid-grok-sidecar",
+            model="grok-4",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            transport="http",
+            source="claude_sidecar",
+        )
+        session.add_all(
+            [
+                ClaudeSidecarUsageEvent(
+                    request_id="cpa-claude-closer",
+                    timestamp=now + timedelta(seconds=1),
+                    auth_index="0",
+                    source="claude@example.com",
+                    provider="claude",
+                    model="claude-sonnet",
+                    total_tokens=15,
+                ),
+                ClaudeSidecarUsageEvent(
+                    request_id="cpa-xai-match",
+                    timestamp=now + timedelta(seconds=5),
+                    auth_index="1",
+                    source="grok@example.com",
+                    provider="xai",
+                    model="grok-4",
+                    total_tokens=15,
+                ),
+            ]
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=1")
+
+    assert response.status_code == 200
+    latest = response.json()["requests"][0]
+    assert latest["sidecarAccountLabel"] == "grok@example.com"
+
+
+@pytest.mark.asyncio
+async def test_request_logs_provider_preference_never_escapes_request_window(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="target-grok-log",
+            model="grok-4",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            source="claude_sidecar",
+        )
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="later-claude-log",
+            model="claude-sonnet",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now + timedelta(seconds=60),
+            source="claude_sidecar",
+        )
+        session.add_all(
+            [
+                ClaudeSidecarUsageEvent(
+                    request_id="near-target-claude",
+                    timestamp=now + timedelta(seconds=1),
+                    auth_index="0",
+                    source="near-claude@example.com",
+                    provider="claude",
+                    model="claude-sonnet",
+                    total_tokens=15,
+                ),
+                ClaudeSidecarUsageEvent(
+                    request_id="outside-target-xai",
+                    timestamp=now + timedelta(seconds=31),
+                    auth_index="1",
+                    source="outside-grok@example.com",
+                    provider="xai",
+                    model="grok-4",
+                    total_tokens=15,
+                ),
+                ClaudeSidecarUsageEvent(
+                    request_id="later-claude",
+                    timestamp=now + timedelta(seconds=60),
+                    auth_index="2",
+                    source="later-claude@example.com",
+                    provider="claude",
+                    model="claude-sonnet",
+                    total_tokens=15,
+                ),
+            ]
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=2")
+
+    assert response.status_code == 200
+    labels_by_request = {
+        request["requestId"]: request["sidecarAccountLabel"]
+        for request in response.json()["requests"]
+    }
+    assert labels_by_request["target-grok-log"] == "near-claude@example.com"
+    assert labels_by_request["later-claude-log"] == "later-claude@example.com"
+
+
+@pytest.mark.asyncio
 async def test_request_logs_api_assigns_distinct_sidecar_labels_per_account(async_client, db_setup):
     # Two concurrent CLIProxyAPI accounts must each get their own email label,
     # matched to the nearest usage event by timestamp.

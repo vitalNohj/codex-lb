@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { CLIPROXY_QUOTA_WINDOWS } from "@/features/settings/cliproxy";
+
 const RoutingStrategySchema = z.enum([
   "usage_weighted",
   "round_robin",
@@ -85,6 +87,7 @@ export const ClaudeSidecarAuthPlanSchema = z.object({
   authIndex: z.string().trim().min(1).max(255).nullable().optional(),
   email: z.string().trim().min(1).max(255).nullable().optional(),
   source: z.string().trim().min(1).max(255).nullable().optional(),
+  provider: z.string().trim().min(1).max(64).nullable().optional(),
   planType: ClaudeSidecarPlanTypeSchema,
   primaryTokenBudget: z.number().int().positive().nullable().optional(),
   secondaryTokenBudget: z.number().int().positive().nullable().optional(),
@@ -456,6 +459,9 @@ export const ClaudeSidecarQuotaAuthSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
+  provider: z.string(),
+  quotaWindows: z.array(z.enum(CLIPROXY_QUOTA_WINDOWS)),
+  supportsManualPlan: z.boolean(),
   status: z.string().nullable().optional(),
   quotaExceeded: z.boolean().default(false),
   nextRecoverAt: z.string().datetime({ offset: true }).nullable().optional(),
@@ -495,6 +501,7 @@ export const ClaudeSidecarRoutingAccountSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
+  provider: z.string(),
   priority: z.number().int().default(0),
   paused: z.boolean().default(false),
 });

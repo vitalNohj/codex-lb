@@ -11,6 +11,7 @@ from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import DashboardContext, get_dashboard_context
+from app.modules.claude_sidecar.provider_adapters import catalog_label
 from app.modules.dashboard.schemas import (
     DashboardOverviewResponse,
     DashboardOverviewTimeframeKey,
@@ -89,7 +90,13 @@ async def list_models() -> dict:
             if sidecar_model.id in seen_model_ids:
                 continue
             seen_model_ids.add(sidecar_model.id)
-            models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}", "sourceOnly": False})
+            models.append(
+                {
+                    "id": sidecar_model.id,
+                    "name": catalog_label(sidecar_model.id, sidecar_model.owned_by),
+                    "sourceOnly": False,
+                }
+            )
     openrouter_config = await load_openrouter_sidecar_config()
     if openrouter_config is not None and openrouter_config.enabled:
         try:

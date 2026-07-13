@@ -3,8 +3,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
-from dataclasses import asdict
 import time
+from dataclasses import asdict
 
 import aiohttp
 import httpx
@@ -20,8 +20,8 @@ from app.core.auth.dependencies import (
     set_dashboard_error_format,
     validate_dashboard_session,
 )
-from app.core.clients.http import _build_ssl_context
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.clients.http import _build_ssl_context
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardBadRequestError
@@ -261,6 +261,7 @@ def _auth_plan_data(plan) -> ClaudeSidecarAuthPlanData:
         auth_index=plan.auth_index,
         email=plan.email,
         source=plan.source,
+        provider=plan.provider,
         plan_type=plan.plan_type,
         primary_token_budget=plan.primary_token_budget,
         secondary_token_budget=plan.secondary_token_budget,

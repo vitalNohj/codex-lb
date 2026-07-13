@@ -67,6 +67,29 @@ async def test_add_log_computes_cost_for_prefixed_claude_sidecar_model(db_setup)
 
 
 @pytest.mark.asyncio
+async def test_add_log_keeps_unpriced_grok_sidecar_cost_null(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_grok_sidecar",
+            model="grok-gpt-4o-compatible",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            source="claude_sidecar",
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        assert persisted.cost_usd is None
+
+
+@pytest.mark.asyncio
 async def test_add_log_persists_request_kind(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:

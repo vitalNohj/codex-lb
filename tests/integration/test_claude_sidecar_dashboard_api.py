@@ -36,6 +36,13 @@ class _FakeSidecarClient:
             "email": "b@example.com",
             "priority": 10,
         },
+        {
+            "name": "xai-grok@example.com.json",
+            "auth_index": "2",
+            "provider": "grok",
+            "email": "grok@example.com",
+            "priority": 20,
+        },
     ]
     strategy_updates: list[str] = []
     priority_updates: list[tuple[str, int]] = []
@@ -98,6 +105,13 @@ def _reset_fake_sidecar_client() -> None:
             "email": "b@example.com",
             "priority": 10,
             "disabled": True,
+        },
+        {
+            "name": "xai-grok@example.com.json",
+            "auth_index": "2",
+            "provider": "xai",
+            "email": "grok@example.com",
+            "priority": 20,
         },
     ]
     _FakeSidecarClient.strategy_updates = []
@@ -321,6 +335,89 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
 
 
 @pytest.mark.asyncio
+async def test_sidecar_quota_matches_same_identity_by_provider(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "shared-auth",
+                    "provider": "claude",
+                    "planType": "custom",
+                    "primaryTokenBudget": 100,
+                    "secondaryTokenBudget": 700,
+                },
+                {
+                    "authIndex": "shared-auth",
+                    "provider": "xai",
+                    "planType": "custom",
+                    "primaryTokenBudget": 1_000,
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    checked_at = datetime.now(timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-user.json",
+                auth_index="shared-auth",
+                email="claude@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                provider="claude",
+            ),
+            SidecarAuthQuota(
+                name="xai-user.json",
+                auth_index="shared-auth",
+                email="grok@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                provider="xai",
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
+        )
+
+    response = await async_client.get("/api/claude-sidecar/quota")
+
+    assert response.status_code == 200
+    accounts = {account["provider"]: account for account in response.json()["accounts"]}
+    assert accounts["claude"]["quotaWindows"] == ["five_hour", "weekly"]
+    assert accounts["claude"]["primaryTokenBudget"] == 100
+    assert accounts["xai"]["quotaWindows"] == ["five_hour"]
+    assert accounts["xai"]["primaryTokenBudget"] == 1_000
+    assert accounts["xai"]["secondaryTokenBudget"] is None
+
+
+@pytest.mark.asyncio
 async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_then_healthy(async_client, monkeypatch):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()
@@ -366,6 +463,7 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
     assert payload["accounts"] == [
         {
             "name": "claude-a@example.com.json",
+            "provider": "claude",
             "authIndex": "0",
             "email": "a@example.com",
             "priority": 0,
@@ -373,10 +471,19 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
         },
         {
             "name": "claude-b@example.com.json",
+            "provider": "claude",
             "authIndex": "1",
             "email": "b@example.com",
             "priority": 10,
             "paused": True,
+        },
+        {
+            "name": "xai-grok@example.com.json",
+            "provider": "xai",
+            "authIndex": "2",
+            "email": "grok@example.com",
+            "priority": 20,
+            "paused": False,
         },
     ]
 
@@ -444,11 +551,11 @@ async def test_put_routing_priority_round_trips(async_client, monkeypatch):
 
     response = await async_client.put(
         "/api/claude-sidecar/routing/priority",
-        json={"name": "claude-a@example.com.json", "priority": 100},
+        json={"name": "xai-grok@example.com.json", "priority": 100},
     )
 
     assert response.status_code == 200
-    assert _FakeSidecarClient.priority_updates == [("claude-a@example.com.json", 100)]
+    assert _FakeSidecarClient.priority_updates == [("xai-grok@example.com.json", 100)]
     assert response.json()["status"] == "healthy"
 
 
@@ -468,22 +575,22 @@ async def test_put_routing_paused_round_trips(async_client, monkeypatch):
 
     response = await async_client.put(
         "/api/claude-sidecar/routing/paused",
-        json={"name": "claude-a@example.com.json", "paused": True},
+        json={"name": "xai-grok@example.com.json", "paused": True},
     )
 
     assert response.status_code == 200
-    assert _FakeSidecarClient.disabled_updates == [("claude-a@example.com.json", True)]
+    assert _FakeSidecarClient.disabled_updates == [("xai-grok@example.com.json", True)]
     assert response.json()["status"] == "healthy"
 
     response = await async_client.put(
         "/api/claude-sidecar/routing/paused",
-        json={"name": "claude-a@example.com.json", "paused": False},
+        json={"name": "xai-grok@example.com.json", "paused": False},
     )
 
     assert response.status_code == 200
     assert _FakeSidecarClient.disabled_updates == [
-        ("claude-a@example.com.json", True),
-        ("claude-a@example.com.json", False),
+        ("xai-grok@example.com.json", True),
+        ("xai-grok@example.com.json", False),
     ]
 
 

@@ -131,6 +131,7 @@ from app.modules.api_keys.service import (
     ApiKeyUsageReservationData,
     _compute_pooled_credits,
 )
+from app.modules.claude_sidecar.provider_adapters import catalog_owner
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.model_sources.catalog import (
@@ -178,12 +179,12 @@ from app.modules.proxy.cursor_chat_compat import (
     is_cursor_compat_client,
     stream_with_cursor_usage_fallback,
 )
-from app.modules.proxy.helpers import _rate_limit_details
-from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.custom_alias_catalog import (
     apply_custom_alias_catalog_overrides,
     load_custom_alias_catalog,
 )
+from app.modules.proxy.helpers import _rate_limit_details
+from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.images_observability import record_images_route_observability
 from app.modules.proxy.model_aliasing import (
     append_discoverable_alias_models,
@@ -215,7 +216,6 @@ from app.modules.proxy.request_policy import (
     normalize_responses_request_payload,
     openai_client_payload_error,
     openai_validation_error,
-    resolve_model_alias,
     sanitize_source_chat_payload,
     strip_terminal_compaction_trigger_input,
     validate_model_access,
@@ -2826,6 +2826,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     if sidecar_config is not None and sidecar_config.enabled:
         discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in sidecar_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
             if decision is None or decision.provider != "claude":
@@ -2840,7 +2841,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                     {
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
-                        "owned_by": "anthropic",
+                        "owned_by": catalog_owner(slug, owner_by_model.get(slug)),
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }

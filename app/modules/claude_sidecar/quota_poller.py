@@ -20,6 +20,7 @@ from app.modules.claude_sidecar.oauth_usage import (
     ClaudeOAuthUsageError,
     fetch_claude_oauth_usage,
 )
+from app.modules.claude_sidecar.provider_adapters import adapter_for_provider
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarOAuthUsage,
@@ -174,7 +175,8 @@ async def _attach_oauth_usage(
     enriched: list[SidecarAuthQuota] = []
     for account in accounts:
         usage = None
-        if account.auth_index:
+        adapter = adapter_for_provider(account.provider)
+        if adapter.supports_anthropic_oauth and account.auth_index:
             try:
                 usage = await fetch_claude_oauth_usage(client, account.auth_index)
             except ClaudeOAuthUsageError as exc:
@@ -183,7 +185,7 @@ async def _attach_oauth_usage(
                     account.email or account.auth_index or account.name,
                     exc,
                 )
-        if usage is None:
+        if adapter.supports_anthropic_oauth and usage is None:
             # Anthropic's OAuth usage endpoint intermittently rate-limits
             # (HTTP 429); keep the last-known buckets so the dashboard's
             # 5h/weekly bars do not flap to "Unavailable" between polls.

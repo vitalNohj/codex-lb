@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ClaudeSidecarQuotaResponseSchema,
+  ClaudeSidecarRoutingResponseSchema,
   DashboardSettingsSchema,
   SettingsUpdateRequestSchema,
   UpstreamProxyAdminSchema,
@@ -439,6 +441,56 @@ describe("SettingsUpdateRequestSchema", () => {
         limitWarmupExhaustedThresholdPercent: 100.1,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("CLIProxyAPI multi-provider schemas", () => {
+  it("parses provider observation fields and routing labels", () => {
+    const quota = ClaudeSidecarQuotaResponseSchema.parse({
+      status: "healthy",
+      accounts: [{
+        name: "xai-user.json",
+        provider: "xai",
+        quotaWindows: ["weekly"],
+        supportsManualPlan: true,
+      }],
+    });
+    const routing = ClaudeSidecarRoutingResponseSchema.parse({
+      status: "healthy",
+      strategy: "fill_first",
+      accounts: [{
+        name: "xai-user.json",
+        provider: "xai",
+        priority: 10,
+        paused: false,
+      }],
+    });
+
+    expect(quota.accounts[0]).toMatchObject({
+      provider: "xai",
+      quotaWindows: ["weekly"],
+      supportsManualPlan: true,
+    });
+    expect(routing.accounts[0]?.provider).toBe("xai");
+  });
+
+  it("preserves optional provider on auth plans", () => {
+    const parsed = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      preferEarlierResetAccounts: false,
+      importWithoutOverwrite: false,
+      totpRequiredOnLogin: false,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      claudeSidecarAuthPlans: [{
+        authIndex: "0",
+        provider: "xai",
+        planType: "custom",
+        secondaryTokenBudget: 123_000,
+      }],
+    });
+
+    expect(parsed.claudeSidecarAuthPlans[0]?.provider).toBe("xai");
   });
 });
 

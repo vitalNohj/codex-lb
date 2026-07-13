@@ -139,6 +139,7 @@ describe("buildSettingsUpdateRequest", () => {
         {
           authIndex: "0",
           email: "claude@example.com",
+          provider: "claude",
           planType: "custom",
           primaryTokenBudget: 100,
           secondaryTokenBudget: 700,
@@ -152,7 +153,7 @@ describe("buildSettingsUpdateRequest", () => {
     const payload = buildSettingsUpdateRequest(settings, { dashboardSessionTtlSeconds: 7200 });
 
     expect(payload.claudeSidecarAuthPlans).toEqual([
-      expect.objectContaining({ authIndex: "0", planType: "custom" }),
+      expect.objectContaining({ authIndex: "0", provider: "claude", planType: "custom" }),
     ]);
     expect(payload.claudeSidecarUsagePollIntervalSeconds).toBe(20);
     expect(payload.claudeSidecarUsageQueueBatchSize).toBe(50);

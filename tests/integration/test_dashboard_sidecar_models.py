@@ -13,7 +13,10 @@ class _FakeSidecarClient:
         pass
 
     async def list_models_cached(self) -> list[SidecarModel]:
-        return [SidecarModel(id="claude-sonnet", created=123, owned_by="anthropic")]
+        return [
+            SidecarModel(id="claude-sonnet", created=123, owned_by="anthropic"),
+            SidecarModel(id="grok-4", created=124, owned_by="xai"),
+        ]
 
 
 def _make_upstream_model(slug: str) -> UpstreamModel:
@@ -55,5 +58,6 @@ async def test_dashboard_models_append_sidecar_models_when_enabled(async_client,
     response = await async_client.get("/api/models")
     assert response.status_code == 200
     models = response.json()["models"]
-    assert {model["id"] for model in models} >= {"gpt-5.4", "claude-sonnet"}
+    assert {model["id"] for model in models} >= {"gpt-5.4", "claude-sonnet", "grok-4"}
     assert next(model for model in models if model["id"] == "claude-sonnet")["name"] == "Claude: claude-sonnet"
+    assert next(model for model in models if model["id"] == "grok-4")["name"] == "Grok: grok-4"

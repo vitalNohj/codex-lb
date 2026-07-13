@@ -226,8 +226,19 @@ describe("ClaudeSidecarSettings", () => {
     const secondPriority = await screen.findByLabelText("Priority for b@example.com");
     expect(screen.getByText("a@example.com")).toBeInTheDocument();
     expect(screen.getByText("b@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/Claude \| claude-a@example\.com\.json/)).toBeInTheDocument();
+    expect(screen.getByText(/Grok \| xai-b@example\.com\.json/)).toBeInTheDocument();
+    expect(screen.getAllByRole("combobox", { name: /Routing strategy/ })).toHaveLength(1);
     expect(firstPriority).toHaveValue(0);
     expect(secondPriority).toHaveValue(10);
+  });
+
+  it("uses provider-neutral setup copy and documents shared effort behavior", () => {
+    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.getByText(/multi-provider chat-completions routing/)).toBeInTheDocument();
+    expect(screen.getByText(/--xai-login/)).toBeInTheDocument();
+    expect(screen.getByText(/One shared override applies to all CLIProxyAPI upstreams/)).toBeInTheDocument();
   });
 
   it("hides CLIProxyAPI routing controls without a management key", () => {

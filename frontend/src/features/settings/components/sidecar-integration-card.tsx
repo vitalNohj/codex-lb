@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
+import { cliproxyProviderLabel } from "@/features/settings/cliproxy";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import {
   REASONING_EFFORT_OPTIONS,
@@ -1008,6 +1009,9 @@ function ReasoningEffort() {
       </Select>
       <span className="block font-normal text-muted-foreground">
         Forces this effort on every request, overriding what the client sends (an explicit model-name suffix still wins).
+        {meta.id === "claude"
+          ? " One shared override applies to all CLIProxyAPI upstreams; upstream support and interpretation may vary."
+          : ""}
       </span>
     </label>
   );
@@ -1084,7 +1088,7 @@ function Routing({
       <div>
         <p className="text-sm font-medium">CLIProxyAPI routing</p>
         <p className="text-xs text-muted-foreground">
-          Choose how CLIProxyAPI rotates Claude accounts and tune priority live. Higher number = preferred.
+          Choose how CLIProxyAPI rotates its upstream accounts and tune priority live.
         </p>
       </div>
       <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-routing-strategy">
@@ -1104,13 +1108,13 @@ function Routing({
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">
-        Fill first burns the highest-priority available account until it cools down; round robin spreads requests within the top-priority group.
+        Fill first drains an available account before failover; round robin spreads requests across available accounts.
       </p>
       {message ? <p className="text-xs text-muted-foreground">{message}</p> : null}
       <div className="space-y-2">
         {isLoading ? <p className="text-xs text-muted-foreground">Loading accounts...</p> : null}
         {!isLoading && accounts.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No Claude accounts reported by CLIProxyAPI.</p>
+          <p className="text-xs text-muted-foreground">No upstream accounts reported by CLIProxyAPI.</p>
         ) : null}
         {accounts.map((account) => (
           <div
@@ -1122,7 +1126,7 @@ function Routing({
                 {account.email || account.name}
               </p>
               <p className="truncate font-mono text-[11px] text-muted-foreground">
-                {account.name}
+                {cliproxyProviderLabel(account.provider)} | {account.name}
                 {account.paused ? " | paused" : ""}
               </p>
             </div>

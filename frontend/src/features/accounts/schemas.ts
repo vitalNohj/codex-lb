@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { CLIPROXY_QUOTA_WINDOWS } from "@/features/settings/cliproxy";
+
 const UsageTrendPointSchema = z.object({
   t: z.iso.datetime({ offset: true }),
   v: z.number(),
@@ -70,7 +72,9 @@ export const SidecarAuthAccountSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
-  provider: z.string().nullable().optional(),
+  provider: z.string(),
+  quotaWindows: z.array(z.enum(CLIPROXY_QUOTA_WINDOWS)),
+  supportsManualPlan: z.boolean(),
   status: z.string().nullable().optional(),
   paused: z.boolean().default(false),
   quotaExceeded: z.boolean().default(false),

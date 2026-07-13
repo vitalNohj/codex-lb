@@ -89,7 +89,7 @@ class RequestLogsService:
         )
         api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
         claude_sidecar_logs = [
-            (log.request_id, log.requested_at)
+            (log.request_id, log.requested_at, log.model)
             for log in logs
             if log.source == "claude_sidecar"
         ]

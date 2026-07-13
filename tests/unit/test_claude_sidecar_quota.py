@@ -46,7 +46,7 @@ def test_parse_exceeded_fixture_extracts_quota_and_model_states():
 
     accounts = parse_auth_files(files)
 
-    assert len(accounts) == 1, "non-claude provider entries must be filtered out"
+    assert len(accounts) == 2
     only = accounts[0]
     assert only.email == "exceeded@example.com"
     assert only.quota_exceeded is True
@@ -59,6 +59,8 @@ def test_parse_exceeded_fixture_extracts_quota_and_model_states():
     by_model = {state.model: state for state in only.model_states}
     assert by_model["claude-sonnet-4-5-20250929"].quota_exceeded is True
     assert by_model["claude-opus-4-1"].quota_exceeded is False
+    assert accounts[1].email == "non-claude@example.com"
+    assert accounts[1].provider == "unknown"
 
 
 def test_snapshot_round_trips_through_json():
@@ -77,7 +79,7 @@ def test_snapshot_round_trips_through_json():
     assert decoded is not None
     assert decoded.status == "healthy"
     assert decoded.checked_at == snapshot.checked_at
-    assert len(decoded.accounts) == 1
+    assert len(decoded.accounts) == 2
     decoded_only = decoded.accounts[0]
     assert decoded_only.email == "exceeded@example.com"
     assert decoded_only.provider == accounts[0].provider
@@ -88,6 +90,20 @@ def test_snapshot_round_trips_through_json():
         for state in decoded_only.model_states
     )
     assert isinstance(decoded_only.model_states[0], SidecarModelQuota)
+
+
+def test_parse_auth_files_normalizes_xai_and_skips_blank_names():
+    accounts = parse_auth_files(
+        [
+            {"name": " xai-user.json ", "provider": "Grok", "email": "grok@example.com"},
+            {"name": "   ", "provider": "claude"},
+            {"provider": "claude", "email": "missing-name@example.com"},
+        ]
+    )
+
+    assert [(account.name, account.provider) for account in accounts] == [
+        ("xai-user.json", "xai"),
+    ]
 
 
 def test_snapshot_from_json_handles_unauthorized_status():

@@ -16,7 +16,7 @@ from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
 from app.db.session import sqlite_writer_section
-
+from app.modules.claude_sidecar.provider_adapters import infer_model_provider, normalize_provider
 
 # CLIProxyAPI records its usage event within a couple of seconds of the
 # codex-lb request; allow a small window when correlating the two by timestamp.
@@ -529,7 +529,7 @@ class RequestLogsRepository:
 
     async def get_claude_sidecar_account_labels_for_logs(
         self,
-        logs: list[tuple[str, datetime]],
+        logs: list[tuple[str, datetime, str]],
     ) -> dict[str, str]:
         """Correlate Claude sidecar request logs to CLIProxyAPI usage events by timestamp.
 
@@ -540,17 +540,22 @@ class RequestLogsRepository:
         event within ``_SIDECAR_LABEL_MATCH_WINDOW`` and that event is consumed
         so it cannot be reused for another row.
         """
-        entries = [(request_id, requested_at) for request_id, requested_at in logs if request_id and requested_at]
+        entries = [
+            (request_id, requested_at, model)
+            for request_id, requested_at, model in logs
+            if request_id and requested_at
+        ]
         if not entries:
             return {}
 
-        window_start = min(requested_at for _, requested_at in entries) - _SIDECAR_LABEL_MATCH_WINDOW
-        window_end = max(requested_at for _, requested_at in entries) + _SIDECAR_LABEL_MATCH_WINDOW
+        window_start = min(requested_at for _, requested_at, _ in entries) - _SIDECAR_LABEL_MATCH_WINDOW
+        window_end = max(requested_at for _, requested_at, _ in entries) + _SIDECAR_LABEL_MATCH_WINDOW
         result = await self._session.execute(
             select(
                 ClaudeSidecarUsageEvent.timestamp,
                 ClaudeSidecarUsageEvent.source,
                 ClaudeSidecarUsageEvent.auth_index,
+                ClaudeSidecarUsageEvent.provider,
             )
             .where(
                 ClaudeSidecarUsageEvent.timestamp >= window_start,
@@ -559,11 +564,11 @@ class RequestLogsRepository:
             .order_by(ClaudeSidecarUsageEvent.timestamp.asc())
         )
         events = [
-            (timestamp, _sidecar_account_label(source, auth_index))
-            for timestamp, source, auth_index in result.all()
+            (timestamp, _sidecar_account_label(source, auth_index), normalize_provider(provider))
+            for timestamp, source, auth_index, provider in result.all()
             if timestamp is not None
         ]
-        events = [(timestamp, label) for timestamp, label in events if label]
+        events = [(timestamp, label, provider) for timestamp, label, provider in events if label]
         if not events:
             return {}
 
@@ -572,19 +577,24 @@ class RequestLogsRepository:
         tolerance = _SIDECAR_LABEL_MATCH_WINDOW.total_seconds()
         # Match newest logs first so the most recent (most visible) rows win the
         # closest events under contention.
-        for request_id, requested_at in sorted(entries, key=lambda item: item[1], reverse=True):
-            best_index: int | None = None
-            best_delta = tolerance
-            for index, (timestamp, _label) in enumerate(events):
-                if index in used_indices:
-                    continue
-                delta = abs((timestamp - requested_at).total_seconds())
-                if delta <= best_delta:
-                    best_delta = delta
-                    best_index = index
-            if best_index is not None:
-                used_indices.add(best_index)
-                labels[request_id] = events[best_index][1]
+        for request_id, requested_at, model in sorted(entries, key=lambda item: item[1], reverse=True):
+            request_provider = infer_model_provider(model)
+            in_window = [
+                (index, abs((timestamp - requested_at).total_seconds()))
+                for index, (timestamp, _label, _provider) in enumerate(events)
+                if index not in used_indices
+                and abs((timestamp - requested_at).total_seconds()) <= tolerance
+            ]
+            if not in_window:
+                continue
+            matching_provider = [
+                candidate
+                for candidate in in_window
+                if request_provider != "unknown" and events[candidate[0]][2] == request_provider
+            ]
+            best_index, _delta = min(matching_provider or in_window, key=lambda candidate: candidate[1])
+            used_indices.add(best_index)
+            labels[request_id] = events[best_index][1]
         return labels
 
     async def get_api_key_details_by_ids(self, api_key_ids: list[str]) -> dict[str, tuple[str, str | None]]:

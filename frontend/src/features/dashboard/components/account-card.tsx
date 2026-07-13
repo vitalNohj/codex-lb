@@ -4,6 +4,10 @@ import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
+import {
+  cliproxyProviderLabel,
+  hasCLIProxyQuotaWindow,
+} from "@/features/settings/cliproxy";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import { StatusBadge } from "@/components/status-badge";
 import { cn } from "@/lib/utils";
@@ -302,12 +306,11 @@ export function ClaudeAuthCard({
   const pauseMutation = useClaudeSidecarAccountPause();
   const title = auth.email ?? auth.name;
   const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
-  const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
-  const providerLabel = auth.provider === "claude"
-    ? "Claude"
-    : auth.provider
-      ? formatSlug(auth.provider)
-      : "CLIProxyAPI";
+  const planLabel = auth.planType ? formatSlug(auth.planType) : "Plan required";
+  const providerLabel = cliproxyProviderLabel(auth.provider);
+  const showFiveHour = hasCLIProxyQuotaWindow(auth.quotaWindows, "five_hour");
+  const showWeekly = hasCLIProxyQuotaWindow(auth.quotaWindows, "weekly");
+  const quotaWindowCount = Number(showFiveHour) + Number(showWeekly);
 
   return (
     <div className="card-hover rounded-xl border bg-card p-4">
@@ -325,18 +328,24 @@ export function ClaudeAuthCard({
       </div>
 
       {/* Quota bars */}
-      <div className="mt-3.5 grid grid-cols-2 gap-3">
-        <QuotaBar
-          label="5h"
-          percent={auth.primaryRemainingPercent ?? null}
-          resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
-        />
-        <QuotaBar
-          label="Weekly"
-          percent={auth.secondaryRemainingPercent ?? null}
-          resetLabel={formatQuotaResetLabel(auth.resetAtSecondary ?? null)}
-        />
-      </div>
+      {quotaWindowCount > 0 ? (
+        <div className={cn("mt-3.5 grid gap-3", quotaWindowCount === 1 ? "grid-cols-1" : "grid-cols-2")}>
+          {showFiveHour ? (
+            <QuotaBar
+              label="5h"
+              percent={auth.primaryRemainingPercent ?? null}
+              resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
+            />
+          ) : null}
+          {showWeekly ? (
+            <QuotaBar
+              label="Weekly"
+              percent={auth.secondaryRemainingPercent ?? null}
+              resetLabel={formatQuotaResetLabel(auth.resetAtSecondary ?? null)}
+            />
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Reasoning effort override occupies the warm-up slot */}
       <div className="mt-3">
