@@ -2,89 +2,109 @@
 
 ## Purpose
 
-Make codex-lb's CLIProxyAPI integration honest about multi-upstream auth files (Claude, Grok/xAI, future providers) while keeping one Settings integration, one Management API client, and one global routing/priority/pause pool.
+Make codex-lb's CLIProxyAPI integration honest about multi-upstream auth files (Claude, Grok/xAI, future) while keeping one Settings integration, one Management API client, and one global routing/priority/pause pool — without shipping the “widen filter only” trap that would call Anthropic OAuth and invent Claude bars for Grok.
 
 ## Scope
 
-- Observation adapters per provider (usage windows, OAuth/live %, manual plans).
-- Auth ingestion + Dashboard/Settings surfaces for all CLIProxyAPI auths.
-- Grok/xAI routing via existing CLIProxyAPI prefixes/full-models.
-- Request Logs Account stays `CLIProxyAPI: <account>` (no provider qualifier).
+- Provider adapters + concrete observation fields (`provider`, `quota_windows`, `supports_manual_plan`).
+- Atomic widen of auth ingestion after/with those gates.
+- Dashboard/Settings UI driven by those fields.
+- Grok routing via existing CLIProxyAPI prefixes/full-models.
+- Honest model catalog labels / `owned_by`.
+- Request Logs Account stays `CLIProxyAPI: <account>`; prefer same-provider correlation.
 
 ## Non-goals
 
 - `claude_sidecar` → `cliproxy` rename.
-- Second integration card for the same CLIProxyAPI URL.
+- Second integration card for same CLIProxyAPI URL.
 - Provider names in Request Logs Account cells.
+- Per-upstream effort overrides.
 - CLIProxyAPI process/login ownership.
+- Asserting model-family credential pick without spike proof.
 
 ## Decision rationale
 
 | Decision | Why |
 |----------|-----|
-| Generic multi-provider (not Grok-only) | CLIProxyAPI already ships multiple `-*-login` flows; a Grok-only fork would be rework for Kimi/etc. |
-| Provider plugins | Transport is shared; observation is not. Adapters prevent Claude OAuth/bars from lying on Grok rows without a full rename. |
-| Global fill-first / priority | Matches Management API + operator preference; UI must label provider so interleaved priorities are readable. |
-| Same card chrome, adaptive windows | Operators already know Codex-parity cards; only the quota windows/inputs change per provider. |
-| Manual plans fallback | Proven Claude path; unblocks Grok before a live xAI usage API is confirmed. |
-| Flat Account log label | Model column already distinguishes providers; Account is for which credential burned. |
+| Adapters before widen | Current poller calls Anthropic for every `auth_index`; estimates invent 5h/7d for everyone. Widen-first = operator-facing lies + bad upstream calls. |
+| Concrete `quota_windows` API field | Frontend today hardcodes two bars; without a field, backend adapters cannot drive UI. |
+| Auth plans stay JSON array + optional `provider` | Avoids migration rewrite; matches existing `ClaudeSidecarAuthPlan` list persistence. |
+| Null parent aggregate when multi-provider | Parent synthetic summary currently blends all auth estimates into one Claude-shaped usage. |
+| Prefer same-provider correlation | 30s nearest-event matching can mis-attribute under concurrent Claude+Grok traffic. |
+| Keep resolver id `claude` | Live rename cost; means “CLIProxyAPI integration,” not “Claude-only.” |
+| Shared effort override | Existing setting; per-upstream effort is a follow-up if Grok needs diverge. |
 
 ## Alternatives considered
 
-1. **Widen filter only** — rejected (misleading quota/OAuth).
-2. **Full rename to cliproxy** — deferred (live migration cost).
+1. **Widen filter only** — rejected (OAuth + fake bars).
+2. **Full rename to cliproxy** — deferred.
 3. **Separate Grok Settings tab** — rejected (shared pool + prefix uniqueness).
-4. **Per-provider routing strategies in codex-lb** — rejected for this change (CLIProxyAPI has one strategy endpoint).
+4. **Object-map auth plans** — rejected for this change; additive array field instead.
+5. **Per-provider strategies in codex-lb** — rejected (CLIProxyAPI has one strategy endpoint).
 
 ## Constraints
 
-- Live shared `codex-lb` instance: no unprompted restarts.
-- Global prefix/full-model uniqueness across CLIProxyAPI/OpenRouter/OmniRoute/Ollama.
+- Live shared `codex-lb`: no unprompted restarts.
+- Global prefix/full-model uniqueness across sidecars.
 - Management API remains SSOT for pause/priority/strategy.
 - Anthropic OAuth URL must not be called for non-Claude auths.
-- Caveman/OpenSpec: `spec.md` normative only; this file is narrative.
+- Do not apply Anthropic pricing to non-Claude model ids (`NULL` if unknown).
+- `spec.md` normative only; this file is narrative.
 
 ## Failure modes / edge cases
 
-- Auth file with missing/unknown `provider` → still listed; adapter = default/manual; subtitle fallback `CLIProxyAPI`.
-- Usage-queue correlation miss → Account shows bare `CLIProxyAPI` (unchanged benign miss).
-- Operator sets Grok auth to highest fill-first priority while sending Claude models → CLIProxyAPI should still select Claude credentials for Claude models; if upstream behavior differs, document from spike and revisit.
-- Manual plan present but live OAuth also present (Claude) → existing preference: authoritative OAuth % wins when available.
-- Prefix seed collides → do not auto-add; surface validation error.
+- Auth file missing `provider` → `unknown`; still listed; manual plans; subtitle fallback `CLIProxyAPI`.
+- Auth file missing usable `name` → skipped (cannot target pause/priority).
+- Usage-queue correlation miss → bare `CLIProxyAPI`.
+- Concurrent mixed traffic without provider match signal → may still mis-associate; prefer-provider reduces but does not eliminate risk.
+- Operator sets Grok highest priority under global fill-first while sending Claude models → **spike must verify** whether CLIProxyAPI still selects Claude credentials; if not, Settings needs a warning.
+- Priority banding docs wrong if CLIProxyAPI sort direction ≠ UI “higher preferred” copy → spike records truth.
+- Manual Claude `pro` default applied to new Grok estimation row → forbidden by frontend requirement.
+- Blended parent usage with mixed providers → forbidden; cards carry truth.
+- Grok model discovered via CLIProxyAPI `/v1/models` labeled `Claude: …` / `owned_by: anthropic` → forbidden.
 
 ## Example flows
 
-### Add Grok to an existing CLIProxyAPI
+### Add Grok to existing CLIProxyAPI (after Phase 1+2)
 
-1. Operator runs `cli-proxy-api --xai-login --no-browser` (or with browser) against the same auth-dir.
-2. Management `auth-files` gains an xAI entry (`provider` per spike).
-3. After Phase 1 deploy: Settings routing list shows Claude + Grok rows; Dashboard shows a Grok auth card with weekly (and 5h iff known) or manual estimate inputs.
-4. Operator sets priorities in one list (e.g. Claude Max `100`, Grok `50`).
-5. Operator adds `grok-` (or concrete full model ids) under CLIProxyAPI prefixes/full-models.
-6. Cursor request for that model → codex-lb CLIProxyAPI dispatch → CLIProxyAPI selects xAI credential.
-7. Request log Account: `CLIProxyAPI: user@x.ai` (example); Model shows the Grok model id.
+1. `cli-proxy-api --xai-login` into the same auth-dir.
+2. Management `auth-files` gains xAI entry (exact `provider` string from spike).
+3. Settings routing shows Claude + Grok rows with provider labels; one strategy.
+4. Dashboard shows a Grok auth card; bars follow `quota_windows`; else manual estimation.
+5. Operator sets priorities in one list (banding per verified CLIProxyAPI sort direction).
+6. Operator adds Grok prefixes/full-models under CLIProxyAPI integration.
+7. Cursor request → CLIProxyAPI dispatch → request log Account `CLIProxyAPI: <email>`; Model shows Grok id.
 
-### Priority list sketch (global)
+### Priority list sketch (global; direction TBD by spike)
 
 ```
 Strategy: fill-first
 
 Priority  Account                         Provider   Paused
-100       vitalnohj@gmail.com             Claude     no
- 90       jvwarrior@gmail.com             Claude     no
- 50       grok-user@example.com           Grok/xAI   no
+???       vitalnohj@gmail.com             Claude     no
+???       jvwarrior@gmail.com             Claude     no
+???       grok-user@example.com           Grok       no
 ```
+
+Replace `???` after spike confirms higher-vs-lower preferred.
+
+## Phase 0 spike checklist (record answers in notes/context)
+
+1. Redacted xAI auth-file JSON: `provider`, `type`, `account_type`, quota fields, priority/disabled.
+2. Redacted usage-queue row for one Grok chat (`provider`, auth identity).
+3. Live weekly / five-hour availability (auth-file vs `api_call`).
+4. `/v1/models` Grok ids + safe prefix candidates (uniqueness check).
+5. Priority sort direction under Management API.
+6. Family-selection probe: interleaved priorities + Claude model request + Grok model request — which auth_index burns?
 
 ## Operational notes
 
-- Spike before Phase 3: capture real xAI auth-file JSON + any quota fields + usage-queue sample (redact secrets) into this context or `notes.md`.
-- Do not pre-hash CLIProxyAPI management secrets (existing rule).
+- Do not pre-hash CLIProxyAPI management secrets.
 - Pause/Resume still PATCHes `disabled` by auth-file `name`.
-- Pricing: add Grok list prices only when routing ships; unpaid/unknown → `NULL` cost (not zero).
-- Follow-up candidates: `claude_sidecar` rename; per-upstream effort overrides; Kimi adapter.
+- Implementation PR must keep adapter+poller+estimate gates atomic with filter widen.
+- Follow-ups: rename to `cliproxy`; per-upstream effort; Kimi adapter; live Grok quota if discovered.
 
 ## Related
 
-- Change proposal/design/tasks in this folder.
+- This change’s `proposal.md` / `design.md` / `tasks.md` / `specs/*`.
 - Prior art: `add-claude-sidecar-routing`, `add-cliproxy-routing-controls`, `add-cliproxy-account-pause`, `cliproxy-card-codex-parity`, `normalize-sidecar-request-log-display`, `move-integration-controls-to-accounts`.
-- Normative requirements: `specs/*/spec.md` in this change (not duplicated here).
