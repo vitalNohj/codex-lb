@@ -80,19 +80,46 @@ function sidecarSourceLabel(source: string | null | undefined): string | null {
   return SIDECAR_SOURCE_LABELS[source] ?? null;
 }
 
-function sidecarAccountLabel(request: RequestLog): string | null {
+type AccountCellDisplay = {
+  title: string;
+  providerPrefix: string | null;
+  sensitiveLabel: string | null;
+  blurWholeLabel: boolean;
+};
+
+function resolveAccountCellDisplay(
+  request: RequestLog,
+  accountLabelMap: Map<string, string>,
+  emailLabelIds: Set<string>,
+): AccountCellDisplay {
   const source = request.source;
-  if (!source) {
-    return null;
+  const providerLabel = source ? SIDECAR_ACCOUNT_LABELS[source] ?? null : null;
+  if (providerLabel) {
+    if (source === "claude_sidecar" && request.sidecarAccountLabel) {
+      return {
+        title: `${providerLabel}: ${request.sidecarAccountLabel}`,
+        providerPrefix: providerLabel,
+        sensitiveLabel: request.sidecarAccountLabel,
+        blurWholeLabel: false,
+      };
+    }
+    return {
+      title: providerLabel,
+      providerPrefix: providerLabel,
+      sensitiveLabel: null,
+      blurWholeLabel: false,
+    };
   }
-  const providerLabel = SIDECAR_ACCOUNT_LABELS[source];
-  if (!providerLabel) {
-    return null;
-  }
-  if (source === "claude_sidecar" && request.sidecarAccountLabel) {
-    return `${providerLabel}: ${request.sidecarAccountLabel}`;
-  }
-  return providerLabel;
+
+  const title = request.accountId
+    ? (accountLabelMap.get(request.accountId) ?? request.accountId)
+    : "Unassigned";
+  return {
+    title,
+    providerPrefix: null,
+    sensitiveLabel: null,
+    blurWholeLabel: !!(request.accountId && emailLabelIds.has(request.accountId)),
+  };
 }
 
 const PLAN_CLASS_MAP: Record<string, string> = {
@@ -225,13 +252,9 @@ export function RecentRequestsTable({
           <TableBody>
             {requests.map((request) => {
               const time = formatTimeLong(request.requestedAt);
-              const sidecarLabel = sidecarAccountLabel(request);
-              const accountLabel = sidecarLabel
-                ? sidecarLabel
-                : request.accountId
-                ? (accountLabelMap.get(request.accountId) ?? request.accountId)
-                : "Unassigned";
-              const isEmailLabel = !!(request.accountId && emailLabelIds.has(request.accountId));
+              const accountDisplay = resolveAccountCellDisplay(request, accountLabelMap, emailLabelIds);
+              const shouldBlurAccount =
+                blurred && (accountDisplay.blurWholeLabel || accountDisplay.sensitiveLabel != null);
               const errorPreview = request.errorMessage || request.errorCode || "-";
               const hasError = !!(request.errorCode || request.errorMessage);
               const visibleServiceTier = request.actualServiceTier ?? request.serviceTier;
@@ -253,13 +276,18 @@ export function RecentRequestsTable({
                     </div>
                   </TableCell>
                   <TableCell className="max-w-48 align-top text-sm">
-                    {isEmailLabel && blurred ? (
-                      <span className="privacy-blur block truncate" title={accountLabel}>
-                        {accountLabel}
+                    {shouldBlurAccount && accountDisplay.providerPrefix && accountDisplay.sensitiveLabel ? (
+                      <span className="block truncate" title={accountDisplay.title}>
+                        {accountDisplay.providerPrefix}:{" "}
+                        <span className="privacy-blur">{accountDisplay.sensitiveLabel}</span>
+                      </span>
+                    ) : shouldBlurAccount ? (
+                      <span className="privacy-blur block truncate" title={accountDisplay.title}>
+                        {accountDisplay.title}
                       </span>
                     ) : (
-                      <span className="block truncate" title={sidecarLabel ?? accountLabel}>
-                        {accountLabel}
+                      <span className="block truncate" title={accountDisplay.title}>
+                        {accountDisplay.title}
                       </span>
                     )}
                   </TableCell>

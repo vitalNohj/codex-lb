@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
+import { usePrivacyStore } from "@/hooks/use-privacy";
 
 const ISO = "2026-01-01T12:00:00+00:00";
 const NULL_FAILURE_METADATA = {
@@ -56,9 +57,11 @@ describe("RecentRequestsTable", () => {
   beforeEach(() => {
     toastSuccess.mockReset();
     toastError.mockReset();
+    usePrivacyStore.setState({ blurred: false });
   });
 
   afterEach(() => {
+    usePrivacyStore.setState({ blurred: false });
     if (originalClipboard) {
       Object.defineProperty(navigator, "clipboard", originalClipboard);
     }
@@ -311,8 +314,8 @@ describe("RecentRequestsTable", () => {
     const claudeCells = within(claudeRow as HTMLElement).getAllByRole("cell");
     expect(claudeCells[1]).toHaveTextContent("CLIProxyAPI: claude@example.com");
     expect(claudeCells[1]).not.toHaveTextContent("Claude sidecar");
-    expect(claudeCells[3]).toHaveTextContent("claude-sonnet");
-    expect(claudeCells[3]).not.toHaveTextContent("Claude sidecar");
+    expect(claudeCells[4]).toHaveTextContent("claude-sonnet");
+    expect(claudeCells[4]).not.toHaveTextContent("Claude sidecar");
 
     const openRouterRow = screen.getByText("openrouter/test-chat").closest("tr");
     expect(openRouterRow).not.toBeNull();
@@ -325,23 +328,74 @@ describe("RecentRequestsTable", () => {
     const omniRouteCells = within(omniRouteRow as HTMLElement).getAllByRole("cell");
     expect(omniRouteCells[1]).toHaveTextContent("OmniRoute");
     expect(omniRouteCells[1]).not.toHaveTextContent("OmniRoute sidecar");
-    expect(omniRouteCells[3]).toHaveTextContent("omniroute/test-chat");
-    expect(omniRouteCells[3]).not.toHaveTextContent("OmniRoute sidecar");
+    expect(omniRouteCells[4]).toHaveTextContent("omniroute/test-chat");
+    expect(omniRouteCells[4]).not.toHaveTextContent("OmniRoute sidecar");
 
     const ollamaRow = screen.getByText("gpt-oss:120b-cloud").closest("tr");
     expect(ollamaRow).not.toBeNull();
     const ollamaCells = within(ollamaRow as HTMLElement).getAllByRole("cell");
     expect(ollamaCells[1]).toHaveTextContent("Ollama");
     expect(ollamaCells[1]).not.toHaveTextContent("Ollama sidecar");
-    expect(ollamaCells[3]).toHaveTextContent("gpt-oss:120b-cloud");
-    expect(ollamaCells[3]).not.toHaveTextContent("Ollama sidecar");
+    expect(ollamaCells[4]).toHaveTextContent("gpt-oss:120b-cloud");
+    expect(ollamaCells[4]).not.toHaveTextContent("Ollama sidecar");
     expect(screen.queryByText("Sidecar HTTP")).not.toBeInTheDocument();
 
     const dialog = openRequestDetails();
     expect(within(dialog).getByText("Source")).toBeInTheDocument();
-    expect(within(dialog).getAllByText("Claude sidecar").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("CLIProxyAPI").length).toBeGreaterThan(0);
     expect(within(dialog).getByText("Transport").closest("div.space-y-1")).toHaveTextContent("HTTP");
     expect(within(dialog).queryByText("Sidecar HTTP")).not.toBeInTheDocument();
+  });
+
+  it("blurs CLIProxyAPI account emails in privacy mode", () => {
+    usePrivacyStore.setState({ blurred: true });
+
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={1}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: "Claude Key",
+            apiKeyId: "key-claude",
+            requestId: "req-sidecar-privacy",
+            requestKind: "normal",
+            model: "claude-sonnet",
+            source: "claude_sidecar",
+            sidecarAccountLabel: "claude@example.com",
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 15,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            requestedReasoningEffort: null,
+            costUsd: 0,
+            costBreakdown: null,
+            latencyMs: 50,
+          },
+        ]}
+      />,
+    );
+
+    const row = screen.getByText("claude-sonnet").closest("tr");
+    expect(row).not.toBeNull();
+    const cells = within(row as HTMLElement).getAllByRole("cell");
+    expect(cells[1]).toHaveTextContent("CLIProxyAPI:");
+    expect(cells[1]).toHaveTextContent("claude@example.com");
+    expect(within(cells[1] as HTMLElement).getByText("claude@example.com")).toHaveClass("privacy-blur");
   });
 
   it("renders empty state", () => {
