@@ -474,6 +474,30 @@ describe("CLIProxyAPI multi-provider schemas", () => {
     expect(routing.accounts[0]?.provider).toBe("xai");
   });
 
+  it("parses legacy quota/routing payloads without multi-provider fields", () => {
+    const quota = ClaudeSidecarQuotaResponseSchema.parse({
+      status: "healthy",
+      accounts: [{
+        name: "claude-user.json",
+        email: "user@example.com",
+      }],
+    });
+    const routing = ClaudeSidecarRoutingResponseSchema.parse({
+      status: "healthy",
+      strategy: "round_robin",
+      accounts: [{
+        name: "claude-user.json",
+        priority: 0,
+        paused: false,
+      }],
+    });
+
+    expect(quota.accounts[0]?.provider).toBeUndefined();
+    expect(quota.accounts[0]?.quotaWindows).toBeUndefined();
+    expect(quota.accounts[0]?.supportsManualPlan).toBeUndefined();
+    expect(routing.accounts[0]?.provider).toBeUndefined();
+  });
+
   it("preserves optional provider on auth plans", () => {
     const parsed = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,

@@ -82,13 +82,17 @@ export function ClaudeSidecarQuotaEstimation() {
       next[authPlanKey(plan)] = planDraftFromPlan(plan);
     }
     for (const account of quotaAccounts ?? []) {
-      if (!account.supportsManualPlan) {
+      // Legacy backends omit supportsManualPlan; treat as Claude-capable (true).
+      if (account.supportsManualPlan === false) {
         continue;
       }
       const key = authPlanKey(account);
-      const provider = account.provider;
+      const provider = account.provider ?? "claude";
       const isClaude = provider === "claude";
-      const quotaWindows = account.quotaWindows.length > 0 ? account.quotaWindows : ["weekly" as const];
+      const quotaWindows =
+        (account.quotaWindows?.length ?? 0) > 0
+          ? account.quotaWindows!
+          : ([...CLIPROXY_QUOTA_WINDOWS] as CLIProxyQuotaWindow[]);
       if (next[key]) {
         next[key] = { ...next[key], provider, quotaWindows };
         continue;

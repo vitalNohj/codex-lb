@@ -459,9 +459,10 @@ export const ClaudeSidecarQuotaAuthSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
-  provider: z.string(),
-  quotaWindows: z.array(z.enum(CLIPROXY_QUOTA_WINDOWS)),
-  supportsManualPlan: z.boolean(),
+  provider: z.string().nullable().optional(),
+  // Optional for backward compat with live backends that predate multi-provider fields.
+  quotaWindows: z.array(z.enum(CLIPROXY_QUOTA_WINDOWS)).optional(),
+  supportsManualPlan: z.boolean().optional(),
   status: z.string().nullable().optional(),
   quotaExceeded: z.boolean().default(false),
   nextRecoverAt: z.string().datetime({ offset: true }).nullable().optional(),
@@ -501,7 +502,7 @@ export const ClaudeSidecarRoutingAccountSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
-  provider: z.string(),
+  provider: z.string().nullable().optional(),
   priority: z.number().int().default(0),
   paused: z.boolean().default(false),
 });

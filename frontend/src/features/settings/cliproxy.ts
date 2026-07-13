@@ -21,5 +21,10 @@ export function hasCLIProxyQuotaWindow(
   quotaWindows: readonly CLIProxyQuotaWindow[] | null | undefined,
   window: CLIProxyQuotaWindow,
 ): boolean {
-  return quotaWindows?.includes(window) ?? false;
+  // Omitted by older backends ⇒ legacy Claude cards show both windows.
+  // Explicit [] from new adapters ⇒ no live windows for that auth.
+  if (quotaWindows == null) {
+    return true;
+  }
+  return quotaWindows.includes(window);
 }

@@ -135,6 +135,39 @@ describe("AccountSummarySchema", () => {
     expect(parsed.resetAtPrimary).toBe(ISO);
   });
 
+  it("parses legacy sidecar auths that omit multi-provider fields", () => {
+    // Live backends predating multi-provider omit provider/quotaWindows/supportsManualPlan.
+    const parsed = AccountSummarySchema.parse({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "Claude via CLIProxyAPI",
+      planType: "claude",
+      status: "active",
+      kind: "sidecar",
+      provider: "claude",
+      readOnly: true,
+      synthetic: true,
+      healthStatus: "healthy",
+      baseUrl: "http://127.0.0.1:8317",
+      sidecarAuths: [
+        {
+          name: "claude-user.json",
+          email: "user@example.com",
+          status: "active",
+          paused: false,
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 1,
+          failed: 0,
+        },
+      ],
+    });
+
+    expect(parsed.sidecarAuths[0]?.provider).toBeUndefined();
+    expect(parsed.sidecarAuths[0]?.quotaWindows).toBeUndefined();
+    expect(parsed.sidecarAuths[0]?.supportsManualPlan).toBeUndefined();
+  });
+
   it("parses manual routing policy", () => {
     const parsed = AccountSummarySchema.parse({
       accountId: "acc-1",

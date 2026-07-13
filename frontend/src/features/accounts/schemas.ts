@@ -72,9 +72,11 @@ export const SidecarAuthAccountSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
-  provider: z.string(),
-  quotaWindows: z.array(z.enum(CLIPROXY_QUOTA_WINDOWS)),
-  supportsManualPlan: z.boolean(),
+  provider: z.string().nullable().optional(),
+  // Optional for backward compat with live backends that predate multi-provider fields.
+  // Missing ⇒ legacy Claude-shaped UI; explicit [] ⇒ no live windows.
+  quotaWindows: z.array(z.enum(CLIPROXY_QUOTA_WINDOWS)).optional(),
+  supportsManualPlan: z.boolean().optional(),
   status: z.string().nullable().optional(),
   paused: z.boolean().default(false),
   quotaExceeded: z.boolean().default(false),
