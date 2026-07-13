@@ -56,7 +56,7 @@
 
 ## 7. Apply readiness / live ops
 
-- [ ] 7.1 Do **not** restart `codex-lb` until operator confirms a safe window
+- [x] 7.1 Do **not** restart `codex-lb` until operator confirms a safe window
 - [ ] 7.2 After deploy: verify existing Claude cards/OAuth/pause/priority still correct before relying on Grok
 - [ ] 7.3 Verify one Grok path: routing row, card windows/manual plan, request log Account `CLIProxyAPI: <email>`, model id, catalog label not Claude
-- [ ] 7.4 Leave `claude_sidecar_*` → `cliproxy_*` rename out of this implementation PR
+- [x] 7.4 Leave `claude_sidecar_*` → `cliproxy_*` rename out of this implementation PR
