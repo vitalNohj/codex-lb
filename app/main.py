@@ -44,6 +44,7 @@ from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
 from app.core.resilience.memory_monitor import configure as configure_memory_monitor
 from app.core.retention.scheduler import build_data_retention_scheduler
+from app.core.scheduling.leader_election import get_leader_election
 from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
 from app.core.usage.reset_credits_refresh_scheduler import build_rate_limit_reset_credits_scheduler
 from app.db.session import SessionLocal, close_db, close_session, init_background_db, init_db
@@ -86,6 +87,40 @@ from app.modules.usage.additional_quota_keys import reload_additional_quota_regi
 from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_usage_ingestor
 
 logger = logging.getLogger(__name__)
+
+
+def _log_abandoned_lease_release(task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("Abandoned scheduler leader lease release finished with error", exc_info=exc)
+
+
+async def _release_leader_lease_within(timeout: float) -> None:
+    """Release the scheduler leader lease without ever pinning shutdown.
+
+    ``release()`` uses a background DB session whose rollback/close shield and
+    await their own cleanup, so wrapping it in ``asyncio.wait_for`` would only
+    cancel the awaiting wrapper while a wedged database call keeps unwinding —
+    shutdown could still hang past the deadline. Run the release as a task and,
+    if it does not finish within ``timeout``, abandon it (logging its eventual
+    outcome from a done callback) so shutdown always proceeds within the
+    deadline; the lease then expires after its TTL, which is acceptable.
+    """
+    release_task: asyncio.Task[None] = asyncio.ensure_future(get_leader_election().release())
+    done, _ = await asyncio.wait({release_task}, timeout=timeout)
+    if release_task not in done:
+        logger.warning(
+            "Scheduler leader lease release did not finish within %.1fs; abandoning it so "
+            "shutdown can proceed (the lease will expire after its TTL)",
+            timeout,
+        )
+        release_task.add_done_callback(_log_abandoned_lease_release)
+        return
+    exc = release_task.exception()
+    if exc is not None:
+        logger.warning("Failed to release scheduler leader lease during shutdown", exc_info=exc)
 
 
 class _MetricsServer(Protocol):
@@ -447,6 +482,18 @@ async def lifespan(app: FastAPI):
         if metrics_server is not None:
             metrics_server.should_exit = True
 
+        # Start the single process-level lease-renewal keeper BEFORE stopping any
+        # scheduler. Schedulers are stopped one at a time and only the final
+        # release() renews the lease while draining detached bodies; an earlier
+        # scheduler's stop() can detach a shielded leader-gated body (which stops
+        # that scheduler's own heartbeat) while the remaining schedulers are still
+        # stopping. If that stop sequence takes >= the (minimum 5s) TTL, the DB
+        # lease would otherwise expire while the detached body still runs as
+        # leader, letting a follower acquire it and run duplicate singleton work.
+        # The keeper renews the lease continuously across the whole stop sequence
+        # and is stopped by release(), which then owns renewal for its bounded
+        # drain. It is a no-op when leader election is disabled.
+        get_leader_election().start_release_keeper()
         await quota_planner_scheduler.stop()
         await auth_guardian_scheduler.stop()
         await automations_scheduler.stop()
@@ -464,6 +511,18 @@ async def lifespan(app: FastAPI):
         await rate_limit_reset_credits_scheduler.stop()
         await account_usage_rollup_scheduler.stop()
         await data_retention_scheduler.stop()
+        # Release the scheduler leader lease only after every leader-gated
+        # scheduler has stopped so no local tick re-acquires it; followers can
+        # then take over immediately instead of waiting out the lease TTL.
+        # release() itself first drains bodies that were detached still
+        # draining shielded work, and skips the early release (letting the
+        # lease expire by TTL) if any is still running, so a follower cannot
+        # become leader while this process may still act as one. The deadline
+        # covers that bounded drain plus the row delete, and — because the
+        # release path shields and awaits its own session teardown — is
+        # enforced by abandoning the release task rather than awaiting a
+        # potentially wedged cancellation, so shutdown always proceeds.
+        await _release_leader_lease_within(10)
         try:
             await close_http_client()
         finally:
