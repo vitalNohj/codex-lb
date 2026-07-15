@@ -11,6 +11,7 @@ from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, StickySessionKind
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository
 from app.modules.settings.repository import SettingsRepository
 from app.modules.sticky_sessions.cleanup_scheduler import StickySessionCleanupScheduler
@@ -91,19 +92,23 @@ async def _insert_http_bridge_session(
     session_id: str,
     state: str,
     last_seen_offset_seconds: int,
+    lease_seconds_remaining: int | None = None,
 ) -> None:
     timestamp = utcnow() - timedelta(seconds=last_seen_offset_seconds)
+    lease_expires_at = (
+        None if lease_seconds_remaining is None else utcnow() + timedelta(seconds=lease_seconds_remaining)
+    )
     async with SessionLocal() as session:
         await session.execute(
             text(
                 """
                 INSERT INTO http_bridge_sessions (
                     id, session_key_kind, session_key_value, session_key_hash, api_key_scope,
-                    owner_epoch, state, last_seen_at, created_at, updated_at
+                    owner_epoch, state, last_seen_at, lease_expires_at, created_at, updated_at
                 )
                 VALUES (
                     :id, 'session_header', :key_value, :key_hash, '__anonymous__',
-                    1, :state, :timestamp, :timestamp, :timestamp
+                    1, :state, :timestamp, :lease_expires_at, :timestamp, :timestamp
                 )
                 """
             ),
@@ -113,6 +118,7 @@ async def _insert_http_bridge_session(
                 "key_hash": f"{session_id}-hash",
                 "state": state,
                 "timestamp": timestamp,
+                "lease_expires_at": lease_expires_at,
             },
         )
         await session.execute(
@@ -136,6 +142,111 @@ async def _insert_http_bridge_session(
             },
         )
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_durable_bridge_owned_alias_registration_is_epoch_fenced(db_setup):
+    del db_setup
+    coordinator = DurableBridgeSessionCoordinator(SessionLocal)
+    claimed = await coordinator.claim_live_session(
+        session_key_kind="session_header",
+        session_key_value="sid-owned-alias-fence",
+        api_key_id=None,
+        instance_id="instance-a",
+        lease_ttl_seconds=60.0,
+        account_id=None,
+        model="gpt-5.6-sol",
+        service_tier=None,
+        latest_turn_state=None,
+        latest_response_id=None,
+        allow_takeover=True,
+    )
+    replaced = await coordinator.claim_live_session(
+        session_key_kind="session_header",
+        session_key_value="sid-owned-alias-fence",
+        api_key_id=None,
+        instance_id="instance-a",
+        lease_ttl_seconds=60.0,
+        account_id=None,
+        model="gpt-5.6-sol",
+        service_tier=None,
+        latest_turn_state=None,
+        latest_response_id=None,
+        allow_takeover=True,
+        force_owner_epoch_advance=True,
+    )
+
+    stale_turn_registered = await coordinator.register_turn_state(
+        session_id=claimed.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=claimed.owner_epoch,
+        turn_state="http_turn_stale_epoch",
+        lease_ttl_seconds=60.0,
+    )
+    stale_response_registered = await coordinator.register_previous_response_id(
+        session_id=claimed.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=claimed.owner_epoch,
+        response_id="resp_stale_epoch",
+        lease_ttl_seconds=60.0,
+    )
+    current_turn_registered = await coordinator.register_turn_state(
+        session_id=replaced.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=replaced.owner_epoch,
+        turn_state="http_turn_current_epoch",
+        lease_ttl_seconds=60.0,
+    )
+    current_response_registered = await coordinator.register_previous_response_id(
+        session_id=replaced.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=replaced.owner_epoch,
+        response_id="resp_current_epoch",
+        lease_ttl_seconds=60.0,
+    )
+
+    assert stale_turn_registered is False
+    assert stale_response_registered is False
+    assert current_turn_registered is True
+    assert current_response_registered is True
+    assert (
+        await coordinator.lookup_turn_state_target(
+            turn_state="http_turn_stale_epoch",
+            api_key_id=None,
+        )
+        is None
+    )
+    assert (
+        await coordinator.lookup_request_targets(
+            session_key_kind="request",
+            session_key_value="req-stale-epoch",
+            api_key_id=None,
+            turn_state=None,
+            session_header=None,
+            previous_response_id="resp_stale_epoch",
+        )
+        is None
+    )
+    by_current_turn = await coordinator.lookup_turn_state_target(
+        turn_state="http_turn_current_epoch",
+        api_key_id=None,
+    )
+    by_current_response = await coordinator.lookup_request_targets(
+        session_key_kind="request",
+        session_key_value="req-current-epoch",
+        api_key_id=None,
+        turn_state=None,
+        session_header=None,
+        previous_response_id="resp_current_epoch",
+    )
+    assert by_current_turn is not None
+    assert by_current_turn.owner_epoch == replaced.owner_epoch
+    assert by_current_response is not None
+    assert by_current_response.owner_epoch == replaced.owner_epoch
 
 
 @pytest.mark.asyncio
@@ -580,7 +691,23 @@ async def test_sticky_sessions_cleanup_scheduler_removes_stale_prompt_cache_and_
     await _insert_http_bridge_session(
         session_id="active-stale-session",
         state="active",
+        # Beyond the full reuse window (max of affinity, prompt-cache/codex/base
+        # idle TTLs; prompt-cache idle TTL default is 3600s) so the row is truly
+        # unreusable and the abandoned-row purge removes it.
+        last_seen_offset_seconds=7200,
+    )
+    await _insert_http_bridge_session(
+        session_id="active-reuse-window-session",
+        state="active",
+        # Past the 60s affinity cutoff but within the 3600s prompt-cache reuse
+        # window, so the still-reusable session must keep its ACTIVE durable row.
+        last_seen_offset_seconds=1800,
+    )
+    await _insert_http_bridge_session(
+        session_id="active-leased-session",
+        state="active",
         last_seen_offset_seconds=600,
+        lease_seconds_remaining=3600,
     )
     await _insert_http_bridge_session(
         session_id="closed-fresh-session",
@@ -607,8 +734,20 @@ async def test_sticky_sessions_cleanup_scheduler_removes_stale_prompt_cache_and_
         }
 
     assert remaining == {"cleanup-durable"}
-    assert bridge_remaining == {"active-stale-session", "closed-fresh-session"}
-    assert alias_remaining == {"active-stale-session", "closed-fresh-session"}
+    # active-stale-session has no lease and is stale beyond the full reuse
+    # window, so the abandoned-row purge removes it. active-reuse-window-session
+    # is still within the prompt-cache reuse window and must be kept, alongside
+    # the leased active row and the fresh closed row.
+    assert bridge_remaining == {
+        "active-reuse-window-session",
+        "active-leased-session",
+        "closed-fresh-session",
+    }
+    assert alias_remaining == {
+        "active-reuse-window-session",
+        "active-leased-session",
+        "closed-fresh-session",
+    }
 
 
 @pytest.mark.asyncio

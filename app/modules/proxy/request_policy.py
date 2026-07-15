@@ -8,7 +8,12 @@ from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.exceptions import ProxyModelNotAllowed
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry, get_model_registry
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesReasoning, ResponsesRequest
+from app.core.openai.requests import (
+    ResponsesCompactRequest,
+    ResponsesReasoning,
+    ResponsesRequest,
+    responses_input_uses_lite_tools,
+)
 from app.core.openai.strict_schema import (
     validate_strict_function_tool_schema,
     validate_strict_json_schema,
@@ -138,23 +143,40 @@ def _canonical_model_for_access(model: str | None) -> str | None:
 def apply_api_key_enforcement(
     payload: ResponsesRequest | ResponsesCompactRequest,
     api_key: ApiKeyData | None,
+    *,
+    registry: ModelRegistry | None = None,
+    prohibit_fast_mode: bool = False,
 ) -> None:
-    normalize_upstream_model_alias(payload)
+    normalize_upstream_model_alias(payload, prohibit_fast_mode=prohibit_fast_mode)
 
     if api_key is None:
         normalize_unsupported_reasoning_effort(payload)
         return
 
-    if api_key.enforced_model and payload.model != api_key.enforced_model:
-        logger.info(
-            "api_key_model_enforced request_id=%s key_id=%s requested_model=%s enforced_model=%s",
-            get_request_id(),
-            api_key.id,
-            payload.model,
-            api_key.enforced_model,
-        )
+    if api_key.enforced_model:
+        requested_model = payload.model
+        if requested_model != api_key.enforced_model:
+            logger.info(
+                "api_key_model_enforced request_id=%s key_id=%s requested_model=%s enforced_model=%s",
+                get_request_id(),
+                api_key.id,
+                requested_model,
+                api_key.enforced_model,
+            )
         payload.model = api_key.enforced_model
-        normalize_upstream_model_alias(payload)
+        normalize_upstream_model_alias(payload, prohibit_fast_mode=prohibit_fast_mode)
+        if (
+            responses_input_uses_lite_tools(payload.input)
+            and _model_responses_lite_capability(
+                payload.model,
+                registry=registry or get_model_registry(),
+            )
+            is False
+        ):
+            raise ProxyModelNotAllowed(
+                f"API key enforced model '{payload.model}' does not support Responses Lite",
+                code="responses_lite_model_mismatch",
+            )
 
     if api_key.enforced_reasoning_effort is not None:
         requested_effort = payload.reasoning.effort if payload.reasoning else None
@@ -197,6 +219,20 @@ def apply_api_key_enforcement(
                 api_key.enforced_service_tier,
                 effective_service_tier,
             )
+
+
+def _model_responses_lite_capability(
+    model: str,
+    *,
+    registry: ModelRegistry,
+) -> bool | None:
+    normalized_model = model.strip().lower()
+    models = registry.get_models_for_metadata()
+    model_entry = models.get(model) or models.get(normalized_model)
+    if model_entry is None:
+        return None
+    capability = model_entry.raw.get("use_responses_lite")
+    return capability if isinstance(capability, bool) else None
 
 
 # Non-standard reasoning toggles some OpenAI-compatible clients attach
@@ -270,13 +306,22 @@ def resolve_model_alias(model: str | None) -> str | None:
     return alias[0]
 
 
-def normalize_upstream_model_alias(payload: ResponsesRequest | ResponsesCompactRequest) -> None:
+def model_alias_requests_fast_mode(model: str | None) -> bool:
+    alias = _resolve_model_alias_parts(model)
+    return alias is not None and alias[3]
+
+
+def normalize_upstream_model_alias(
+    payload: ResponsesRequest | ResponsesCompactRequest,
+    *,
+    prohibit_fast_mode: bool = False,
+) -> None:
     requested_model = payload.model
     alias = _resolve_model_alias_parts(requested_model)
     if alias is None:
         return
 
-    canonical_model, alias_effort, alias_service_tier = alias
+    canonical_model, alias_effort, alias_service_tier, alias_requests_fast_mode = alias
     if payload.model != canonical_model:
         logger.info(
             "model_alias_normalized request_id=%s requested_model=%s normalized_model=%s",
@@ -304,6 +349,14 @@ def normalize_upstream_model_alias(payload: ResponsesRequest | ResponsesCompactR
             )
 
     if alias_service_tier is not None and getattr(payload, "service_tier", None) is None:
+        if prohibit_fast_mode and alias_requests_fast_mode:
+            logger.info(
+                "model_alias_fast_mode_prohibited request_id=%s requested_model=%s normalized_model=%s",
+                get_request_id(),
+                requested_model,
+                canonical_model,
+            )
+            return
         setattr(payload, "service_tier", alias_service_tier)
         logger.info(
             "model_alias_service_tier_normalized request_id=%s requested_model=%s "
@@ -315,7 +368,7 @@ def normalize_upstream_model_alias(payload: ResponsesRequest | ResponsesCompactR
         )
 
 
-def _resolve_model_alias_parts(model: str | None) -> tuple[str, str | None, str | None] | None:
+def _resolve_model_alias_parts(model: str | None) -> tuple[str, str | None, str | None, bool] | None:
     if not isinstance(model, str):
         return None
     normalized = model.strip().lower()
@@ -330,7 +383,12 @@ def _resolve_model_alias_parts(model: str | None) -> tuple[str, str | None, str 
         tokens = [token for token in suffix.split("-") if token]
         if not tokens or any(token not in _MODEL_ALIAS_TOKENS for token in tokens):
             return None
-        return base_model, _resolve_alias_reasoning_effort(tokens), _resolve_alias_service_tier(tokens)
+        return (
+            base_model,
+            _resolve_alias_reasoning_effort(tokens),
+            _resolve_alias_service_tier(tokens),
+            "fast" in tokens,
+        )
 
     return None
 

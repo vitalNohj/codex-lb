@@ -53,6 +53,16 @@ const BASE_SETTINGS: DashboardSettings = {
   omnirouteSidecarLastCheckedAt: "2026-01-01T00:00:00Z",
   omnirouteSidecarLastModelCount: 1,
   guestAccessEnabled: false,
+  prohibitFastMode: false,
+  httpDownstreamTransportPolicy: "smart",
+  proxyAccountResponseCreateLimit: 4,
+  proxyAccountStreamLimit: 8,
+  proxyAccountStreamRecoveryReserve: 1,
+  hideUpstreamQuotaFromApiKeys: false,
+  limitWarmupExhaustedThresholdPercent: 99,
+  limitWarmupIdleThresholdPercent: 1,
+  weeklyPaceSmoothingMinutes: 30,
+  limitWarmupStaggeredIdleEnabled: false,
   guestPasswordConfigured: false,
 };
 

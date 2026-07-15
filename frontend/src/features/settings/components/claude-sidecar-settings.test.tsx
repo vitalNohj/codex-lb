@@ -55,6 +55,16 @@ const BASE_SETTINGS: DashboardSettings = {
   claudeSidecarUsageQueueBatchSize: 100,
   claudeSidecarUsageCollectionEnabled: true,
   guestAccessEnabled: false,
+  prohibitFastMode: false,
+  httpDownstreamTransportPolicy: "smart",
+  proxyAccountResponseCreateLimit: 4,
+  proxyAccountStreamLimit: 8,
+  proxyAccountStreamRecoveryReserve: 1,
+  hideUpstreamQuotaFromApiKeys: false,
+  limitWarmupExhaustedThresholdPercent: 99,
+  limitWarmupIdleThresholdPercent: 1,
+  weeklyPaceSmoothingMinutes: 30,
+  limitWarmupStaggeredIdleEnabled: false,
   guestPasswordConfigured: false,
 };
 

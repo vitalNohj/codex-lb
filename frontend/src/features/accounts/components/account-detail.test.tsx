@@ -47,6 +47,8 @@ const detailHandlers = {
   onExportAuth: vi.fn(),
   onLimitWarmupChange: vi.fn(),
   onRoutingPolicyChange: vi.fn(),
+  onResetUsage: vi.fn(),
+  onResetCredit: vi.fn(),
   onSecurityWorkAuthorizedChange: vi.fn(),
 };
 
@@ -81,6 +83,8 @@ describe("AccountDetail", () => {
         onExportAuth={vi.fn()}
         onLimitWarmupChange={vi.fn()}
         onRoutingPolicyChange={vi.fn()}
+        onResetUsage={vi.fn()}
+        onResetCredit={vi.fn()}
         onSecurityWorkAuthorizedChange={vi.fn()}
       />,
     );
@@ -151,6 +155,8 @@ describe("AccountDetail", () => {
         onExportAuth={vi.fn()}
         onLimitWarmupChange={vi.fn()}
         onRoutingPolicyChange={vi.fn()}
+        onResetUsage={vi.fn()}
+        onResetCredit={vi.fn()}
         onSecurityWorkAuthorizedChange={vi.fn()}
       />,
     );

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -168,6 +169,28 @@ class GhError(RuntimeError):
     """A GitHub CLI call failed."""
 
 
+_RATE_LIMIT_MARKER = "API rate limit exceeded"
+_fallback_token_active = False
+
+
+def _activate_fallback_token() -> bool:
+    """Switch gh calls to GH_FALLBACK_TOKEN once after a rate-limit failure.
+
+    The primary token is typically a user PAT whose quota is shared with
+    other consumers; github.token carries a separate per-repository quota,
+    so a single runtime switch keeps the sync alive through PAT exhaustion.
+    """
+    global _fallback_token_active
+    if _fallback_token_active:
+        return False
+    fallback = os.environ.get("GH_FALLBACK_TOKEN", "").strip()
+    if not fallback or fallback == os.environ.get("GH_TOKEN", ""):
+        return False
+    os.environ["GH_TOKEN"] = fallback
+    _fallback_token_active = True
+    return True
+
+
 @dataclass(frozen=True)
 class SyncDecision:
     repo: str
@@ -207,6 +230,12 @@ def run_gh(args: list[str], *, input_json: Any | None = None, timeout_seconds: i
 
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip()
+        if _RATE_LIMIT_MARKER in detail and _activate_fallback_token():
+            print(
+                "warning: active token rate-limited; retrying with GH_FALLBACK_TOKEN",
+                file=sys.stderr,
+            )
+            return run_gh(args, input_json=input_json, timeout_seconds=timeout_seconds)
         raise GhError(f"{' '.join(command)}: {detail}")
 
     text = proc.stdout.strip()
@@ -696,6 +725,19 @@ def classify_check_state(
     named_check_runs: dict[str, dict[str, Any]] = {}
     unnamed_check_runs: list[dict[str, Any]] = []
 
+    authoritative_ci_workflow = authoritative_ci_workflow_id(check_runs)
+    authoritative_ci_run = authoritative_ci_workflow_run_id(
+        check_runs,
+        workflow_id=authoritative_ci_workflow,
+    )
+    if authoritative_ci_run is not None and authoritative_ci_workflow is not None:
+        check_runs = [
+            item
+            for item in check_runs
+            if github_actions_workflow_id(item) != authoritative_ci_workflow
+            or github_actions_workflow_run_id(item) in {None, authoritative_ci_run}
+        ]
+
     for item in check_runs:
         name = item.get("name")
         if isinstance(name, str):
@@ -745,8 +787,90 @@ def check_run_recency_key(item: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def github_actions_workflow_run_id(item: dict[str, Any]) -> str | None:
+    details_url = item.get("details_url") or item.get("detailsUrl")
+    if not isinstance(details_url, str):
+        return None
+    match = re.search(r"/actions/runs/(\d+)(?:/|$)", details_url)
+    return match.group(1) if match is not None else None
+
+
+def authoritative_ci_workflow_run_id(
+    check_runs: list[dict[str, Any]],
+    *,
+    workflow_id: str | None,
+) -> str | None:
+    if workflow_id is None:
+        return None
+    workflow_runs = [
+        item
+        for item in check_runs
+        if github_actions_workflow_id(item) == workflow_id and github_actions_workflow_run_id(item) is not None
+    ]
+    if not workflow_runs:
+        return None
+    latest_run = max(workflow_runs, key=github_actions_workflow_run_recency_key)
+    return github_actions_workflow_run_id(latest_run)
+
+
+def github_actions_workflow_run_recency_key(item: dict[str, Any]) -> tuple[str, tuple[str, str], int]:
+    run_id = github_actions_workflow_run_id(item)
+    return (
+        str(item.get("_github_actions_run_started_at") or item.get("_github_actions_run_created_at") or ""),
+        check_run_recency_key(item),
+        int(run_id) if isinstance(run_id, str) and run_id.isdigit() else 0,
+    )
+
+
+def github_actions_workflow_id(item: dict[str, Any]) -> str | None:
+    workflow_id = item.get("_github_actions_workflow_id")
+    return str(workflow_id) if isinstance(workflow_id, (int, str)) else None
+
+
+def authoritative_ci_workflow_id(check_runs: list[dict[str, Any]]) -> str | None:
+    required_runs = [item for item in check_runs if item.get("name") == "CI Required"]
+    if not required_runs:
+        return None
+    latest_required = max(required_runs, key=check_run_recency_key)
+    return github_actions_workflow_id(latest_required)
+
+
+def annotate_github_actions_workflow_ids(repo: str, check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    workflow_metadata_by_run: dict[str, tuple[str, str | None]] = {}
+    for run_id in {github_actions_workflow_run_id(item) for item in check_runs} - {None}:
+        assert run_id is not None
+        try:
+            workflow_run = gh_api(f"/repos/{repo}/actions/runs/{run_id}")
+        except GhError:
+            continue
+        workflow_id = workflow_run.get("workflow_id") if isinstance(workflow_run, dict) else None
+        if isinstance(workflow_id, (int, str)):
+            # GitHub preserves ``created_at`` when an existing run id is rerun,
+            # while ``run_started_at`` advances to the current attempt.
+            run_started_at = workflow_run.get("run_started_at") or workflow_run.get("created_at")
+            workflow_metadata_by_run[run_id] = (
+                str(workflow_id),
+                str(run_started_at) if isinstance(run_started_at, str) else None,
+            )
+
+    annotated: list[dict[str, Any]] = []
+    for item in check_runs:
+        run_id = github_actions_workflow_run_id(item)
+        metadata = workflow_metadata_by_run.get(run_id) if run_id is not None else None
+        if metadata is None:
+            annotated.append(item)
+            continue
+        workflow_id, run_started_at = metadata
+        annotated_item = {**item, "_github_actions_workflow_id": workflow_id}
+        if run_started_at is not None:
+            annotated_item["_github_actions_run_started_at"] = run_started_at
+        annotated.append(annotated_item)
+    return annotated
+
+
 def commit_checks_state(repo: str, head_sha: str) -> str:
     check_runs = paged_api(f"/repos/{repo}/commits/{head_sha}/check-runs")
+    check_runs = annotate_github_actions_workflow_ids(repo, check_runs)
     combined_status = gh_api(f"/repos/{repo}/commits/{head_sha}/status")
     return classify_check_state(
         check_runs,

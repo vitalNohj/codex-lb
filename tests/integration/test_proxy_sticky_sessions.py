@@ -111,6 +111,7 @@ def _install_proxy_settings_cache(
         http_responses_session_bridge_gateway_safe_mode=False,
         proxy_token_refresh_limit=32,
         proxy_upstream_websocket_connect_limit=64,
+        proxy_account_stream_recovery_reserve=1,
         proxy_response_create_limit=64,
         proxy_compact_response_create_limit=16,
     )
@@ -436,6 +437,93 @@ async def test_proxy_codex_session_id_pins_responses_and_compact_without_sticky_
     response = await async_client.post("/backend-api/codex/responses", json=stream_payload, headers=headers)
     assert response.status_code == 200
     assert stream_seen == ["acc_sid_a", "acc_sid_a"]
+
+
+@pytest.mark.asyncio
+async def test_proxy_unregistered_turn_state_does_not_pin_compact_via_unscoped_sticky_state(
+    async_client,
+    monkeypatch,
+):
+    await _set_routing_settings(async_client, sticky_threads_enabled=False)
+    acc_a_id = await _import_account(async_client, "acc_turn_state_a", "turn_state_a@example.com")
+    acc_b_id = await _import_account(async_client, "acc_turn_state_b", "turn_state_b@example.com")
+
+    now = utcnow()
+    now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
+
+    async with SessionLocal() as session:
+        usage_repo = UsageRepository(session)
+        await usage_repo.add_entry(
+            account_id=acc_a_id,
+            used_percent=10.0,
+            window="primary",
+            reset_at=now_epoch + 3600,
+            window_minutes=300,
+        )
+        await usage_repo.add_entry(
+            account_id=acc_b_id,
+            used_percent=20.0,
+            window="primary",
+            reset_at=now_epoch + 3600,
+            window_minutes=300,
+        )
+
+    stream_seen: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **_kwargs):
+        stream_seen.append(account_id)
+        yield 'data: {"type":"response.completed","response":{"id":"resp_turn_state"}}\n\n'
+
+    compact_seen: list[str] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        compact_seen.append(account_id)
+        return OpenAIResponsePayload.model_validate({"output": []})
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    headers = {"x-codex-turn-state": "codex-turn-state-123"}
+    stream_payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [],
+        "stream": True,
+    }
+    response = await async_client.post("/backend-api/codex/responses", json=stream_payload, headers=headers)
+    assert response.status_code == 200
+    assert stream_seen == ["acc_turn_state_a"]
+
+    async with SessionLocal() as session:
+        usage_repo = UsageRepository(session)
+        await usage_repo.add_entry(
+            account_id=acc_a_id,
+            used_percent=95.0,
+            window="primary",
+            reset_at=now_epoch + 3600,
+            window_minutes=300,
+        )
+        await usage_repo.add_entry(
+            account_id=acc_b_id,
+            used_percent=5.0,
+            window="primary",
+            reset_at=now_epoch + 3600,
+            window_minutes=300,
+        )
+
+    compact_payload = {
+        "model": "gpt-5.1",
+        "instructions": "summarize",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+    }
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json=compact_payload,
+        headers=headers,
+    )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "turn_state_owner_unavailable"
+    assert compact_seen == []
 
 
 @pytest.mark.asyncio
@@ -1327,3 +1415,90 @@ async def test_reallocate_sticky_respects_existing_session_then_falls_back(async
     await async_client.post("/backend-api/codex/responses", json=payload)
     assert len(seen) == 3
     assert seen[2] == "acc_realloc_b"
+
+
+@pytest.mark.asyncio
+async def test_sticky_upsert_single_statement_insert_and_update(db_setup):
+    """The upsert must persist and return the row with one data statement
+    (RETURNING), for both the insert and the conflict-update arms."""
+    from sqlalchemy import event
+
+    from app.db.models import StickySessionKind
+    from app.db.session import engine
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(
+            Account(
+                id="acc_sticky_rt",
+                email="sticky-rt@example.com",
+                plan_type="plus",
+                access_token_encrypted=encryptor.encrypt("access"),
+                refresh_token_encrypted=encryptor.encrypt("refresh"),
+                id_token_encrypted=encryptor.encrypt("id"),
+                last_refresh=utcnow(),
+                status=AccountStatus.ACTIVE,
+                deactivation_reason=None,
+            )
+        )
+
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if "sticky_sessions" in statement:
+            statements.append(statement)
+
+    async with SessionLocal() as session:
+        repo = StickySessionsRepository(session)
+        event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+        try:
+            inserted = await repo.upsert("key_rt", "acc_sticky_rt", kind=StickySessionKind.PROMPT_CACHE)
+            updated = await repo.upsert("key_rt", "acc_sticky_rt", kind=StickySessionKind.PROMPT_CACHE)
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+
+    assert inserted.key == "key_rt"
+    assert inserted.account_id == "acc_sticky_rt"
+    assert updated.key == "key_rt"
+    assert updated.account_id == "acc_sticky_rt"
+    assert updated.updated_at >= inserted.updated_at
+    # One INSERT ... RETURNING per upsert; no follow-up SELECT/refresh.
+    assert len(statements) == 2
+    assert all("INSERT" in stmt.upper() and "RETURNING" in stmt.upper() for stmt in statements)
+
+
+@pytest.mark.asyncio
+async def test_sticky_upsert_returning_refreshes_identity_map_instance(db_setup):
+    """Rebinding a key within one session must return the NEW account even
+    when the session's identity map already holds the row from an earlier
+    upsert (populate_existing on the RETURNING execute)."""
+    from app.db.models import StickySessionKind
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        repo_accounts = AccountsRepository(session)
+        for account_id in ("acc_rebind_a", "acc_rebind_b"):
+            await repo_accounts.upsert(
+                Account(
+                    id=account_id,
+                    email=f"{account_id}@example.com",
+                    plan_type="plus",
+                    access_token_encrypted=encryptor.encrypt("access"),
+                    refresh_token_encrypted=encryptor.encrypt("refresh"),
+                    id_token_encrypted=encryptor.encrypt("id"),
+                    last_refresh=utcnow(),
+                    status=AccountStatus.ACTIVE,
+                    deactivation_reason=None,
+                )
+            )
+
+    async with SessionLocal() as session:
+        repo = StickySessionsRepository(session)
+        first = await repo.upsert("key_rebind", "acc_rebind_a", kind=StickySessionKind.PROMPT_CACHE)
+        assert first.account_id == "acc_rebind_a"
+        # Same session, same identity-map row: rebinding must not return the
+        # stale in-memory account_id.
+        second = await repo.upsert("key_rebind", "acc_rebind_b", kind=StickySessionKind.PROMPT_CACHE)
+        assert second.account_id == "acc_rebind_b"

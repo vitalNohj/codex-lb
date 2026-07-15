@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
@@ -27,7 +28,11 @@ class ClaudeSidecarAuthPlanData:
 class DashboardSettingsData:
     sticky_threads_enabled: bool
     upstream_stream_transport: str
+    prohibit_fast_mode: bool
     http_downstream_transport_policy: str
+    proxy_account_response_create_limit: int
+    proxy_account_stream_limit: int
+    proxy_account_stream_recovery_reserve: int
     upstream_proxy_routing_enabled: bool
     upstream_proxy_default_pool_id: str | None
     prefer_earlier_reset_accounts: bool
@@ -58,6 +63,7 @@ class DashboardSettingsData:
     limit_warmup_prompt: str
     limit_warmup_cooldown_seconds: int
     limit_warmup_exhausted_threshold_percent: float
+    limit_warmup_idle_threshold_percent: float
     limit_warmup_min_available_percent: float
     weekly_pace_working_days: str
     weekly_pace_smoothing_minutes: int
@@ -123,13 +129,18 @@ class DashboardSettingsData:
     guest_access_enabled: bool
     guest_password_configured: bool
     limit_warmup_staggered_idle_enabled: bool
+    version: int
 
 
 @dataclass(frozen=True, slots=True)
 class DashboardSettingsUpdateData:
     sticky_threads_enabled: bool
     upstream_stream_transport: str
+    prohibit_fast_mode: bool
     http_downstream_transport_policy: str
+    proxy_account_response_create_limit: int | None
+    proxy_account_stream_limit: int | None
+    proxy_account_stream_recovery_reserve: int | None
     upstream_proxy_routing_enabled: bool
     upstream_proxy_default_pool_id: str | None
     prefer_earlier_reset_accounts: bool
@@ -159,6 +170,7 @@ class DashboardSettingsUpdateData:
     limit_warmup_prompt: str
     limit_warmup_cooldown_seconds: int
     limit_warmup_exhausted_threshold_percent: float
+    limit_warmup_idle_threshold_percent: float
     limit_warmup_min_available_percent: float
     weekly_pace_working_days: str
     weekly_pace_smoothing_minutes: int
@@ -240,7 +252,12 @@ class SettingsService:
         row = await self._repository.get_or_create()
         return self._to_data(row)
 
-    async def update_settings(self, payload: DashboardSettingsUpdateData) -> DashboardSettingsData:
+    async def update_settings(
+        self,
+        payload: DashboardSettingsUpdateData,
+        *,
+        expected_version: int | None = None,
+    ) -> DashboardSettingsData:
         current = await self._repository.get_or_create()
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
@@ -282,9 +299,14 @@ class SettingsService:
             ollama_api_key_value = payload.ollama_sidecar_api_key.strip()
             ollama_api_key_encrypted = self._encryptor.encrypt(ollama_api_key_value) if ollama_api_key_value else None
         row = await self._repository.update(
+            expected_version=expected_version,
             sticky_threads_enabled=payload.sticky_threads_enabled,
             upstream_stream_transport=payload.upstream_stream_transport,
+            prohibit_fast_mode=payload.prohibit_fast_mode,
             http_downstream_transport_policy=payload.http_downstream_transport_policy,
+            proxy_account_response_create_limit=payload.proxy_account_response_create_limit,
+            proxy_account_stream_limit=payload.proxy_account_stream_limit,
+            proxy_account_stream_recovery_reserve=payload.proxy_account_stream_recovery_reserve,
             upstream_proxy_routing_enabled=payload.upstream_proxy_routing_enabled,
             upstream_proxy_default_pool_id=payload.upstream_proxy_default_pool_id,
             prefer_earlier_reset_accounts=payload.prefer_earlier_reset_accounts,
@@ -318,6 +340,7 @@ class SettingsService:
             limit_warmup_prompt=payload.limit_warmup_prompt,
             limit_warmup_cooldown_seconds=payload.limit_warmup_cooldown_seconds,
             limit_warmup_exhausted_threshold_percent=payload.limit_warmup_exhausted_threshold_percent,
+            limit_warmup_idle_threshold_percent=payload.limit_warmup_idle_threshold_percent,
             limit_warmup_min_available_percent=payload.limit_warmup_min_available_percent,
             weekly_pace_working_days=payload.weekly_pace_working_days,
             weekly_pace_smoothing_minutes=payload.weekly_pace_smoothing_minutes,
@@ -390,7 +413,15 @@ class SettingsService:
         return DashboardSettingsData(
             sticky_threads_enabled=row.sticky_threads_enabled,
             upstream_stream_transport=row.upstream_stream_transport,
+            prohibit_fast_mode=row.prohibit_fast_mode,
             http_downstream_transport_policy=row.http_downstream_transport_policy,
+            proxy_account_response_create_limit=_effective_response_create_limit(
+                row.proxy_account_response_create_limit
+            ),
+            proxy_account_stream_limit=_effective_stream_limit(row.proxy_account_stream_limit),
+            proxy_account_stream_recovery_reserve=_effective_stream_recovery_reserve(
+                row.proxy_account_stream_recovery_reserve
+            ),
             upstream_proxy_routing_enabled=row.upstream_proxy_routing_enabled,
             upstream_proxy_default_pool_id=row.upstream_proxy_default_pool_id,
             prefer_earlier_reset_accounts=row.prefer_earlier_reset_accounts,
@@ -425,6 +456,7 @@ class SettingsService:
             limit_warmup_prompt=row.limit_warmup_prompt,
             limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
             limit_warmup_exhausted_threshold_percent=row.limit_warmup_exhausted_threshold_percent,
+            limit_warmup_idle_threshold_percent=row.limit_warmup_idle_threshold_percent,
             limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
             weekly_pace_working_days=row.weekly_pace_working_days,
             weekly_pace_smoothing_minutes=row.weekly_pace_smoothing_minutes,
@@ -500,6 +532,7 @@ class SettingsService:
             guest_access_enabled=row.guest_access_enabled,
             guest_password_configured=row.guest_password_hash is not None,
             limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
+            version=row.version,
         )
 
 
@@ -509,6 +542,18 @@ _DEFAULT_CLAUDE_SIDECAR_PREFIXES = [
     SidecarPrefix(prefix="cp-", strip=True),
     SidecarPrefix(prefix="cp_", strip=True),
 ]
+
+
+def _effective_response_create_limit(value: int | None) -> int:
+    return get_settings().proxy_account_response_create_limit if value is None else value
+
+
+def _effective_stream_limit(value: int | None) -> int:
+    return get_settings().proxy_account_stream_limit if value is None else value
+
+
+def _effective_stream_recovery_reserve(value: int | None) -> int:
+    return get_settings().proxy_account_stream_recovery_reserve if value is None else value
 
 
 def _normalize_additional_quota_key(raw_quota_key: str) -> str | None:

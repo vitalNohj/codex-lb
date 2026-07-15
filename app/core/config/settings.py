@@ -171,6 +171,7 @@ class Settings(BaseSettings):
     database_sqlite_pre_migrate_backup_max_files: int = Field(default=5, ge=1)
     database_sqlite_startup_check_mode: Literal["quick", "full", "off"] = "quick"
     database_alembic_auto_remap_enabled: bool = True
+    database_migration_lock_timeout_seconds: float = Field(default=300.0, gt=0)
     upstream_base_url: str = "https://chatgpt.com/backend-api"
     upstream_stream_transport: Literal["http", "websocket", "auto"] = "auto"
     http_downstream_transport_policy: Literal["smart", "always_http", "always_websocket", "pinned"] = "smart"
@@ -232,6 +233,15 @@ class Settings(BaseSettings):
     oauth_callback_host: str = _default_oauth_callback_host()
     oauth_callback_port: int = 1455  # Do not change the port. OpenAI dislikes changes.
     token_refresh_timeout_seconds: float = 8.0
+    # Cross-replica token-refresh claim (account_refresh_claims table).
+    # The TTL bounds how long a crashed claimant can block refresh for one
+    # account; it is validated to stay >= proxy_admission_wait_timeout_seconds
+    # + 2x token_refresh_timeout_seconds because the claim is held across the
+    # refresh-admission wait AND the OAuth exchange, and a healthy claimant
+    # must not lose its claim mid-work.
+    token_refresh_claim_ttl_seconds: float = Field(default=30.0, gt=0)
+    token_refresh_claim_wait_seconds: float = Field(default=8.0, gt=0)
+    token_refresh_claim_poll_seconds: float = Field(default=0.25, gt=0)
     auth_guardian_enabled: bool = False
     auth_guardian_interval_seconds: int = Field(default=21600, gt=0)
     auth_guardian_max_refresh_age_seconds: int = Field(default=43200, gt=0)
@@ -246,6 +256,9 @@ class Settings(BaseSettings):
     usage_fetch_max_retries: int = 2
     usage_refresh_enabled: bool = True
     usage_refresh_interval_seconds: int = Field(default=60, gt=0)
+    live_usage_ingestion_enabled: bool = True
+    live_usage_write_min_interval_seconds: float = Field(default=5.0, ge=0)
+    live_usage_queue_size: int = Field(default=512, gt=0)
     rate_limit_reset_credits_refresh_interval_seconds: int = Field(default=60, gt=0)
     openai_cache_affinity_max_age_seconds: int = Field(default=1800, gt=0)
     warmup_model: str = "gpt-5.4-mini"
@@ -275,11 +288,21 @@ class Settings(BaseSettings):
     http_responses_session_bridge_advertise_base_url: str | None = None
     sticky_session_cleanup_enabled: bool = True
     sticky_session_cleanup_interval_seconds: int = Field(default=300, gt=0)
+    # Data retention (0 = disabled). Non-zero values have safety floors so
+    # every in-product consumer window stays inside retained data.
+    # Display-only pagination total for the request-log listing; 0 disables.
+    request_log_count_cache_ttl_seconds: float = Field(default=30.0, ge=0)
+    request_log_retention_days: int = Field(default=0, ge=0, le=3650)
+    usage_history_retention_days: int = Field(default=0, ge=0, le=3650)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
     automations_scheduler_enabled: bool = True
     automations_scheduler_interval_seconds: int = Field(default=30, gt=0)
     encryption_key_file: Path = DEFAULT_ENCRYPTION_KEY_FILE
+    # Startup cross-replica encryption-key consistency check against the shared
+    # database sentinel: "enforce" refuses startup on mismatch, "warn" logs an
+    # ERROR and continues, "off" disables the check.
+    encryption_key_fingerprint_mode: Literal["enforce", "warn", "off"] = "enforce"
     database_migrations_fail_fast: bool = True
     log_proxy_request_shape: bool = False
     log_proxy_request_shape_raw_cache_key: bool = False
@@ -314,6 +337,9 @@ class Settings(BaseSettings):
     # catalog (GPT-5.6 requires 0.144.0) or a degraded-startup refresh would
     # receive an upstream catalog without those models.
     model_registry_client_version: str = "0.144.0"
+    # Persisted registry snapshots older than this are ignored at load time
+    # (bootstrap catalog remains the floor until the next leader refresh).
+    model_registry_snapshot_max_age_seconds: int = Field(default=86400, gt=0)
     codex_fingerprint_os: str = "Mac OS 26.5.0"
     codex_fingerprint_arch: str = "arm64"
     codex_fingerprint_terminal: str = "iTerm.app/3.6.10"
@@ -341,8 +367,8 @@ class Settings(BaseSettings):
     log_format: str = "text"  # "text" or "json"
 
     # Leader election
-    leader_election_enabled: bool = False
-    leader_election_ttl_seconds: int = 600
+    leader_election_enabled: bool = True
+    leader_election_ttl_seconds: int = Field(default=60, ge=5)
 
     # Circuit breaker
     circuit_breaker_enabled: bool = False
@@ -375,9 +401,22 @@ class Settings(BaseSettings):
     proxy_admission_wait_timeout_seconds: float = Field(default=10.0, gt=0)
     proxy_account_response_create_limit: int = Field(default=4, ge=0)
     proxy_account_stream_limit: int = Field(default=8, ge=0)
+    proxy_account_stream_recovery_reserve: int = Field(default=1, ge=0)
     proxy_account_inflight_penalty_pct: float = Field(default=2.5, ge=0)
     proxy_account_lease_token_weight: float = Field(default=1.0, ge=0)
     proxy_account_lease_ttl_seconds: float = Field(default=900.0, gt=0)
+    proxy_account_caps_scope: Literal["partitioned", "replica"] = "partitioned"
+    proxy_account_cap_partition_scale_down_seconds: int = Field(default=60, ge=30)
+    # Explicit operator declaration of how many worker processes
+    # (uvicorn/gunicorn) this instance runs behind a single bridge-ring instance
+    # id. Only ``1`` (the default) is supported: per-account concurrency caps are
+    # partitioned per REPLICA via the bridge ring, and intra-pod multi-worker
+    # cap partitioning cannot be made reliable (there is no portable per-worker
+    # index — standard multi-worker launches inherit the same environment into
+    # every child). A declared value greater than 1 is rejected at startup by
+    # ``_validate_workers_per_instance``; operators scale horizontally via
+    # replicas instead. Default 1 is a no-op requiring zero operator action.
+    workers_per_instance: int = Field(default=1, ge=1)
     proxy_refresh_failure_cooldown_seconds: float = Field(default=5.0, ge=0.0)
     usage_refresh_auth_failure_cooldown_seconds: float = Field(default=300.0, ge=0.0)
 
@@ -394,6 +433,20 @@ class Settings(BaseSettings):
     # HTTP connector limits
     http_connector_limit: int = 100
     http_connector_limit_per_host: int = 50
+
+    @field_validator("request_log_retention_days")
+    @classmethod
+    def _validate_request_log_retention(cls, value: int) -> int:
+        if value != 0 and value < 30:
+            raise ValueError("request_log_retention_days must be 0 (disabled) or >= 30")
+        return value
+
+    @field_validator("usage_history_retention_days")
+    @classmethod
+    def _validate_usage_history_retention(cls, value: int) -> int:
+        if value != 0 and value < 45:
+            raise ValueError("usage_history_retention_days must be 0 (disabled) or >= 45")
+        return value
 
     @field_validator("data_dir", mode="before")
     @classmethod
@@ -663,6 +716,31 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_token_refresh_claim_ttl(self) -> "Settings":
+        # The claim is acquired BEFORE the refresh-admission wait and held
+        # through the OAuth exchange, so the TTL floor must cover both: the
+        # admission wait ceiling plus the HTTP exchange (2x for margin). A TTL
+        # sized only around the HTTP timeout can expire under a healthy
+        # claimant stuck in admission, letting another replica claim the same
+        # account and reuse the single-use refresh token.
+        minimum_ttl = self.proxy_admission_wait_timeout_seconds + 2.0 * self.token_refresh_timeout_seconds
+        if "token_refresh_claim_ttl_seconds" not in self.model_fields_set:
+            # The operator has not opted into the new setting. Derive the
+            # default from the related timeouts so a deployment that only
+            # raised the refresh/admission timeouts before this setting
+            # existed still boots with a TTL that satisfies the invariant,
+            # instead of crashing at startup against the fixed 30s default.
+            self.token_refresh_claim_ttl_seconds = max(self.token_refresh_claim_ttl_seconds, minimum_ttl)
+            return self
+        if self.token_refresh_claim_ttl_seconds < minimum_ttl:
+            raise ValueError(
+                "token_refresh_claim_ttl_seconds must be at least proxy_admission_wait_timeout_seconds "
+                f"+ 2x token_refresh_timeout_seconds ({minimum_ttl}s) so a healthy claimant cannot lose "
+                "its claim while waiting for refresh admission or mid-exchange"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_metrics_port(self) -> "Settings":
         http_port = _configured_http_port()
         if self.metrics_port == http_port:
@@ -677,6 +755,28 @@ class Settings(BaseSettings):
             raise ValueError("dashboard_auth_mode=trusted_header requires firewall_trust_proxy_headers=true")
         if not self.firewall_trusted_proxy_cidrs:
             raise ValueError("dashboard_auth_mode=trusted_header requires non-empty firewall_trusted_proxy_cidrs")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_workers_per_instance(self) -> "Settings":
+        # Only one worker process per instance is supported. Per-account
+        # concurrency caps are partitioned per REPLICA via the bridge ring, which
+        # is correct only when a single process runs behind each ring instance
+        # id. Running multiple worker processes per instance cannot be made
+        # reliable for shared caps: there is no portable per-worker index, and a
+        # standard uvicorn/gunicorn multi-worker launch inherits the SAME
+        # environment into every child, so the workers cannot self-partition. Fail
+        # fast on the explicit declaration rather than silently over-admitting.
+        if self.workers_per_instance > 1:
+            raise ValueError(
+                "workers_per_instance (CODEX_LB_WORKERS_PER_INSTANCE="
+                f"{self.workers_per_instance}) is not supported: running more than one worker "
+                "process per instance would multiply per-account concurrency caps, because those "
+                "caps are partitioned per replica via the bridge ring and intra-pod worker "
+                "partitioning cannot be made reliable. Run ONE worker per pod/container and scale "
+                "horizontally via replicas (the bridge ring partitions caps per replica); set "
+                "CODEX_LB_WORKERS_PER_INSTANCE=1 (the default)."
+            )
         return self
 
 

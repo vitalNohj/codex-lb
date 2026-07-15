@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
+import app.modules.settings.service as settings_service_module
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.db.models import DashboardSettings
+from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import (
     DashboardSettingsUpdateData,
+    SettingsService,
     SidecarRoutingConflictError,
     _dump_additional_quota_routing_policies,
     _dump_claude_sidecar_model_prefixes,
@@ -18,6 +23,38 @@ from app.modules.settings.service import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_migrated_null_account_caps_inherit_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = DashboardSettings()
+    row.proxy_account_response_create_limit = None
+    row.proxy_account_stream_limit = None
+    row.proxy_account_stream_recovery_reserve = None
+
+    class _Repository:
+        async def get_or_create(self) -> DashboardSettings:
+            return row
+
+    monkeypatch.setattr(
+        settings_service_module,
+        "get_settings",
+        lambda: type(
+            "_StartupSettings",
+            (),
+            {
+                "proxy_account_response_create_limit": 24,
+                "proxy_account_stream_limit": 32,
+                "proxy_account_stream_recovery_reserve": 4,
+            },
+        )(),
+    )
+
+    settings = await SettingsService(cast(SettingsRepository, _Repository())).get_settings()
+
+    assert settings.proxy_account_response_create_limit == 24
+    assert settings.proxy_account_stream_limit == 32
+    assert settings.proxy_account_stream_recovery_reserve == 4
 
 
 def test_parse_additional_quota_routing_policies_normalizes_aliases_and_policy_case() -> None:
@@ -94,6 +131,11 @@ def _settings_update(
     return DashboardSettingsUpdateData(
         sticky_threads_enabled=True,
         upstream_stream_transport="default",
+        prohibit_fast_mode=False,
+        http_downstream_transport_policy="smart",
+        proxy_account_response_create_limit=4,
+        proxy_account_stream_limit=8,
+        proxy_account_stream_recovery_reserve=1,
         upstream_proxy_routing_enabled=False,
         upstream_proxy_default_pool_id=None,
         prefer_earlier_reset_accounts=True,
@@ -116,13 +158,17 @@ def _settings_update(
         import_without_overwrite=True,
         totp_required_on_login=False,
         api_key_auth_enabled=False,
+        hide_upstream_quota_from_api_keys=False,
         limit_warmup_enabled=False,
         limit_warmup_windows="both",
         limit_warmup_model="auto",
         limit_warmup_prompt="Say OK.",
         limit_warmup_cooldown_seconds=3600,
+        limit_warmup_exhausted_threshold_percent=99.0,
+        limit_warmup_idle_threshold_percent=1.0,
         limit_warmup_min_available_percent=100.0,
         weekly_pace_working_days="0,1,2,3,4,5,6",
+        weekly_pace_smoothing_minutes=30,
         claude_sidecar_enabled=False,
         claude_sidecar_base_url="http://127.0.0.1:8317",
         claude_sidecar_api_key=None,
@@ -172,6 +218,7 @@ def _settings_update(
         ollama_sidecar_models_cache_ttl_seconds=60.0,
         ollama_sidecar_default_reasoning_effort=None,
         guest_access_enabled=False,
+        limit_warmup_staggered_idle_enabled=False,
     )
 
 

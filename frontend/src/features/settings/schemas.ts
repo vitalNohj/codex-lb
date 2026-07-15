@@ -95,6 +95,7 @@ export const DashboardSettingsSchema = z
     stickyThreadsEnabled: z.boolean(),
     upstreamStreamTransport:
       UpstreamStreamTransportSchema.optional().default("default"),
+    prohibitFastMode: z.boolean().optional().default(false),
     httpDownstreamTransportPolicy:
       HttpDownstreamTransportPolicySchema.optional().default("smart"),
     upstreamProxyRoutingEnabled: z.boolean().optional().default(false),
@@ -111,6 +112,9 @@ export const DashboardSettingsSchema = z
       .optional()
       .default(5),
     singleAccountId: z.string().nullable().optional().default(null),
+    proxyAccountResponseCreateLimit: z.number().int().min(0).optional().default(4),
+    proxyAccountStreamLimit: z.number().int().min(0).optional().default(8),
+    proxyAccountStreamRecoveryReserve: z.number().int().min(0).optional().default(1),
     openaiCacheAffinityMaxAgeSeconds: z
       .number()
       .int()
@@ -149,6 +153,12 @@ export const DashboardSettingsSchema = z
       .max(100)
       .optional()
       .default(99),
+    limitWarmupIdleThresholdPercent: z
+      .number()
+      .positive()
+      .max(100)
+      .optional()
+      .default(1),
     limitWarmupMinAvailablePercent: z
       .number()
       .positive()
@@ -223,6 +233,7 @@ export const DashboardSettingsSchema = z
     guestAccessEnabled: z.boolean().optional().default(false),
     guestPasswordConfigured: z.boolean().optional().default(false),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional().default(false),
+    version: z.number().int().min(1).optional(),
   })
   .transform((settings) => {
     const legacyProvided = settings.stickyReallocationBudgetThresholdPct !== undefined;
@@ -256,93 +267,114 @@ export const DashboardSettingsSchema = z
     };
   });
 
-export const SettingsUpdateRequestSchema = z.object({
-  stickyThreadsEnabled: z.boolean().optional(),
-  upstreamStreamTransport: UpstreamStreamTransportSchema.optional(),
-  httpDownstreamTransportPolicy: HttpDownstreamTransportPolicySchema.optional(),
-  upstreamProxyRoutingEnabled: z.boolean().optional(),
-  upstreamProxyDefaultPoolId: z.string().nullable().optional(),
-  preferEarlierResetAccounts: z.boolean().optional(),
-  preferEarlierResetWindow: z.enum(["primary", "secondary"]).optional(),
-  routingStrategy: RoutingStrategySchema.optional(),
-  relativeAvailabilityPower: z.number().positive().optional(),
-  relativeAvailabilityTopK: z.number().int().min(1).max(20).optional(),
-  singleAccountId: z.string().nullable().optional(),
-  openaiCacheAffinityMaxAgeSeconds: z.number().int().positive().optional(),
-  dashboardSessionTtlSeconds: z.number().int().min(3600).optional(),
-  stickyReallocationBudgetThresholdPct: z.number().min(0).max(100).optional(),
-  stickyReallocationPrimaryBudgetThresholdPct: z.number().min(0).max(100).optional(),
-  stickyReallocationSecondaryBudgetThresholdPct: z.number().min(0).max(100).optional(),
-  additionalQuotaRoutingPolicies: z
-    .record(z.string(), AdditionalQuotaRoutingPolicySchema)
-    .optional(),
-  modelAliases: z.record(z.string(), z.string()).optional(),
-  customAliasCatalog: z.record(z.string(), CustomAliasCatalogEntrySchema).optional(),
-  warmupModel: z.string().trim().min(1).optional(),
-  importWithoutOverwrite: z.boolean().optional(),
-  totpRequiredOnLogin: z.boolean().optional(),
-  apiKeyAuthEnabled: z.boolean().optional(),
-  hideUpstreamQuotaFromApiKeys: z.boolean().optional(),
-  limitWarmupEnabled: z.boolean().optional(),
-  limitWarmupWindows: LimitWarmupWindowsSchema.optional(),
-  limitWarmupModel: LimitWarmupModelSchema.optional(),
-  limitWarmupPrompt: LimitWarmupPromptSchema.optional(),
-  limitWarmupCooldownSeconds: z.number().int().min(60).optional(),
-  limitWarmupExhaustedThresholdPercent: z.number().positive().max(100).optional(),
-  limitWarmupMinAvailablePercent: z.number().positive().max(100).optional(),
-  weeklyPaceWorkingDays: WeeklyPaceWorkingDaysValueSchema.optional(),
-  weeklyPaceSmoothingMinutes: WeeklyPaceSmoothingMinutesSchema.optional(),
-  claudeSidecarEnabled: z.boolean().optional(),
-  claudeSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
-  claudeSidecarApiKey: z.string().trim().max(4096).optional(),
-  claudeSidecarClearApiKey: z.boolean().optional(),
-  claudeSidecarModelPrefixes: RequiredSidecarModelPrefixesSchema.optional(),
-  claudeSidecarFullModels: SidecarFullModelsSchema.optional(),
-  claudeSidecarConnectTimeoutSeconds: z.number().positive().optional(),
-  claudeSidecarRequestTimeoutSeconds: z.number().positive().optional(),
-  claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
-  claudeSidecarManagementKey: z.string().trim().max(4096).optional(),
-  claudeSidecarClearManagementKey: z.boolean().optional(),
-  claudeSidecarQuotaPollIntervalSeconds: z.number().positive().optional(),
-  claudeSidecarAuthPlans: z.array(ClaudeSidecarAuthPlanSchema).optional(),
-  claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional(),
-  claudeSidecarUsageQueueBatchSize: z.number().int().positive().max(1000).optional(),
-  claudeSidecarUsageCollectionEnabled: z.boolean().optional(),
-  claudeSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
-  openrouterSidecarEnabled: z.boolean().optional(),
-  openrouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
-  openrouterSidecarApiKey: z.string().trim().max(4096).optional(),
-  openrouterSidecarClearApiKey: z.boolean().optional(),
-  openrouterSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
-  openrouterSidecarFullModels: SidecarFullModelsSchema.optional(),
-  openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
-  openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
-  openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
-  openrouterSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
-  omnirouteSidecarEnabled: z.boolean().optional(),
-  omnirouteSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
-  omnirouteSidecarApiKey: z.string().trim().max(4096).optional(),
-  omnirouteSidecarClearApiKey: z.boolean().optional(),
-  omnirouteSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
-  omnirouteSidecarFullModels: SidecarFullModelsSchema.optional(),
-  omnirouteSidecarSelectedModels: SidecarFullModelsSchema.optional(),
-  omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional(),
-  omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional(),
-  omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
-  omnirouteSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
-  ollamaSidecarEnabled: z.boolean().optional(),
-  ollamaSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
-  ollamaSidecarApiKey: z.string().trim().max(4096).optional(),
-  ollamaSidecarClearApiKey: z.boolean().optional(),
-  ollamaSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
-  ollamaSidecarFullModels: SidecarFullModelsSchema.optional(),
-  ollamaSidecarConnectTimeoutSeconds: z.number().positive().optional(),
-  ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
-  ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
-  ollamaSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
-  guestAccessEnabled: z.boolean().optional(),
-  limitWarmupStaggeredIdleEnabled: z.boolean().optional(),
-});
+export const SettingsUpdateRequestSchema = z
+  .object({
+    expectedVersion: z.number().int().min(1).optional(),
+    stickyThreadsEnabled: z.boolean().optional(),
+    upstreamStreamTransport: UpstreamStreamTransportSchema.optional(),
+    prohibitFastMode: z.boolean().optional(),
+    httpDownstreamTransportPolicy: HttpDownstreamTransportPolicySchema.optional(),
+    upstreamProxyRoutingEnabled: z.boolean().optional(),
+    upstreamProxyDefaultPoolId: z.string().nullable().optional(),
+    preferEarlierResetAccounts: z.boolean().optional(),
+    preferEarlierResetWindow: z.enum(["primary", "secondary"]).optional(),
+    routingStrategy: RoutingStrategySchema.optional(),
+    relativeAvailabilityPower: z.number().positive().optional(),
+    relativeAvailabilityTopK: z.number().int().min(1).max(20).optional(),
+    singleAccountId: z.string().nullable().optional(),
+    proxyAccountResponseCreateLimit: z.number().int().min(0).optional(),
+    proxyAccountStreamLimit: z.number().int().min(0).optional(),
+    proxyAccountStreamRecoveryReserve: z.number().int().min(0).optional(),
+    openaiCacheAffinityMaxAgeSeconds: z.number().int().positive().optional(),
+    dashboardSessionTtlSeconds: z.number().int().min(3600).optional(),
+    stickyReallocationBudgetThresholdPct: z.number().min(0).max(100).optional(),
+    stickyReallocationPrimaryBudgetThresholdPct: z.number().min(0).max(100).optional(),
+    stickyReallocationSecondaryBudgetThresholdPct: z.number().min(0).max(100).optional(),
+    additionalQuotaRoutingPolicies: z
+      .record(z.string(), AdditionalQuotaRoutingPolicySchema)
+      .optional(),
+    modelAliases: z.record(z.string(), z.string()).optional(),
+    customAliasCatalog: z.record(z.string(), CustomAliasCatalogEntrySchema).optional(),
+    warmupModel: z.string().trim().min(1).optional(),
+    importWithoutOverwrite: z.boolean().optional(),
+    totpRequiredOnLogin: z.boolean().optional(),
+    apiKeyAuthEnabled: z.boolean().optional(),
+    hideUpstreamQuotaFromApiKeys: z.boolean().optional(),
+    limitWarmupEnabled: z.boolean().optional(),
+    limitWarmupWindows: LimitWarmupWindowsSchema.optional(),
+    limitWarmupModel: LimitWarmupModelSchema.optional(),
+    limitWarmupPrompt: LimitWarmupPromptSchema.optional(),
+    limitWarmupCooldownSeconds: z.number().int().min(60).optional(),
+    limitWarmupExhaustedThresholdPercent: z.number().positive().max(100).optional(),
+    limitWarmupIdleThresholdPercent: z.number().positive().max(100).optional(),
+    limitWarmupMinAvailablePercent: z.number().positive().max(100).optional(),
+    weeklyPaceWorkingDays: WeeklyPaceWorkingDaysValueSchema.optional(),
+    weeklyPaceSmoothingMinutes: WeeklyPaceSmoothingMinutesSchema.optional(),
+    claudeSidecarEnabled: z.boolean().optional(),
+    claudeSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+    claudeSidecarApiKey: z.string().trim().max(4096).optional(),
+    claudeSidecarClearApiKey: z.boolean().optional(),
+    claudeSidecarModelPrefixes: RequiredSidecarModelPrefixesSchema.optional(),
+    claudeSidecarFullModels: SidecarFullModelsSchema.optional(),
+    claudeSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+    claudeSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+    claudeSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+    claudeSidecarManagementKey: z.string().trim().max(4096).optional(),
+    claudeSidecarClearManagementKey: z.boolean().optional(),
+    claudeSidecarQuotaPollIntervalSeconds: z.number().positive().optional(),
+    claudeSidecarAuthPlans: z.array(ClaudeSidecarAuthPlanSchema).optional(),
+    claudeSidecarUsagePollIntervalSeconds: z.number().positive().optional(),
+    claudeSidecarUsageQueueBatchSize: z.number().int().positive().max(1000).optional(),
+    claudeSidecarUsageCollectionEnabled: z.boolean().optional(),
+    claudeSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    openrouterSidecarEnabled: z.boolean().optional(),
+    openrouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+    openrouterSidecarApiKey: z.string().trim().max(4096).optional(),
+    openrouterSidecarClearApiKey: z.boolean().optional(),
+    openrouterSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+    openrouterSidecarFullModels: SidecarFullModelsSchema.optional(),
+    openrouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+    openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+    openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+    openrouterSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    omnirouteSidecarEnabled: z.boolean().optional(),
+    omnirouteSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+    omnirouteSidecarApiKey: z.string().trim().max(4096).optional(),
+    omnirouteSidecarClearApiKey: z.boolean().optional(),
+    omnirouteSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+    omnirouteSidecarFullModels: SidecarFullModelsSchema.optional(),
+    omnirouteSidecarSelectedModels: SidecarFullModelsSchema.optional(),
+    omnirouteSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+    omnirouteSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+    omnirouteSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+    omnirouteSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    ollamaSidecarEnabled: z.boolean().optional(),
+    ollamaSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+    ollamaSidecarApiKey: z.string().trim().max(4096).optional(),
+    ollamaSidecarClearApiKey: z.boolean().optional(),
+    ollamaSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+    ollamaSidecarFullModels: SidecarFullModelsSchema.optional(),
+    ollamaSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+    ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+    ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+    ollamaSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    guestAccessEnabled: z.boolean().optional(),
+    limitWarmupStaggeredIdleEnabled: z.boolean().optional(),
+  })
+  .superRefine((settings, ctx) => {
+    if (
+      settings.proxyAccountStreamLimit !== undefined &&
+      settings.proxyAccountStreamLimit > 0 &&
+      settings.proxyAccountStreamRecoveryReserve !== undefined &&
+      settings.proxyAccountStreamRecoveryReserve > settings.proxyAccountStreamLimit
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["proxyAccountStreamRecoveryReserve"],
+        message: "proxyAccountStreamRecoveryReserve must not exceed proxyAccountStreamLimit",
+      });
+    }
+  });
 
 export const ClaudeSidecarModelSummarySchema = z.object({
   id: z.string(),

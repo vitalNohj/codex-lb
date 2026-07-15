@@ -5,10 +5,13 @@ from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
+from app.core.exceptions import DashboardSettingsConflictError
 from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
@@ -31,7 +34,11 @@ class SettingsRepository:
             id=_SETTINGS_ID,
             sticky_threads_enabled=True,
             upstream_stream_transport="default",
+            prohibit_fast_mode=False,
             http_downstream_transport_policy=get_settings().http_downstream_transport_policy,
+            proxy_account_response_create_limit=get_settings().proxy_account_response_create_limit,
+            proxy_account_stream_limit=get_settings().proxy_account_stream_limit,
+            proxy_account_stream_recovery_reserve=get_settings().proxy_account_stream_recovery_reserve,
             upstream_proxy_routing_enabled=False,
             upstream_proxy_default_pool_id=None,
             prefer_earlier_reset_accounts=True,
@@ -65,6 +72,7 @@ class SettingsRepository:
             limit_warmup_prompt="Say OK.",
             limit_warmup_cooldown_seconds=3600,
             limit_warmup_exhausted_threshold_percent=99.0,
+            limit_warmup_idle_threshold_percent=1.0,
             limit_warmup_min_available_percent=100.0,
             weekly_pace_working_days="0,1,2,3,4,5,6",
             weekly_pace_smoothing_minutes=30,
@@ -166,7 +174,11 @@ class SettingsRepository:
         *,
         sticky_threads_enabled: bool | None = None,
         upstream_stream_transport: str | None = None,
+        prohibit_fast_mode: bool | None = None,
         http_downstream_transport_policy: str | None = None,
+        proxy_account_response_create_limit: int | None = None,
+        proxy_account_stream_limit: int | None = None,
+        proxy_account_stream_recovery_reserve: int | None = None,
         upstream_proxy_routing_enabled: bool | None = None,
         upstream_proxy_default_pool_id: str | None | object = _UNSET,
         prefer_earlier_reset_accounts: bool | None = None,
@@ -196,6 +208,7 @@ class SettingsRepository:
         limit_warmup_prompt: str | None = None,
         limit_warmup_cooldown_seconds: int | None = None,
         limit_warmup_exhausted_threshold_percent: float | None = None,
+        limit_warmup_idle_threshold_percent: float | None = None,
         limit_warmup_min_available_percent: float | None = None,
         weekly_pace_working_days: str | None = None,
         weekly_pace_smoothing_minutes: int | None = None,
@@ -261,14 +274,31 @@ class SettingsRepository:
         ollama_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         guest_access_enabled: bool | None = None,
         limit_warmup_staggered_idle_enabled: bool | None = None,
+        expected_version: int | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
+        if expected_version is not None and settings.version != expected_version:
+            # Bind the CAS to the row this UPDATE targets: with
+            # DashboardSettings.version as version_id_col, commit_refresh emits
+            # `UPDATE ... WHERE version = :expected`, so a writer committing in
+            # between still surfaces as StaleDataError -> 409.
+            raise DashboardSettingsConflictError(
+                "Settings were modified since this form was loaded; reload and retry",
+            )
         if sticky_threads_enabled is not None:
             settings.sticky_threads_enabled = sticky_threads_enabled
         if upstream_stream_transport is not None:
             settings.upstream_stream_transport = upstream_stream_transport
+        if prohibit_fast_mode is not None:
+            settings.prohibit_fast_mode = prohibit_fast_mode
         if http_downstream_transport_policy is not None:
             settings.http_downstream_transport_policy = http_downstream_transport_policy
+        if proxy_account_response_create_limit is not None:
+            settings.proxy_account_response_create_limit = proxy_account_response_create_limit
+        if proxy_account_stream_limit is not None:
+            settings.proxy_account_stream_limit = proxy_account_stream_limit
+        if proxy_account_stream_recovery_reserve is not None:
+            settings.proxy_account_stream_recovery_reserve = proxy_account_stream_recovery_reserve
         if upstream_proxy_routing_enabled is not None:
             settings.upstream_proxy_routing_enabled = upstream_proxy_routing_enabled
         if upstream_proxy_default_pool_id is not _UNSET:
@@ -331,6 +361,8 @@ class SettingsRepository:
             settings.limit_warmup_cooldown_seconds = limit_warmup_cooldown_seconds
         if limit_warmup_exhausted_threshold_percent is not None:
             settings.limit_warmup_exhausted_threshold_percent = limit_warmup_exhausted_threshold_percent
+        if limit_warmup_idle_threshold_percent is not None:
+            settings.limit_warmup_idle_threshold_percent = limit_warmup_idle_threshold_percent
         if limit_warmup_min_available_percent is not None:
             settings.limit_warmup_min_available_percent = limit_warmup_min_available_percent
         if weekly_pace_working_days is not None:
@@ -461,9 +493,24 @@ class SettingsRepository:
             settings.guest_access_enabled = guest_access_enabled
         if limit_warmup_staggered_idle_enabled is not None:
             settings.limit_warmup_staggered_idle_enabled = limit_warmup_staggered_idle_enabled
+        # Force the optimistic-version CAS to run even when the payload makes no
+        # net change. `version_id_col` only raises `StaleDataError` when the
+        # flush emits an ORM UPDATE; a full-row save that assigns values all
+        # equal to this (possibly stale) session's row would otherwise flush
+        # nothing, commit silently, and refresh over a concurrent writer's
+        # values without the required 409. Flagging a column dirty guarantees an
+        # `UPDATE ... SET version = version + 1 WHERE version = :expected`, so a
+        # stale no-op save still surfaces the conflict.
+        flag_modified(settings, "sticky_threads_enabled")
         await self.commit_refresh(settings)
         return settings
 
     async def commit_refresh(self, settings: DashboardSettings) -> None:
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except StaleDataError as exc:
+            # The optimistic version check (DashboardSettings.version) matched
+            # zero rows: another writer (replica or request) committed first.
+            await self._session.rollback()
+            raise DashboardSettingsConflictError() from exc
         await self._session.refresh(settings)

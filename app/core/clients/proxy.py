@@ -55,6 +55,7 @@ from app.core.errors import (
     openai_error,
     response_failed_event,
 )
+from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.models import CompactResponsePayload, OpenAIError
 from app.core.openai.parsing import (
@@ -62,7 +63,11 @@ from app.core.openai.parsing import (
     parse_error_payload,
     parse_sse_event,
 )
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
+from app.core.openai.requests import (
+    ResponsesCompactRequest,
+    ResponsesRequest,
+    validate_compact_input_wire_budget,
+)
 from app.core.resilience.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerOpenError,
@@ -71,11 +76,14 @@ from app.core.resilience.circuit_breaker import (
 )
 from app.core.types import JsonObject, JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute
+from app.core.usage.live_hub import publish_live_usage
+from app.core.usage.live_snapshots import EVENT_MARKER, parse_rate_limit_event_text, parse_rate_limit_headers
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
 CODEX_INSTALLATION_ID_HEADER = "x-codex-installation-id"
+CODEX_TURN_METADATA_HEADER = "x-codex-turn-metadata"
 CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 CODEX_RESPONSES_LITE_WEBSOCKET_METADATA_KEY = "ws_request_header_x_openai_internal_codex_responses_lite"
 
@@ -123,7 +131,13 @@ def _is_response_stream_terminal_event_type(event_type: str, *, enforce_openai_s
     return event_type == "error" and not enforce_openai_sdk_contract
 
 
-_SSE_READ_CHUNK_SIZE = 1 * 1024
+# 16 KiB reads: 1 KiB reads made a multi-MB SSE event cost thousands of
+# iterations, and each iteration's separator rescan froze the event loop
+# (see the scan cursor in _iter_sse_events).
+_SSE_READ_CHUNK_SIZE = 16 * 1024
+# Longest separator is 4 bytes; a separator can straddle a chunk boundary by
+# at most 3 bytes, so rescans back up this far into already-scanned bytes.
+_SSE_SEPARATOR_OVERLAP = 3
 _IMAGE_INLINE_MAX_BYTES = 8 * 1024 * 1024
 _IMAGE_INLINE_CHUNK_SIZE = 64 * 1024
 _IMAGE_INLINE_TIMEOUT_SECONDS = 8.0
@@ -467,19 +481,60 @@ def filter_inbound_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in headers.items() if not _should_drop_inbound_header(key)}
 
 
+def _rewrite_turn_metadata_installation_id(value: JsonValue, codex_installation_id: str | None) -> JsonValue:
+    if not codex_installation_id or not isinstance(value, str):
+        return value
+    try:
+        metadata = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if not isinstance(metadata, dict) or "installation_id" not in metadata:
+        return value
+    metadata["installation_id"] = codex_installation_id
+    return json.dumps(metadata, ensure_ascii=True, separators=(",", ":"))
+
+
 def apply_codex_installation_metadata(payload: dict[str, JsonValue], codex_installation_id: str | None) -> None:
     raw_metadata = payload.get("client_metadata")
     client_metadata: dict[str, JsonValue] = {}
     if is_json_mapping(raw_metadata):
         for key, value in raw_metadata.items():
-            if isinstance(key, str) and key.lower() != CODEX_INSTALLATION_ID_HEADER:
-                client_metadata[key] = value
+            if not isinstance(key, str) or key.lower() == CODEX_INSTALLATION_ID_HEADER:
+                continue
+            client_metadata[key] = (
+                _rewrite_turn_metadata_installation_id(value, codex_installation_id)
+                if key.lower() == CODEX_TURN_METADATA_HEADER
+                else value
+            )
     if codex_installation_id:
         client_metadata[CODEX_INSTALLATION_ID_HEADER] = codex_installation_id
     if client_metadata:
         payload["client_metadata"] = client_metadata
     else:
         payload.pop("client_metadata", None)
+
+
+def apply_codex_installation_headers(
+    headers: Mapping[str, str],
+    codex_installation_id: str | None,
+) -> dict[str, str]:
+    """Keep canonical turn metadata consistent with the selected account."""
+    updated = dict(headers)
+    if not codex_installation_id:
+        return updated
+    has_installation_id = False
+    for key, value in list(updated.items()):
+        lowered = key.lower()
+        if lowered == CODEX_INSTALLATION_ID_HEADER:
+            updated[key] = codex_installation_id
+            has_installation_id = True
+        elif lowered == CODEX_TURN_METADATA_HEADER:
+            rewritten = _rewrite_turn_metadata_installation_id(value, codex_installation_id)
+            if isinstance(rewritten, str):
+                updated[key] = rewritten
+    if not has_installation_id:
+        updated[CODEX_INSTALLATION_ID_HEADER] = codex_installation_id
+    return updated
 
 
 _NATIVE_CODEX_USER_AGENT_PREFIXES: tuple[str, ...] = (
@@ -565,9 +620,8 @@ def _is_native_codex_request(headers: Mapping[str, str]) -> bool:
 def _normalize_non_native_upstream_fingerprint(headers: dict[str, str]) -> None:
     """Rewrite a non-native request's outbound fingerprint to the Codex CLI
     persona in place: set ``User-Agent`` to a ``codex_cli_rs`` string, strip
-    SDK-only ``x-openai-client-*`` and ``x-stainless-*`` headers, and strip any
-    inbound ``originator`` header (the real Codex CLI omits it for the default
-    originator and lets the backend read it from the User-Agent prefix)."""
+    SDK-only ``x-openai-client-*`` and ``x-stainless-*`` headers, and replace
+    any inbound ``originator`` or ``version`` with the canonical Codex values."""
     version = get_codex_version_cache().cached_version_or_default()
     codex_user_agent = build_codex_user_agent(version)
     for key in list(headers.keys()):
@@ -577,9 +631,12 @@ def _normalize_non_native_upstream_fingerprint(headers: dict[str, str]) -> None:
             or lowered in _SDK_FINGERPRINT_HEADER_KEYS
             or lowered.startswith(_SDK_FINGERPRINT_HEADER_PREFIXES)
             or lowered == "originator"
+            or lowered == "version"
         ):
             del headers[key]
     headers["User-Agent"] = codex_user_agent
+    headers["originator"] = _CODEX_CLI_ORIGINATOR
+    headers["version"] = version
 
 
 def _build_upstream_headers(
@@ -952,9 +1009,9 @@ def _remaining_total_timeout(timeout_seconds: float | None, started_at: float, n
     return max(0.001, timeout_seconds - max(0.0, now - started_at))
 
 
-def _find_sse_separator(buffer: bytes | bytearray) -> tuple[int, int] | None:
+def _find_sse_separator(buffer: bytes | bytearray, start: int = 0) -> tuple[int, int] | None:
     separators = (b"\r\n\r\n", b"\n\n", b"\r\r")
-    positions = [(buffer.find(separator), len(separator)) for separator in separators]
+    positions = [(buffer.find(separator, start), len(separator)) for separator in separators]
     valid_positions = [position for position in positions if position[0] >= 0]
     if not valid_positions:
         return None
@@ -990,6 +1047,7 @@ async def _iter_sse_events(
             pass
 
     buffer = bytearray()
+    scanned = 0
     chunk_iterator = resp.content.iter_chunked(_SSE_READ_CHUNK_SIZE)
     iterator = chunk_iterator.__aiter__()
 
@@ -1012,11 +1070,22 @@ async def _iter_sse_events(
 
         buffer.extend(chunk)
         while True:
-            raw_event = _pop_sse_event(buffer)
-            if raw_event is None:
+            # `scanned` marks the prefix already known to hold no separator,
+            # so each new chunk only scans the new bytes (plus the straddle
+            # overlap). Without the cursor, a large event re-scanned the
+            # entire accumulated buffer on every read — O(n^2) byte scanning
+            # that blocked the event loop for every in-flight stream.
+            separator = _find_sse_separator(buffer, max(0, scanned - _SSE_SEPARATOR_OVERLAP))
+            if separator is None:
+                scanned = len(buffer)
                 if len(buffer) > max_event_bytes:
                     raise StreamEventTooLargeError(len(buffer), max_event_bytes)
                 break
+            index, separator_len = separator
+            event_end = index + separator_len
+            raw_event = bytes(buffer[:event_end])
+            del buffer[:event_end]
+            scanned = 0
 
             if len(raw_event) > max_event_bytes:
                 raise StreamEventTooLargeError(len(raw_event), max_event_bytes)
@@ -1983,8 +2052,11 @@ def _prepare_websocket_response_create_payload(payload_dict: JsonObject) -> Json
         )
     if payload_size <= _UPSTREAM_RESPONSE_CREATE_MAX_BYTES:
         return request_payload
+    # 400, not 413: the Codex client surfaces 400 immediately as a non-retryable
+    # invalid request, while 413 burns five full-payload retries and then pins the
+    # session to HTTP transport.
     raise ProxyResponseError(
-        413,
+        400,
         _response_create_too_large_error_envelope(payload_size, _UPSTREAM_RESPONSE_CREATE_MAX_BYTES),
         failure_phase="validation",
         failure_detail=f"response.create_bytes={payload_size}",
@@ -2421,6 +2493,8 @@ async def stream_responses(
     allow_direct_egress: bool = True,
     codex_installation_id: str | None = None,
     enforce_openai_sdk_contract: bool = True,
+    codex_lb_account_id: str | None = None,
+    suppress_live_usage: bool = False,
 ) -> AsyncIterator[str]:
     effective_allow_direct_egress = allow_direct_egress or (route is None and session is not None)
     async with lease_http_session(session) as client_session:
@@ -2439,7 +2513,15 @@ async def stream_responses(
             allow_direct_egress=effective_allow_direct_egress,
             codex_installation_id=codex_installation_id,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+            codex_lb_account_id=codex_lb_account_id,
+            suppress_live_usage=suppress_live_usage,
         ):
+            if not suppress_live_usage and (codex_lb_account_id or account_id) and EVENT_MARKER in event_block:
+                publish_live_usage(
+                    parse_rate_limit_event_text(event_block),
+                    account_id=codex_lb_account_id,
+                    chatgpt_account_id=None if codex_lb_account_id else account_id,
+                )
             yield event_block
 
 
@@ -2458,8 +2540,11 @@ async def _stream_responses_with_session(
     allow_direct_egress: bool = True,
     codex_installation_id: str | None = None,
     enforce_openai_sdk_contract: bool = True,
+    codex_lb_account_id: str | None = None,
+    suppress_live_usage: bool = False,
 ) -> AsyncIterator[str]:
     settings = get_settings()
+    headers = apply_codex_installation_headers(headers, codex_installation_id)
     upstream_base = (base_url or settings.upstream_base_url).rstrip("/")
     url = f"{upstream_base}/codex/responses"
     require_route_or_direct_egress_opt_in(
@@ -2531,6 +2616,7 @@ async def _stream_responses_with_session(
         upstream_headers = _build_upstream_headers(headers, access_token, account_id)
         _apply_responses_lite_http_header(upstream_headers, payload_dict)
         method = "POST"
+    upstream_headers = apply_codex_installation_headers(upstream_headers, codex_installation_id)
     remaining_request_timeout = _remaining_total_timeout(
         request_total_timeout,
         pre_request_started_at,
@@ -2572,6 +2658,15 @@ async def _stream_responses_with_session(
                 resp = _CodexSSEResponse(raw_resp)
                 status_code = resp.status
                 last_stream_activity_at = time.monotonic()
+                # Error responses (429/403) carry the saturated-window
+                # snapshot — exactly when freshness matters most — so headers
+                # are ingested regardless of status.
+                if not suppress_live_usage:
+                    publish_live_usage(
+                        parse_rate_limit_headers(getattr(raw_resp, "headers", None)),
+                        account_id=codex_lb_account_id,
+                        chatgpt_account_id=None if codex_lb_account_id else account_id,
+                    )
                 if resp.status >= 400:
                     if raise_for_status:
                         error_payload = await _error_payload_from_response(resp)
@@ -2660,6 +2755,12 @@ async def _stream_responses_with_session(
         ) as resp:
             status_code = resp.status
             last_stream_activity_at = time.monotonic()
+            if not suppress_live_usage:
+                publish_live_usage(
+                    parse_rate_limit_headers(getattr(resp, "headers", None)),
+                    account_id=codex_lb_account_id,
+                    chatgpt_account_id=None if codex_lb_account_id else account_id,
+                )
             if resp.status >= 400:
                 if raise_for_status:
                     error_payload = await _error_payload_from_response(resp)
@@ -2782,6 +2883,7 @@ async def _stream_responses_with_session(
         payload_json = json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
         upstream_headers = _build_upstream_headers(headers, access_token, account_id)
         _apply_responses_lite_http_header(upstream_headers, payload_dict)
+        upstream_headers = apply_codex_installation_headers(upstream_headers, codex_installation_id)
         method = "POST"
         remaining_request_timeout = _remaining_total_timeout(
             request_total_timeout,
@@ -3268,6 +3370,17 @@ class _CompactCommandTransport:
                 effective_connect_timeout,
             )
         _apply_responses_lite_http_header(upstream_headers, payload_dict)
+        try:
+            validate_compact_input_wire_budget(payload_dict)
+        except ClientPayloadError as exc:
+            error = openai_error(
+                exc.code or "invalid_request_error",
+                str(exc),
+                error_type=exc.error_type or "invalid_request_error",
+            )
+            if exc.param is not None:
+                error["error"]["param"] = exc.param
+            raise ProxyResponseError(400, error) from exc
         now = time.monotonic()
         compact_timeout_seconds = _remaining_total_timeout(
             compact_timeout_seconds,

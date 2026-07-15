@@ -72,6 +72,16 @@ const BASE_SETTINGS = {
   omnirouteSidecarRequestTimeoutSeconds: 600,
   omnirouteSidecarModelsCacheTtlSeconds: 60,
   guestAccessEnabled: false,
+  prohibitFastMode: false,
+  httpDownstreamTransportPolicy: "smart",
+  proxyAccountResponseCreateLimit: 4,
+  proxyAccountStreamLimit: 8,
+  proxyAccountStreamRecoveryReserve: 1,
+  hideUpstreamQuotaFromApiKeys: false,
+  limitWarmupExhaustedThresholdPercent: 99,
+  limitWarmupIdleThresholdPercent: 1,
+  weeklyPaceSmoothingMinutes: 30,
+  limitWarmupStaggeredIdleEnabled: false,
   guestPasswordConfigured: false,
 } as DashboardSettings;
 

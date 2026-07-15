@@ -465,7 +465,7 @@ describe("AccountList", () => {
     expect(scrollRegion).not.toContainElement(addAccountButton);
   });
 
-  it("keeps the account rows inside a bounded scroll region on desktop", () => {
+  it("keeps the account rows inside a viewport-bounded scroll region", () => {
     render(
       <AccountList
         accounts={Array.from({ length: 20 }, (_, index) => ({
@@ -476,6 +476,7 @@ describe("AccountList", () => {
           status: "active",
           limitWarmupEnabled: false,
           additionalQuotas: [],
+          sidecarAuths: [],
         }))}
         selectedAccountId={null}
         onSelect={() => {}}
@@ -484,13 +485,12 @@ describe("AccountList", () => {
       />,
     );
 
-    expect(screen.getByTestId("account-list-scroll-region")).toHaveClass(
-      "overflow-y-auto",
-      "max-h-[min(32rem,calc(100dvh-16rem))]",
-    );
-    expect(screen.getByTestId("account-list-scroll-region")).not.toHaveClass(
-      "lg:max-h-none",
-    );
+    const scrollRegion = screen.getByTestId("account-list-scroll-region");
+
+    expect(scrollRegion).toHaveClass("overflow-y-auto");
+    expect(scrollRegion.parentElement).toHaveClass("max-h-[calc(100dvh-15rem)]");
+    expect(scrollRegion).not.toHaveClass("max-h-[calc(100dvh-23rem)]");
+    expect(scrollRegion).not.toHaveClass("lg:max-h-none");
   });
 
   it("filters re-auth required accounts by status", async () => {

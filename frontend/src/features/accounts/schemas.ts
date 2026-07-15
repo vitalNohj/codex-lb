@@ -306,6 +306,7 @@ export const AccountUpdateRequestSchema = z.object({
 
 export const OauthStartRequestSchema = z.object({
   forceMethod: z.string().optional(),
+  accountId: z.string().optional(),
 });
 
 export const OauthStartResponseSchema = z.object({

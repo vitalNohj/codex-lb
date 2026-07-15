@@ -70,6 +70,15 @@ Responses request with:
 Clients that expose Fast Mode as `fast` may keep using that spelling; codex-lb
 normalizes it to `priority` before forwarding.
 
+### Operator Fast Mode prohibition
+
+Operators can enable the Routing setting `prohibitFastMode` when qualified
+Codex harness model aliases such as `gpt-5.6-sol-xhigh-fast` must run at the
+normal OpenAI tier. The alias still supplies its canonical model and reasoning
+effort, but does not derive `service_tier: "priority"`. This policy does not
+rewrite an explicit client tier or an API-key-enforced tier; see
+`openspec/specs/fast-mode-policy/context.md` for scope and operating notes.
+
 API keys can also force the tier for traffic that uses that key. Set the key's
 enforced service tier to `priority` or `fast`; both values are stored and
 returned as `priority`.
@@ -102,7 +111,7 @@ when upstream reports a different actual tier.
 - **Upstream error / no accounts:** Non-streaming responses return an OpenAI error envelope with 5xx status.
 - **Compact upstream transport/client failure:** Retry only inside `/codex/responses/compact` when the failure is safely retryable; otherwise return an explicit upstream error without surrogate fallback.
 - **HTTP bridge session closes or expires:** The next compatible HTTP `/v1/responses` or `/backend-api/codex/responses` request recreates a fresh upstream websocket bridge session; continuity is guaranteed only within the lifetime of one active bridged session.
-- **Multi-instance routing without bridge owner policy:** if operators do not configure a bridge ring or front-door affinity, continuity can still fragment across replicas. With a configured bridge ring, hard continuity keys still fail closed on the wrong replica, while gateway-safe prompt-cache requests may accept locality misses instead of failing.
+- **Multi-instance routing without bridge owner policy:** if operators do not configure a bridge ring or front-door affinity, continuity can still fragment across replicas. With a configured bridge ring, hard continuity keys landing on a non-owner replica are proxy-forwarded to the owner replica; the proxy fails closed only when the owner endpoint or ring membership cannot be resolved or the forward signature fails authentication. Gateway-safe prompt-cache requests may accept locality misses and continue locally instead of forwarding.
 - **Codex websocket reconnects:** Reconnect continuity now depends on the client replaying the accepted `x-codex-turn-state`; generated turn-state is emitted on accept for backend Codex routes and echoed back when the client already supplies one.
 - **Codex websocket stale previous-response anchors:** Direct backend Codex websocket stale-anchor failures are surfaced as `response.failed` / `codex_previous_response_stale` without the raw upstream code or missing `resp_...` id; OpenAI-compatible `/v1/responses` websocket clients continue to receive generic `stream_incomplete` masking.
 - **Websocket handshake forbidden/not-found:** Auto transport now fails loud on `403` / `404` instead of silently hiding the websocket regression behind HTTP fallback.
@@ -145,6 +154,25 @@ Sidecar Responses routing example:
 ```
 
 If an enabled sidecar has prefix `cp-` with strip enabled and no exact full-model owner exists, the sidecar receives `some-model` while codex-lb records and enforces limits against `cp-some-model`.
+
+## Known Client Integrations (Reference)
+
+Third-party agents that consume the `/v1` Responses surface documented by this
+capability (rendered guide: `docs/client-setup.md`). These are configuration
+examples against the existing contract, not separate compatibility surfaces:
+
+- **OpenCode** — built-in `openai` provider with a `baseURL` override; uses the
+  Responses API path so `encrypted_content` / multi-turn reasoning state is
+  preserved (Chat Completions custom providers drop it).
+- **OpenClaw** — custom provider with `"api": "openai-responses"` against
+  `/v1`; Codex-native provider builds may target `/backend-api/codex` instead.
+- **Hermes Agent** (Nous Research) — named custom provider with
+  `api_mode: codex_responses` against `/v1`; the responses transport carries
+  reasoning state across turns like the OpenCode path.
+
+New client guides added to `docs/client-setup.md` should stay configuration-only
+examples of this contract; anything needing new proxy behavior requires its own
+OpenSpec change first.
 
 ## Operational Notes
 

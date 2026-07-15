@@ -189,6 +189,7 @@ export const RequestLogSchema = z.object({
   tokens: z.number().nullable(),
   inputTokens: z.number().nullable().optional().default(null),
   outputTokens: z.number().nullable().optional().default(null),
+  outputTokensRaw: z.number().nullable().optional().default(null),
   cachedInputTokens: z.number().nullable(),
   reasoningEffort: z.string().nullable(),
   requestedReasoningEffort: z.string().nullable().optional().default(null),
@@ -197,6 +198,8 @@ export const RequestLogSchema = z.object({
   referenceCostUsd: z.number().nullable().optional(),
   savingsUsd: z.number().nullable().optional(),
   latencyMs: z.number().nullable(),
+  latencyFirstTokenMs: z.number().nullable().optional().default(null),
+  latencyQueueMs: z.number().nullable().optional().default(null),
 });
 
 export const RequestLogsResponseSchema = z.object({
