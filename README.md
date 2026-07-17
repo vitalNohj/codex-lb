@@ -16,11 +16,8 @@ Resources
 
 <p align="center">
   <a href="https://github.com/Soju06/codex-lb"><img alt="Fork of Soju06/codex-lb" src="https://img.shields.io/badge/fork%20of-Soju06%2Fcodex--lb-2563eb"></a>
-  <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111827">
-  <img alt="Codex and Cursor ready" src="https://img.shields.io/badge/Codex%20%2B%20Cursor-ready-7c3aed">
-  <img alt="Vision input" src="https://img.shields.io/badge/vision-image%20input-0ea5e9">
   <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OmniRoute%20%7C%20Ollama-059669">
-  <img alt="Dashboard included" src="https://img.shields.io/badge/dashboard-included-f97316">
+  <img alt="Cursor compatible" src="https://img.shields.io/badge/Cursor-compatible-7c3aed">
 </p>
 
 > This is a fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb). Upstream gives you the core Codex account load balancer. This fork turns it into a model-routing command center: native ChatGPT/Codex accounts, CLIProxyAPI, OpenRouter, OmniRoute, and Ollama Cloud can all sit behind one proxy, one API-key layer, one request log, and one dashboard — with first-class Cursor support including image (vision) input, model aliasing, and per-provider reasoning-effort control.

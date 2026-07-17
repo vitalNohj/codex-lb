@@ -17,10 +17,18 @@ import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences"
 
 import { DashboardPage } from "./dashboard-page";
 
-const { accountCardsSpy, accountListSpy, accountSummaryLineSpy } = vi.hoisted(() => ({
+const {
+  accountCardsSpy,
+  accountListSpy,
+  accountSummaryLineSpy,
+  requestFiltersSpy,
+  recentRequestsTableSpy,
+} = vi.hoisted(() => ({
   accountCardsSpy: vi.fn(),
   accountListSpy: vi.fn(),
   accountSummaryLineSpy: vi.fn(),
+  requestFiltersSpy: vi.fn(),
+  recentRequestsTableSpy: vi.fn(),
 }));
 
 vi.mock("@/features/accounts/hooks/use-accounts", () => ({
@@ -104,11 +112,31 @@ vi.mock("@/features/dashboard/components/filters/overview-timeframe-select", () 
 }));
 
 vi.mock("@/features/dashboard/components/filters/request-filters", () => ({
-  RequestFilters: () => <div data-testid="request-filters" />,
+  RequestFilters: ({
+    viewMode,
+    onViewModeChange,
+  }: {
+    viewMode: string;
+    onViewModeChange: (mode: "expanded") => void;
+  }) => {
+    requestFiltersSpy({ viewMode });
+    return (
+      <button
+        type="button"
+        data-testid="request-filters"
+        onClick={() => onViewModeChange("expanded")}
+      >
+        Filters in {viewMode}
+      </button>
+    );
+  },
 }));
 
 vi.mock("@/features/dashboard/components/recent-requests-table", () => ({
-  RecentRequestsTable: () => <div data-testid="recent-requests-table" />,
+  RecentRequestsTable: ({ viewMode }: { viewMode: string }) => {
+    recentRequestsTableSpy({ viewMode });
+    return <div data-testid="recent-requests-table">Table in {viewMode}</div>;
+  },
 }));
 
 vi.mock("@/features/dashboard/components/stats-grid", () => ({
@@ -134,6 +162,8 @@ describe("DashboardPage", () => {
     accountCardsSpy.mockReset();
     accountListSpy.mockReset();
     accountSummaryLineSpy.mockReset();
+    requestFiltersSpy.mockReset();
+    recentRequestsTableSpy.mockReset();
     useAccountMutationsMock.mockReset();
     useDashboardMock.mockReset();
     useDashboardProjectionsMock.mockReset();
@@ -142,6 +172,7 @@ describe("DashboardPage", () => {
     useDashboardPreferencesStore.setState({
       accountBurnrateEnabled: true,
       accountViewMode: "cards",
+      requestLogViewMode: "simplified",
       accountTypeVisibility: { codex: true, cliproxy: true, openrouter: true, omniroute: true },
       accountListSort: null,
       initialized: true,
@@ -306,5 +337,21 @@ describe("DashboardPage", () => {
     await user.click(screen.getByTestId("account-list"));
 
     expect(useDashboardPreferencesStore.getState().accountListSort).toEqual({ key: "credits", direction: "desc" });
+  });
+
+  it("passes request-log view mode to filters and table and persists changes", async () => {
+    const user = userEvent.setup();
+    mockReadyDashboard();
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(requestFiltersSpy).toHaveBeenLastCalledWith({ viewMode: "simplified" });
+    expect(recentRequestsTableSpy).toHaveBeenLastCalledWith({ viewMode: "simplified" });
+
+    await user.click(screen.getByTestId("request-filters"));
+
+    expect(useDashboardPreferencesStore.getState().requestLogViewMode).toBe("expanded");
+    expect(requestFiltersSpy).toHaveBeenLastCalledWith({ viewMode: "expanded" });
+    expect(recentRequestsTableSpy).toHaveBeenLastCalledWith({ viewMode: "expanded" });
   });
 });

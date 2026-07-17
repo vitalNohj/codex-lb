@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
+import type { RequestLog } from "@/features/dashboard/schemas";
 
 const ISO = "2026-01-01T12:00:00+00:00";
 const NULL_FAILURE_METADATA = {
@@ -43,8 +44,43 @@ const PAGINATION_PROPS = {
   limit: 25,
   offset: 0,
   hasMore: false,
+  viewMode: "expanded" as const,
   onLimitChange: vi.fn(),
   onOffsetChange: vi.fn(),
+};
+
+const VIEW_MODE_REQUEST: RequestLog = {
+  requestedAt: ISO,
+  accountId: "acc-view",
+  planType: "plus",
+  apiKeyName: "View Key",
+  apiKeyId: "key-view",
+  requestId: "req-view",
+  requestKind: "normal",
+  model: "gpt-5.1",
+  source: null,
+  serviceTier: null,
+  requestedServiceTier: null,
+  actualServiceTier: null,
+  transport: "http",
+  upstreamTransport: "auto",
+  status: "ok",
+  errorCode: null,
+  errorMessage: null,
+  ...NULL_FAILURE_METADATA,
+  ...NULL_USERAGENT_METADATA,
+  tokens: 1200,
+  inputTokens: 1000,
+  outputTokens: 200,
+  outputTokensRaw: 200,
+  cachedInputTokens: 0,
+  reasoningEffort: null,
+  requestedReasoningEffort: null,
+  costUsd: 0.01,
+  costBreakdown: null,
+  latencyMs: 1000,
+  latencyFirstTokenMs: 200,
+  latencyQueueMs: 50,
 };
 
 function openRequestDetails(index = 0) {
@@ -66,6 +102,83 @@ describe("RecentRequestsTable", () => {
     if (originalIsSecureContext) {
       Object.defineProperty(window, "isSecureContext", originalIsSecureContext);
     }
+  });
+
+  it("renders the exact simplified column set with plan inside Account", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        viewMode="simplified"
+        accounts={[]}
+        requests={[VIEW_MODE_REQUEST]}
+      />,
+    );
+
+    const table = screen.getByRole("table");
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent);
+    const row = within(table).getByText("gpt-5.1").closest("tr");
+
+    expect(headers).toEqual([
+      "Time",
+      "Account",
+      "API Key",
+      "Model",
+      "Tokens",
+      "Cost",
+      "Status",
+      "Details",
+    ]);
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getAllByRole("cell")).toHaveLength(8);
+    expect(within(row as HTMLElement).getAllByRole("cell")[1]).toHaveTextContent("Plus");
+    expect(within(table).queryByText("HTTP")).not.toBeInTheDocument();
+    expect(within(table).queryByText("200ms")).not.toBeInTheDocument();
+
+    const dialog = openRequestDetails();
+    expect(within(dialog).getByText("Transport").closest("div.space-y-1")).toHaveTextContent("HTTP");
+    expect(within(dialog).getByText("TTFT").closest("div.space-y-1")).toHaveTextContent("200 ms");
+    expect(within(dialog).getByText("Queue").closest("div.space-y-1")).toHaveTextContent("50 ms");
+    expect(within(dialog).getByText("TPS").closest("div.space-y-1")).toHaveTextContent("250.0");
+  });
+
+  it("renders the complete expanded column set", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        viewMode="expanded"
+        accounts={[]}
+        requests={[VIEW_MODE_REQUEST]}
+      />,
+    );
+
+    const table = screen.getByRole("table");
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent);
+    const row = within(table).getByText("gpt-5.1").closest("tr");
+
+    expect(headers).toEqual([
+      "Time",
+      "Account",
+      "Plan",
+      "API Key",
+      "Model",
+      "Transport",
+      "Status",
+      "TTFT",
+      "TPS",
+      "Tokens",
+      "Cost",
+      "Details",
+    ]);
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getAllByRole("cell")).toHaveLength(12);
+    expect(within(row as HTMLElement).getAllByRole("cell")[2]).toHaveTextContent("Plus");
+    expect(within(table).getByText("HTTP")).toBeInTheDocument();
+    expect(within(table).getByText("200ms")).toBeInTheDocument();
+    expect(within(table).getByText("250.0")).toBeInTheDocument();
   });
 
   it("renders rows with status badges and supports request details and copy actions", async () => {

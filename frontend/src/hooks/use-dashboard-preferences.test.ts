@@ -45,6 +45,49 @@ describe("useDashboardPreferencesStore", () => {
     expect(window.localStorage.getItem("codex-lb-dashboard-account-view-mode")).toBe("list");
   });
 
+  it("defaults request-log view mode to simplified", async () => {
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+
+    expect(useDashboardPreferencesStore.getState().requestLogViewMode).toBe("simplified");
+    expect(window.localStorage.getItem("codex-lb-dashboard-request-log-view-mode")).toBe(
+      "simplified",
+    );
+  });
+
+  it("restores a stored expanded request-log view mode", async () => {
+    window.localStorage.setItem("codex-lb-dashboard-request-log-view-mode", "expanded");
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+
+    expect(useDashboardPreferencesStore.getState().requestLogViewMode).toBe("expanded");
+  });
+
+  it("replaces an invalid stored request-log view mode with simplified", async () => {
+    window.localStorage.setItem("codex-lb-dashboard-request-log-view-mode", "invalid");
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+
+    expect(useDashboardPreferencesStore.getState().requestLogViewMode).toBe("simplified");
+    expect(window.localStorage.getItem("codex-lb-dashboard-request-log-view-mode")).toBe(
+      "simplified",
+    );
+  });
+
+  it("persists request-log view mode updates", async () => {
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().setRequestLogViewMode("expanded");
+
+    expect(useDashboardPreferencesStore.getState().requestLogViewMode).toBe("expanded");
+    expect(window.localStorage.getItem("codex-lb-dashboard-request-log-view-mode")).toBe(
+      "expanded",
+    );
+  });
+
   it("defaults all account types to visible", async () => {
     const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
 

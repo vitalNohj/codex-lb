@@ -43,8 +43,10 @@ export function DashboardPage() {
   const isDark = useThemeStore((s) => s.theme === "dark");
   const showAccountBurnrate = useDashboardPreferencesStore((s) => s.accountBurnrateEnabled);
   const accountViewMode = useDashboardPreferencesStore((s) => s.accountViewMode);
+  const requestLogViewMode = useDashboardPreferencesStore((s) => s.requestLogViewMode);
   const accountListSort = useDashboardPreferencesStore((s) => s.accountListSort);
   const setAccountViewMode = useDashboardPreferencesStore((s) => s.setAccountViewMode);
+  const setRequestLogViewMode = useDashboardPreferencesStore((s) => s.setRequestLogViewMode);
   const accountTypeVisibility = useDashboardPreferencesStore((s) => s.accountTypeVisibility);
   const setAccountTypeVisibility = useDashboardPreferencesStore((s) => s.setAccountTypeVisibility);
   const setAccountListSort = useDashboardPreferencesStore((s) => s.setAccountListSort);
@@ -291,8 +293,10 @@ export function DashboardPage() {
               apiKeyOptions={apiKeyOptions}
               modelOptions={modelOptions}
               statusOptions={statusOptions}
+              viewMode={requestLogViewMode}
               onSearchChange={(search) => updateFilters({ search, offset: 0 })}
               onTimeframeChange={(timeframe) => updateFilters({ timeframe, offset: 0 })}
+              onViewModeChange={setRequestLogViewMode}
               onAccountChange={(accountIds) => updateFilters({ accountIds, offset: 0 })}
               onApiKeyChange={(apiKeyIds) => updateFilters({ apiKeyIds, offset: 0 })}
               onModelChange={(modelOptionsSelected) =>
@@ -319,6 +323,7 @@ export function DashboardPage() {
                 limit={filters.limit}
                 offset={filters.offset}
                 hasMore={logPage?.hasMore ?? false}
+                viewMode={requestLogViewMode}
                 onLimitChange={(limit) => updateFilters({ limit, offset: 0 })}
                 onOffsetChange={(offset) => updateFilters({ offset })}
               />

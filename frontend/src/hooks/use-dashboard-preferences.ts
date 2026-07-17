@@ -4,10 +4,12 @@ import type { AccountListSort, AccountListSortKey } from "@/features/dashboard/c
 
 const ACCOUNT_BURNRATE_STORAGE_KEY = "codex-lb-account-burnrate-enabled";
 const ACCOUNT_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-account-view-mode";
+const REQUEST_LOG_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-request-log-view-mode";
 const ACCOUNT_TYPE_VISIBILITY_STORAGE_KEY = "codex-lb-dashboard-account-type-visibility";
 const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
 
 export type DashboardAccountViewMode = "cards" | "list";
+export type DashboardRequestLogViewMode = "simplified" | "expanded";
 
 export type AccountTypeKey = "codex" | "cliproxy" | "openrouter" | "omniroute";
 export type AccountTypeVisibility = Record<AccountTypeKey, boolean>;
@@ -21,12 +23,14 @@ function defaultAccountTypeVisibility(): AccountTypeVisibility {
 type DashboardPreferencesState = {
   accountBurnrateEnabled: boolean;
   accountViewMode: DashboardAccountViewMode;
+  requestLogViewMode: DashboardRequestLogViewMode;
   accountTypeVisibility: AccountTypeVisibility;
   accountListSort: AccountListSort;
   initialized: boolean;
   initializePreferences: () => void;
   setAccountBurnrateEnabled: (enabled: boolean) => void;
   setAccountViewMode: (mode: DashboardAccountViewMode) => void;
+  setRequestLogViewMode: (mode: DashboardRequestLogViewMode) => void;
   setAccountTypeVisibility: (key: AccountTypeKey, enabled: boolean) => void;
   setAccountListSort: (sort: AccountListSort) => void;
 };
@@ -57,6 +61,14 @@ function readStoredAccountViewMode(): DashboardAccountViewMode | null {
   }
   const stored = window.localStorage.getItem(ACCOUNT_VIEW_MODE_STORAGE_KEY);
   return stored === "cards" || stored === "list" ? stored : null;
+}
+
+function readStoredRequestLogViewMode(): DashboardRequestLogViewMode | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const stored = window.localStorage.getItem(REQUEST_LOG_VIEW_MODE_STORAGE_KEY);
+  return stored === "simplified" || stored === "expanded" ? stored : null;
 }
 
 function readStoredAccountListSort(): AccountListSort {
@@ -93,6 +105,13 @@ function persistAccountViewMode(mode: DashboardAccountViewMode): void {
     return;
   }
   window.localStorage.setItem(ACCOUNT_VIEW_MODE_STORAGE_KEY, mode);
+}
+
+function persistRequestLogViewMode(mode: DashboardRequestLogViewMode): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(REQUEST_LOG_VIEW_MODE_STORAGE_KEY, mode);
 }
 
 function readStoredAccountTypeVisibility(): AccountTypeVisibility | null {
@@ -143,19 +162,29 @@ function persistAccountListSort(sort: AccountListSort): void {
 export const useDashboardPreferencesStore = create<DashboardPreferencesState>((set, get) => ({
   accountBurnrateEnabled: true,
   accountViewMode: "cards",
+  requestLogViewMode: "simplified",
   accountTypeVisibility: defaultAccountTypeVisibility(),
   accountListSort: null,
   initialized: false,
   initializePreferences: () => {
     const accountBurnrateEnabled = readStoredAccountBurnrateEnabled() ?? true;
     const accountViewMode = readStoredAccountViewMode() ?? "cards";
+    const requestLogViewMode = readStoredRequestLogViewMode() ?? "simplified";
     const accountTypeVisibility = readStoredAccountTypeVisibility() ?? defaultAccountTypeVisibility();
     const accountListSort = readStoredAccountListSort();
     persistAccountBurnrateEnabled(accountBurnrateEnabled);
     persistAccountViewMode(accountViewMode);
+    persistRequestLogViewMode(requestLogViewMode);
     persistAccountTypeVisibility(accountTypeVisibility);
     persistAccountListSort(accountListSort);
-    set({ accountBurnrateEnabled, accountViewMode, accountTypeVisibility, accountListSort, initialized: true });
+    set({
+      accountBurnrateEnabled,
+      accountViewMode,
+      requestLogViewMode,
+      accountTypeVisibility,
+      accountListSort,
+      initialized: true,
+    });
   },
   setAccountBurnrateEnabled: (enabled) => {
     persistAccountBurnrateEnabled(enabled);
@@ -164,6 +193,10 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   setAccountViewMode: (mode) => {
     persistAccountViewMode(mode);
     set({ accountViewMode: mode, initialized: true });
+  },
+  setRequestLogViewMode: (mode) => {
+    persistRequestLogViewMode(mode);
+    set({ requestLogViewMode: mode, initialized: true });
   },
   setAccountTypeVisibility: (key, enabled) => {
     const next = { ...get().accountTypeVisibility, [key]: enabled };

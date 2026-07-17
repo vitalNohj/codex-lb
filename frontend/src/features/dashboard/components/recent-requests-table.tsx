@@ -26,6 +26,7 @@ import {
 import { PaginationControls } from "@/features/dashboard/components/filters/pagination-controls";
 import { RequestArchivePanel } from "@/features/conversation-archive/components/request-archive-panel";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
+import type { DashboardRequestLogViewMode } from "@/hooks/use-dashboard-preferences";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
 import {
   formatDateTimeInline,
@@ -115,6 +116,7 @@ export type RecentRequestsTableProps = {
   limit: number;
   offset: number;
   hasMore: boolean;
+  viewMode: DashboardRequestLogViewMode;
   onLimitChange: (limit: number) => void;
   onOffsetChange: (offset: number) => void;
 };
@@ -190,6 +192,7 @@ export function RecentRequestsTable({
   limit,
   offset,
   hasMore,
+  viewMode,
   onLimitChange,
   onOffsetChange,
 }: RecentRequestsTableProps) {
@@ -231,21 +234,36 @@ export function RecentRequestsTable({
     <div className="space-y-3">
     <div className="rounded-xl border bg-card">
       <div className="relative overflow-x-auto">
-        <Table className="min-w-[960px] table-fixed">
+        <Table
+          className={
+            viewMode === "simplified"
+              ? "min-w-[960px] table-fixed"
+              : "min-w-[1440px] table-fixed"
+          }
+        >
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-28 pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Time</TableHead>
-              <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Account</TableHead>
-              <TableHead className="w-24 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Plan</TableHead>
-              <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">API Key</TableHead>
-              <TableHead className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Model</TableHead>
-              <TableHead className="w-32 pr-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Transport</TableHead>
-              <TableHead className="w-24 pl-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Status</TableHead>
-              <TableHead className="w-20 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">TTFT</TableHead>
-              <TableHead className="w-20 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">TPS</TableHead>
-              <TableHead className="w-24 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Tokens</TableHead>
-              <TableHead className="w-16 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Cost</TableHead>
-              <TableHead className="w-72 pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Details</TableHead>
+              <TableHead className={viewMode === "simplified" ? "w-[10%] pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-28 pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>Time</TableHead>
+              <TableHead className={viewMode === "simplified" ? "w-[18%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-48 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>Account</TableHead>
+              {viewMode === "expanded" ? (
+                <TableHead className="w-24 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Plan</TableHead>
+              ) : null}
+              <TableHead className={viewMode === "simplified" ? "w-[14%] pr-8 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-40 pr-8 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>API Key</TableHead>
+              <TableHead className={viewMode === "simplified" ? "w-[16%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-56 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>Model</TableHead>
+              {viewMode === "expanded" ? (
+                <>
+                  <TableHead className="w-32 pr-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Transport</TableHead>
+                  <TableHead className="w-24 pl-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Status</TableHead>
+                  <TableHead className="w-20 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">TTFT</TableHead>
+                  <TableHead className="w-20 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">TPS</TableHead>
+                </>
+              ) : null}
+              <TableHead className={viewMode === "simplified" ? "w-[10%] text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-24 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>Tokens</TableHead>
+              <TableHead className={viewMode === "simplified" ? "w-[8%] pr-8 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-16 pr-8 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>Cost</TableHead>
+              {viewMode === "simplified" ? (
+                <TableHead className="w-[10%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Status</TableHead>
+              ) : null}
+              <TableHead className={viewMode === "simplified" ? "w-[14%] pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-72 pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>Details</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -289,19 +307,29 @@ export function RecentRequestsTable({
                         {accountLabel}
                       </span>
                     )}
-                  </TableCell>
-                  <TableCell className="align-top">
-                    {planType ? (
+                    {viewMode === "simplified" && planType ? (
                       <Badge
                         variant="outline"
-                        className={PLAN_CLASS_MAP[planType] ?? PLAN_CLASS_MAP.free}
+                        className={`mt-1 ${PLAN_CLASS_MAP[planType] ?? PLAN_CLASS_MAP.free}`}
                       >
                         {planLabel}
                       </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">--</span>
-                    )}
+                    ) : null}
                   </TableCell>
+                  {viewMode === "expanded" ? (
+                    <TableCell className="align-top">
+                      {planType ? (
+                        <Badge
+                          variant="outline"
+                          className={PLAN_CLASS_MAP[planType] ?? PLAN_CLASS_MAP.free}
+                        >
+                          {planLabel}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">--</span>
+                      )}
+                    </TableCell>
+                  ) : null}
                   <TableCell className="truncate align-top pr-8 text-xs text-muted-foreground">
                     {request.apiKeyName || "--"}
                   </TableCell>
@@ -327,40 +355,47 @@ export function RecentRequestsTable({
                       ) : null}
                     </div>
                   </TableCell>
-                  <TableCell className="pr-3 align-top">
-                    {request.transport ? (
-                      <div className="space-y-1">
+                  {viewMode === "expanded" ? (
+                    <>
+                      <TableCell className="pr-3 align-top">
+                        {request.transport ? (
+                          <div className="space-y-1">
+                            <Badge
+                              variant="outline"
+                              className={
+                                TRANSPORT_CLASS_MAP[request.transport] ??
+                                TRANSPORT_CLASS_MAP.http
+                              }
+                              title="Downstream client transport"
+                            >
+                              {TRANSPORT_LABELS[request.transport] ?? request.transport}
+                            </Badge>
+                            {upstreamTransport ? (
+                              <div className="text-[11px] text-muted-foreground">
+                                Up {TRANSPORT_LABELS[upstreamTransport] ?? upstreamTransport}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">--</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="pl-3 align-top">
                         <Badge
                           variant="outline"
-                          className={TRANSPORT_CLASS_MAP[request.transport] ?? TRANSPORT_CLASS_MAP.http}
-                          title="Downstream client transport"
+                          className={STATUS_CLASS_MAP[request.status] ?? STATUS_CLASS_MAP.error}
                         >
-                          {TRANSPORT_LABELS[request.transport] ?? request.transport}
+                          {REQUEST_STATUS_LABELS[request.status] ?? request.status}
                         </Badge>
-                        {upstreamTransport ? (
-                          <div className="text-[11px] text-muted-foreground">
-                            Up {TRANSPORT_LABELS[upstreamTransport] ?? upstreamTransport}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">--</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="pl-3 align-top">
-                    <Badge
-                      variant="outline"
-                      className={STATUS_CLASS_MAP[request.status] ?? STATUS_CLASS_MAP.error}
-                    >
-                      {REQUEST_STATUS_LABELS[request.status] ?? request.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right align-top font-mono text-xs tabular-nums">
-                    {formatCompactElapsed(request.latencyFirstTokenMs) ?? "--"}
-                  </TableCell>
-                  <TableCell className="text-right align-top font-mono text-xs tabular-nums">
-                    {generationSpeed ?? "--"}
-                  </TableCell>
+                      </TableCell>
+                      <TableCell className="text-right align-top font-mono text-xs tabular-nums">
+                        {formatCompactElapsed(request.latencyFirstTokenMs) ?? "--"}
+                      </TableCell>
+                      <TableCell className="text-right align-top font-mono text-xs tabular-nums">
+                        {generationSpeed ?? "--"}
+                      </TableCell>
+                    </>
+                  ) : null}
                   <TableCell className="text-right align-top font-mono text-xs tabular-nums">
                     <div className="leading-tight">
                       <div>{formatCompactNumber(request.tokens)}</div>
@@ -374,6 +409,16 @@ export function RecentRequestsTable({
                   <TableCell className="text-right align-top pr-8 font-mono text-xs tabular-nums">
                     {formatCurrency(request.costUsd)}
                   </TableCell>
+                  {viewMode === "simplified" ? (
+                    <TableCell className="align-top">
+                      <Badge
+                        variant="outline"
+                        className={STATUS_CLASS_MAP[request.status] ?? STATUS_CLASS_MAP.error}
+                      >
+                        {REQUEST_STATUS_LABELS[request.status] ?? request.status}
+                      </Badge>
+                    </TableCell>
+                  ) : null}
                   <TableCell className="pr-4 align-top whitespace-normal">
                     {hasError ? (
                       <div className="space-y-2">
