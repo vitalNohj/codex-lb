@@ -63,3 +63,15 @@ PROMPT.md
 SUMMARY.md
 .superpowers/
 .agents/worktrees/
+
+# Personal agent/editor files — local only, never committed, never sent upstream
+/AGENTS.md
+/CLAUDE.md
+/.cursor/hooks/state/
+/.cursor/mcp.json
+/.cursor/settings.json
+/.cursor/rules/
+/.cursorignore
+/SECURITY_AUDIT_REPORT.md
+/UPSTREAM_MERGE_PLAN.md
+/codex-lb.service
