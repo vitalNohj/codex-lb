@@ -67,6 +67,7 @@ SUMMARY.md
 # Personal agent/editor files — local only, never committed, never sent upstream
 /AGENTS.md
 /CLAUDE.md
+/.gitattributes
 /.cursor/hooks/state/
 /.cursor/mcp.json
 /.cursor/settings.json
