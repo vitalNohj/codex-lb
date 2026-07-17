@@ -103,6 +103,10 @@ vi.mock("@/features/model-sources/components/model-sources-settings", () => ({
   },
 }));
 
+vi.mock("@/features/settings/components/sidecar-integrations", () => ({
+  SidecarIntegrationsCard: () => <div>Sidecar Integrations</div>,
+}));
+
 describe("SettingsPage", () => {
   const settings = createDashboardSettings();
   const upstreamAdmin = { endpoints: [], pools: [], bindings: [], routingEnabled: false, defaultPoolId: null };

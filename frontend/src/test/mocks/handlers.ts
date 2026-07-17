@@ -2226,7 +2226,7 @@ export const handlers = [
     });
   }),
 
-  http.get("*/api/models", () => {
+  http.get("/api/models", () => {
     return HttpResponse.json({
       models: [
         { id: "gpt-5.1", name: "GPT 5.1" },

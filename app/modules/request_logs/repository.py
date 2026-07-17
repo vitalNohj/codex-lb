@@ -20,7 +20,6 @@ from app.core.utils.time import utcnow
 from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
 from app.db.session import sqlite_writer_section
 
-
 # CLIProxyAPI records its usage event within a couple of seconds of the
 # codex-lb request; allow a small window when correlating the two by timestamp.
 _SIDECAR_LABEL_MATCH_WINDOW = timedelta(seconds=30)

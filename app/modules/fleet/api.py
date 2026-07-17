@@ -61,6 +61,10 @@ async def get_fleet_summary(
     visible_account_ids = _visible_account_ids(api_key)
     include_usage = await _can_view_fleet_usage(api_key)
     accounts = await context.service.list_accounts(account_ids=visible_account_ids)
+    # Fleet consumers reason about native Codex account capacity; synthetic
+    # sidecar accounts (CLIProxyAPI/OpenRouter/OmniRoute/Ollama) are dashboard
+    # observability constructs and must not leak into the fleet projection.
+    accounts = [account for account in accounts if not account.synthetic]
     persisted_status_by_account_id: dict[str, str] | None = None
     if not include_usage:
         persisted_accounts = (

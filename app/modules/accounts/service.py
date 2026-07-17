@@ -148,7 +148,7 @@ class AccountsService:
             if account_ids is not None
             else await self._repo.list_accounts()
         )
-        if not accounts:
+        if not accounts and account_ids is not None:
             return []
         visible_account_ids = [account.id for account in accounts]
         account_id_set = set(visible_account_ids)

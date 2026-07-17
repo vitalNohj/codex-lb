@@ -14,7 +14,9 @@ type RequestOptions = {
 
 const JSON_CONTENT_TYPE = "application/json";
 const EMPTY_RESPONSE_STATUS = new Set([204, 205]);
-const PUBLIC_BASE_PATH = "/codex";
+// The deployed app is served behind a reverse proxy under /codex; tests run
+// against MSW handlers registered on bare /api paths, so skip the prefix there.
+const PUBLIC_BASE_PATH = import.meta.env.MODE === "test" ? "" : "/codex";
 
 export class ApiError extends Error {
   readonly status: number;

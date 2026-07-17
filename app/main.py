@@ -497,7 +497,6 @@ async def lifespan(app: FastAPI):
         if metrics_server is not None:
             metrics_server.should_exit = True
 
-        await cache_poller.stop()
         await claude_sidecar_usage_collector.stop()
         await claude_sidecar_quota_poller.stop()
         # Start the single process-level lease-renewal keeper BEFORE stopping any
