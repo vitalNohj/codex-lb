@@ -233,6 +233,37 @@ describe("AccountCard", () => {
     expect(screen.queryByRole("button", { name: "Pause claude-one@example.com" })).toBeNull();
   });
 
+  it("shows Re-auth required badge for expired Claude OAuth auth", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "vitalnohj@example.com",
+      status: "reauth_required",
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 1,
+      usageSource: "oauth_usage",
+      primaryRemainingPercent: 100,
+      secondaryRemainingPercent: 79,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByText("Re-auth required")).toBeInTheDocument();
+  });
+
   it("falls back to CLIProxyAPI in the subtitle when the auth provider is unknown", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",

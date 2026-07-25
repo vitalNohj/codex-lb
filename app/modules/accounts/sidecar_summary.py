@@ -159,7 +159,7 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         auth_index=auth.auth_index,
         email=auth.email,
         provider=auth.provider,
-        status=auth.status,
+        status=_dashboard_auth_status(auth),
         paused=auth.disabled,
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
@@ -178,6 +178,27 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         reset_at_secondary=estimate.reset_at_secondary if estimate else None,
         confidence=estimate.confidence if estimate else None,
     )
+
+
+def _dashboard_auth_status(auth: SidecarAuthQuota) -> str | None:
+    # ponytail: map CLIProxy auth-death shapes onto native reauth_required so
+    # StatusBadge already works; does not add a Claude re-login button.
+    if _looks_like_reauth(auth):
+        return "reauth_required"
+    return auth.status
+
+
+def _looks_like_reauth(auth: SidecarAuthQuota) -> bool:
+    message = (auth.status_message or "").lower()
+    if (
+        "authentication_error" in message
+        or "re-authenticate" in message
+        or "invalid_grant" in message
+        or ("oauth" in message and "expired" in message)
+    ):
+        return True
+    status = (auth.status or "").lower()
+    return auth.unavailable and status in {"error", "unauthorized"}
 
 
 def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAccount:
