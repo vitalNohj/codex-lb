@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import Awaitable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from functools import lru_cache
 from importlib import import_module
 from ipaddress import ip_address
@@ -20,12 +21,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
+from app.core.audit.service import drain_audit_log_tasks
 from app.core.auth.guardian import build_auth_guardian_scheduler
 from app.core.balancer import configure_replica_salt
 from app.core.bootstrap import ensure_auto_bootstrap_token, log_bootstrap_token
 from app.core.clients.http import close_http_client, init_http_client
 from app.core.config.key_fingerprint import verify_encryption_key_fingerprint
-from app.core.config.settings import _bridge_advertise_hostname_is_replica_specific, get_settings
+from app.core.config.settings import (
+    _bridge_advertise_hostname_is_replica_specific,
+    get_settings,
+    warn_removed_settings,
+)
 from app.core.config.settings_cache import get_settings_cache
 from app.core.handlers import add_exception_handlers
 from app.core.metrics.middleware import MetricsMiddleware
@@ -35,8 +41,11 @@ from app.core.middleware import (
     add_app_version_middleware,
     add_backend_api_codex_v1_alias_middleware,
     add_dashboard_auth_proxy_middleware,
+    add_multipart_content_encoding_middleware,
+    add_request_body_limit_middleware,
     add_request_decompression_middleware,
     add_request_id_middleware,
+    add_trusted_proxy_headers_middleware,
 )
 from app.core.middleware.dashboard_gzip import add_dashboard_gzip_middleware
 from app.core.middleware.inflight import InFlightMiddleware
@@ -46,8 +55,10 @@ from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
 from app.core.resilience.memory_monitor import configure as configure_memory_monitor
 from app.core.retention.scheduler import build_data_retention_scheduler
 from app.core.scheduling.leader_election import get_leader_election
+from app.core.shutdown import close_control_plane_task_admission
 from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
 from app.core.usage.reset_credits_refresh_scheduler import build_rate_limit_reset_credits_scheduler
+from app.core.utils.time import utcnow
 from app.db.session import SessionLocal, close_db, close_session, init_background_db, init_db
 from app.modules.accounts import api as accounts_api
 from app.modules.accounts.usage_rollup_scheduler import build_account_usage_rollup_scheduler
@@ -72,6 +83,7 @@ from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
 from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.cap_partitioning import refresh_cap_partition
+from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import missing_durable_bridge_tables
 from app.modules.proxy.rate_limit_cache import get_rate_limit_headers_cache
 from app.modules.proxy.ring_membership import (
@@ -88,7 +100,10 @@ from app.modules.request_logs import api as request_logs_api
 from app.modules.runtime import api as runtime_api
 from app.modules.settings import api as settings_api
 from app.modules.sticky_sessions import api as sticky_sessions_api
-from app.modules.sticky_sessions.cleanup_scheduler import build_sticky_session_cleanup_scheduler
+from app.modules.sticky_sessions.cleanup_scheduler import (
+    _abandoned_bridge_retention_seconds,
+    build_sticky_session_cleanup_scheduler,
+)
 from app.modules.usage import api as usage_api
 from app.modules.usage.additional_quota_keys import reload_additional_quota_registry
 from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_usage_ingestor
@@ -128,6 +143,46 @@ async def _release_leader_lease_within(timeout: float) -> None:
     exc = release_task.exception()
     if exc is not None:
         logger.warning("Failed to release scheduler leader lease during shutdown", exc_info=exc)
+
+
+async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> None:
+    # Closing admission is synchronous with producer checks on the event loop,
+    # so no task can appear after the stable drain passes complete.
+    close_control_plane_task_admission()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    clean_passes = 0
+
+    while clean_passes < 2:
+        remaining = max(0.0, deadline - loop.time())
+        results = await asyncio.gather(
+            drain_audit_log_tasks(remaining),
+            fleet_api.drain_background_refresh_tasks(remaining),
+            return_exceptions=True,
+        )
+
+        clean_pass = True
+        for task_kind, result in zip(("audit log", "fleet refresh"), results, strict=True):
+            if isinstance(result, BaseException):
+                clean_pass = False
+                logger.warning(
+                    "Failed to drain %s tasks during shutdown",
+                    task_kind,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+            elif result is False:
+                clean_pass = False
+
+        if not clean_pass:
+            return
+
+        clean_passes += 1
+
+        # A done callback may enqueue sibling audit/fleet work after both
+        # registries looked empty. One extra stable pass catches that before
+        # HTTP clients and DB engines are torn down.
+        if clean_passes < 2:
+            await asyncio.sleep(0)
 
 
 class _MetricsServer(Protocol):
@@ -203,6 +258,7 @@ async def lifespan(app: FastAPI):
     await get_rate_limit_headers_cache().invalidate()
     reload_additional_quota_registry()
     settings = get_settings()
+    warn_removed_settings()
     # Anchor round-robin tie-break decorrelation to this replica's stable bridge
     # instance identity so peer replicas spread exact ties across equally-good
     # accounts instead of all herding onto the lexicographically-first account.
@@ -220,8 +276,24 @@ async def lifespan(app: FastAPI):
         log_bootstrap_token(logger, _auto_bootstrap_token)
     await init_http_client()
     bridge_durable_schema_ready = await _ensure_bridge_durable_schema_ready(settings)
-    if bridge_durable_schema_ready:
+    if bridge_durable_schema_ready is True:
         startup_module.mark_bridge_durable_schema_ready()
+        dashboard_settings = await get_settings_cache().get()
+        ownerless_cutoff = utcnow() - timedelta(
+            seconds=_abandoned_bridge_retention_seconds(dashboard_settings, settings)
+        )
+        deleted_bridge_rows = await DurableBridgeSessionCoordinator(SessionLocal).purge_owned_sessions_on_startup(
+            instance_id=settings.http_responses_session_bridge_instance_id,
+            ownerless_cutoff=ownerless_cutoff,
+        )
+        if deleted_bridge_rows > 0:
+            logger.info(
+                "Purged durable HTTP bridge rows from previous process instance",
+                extra={
+                    "instance_id": settings.http_responses_session_bridge_instance_id,
+                    "deleted": deleted_bridge_rows,
+                },
+            )
     from app.core.auth.api_key_cache import get_api_key_cache
     from app.core.cache.invalidation import (
         NAMESPACE_ACCOUNT_ROUTING,
@@ -231,11 +303,13 @@ async def lifespan(app: FastAPI):
         NAMESPACE_MODEL_REGISTRY,
         NAMESPACE_RESET_CREDITS,
         NAMESPACE_SETTINGS,
+        NAMESPACE_UPSTREAM_ROUTE,
         CacheInvalidationPoller,
         get_cache_invalidation_poller,
         set_cache_invalidation_poller,
     )
     from app.core.middleware.firewall_cache import get_firewall_ip_cache
+    from app.core.upstream_proxy.cache import get_upstream_route_cache
     from app.modules.proxy.account_cache import get_account_selection_cache, get_routing_availability_cache
     from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 
@@ -259,6 +333,10 @@ async def lifespan(app: FastAPI):
         NAMESPACE_SETTINGS,
         lambda: get_settings_cache().invalidate(propagate=False),
     )
+    cache_poller.on_invalidation(NAMESPACE_UPSTREAM_ROUTE, get_upstream_route_cache().clear)
+    # The route resolver also reads the dashboard settings row (routing enabled
+    # + default pool id), so settings bumps clear resolved routes as well.
+    cache_poller.on_invalidation(NAMESPACE_SETTINGS, get_upstream_route_cache().clear)
     # The bus carries no payload, so a peer redeem clears this replica's whole
     # reset-credits store; the refresh scheduler repopulates it on its next tick.
     cache_poller.on_invalidation(NAMESPACE_RESET_CREDITS, get_rate_limit_reset_credits_store().invalidate)
@@ -446,6 +524,10 @@ async def lifespan(app: FastAPI):
         shutdown_state.set_bridge_drain_active(True)
         shutdown_state.set_draining(True)
         drained = await shutdown_state.wait_for_in_flight_drain(timeout_seconds=settings.shutdown_drain_timeout_seconds)
+        # No await separates the timeout result from this cutoff. A slow
+        # request therefore either registered its task before the barrier or
+        # is prevented from starting new audit/fleet database work afterward.
+        shutdown_state.close_control_plane_task_admission()
         if not drained:
             logger.warning("Drain timeout reached, proceeding with shutdown")
 
@@ -499,6 +581,12 @@ async def lifespan(app: FastAPI):
 
         await claude_sidecar_usage_collector.stop()
         await claude_sidecar_quota_poller.stop()
+        # Detached control-plane work must finish while usage singleflight,
+        # shared HTTP clients, and both database engines are still available.
+        # The replica heartbeat is already stopped/staled so this grace period
+        # does not extend its active bridge-ring lifetime.
+        await _drain_detached_control_plane_tasks(settings.shutdown_drain_timeout_seconds)
+
         # Start the single process-level lease-renewal keeper BEFORE stopping any
         # scheduler. Schedulers are stopped one at a time and only the final
         # release() renews the lease while draining detached bodies; an earlier
@@ -551,17 +639,13 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Metrics server stopped with an error")
             finally:
-                shutdown_state.reset()
                 mark_process_dead()
                 await close_db()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    configure_memory_monitor(
-        warning_threshold_mb=settings.memory_warning_threshold_mb,
-        reject_threshold_mb=settings.memory_reject_threshold_mb,
-    )
+    configure_memory_monitor(reject_threshold_mb=settings.memory_reject_threshold_mb)
     app = FastAPI(
         title="codex-lb",
         version="0.1.0",
@@ -573,6 +657,8 @@ def create_app() -> FastAPI:
     add_dashboard_gzip_middleware(app)
     add_dashboard_auth_proxy_middleware(app)
     add_request_decompression_middleware(app)
+    add_request_body_limit_middleware(app)
+    add_multipart_content_encoding_middleware(app)
     add_request_id_middleware(app)
     add_api_firewall_middleware(app)
     app.add_middleware(cast(Any, MetricsMiddleware), enabled=settings.metrics_enabled)
@@ -581,24 +667,21 @@ def create_app() -> FastAPI:
             cast(Any, BackpressureMiddleware),
             max_concurrent=settings.backpressure_max_concurrent_requests,
         )
-    proxy_http_limit = settings.bulkhead_proxy_http_limit
-    proxy_websocket_limit = settings.bulkhead_proxy_websocket_limit
-    proxy_compact_limit = settings.bulkhead_proxy_compact_limit
-    assert proxy_http_limit is not None
-    assert proxy_websocket_limit is not None
-    assert proxy_compact_limit is not None
     app.add_middleware(
         cast(Any, BulkheadMiddleware),
         bulkhead=get_bulkhead(
-            proxy_http_limit=proxy_http_limit,
-            proxy_websocket_limit=proxy_websocket_limit,
-            proxy_compact_limit=proxy_compact_limit,
+            proxy_http_limit=settings.bulkhead_proxy_limit,
+            proxy_websocket_limit=settings.bulkhead_proxy_limit,
+            # Compact limit is derived by BulkheadSemaphore: min(http, 16),
+            # or 0 when the http class is unlimited-off (0).
+            proxy_compact_limit=None,
             dashboard_limit=settings.bulkhead_dashboard_limit,
         ),
     )
     add_backend_api_codex_v1_alias_middleware(app)
     add_app_version_middleware(app)
     add_exception_handlers(app)
+    add_trusted_proxy_headers_middleware(app)
 
     app.include_router(proxy_api.router)
     app.include_router(proxy_api.internal_router)

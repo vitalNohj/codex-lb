@@ -196,6 +196,67 @@ async def test_proxy_compact_strips_tool_fields_before_upstream(async_client, mo
 
 
 @pytest.mark.asyncio
+async def test_proxy_compact_preserves_historical_code_mode_side_effect_pair_before_ordinary_tail(
+    async_client, monkeypatch
+):
+    email = "compact-side-effect@example.com"
+    raw_account_id = "acc_compact_side_effect"
+    files = {"auth_json": ("auth.json", json.dumps(_make_auth_json(raw_account_id, email)), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    seen_payloads: list[dict[str, object]] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        del headers, access_token, account_id
+        seen_payloads.append(cast(dict[str, object], payload.to_payload()))
+        return CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+    side_effect_call = {
+        "type": "custom_tool_call",
+        "name": "exec",
+        "call_id": "call-code-mode-exec",
+        "input": json.dumps({"command": "git status --short"}),
+    }
+    side_effect_output = {
+        "type": "custom_tool_call_output",
+        "call_id": "call-code-mode-exec",
+        "output": "clean",
+    }
+    ordinary_tail = {"role": "assistant", "content": "ordinary tail " + "x" * 500_000}
+    payload = {
+        "model": "gpt-5.6-sol",
+        "instructions": "",
+        "input": [
+            {"role": "user", "content": "perform a code-mode action"},
+            {"role": "assistant", "content": "prefix " + "y" * 260_000},
+            side_effect_call,
+            side_effect_output,
+            ordinary_tail,
+            {"role": "user", "content": "continue after compaction"},
+        ],
+    }
+
+    response = await async_client.post("/backend-api/codex/responses/compact", json=payload)
+
+    assert response.status_code == 200
+    assert len(seen_payloads) == 1
+    upstream_input = seen_payloads[0]["input"]
+    assert isinstance(upstream_input, list)
+    assert side_effect_call in upstream_input
+    assert side_effect_output in upstream_input
+    assert all(
+        not (
+            isinstance(item, dict)
+            and item.get("role") == "assistant"
+            and item.get("content") == [{"type": "output_text", "text": ordinary_tail["content"]}]
+        )
+        for item in upstream_input
+    )
+
+
+@pytest.mark.asyncio
 async def test_proxy_compact_surfaces_additional_quota_exhausted(async_client):
     email = "compact-gated@example.com"
     raw_account_id = "acc_compact_gated"
@@ -326,7 +387,13 @@ async def test_proxy_compact_normalizes_summary_output_for_codex_remote_v2(async
     assert response.status_code == 200
     compact_json = response.json()
     assert compact_json["object"] == "response.compaction"
-    assert compact_json["output"] == [{"type": "compaction", "encrypted_content": "enc_compact_v2"}]
+    assert compact_json["output"] == [
+        {
+            "id": "cmp_compact_v2",
+            "type": "compaction",
+            "encrypted_content": "enc_compact_v2",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1242,6 +1309,48 @@ async def test_proxy_compact_retryable_transport_failure_retries_same_contract_o
     assert response.json()["object"] == "response.compaction"
     assert compact_calls == [raw_account_id, raw_account_id]
     assert stream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_proxy_compact_ambiguous_process_network_failure_is_neutral_and_not_replayed(
+    async_client,
+    monkeypatch,
+):
+    email = "compact-network-neutral@example.com"
+    raw_account_id = "acc_compact_network_neutral"
+    auth_json = _make_auth_json(raw_account_id, email)
+    response = await async_client.post(
+        "/api/accounts/import",
+        files={"auth_json": ("auth.json", json.dumps(auth_json), "application/json")},
+    )
+    assert response.status_code == 200
+    compact_calls = 0
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        nonlocal compact_calls
+        del payload, headers, access_token, account_id
+        compact_calls += 1
+        raise ProxyResponseError(
+            502,
+            openai_error("proxy_network_unavailable", "Temporary local network failure"),
+            failure_phase="request",
+            retryable_same_contract=False,
+        )
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": []},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "proxy_network_unavailable"
+    assert compact_calls == 1
+    async with SessionLocal() as session:
+        account = await session.get(Account, generate_unique_account_id(raw_account_id, email))
+        assert account is not None
+        assert account.status == AccountStatus.ACTIVE
 
 
 @pytest.mark.asyncio

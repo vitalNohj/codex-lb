@@ -208,7 +208,14 @@ marked `reauth_required`, or otherwise made unavailable by a permanent
 credential/session failure. This applies even when a long-lived in-memory HTTP
 bridge session still holds an older `ACTIVE` account object. When the account
 is successfully imported, re-authenticated, or reactivated, the service MUST
-clear the in-memory unavailable marker.
+clear the in-memory unavailable marker. The routing-unavailable state MUST be
+derived from persisted account status and MUST converge on every replica
+within the cache-invalidation bus bound (marks and clears both propagate);
+bridge-session reuse checks MUST NOT add per-request database reads; sessions
+pinned to a deleted account MUST NOT be reused on any replica. A local
+unavailable mark set while a snapshot refresh is in flight MUST survive that
+refresh: a refresh MUST NOT clear marks it could not have observed as committed
+status when its database read started.
 
 #### Scenario: Stale bridge session is not reused after account becomes unavailable
 
@@ -219,10 +226,34 @@ clear the in-memory unavailable marker.
 
 #### Scenario: Re-authentication clears routing-unavailable state
 
-- **GIVEN** account A was marked unavailable after a credential/session failure
+- **GIVEN** account A was marked unavailable after a credential/session failure,
+  including on a replica other than the one handling the re-authentication
 - **WHEN** account A is re-authenticated successfully
 - **THEN** account A is eligible for routing again subject to normal account
-  selection gates
+  selection gates on every replica after the invalidation bus converges,
+  without requiring a process restart
+
+#### Scenario: Pause on one replica stops bridge-session reuse on peers
+
+- **GIVEN** replica B holds a warm HTTP bridge session pinned to account A whose in-memory snapshot reads `ACTIVE`
+- **WHEN** account A is paused via a request served by replica A
+- **THEN** after the invalidation bus converges, replica B refuses to reuse the warm bridge session for account A
+
+#### Scenario: Local mark set during an in-flight snapshot refresh is preserved
+
+- **GIVEN** a routing snapshot refresh is in flight and its database read observed
+  account A as `ACTIVE` before a permanent failure was committed
+- **WHEN** account A is marked routing-unavailable locally before that refresh
+  finishes
+- **THEN** the completed refresh MUST NOT drop the local mark based on its stale
+  snapshot, and account A remains routing-unavailable on that replica until a
+  later refresh observes a committed routable status
+
+#### Scenario: Deletion on one replica stops bridge-session reuse on peers
+
+- **GIVEN** replica B holds a warm HTTP bridge session pinned to account A whose in-memory snapshot reads `ACTIVE`
+- **WHEN** account A is deleted via a request served by replica A
+- **THEN** after the invalidation bus converges, replica B treats account A as routing-unavailable even though its in-memory account object still reads `ACTIVE`
 
 ### Requirement: Upstream rate-limit cooldown honors the Retry-After hint duration
 
@@ -236,6 +267,20 @@ example `month`, where `m` prefixes the word) is not mis-read as that shorter
 unit. When the hint contains no recognizable unit token, the system SHALL fall
 back to the error-count backoff schedule. A rate-limited account SHALL NOT be
 re-selected before its cooldown elapses.
+
+When the upstream rate-limit error carries no explicit reset metadata
+(`resets_at`/`resets_in_seconds`), the resolved cooldown deadline SHALL be
+persisted on the account row (`reset_at`) so the cooldown survives process
+restarts and is visible to all replicas sharing the database: a parsed
+Retry-After hint deadline SHALL be persisted rounded up to the next whole
+second (persistence stores `reset_at` as an integer, so a short or fractional
+hint MUST NOT truncate down to an already-elapsed deadline), and when the
+cooldown comes from the error-count backoff fallback the persisted deadline
+SHALL be at least `RATE_LIMITED_MIN_COOLDOWN_SECONDS` (30 seconds) in the
+future. Explicit upstream reset metadata, when present, SHALL continue to be
+persisted as-is.
+The marking replica's in-process cooldown MAY remain shorter than the
+persisted deadline so its existing fresh-usage recovery gate is unchanged.
 
 #### Scenario: Compound minute-and-second hint sets the full cooldown
 
@@ -262,6 +307,26 @@ re-selected before its cooldown elapses.
 - **WHEN** the balancer records the rate limit for the account
 - **THEN** the `month` token is not read as a 1-minute hint
 - **AND** the cooldown uses the error-count backoff schedule instead
+
+#### Scenario: Cooldown without upstream reset metadata is persisted
+
+- **GIVEN** an upstream 429 that carries no `resets_at`/`resets_in_seconds` metadata and no parseable Retry-After hint
+- **WHEN** the balancer records the rate limit for the account
+- **THEN** the persisted account row holds status `RATE_LIMITED` with `blocked_at` set
+- **AND** the persisted `reset_at` is at least 30 seconds in the future
+
+#### Scenario: Retry-After hint deadline is persisted
+
+- **GIVEN** an upstream 429 whose message says "try again in 20m" and that carries no reset metadata
+- **WHEN** the balancer records the rate limit for the account
+- **THEN** the persisted `reset_at` is approximately 1200 seconds in the future
+
+#### Scenario: Short fractional Retry-After hint is not truncated away
+
+- **GIVEN** an upstream 429 whose message says "try again in 500ms" and that carries no reset metadata
+- **WHEN** the balancer records the rate limit for the account
+- **THEN** the persisted integer `reset_at` deadline is strictly in the future
+- **AND** peer replicas honor the hinted cooldown instead of reselecting the account immediately
 
 ### Requirement: Re-authentication-required accounts are not selectable
 
@@ -314,3 +379,241 @@ When building account selection state, the proxy SHALL treat any main-window usa
 - **THEN** the weekly-primary remap into the secondary slot is evaluated on the raw samples
 - **AND** the elapsed-reset expiry applies to the remapped derived values
 
+### Requirement: Rate-limit cooldowns are enforced across replicas
+
+A replica that did not observe the upstream 429 MUST NOT transition a
+`RATE_LIMITED` account to `ACTIVE` while the persisted `reset_at` deadline is
+in the future, regardless of the account's recorded usage. For `RATE_LIMITED`
+rows with `blocked_at` set but no persisted `reset_at` (legacy rows written
+before cooldown persistence), replicas MUST hold the account `RATE_LIMITED`
+until at least `blocked_at + RATE_LIMITED_MIN_COOLDOWN_SECONDS`. Recovery
+transitions MUST be written through the compare-and-set status update
+(`update_status_if_current`) so a stale snapshot cannot clobber a newer
+marking.
+
+This constraint applies to every recovery path that writes account status,
+including the usage-refresh reconcile path: a usage refresh that observes
+available quota for a `RATE_LIMITED` account with `blocked_at` set MUST NOT
+rewrite the account to `ACTIVE` (or clear `reset_at`/`blocked_at`) while the
+persisted cooldown deadline — `reset_at`, or the
+`blocked_at + RATE_LIMITED_MIN_COOLDOWN_SECONDS` floor when `reset_at` is
+NULL — is still in the future. Only the replica that observed the 429 MAY
+recover the account earlier, through its runtime-cooldown-gated fresh-usage
+path; a replica's runtime cooldown state counts as observing the current 429
+only when its runtime block marker is at least as recent as the effective
+persisted `blocked_at` — leftover runtime state from an earlier 429 MUST NOT
+unlock early recovery of a newer block. `RATE_LIMITED` rows without
+`blocked_at` (stale window-derived markings) keep the existing fresh-usage
+recovery.
+
+#### Scenario: Usage refresh does not clear a running Retry-After cooldown
+
+- **GIVEN** an account marked `RATE_LIMITED` by a 429 whose Retry-After hint persisted `reset_at` 20 minutes in the future and `blocked_at` set
+- **WHEN** a periodic usage refresh fetches fresh usage showing available quota before that deadline
+- **THEN** the persisted row keeps status `RATE_LIMITED` with its `reset_at` and `blocked_at` intact
+- **AND** once the deadline elapses, a later refresh may recover the account to `ACTIVE` through the compare-and-set path
+
+#### Scenario: Peer replica does not flip a cooling account back
+
+- **GIVEN** balancer instance A marked account X `RATE_LIMITED` from a 429 with no reset metadata
+- **AND** account X's recorded usage is below 100%
+- **WHEN** a second balancer instance sharing the same database runs account selection
+- **THEN** account X is not selected
+- **AND** the persisted row remains `RATE_LIMITED` with its `reset_at` deadline intact until the deadline elapses
+
+#### Scenario: Stale runtime cooldown does not unlock early recovery of a newer block
+
+- **GIVEN** a replica holds expired runtime cooldown state left over from an earlier 429 of account X
+- **AND** account X was since re-marked `RATE_LIMITED` by a peer replica with a newer `blocked_at` and a future persisted `reset_at`
+- **WHEN** the replica evaluates account X with usage recorded after the newer `blocked_at`
+- **THEN** account X stays `RATE_LIMITED` and is not selected until the persisted deadline elapses
+
+#### Scenario: Legacy row without reset_at is floored
+
+- **GIVEN** a persisted `RATE_LIMITED` row with `blocked_at` five seconds ago and `reset_at` NULL
+- **WHEN** a fresh balancer instance evaluates it during selection
+- **THEN** the account stays `RATE_LIMITED` and is not selected
+- **AND** once the 30-second floor has elapsed, recovery back to `ACTIVE` is permitted through the compare-and-set path
+
+### Requirement: Transient balancer health signals are replica-local
+
+Transient error counts, error-backoff windows, drain/probe health tiers, probe success streaks, and in-flight/lease pressure SHALL be maintained per replica
+as advisory routing state and SHALL NOT require cross-replica agreement;
+persisted account status, `reset_at`, and `blocked_at` transitions are the
+only cross-replica health signals. Each replica SHALL converge on its own
+observations.
+
+#### Scenario: Peer may route to an account draining elsewhere
+
+- **GIVEN** replica A has drained account X after locally observed transient errors
+- **WHEN** replica B, which has recorded no errors for X, performs selection
+- **THEN** replica B may select account X
+- **AND** replica B backs off independently once its own error threshold for X is reached
+
+### Requirement: Round-robin tie-breaking is decorrelated across replicas
+
+The `round_robin` routing strategy SHALL order candidate accounts primarily by
+planner cost and then by least-recently-selected time, and SHALL break any
+remaining exact tie using a per-replica salt mixed into the account identifier
+through a keyed hash. The salt SHALL be stable for the lifetime of a replica
+process (not randomized per selection), SHALL default to the replica's HTTP
+responses-session bridge instance identity, and SHALL fall back to the host
+identity when no bridge instance identity is configured. Mixing the salt SHALL
+change only the final tie-break: the planner-cost and least-recently-selected
+ordering SHALL remain identical to selection without a salt, so only genuinely
+tied candidates are reordered.
+
+#### Scenario: Replicas with distinct salts spread an exact tie
+
+- **GIVEN** two or more healthy eligible accounts that are exactly tied on
+  planner cost and least-recently-selected time
+- **AND** two replicas configured with distinct per-replica salts
+- **WHEN** each replica selects with the `round_robin` strategy
+- **THEN** the replicas MAY break the tie toward different accounts so load
+  spreads across the equally-good candidates instead of herding onto one
+
+#### Scenario: Primary ordering is unaffected by the salt
+
+- **GIVEN** candidate accounts that differ in planner cost or
+  least-recently-selected time
+- **WHEN** account selection uses the `round_robin` strategy under any salt
+- **THEN** the account with the lower planner cost, or when costs are equal the
+  least-recently-selected account, is selected regardless of the salt value
+
+#### Scenario: Single-replica selection is deterministic
+
+- **GIVEN** a fixed set of candidate accounts and a fixed per-replica salt
+- **WHEN** the `round_robin` strategy selects repeatedly with unchanged state
+- **THEN** the same account is selected every time
+
+### Requirement: Probing accounts receive bounded recovery admission
+
+For routing strategies that use the health-tier candidate pool, the load balancer MUST give replica-local `PROBING` accounts bounded opportunities to receive recovery traffic while healthy accounts remain. A probing account MUST become due when it has never been selected or at least the fixed probe quiet interval has elapsed since its last selection. When one or more probing accounts are due, selection MUST admit only the oldest-due probing account, using account id as a stable tie-break, ahead of the healthy pool for that selection. An unbound sticky selection or a sticky selection that can fall back from its existing owner MUST reserve that admission in replica-local runtime state before releasing the runtime lock for sticky repository work, so concurrent requests cannot consume the same due interval. The reservation MUST retain both its timestamp token and the runtime version captured at reservation. It MUST remain provisional through selection-time sticky repository work, the final local lease check, and selection-state persistence, and MUST be committed only if both captured values remain current when selection returns the probing account. If either value becomes stale, selection MUST release the reservation and retry without returning the stale probe. Sticky delete or upsert decisions made during selection MUST remain provisional through hard-sticky cap classification, final lease admission, selection-state persistence, and the probe reservation commit when applicable. Every other outcome MUST release the reservation without consuming the interval. Provisional reserve/release operations MUST NOT advance the runtime health-observation version used to reject stale Force Probe settlement; a committed recovery admission MUST advance it. When no probing account is due, healthy-first ordering MUST remain unchanged.
+
+Recovery admission MUST occur only after all ordinary account eligibility, cooldown, model, security, quota, and local account-cap gates, but before budget and `burn_first`/`normal`/`preserve` preference shortcuts that could otherwise mask the due account. A hard-sticky owner MAY remain in the candidate set despite its local account cap solely to preserve fail-closed ownership, but every wider fallback candidate MUST pass the cap gate. When every otherwise available fallback is cap-filtered, an unavailable but under-cap fallback MUST NOT suppress the stable local account-cap error or be selected through transient-backoff fallback. Non-cap availability before and after cap filtering MUST be evaluated over each complete fallback pool so cross-account opportunistic eligibility is preserved, and an established local cap error MUST NOT be replaced by the opportunistic burn-window error. Returning a local cap error MUST preserve the existing hard-sticky owner mapping without deleting or rebinding it. Recovery admission MUST NOT displace a selectable existing sticky owner merely to probe another account, and it MUST NOT change the behavior of routing strategies that intentionally bypass health-tier pool ordering.
+
+#### Scenario: Due probing account progresses while a healthy account exists
+
+- **GIVEN** one eligible healthy account and one eligible probing account whose last selection is older than the fixed probe quiet interval
+- **WHEN** an unbound health-tier-aware selection occurs
+- **THEN** the probing account is selected for one recovery attempt
+- **AND** its selection timestamp prevents another bounded recovery admission until the quiet interval elapses again
+
+#### Scenario: Recent probing account does not displace healthy routing
+
+- **GIVEN** one eligible healthy account and one eligible probing account selected less than the fixed probe quiet interval ago
+- **WHEN** health-tier-aware selection occurs
+- **THEN** the healthy account is selected
+
+#### Scenario: Routing policy cannot starve a due probe
+
+- **GIVEN** an eligible probing account is due while a healthy `burn_first` or non-preserved account remains
+- **WHEN** health-tier-aware selection applies routing-policy preferences
+- **THEN** the due probing account receives the bounded recovery admission before those preferences
+
+#### Scenario: Oldest due probing account rotates fairly
+
+- **GIVEN** multiple eligible probing accounts are due while healthy accounts remain
+- **WHEN** health-tier-aware selection occurs
+- **THEN** only the probing account with the oldest selection timestamp is admitted
+- **AND** account id deterministically breaks an exact timestamp tie
+
+#### Scenario: Existing sticky owner is retained
+
+- **GIVEN** a request has a selectable sticky owner on a healthy account
+- **AND** another account is due for probing recovery
+- **WHEN** sticky selection occurs
+- **THEN** the existing owner remains selected
+- **AND** the sticky mapping is not rebound for recovery sampling
+
+#### Scenario: Concurrent unbound stickies share one recovery admission
+
+- **GIVEN** a probing account is due while a healthy account remains
+- **AND** multiple requests concurrently observe distinct sticky keys with no existing owner
+- **WHEN** those requests perform sticky selection
+- **THEN** at most one request selects the due probing account for that quiet interval
+- **AND** the other requests observe the reservation and retain healthy-first routing
+
+#### Scenario: Concurrent sticky fallbacks share one recovery admission
+
+- **GIVEN** a probing account is due while a healthy account remains
+- **AND** multiple sticky requests have existing owners that are temporarily unavailable
+- **WHEN** those requests concurrently select from the wider fallback pool
+- **THEN** at most one request selects the due probing account for that quiet interval
+- **AND** the other fallback requests observe the reservation and retain healthy-first routing
+
+#### Scenario: Lease race releases a provisional probe admission
+
+- **GIVEN** a sticky request reserves a due probing account while it performs sticky persistence
+- **AND** another request fills that account's local concurrency cap before the final lease check
+- **WHEN** the reserving request rejects the probing account and selects or reports another outcome
+- **THEN** the probing account's prior selection timestamp is restored
+- **AND** the quiet interval is not consumed by traffic that was never admitted
+
+#### Scenario: Released reservation does not invalidate Force Probe settlement
+
+- **GIVEN** an accepted Force Probe is loading usage for a probing account
+- **AND** a concurrent sticky request reserves and then releases that probing account without selecting it
+- **WHEN** the Force Probe settles against otherwise unchanged runtime health
+- **THEN** its success is not rejected as stale because of the provisional reservation
+- **AND** reserve/release does not advance the runtime health-observation version
+
+#### Scenario: Newer health observation invalidates a sticky probe reservation
+
+- **GIVEN** a sticky request reserves a due probing account and begins sticky repository work
+- **AND** a newer runtime health observation advances that account's version and changes its health tier before admission commits
+- **WHEN** the stale sticky selection attempts to return the reserved probing account
+- **THEN** selection releases the reservation and retries against the newer runtime state
+- **AND** it does not return the stale probe or persist sticky affinity to it
+
+#### Scenario: Saturated probing account is excluded from sticky fallback
+
+- **GIVEN** a hard-sticky owner is temporarily unavailable
+- **AND** a due probing fallback account is at its local concurrency cap
+- **AND** an eligible healthy fallback remains below its cap
+- **WHEN** sticky fallback selection occurs
+- **THEN** the saturated probing account is excluded from the fallback pool
+- **AND** the healthy account is selected without rebinding the sticky mapping to the saturated account
+
+#### Scenario: Saturated-only sticky fallback reports local cap pressure
+
+- **GIVEN** a hard-sticky owner is temporarily unavailable
+- **AND** every wider fallback account is at its local concurrency cap
+- **WHEN** sticky fallback selection cannot retain the owner
+- **THEN** selection returns the stable local account-cap error
+- **AND** it does not report global upstream unavailability or delete or rebind the sticky mapping
+
+#### Scenario: Unavailable under-cap fallback does not mask cap pressure
+
+- **GIVEN** a hard-sticky owner is temporarily unavailable
+- **AND** every otherwise available wider fallback is at its local concurrency cap
+- **AND** another wider fallback is under cap but unavailable because of quota, rate limit, cooldown, or account status
+- **WHEN** sticky fallback selection cannot retain the owner
+- **THEN** selection returns the stable local account-cap error
+- **AND** the unavailable under-cap fallback does not cause global upstream-unavailability classification
+
+#### Scenario: Opportunistic fallback cap pressure is classified over the complete pool
+
+- **GIVEN** a hard-sticky owner is temporarily unavailable
+- **AND** multiple wider fallbacks are opportunistically eligible when evaluated together
+- **AND** every such fallback is at its local concurrency cap
+- **WHEN** opportunistic sticky fallback selection cannot retain the owner
+- **THEN** selection returns the stable local account-cap error
+- **AND** it does not replace that reason with the opportunistic burn-window error
+
+#### Scenario: Backoff-only fallback does not bypass local cap pressure
+
+- **GIVEN** a hard-sticky owner is temporarily unavailable
+- **AND** every normally usable wider fallback is at its local concurrency cap
+- **AND** another under-cap fallback is still in transient error backoff
+- **WHEN** sticky fallback selection evaluates the post-cap pool
+- **THEN** it returns the stable local account-cap error
+- **AND** it does not select or bind the backoff-only fallback
+
+#### Scenario: Cap classification discards a provisional sticky deletion
+
+- **GIVEN** an unavailable hard-sticky owner would otherwise be reallocated because of budget pressure
+- **AND** every normally usable wider fallback is at its local concurrency cap
+- **WHEN** selection finalizes the stable local account-cap error
+- **THEN** any provisional delete or rebind decision is discarded
+- **AND** the existing hard-sticky owner mapping remains unchanged

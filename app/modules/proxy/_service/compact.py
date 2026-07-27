@@ -25,6 +25,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.errors import openai_error
 from app.core.openai.models import CompactResponsePayload
 from app.core.openai.requests import ResponsesCompactRequest
+from app.core.resilience.network_recovery import ProcessNetworkRecovery
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.request_id import ensure_request_id, get_request_id
@@ -35,17 +36,21 @@ from app.modules.api_keys.service import (
     ApiKeyRequestUsageBudget,
     ApiKeyUsageReservationData,
 )
-from app.modules.proxy._service.support import _request_log_useragent_fields, _RequestLogFailureMetadata
+from app.modules.proxy._service.support import _request_log_client_fields, _RequestLogFailureMetadata
 from app.modules.proxy.affinity import (
+    _affinity_with_payload_continuity,
     _AffinityPolicy,
+    _bare_codex_session_affinity,
     _is_synthesized_turn_state,
     _owner_lookup_session_id_from_headers,
     _prompt_cache_key_from_request_model,
+    _request_allows_bare_session_cap_spillover,
     _resolve_prompt_cache_key,
     _sticky_key_from_session_header,
     _sticky_key_from_turn_state_header,
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
+from app.modules.proxy.continuity import resolve_required_account_id
 from app.modules.proxy.helpers import _header_account_id, _normalize_error_code, _parse_openai_error
 from app.modules.proxy.load_balancer import (
     AccountConcurrencyCaps,
@@ -63,6 +68,15 @@ _CompactResponses = Callable[
     [ResponsesCompactRequest, Mapping[str, str], str, str | None],
     Awaitable[CompactResponsePayload],
 ]
+
+
+def _compact_turn_state_session_identity(session_key: object | None, session: object | None) -> str | None:
+    durable_session_id = getattr(session, "durable_session_id", None)
+    if isinstance(durable_session_id, str) and durable_session_id.strip():
+        return f"durable:{durable_session_id.strip()}"
+    if session_key is None:
+        return None
+    return f"live:{session_key!r}"
 
 
 class _CompactServiceProtocol(Protocol):
@@ -407,30 +421,34 @@ def _sticky_key_for_compact_request(
     )
     turn_state_key = _sticky_key_from_turn_state_header(headers)
     if turn_state_key:
-        return _AffinityPolicy(
+        policy = _AffinityPolicy(
             key=turn_state_key,
             kind=StickySessionKind.CODEX_SESSION,
+            codex_session_source="turn_state",
         )
-    if codex_session_affinity:
-        session_key = _sticky_key_from_session_header(headers)
-        if session_key:
-            return _AffinityPolicy(
-                key=session_key,
-                kind=StickySessionKind.CODEX_SESSION,
-            )
-    if openai_cache_affinity:
-        return _AffinityPolicy(
+    elif (
+        session_affinity := _bare_codex_session_affinity(
+            headers,
+            enabled=codex_session_affinity,
+            allow_cap_spillover=_request_allows_bare_session_cap_spillover(payload),
+        )
+    ) is not None:
+        policy = session_affinity
+    elif openai_cache_affinity:
+        policy = _AffinityPolicy(
             key=cache_key,
             kind=StickySessionKind.PROMPT_CACHE,
             max_age_seconds=openai_cache_affinity_max_age_seconds,
         )
-    if sticky_threads_enabled:
-        return _AffinityPolicy(
+    elif sticky_threads_enabled:
+        policy = _AffinityPolicy(
             key=cache_key,
             kind=StickySessionKind.STICKY_THREAD,
             reallocate_sticky=True,
         )
-    return _AffinityPolicy()
+    else:
+        policy = _AffinityPolicy()
+    return _affinity_with_payload_continuity(policy, payload)
 
 
 def _service_tier_from_compact_payload(payload: ResponsesCompactRequest) -> str | None:
@@ -473,14 +491,20 @@ class _CompactMixin:
                 ),
             )
         api_key_id = api_key.id if api_key is not None else None
-        owner_account_ids: set[str] = set()
+        owner_refs: list[tuple[str, str, str | None]] = []
         async with proxy._http_bridge_lock:
             session_key = proxy._http_bridge_turn_state_index.get((normalized_turn_state, api_key_id))
             session = proxy._http_bridge_sessions.get(session_key) if session_key is not None else None
             account = getattr(session, "account", None)
             account_id = getattr(account, "id", None)
             if isinstance(account_id, str) and account_id.strip():
-                return account_id
+                owner_refs.append(
+                    (
+                        "turn-state live index",
+                        account_id,
+                        _compact_turn_state_session_identity(session_key, session),
+                    )
+                )
 
         try:
             durable_lookup = await proxy._durable_bridge.lookup_turn_state_target(
@@ -498,18 +522,36 @@ class _CompactMixin:
             ) from exc
         account_id = getattr(durable_lookup, "account_id", None)
         if isinstance(account_id, str) and account_id.strip():
-            owner_account_ids.add(account_id)
-        if len(owner_account_ids) == 1:
-            return next(iter(owner_account_ids))
-        if len(owner_account_ids) > 1:
-            raise ProxyResponseError(
-                502,
-                openai_error(
-                    "turn_state_owner_conflict",
-                    "Turn-state continuity resolved to conflicting upstream accounts; retry the logical turn.",
-                    error_type="server_error",
-                ),
+            durable_session_id = getattr(durable_lookup, "session_id", None)
+            owner_refs.append(
+                (
+                    "turn-state durable alias",
+                    account_id,
+                    f"durable:{durable_session_id.strip()}"
+                    if isinstance(durable_session_id, str) and durable_session_id.strip()
+                    else None,
+                )
             )
+        resolved_owner = resolve_required_account_id(
+            *((source, owner_account_id) for source, owner_account_id, _session_id in owner_refs)
+        )
+        if resolved_owner is not None:
+            session_identities = {
+                session_identity
+                for _source, owner_account_id, session_identity in owner_refs
+                if owner_account_id == resolved_owner and session_identity is not None
+            }
+            if len(session_identities) > 1:
+                sources = ", ".join(source for source, _account_id, _session_id in owner_refs)
+                raise ProxyResponseError(
+                    502,
+                    openai_error(
+                        "continuity_owner_conflict",
+                        f"Account-owned continuity sources conflict ({sources}); retry the logical turn.",
+                        error_type="server_error",
+                    ),
+                )
+            return resolved_owner
         if not fail_on_missing:
             return None
         raise ProxyResponseError(
@@ -535,7 +577,7 @@ class _CompactMixin:
         proxy = cast(_CompactServiceProtocol, self)
         _maybe_log_proxy_request_payload("compact", payload, headers)
         filtered = filter_inbound_headers(headers)
-        useragent, useragent_group = _request_log_useragent_fields(headers)
+        useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
         request_kind = _request_kind_from_headers(headers)
         request_id = get_request_id() or ensure_request_id(None)
         start = _service_time().monotonic()
@@ -571,9 +613,12 @@ class _CompactMixin:
         )
         sticky_key_source = "none"
         if affinity.kind == StickySessionKind.CODEX_SESSION:
-            sticky_key_source = (
-                "turn_state_header" if _sticky_key_from_turn_state_header(headers) is not None else "session_header"
-            )
+            if _sticky_key_from_turn_state_header(headers) is not None:
+                sticky_key_source = "turn_state_header"
+            elif _sticky_key_from_session_header(headers) is not None:
+                sticky_key_source = "session_header"
+            else:
+                sticky_key_source = "payload"
         elif affinity.key:
             sticky_key_source = "payload" if had_prompt_cache_key else "derived"
         _maybe_log_proxy_request_shape(
@@ -631,29 +676,15 @@ class _CompactMixin:
                         ),
                     )
 
-        # ``input_file.file_id`` references must land on the account that
-        # registered the upload (chatgpt-account-id-scoped). The helper
-        # returns ``None`` when stronger affinity signals are present
-        # (prompt_cache_key / session header / turn_state header /
-        # previous_response_id), so existing routing wins.
-        if (
-            turn_state_owner_account_id is not None
-            and previous_response_preferred_account_id is not None
-            and turn_state_owner_account_id != previous_response_preferred_account_id
-        ):
-            raise ProxyResponseError(
-                502,
-                openai_error(
-                    "turn_state_owner_conflict",
-                    "Turn-state continuity resolved to conflicting upstream accounts; retry the logical turn.",
-                    error_type="server_error",
-                ),
-            )
-        preferred_account_id = (
-            turn_state_owner_account_id or previous_response_preferred_account_id or rewritten_file_account_id
+        # File pins are account ownership, not locality. Resolved turn-state or
+        # previous-response owners above still take precedence (and conflicts
+        # fail closed), while process-session/prompt-cache hints never hide a
+        # known file owner.
+        preferred_account_id = resolve_required_account_id(
+            ("turn state", turn_state_owner_account_id),
+            ("previous response", previous_response_preferred_account_id),
+            ("input file", rewritten_file_account_id),
         )
-        if preferred_account_id is None:
-            preferred_account_id = await proxy._resolve_file_account_for_responses(payload, headers)
         try:
 
             async def _call_compact(
@@ -802,6 +833,7 @@ class _CompactMixin:
                         _service_pop_compact_timeout_overrides(timeout_tokens)
 
             last_exc: ProxyResponseError | None = None
+            network_recovery = ProcessNetworkRecovery(transport="compact", request_id=request_id)
             excluded_account_ids: set[str] = set()
             require_security_work_authorized = False
             estimated_lease_tokens = _estimated_lease_tokens_from_request_usage_budget(
@@ -813,10 +845,7 @@ class _CompactMixin:
                     request_id=request_id,
                     kind="compact",
                     api_key=api_key,
-                    sticky_key=affinity.key,
-                    sticky_kind=affinity.kind,
-                    reallocate_sticky=affinity.reallocate_sticky,
-                    sticky_max_age_seconds=affinity.max_age_seconds,
+                    affinity_policy=affinity,
                     prefer_earlier_reset_accounts=prefer_earlier_reset,
                     prefer_earlier_reset_window=_prefer_earlier_reset_window(settings),
                     routing_strategy=routing_strategy,
@@ -847,10 +876,7 @@ class _CompactMixin:
                             request_id=request_id,
                             kind="compact",
                             api_key=api_key,
-                            sticky_key=affinity.key,
-                            sticky_kind=affinity.kind,
-                            reallocate_sticky=affinity.reallocate_sticky,
-                            sticky_max_age_seconds=affinity.max_age_seconds,
+                            affinity_policy=affinity,
                             prefer_earlier_reset_accounts=prefer_earlier_reset,
                             prefer_earlier_reset_window=_prefer_earlier_reset_window(settings),
                             routing_strategy=routing_strategy,
@@ -933,6 +959,19 @@ class _CompactMixin:
                         request_id,
                         account.id,
                     )
+                except ProxyResponseError:
+                    await proxy._load_balancer.release_account_lease(selected_account_response_create_lease)
+                    selected_account_response_create_lease = None
+                    # ensure_fresh_with_budget translates terminal process-network
+                    # recovery outcomes before the compact upstream settlement
+                    # branches run, so this boundary owns reservation cleanup.
+                    await proxy._settle_compact_api_key_usage(
+                        api_key=api_key,
+                        api_key_reservation=api_key_reservation,
+                        response=None,
+                        request_service_tier=request_service_tier,
+                    )
+                    raise
                 except (RefreshError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
                     await proxy._load_balancer.release_account_lease(selected_account_response_create_lease)
                     selected_account_response_create_lease = None
@@ -1082,6 +1121,7 @@ class _CompactMixin:
                         account_response_create_lease = selected_account_response_create_lease
                         selected_account_response_create_lease = None
                         response = await _call_compact(account, account_response_create_lease)
+                        network_recovery.log_recovered()
                         actual_service_tier = _service_tier_from_response(response)
                         await proxy._load_balancer.record_success(account)
                         await proxy._settle_compact_api_key_usage(
@@ -1152,6 +1192,17 @@ class _CompactMixin:
                                     force=True,
                                     timeout_seconds=_compact_freshness_budget_seconds(remaining_budget),
                                 )
+                            except ProxyResponseError:
+                                # A translated refresh-recovery error escapes the
+                                # current upstream-error handler, so settle before
+                                # handing it to the request-level error boundary.
+                                await proxy._settle_compact_api_key_usage(
+                                    api_key=api_key,
+                                    api_key_reservation=api_key_reservation,
+                                    response=None,
+                                    request_service_tier=request_service_tier,
+                                )
+                                raise
                             except (RefreshError, aiohttp.ClientError, asyncio.TimeoutError) as refresh_exc:
                                 if isinstance(refresh_exc, RefreshError):
                                     if refresh_exc.is_permanent:
@@ -1300,15 +1351,33 @@ class _CompactMixin:
                             excluded_account_ids.add(account.id)
                             transient_exhausted = True
                             break  # break inner loop → outer loop tries different account
-                        if exc.retryable_same_contract and safe_retry_budget > 0:
-                            safe_retry_budget -= 1
-                            continue
                         error = _parse_openai_error(exc.payload)
                         code = _normalize_error_code(
                             error.code if error else None,
                             error.type if error else None,
                         )
                         error_message = error.message if error else None
+                        network_recovery.account_id = account.id
+                        recovery_decision = await network_recovery.wait(
+                            error_code=code,
+                            retryable_same_contract=exc.retryable_same_contract,
+                            deadline=deadline,
+                            rotate_shared_client=True,
+                            failed_session=exc.failed_session,
+                        )
+                        if recovery_decision == "retry":
+                            continue
+                        if recovery_decision == "exhausted":
+                            await proxy._settle_compact_api_key_usage(
+                                api_key=api_key,
+                                api_key_reservation=api_key_reservation,
+                                response=None,
+                                request_service_tier=request_service_tier,
+                            )
+                            _raise_proxy_budget_exhausted()
+                        if exc.retryable_same_contract and safe_retry_budget > 0:
+                            safe_retry_budget -= 1
+                            continue
                         if _is_security_work_authorization_required_error(code, error_message):
                             if (
                                 not account.security_work_authorized
@@ -1353,10 +1422,21 @@ class _CompactMixin:
                                 code,
                                 http_status=exc.status_code,
                             )
-                            if affinity.key is not None and affinity.kind is not None:
+                            if (
+                                affinity.selection_key is not None
+                                and affinity.kind is not None
+                                and affinity.kind != StickySessionKind.CODEX_SESSION
+                            ):
+                                # A timeout cannot prove that durable Codex
+                                # ownership is invalid. Preserve both raw hard
+                                # turn-state rows and namespaced process locality;
+                                # runtime health already drives safe fallback.
                                 try:
                                     async with proxy._repo_factory() as repos:
-                                        await repos.sticky_sessions.delete(affinity.key, kind=affinity.kind)
+                                        await repos.sticky_sessions.delete(
+                                            affinity.selection_key,
+                                            kind=affinity.kind,
+                                        )
                                     logger.info(
                                         "Compact sticky mapping cleared after upstream timeout request_id=%s "
                                         "sticky_kind=%s",
@@ -1491,6 +1571,7 @@ class _CompactMixin:
                 upstream_proxy_fail_closed_reason=route_fail_closed_reason,
                 useragent=useragent,
                 useragent_group=useragent_group,
+                conversation_id=conversation_id,
                 client_ip=client_ip,
                 request_kind=request_kind,
             )

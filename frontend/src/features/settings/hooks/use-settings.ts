@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { ApiError } from "@/lib/api-client";
@@ -38,6 +39,7 @@ import type {
 } from "@/features/settings/schemas";
 
 export function useSettings() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const { data, error, isFetching, isLoading, isPending, isSuccess, refetch } = useQuery({
@@ -49,12 +51,12 @@ export function useSettings() {
   const updateSettingsMutation = useMutation({
     mutationFn: (payload: SettingsUpdateRequest) => updateSettings(payload),
     onSuccess: () => {
-      toast.success("Settings saved");
+      toast.success(t("settings.toasts.saved"));
       void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
       void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
     },
     onError: (error: Error) => {
-      toast.error(error.message || "Failed to save settings");
+      toast.error(error.message || t("settings.toasts.saveFailed"));
       if (error instanceof ApiError && error.code === "settings_conflict") {
         // Another writer committed since this form was loaded; refetch so the
         // next save carries the fresh expectedVersion.
@@ -70,6 +72,7 @@ export function useSettings() {
 }
 
 export function useUpstreamProxyAdmin() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const {
@@ -97,24 +100,24 @@ export function useUpstreamProxyAdmin() {
   const createEndpointMutation = useMutation({
     mutationFn: (payload: UpstreamProxyEndpointCreateRequest) => createUpstreamProxyEndpoint(payload),
     onSuccess: () => {
-      toast.success("Proxy endpoint created");
+      toast.success(t("upstreamProxy.toasts.endpointCreated"));
       void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
       void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
-      toast.error(error.message || "Proxy endpoint creation failed");
+      toast.error(error.message || t("upstreamProxy.toasts.endpointCreateFailed"));
     },
   });
 
   const createPoolMutation = useMutation({
     mutationFn: (payload: UpstreamProxyPoolCreateRequest) => createUpstreamProxyPool(payload),
     onSuccess: () => {
-      toast.success("Proxy pool created");
+      toast.success(t("upstreamProxy.toasts.poolCreated"));
       void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
       void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
-      toast.error(error.message || "Proxy pool creation failed");
+      toast.error(error.message || t("upstreamProxy.toasts.poolCreateFailed"));
     },
   });
 
@@ -122,12 +125,12 @@ export function useUpstreamProxyAdmin() {
     mutationFn: ({ poolId, payload }: { poolId: string; payload: UpstreamProxyPoolMemberRequest }) =>
       addUpstreamProxyPoolMember(poolId, payload),
     onSuccess: () => {
-      toast.success("Proxy pool member added");
+      toast.success(t("upstreamProxy.toasts.memberAdded"));
       void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
       void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
-      toast.error(error.message || "Proxy pool update failed");
+      toast.error(error.message || t("upstreamProxy.toasts.poolUpdateFailed"));
     },
   });
 
@@ -135,13 +138,13 @@ export function useUpstreamProxyAdmin() {
     mutationFn: (endpointId: string) => testUpstreamProxyEndpoint(endpointId),
     onSuccess: (result) => {
       if (result.ok) {
-        toast.success("Proxy endpoint reachable");
+        toast.success(t("upstreamProxy.toasts.endpointReachable"));
       } else {
-        toast.error(result.error || "Proxy endpoint test failed");
+        toast.error(result.error || t("upstreamProxy.toasts.endpointTestFailed"));
       }
     },
     onError: (error: Error) => {
-      toast.error(error.message || "Proxy endpoint test failed");
+      toast.error(error.message || t("upstreamProxy.toasts.endpointTestFailed"));
     },
   });
 
@@ -149,12 +152,12 @@ export function useUpstreamProxyAdmin() {
     mutationFn: ({ accountId, payload }: { accountId: string; payload: AccountProxyBindingRequest }) =>
       putAccountProxyBinding(accountId, payload),
     onSuccess: () => {
-      toast.success("Account proxy binding saved");
+      toast.success(t("upstreamProxy.toasts.accountBindingSaved"));
       void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
       void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
     },
     onError: (error: Error) => {
-      toast.error(error.message || "Account proxy binding failed");
+      toast.error(error.message || t("upstreamProxy.toasts.accountBindingFailed"));
     },
   });
 

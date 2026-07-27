@@ -211,6 +211,9 @@ class DashboardSettingsResponse(DashboardModel):
     upstream_proxy_default_pool_id: str | None = None
     prefer_earlier_reset_accounts: bool
     prefer_earlier_reset_window: str = Field(pattern=r"^(primary|secondary)$")
+    show_reset_credit_badges: bool
+    auto_redeem_reset_credits_before_expiry: bool
+    show_reset_credit_expiry_badge: bool
     routing_strategy: str = Field(
         pattern=r"^(usage_weighted|round_robin|capacity_weighted|relative_availability|fill_first|sequential_drain|reset_drain|single_account)$"
     )
@@ -241,6 +244,10 @@ class DashboardSettingsResponse(DashboardModel):
     weekly_pace_working_days: str = _DEFAULT_WEEKLY_PACE_WORKING_DAYS
     weekly_pace_smoothing_minutes: int = Field(default=30)
     limit_warmup_staggered_idle_enabled: bool
+    request_log_retention_days: int = Field(ge=0, le=3650)
+    usage_history_retention_days: int = Field(ge=0, le=3650)
+    request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
+    usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
     model_aliases: dict[str, str] = Field(default_factory=dict)
     custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] = Field(default_factory=dict)
@@ -335,6 +342,9 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     upstream_proxy_default_pool_id: str | None = None
     prefer_earlier_reset_accounts: bool | None = None
     prefer_earlier_reset_window: str | None = Field(default=None, pattern=r"^(primary|secondary)$")
+    show_reset_credit_badges: bool | None = None
+    auto_redeem_reset_credits_before_expiry: bool | None = None
+    show_reset_credit_expiry_badge: bool | None = None
     routing_strategy: str | None = Field(
         default=None,
         pattern=r"^(usage_weighted|round_robin|capacity_weighted|relative_availability|fill_first|sequential_drain|reset_drain|single_account)$",
@@ -417,6 +427,25 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     ollama_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     guest_access_enabled: bool | None = None
     limit_warmup_staggered_idle_enabled: bool | None = None
+    # Tri-state retention overrides: absent = unchanged, present null = clear
+    # the override (back to inheriting the deprecated env alias), present
+    # value = store the override.
+    request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
+    usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
+
+    @field_validator("request_log_retention_override_days")
+    @classmethod
+    def _validate_request_log_retention_override(cls, value: int | None) -> int | None:
+        if value is not None and value != 0 and value < 30:
+            raise ValueError("request_log_retention_override_days must be 0 (disabled) or >= 30")
+        return value
+
+    @field_validator("usage_history_retention_override_days")
+    @classmethod
+    def _validate_usage_history_retention_override(cls, value: int | None) -> int | None:
+        if value is not None and value != 0 and value < 45:
+            raise ValueError("usage_history_retention_override_days must be 0 (disabled) or >= 45")
+        return value
 
     @field_validator("model_aliases")
     @classmethod

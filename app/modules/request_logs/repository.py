@@ -12,9 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.config.settings import get_settings
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
-from app.core.usage.types import BucketModelAggregate, RequestActivityAggregate, UsageSummaryLogsAggregate
+from app.core.usage.types import (
+    BucketConversationAggregate,
+    BucketModelAggregate,
+    RequestActivityAggregate,
+    UsageSummaryLogsAggregate,
+)
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
@@ -31,13 +35,22 @@ class _RequestLogFilters:
     needs_related_search_joins: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RequestLogsResult:
+    logs: list[RequestLog]
+    total: int
+    aggregated_cost_usd: float | None = None
+
+
 # The exact COUNT(*) behind the request-log listing's "X-Y of N" scans the
 # whole filtered set on PostgreSQL; the dashboard re-runs it on every 30s
 # poll and every pagination click even though the displayed total is
 # tolerant of short staleness. Cache it per filter signature for a small
-# TTL (configurable; 0 disables, which the test suite uses so totals stay
-# exact within a test).
+# fixed TTL (issue #1340 / PRINCIPLES.md P2; the test suite patches the
+# TTL to 0 so totals stay exact within a test).
+_COUNT_CACHE_TTL_SECONDS = 30.0
 _COUNT_CACHE_MAX_ENTRIES = 256
+_CONVERSATION_WHITESPACE = " \t\n\v\f\r"
 _recent_count_cache: dict[tuple, tuple[int, float]] = {}
 
 
@@ -63,6 +76,13 @@ def _store_recent_count(key: tuple, total: int, ttl_seconds: float) -> None:
     _recent_count_cache[key] = (total, time.monotonic() + ttl_seconds)
 
 
+@dataclass(frozen=True, slots=True)
+class PreviousResponseOwnerRecord:
+    account_id: str
+    requested_at: datetime | None
+    session_id: str | None
+
+
 class RequestLogsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -70,6 +90,23 @@ class RequestLogsRepository:
     @staticmethod
     def _exclude_warmup_clause() -> ColumnElement[bool]:
         return RequestLog.request_kind.not_in((RequestKind.WARMUP.value, "limit_warmup"))
+
+    @staticmethod
+    def _conversation_id_expr() -> ColumnElement:
+        trimmed = func.ltrim(
+            func.rtrim(RequestLog.conversation_id, _CONVERSATION_WHITESPACE),
+            _CONVERSATION_WHITESPACE,
+        )
+        return func.nullif(trimmed, "")
+
+    def _bucket_epoch_expr(self, bucket_seconds: int) -> ColumnElement:
+        bind = self._session.get_bind()
+        dialect = bind.dialect.name if bind else "sqlite"
+        if dialect == "postgresql":
+            return func.floor(func.extract("epoch", RequestLog.requested_at) / bucket_seconds) * bucket_seconds
+        # Use explicit integer division for SQLite: CAST(epoch / N AS INTEGER) * N
+        epoch_col = cast(func.strftime("%s", RequestLog.requested_at), Integer)
+        return cast(epoch_col / bucket_seconds, Integer) * bucket_seconds
 
     async def list_since(self, since: datetime) -> list[RequestLog]:
         result = await self._session.execute(
@@ -80,13 +117,13 @@ class RequestLogsRepository:
         )
         return list(result.scalars().all())
 
-    async def find_latest_account_id_for_response_id(
+    async def find_latest_owner_record_for_response_id(
         self,
         *,
         response_id: str,
         api_key_id: str | None,
         session_id: str | None = None,
-    ) -> str | None:
+    ) -> PreviousResponseOwnerRecord | None:
         response_id_value = response_id.strip()
         if not response_id_value:
             return None
@@ -99,41 +136,62 @@ class RequestLogsRepository:
         if api_key_id is not None:
             base_conditions.append(RequestLog.api_key_id == api_key_id)
 
-        async def _lookup_account_id(conditions: list[ColumnElement[bool]]) -> str | None:
+        async def _lookup_owner_record(
+            conditions: list[ColumnElement[bool]],
+        ) -> PreviousResponseOwnerRecord | None:
             stmt = (
-                select(RequestLog.account_id)
+                select(RequestLog.account_id, RequestLog.requested_at, RequestLog.session_id)
                 .where(and_(*conditions))
                 .order_by(RequestLog.requested_at.desc(), RequestLog.id.desc())
                 .limit(1)
             )
             result = await self._session.execute(stmt)
-            account_id = result.scalar_one_or_none()
+            row = result.one_or_none()
+            if row is None:
+                return None
+            account_id, requested_at, owner_session_id = row
             if not isinstance(account_id, str):
                 return None
             stripped = account_id.strip()
-            return stripped or None
+            if not stripped:
+                return None
+            normalized_owner_session_id = (
+                owner_session_id.strip() if isinstance(owner_session_id, str) and owner_session_id.strip() else None
+            )
+            return PreviousResponseOwnerRecord(
+                account_id=stripped,
+                requested_at=requested_at if isinstance(requested_at, datetime) else None,
+                session_id=normalized_owner_session_id,
+            )
 
         session_id_value = session_id.strip() if isinstance(session_id, str) else ""
         if session_id_value:
-            scoped_owner = await _lookup_account_id([*base_conditions, RequestLog.session_id == session_id_value])
+            scoped_owner = await _lookup_owner_record([*base_conditions, RequestLog.session_id == session_id_value])
             if scoped_owner is not None:
                 return scoped_owner
 
-        return await _lookup_account_id(base_conditions)
+        return await _lookup_owner_record(base_conditions)
+
+    async def find_latest_account_id_for_response_id(
+        self,
+        *,
+        response_id: str,
+        api_key_id: str | None,
+        session_id: str | None = None,
+    ) -> str | None:
+        owner = await self.find_latest_owner_record_for_response_id(
+            response_id=response_id,
+            api_key_id=api_key_id,
+            session_id=session_id,
+        )
+        return owner.account_id if owner is not None else None
 
     async def aggregate_by_bucket(
         self,
         since: datetime,
         bucket_seconds: int = 21600,
     ) -> list[BucketModelAggregate]:
-        bind = self._session.get_bind()
-        dialect = bind.dialect.name if bind else "sqlite"
-        if dialect == "postgresql":
-            bucket_expr = func.floor(func.extract("epoch", RequestLog.requested_at) / bucket_seconds) * bucket_seconds
-        else:
-            # Use explicit integer division for SQLite: CAST(epoch / N AS INTEGER) * N
-            epoch_col = cast(func.strftime("%s", RequestLog.requested_at), Integer)
-            bucket_expr = cast(epoch_col / bucket_seconds, Integer) * bucket_seconds
+        bucket_expr = self._bucket_epoch_expr(bucket_seconds)
         bucket_col = bucket_expr.label("bucket_epoch")
 
         stmt = (
@@ -171,6 +229,36 @@ class RequestLogsRepository:
             for row in result.all()
         ]
 
+    async def aggregate_conversations_by_bucket(
+        self,
+        since: datetime,
+        bucket_seconds: int = 21600,
+    ) -> list[BucketConversationAggregate]:
+        bucket_expr = self._bucket_epoch_expr(bucket_seconds)
+        bucket_col = bucket_expr.label("bucket_epoch")
+        conversation_id = self._conversation_id_expr()
+        stmt = (
+            select(
+                bucket_col,
+                func.count(func.distinct(conversation_id)).label("conversation_count"),
+            )
+            .where(
+                RequestLog.requested_at >= since,
+                self._exclude_warmup_clause(),
+                conversation_id.is_not(None),
+            )
+            .group_by(bucket_col)
+            .order_by(bucket_col)
+        )
+        result = await self._session.execute(stmt)
+        return [
+            BucketConversationAggregate(
+                bucket_epoch=int(row.bucket_epoch),
+                conversation_count=int(row.conversation_count),
+            )
+            for row in result.all()
+        ]
+
     async def aggregate_activity_since(self, since: datetime) -> RequestActivityAggregate:
         stmt = self._aggregate_activity_stmt(since)
         result = await self._session.execute(stmt)
@@ -182,6 +270,8 @@ class RequestLogsRepository:
             output_tokens=int(row.output_tokens),
             cached_input_tokens=int(row.cached_input_tokens),
             cost_usd=float(row.cost_usd or 0.0),
+            conversation_count=int(row.conversation_count or 0),
+            conversation_request_count=int(row.conversation_request_count or 0),
         )
 
     async def aggregate_activity_between(self, since: datetime, until: datetime) -> RequestActivityAggregate:
@@ -195,6 +285,8 @@ class RequestLogsRepository:
             output_tokens=int(row.output_tokens),
             cached_input_tokens=int(row.cached_input_tokens),
             cost_usd=float(row.cost_usd or 0.0),
+            conversation_count=int(row.conversation_count or 0),
+            conversation_request_count=int(row.conversation_request_count or 0),
         )
 
     def _aggregate_activity_stmt(self, since: datetime, until: datetime | None = None):
@@ -208,6 +300,8 @@ class RequestLogsRepository:
             func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
             func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+            func.count(func.distinct(self._conversation_id_expr())).label("conversation_count"),
+            func.count(self._conversation_id_expr()).label("conversation_request_count"),
         ).where(
             RequestLog.requested_at >= since,
             self._exclude_warmup_clause(),
@@ -351,8 +445,6 @@ class RequestLogsRepository:
         latency_bridge_queue_wait_ms: int | None = None,
         prewarm_status: str | None = None,
         prewarm_latency_ms: int | None = None,
-        prewarm_canary_bucket: str | None = None,
-        prewarm_eligible_reason: str | None = None,
         session_previous_gap_ms: int | None = None,
         error_message: str | None = None,
         requested_at: datetime | None = None,
@@ -371,6 +463,7 @@ class RequestLogsRepository:
         source: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
+        conversation_id: str | None = None,
         client_ip: str | None = None,
         failure_phase: str | None = None,
         failure_detail: str | None = None,
@@ -400,6 +493,7 @@ class RequestLogsRepository:
             resolved_useragent_group = (
                 useragent_group if not isinstance(useragent_group, str) or useragent_group.strip() else None
             )
+            resolved_conversation_id = (conversation_id or "").strip() or None
             resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
             log = RequestLog(
                 account_id=account_id,
@@ -417,6 +511,7 @@ class RequestLogsRepository:
                 request_kind=request_kind,
                 useragent=resolved_useragent,
                 useragent_group=resolved_useragent_group,
+                conversation_id=resolved_conversation_id,
                 client_ip=resolved_client_ip,
                 service_tier=service_tier,
                 requested_service_tier=requested_service_tier,
@@ -438,8 +533,6 @@ class RequestLogsRepository:
                 latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
                 prewarm_status=prewarm_status,
                 prewarm_latency_ms=prewarm_latency_ms,
-                prewarm_canary_bucket=prewarm_canary_bucket,
-                prewarm_eligible_reason=prewarm_eligible_reason,
                 session_previous_gap_ms=session_previous_gap_ms,
                 status=status,
                 error_code=error_code,
@@ -519,6 +612,7 @@ class RequestLogsRepository:
         search: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        conversation_id: str | None = None,
         account_ids: list[str] | None = None,
         api_key_ids: list[str] | None = None,
         model_options: list[tuple[str, str | None]] | None = None,
@@ -528,11 +622,12 @@ class RequestLogsRepository:
         include_error_other: bool = True,
         error_codes_in: list[str] | None = None,
         error_codes_excluding: list[str] | None = None,
-    ) -> tuple[list[RequestLog], int]:
+    ) -> RequestLogsResult:
         filters = self._build_filters(
             search=search,
             since=since,
             until=until,
+            conversation_id=conversation_id,
             account_ids=account_ids,
             api_key_ids=api_key_ids,
             model_options=model_options,
@@ -556,13 +651,18 @@ class RequestLogsRepository:
         result = await self._session.execute(stmt)
         logs = list(result.scalars().all())
 
-        ttl_seconds = get_settings().request_log_count_cache_ttl_seconds
+        if conversation_id is not None:
+            total, aggregated_cost_usd = await self._count_and_sum_recent(filters)
+            return RequestLogsResult(logs=logs, total=total, aggregated_cost_usd=aggregated_cost_usd)
+
+        ttl_seconds = _COUNT_CACHE_TTL_SECONDS
         if ttl_seconds <= 0:
-            return logs, await self._count_recent(filters)
+            return RequestLogsResult(logs=logs, total=await self._count_recent(filters))
         cache_key = (
             search,
             since,
             until,
+            conversation_id,
             tuple(account_ids or ()),
             tuple(api_key_ids or ()),
             tuple(model_options or ()),
@@ -577,7 +677,19 @@ class RequestLogsRepository:
         if total is None:
             total = await self._count_recent(filters)
             _store_recent_count(cache_key, total, ttl_seconds)
-        return logs, total
+        return RequestLogsResult(logs=logs, total=total)
+
+    async def _count_and_sum_recent(self, filters: _RequestLogFilters) -> tuple[int, float]:
+        aggregate_stmt = select(
+            func.count(),
+            func.coalesce(func.sum(RequestLog.cost_usd), 0.0),
+        ).select_from(RequestLog)
+        aggregate_stmt = self._apply_related_search_joins(aggregate_stmt, filters.needs_related_search_joins)
+        if filters.conditions:
+            aggregate_stmt = aggregate_stmt.where(and_(*filters.conditions))
+        result = await self._session.execute(aggregate_stmt)
+        request_count, aggregated_cost_usd = result.one()
+        return int(request_count), float(aggregated_cost_usd)
 
     async def _count_recent(self, filters: _RequestLogFilters) -> int:
         count_stmt = select(func.count(RequestLog.id)).select_from(RequestLog)
@@ -805,6 +917,7 @@ class RequestLogsRepository:
         search: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        conversation_id: str | None = None,
         account_ids: list[str] | None = None,
         api_key_ids: list[str] | None = None,
         model_options: list[tuple[str, str | None]] | None = None,
@@ -823,6 +936,8 @@ class RequestLogsRepository:
             conditions.append(RequestLog.requested_at >= since)
         if until is not None:
             conditions.append(RequestLog.requested_at <= until)
+        if conversation_id is not None:
+            conditions.append(RequestLog.conversation_id == conversation_id)
         if account_ids:
             conditions.append(RequestLog.account_id.in_(account_ids))
         if api_key_ids:

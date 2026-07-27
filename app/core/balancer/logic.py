@@ -51,6 +51,8 @@ REAUTH_REQUIRED_FAILURE_CODES = frozenset(
 SECONDS_PER_DAY = 60 * 60 * 24
 SECONDS_PER_HOUR = 60 * 60
 SECONDS_PER_WEEK = 7 * SECONDS_PER_DAY
+RATE_LIMIT_RESET_MAX_HORIZON_SECONDS = 366 * SECONDS_PER_DAY
+RATE_LIMIT_RESET_ROUNDING_TOLERANCE_SECONDS = 1.0
 UNKNOWN_RESET_BUCKET_DAYS = 10_000
 UNKNOWN_RESET_FALLBACK_SECONDS = 7 * SECONDS_PER_DAY
 RELATIVE_AVAILABILITY_MIN_DIVISOR_SECONDS = 5 * 60
@@ -366,6 +368,7 @@ def select_account(
     routing_strategy: RoutingStrategy = "capacity_weighted",
     allow_backoff_fallback: bool = True,
     deterministic_probe: bool = False,
+    recovery_probe_only: bool = False,
     relative_availability_power: float = DEFAULT_RELATIVE_AVAILABILITY_POWER,
     relative_availability_top_k: int = DEFAULT_RELATIVE_AVAILABILITY_TOP_K,
     usage_weighted_order: UsageWeightedOrder = "secondary_first",
@@ -403,6 +406,9 @@ def select_account(
             account exists.
         deterministic_probe: Whether weighted strategies should use a
             deterministic probe order instead of random weighted choice.
+        recovery_probe_only: Whether to return only a due probing-account
+            recovery admission and otherwise return no selection. Health-tier
+            bypass strategies ignore this internal mode.
         relative_availability_power: Exponent applied to normalized relative
             availability weights.
         relative_availability_top_k: Maximum number of highest-weight
@@ -615,7 +621,13 @@ def select_account(
     healthy = [s for s in available if s.health_tier == HEALTH_TIER_HEALTHY]
     probing = [s for s in available if s.health_tier == HEALTH_TIER_PROBING]
     draining = [s for s in available if s.health_tier == HEALTH_TIER_DRAINING]
-    health_pool = healthy or probing or draining or available
+    # Recovery is a liveness admission inside the already-eligible pool. Pick
+    # it before routing-policy preferences so burn/preserve policy cannot make
+    # PROBING permanent, but never before quota/cooldown/security filtering.
+    due_probe = _oldest_due_probing_account(probing, current=current) if healthy or recovery_probe_only else None
+    if recovery_probe_only and due_probe is None:
+        return SelectionResult(None, None)
+    health_pool = [due_probe] if due_probe is not None else healthy or probing or draining or available
     burn_first = [s for s in health_pool if _routing_policy(s) == ROUTING_POLICY_BURN_FIRST]
     normal = [s for s in health_pool if _routing_policy(s) == ROUTING_POLICY_NORMAL]
     preserve = [s for s in health_pool if _routing_policy(s) == ROUTING_POLICY_PRESERVE]
@@ -670,6 +682,27 @@ def select_account(
                 key=_reset_first_sort_key if effective_prefer_earlier_reset else _usage_sort_key_with_cost,
             )
     return SelectionResult(selected, None)
+
+
+def _oldest_due_probing_account(
+    probing: Iterable[AccountState],
+    *,
+    current: float,
+) -> AccountState | None:
+    due = [
+        state
+        for state in probing
+        if state.last_selected_at is None or current - state.last_selected_at >= PROBE_QUIET_SECONDS
+    ]
+    if not due:
+        return None
+    return min(
+        due,
+        key=lambda state: (
+            state.last_selected_at if state.last_selected_at is not None else float("-inf"),
+            state.account_id,
+        ),
+    )
 
 
 def _remaining_secondary_credits(state: AccountState) -> float:
@@ -1077,7 +1110,7 @@ def handle_rate_limit(state: AccountState, error: UpstreamError) -> None:
     state.last_error_at = now
     state.blocked_at = now
 
-    reset_at = _extract_reset_at(error)
+    reset_at = _extract_reset_at(error, now=now)
 
     message = error.get("message")
     delay = parse_retry_after(message) if message else None
@@ -1123,16 +1156,17 @@ def _format_retry_hint(wait_seconds: float) -> str:
 
 
 def handle_quota_exceeded(state: AccountState, error: UpstreamError) -> None:
+    now = time.time()
     state.status = AccountStatus.QUOTA_EXCEEDED
     state.used_percent = 100.0
-    state.blocked_at = time.time()
-    state.cooldown_until = time.time() + QUOTA_EXCEEDED_COOLDOWN_SECONDS
+    state.blocked_at = now
+    state.cooldown_until = now + QUOTA_EXCEEDED_COOLDOWN_SECONDS
 
-    reset_at = _extract_reset_at(error)
+    reset_at = _extract_reset_at(error, now=now)
     if reset_at is not None:
         state.reset_at = reset_at
     else:
-        state.reset_at = int(time.time() + 3600)
+        state.reset_at = int(now + 3600)
 
 
 def handle_permanent_failure(state: AccountState, error_code: str) -> None:
@@ -1168,13 +1202,53 @@ def failover_decision(
     return "surface"
 
 
-def _extract_reset_at(error: UpstreamError) -> int | None:
-    reset_at = error.get("resets_at")
+def plausible_rate_limit_reset_at(
+    reset_at: int | float | None,
+    *,
+    now: float | None = None,
+    allow_rounding_slack: bool = True,
+) -> float | None:
+    """Return a finite near-future reset deadline, or ``None`` when invalid."""
+
+    if reset_at is None or isinstance(reset_at, bool):
+        return None
+    current = time.time() if now is None else now
+    if isinstance(reset_at, float) and not math.isfinite(reset_at):
+        return None
+    horizon = RATE_LIMIT_RESET_MAX_HORIZON_SECONDS
+    if allow_rounding_slack:
+        # Persisted deadlines are whole seconds; ceil may move an otherwise
+        # valid raw deadline just beyond the metadata horizon.
+        horizon += RATE_LIMIT_RESET_ROUNDING_TOLERANCE_SECONDS
+    # Keep this comparison ahead of float conversion: Python integers can be
+    # arbitrarily large, while converting malformed metadata can overflow.
+    if reset_at <= current or reset_at > current + horizon:
+        return None
+    return float(reset_at)
+
+
+def _extract_reset_at(error: UpstreamError, *, now: float) -> int | None:
+    reset_at = plausible_rate_limit_reset_at(
+        error.get("resets_at"),
+        now=now,
+        allow_rounding_slack=False,
+    )
     if reset_at is not None:
-        return int(reset_at)
+        rounded_reset_at = int(math.ceil(reset_at))
+        if plausible_rate_limit_reset_at(rounded_reset_at, now=now) is not None:
+            return rounded_reset_at
+        return None
+
     reset_in = error.get("resets_in_seconds")
-    if reset_in is not None:
-        return int(time.time() + float(reset_in))
+    if reset_in is None or isinstance(reset_in, bool):
+        return None
+    if isinstance(reset_in, float) and not math.isfinite(reset_in):
+        return None
+    if reset_in <= 0 or reset_in > RATE_LIMIT_RESET_MAX_HORIZON_SECONDS:
+        return None
+    rounded_reset_at = int(math.ceil(now + float(reset_in)))
+    if plausible_rate_limit_reset_at(rounded_reset_at, now=now) is not None:
+        return rounded_reset_at
     return None
 
 

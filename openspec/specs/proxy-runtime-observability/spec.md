@@ -153,6 +153,21 @@ When the service retires an HTTP bridge session because pending precreated repla
 - **THEN** the console log includes a HTTP bridge event with `event=retire_stale_pending`
 - **AND** the event includes only hashed bridge identity and low-cardinality metadata
 
+### Requirement: Process-wide network recovery is observable without sensitive resolver data
+
+The service MUST emit low-cardinality structured diagnostics when it detects a process-wide DNS or route failure, rotates shared transport state, retries a safe request, recovers, or exhausts the request budget. Diagnostics MUST NOT contain DNS server addresses, request payloads, API keys, access tokens, raw continuity keys, or account email addresses.
+
+#### Scenario: Recovery diagnostics are emitted
+
+- **WHEN** a safe Responses request enters and later exits process-wide network recovery
+- **THEN** logs identify the recovery stage, request id, transport, attempt count, and internal account id when known
+- **AND** logs do not expose resolver configuration or request content
+
+#### Scenario: Concurrent rotation is coalesced visibly
+
+- **WHEN** several callers report a network failure from the same shared client generation
+- **THEN** diagnostics distinguish the caller that rotated the client from callers that reused the already-rotated replacement
+
 ### Requirement: Request-log metadata keeps local routing failures unbound from upstream status
 
 When request routing fails before contacting upstream, `upstream_status_code` MUST be
@@ -185,6 +200,154 @@ The proxy MUST persist prompt-client user-agent metadata on `request_logs` for b
 - **WHEN** a proxied HTTP or WebSocket request omits the `User-Agent` header or sends only blank whitespace
 - **THEN** the persisted `request_logs` row stores `useragent = null`
 - **AND** the persisted row stores `useragent_group = null`
+
+### Requirement: Supported harnesses provide observational conversation metadata
+
+The proxy request-log metadata helper MUST detect a conversation ID only for
+the first matching user-agent rule in this ordered table:
+
+- `opencode` uses `x-parent-session-id`, then `x-opencode-session`, then
+  `x-session-id`, then `x-session-affinity`.
+- `codex` uses `thread-id`.
+
+User-agent prefix matching MUST ignore surrounding whitespace and case. Header
+name matching MUST be case-insensitive. The helper MUST use the first configured
+header whose value is non-empty after trimming surrounding whitespace, and MUST
+preserve the remaining conversation ID exactly. Detection MUST NOT reject,
+rewrite, route, or otherwise alter the proxied request.
+
+#### Scenario: Codex uses thread-id
+
+- **GIVEN** a request has user-agent `codex/1.2` and `thread-id: " conv-a "`
+- **WHEN** request-log client metadata is derived
+- **THEN** the conversation ID is `conv-a`
+
+#### Scenario: OpenCode uses ordered fallback headers
+
+- **GIVEN** a request has user-agent `opencode/1.0`, an empty
+  `x-parent-session-id`, an empty `x-opencode-session`, `x-session-id: fallback`,
+  and `x-session-affinity: affinity`
+- **WHEN** request-log client metadata is derived
+- **THEN** the conversation ID is `fallback`
+
+#### Scenario: OpenCode parent session takes precedence
+
+- **GIVEN** a request has user-agent `opencode/1.0`,
+  `x-parent-session-id: parent`, `x-opencode-session: child`,
+  `x-session-id: fallback`, and `x-session-affinity: affinity`
+- **WHEN** request-log client metadata is derived
+- **THEN** the conversation ID is `parent`
+
+#### Scenario: Prefix and header matching ignore case
+
+- **GIVEN** a request has user-agent ` CODEX/1.2 ` and header `Thread-Id:
+  conv-b`
+- **WHEN** request-log client metadata is derived
+- **THEN** the conversation ID is `conv-b`
+
+#### Scenario: Unsupported harnesses produce null metadata
+
+- **GIVEN** a request has no user-agent or has an unsupported user-agent and
+  includes a configured conversation header
+- **WHEN** request-log client metadata is derived
+- **THEN** the conversation ID is null
+- **AND** the request continues through the proxy unchanged
+
+### Requirement: Conversation metadata is nullable and indexed in request logs
+
+The request-log persistence model MUST store `conversation_id` as a nullable
+string and MUST provide an index named `idx_logs_conversation_id`. Existing rows
+MUST remain valid with a null conversation ID. Empty or whitespace-only detected
+values MUST be persisted as null.
+
+#### Scenario: Known conversation ID is persisted
+
+- **GIVEN** request-log metadata contains a non-empty conversation ID
+- **WHEN** the request log is persisted
+- **THEN** the stored `conversation_id` equals the trimmed ID
+
+#### Scenario: Missing conversation ID remains nullable
+
+- **GIVEN** request-log metadata contains no usable conversation ID
+- **WHEN** the request log is persisted
+- **THEN** the stored `conversation_id` is null
+
+### Requirement: Conversation metadata propagates through every request-log path
+
+The proxy MUST carry the detected nullable `conversation_id` into the shared
+request-log persistence sink for HTTP and WebSocket requests, including normal
+requests and preflight errors, and the compact, control, transcription, file,
+warmup, thread-goal, and model-source paths. WebSocket finalization and HTTP
+logging MUST preserve the same value derived from the inbound request headers.
+
+#### Scenario: Normal HTTP logs retain the inbound conversation
+
+- **GIVEN** a supported Codex or OpenCode request reaches the normal HTTP
+  request-log path with a usable conversation header
+- **WHEN** the path writes or finalizes its request log
+- **THEN** the persisted log contains that conversation ID
+
+#### Scenario: WebSocket logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the WebSocket request-log path with a
+  usable conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Preflight errors retain the inbound conversation
+
+- **GIVEN** a supported request reaches the HTTP preflight-error log path with
+  a usable conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Compact logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the compact log path with a usable
+  conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Control logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the control log path with a usable
+  conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Transcription logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the transcription log path with a
+  usable conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: File logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the file log path with a usable
+  conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Warmup logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the warmup log path with a usable
+  conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Thread-goal logs retain the inbound conversation
+
+- **GIVEN** a supported request reaches the thread-goal log path with a usable
+  conversation header
+- **WHEN** that path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
+
+#### Scenario: Model-source logs retain the inbound conversation
+
+- **GIVEN** a model-source request has a supported conversation header
+- **WHEN** the model-source path persists its request log
+- **THEN** the persisted log contains the detected conversation ID
 
 ### Requirement: Request logs persist client IP for Responses traffic
 
@@ -272,20 +435,46 @@ The proxy MUST persist nullable low-cardinality request-log fields for TTFT phas
 - **THEN** the request log can record first upstream event latency separately from first downstream token latency
 
 ### Requirement: Codex prewarm canary outcomes are observable
-The proxy MUST record visible-request prewarm status, latency, canary bucket, and eligibility cohort using stable strings, and MUST emit a prewarm outcome counter labelled only by outcome, cohort, and bucket.
 
-#### Scenario: Canary miss is visible without raw identifiers
-- **WHEN** Codex prewarm is enabled but deterministic canary sampling excludes an otherwise eligible request
-- **THEN** the visible request log records `prewarm_status=canary_miss`
-- **AND** metrics increment the prewarm counter for the stable cohort and bucket
-- **AND** logs and metrics do not include raw API keys, raw session ids, prompt text, or affinity key values
+The proxy MUST record visible-request prewarm status and latency using
+stable strings, and MUST emit a prewarm outcome counter labelled only by
+outcome. Prewarm eligibility is the prewarm enabled flag alone: no
+deterministic canary sampling or allow/deny cohort exists, so no canary
+bucket or eligibility cohort dimension is recorded and the
+`prewarm_status=canary_miss` value MUST NOT occur.
+
+#### Scenario: Prewarm outcome is visible without raw identifiers
+
+- **WHEN** Codex prewarm is enabled and a visible request triggers or skips
+  a session prewarm
+- **THEN** the visible request log records `prewarm_status` (and prewarm
+  latency when a prewarm was attempted)
+- **AND** metrics increment the outcome-labelled prewarm counter
+- **AND** logs and metrics do not include raw API keys, raw session ids,
+  prompt text, or affinity key values
+
+#### Scenario: Canary sampling no longer excludes eligible requests
+
+- **WHEN** Codex prewarm is enabled
+- **THEN** no request is excluded by deterministic canary sampling
+- **AND** `prewarm_status=canary_miss` is never recorded
+- **AND** the prewarm counter and request log carry no canary bucket or
+  eligibility cohort dimension (the legacy request-log columns remain
+  unwritten for one release for rolling-upgrade safety, then are dropped)
 
 ### Requirement: 24-hour TTFT breakdown queries are available
-Operators MUST have an OpenSpec context runbook or dashboard artifact with 24-hour TTFT breakdown queries by user agent group, upstream transport, model/cache ratio, session gap cohort, prompt size cohort, and prewarm bucket/outcome/cohort.
+
+Operators MUST have an OpenSpec context runbook or dashboard artifact with
+24-hour TTFT breakdown queries by user agent group, upstream transport,
+model/cache ratio, session gap cohort, prompt size cohort, and prewarm
+status/outcome.
 
 #### Scenario: Operator investigates TTFT regression
-- **WHEN** an operator needs to inspect the last 24 hours of request-log latency
-- **THEN** the repository provides SQL that reports p50, p90, p95 TTFT and total latency for the requested breakdowns
+
+- **WHEN** an operator needs to inspect the last 24 hours of request-log
+  latency
+- **THEN** the repository provides SQL that reports p50, p90, p95 TTFT and
+  total latency for the requested breakdowns
 
 ### Requirement: Dashboard request logs show generation speed
 
@@ -439,3 +628,13 @@ the reasoning-inclusive `output_tokens` numerator used for TPS.
 - **AND** `latency_queue_ms` MAY be null on paths whose queue waits are already
   recorded in dedicated phase columns
 
+### Requirement: Cap partition replica count is observable
+
+The service MUST expose a Prometheus gauge named `codex_lb_cap_partition_replicas` whose value equals the live replica count currently used for account cap partitioning, and it MUST log adopted partition rebalances at info level with the old count, the new count, and this replica's rank. The gauge and log MUST NOT include account ids, instance secrets, or request payload content.
+
+#### Scenario: Partition rebalance updates the gauge
+
+- **GIVEN** a replica whose adopted partition has replica count 1
+- **WHEN** a partition refresh observes and adopts two active members
+- **THEN** `codex_lb_cap_partition_replicas` reports 2
+- **AND** an info-level log records the rebalance from count 1 to count 2 with the replica's rank
