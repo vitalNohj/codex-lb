@@ -87,6 +87,13 @@ const BASE_SETTINGS = {
   limitWarmupIdleThresholdPercent: 1,
   weeklyPaceSmoothingMinutes: 30,
   limitWarmupStaggeredIdleEnabled: false,
+  showResetCreditBadges: true,
+  autoRedeemResetCreditsBeforeExpiry: false,
+  showResetCreditExpiryBadge: true,
+  requestLogRetentionDays: 0,
+  usageHistoryRetentionDays: 0,
+  requestLogRetentionOverrideDays: null,
+  usageHistoryRetentionOverrideDays: null,
   guestPasswordConfigured: false,
 } as DashboardSettings;
 

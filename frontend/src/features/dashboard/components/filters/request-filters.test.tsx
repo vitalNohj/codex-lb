@@ -24,6 +24,8 @@ const BASE_PROPS: RequestFiltersProps = {
   apiKeyOptions: EMPTY_OPTIONS,
   modelOptions: EMPTY_OPTIONS,
   statusOptions: EMPTY_OPTIONS,
+  viewMode: "simplified",
+  onViewModeChange: vi.fn(),
   onSearchChange: vi.fn(),
   onTimeframeChange: vi.fn(),
   onAccountChange: vi.fn(),

@@ -533,6 +533,10 @@ export function createDashboardSettings(
 		guestAccessEnabled: false,
 		guestPasswordConfigured: false,
 		limitWarmupStaggeredIdleEnabled: false,
+		requestLogRetentionDays: 0,
+		usageHistoryRetentionDays: 0,
+		requestLogRetentionOverrideDays: null,
+		usageHistoryRetentionOverrideDays: null,
 		...overrides,
 	});
 }
