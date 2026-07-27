@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -75,6 +75,7 @@ async def test_reports_api_returns_null_account_bucket(async_client, db_setup):
     assert payload["daily"] == [
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.55,
             "cachedInputTokens": 2,
             "date": start_at.date().isoformat(),
@@ -103,6 +104,80 @@ async def test_reports_api_returns_null_account_bucket(async_client, db_setup):
     ]
 
 
+async def test_reports_api_returns_distinct_nonblank_conversation_counts(async_client, db_setup):
+    async with SessionLocal() as session:
+        session.add(_make_account("acc_reports_conversations", "reports-conversations@example.com"))
+        session.add_all(
+            [
+                RequestLog(
+                    account_id="acc_reports_conversations",
+                    request_id="report-api-conversation-1",
+                    requested_at=datetime(2026, 6, 1, 10, 0),
+                    model="gpt-5.1",
+                    status="success",
+                    useragent_group="opencode",
+                    conversation_id="conv-api-span",
+                ),
+                RequestLog(
+                    account_id="acc_reports_conversations",
+                    request_id="report-api-conversation-2",
+                    requested_at=datetime(2026, 6, 2, 10, 0),
+                    model="gpt-5.1",
+                    status="success",
+                    useragent_group="opencode",
+                    conversation_id="conv-api-span",
+                ),
+                RequestLog(
+                    account_id="acc_reports_conversations",
+                    request_id="report-api-conversation-null",
+                    requested_at=datetime(2026, 6, 2, 11, 0),
+                    model="gpt-5.1",
+                    status="success",
+                    useragent_group="opencode",
+                    conversation_id=None,
+                ),
+                RequestLog(
+                    account_id="acc_reports_conversations",
+                    request_id="report-api-conversation-empty",
+                    requested_at=datetime(2026, 6, 2, 12, 0),
+                    model="gpt-5.1",
+                    status="success",
+                    useragent_group="opencode",
+                    conversation_id="",
+                ),
+                RequestLog(
+                    account_id="acc_reports_conversations",
+                    request_id="report-api-conversation-whitespace",
+                    requested_at=datetime(2026, 6, 2, 13, 0),
+                    model="gpt-5.1",
+                    status="success",
+                    useragent_group="opencode",
+                    conversation_id="   ",
+                ),
+            ]
+        )
+        await session.commit()
+
+    response = await async_client.get(
+        "/api/reports",
+        params={
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
+            "account_id": "acc_reports_conversations",
+            "model": "gpt-5.1",
+            "useragent_group": "opencode",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["totalConversations"] == 1
+    assert [(row["date"], row["conversations"]) for row in payload["daily"]] == [
+        ("2026-06-01", 1),
+        ("2026-06-02", 1),
+    ]
+
+
 async def test_reports_api_rejects_oversized_date_ranges(async_client, db_setup):
     response = await async_client.get(
         "/api/reports",
@@ -124,6 +199,64 @@ async def test_reports_api_rejects_oversized_date_ranges_with_default_end_date(a
     )
     assert response.status_code == 400
     assert response.json()["error"]["message"] == "report date range must be 730 days or less"
+
+
+async def test_reports_api_rejects_inverted_range_and_preserves_valid_one_day(
+    async_client,
+    db_setup,
+):
+    report_day = date(2026, 6, 3)
+    async with SessionLocal() as session:
+        session.add(_make_account("acc_reports_range", "reports-range@example.com"))
+        session.add(
+            RequestLog(
+                account_id="acc_reports_range",
+                request_id="report-range-request",
+                requested_at=datetime(2026, 6, 3, 12, 0, 0),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=12,
+                output_tokens=4,
+                cached_input_tokens=2,
+                cost_usd=0.35,
+            )
+        )
+        await session.commit()
+
+    inverted_response = await async_client.get(
+        "/api/reports",
+        params={"start_date": "2026-06-07", "end_date": "2026-06-01"},
+    )
+    valid_response = await async_client.get(
+        "/api/reports",
+        params={"start_date": report_day.isoformat(), "end_date": report_day.isoformat()},
+    )
+
+    assert valid_response.status_code == 200
+    valid_payload = valid_response.json()
+    assert valid_payload["summary"]["totalRequests"] == 1
+    assert valid_payload["summary"]["totalCostUsd"] == 0.35
+    assert [row["date"] for row in valid_payload["daily"]] == [report_day.isoformat()]
+
+    assert inverted_response.status_code == 400
+    assert inverted_response.json() == {
+        "error": {
+            "code": "invalid_report_date_range",
+            "message": "start_date must be on or before end_date",
+        }
+    }
+
+
+async def test_reports_api_accepts_inclusive_730_day_range(async_client, db_setup):
+    end_date = date(2026, 1, 1)
+    start_date = end_date - timedelta(days=729)
+
+    response = await async_client.get(
+        "/api/reports",
+        params={"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
+    )
+
+    assert response.status_code == 200
 
 
 async def test_reports_api_includes_preserved_deleted_account_history(async_client, db_setup):
@@ -163,6 +296,7 @@ async def test_reports_api_includes_preserved_deleted_account_history(async_clie
     assert payload["daily"] == [
         {
             "activeAccounts": 0,
+            "conversations": 0,
             "costUsd": 0.42,
             "cachedInputTokens": 3,
             "date": start_at.date().isoformat(),
@@ -305,6 +439,7 @@ async def test_reports_api_interprets_dates_in_requested_timezone(async_client, 
     assert payload["daily"] == [
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.5,
             "cachedInputTokens": 0,
             "date": "2026-06-01",
@@ -554,6 +689,7 @@ async def test_reports_api_default_range_uses_last_seven_calendar_days_in_reques
     assert payload["daily"] == [
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.7,
             "cachedInputTokens": 0,
             "date": "2026-06-01",
@@ -567,6 +703,7 @@ async def test_reports_api_default_range_uses_last_seven_calendar_days_in_reques
         },
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 1.4,
             "cachedInputTokens": 0,
             "date": "2026-06-07",
@@ -655,6 +792,7 @@ async def test_reports_api_uses_dst_aware_boundaries_for_requested_timezone(asyn
     assert payload["daily"] == [
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.5,
             "cachedInputTokens": 0,
             "date": "2026-03-08",
@@ -1425,6 +1563,7 @@ async def test_reports_api_summary_uses_sql_range_totals_not_rounded_daily_rows(
     assert payload["daily"] == [
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.0,
             "cachedInputTokens": 0,
             "date": "2026-06-01",
@@ -1438,6 +1577,7 @@ async def test_reports_api_summary_uses_sql_range_totals_not_rounded_daily_rows(
         },
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.0,
             "cachedInputTokens": 0,
             "date": "2026-06-02",
@@ -1451,6 +1591,7 @@ async def test_reports_api_summary_uses_sql_range_totals_not_rounded_daily_rows(
         },
         {
             "activeAccounts": 1,
+            "conversations": 0,
             "costUsd": 0.0,
             "cachedInputTokens": 0,
             "date": "2026-06-03",

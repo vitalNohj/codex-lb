@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,27 @@ from app.modules.usage.additional_quota_keys import clear_additional_quota_regis
 
 def _db_url(path: Path) -> str:
     return f"sqlite+aiosqlite:///{path}"
+
+
+def test_parse_args_rejects_explicit_empty_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["codex-lb-db", "--db-url", "", "current"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        migrate_module._parse_args()
+
+    assert exc_info.value.code == 2
+    assert "argument --db-url: database URL must not be empty" in capsys.readouterr().err
+
+
+def test_parse_args_preserves_omitted_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["codex-lb-db", "current"])
+
+    args = migrate_module._parse_args()
+
+    assert args.db_url is None
 
 
 def test_check_schema_drift_disposes_sync_engine(monkeypatch) -> None:
@@ -451,6 +473,93 @@ def test_request_logs_transport_stays_in_additive_migration_chain(tmp_path: Path
     with create_engine(sync_url, future=True).connect() as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("request_logs")}
         assert "transport" in columns
+
+
+def test_request_log_useragent_family_migration_backfills_only_slash_values(tmp_path: Path) -> None:
+    db_path = tmp_path / "request-log-useragent-families.db"
+    url = _db_url(db_path)
+    parent_revision = "20260720_000000_add_request_log_conversation_id"
+    target_revision = "20260722_000000_backfill_request_log_useragent_families"
+
+    run_upgrade(url, parent_revision, bootstrap_legacy=False)
+    engine = create_engine(to_sync_database_url(url), future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO request_logs (request_id, model, status, useragent, useragent_group) "
+                    "VALUES (:request_id, :model, :status, :useragent, :useragent_group)"
+                ),
+                [
+                    {
+                        "request_id": "slash",
+                        "model": "gpt-5",
+                        "status": "success",
+                        "useragent": "Codex Desktop/0.142.4",
+                        "useragent_group": "Codex",
+                    },
+                    {
+                        "request_id": "whitespace",
+                        "model": "gpt-5",
+                        "status": "success",
+                        "useragent": " Codex Desktop/0.142.4",
+                        "useragent_group": "Codex",
+                    },
+                    {
+                        "request_id": "slash-free",
+                        "model": "gpt-5",
+                        "status": "success",
+                        "useragent": "CodexCLI",
+                        "useragent_group": "sentinel-slash-free",
+                    },
+                    {
+                        "request_id": "null",
+                        "model": "gpt-5",
+                        "status": "success",
+                        "useragent": None,
+                        "useragent_group": "sentinel-null",
+                    },
+                ],
+            )
+    finally:
+        engine.dispose()
+
+    run_upgrade(url, target_revision, bootstrap_legacy=False)
+    engine = create_engine(to_sync_database_url(url), future=True)
+    try:
+        with engine.begin() as connection:
+            groups = {
+                row.request_id: row.useragent_group
+                for row in connection.execute(text("SELECT request_id, useragent_group FROM request_logs")).all()
+            }
+    finally:
+        engine.dispose()
+
+    assert groups == {
+        "slash": "Codex Desktop",
+        "whitespace": " Codex Desktop",
+        "slash-free": "sentinel-slash-free",
+        "null": "sentinel-null",
+    }
+
+
+def test_request_log_useragent_family_migration_selects_postgresql_expression(monkeypatch) -> None:
+    migration = importlib.import_module(
+        "app.db.alembic.versions.20260722_000000_backfill_request_log_useragent_families"
+    )
+    fake_bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    selected_statements: list[object] = []
+
+    monkeypatch.setattr(migration.op, "get_bind", lambda: fake_bind)
+    monkeypatch.setattr(migration.op, "execute", selected_statements.append)
+
+    migration.upgrade()
+
+    assert len(selected_statements) == 1
+    sql = str(selected_statements[0])
+    assert "substring(useragent from 1 for position('/' in useragent) - 1)" in sql
+    assert "WHERE useragent IS NOT NULL AND position('/' in useragent) > 0" in sql
+    assert "trim" not in sql.lower()
 
 
 def test_request_logs_response_lookup_migration_handles_preexisting_session_id_column(tmp_path: Path) -> None:
@@ -1908,3 +2017,104 @@ def test_replica_guardrails_migration_round_trips_with_version_backfill(tmp_path
             assert connection.execute(text("SELECT COUNT(*) FROM dashboard_settings")).scalar_one() == 1
     finally:
         engine.dispose()
+
+
+def test_check_schema_drift_detects_missing_dashboard_hot_path_indexes(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing-hot-path-indexes.db"
+    url = _db_url(db_path)
+
+    run_upgrade(url, "head", bootstrap_legacy=False)
+
+    sync_url = to_sync_database_url(url)
+    with create_engine(sync_url, future=True).connect() as connection:
+        connection.execute(text("DROP INDEX idx_logs_dash_usage_covering"))
+        connection.execute(text("DROP INDEX ix_additional_usage_distinct_labels"))
+        connection.commit()
+
+    drift = check_schema_drift(url)
+    assert any("idx_logs_dash_usage_covering" in diff for diff in drift)
+    assert any("ix_additional_usage_distinct_labels" in diff for diff in drift)
+
+
+def test_dashboard_hot_path_index_migration_is_idempotent(tmp_path: Path) -> None:
+    db_path = tmp_path / "hot-path-indexes.db"
+    url = _db_url(db_path)
+    pre_revision = "20260716_010000_add_dashboard_retention_settings"
+    target_revision = "20260717_000000_optimize_dashboard_hot_path_indexes"
+
+    run_upgrade(url, pre_revision, bootstrap_legacy=False)
+
+    sync_url = to_sync_database_url(url)
+    with create_engine(sync_url, future=True).connect() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE INDEX idx_logs_dash_usage_covering
+                ON request_logs (requested_at)
+                WHERE deleted_at IS NULL
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE INDEX ix_additional_usage_distinct_labels
+                ON additional_usage_history (account_id, quota_key, limit_name, metered_feature)
+                """
+            )
+        )
+        connection.commit()
+
+    result = run_upgrade(url, target_revision, bootstrap_legacy=False)
+    assert result.current_revision == target_revision
+
+    with create_engine(sync_url, future=True).connect() as connection:
+        log_indexes = {str(row[1]) for row in connection.execute(text('PRAGMA index_list("request_logs")')).fetchall()}
+        usage_indexes = {
+            str(row[1]) for row in connection.execute(text('PRAGMA index_list("additional_usage_history")')).fetchall()
+        }
+
+    assert "idx_logs_dash_usage_covering" in log_indexes
+    assert "ix_additional_usage_distinct_labels" in usage_indexes
+
+
+def test_dashboard_hot_path_postgresql_indexes_build_concurrently() -> None:
+    revision_path = (
+        Path(__file__).resolve().parents[2]
+        / "app/db/alembic/versions/20260717_000000_optimize_dashboard_hot_path_indexes.py"
+    )
+    source = revision_path.read_text(encoding="utf-8")
+
+    assert "autocommit_block" in source
+    assert source.count("CREATE INDEX CONCURRENTLY IF NOT EXISTS") == 2
+    assert "_COVERING_INDEX_NAME" in source
+    assert "_LABELS_INDEX_NAME" in source
+    # Redundant indexes are dropped without blocking writers, and leftover
+    # invalid indexes from an interrupted concurrent build are rebuilt instead
+    # of being silently accepted by IF NOT EXISTS.
+    assert source.count("DROP INDEX CONCURRENTLY IF EXISTS") >= 2
+    assert "indisvalid" in source
+
+
+def test_dashboard_hot_path_index_migration_drops_redundant_indexes(tmp_path: Path) -> None:
+    db_path = tmp_path / "hot-path-redundant-indexes.db"
+    url = _db_url(db_path)
+
+    run_upgrade(url, "head", bootstrap_legacy=False)
+
+    sync_url = to_sync_database_url(url)
+    with create_engine(sync_url, future=True).connect() as connection:
+        log_indexes = {str(row[1]) for row in connection.execute(text('PRAGMA index_list("request_logs")')).fetchall()}
+        usage_indexes = {
+            str(row[1]) for row in connection.execute(text('PRAGMA index_list("additional_usage_history")')).fetchall()
+        }
+
+    assert "idx_logs_requested_at" not in log_indexes
+    assert "idx_logs_api_key_time_account" not in log_indexes
+    assert "ix_additional_usage_history_account_id" not in usage_indexes
+    # Kept: the sessionless response-owner fallback needs its ordered retrieval.
+    assert "idx_logs_request_status_api_key_time" in log_indexes
+    assert "idx_logs_dash_usage_covering" in log_indexes
+    assert "ix_additional_usage_distinct_labels" in usage_indexes
+
+    assert check_schema_drift(url) == ()

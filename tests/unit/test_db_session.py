@@ -24,10 +24,6 @@ class _FakeSettings:
     database_url: str
     database_pool_size: int = 15
     database_max_overflow: int = 10
-    database_background_pool_size: int | None = None
-    database_background_max_overflow: int | None = None
-    database_pool_timeout_seconds: float = 30.0
-    database_pool_recycle_seconds: int = 1800
     database_migrate_on_startup: bool = True
     database_sqlite_pre_migrate_backup_enabled: bool = False
     database_sqlite_pre_migrate_backup_max_files: int = 5
@@ -149,46 +145,15 @@ async def test_sqlite_writer_section_does_not_serialize_memory_sqlite(monkeypatc
     await asyncio.wait_for(asyncio.gather(first_writer(), second_writer()), timeout=1)
 
 
-def test_background_pool_defaults_to_main_pool_settings(monkeypatch) -> None:
-    monkeypatch.setattr(
-        session_module,
-        "_settings",
-        _FakeSettings(
-            database_url="sqlite+aiosqlite:///:memory:",
-            database_pool_size=15,
-            database_max_overflow=10,
-        ),
-    )
-
-    assert session_module._database_pool_size(background=True) == 15
-    assert session_module._database_max_overflow(background=True) == 10
-
-
-def test_background_pool_settings_can_override_main_pool(monkeypatch) -> None:
-    monkeypatch.setattr(
-        session_module,
-        "_settings",
-        _FakeSettings(
-            database_url="sqlite+aiosqlite:///:memory:",
-            database_pool_size=15,
-            database_max_overflow=10,
-            database_background_pool_size=4,
-            database_background_max_overflow=1,
-        ),
-    )
-
-    assert session_module._database_pool_size(background=True) == 4
-    assert session_module._database_max_overflow(background=True) == 1
-    assert session_module._database_pool_size(background=False) == 15
-    assert session_module._database_max_overflow(background=False) == 10
-
-
 def test_postgres_engine_kwargs_enable_pre_ping_and_recycle(monkeypatch) -> None:
     """Regression for #672: PostgreSQL engines MUST validate pooled connections
-    on checkout (``pool_pre_ping``) and recycle them within the configured
-    window (``pool_recycle``). Without these the pool serves stale connections
+    on checkout (``pool_pre_ping``) and recycle them within a finite window
+    (``pool_recycle``). Without these the pool serves stale connections
     after the server idles them out, causing
     ``asyncpg.InterfaceError: connection is closed`` on the first real query.
+
+    Both the main and the background engine build their kwargs through this
+    single helper, so one assertion covers both engines.
     """
     monkeypatch.setenv("CODEX_LB_TEST_DATABASE_URL", "")
     monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
@@ -199,36 +164,28 @@ def test_postgres_engine_kwargs_enable_pre_ping_and_recycle(monkeypatch) -> None
             database_url="postgresql+asyncpg://u:p@h/db",
             database_pool_size=15,
             database_max_overflow=10,
-            database_pool_timeout_seconds=30.0,
-            database_pool_recycle_seconds=1800,
         ),
     )
 
-    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
+    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
     assert kwargs["pool_pre_ping"] is True
     assert kwargs["pool_recycle"] == 1800
     assert kwargs["pool_size"] == 15
     assert kwargs["max_overflow"] == 10
     assert kwargs["pool_timeout"] == 30.0
 
-    background_kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=True)
-    assert background_kwargs["pool_pre_ping"] is True
-    assert background_kwargs["pool_recycle"] == 1800
 
-
-def test_postgres_engine_kwargs_honor_custom_recycle(monkeypatch) -> None:
+def test_postgres_engine_kwargs_use_fixed_timeout_and_recycle_constants(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
     monkeypatch.setattr(
         session_module,
         "_settings",
-        _FakeSettings(
-            database_url="postgresql+asyncpg://u:p@h/db",
-            database_pool_recycle_seconds=600,
-        ),
+        _FakeSettings(database_url="postgresql+asyncpg://u:p@h/db"),
     )
 
-    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
-    assert kwargs["pool_recycle"] == 600
+    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
+    assert kwargs["pool_timeout"] == session_module._POSTGRES_POOL_TIMEOUT_SECONDS == 30.0
+    assert kwargs["pool_recycle"] == session_module._POSTGRES_POOL_RECYCLE_SECONDS == 1800
 
 
 def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> None:
@@ -243,7 +200,7 @@ def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> N
         _FakeSettings(database_url="postgresql+asyncpg://u:p@h/db"),
     )
 
-    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
+    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
     assert kwargs["poolclass"] is NullPool
     assert "pool_pre_ping" not in kwargs
     assert "pool_recycle" not in kwargs
@@ -257,7 +214,6 @@ def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatc
             database_url="sqlite+aiosqlite:///store.db",
             database_pool_size=15,
             database_max_overflow=10,
-            database_pool_timeout_seconds=30.0,
         ),
     )
 
@@ -279,18 +235,58 @@ def test_postgres_engine_kwargs_keep_pool_controls(monkeypatch) -> None:
             database_url="postgresql+asyncpg://u:p@h/db",
             database_pool_size=12,
             database_max_overflow=4,
-            database_pool_timeout_seconds=11.0,
-            database_pool_recycle_seconds=900,
         ),
     )
 
-    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
+    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
 
     assert kwargs["pool_pre_ping"] is True
-    assert kwargs["pool_recycle"] == 900
+    assert kwargs["pool_recycle"] == 1800
     assert kwargs["pool_size"] == 12
     assert kwargs["max_overflow"] == 4
-    assert kwargs["pool_timeout"] == 11.0
+    assert kwargs["pool_timeout"] == 30.0
+
+
+def test_postgres_connect_args_pin_session_timezone_to_utc(monkeypatch) -> None:
+    """Regression: the application writes naive UTC datetimes into timestamptz
+    columns, so the asyncpg session time zone MUST be UTC. Otherwise a container
+    running e.g. TZ=Europe/Amsterdam makes PostgreSQL interpret those naive
+    values in local time and shift every stored timestamp, which silently breaks
+    ring-membership staleness, leader election and bridge-session lease expiry.
+    """
+    monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
+
+    connect_args = session_module._postgres_async_connect_args("postgresql+asyncpg://u:p@h/db")
+
+    assert connect_args == {"server_settings": {"timezone": "UTC"}}
+
+
+def test_postgres_connect_args_pin_utc_and_keep_test_db_url_tuning(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_TEST_DATABASE_URL", "1")
+
+    connect_args = session_module._postgres_async_connect_args("postgresql+asyncpg://u:p@h/db")
+
+    assert connect_args == {
+        "server_settings": {"timezone": "UTC"},
+        "prepared_statement_cache_size": 0,
+    }
+
+
+def test_postgres_connect_args_none_for_non_postgres_url() -> None:
+    assert session_module._postgres_async_connect_args("sqlite+aiosqlite:///:memory:") is None
+
+
+def test_postgres_engine_kwargs_forward_utc_connect_args(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
+    monkeypatch.setattr(
+        session_module,
+        "_settings",
+        _FakeSettings(database_url="postgresql+asyncpg://u:p@h/db"),
+    )
+
+    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
+
+    assert kwargs["connect_args"] == {"server_settings": {"timezone": "UTC"}}
 
 
 @pytest.mark.asyncio
@@ -664,7 +660,7 @@ async def test_init_background_db_creates_separate_engine() -> None:
 
 
 @pytest.mark.asyncio
-async def test_init_background_db_uses_main_pool_size_for_postgres_by_default() -> None:
+async def test_init_background_db_derives_postgres_pool_size_from_main_pool() -> None:
     session_module.init_background_db("postgresql+asyncpg://user:pass@localhost/db")
 
     assert session_module._background_engine is not None

@@ -9,12 +9,14 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
 CODEX_OK_LABEL = "🤖 codex: ok"
 CODEX_NEEDS_WORK_LABEL = "🤖 codex: needs work"
+NEEDS_REBASE_LABEL = "needs rebase"
 LEGACY_CODEX_LABELS = {"🤖 codex-ok"}
 CODEX_REVIEW_AUTHORS = {
     "chatgpt-codex-connector",
@@ -31,6 +33,8 @@ SUCCESS_CHECK_STATES = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAIL_CHECK_STATES = {"ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "STALE", "TIMED_OUT"}
 PENDING_CHECK_STATES = {"EXPECTED", "IN_PROGRESS", "PENDING", "QUEUED", "REQUESTED", "WAITING"}
 UNMERGEABLE_STATES = {"DIRTY", "BLOCKED"}
+NEEDS_REBASE_STATES = {"CONFLICTING", "DIRTY"}
+NO_REBASE_STATES = {"BEHIND", "BLOCKED", "CLEAN", "DRAFT", "HAS_HOOKS", "UNSTABLE"}
 CODEX_LB_REQUIRED_CHECKS = frozenset(
     {
         "Frontend lint (eslint)",
@@ -170,6 +174,9 @@ class GhError(RuntimeError):
 
 
 _RATE_LIMIT_MARKER = "API rate limit exceeded"
+_TRANSIENT_GH_MARKERS = ("HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504", "Unicorn!")
+_GH_RETRY_ATTEMPTS = 5
+_GH_RETRY_BASE_DELAY_SECONDS = 2.0
 _fallback_token_active = False
 
 
@@ -191,6 +198,29 @@ def _activate_fallback_token() -> bool:
     return True
 
 
+def _gh_args_safe_to_retry(args: list[str]) -> bool:
+    """Return whether a failed gh invocation is safe to re-run automatically."""
+
+    if not args or args[0] != "api":
+        return False
+    if "graphql" in args:
+        return True
+    method = "GET"
+    for index, arg in enumerate(args):
+        if arg == "--method" and index + 1 < len(args):
+            method = args[index + 1].upper()
+            break
+    return method == "GET"
+
+
+def _is_retryable_gh_failure(detail: str) -> bool:
+    return any(marker in detail for marker in _TRANSIENT_GH_MARKERS)
+
+
+def _gh_retry_delay(attempt_index: int) -> float:
+    return min(_GH_RETRY_BASE_DELAY_SECONDS * (2**attempt_index), 30.0)
+
+
 @dataclass(frozen=True)
 class SyncDecision:
     repo: str
@@ -202,6 +232,9 @@ class SyncDecision:
     has_needs_work_label: bool
     wants_needs_work_label: bool
     needs_work_action: str
+    has_needs_rebase_label: bool
+    wants_needs_rebase_label: bool
+    needs_rebase_action: str
     legacy_labels: frozenset[str]
     reason: str
     review_url: str | None
@@ -215,20 +248,28 @@ class SyncDecision:
 def run_gh(args: list[str], *, input_json: Any | None = None, timeout_seconds: int = 30) -> Any:
     command = ["gh", *args]
     input_text = json.dumps(input_json) if input_json is not None else None
-    try:
-        proc = subprocess.run(
-            command,
-            check=False,
-            input=input_text,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise GhError(f"{' '.join(command)}: timed out after {timeout_seconds}s") from exc
+    safe_to_retry = _gh_args_safe_to_retry(args)
+    attempts = _GH_RETRY_ATTEMPTS if safe_to_retry else 1
+    for attempt_index in range(attempts):
+        try:
+            proc = subprocess.run(
+                command,
+                check=False,
+                input=input_text,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise GhError(f"{' '.join(command)}: timed out after {timeout_seconds}s") from exc
 
-    if proc.returncode != 0:
+        if proc.returncode == 0:
+            text = proc.stdout.strip()
+            if not text:
+                return None
+            return json.loads(text)
+
         detail = proc.stderr.strip() or proc.stdout.strip()
         if _RATE_LIMIT_MARKER in detail and _activate_fallback_token():
             print(
@@ -236,12 +277,17 @@ def run_gh(args: list[str], *, input_json: Any | None = None, timeout_seconds: i
                 file=sys.stderr,
             )
             return run_gh(args, input_json=input_json, timeout_seconds=timeout_seconds)
+        if safe_to_retry and _is_retryable_gh_failure(detail) and attempt_index + 1 < attempts:
+            delay = _gh_retry_delay(attempt_index)
+            print(
+                f"warning: {' '.join(command)} failed transiently ({detail}); retrying in {delay:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            continue
         raise GhError(f"{' '.join(command)}: {detail}")
 
-    text = proc.stdout.strip()
-    if not text:
-        return None
-    return json.loads(text)
+    raise GhError(f"{' '.join(command)}: failed after retries")
 
 
 def gh_api(path: str, *, method: str = "GET", input_json: Any | None = None) -> Any:
@@ -893,6 +939,16 @@ def pr_merge_state(repo: str, number: int) -> str:
     return merge_state or "UNKNOWN"
 
 
+def needs_rebase_label_target(merge_state: str, *, has_label: bool) -> bool:
+    """Sync confirmed conflicts and preserve the label when GitHub is ambiguous."""
+
+    if merge_state in NEEDS_REBASE_STATES:
+        return True
+    if merge_state in NO_REBASE_STATES:
+        return False
+    return has_label
+
+
 def workflow_runs_requiring_approval(repo: str, head_sha: str) -> tuple[int, ...]:
     runs = paged_api(f"/repos/{repo}/actions/runs?event=pull_request&head_sha={head_sha}")
     run_ids: list[int] = []
@@ -1100,6 +1156,11 @@ def decide_pr(
     )
     has_ok_label = CODEX_OK_LABEL in labels
     has_needs_work_label = CODEX_NEEDS_WORK_LABEL in labels
+    has_needs_rebase_label = NEEDS_REBASE_LABEL in labels
+    wants_needs_rebase_label = needs_rebase_label_target(
+        merge_state,
+        has_label=has_needs_rebase_label,
+    )
     legacy_labels = frozenset(label for label in labels if label in LEGACY_CODEX_LABELS)
 
     reason_parts: list[str] = []
@@ -1164,6 +1225,12 @@ def decide_pr(
         needs_work_action = "remove"
     else:
         needs_work_action = "keep"
+    if wants_needs_rebase_label and not has_needs_rebase_label:
+        needs_rebase_action = "add"
+    elif not wants_needs_rebase_label and has_needs_rebase_label:
+        needs_rebase_action = "remove"
+    else:
+        needs_rebase_action = "keep"
 
     review_url = unresolved_finding_urls[0] if unresolved_finding_urls else None
     if review_url is None and isinstance(review_node, dict):
@@ -1179,6 +1246,9 @@ def decide_pr(
         has_needs_work_label=has_needs_work_label,
         wants_needs_work_label=wants_needs_work_label,
         needs_work_action=needs_work_action,
+        has_needs_rebase_label=has_needs_rebase_label,
+        wants_needs_rebase_label=wants_needs_rebase_label,
+        needs_rebase_action=needs_rebase_action,
         legacy_labels=legacy_labels,
         reason="; ".join(reason_parts),
         review_url=review_url,
@@ -1235,6 +1305,26 @@ def apply_decision(decision: SyncDecision, *, tolerate_permission_errors: bool =
                 tolerate_permission_errors=tolerate_permission_errors,
                 tolerate_missing=True,
                 action=f"remove {CODEX_NEEDS_WORK_LABEL} from {decision.repo}#{decision.number}",
+            )
+        )
+    if decision.needs_rebase_action == "add":
+        record(
+            gh_api_write(
+                f"/repos/{decision.repo}/issues/{decision.number}/labels",
+                method="POST",
+                input_json={"labels": [NEEDS_REBASE_LABEL]},
+                tolerate_permission_errors=tolerate_permission_errors,
+                action=f"add {NEEDS_REBASE_LABEL} to {decision.repo}#{decision.number}",
+            )
+        )
+    elif decision.needs_rebase_action == "remove":
+        record(
+            gh_api_write(
+                f"/repos/{decision.repo}/issues/{decision.number}/labels/{quote(NEEDS_REBASE_LABEL, safe='')}",
+                method="DELETE",
+                tolerate_permission_errors=tolerate_permission_errors,
+                tolerate_missing=True,
+                action=f"remove {NEEDS_REBASE_LABEL} from {decision.repo}#{decision.number}",
             )
         )
     for label in decision.legacy_labels:
@@ -1374,6 +1464,16 @@ def main(argv: list[str] | None = None) -> int:
                 tolerate_permission_errors=args.tolerate_write_permission_errors,
             )
         )
+        setup_warnings.extend(
+            ensure_label(
+                repo,
+                NEEDS_REBASE_LABEL,
+                color="fbca04",
+                description="Needs rebase or conflict repair against current main",
+                apply=args.apply,
+                tolerate_permission_errors=args.tolerate_write_permission_errors,
+            )
+        )
         for warning in setup_warnings:
             print(f"warning: {warning}", file=sys.stderr, flush=True)
         numbers = list_open_pr_numbers(repo) if args.all_open else list(args.pr or [])
@@ -1436,6 +1536,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"ok={decision.has_ok_label}->{decision.wants_ok_label}/{decision.ok_action} "
                     f"needs_work={decision.has_needs_work_label}->{decision.wants_needs_work_label}/"
                     f"{decision.needs_work_action} "
+                    f"needs_rebase={decision.has_needs_rebase_label}->{decision.wants_needs_rebase_label}/"
+                    f"{decision.needs_rebase_action} "
                     f"legacy={','.join(sorted(decision.legacy_labels)) or '-'} "
                     f"approve_runs={','.join(str(run_id) for run_id in decision.approve_workflow_run_ids) or '-'} "
                     f"trigger_codex={decision.trigger_codex_review and not args.no_trigger_missing_codex} "

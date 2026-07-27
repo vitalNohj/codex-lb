@@ -17,8 +17,11 @@ from app.core.clients.proxy import (
     CODEX_INSTALLATION_ID_HEADER,
     ImageFetchSession,
     ProxyResponseError,
+    _finalize_responses_lite_reasoning_context,
     _inline_content_images,
     _normalize_responses_lite_websocket_client_metadata,
+    _payload_has_responses_lite_websocket_marker,
+    _payload_uses_responses_lite,
     apply_codex_installation_metadata,
 )
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
@@ -27,6 +30,9 @@ from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.modules.proxy._service.support import (
+    _PENDING_TOOL_CALL_ITEM_TYPES,
+    _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE,
+    _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPES,
     _WebSocketRequestState,
 )
 
@@ -44,6 +50,10 @@ _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE = (
 )
 _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE = "[codex-lb omitted historical inline image to fit upstream websocket budget]"
 _OVERSIZED_RESPONSE_CREATE_DUMP_DIR: Path | None = None
+_RESPONSE_CREATE_DUMP_SUFFIX = ".response-create.json.gz"
+_RESPONSE_CREATE_META_SUFFIX = ".meta.json"
+_RESPONSE_CREATE_DUMP_SHA_SLUG_LEN = 16
+_RESPONSE_CREATE_DUMP_MAX_PAIRS = 20
 _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS = (
     "x-codex-turn-metadata",
     "x-openai-subagent",
@@ -88,6 +98,52 @@ def _oversized_response_create_dump_dir() -> Path:
     settings_factory = _service_global_or("get_settings", get_settings)
     data_dir = getattr(settings_factory(), "data_dir", DEFAULT_HOME_DIR)
     return data_dir / "debug" / "response-create-dumps"
+
+
+def _response_create_dump_max_pairs() -> int:
+    return int(_service_global_or("_RESPONSE_CREATE_DUMP_MAX_PAIRS", _RESPONSE_CREATE_DUMP_MAX_PAIRS))
+
+
+def _existing_response_create_dump(dump_dir: Path, sha_slug: str) -> Path | None:
+    """Return an existing *complete* dump for the same payload fingerprint.
+
+    A dump only counts as existing when both the payload and its ``.meta.json``
+    sibling are present. A lone payload file (e.g. a crash or disk-full failure
+    between the two writes) is treated as absent so a retry can recreate the
+    missing meta instead of permanently suppressing the capture operators are
+    trying to diagnose.
+    """
+    try:
+        matches = sorted(dump_dir.glob(f"*-{sha_slug}{_RESPONSE_CREATE_DUMP_SUFFIX}"))
+    except OSError:
+        return None
+    for dump_path in matches:
+        dump_id = dump_path.name[: -len(_RESPONSE_CREATE_DUMP_SUFFIX)]
+        meta_path = dump_dir / f"{dump_id}{_RESPONSE_CREATE_META_SUFFIX}"
+        if meta_path.exists():
+            return dump_path
+    return None
+
+
+def _prune_response_create_dumps(dump_dir: Path, *, max_pairs: int) -> None:
+    """Drop the oldest dump pairs so at most ``max_pairs`` remain.
+
+    Dump ids are timestamp-prefixed, so lexicographic order is chronological.
+    """
+    try:
+        dump_paths = sorted(dump_dir.glob(f"*{_RESPONSE_CREATE_DUMP_SUFFIX}"))
+    except OSError:
+        return
+    excess = len(dump_paths) - max_pairs
+    if excess <= 0:
+        return
+    for dump_path in dump_paths[:excess]:
+        dump_id = dump_path.name[: -len(_RESPONSE_CREATE_DUMP_SUFFIX)]
+        for stale_path in (dump_path, dump_dir / f"{dump_id}{_RESPONSE_CREATE_META_SUFFIX}"):
+            try:
+                stale_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to prune response.create dump path=%s", stale_path, exc_info=True)
 
 
 def _fingerprint_input_items(items: Sequence[JsonValue]) -> str:
@@ -138,6 +194,13 @@ def _response_create_text(
         upstream_payload["type"] = "response.create"
     if client_metadata:
         upstream_payload["client_metadata"] = client_metadata
+    _finalize_responses_lite_reasoning_context(
+        upstream_payload,
+        responses_lite=(
+            _payload_uses_responses_lite(upstream_payload)
+            or _payload_has_responses_lite_websocket_marker(upstream_payload)
+        ),
+    )
     return json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
 
 
@@ -156,6 +219,13 @@ def _response_create_text_with_size_guard(
         upstream_payload["type"] = "response.create"
     if client_metadata:
         upstream_payload["client_metadata"] = client_metadata
+    _finalize_responses_lite_reasoning_context(
+        upstream_payload,
+        responses_lite=(
+            _payload_uses_responses_lite(upstream_payload)
+            or _payload_has_responses_lite_websocket_marker(upstream_payload)
+        ),
+    )
     text_data = json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
     payload_size = len(text_data.encode("utf-8"))
     max_bytes = _upstream_response_create_max_bytes()
@@ -266,15 +336,6 @@ def _slim_response_create_payload_for_upstream(
         "historical_tool_outputs_slimmed": tool_outputs_slimmed,
         "historical_images_slimmed": images_slimmed,
     }
-
-
-_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE = {
-    "function_call": "function_call_output",
-    "custom_tool_call": "custom_tool_call_output",
-    "apply_patch_call": "apply_patch_call_output",
-}
-_PENDING_TOOL_CALL_ITEM_TYPES = frozenset(_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE)
-_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPES = frozenset(_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE.values())
 
 
 def _function_call_output_call_ids(input_items: list[JsonValue]) -> set[str]:
@@ -397,14 +458,19 @@ def _slim_historical_response_input_item(item: JsonValue) -> tuple[JsonValue, in
     images_slimmed = 0
 
     item_type = item_mapping.get("type")
-    if item_type == "function_call_output":
+    if isinstance(item_type, str) and item_type in _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPES:
         output = item_mapping.get("output")
-        output_text = output if isinstance(output, str) else None
-        if output_text is not None and _should_slim_historical_tool_output(output_text):
-            item_mapping["output"] = _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(
-                bytes=len(output_text.encode("utf-8"))
-            )
-            tool_outputs_slimmed += 1
+        if isinstance(output, str):
+            if _should_slim_historical_tool_output(output):
+                item_mapping["output"] = _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(
+                    bytes=len(output.encode("utf-8"))
+                )
+                tool_outputs_slimmed += 1
+        else:
+            slimmed_output, output_images_slimmed = _slim_historical_response_content(output)
+            if output_images_slimmed > 0:
+                item_mapping["output"] = slimmed_output
+                images_slimmed += output_images_slimmed
 
     content = item_mapping.get("content")
     slimmed_content, content_images_slimmed = _slim_historical_response_content(content)
@@ -412,7 +478,7 @@ def _slim_historical_response_input_item(item: JsonValue) -> tuple[JsonValue, in
         item_mapping["content"] = slimmed_content
         images_slimmed += content_images_slimmed
 
-    if item_mapping.get("type") == "input_image" and _is_inline_image_reference(item_mapping.get("image_url")):
+    if item_type == "input_image" and _is_inline_image_reference(item_mapping.get("image_url")):
         return _response_create_inline_image_notice_item(), tool_outputs_slimmed, images_slimmed + 1
 
     return item_mapping, tool_outputs_slimmed, images_slimmed
@@ -615,6 +681,25 @@ def _write_response_create_dump(
 
     payload_bytes = request_text.encode("utf-8")
     request_sha = sha256(payload_bytes).hexdigest()
+    sha_slug = request_sha[:_RESPONSE_CREATE_DUMP_SHA_SLUG_LEN]
+    dump_dir = _oversized_response_create_dump_dir()
+
+    existing_dump_path = _existing_response_create_dump(dump_dir, sha_slug)
+    if existing_dump_path is not None:
+        logger.warning(
+            (
+                "Skipped duplicate %s response.create dump request_id=%s request_log_id=%s "
+                "request_text_sha256=%s existing_dump_path=%s bytes=%s"
+            ),
+            log_prefix,
+            request_state.request_id,
+            request_state.request_log_id,
+            request_sha,
+            existing_dump_path,
+            len(payload_bytes),
+        )
+        return False
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     dump_id = "-".join(
         (
@@ -625,11 +710,11 @@ def _write_response_create_dump(
                 request_state.request_log_id or request_state.response_id or request_state.request_id,
                 fallback="request",
             ),
+            sha_slug,
         )
     )
-    dump_dir = _oversized_response_create_dump_dir()
-    dump_path = dump_dir / f"{dump_id}.response-create.json.gz"
-    meta_path = dump_dir / f"{dump_id}.meta.json"
+    dump_path = dump_dir / f"{dump_id}{_RESPONSE_CREATE_DUMP_SUFFIX}"
+    meta_path = dump_dir / f"{dump_id}{_RESPONSE_CREATE_META_SUFFIX}"
 
     meta: dict[str, JsonValue] = {
         "dump_id": dump_id,
@@ -672,6 +757,13 @@ def _write_response_create_dump(
         else:
             meta["summary"] = {"payload_type": type(parsed_payload).__name__}
 
+    max_pairs = _response_create_dump_max_pairs()
+    # Trim any pre-existing over-cap backlog before the new write. If the volume
+    # is already full, the write below raises and returns without pruning, so a
+    # directory left above the bound (e.g. after an upgrade that lowers the cap)
+    # would otherwise stay full on the exact failure the cap is meant to bound.
+    _prune_response_create_dumps(dump_dir, max_pairs=max_pairs)
+
     try:
         dump_dir.mkdir(parents=True, exist_ok=True)
         with gzip.open(dump_path, "wt", encoding="utf-8") as handle:
@@ -688,6 +780,8 @@ def _write_response_create_dump(
             request_state.request_log_id,
         )
         return False
+
+    _prune_response_create_dumps(dump_dir, max_pairs=max_pairs)
 
     logger.warning(
         "Saved %s response.create dump request_id=%s request_log_id=%s dump_path=%s meta_path=%s bytes=%s",

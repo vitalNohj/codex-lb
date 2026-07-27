@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +13,7 @@ from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SE
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardSettingsConflictError
+from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
@@ -43,6 +45,9 @@ class SettingsRepository:
             upstream_proxy_default_pool_id=None,
             prefer_earlier_reset_accounts=True,
             prefer_earlier_reset_window="secondary",
+            show_reset_credit_badges=True,
+            auto_redeem_reset_credits_before_expiry=False,
+            show_reset_credit_expiry_badge=True,
             routing_strategy="capacity_weighted",
             relative_availability_power=2.0,
             relative_availability_top_k=5,
@@ -156,6 +161,8 @@ class SettingsRepository:
             ollama_sidecar_request_timeout_seconds=static_settings.ollama_sidecar_request_timeout_seconds,
             ollama_sidecar_models_cache_ttl_seconds=static_settings.ollama_sidecar_models_cache_ttl_seconds,
             limit_warmup_staggered_idle_enabled=False,
+            request_log_retention_days=None,
+            usage_history_retention_days=None,
         )
         self._session.add(row)
         try:
@@ -183,6 +190,9 @@ class SettingsRepository:
         upstream_proxy_default_pool_id: str | None | object = _UNSET,
         prefer_earlier_reset_accounts: bool | None = None,
         prefer_earlier_reset_window: str | None = None,
+        show_reset_credit_badges: bool | None = None,
+        auto_redeem_reset_credits_before_expiry: bool | None = None,
+        show_reset_credit_expiry_badge: bool | None = None,
         routing_strategy: str | None = None,
         relative_availability_power: float | None = None,
         relative_availability_top_k: int | None = None,
@@ -274,6 +284,10 @@ class SettingsRepository:
         ollama_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         guest_access_enabled: bool | None = None,
         limit_warmup_staggered_idle_enabled: bool | None = None,
+        request_log_retention_days: int | None = None,
+        usage_history_retention_days: int | None = None,
+        clear_request_log_retention: bool = False,
+        clear_usage_history_retention: bool = False,
         expected_version: int | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
@@ -285,6 +299,10 @@ class SettingsRepository:
             raise DashboardSettingsConflictError(
                 "Settings were modified since this form was loaded; reload and retry",
             )
+        upstream_route_inputs_changed = (
+            upstream_proxy_routing_enabled is not None
+            and upstream_proxy_routing_enabled != settings.upstream_proxy_routing_enabled
+        ) or (upstream_proxy_default_pool_id or None) != settings.upstream_proxy_default_pool_id
         if sticky_threads_enabled is not None:
             settings.sticky_threads_enabled = sticky_threads_enabled
         if upstream_stream_transport is not None:
@@ -307,6 +325,12 @@ class SettingsRepository:
             settings.prefer_earlier_reset_accounts = prefer_earlier_reset_accounts
         if prefer_earlier_reset_window is not None:
             settings.prefer_earlier_reset_window = prefer_earlier_reset_window
+        if show_reset_credit_badges is not None:
+            settings.show_reset_credit_badges = show_reset_credit_badges
+        if auto_redeem_reset_credits_before_expiry is not None:
+            settings.auto_redeem_reset_credits_before_expiry = auto_redeem_reset_credits_before_expiry
+        if show_reset_credit_expiry_badge is not None:
+            settings.show_reset_credit_expiry_badge = show_reset_credit_expiry_badge
         if routing_strategy is not None:
             settings.routing_strategy = routing_strategy
         if relative_availability_power is not None:
@@ -493,6 +517,17 @@ class SettingsRepository:
             settings.guest_access_enabled = guest_access_enabled
         if limit_warmup_staggered_idle_enabled is not None:
             settings.limit_warmup_staggered_idle_enabled = limit_warmup_staggered_idle_enabled
+        # Retention overrides are tri-state: a clear flag resets the column to
+        # NULL (inherit the deprecated env alias); a non-None value stores an
+        # override; neither leaves the stored value untouched.
+        if clear_request_log_retention:
+            settings.request_log_retention_days = None
+        elif request_log_retention_days is not None:
+            settings.request_log_retention_days = request_log_retention_days
+        if clear_usage_history_retention:
+            settings.usage_history_retention_days = None
+        elif usage_history_retention_days is not None:
+            settings.usage_history_retention_days = usage_history_retention_days
         # Force the optimistic-version CAS to run even when the payload makes no
         # net change. `version_id_col` only raises `StaleDataError` when the
         # flush emits an ORM UPDATE; a full-row save that assigns values all
@@ -502,10 +537,20 @@ class SettingsRepository:
         # `UPDATE ... SET version = version + 1 WHERE version = :expected`, so a
         # stale no-op save still surfaces the conflict.
         flag_modified(settings, "sticky_threads_enabled")
-        await self.commit_refresh(settings)
+        # The route cache must be cleared synchronously between the commit and
+        # the refresh await: the committed row is visible to concurrent
+        # requests as soon as the commit returns, and any await before the
+        # clear would let them resolve from the stale per-account route cache
+        # (e.g. cached direct egress immediately after routing was enabled).
+        await self.commit_refresh(
+            settings,
+            on_committed=get_upstream_route_cache().clear if upstream_route_inputs_changed else None,
+        )
         return settings
 
-    async def commit_refresh(self, settings: DashboardSettings) -> None:
+    async def commit_refresh(
+        self, settings: DashboardSettings, *, on_committed: Callable[[], None] | None = None
+    ) -> None:
         try:
             await self._session.commit()
         except StaleDataError as exc:
@@ -513,4 +558,9 @@ class SettingsRepository:
             # zero rows: another writer (replica or request) committed first.
             await self._session.rollback()
             raise DashboardSettingsConflictError() from exc
+        if on_committed is not None:
+            # Runs synchronously between the commit and the refresh await so
+            # concurrent requests cannot observe the committed row alongside
+            # stale state the hook is meant to reset.
+            on_committed()
         await self._session.refresh(settings)

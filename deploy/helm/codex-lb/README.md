@@ -112,7 +112,9 @@ Use External Secrets Operator to materialize credentials.
 Key properties:
 
 - `externalSecrets.enabled=true`
+- requires External Secrets Operator v0.17.0 or newer (the first release that serves `external-secrets.io/v1`)
 - DB credentials are not assumed to exist at render time
+- remote secret keys and optional JSON properties are configurable independently
 - migration Job remains `post-install,pre-upgrade`
 - application pods keep the schema gate initContainer enabled and wait for schema head before starting the app container
 
@@ -135,6 +137,26 @@ helm upgrade --install codex-lb deploy/helm/codex-lb/ \
 ```
 
 </details>
+
+By default, both values are read from JSON properties in a remote secret named
+after the release. Providers such as Infisical commonly store each value as an
+individual secret instead. Configure absolute keys and clear the property fields
+for that layout:
+
+```yaml
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: infisical
+    kind: ClusterSecretStore
+  remoteRefs:
+    databaseUrl:
+      key: /apps/codex-lb/DATABASE_URL
+      property: ""
+    encryptionKey:
+      key: /apps/codex-lb/ENCRYPTION_KEY
+      property: ""
+```
 
 ## Quick Start
 
@@ -267,8 +289,8 @@ Single-replica deployments can use SQLite, but **multi-replica requires PostgreS
   
 - **Circuit Breaker**: Enabled by default (`config.circuitBreakerEnabled=true`)
   - Protects upstream API endpoints from cascading failures
-  - Opens after `config.circuitBreakerFailureThreshold=5` consecutive failures
-  - Enters half-open state after `config.circuitBreakerRecoveryTimeoutSeconds=60` seconds
+  - Opens after 5 consecutive failures; enters half-open state after 60
+    seconds (fixed application constants)
   - Prevents thundering herd when upstream is degraded
 
 ### Session Bridge Ring
@@ -499,7 +521,42 @@ gatewayApi:
       namespace: gateway-system
   hostnames:
     - codex-lb.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+        - path:
+            type: PathPrefix
+            value: /backend-api/codex
+        - path:
+            type: PathPrefix
+            value: /backend-api/wham
+        - path:
+            type: PathPrefix
+            value: /backend-api/transcribe
+        - path:
+            type: PathPrefix
+            value: /backend-api/files
+        - path:
+            type: PathPrefix
+            value: /api/codex
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: oauth-forward-auth
 ```
+
+When `rules` is empty, the chart renders the existing catch-all route. For
+custom rules, the chart preserves their order and adds the codex-lb Service as
+the backend of every rule. Referenced extension resources must be valid for the
+HTTPRoute namespace according to the selected Gateway implementation.
 
 ### nginx annotations and responses sticky routing
 

@@ -31,6 +31,9 @@ def decision(module: ModuleType, **overrides: Any) -> Any:
         "has_needs_work_label": False,
         "wants_needs_work_label": False,
         "needs_work_action": "keep",
+        "has_needs_rebase_label": False,
+        "wants_needs_rebase_label": False,
+        "needs_rebase_action": "keep",
         "legacy_labels": frozenset(),
         "reason": "checks are pending",
         "review_url": None,
@@ -42,6 +45,85 @@ def decision(module: ModuleType, **overrides: Any) -> Any:
     }
     values.update(overrides)
     return module.SyncDecision(**values)
+
+
+@pytest.mark.parametrize("merge_state", ["CONFLICTING", "DIRTY"])
+def test_needs_rebase_label_target_adds_for_confirmed_conflicts(merge_state: str) -> None:
+    module = load_sync_module()
+
+    assert module.needs_rebase_label_target(merge_state, has_label=False) is True
+
+
+@pytest.mark.parametrize("merge_state", ["BEHIND", "BLOCKED", "CLEAN", "DRAFT", "HAS_HOOKS", "UNSTABLE"])
+def test_needs_rebase_label_target_removes_for_known_non_conflict_states(merge_state: str) -> None:
+    module = load_sync_module()
+
+    assert module.needs_rebase_label_target(merge_state, has_label=True) is False
+
+
+@pytest.mark.parametrize("has_label", [False, True])
+def test_needs_rebase_label_target_preserves_unknown_state(has_label: bool) -> None:
+    module = load_sync_module()
+
+    assert module.needs_rebase_label_target("UNKNOWN", has_label=has_label) is has_label
+
+
+def test_apply_decision_adds_needs_rebase_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_sync_module()
+    calls: list[tuple[str, str, Any | None]] = []
+
+    def capture_write(path: str, *, method: str = "GET", input_json: Any | None = None) -> None:
+        calls.append((method, path, input_json))
+
+    monkeypatch.setattr(module, "gh_api", capture_write)
+
+    warnings = module.apply_decision(
+        decision(
+            module,
+            ok_action="keep",
+            has_needs_rebase_label=False,
+            wants_needs_rebase_label=True,
+            needs_rebase_action="add",
+        )
+    )
+
+    assert warnings == ()
+    assert calls == [
+        (
+            "POST",
+            "/repos/Soju06/codex-lb/issues/714/labels",
+            {"labels": ["needs rebase"]},
+        )
+    ]
+
+
+def test_apply_decision_removes_stale_needs_rebase_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_sync_module()
+    calls: list[tuple[str, str, Any | None]] = []
+
+    def capture_write(path: str, *, method: str = "GET", input_json: Any | None = None) -> None:
+        calls.append((method, path, input_json))
+
+    monkeypatch.setattr(module, "gh_api", capture_write)
+
+    warnings = module.apply_decision(
+        decision(
+            module,
+            ok_action="keep",
+            has_needs_rebase_label=True,
+            wants_needs_rebase_label=False,
+            needs_rebase_action="remove",
+        )
+    )
+
+    assert warnings == ()
+    assert calls == [
+        (
+            "DELETE",
+            "/repos/Soju06/codex-lb/issues/714/labels/needs%20rebase",
+            None,
+        )
+    ]
 
 
 def test_classify_check_state_uses_latest_run_for_duplicate_check_names() -> None:
@@ -860,6 +942,15 @@ def _ok_proc(payload: str = "{}") -> Any:
     return _Proc()
 
 
+def _transient_gh_proc() -> Any:
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "gh: HTTP 503"
+
+    return _Proc()
+
+
 def test_run_gh_switches_to_fallback_token_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     module = load_sync_module()
     monkeypatch.setenv("GH_TOKEN", "primary-token")
@@ -881,6 +972,43 @@ def test_run_gh_switches_to_fallback_token_on_rate_limit(monkeypatch: pytest.Mon
 
     assert result == {}
     assert calls == ["primary-token", "fallback-token"]
+
+
+def test_run_gh_retries_transient_read_only_api_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_sync_module()
+    calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> Any:
+        del kwargs
+        calls.append(command)
+        if len(calls) == 1:
+            return _transient_gh_proc()
+        return _ok_proc('{"ok": true}')
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    assert module.run_gh(["api", "/repos/example/project/issues/1/labels"]) == {"ok": True}
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+def test_run_gh_does_not_retry_mutating_pr_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_sync_module()
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> Any:
+        del kwargs
+        calls.append(command)
+        return _transient_gh_proc()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+
+    with pytest.raises(module.GhError):
+        module.run_gh(["pr", "comment", "1344", "--body", "@codex review"])
+    assert len(calls) == 1
 
 
 def test_run_gh_fails_without_distinct_fallback_token(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,6 +5,7 @@ import base64
 import contextlib
 import json
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -28,6 +29,7 @@ from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, Limit
 from app.modules.model_sources.forwarding import (
     SourceChatCompletion,
     SourceResponsesStream,
+    SourceTimings,
     SourceUsage,
     SourceUsageHolder,
 )
@@ -470,6 +472,27 @@ async def test_api_key_create_rejects_unknown_assigned_account_ids(async_client)
 
 
 @pytest.mark.asyncio
+async def test_api_key_create_rejects_duplicate_limit_rules(async_client):
+    create = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "duplicate-limits-key",
+            "limits": [
+                {"limitType": "total_tokens", "limitWindow": "daily", "maxValue": 100},
+                {"limitType": "total_tokens", "limitWindow": "daily", "maxValue": 200},
+            ],
+        },
+    )
+
+    assert create.status_code == 400
+    assert create.json()["error"]["code"] == "invalid_api_key_payload"
+
+    listed = await async_client.get("/api/api-keys/")
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
+@pytest.mark.asyncio
 async def test_api_key_update_does_not_persist_assignments_when_limits_are_invalid(async_client):
     assigned_account_id = await _import_account(async_client, "acc-atomic", "atomic@example.com")
 
@@ -813,6 +836,100 @@ async def test_api_key_enforces_service_tier_for_responses(async_client, monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("requested_service_tier", [None, "auto", "default"])
+async def test_enforced_unadvertised_tier_uses_effective_tier_for_accounting_and_forwarding(
+    async_client,
+    monkeypatch,
+    requested_service_tier,
+):
+    await _populate_test_registry()
+    model = _TEST_MODELS[0]
+
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "fallback-service-tier",
+            "allowedModels": [model],
+            "enforcedServiceTier": "priority",
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    await _import_account(async_client, "acc_fallback_service_tier", "fallback-service-tier@example.com")
+
+    # Isolate the authoritative catalog answer that drives this regression.
+    # Account selection still uses the populated registry above.
+    monkeypatch.setattr(
+        "app.modules.proxy.request_policy.get_model_registry",
+        lambda: SimpleNamespace(model_advertises_service_tier=lambda _model, _tier: False),
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_enforce_limits(
+        _api_key,
+        *,
+        request_model,
+        request_service_tier,
+        request_usage_budget=None,
+    ):
+        seen["accounting_model"] = request_model
+        seen["accounting_service_tier"] = request_service_tier
+        seen["request_usage_budget"] = request_usage_budget
+        return None
+
+    async def fake_stream(payload, _headers, _access_token, _account_id, base_url=None, raise_for_status=False):
+        seen["forwarded_payload"] = payload.to_payload()
+        event = {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_fallback_service_tier",
+                "usage": {"input_tokens": 3, "output_tokens": 2},
+            },
+        }
+        yield f"data: {json.dumps(event)}\n\n"
+
+    monkeypatch.setattr(proxy_api, "_enforce_request_limits", fake_enforce_limits)
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    request_payload = {"model": model, "instructions": "hi", "input": [], "stream": True}
+    if requested_service_tier is not None:
+        request_payload["service_tier"] = requested_service_tier
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={"Authorization": f"Bearer {key}"},
+        json=request_payload,
+    ) as response:
+        assert response.status_code == 200
+        _ = [line async for line in response.aiter_lines() if line]
+
+    assert seen["accounting_model"] == model
+    assert seen["accounting_service_tier"] is None
+    forwarded_payload = cast("dict[str, object]", seen["forwarded_payload"])
+    assert "service_tier" not in forwarded_payload
+
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(RequestLog).where(RequestLog.model == model).order_by(RequestLog.requested_at.desc())
+        )
+        latest_log = result.scalars().first()
+        assert latest_log is not None
+        assert latest_log.requested_service_tier is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/codex/responses/compact", "/v1/responses/compact"])
 async def test_api_key_enforces_model_and_reasoning_for_compact_responses(async_client, monkeypatch, endpoint):
     await _populate_test_registry()
@@ -1017,6 +1134,7 @@ async def test_source_routed_chat_completion_settles_api_key_usage(async_client,
                 },
             },
             usage=SourceUsage(input_tokens=11, output_tokens=7, cached_input_tokens=3),
+            timings=None,
             upstream_status_code=200,
         )
 
@@ -1054,6 +1172,59 @@ async def test_source_routed_chat_completion_settles_api_key_usage(async_client,
         assert latest_log.output_tokens == 7
         assert latest_log.cached_input_tokens == 3
         assert latest_log.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_source_routed_chat_completion_records_upstream_timings(async_client, monkeypatch):
+    """vLLM (and compatible forks) can attach a ``metrics`` object with its own
+    TTFT/generation timing alongside ``usage``; the request log must carry it
+    through as latency_first_token_ms/latency_ms so the dashboard can apply its
+    existing generation-only TPS calculation."""
+    model = "vllm-chat-timings"
+    source_id = await _create_model_source(async_client, name="vllm-timings", model=model)
+
+    async def fake_forward(source, payload):
+        return SourceChatCompletion(
+            payload={
+                "id": "chatcmpl_source_timings",
+                "object": "chat.completion",
+                "created": 1,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 28, "completion_tokens": 9, "total_tokens": 37},
+                "metrics": {
+                    "time_to_first_token_ms": 108.83,
+                    "generation_time_ms": 162.98,
+                    "queue_time_ms": 0.037,
+                    "mean_itl_ms": 20.37,
+                    "tokens_per_second": 33.11,
+                },
+            },
+            usage=SourceUsage(input_tokens=28, output_tokens=9),
+            timings=SourceTimings(latency_first_token_ms=109, latency_ms=272),
+            upstream_status_code=200,
+        )
+
+    monkeypatch.setattr(proxy_api, "forward_chat_completion", fake_forward)
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        result = await session.execute(select(RequestLog).where(RequestLog.model_source_id == source_id))
+        latest_log = result.scalars().first()
+        assert latest_log is not None
+        assert latest_log.latency_first_token_ms == 109
+        assert latest_log.latency_ms == 272
 
 
 @pytest.mark.asyncio
@@ -1107,6 +1278,7 @@ async def test_source_routed_chat_completion_applies_api_key_enforcement(async_c
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             },
             usage=SourceUsage(input_tokens=1, output_tokens=1, cached_input_tokens=0),
+            timings=None,
             upstream_status_code=200,
         )
 
@@ -1127,6 +1299,26 @@ async def test_source_routed_chat_completion_applies_api_key_enforcement(async_c
     forwarded_payload = cast("dict[str, object]", observed["payload"])
     assert forwarded_payload["reasoning_effort"] == "high"
     assert forwarded_payload["service_tier"] == "priority"
+
+    # A source route is outside the subscription-account catalog boundary.
+    # Even an authoritative "tier absent" answer for account models must not
+    # strip the key's tier from the selected source request.
+    monkeypatch.setattr(
+        "app.modules.proxy.request_policy.get_model_registry",
+        lambda: SimpleNamespace(model_advertises_service_tier=lambda _model, _tier: False),
+    )
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "hi again"}],
+            "reasoning_effort": "low",
+        },
+    )
+    assert response.status_code == 200
+    source_fallback_control = cast("dict[str, object]", observed["payload"])
+    assert source_fallback_control["service_tier"] == "priority"
 
 
 @pytest.mark.asyncio

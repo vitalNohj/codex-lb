@@ -42,6 +42,7 @@ def to_request_log_entry(
     savings_usd = _savings_usd(actual=cost_breakdown.total_usd, reference=reference_cost_usd)
     return RequestLogEntry(
         requested_at=log.requested_at,
+        conversation_id=log.conversation_id,
         account_id=log.account_id,
         plan_type=log.plan_type,
         api_key_id=log.api_key_id,
@@ -77,6 +78,7 @@ def to_request_log_entry(
         input_tokens=log.input_tokens,
         output_tokens=output_tokens_from_log(log_like),
         output_tokens_raw=log.output_tokens,
+        reasoning_tokens=log.reasoning_tokens,
         cached_input_tokens=cached_input_tokens_from_log(log_like),
         cost_usd=cost_breakdown.total_usd,
         cost_breakdown=RequestLogCostBreakdown(**cost_breakdown.__dict__),

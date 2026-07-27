@@ -16,6 +16,7 @@ class RequestLogCostBreakdown(DashboardModel):
 
 class RequestLogEntry(DashboardModel):
     requested_at: datetime
+    conversation_id: str | None = None
     account_id: str | None = None
     plan_type: str | None = None
     api_key_id: str | None = None
@@ -49,6 +50,7 @@ class RequestLogEntry(DashboardModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     output_tokens_raw: int | None = None
+    reasoning_tokens: int | None = None
     cached_input_tokens: int | None = None
     reasoning_effort: str | None = None
     requested_reasoning_effort: str | None = None
@@ -61,10 +63,16 @@ class RequestLogEntry(DashboardModel):
     latency_queue_ms: int | None = None
 
 
+class RequestLogConversation(DashboardModel):
+    request_count: int
+    aggregated_cost_usd: float
+
+
 class RequestLogsResponse(DashboardModel):
     requests: list[RequestLogEntry] = Field(default_factory=list)
     total: int
     has_more: bool
+    conversation: RequestLogConversation | None = None
 
 
 class RequestLogModelOption(DashboardModel):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections import Counter
 from types import SimpleNamespace
 from typing import cast
 
@@ -88,6 +89,88 @@ async def _import_account(async_client, account_id: str, email: str) -> str:
     response = await async_client.post("/api/accounts/import", files=files)
     assert response.status_code == 200
     return generate_unique_account_id(account_id, email)
+
+
+def _sse_data_events(lines: list[str]) -> list[dict]:
+    return [json.loads(line[6:]) for line in lines if line.startswith("data: ") and not line.startswith("data: [DONE]")]
+
+
+async def _request_idle_heartbeat_stream(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    route: str,
+    headers: dict[str, str],
+    account_suffix: str,
+) -> list[str]:
+    await _import_account(
+        async_client,
+        f"acc_idle_heartbeat_{account_suffix}",
+        f"idle-heartbeat-{account_suffix}@example.com",
+    )
+
+    settings = proxy_api_module.get_settings().model_copy(update={"sse_keepalive_interval_seconds": 0.005})
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_api_module, "_HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS", 0.005)
+
+    async def fake_stream(*args, **kwargs):
+        del args, kwargs
+        await asyncio.sleep(0.04)
+        yield _sse_event(
+            {
+                "type": "codex.rate_limits",
+                "plan_type": "pro",
+                "rate_limits": {"allowed": True},
+            }
+        )
+        yield _sse_event(
+            {
+                "type": "response.completed",
+                "sequence_number": 1,
+                "response": {
+                    "id": f"resp_idle_heartbeat_{account_suffix}",
+                    "object": "response",
+                    "status": "completed",
+                    "output": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "input": "heartbeat", "stream": True}
+    async with async_client.stream(
+        "POST",
+        route,
+        json=payload,
+        headers={"accept": "text/event-stream", **headers},
+    ) as response:
+        assert response.status_code == 200
+        return [line async for line in response.aiter_lines() if line]
+
+
+@pytest.mark.asyncio
+async def test_openapi_operation_ids_are_unique_and_thread_goal_methods_stable(async_client):
+    response = await async_client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    operation_ids: list[str] = []
+    http_methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    for path, path_item in schema["paths"].items():
+        for method, operation in path_item.items():
+            if method not in http_methods:
+                continue
+            operation_id = operation.get("operationId")
+            assert isinstance(operation_id, str), f"{method.upper()} {path} has no operationId"
+            operation_ids.append(operation_id)
+
+    duplicate_ids = {operation_id: count for operation_id, count in Counter(operation_ids).items() if count > 1}
+    assert duplicate_ids == {}
+
+    thread_goal = schema["paths"]["/backend-api/codex/thread/goal/get"]
+    assert thread_goal["get"]["operationId"] == "thread_goal_get_backend_api_codex_thread_goal_get_get"
+    assert thread_goal["post"]["operationId"] == "thread_goal_get_backend_api_codex_thread_goal_get_post"
 
 
 @pytest.mark.asyncio
@@ -714,6 +797,106 @@ async def test_codex_trace_summarize_forwards_payload_without_model_unchanged(as
 
 
 @pytest.mark.asyncio
+async def test_codex_alpha_search_forwards_request_and_response(async_client, monkeypatch):
+    await _import_account(async_client, "acc_codex_search", "codex-search@example.com")
+    calls = []
+    upstream_body = b'{"results":[{"title":"OpenAI","url":"https://openai.com/"}]}'
+
+    async def fake_codex_control_request(
+        path,
+        *,
+        method,
+        payload: bytes | None,
+        query_params,
+        headers,
+        access_token,
+        account_id,
+        timeout_seconds=None,
+        **_kwargs,
+    ):
+        calls.append(
+            {
+                "path": path,
+                "method": method,
+                "payload": payload,
+                "query_params": list(query_params),
+                "session_id": headers.get("session_id"),
+                "access_token": access_token,
+                "account_id": account_id,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return core_proxy.CodexControlResponse(
+            status_code=200,
+            body=upstream_body,
+            headers={
+                "content-type": "application/json",
+                "x-request-id": "search-request",
+                "set-cookie": "must-not-leak=1",
+            },
+        )
+
+    monkeypatch.setattr(proxy_module, "core_codex_control_request", fake_codex_control_request)
+    payload = b'{ "query": "OpenAI official website" }'
+
+    response = await async_client.post(
+        "/backend-api/codex/alpha/search?result_count=10",
+        content=payload,
+        headers={"content-type": "application/json", "session_id": "search-session"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == upstream_body
+    assert response.headers["x-request-id"] == "search-request"
+    assert "set-cookie" not in response.headers
+    assert calls == [
+        {
+            "path": "alpha/search",
+            "method": "POST",
+            "payload": payload,
+            "query_params": [("result_count", "10")],
+            "session_id": "search-session",
+            "access_token": "access-token",
+            "account_id": "acc_codex_search",
+            "timeout_seconds": calls[0]["timeout_seconds"],
+        }
+    ]
+    assert isinstance(calls[0]["timeout_seconds"], float)
+    assert calls[0]["timeout_seconds"] > 0
+
+
+@pytest.mark.asyncio
+async def test_codex_alpha_search_preserves_normalized_control_error_contract(async_client, monkeypatch):
+    async def fake_codex_control_request(*_args, **_kwargs):
+        raise ProxyResponseError(
+            429,
+            {
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": "Search rate limit exceeded",
+                    "type": "rate_limit_error",
+                }
+            },
+        )
+
+    monkeypatch.setattr(proxy_module.ProxyService, "codex_control_request", fake_codex_control_request)
+
+    response = await async_client.post(
+        "/backend-api/codex/alpha/search",
+        json={"query": "OpenAI official website"},
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "error": {
+            "code": "rate_limit_exceeded",
+            "message": "Search rate limit exceeded",
+            "type": "rate_limit_error",
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_codex_realtime_call_forwards_raw_sdp_and_location(async_client, monkeypatch):
     await _import_account(async_client, "acc_codex_realtime", "codex-realtime@example.com")
     calls = []
@@ -1072,7 +1255,7 @@ async def test_proxy_stream_classifies_core_generated_eof_failure(async_client, 
         assert log.failure_detail == "upstream_eof_before_terminal_event"
 
 
-async def test_proxy_stream_retries_first_core_generated_eof_before_no_accounts(async_client, monkeypatch):
+async def test_proxy_stream_surfaces_first_core_generated_eof_before_no_accounts(async_client, monkeypatch):
     expected_account_id = await _import_account(
         async_client,
         "acc_stream_first_core_eof",
@@ -1109,7 +1292,7 @@ async def test_proxy_stream_retries_first_core_generated_eof_before_no_accounts(
         json.loads(line[6:]) for line in lines if line.startswith("data: ") and not line.startswith("data: [DONE]")
     ][-1]
     assert event["type"] == "response.failed"
-    assert event["response"]["error"]["code"] == "no_accounts"
+    assert event["response"]["error"]["code"] == "stream_incomplete"
 
     async with SessionLocal() as session:
         result = await session.execute(
@@ -1230,6 +1413,99 @@ async def test_stream_responses_starts_sse_keepalive_before_first_upstream_event
     chunks = [cast(str, await asyncio.wait_for(iterator.__anext__(), timeout=0.2)) for _ in range(2)]
     assert any("response.completed" in chunk for chunk in chunks)
     assert seen_client_ip == ["203.0.113.7"]
+
+
+@pytest.mark.asyncio
+async def test_backend_desktop_openai_shape_uses_codex_heartbeat_with_sdk_normalization(
+    async_client,
+    monkeypatch,
+):
+    lines = await _request_idle_heartbeat_stream(
+        async_client,
+        monkeypatch,
+        route="/backend-api/codex/responses",
+        headers={
+            "user-agent": "Codex Desktop/0.1.0 (Mac OS 26.5.0; arm64)",
+            "originator": "Codex Desktop",
+        },
+        account_suffix="desktop_openai_shape",
+    )
+
+    assert lines[:2] == CODEX_KEEPALIVE_FRAME.strip().splitlines()
+    event_types = [event.get("type") for event in _sse_data_events(lines)]
+    standard_event_types = [event_type for event_type in event_types if event_type != "codex.keepalive"]
+    assert standard_event_types[0] == "response.created"
+    assert "codex.rate_limits" not in event_types
+    assert "response.completed" in standard_event_types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("identity_headers", "account_suffix"),
+    [
+        pytest.param(
+            {
+                "user-agent": "Codex Desktop/0.1.0 (Mac OS 26.5.0; arm64)",
+                "originator": "Codex Desktop",
+                "x-stainless-lang": "python",
+            },
+            "desktop_stainless",
+            id="x-stainless-overrides-desktop",
+        ),
+        pytest.param(
+            {
+                "user-agent": "OpenAI/Python 2.24.0",
+                "originator": "Codex Desktop",
+            },
+            "native_originator_openai_ua",
+            id="openai-user-agent-overrides-native-originator",
+        ),
+    ],
+)
+async def test_backend_explicit_sdk_marker_uses_comment_heartbeat(
+    async_client,
+    monkeypatch,
+    identity_headers,
+    account_suffix,
+):
+    lines = await _request_idle_heartbeat_stream(
+        async_client,
+        monkeypatch,
+        route="/backend-api/codex/responses",
+        headers=identity_headers,
+        account_suffix=account_suffix,
+    )
+
+    assert lines[0] == SSE_KEEPALIVE_FRAME.strip()
+    assert CODEX_KEEPALIVE_FRAME.strip().splitlines()[0] not in lines
+    event_types = [event.get("type") for event in _sse_data_events(lines)]
+    assert event_types[0] == "response.created"
+    assert "codex.rate_limits" not in event_types
+    assert "response.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_v1_desktop_identity_uses_comment_heartbeat_and_sdk_event_order(
+    async_client,
+    monkeypatch,
+):
+    lines = await _request_idle_heartbeat_stream(
+        async_client,
+        monkeypatch,
+        route="/v1/responses",
+        headers={
+            "user-agent": "Codex Desktop/0.1.0 (Mac OS 26.5.0; arm64)",
+            "originator": "Codex Desktop",
+        },
+        account_suffix="v1_desktop",
+    )
+
+    assert lines[0] == SSE_KEEPALIVE_FRAME.strip()
+    assert CODEX_KEEPALIVE_FRAME.strip().splitlines()[0] not in lines
+    event_types = [event.get("type") for event in _sse_data_events(lines)]
+    assert event_types[0] == "response.created"
+    assert "codex.rate_limits" not in event_types
+    assert "response.completed" in event_types
 
 
 @pytest.mark.asyncio

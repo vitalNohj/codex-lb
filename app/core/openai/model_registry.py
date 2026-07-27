@@ -187,6 +187,8 @@ def _bootstrap_model(
         "visibility": visibility,
         "availability_nux": None,
         "max_context_window": context_window,
+        "truncation_policy": {"mode": "tokens", "limit": 10_000},
+        "experimental_supported_tools": [],
     }
     if raw:
         raw_fields.update(raw)
@@ -342,6 +344,7 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         "GPT-5.2",
         prefer_websockets=True,
         minimal_client_version="0.0.1",
+        raw={"truncation_policy": {"mode": "bytes", "limit": 10_000}},
     ),
     _bootstrap_model(
         "codex-auto-review",
@@ -371,7 +374,7 @@ def _union_string_tiers(primary: JsonValue, secondary: JsonValue) -> list[JsonVa
             for item in source:
                 if not isinstance(item, str):
                     continue
-                identity = _canonical_service_tier_value(item)
+                identity = canonical_service_tier_value(item)
                 if identity not in seen:
                     seen.add(identity)
                     merged.append(item)
@@ -384,7 +387,7 @@ def _service_tier_identity(entry: JsonValue) -> str:
         for key in _SERVICE_TIER_OBJECT_KEY_FIELDS:
             value = entry.get(key)
             if isinstance(value, str) and value:
-                canonical = _canonical_service_tier_value(value)
+                canonical = canonical_service_tier_value(value)
                 if canonical:
                     identities.append(canonical)
         if "priority" in identities:
@@ -394,7 +397,7 @@ def _service_tier_identity(entry: JsonValue) -> str:
     return json.dumps(entry, sort_keys=True, default=str)
 
 
-def _canonical_service_tier_value(value: str) -> str:
+def canonical_service_tier_value(value: str) -> str:
     canonical = value.strip().lower()
     if canonical in {"fast", "priority"}:
         return "priority"
@@ -433,7 +436,7 @@ def _model_service_tier_keys(model: UpstreamModel) -> frozenset[str]:
 
     def add_tier(value: str) -> None:
         tiers.add(value)
-        canonical = _canonical_service_tier_value(value)
+        canonical = canonical_service_tier_value(value)
         if canonical:
             tiers.add(canonical)
 
@@ -577,11 +580,9 @@ class ModelRegistry:
         if service_tier is None:
             return self.plan_types_for_model(slug)
         normalized_slug = slug.strip().lower()
-        normalized_service_tier = service_tier.strip()
+        normalized_service_tier = canonical_service_tier_value(service_tier)
         if not normalized_slug or not normalized_service_tier:
             return self.plan_types_for_model(slug)
-        if normalized_service_tier == "fast":
-            normalized_service_tier = "priority"
 
         if self._snapshot is None:
             return self.plan_types_for_model(slug)
@@ -592,7 +593,7 @@ class ModelRegistry:
             normalized_slug
         )
         if tier_plans is None:
-            return self.plan_types_for_model(slug)
+            return frozenset() if self._snapshot.account_catalogs_authoritative else self.plan_types_for_model(slug)
         return tier_plans.get(normalized_service_tier, frozenset())
 
     def account_ids_for_model_service_tier(self, slug: str, service_tier: str | None) -> frozenset[str] | None:
@@ -601,7 +602,7 @@ class ModelRegistry:
         if not self._snapshot.account_catalogs_authoritative:
             return None
         normalized_slug = slug.strip().lower()
-        normalized_service_tier = _canonical_service_tier_value(service_tier)
+        normalized_service_tier = canonical_service_tier_value(service_tier)
         if not normalized_slug or not normalized_service_tier:
             return None
 
@@ -613,6 +614,48 @@ class ModelRegistry:
                 return frozenset()
             return None
         return tier_accounts.get(normalized_service_tier, frozenset())
+
+    def model_advertises_service_tier(self, slug: str, service_tier: str | None) -> bool:
+        """Report whether the catalog lists ``service_tier`` for ``slug`` at all.
+
+        This is deliberately distinct from "no account carries the tier": a model
+        that never advertises the tier cannot be routed at it by any account, so
+        an enforced tier must not be treated as an account-eligibility filter for
+        that model. Returns ``True`` whenever the answer is unknown (no snapshot,
+        non-authoritative catalogs, unusable slug/tier) so callers keep their
+        existing behavior until the catalog can actually answer.
+        """
+        if service_tier is None or self._snapshot is None:
+            return True
+        if not self._snapshot.account_catalogs_authoritative:
+            return True
+        normalized_slug = slug.strip().lower()
+        normalized_service_tier = canonical_service_tier_value(service_tier)
+        if not normalized_slug or not normalized_service_tier:
+            return True
+
+        model_is_known = (
+            slug in self._snapshot.model_plans
+            or normalized_slug in self._snapshot.model_plans
+            or slug in self._snapshot.model_accounts
+            or normalized_slug in self._snapshot.model_accounts
+        )
+        if not model_is_known:
+            # An authoritative subscription snapshot cannot describe the tier
+            # capabilities of an operator-mapped or source-routed model that it
+            # does not contain. Keep the enforced tier when model identity is
+            # unknown instead of broadening fallback beyond catalog evidence.
+            return True
+
+        tier_accounts = self._snapshot.model_service_tier_accounts.get(
+            slug
+        ) or self._snapshot.model_service_tier_accounts.get(normalized_slug)
+        tier_plans = self._snapshot.model_service_tier_plans.get(slug) or self._snapshot.model_service_tier_plans.get(
+            normalized_slug
+        )
+        if tier_accounts is None and tier_plans is None:
+            return False
+        return normalized_service_tier in (tier_accounts or {}) or normalized_service_tier in (tier_plans or {})
 
     def account_ids_for_model(self, slug: str) -> frozenset[str] | None:
         """Return exact supporting accounts, or ``None`` while coverage is incomplete."""

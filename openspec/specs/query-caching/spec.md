@@ -205,6 +205,100 @@ The system SHALL keep dashboard hot-path database reads bounded by the data need
 - **THEN** the system MAY move that read to a cached, incremental, or source-structured summary so the dashboard does not repeatedly scan raw history on every poll
 - **AND** the summary contract MUST preserve the externally visible dashboard semantics
 
+### Requirement: Request-log listings filter by conversation ID
+
+`GET /api/request-logs` MUST accept an optional `conversation_id` filter and
+apply it together with every existing request-log filter, including timeframe,
+status, model, account, API key, and search filters. The filter MUST use a bound
+query parameter and MUST not change request routing or unrelated response data.
+
+#### Scenario: Conversation-only filtering returns matching rows
+
+- **GIVEN** request logs contain rows for `conv-a` and `conv-b`
+- **WHEN** the request-log listing is requested with
+  `conversation_id=conv-a`
+- **THEN** only rows with conversation ID `conv-a` are returned
+
+#### Scenario: Conversation filtering composes with existing filters
+
+- **GIVEN** matching conversation rows differ by status, model, account, API
+  key, timeframe, or search text
+- **WHEN** a conversation filter and existing filters are requested together
+- **THEN** every returned row matches the complete combined filter set
+
+### Requirement: Filtered responses expose pagination-independent conversation aggregates
+
+When `conversation_id` is present, the request-log response MUST include
+`conversation.requestCount` and `conversation.aggregatedCostUsd`. Both values
+MUST use the complete active filter set and MUST be independent of page limit and
+offset. `aggregatedCostUsd` MUST sum stored `cost_usd` values, with no matches
+represented as zero. The top-level listing total MUST remain consistent with the
+filtered request count.
+
+#### Scenario: Aggregates ignore pagination
+
+- **GIVEN** a filtered conversation has twelve matching requests across multiple
+  pages with a total stored cost of `1.23`
+- **WHEN** page one and a later page are requested with different limit or
+  offset values
+- **THEN** both responses report `conversation.requestCount` as `12`
+- **AND** both responses report `conversation.aggregatedCostUsd` as `1.23`
+
+#### Scenario: No matching rows return zero aggregates
+
+- **GIVEN** a conversation filter and active filters match no request logs
+- **WHEN** the request-log listing is requested
+- **THEN** the response reports `conversation.requestCount` as `0`
+- **AND** the response reports `conversation.aggregatedCostUsd` as `0`
+
+#### Scenario: No conversation filter returns null metadata
+
+- **GIVEN** the request-log listing is requested without `conversation_id`
+- **WHEN** the response is generated
+- **THEN** the response's `conversation` metadata is null
+
+### Requirement: Conversation filters participate in listing-count cache identity
+
+The request-log listing-count cache signature MUST include `conversation_id` in
+addition to every existing filter dimension. Requests for different
+conversation IDs MUST not reuse one another's cached listing count.
+
+#### Scenario: Different conversation IDs have isolated cached totals
+
+- **GIVEN** two listing requests differ only by conversation ID
+- **WHEN** their listing counts are served through the cache
+- **THEN** each request uses its own cache entry and filtered total
+
+### Requirement: Distinct conversation aggregates exclude null and blank IDs
+
+Dashboard and report distinct-conversation aggregate queries MUST exclude null,
+empty-string, and whitespace-only `conversation_id` values. SQL MUST use
+`COUNT(DISTINCT NULLIF(TRIM(request_logs.conversation_id), ''))`, or an
+equivalent database-specific expression with the same null-and-blank exclusion
+semantics.
+
+#### Scenario: Empty conversation IDs do not inflate aggregates
+
+- **GIVEN** the active filtered range contains repeated `conv-a` values and
+  rows whose conversation IDs are null, `''`, and `'   '`
+- **WHEN** dashboard or report conversation aggregates are calculated
+- **THEN** the distinct conversation count is `1`
+- **AND** null and blank IDs do not create an unknown conversation bucket
+
+### Requirement: Dashboard conversation trends aggregate by bucket
+
+The dashboard conversation trend query MUST group by the configured time bucket
+and count distinct non-empty normalized conversation IDs within each bucket. It
+MUST exclude warmup traffic and MUST NOT use model or service-tier grouping that
+could cause one conversation to be counted more than once in a bucket.
+
+#### Scenario: One conversation across model groups counts once per bucket
+
+- **GIVEN** a bucket contains two non-warmup request logs for `conv-a` under
+  different models and one log for `conv-b`
+- **WHEN** the dashboard conversation trend aggregate is calculated
+- **THEN** that bucket's conversation count is `2`
+
 ### Requirement: Additional usage latest reads avoid SQLite window scans
 
 Additional usage latest-per-account reads on SQLite MUST avoid `row_number()` window-function scans over the full `additional_usage_history` table. They MUST select matching accounts, then use indexed latest-row lookups ordered by `recorded_at DESC, used_percent DESC, id DESC` while preserving canonical quota-key and alias matching semantics. Non-SQLite dialects MAY keep the set-based window-function query.
@@ -403,3 +497,68 @@ Deleting an API key MUST delete its rollup row in the same transaction.
 - **WHEN** the key is deleted
 - **THEN** the rollup row MUST be deleted in the same transaction
 
+### Requirement: Cross-replica cache invalidation bus bounds process-local cache staleness
+Every process-local cache that serves security, authorization, or routing decisions MUST either register a namespace on the cross-replica cache-invalidation bus or declare a documented maximum cross-replica staleness TTL. Mutations MUST commit durable state before (or independently of) bumping their namespace version, each process MUST poll the `cache_invalidation` version table at a bounded interval (default 0.5s) and run registered namespace callbacks on version change, and the registered namespaces MUST include `api_key`, `firewall`, `account_routing`, `account_selection`, and `settings`. Each process MUST seed its baseline namespace versions before loading local caches / routing snapshots and before serving traffic, so a peer bump committed after that baseline is observed as a change (runs callbacks) rather than acknowledged as pre-existing state. A cache's TTL remains the fallback staleness bound when a bump is lost.
+
+#### Scenario: Selection-state change on one replica converges on peers within the bus bound
+
+- **GIVEN** two replicas share one database and each runs the cache-invalidation poller
+- **AND** replica B holds warm cached selection inputs that include account X
+- **WHEN** replica A persists a state change for account X and invalidates its selection cache with propagation
+- **THEN** the `account_selection` namespace version is bumped within one poll cycle
+- **AND** replica B's selection cache is invalidated on its next poll, without waiting for the cache TTL
+
+#### Scenario: Peer bump committed before the first poll is not lost
+
+- **GIVEN** a starting replica seeds its baseline namespace versions before loading its routing snapshot and before serving traffic
+- **WHEN** a peer commits a mutation and bumps `account_routing` (or `settings`, or `account_selection`) after this replica loaded its caches but before its first poll cycle
+- **THEN** the replica's first poll observes the bumped version as a change and runs the namespace callbacks
+- **AND** the peer bump is not silently acknowledged as a baseline, so the cache is not left stale until the fallback TTL
+
+#### Scenario: New security-relevant cache without bus coverage is a spec violation
+
+- **GIVEN** a contributor adds a new process-local cache that gates a security, authorization, or routing decision
+- **WHEN** the cache neither registers a cache-invalidation namespace nor documents a maximum cross-replica staleness TTL
+- **THEN** the change violates this capability and is rejected at review
+
+#### Scenario: Lost bump still converges within the fallback TTL
+
+- **GIVEN** a mutation's namespace bump is permanently lost after retries
+- **WHEN** peer replicas keep serving their cached values
+- **THEN** each peer converges no later than that cache's documented fallback TTL
+
+### Requirement: Cache invalidation bumps and polling are resilient and observable
+`bump()` MUST retry transient write failures (including SQLite "database is locked") with a short backoff; on final failure it MUST log at ERROR with the namespace, increment `codex_lb_cache_invalidation_bump_failures_total{namespace}`, and MUST NOT fail the originating mutation. Coalesced (`request_bump`) namespaces MUST remain pending and be retried on subsequent poll cycles until a bump succeeds, and a `request_bump` arriving while a flush for the same namespace is already awaiting its bump MUST be preserved and produce a later bump. When any invalidation callback for a namespace fails, the poller MUST NOT acknowledge the observed version and MUST re-run that namespace's callbacks on subsequent poll cycles until they succeed. The poller MUST escalate consecutive poll failures above debug level after a bounded count (WARNING after 3, ERROR after 10) and increment `codex_lb_cache_invalidation_poll_failures_total`.
+
+#### Scenario: Bump failure under database lock is observable and does not fail the mutation
+
+- **GIVEN** the database rejects cache-invalidation writes with a lock error for longer than the retry budget
+- **WHEN** a mutation attempts a durable namespace bump
+- **THEN** the mutation itself still succeeds
+- **AND** an ERROR log naming the namespace is emitted and the bump-failure counter increments
+
+#### Scenario: Pending coalesced namespace flushes on the next successful cycle
+
+- **GIVEN** a coalesced `request_bump` namespace failed to flush during a poll cycle
+- **WHEN** the database becomes writable again
+- **THEN** the next poll cycle flushes the pending namespace and increments its version
+
+#### Scenario: Bump requested during an in-flight flush produces a later bump
+
+- **GIVEN** a coalesced flush is awaiting the bump write for a namespace
+- **WHEN** another mutation commits and requests a bump for the same namespace before the flush completes
+- **THEN** the namespace is re-queued and flushed again on a subsequent cycle, incrementing the version beyond the in-flight bump
+
+#### Scenario: Failed invalidation callback keeps the version unacknowledged and is retried
+
+- **GIVEN** a replica observes an `account_routing` version bump
+- **AND** its routing snapshot refresh fails with a transient database error
+- **WHEN** the poll cycle completes
+- **THEN** the replica does not record the new version as seen
+- **AND** the refresh is retried on subsequent poll cycles until it succeeds
+
+#### Scenario: Consecutive poll failures escalate above debug
+
+- **GIVEN** a replica's poller cannot read the `cache_invalidation` table
+- **WHEN** three consecutive polls fail
+- **THEN** a WARNING is logged and the poll-failure counter increments

@@ -159,8 +159,6 @@ class _RequestLogMixin:
         latency_bridge_queue_wait_ms: int | None = None,
         prewarm_status: str | None = None,
         prewarm_latency_ms: int | None = None,
-        prewarm_canary_bucket: str | None = None,
-        prewarm_eligible_reason: str | None = None,
         session_previous_gap_ms: int | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
@@ -189,6 +187,7 @@ class _RequestLogMixin:
         upstream_proxy_fail_closed_reason: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
+        conversation_id: str | None = None,
         client_ip: str | None = None,
         archive_request_id: str | None = None,
     ) -> None:
@@ -209,8 +208,6 @@ class _RequestLogMixin:
                 latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
                 prewarm_status=prewarm_status,
                 prewarm_latency_ms=prewarm_latency_ms,
-                prewarm_canary_bucket=prewarm_canary_bucket,
-                prewarm_eligible_reason=prewarm_eligible_reason,
                 session_previous_gap_ms=session_previous_gap_ms,
                 error_code=error_code,
                 error_message=error_message,
@@ -239,6 +236,7 @@ class _RequestLogMixin:
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 useragent=useragent,
                 useragent_group=useragent_group,
+                conversation_id=conversation_id,
                 client_ip=client_ip,
             ),
             name=f"proxy-request-log-{request_id}",
@@ -384,8 +382,6 @@ class _RequestLogMixin:
         latency_bridge_queue_wait_ms: int | None = None,
         prewarm_status: str | None = None,
         prewarm_latency_ms: int | None = None,
-        prewarm_canary_bucket: str | None = None,
-        prewarm_eligible_reason: str | None = None,
         session_previous_gap_ms: int | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
@@ -414,6 +410,7 @@ class _RequestLogMixin:
         upstream_proxy_fail_closed_reason: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
+        conversation_id: str | None = None,
         client_ip: str | None = None,
     ) -> None:
         proxy = cast(_RequestLogServiceProtocol, self)
@@ -446,8 +443,6 @@ class _RequestLogMixin:
                     latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
                     prewarm_status=prewarm_status,
                     prewarm_latency_ms=prewarm_latency_ms,
-                    prewarm_canary_bucket=prewarm_canary_bucket,
-                    prewarm_eligible_reason=prewarm_eligible_reason,
                     session_previous_gap_ms=session_previous_gap_ms,
                     status=status,
                     error_code=error_code,
@@ -465,6 +460,7 @@ class _RequestLogMixin:
                     upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                     useragent=useragent,
                     useragent_group=useragent_group,
+                    conversation_id=conversation_id,
                     client_ip=client_ip,
                 )
         except Exception:
@@ -492,6 +488,7 @@ class _RequestLogMixin:
         upstream_proxy_fail_closed_reason: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
+        conversation_id: str | None = None,
         client_ip: str | None = None,
     ) -> None:
         await self._write_request_log(
@@ -511,5 +508,6 @@ class _RequestLogMixin:
             upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
             useragent=useragent,
             useragent_group=useragent_group,
+            conversation_id=conversation_id,
             client_ip=client_ip,
         )

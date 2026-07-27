@@ -46,6 +46,7 @@ const EMPTY_REPORT: ReportsResponse = {
     totalCachedTokens: 0,
     totalRequests: 0,
     totalErrors: 0,
+    totalConversations: 0,
     activeAccounts: 0,
     avgCostPerDay: 0,
     avgRequestsPerDay: 0,
@@ -139,6 +140,21 @@ describe("ReportsPage", () => {
       }),
       "America/Los_Angeles",
     );
+  });
+
+  it("shows the loading label without duplicating ellipsis punctuation", () => {
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        isLoading: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.queryByText("Loading......")).not.toBeInTheDocument();
   });
 
   it("uses the live valid timezone for reports queries even when a cached value exists", async () => {
