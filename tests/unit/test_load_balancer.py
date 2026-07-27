@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from datetime import datetime
@@ -12,14 +13,19 @@ from app.core import usage as usage_core
 from app.core.balancer import (
     HEALTH_TIER_DRAINING,
     HEALTH_TIER_HEALTHY,
+    HEALTH_TIER_PROBING,
+    RATE_LIMIT_RESET_MAX_HORIZON_SECONDS,
     RATE_LIMITED_MIN_COOLDOWN_SECONDS,
+    ROUTING_POLICY_PRESERVE,
     AccountState,
     RoutingCost,
     handle_permanent_failure,
     handle_quota_exceeded,
     handle_rate_limit,
+    plausible_rate_limit_reset_at,
     select_account,
 )
+from app.core.balancer.logic import DRAIN_PRIMARY_THRESHOLD_PCT, PROBE_QUIET_SECONDS
 from app.core.usage.quota import apply_usage_quota
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.proxy.load_balancer import (
@@ -335,6 +341,98 @@ def test_budget_safe_selection_applies_burn_first_after_health_tier_filtering():
 
     assert result.account is not None
     assert result.account.account_id == "normal"
+
+
+def test_due_probe_precedes_healthy_burn_first_policy():
+    now = time.time()
+    states = [
+        AccountState(
+            "healthy-burn-first",
+            AccountStatus.ACTIVE,
+            used_percent=40.0,
+            routing_policy="burn_first",
+            health_tier=HEALTH_TIER_HEALTHY,
+        ),
+        AccountState(
+            "due-probe",
+            AccountStatus.ACTIVE,
+            used_percent=10.0,
+            routing_policy="normal",
+            health_tier=HEALTH_TIER_PROBING,
+            last_selected_at=now - PROBE_QUIET_SECONDS - 1.0,
+        ),
+    ]
+
+    result = _select_account_preferring_budget_safe(
+        states,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        budget_threshold_pct=95.0,
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "due-probe"
+
+
+def test_due_preserve_probe_precedes_healthy_normal_policy():
+    now = time.time()
+    states = [
+        AccountState(
+            "healthy-normal",
+            AccountStatus.ACTIVE,
+            used_percent=40.0,
+            routing_policy="normal",
+            health_tier=HEALTH_TIER_HEALTHY,
+        ),
+        AccountState(
+            "due-preserve-probe",
+            AccountStatus.ACTIVE,
+            used_percent=10.0,
+            routing_policy=ROUTING_POLICY_PRESERVE,
+            health_tier=HEALTH_TIER_PROBING,
+            last_selected_at=now - PROBE_QUIET_SECONDS - 1.0,
+        ),
+    ]
+
+    result = _select_account_preferring_budget_safe(
+        states,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        budget_threshold_pct=95.0,
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "due-preserve-probe"
+
+
+def test_unavailable_due_probe_does_not_bypass_availability_gates():
+    now = time.time()
+    states = [
+        AccountState(
+            "healthy",
+            AccountStatus.ACTIVE,
+            used_percent=40.0,
+            health_tier=HEALTH_TIER_HEALTHY,
+        ),
+        AccountState(
+            "blocked-probe",
+            AccountStatus.ACTIVE,
+            used_percent=10.0,
+            health_tier=HEALTH_TIER_PROBING,
+            last_selected_at=now - PROBE_QUIET_SECONDS - 1.0,
+            cooldown_until=now + 60.0,
+        ),
+    ]
+
+    result = _select_account_preferring_budget_safe(
+        states,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        budget_threshold_pct=95.0,
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "healthy"
 
 
 def test_budget_safe_selection_falls_back_when_burn_first_unavailable():
@@ -1001,6 +1099,97 @@ def test_handle_rate_limit_upstream_reset_metadata_still_wins(monkeypatch):
     assert state.reset_at == pytest.approx(now + 600.0)
 
 
+def test_handle_rate_limit_accepts_plausible_absolute_reset_metadata(monkeypatch):
+    now = 1_700_000_000.0
+    reset_at = now + 30 * 24 * 3600 + 0.25
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    handle_rate_limit(state, {"message": "Rate limit exceeded.", "resets_at": reset_at})
+
+    assert state.reset_at == 1_702_592_001
+
+
+def test_handle_rate_limit_rejects_implausible_absolute_reset_metadata(monkeypatch):
+    # Production incident shape: this value maps to January 2446 and must not
+    # pin the account until then. With no other usable hint, the durable reset
+    # falls back to the existing minimum peer-visible cooldown.
+    now = 1_784_146_959.0
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    monkeypatch.setattr("app.core.balancer.logic.backoff_seconds", lambda _: 0.2)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    handle_rate_limit(state, {"message": "Rate limit exceeded.", "resets_at": 15_023_672_358})
+
+    assert state.reset_at == now + RATE_LIMITED_MIN_COOLDOWN_SECONDS
+    assert state.cooldown_until == pytest.approx(now + 0.2)
+
+
+def test_handle_rate_limit_uses_valid_relative_reset_after_invalid_absolute(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    handle_rate_limit(
+        state,
+        {
+            "message": "Rate limit exceeded.",
+            "resets_at": 15_023_672_358,
+            "resets_in_seconds": 600.25,
+        },
+    )
+
+    assert state.reset_at == 1_700_000_601
+
+
+@pytest.mark.parametrize("reset_at", [float("nan"), float("inf"), -float("inf"), 1_699_999_999.0])
+def test_handle_rate_limit_rejects_nonfinite_and_elapsed_reset_metadata(monkeypatch, reset_at):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    monkeypatch.setattr("app.core.balancer.logic.backoff_seconds", lambda _: 0.2)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    handle_rate_limit(state, {"message": "Rate limit exceeded.", "resets_at": reset_at})
+
+    assert state.reset_at == now + RATE_LIMITED_MIN_COOLDOWN_SECONDS
+
+
+def test_handle_rate_limit_rejects_oversized_integer_metadata_without_overflow(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    monkeypatch.setattr("app.core.balancer.logic.backoff_seconds", lambda _: 0.2)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    handle_rate_limit(
+        state,
+        {
+            "message": "Rate limit exceeded.",
+            "resets_at": 10**309,
+            "resets_in_seconds": 10**309,
+        },
+    )
+
+    assert state.reset_at == now + RATE_LIMITED_MIN_COOLDOWN_SECONDS
+
+
+@pytest.mark.parametrize("metadata_key", ["resets_at", "resets_in_seconds"])
+def test_handle_rate_limit_horizon_edge_remains_valid_after_rounding(monkeypatch, metadata_key):
+    now = 1_700_000_000.9
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+    metadata_value = (
+        now + RATE_LIMIT_RESET_MAX_HORIZON_SECONDS
+        if metadata_key == "resets_at"
+        else RATE_LIMIT_RESET_MAX_HORIZON_SECONDS
+    )
+
+    handle_rate_limit(state, {metadata_key: metadata_value})
+
+    expected = int(now + RATE_LIMIT_RESET_MAX_HORIZON_SECONDS) + 1
+    assert state.reset_at == expected
+    assert plausible_rate_limit_reset_at(state.reset_at, now=now) == float(expected)
+
+
 def test_handle_rate_limit_cooldown_honors_word_unit_hint(monkeypatch):
     now = 1_700_000_000.0
     monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
@@ -1211,6 +1400,17 @@ def test_handle_quota_exceeded_sets_used_percent_and_cooldown():
     assert state.status == AccountStatus.QUOTA_EXCEEDED
     assert state.used_percent == 100.0
     assert state.cooldown_until is not None
+
+
+def test_handle_quota_exceeded_rejects_implausible_reset_metadata(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    handle_quota_exceeded(state, {"resets_at": 15_023_672_358})
+
+    assert state.status == AccountStatus.QUOTA_EXCEEDED
+    assert state.reset_at == int(now + 3600)
 
 
 def test_handle_permanent_failure_sets_reason():
@@ -2894,6 +3094,160 @@ def test_background_recovery_state_preserves_rate_limit_cooldown_when_reset_is_i
     assert state.cooldown_until == pytest.approx(future_reset)
 
 
+def test_state_from_account_rejected_reset_requires_fresh_post_block_evidence(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 60.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=15_023_672_358,
+        blocked_at=int(blocked),
+    )
+    stale_primary = _make_test_usage(
+        window="primary",
+        used_percent=10.0,
+        reset_at=int(now + 3600),
+        recorded_at=_epoch_to_naive_utc(blocked - 10),
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=stale_primary,
+        secondary_entry=None,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.reset_at == 15_023_672_358.0
+    assert state.blocked_at == blocked
+
+
+def test_state_from_account_rejected_reset_requires_all_quota_windows_available(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 60.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=15_023_672_358,
+        blocked_at=int(blocked),
+    )
+    fresh_primary = _make_test_usage(
+        window="primary",
+        used_percent=10.0,
+        reset_at=int(now + 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+    )
+    exhausted_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=100.0,
+        reset_at=int(now + 7 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+        window_minutes=10080,
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=fresh_primary,
+        secondary_entry=exhausted_secondary,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.reset_at == 15_023_672_358.0
+
+
+def test_state_from_account_rejected_reset_without_block_recovers_from_fresh_usage(monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=15_023_672_358,
+        blocked_at=None,
+    )
+    fresh_primary = _make_test_usage(
+        window="primary",
+        used_percent=10.0,
+        reset_at=int(now + 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=fresh_primary,
+        secondary_entry=None,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.ACTIVE
+    assert state.reset_at is None
+    assert state.blocked_at is None
+
+
+def test_state_from_account_preserves_elapsed_reset_for_selector_recovery(monkeypatch):
+    now = 1_700_000_000.0
+    elapsed_reset = now - 10.0
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=int(elapsed_reset),
+        blocked_at=int(now - 60),
+    )
+    state = _state_from_account(
+        account=account,
+        primary_entry=None,
+        secondary_entry=None,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.reset_at == elapsed_reset
+    selection = select_account([state], now=now)
+    assert selection.account is state
+    assert state.status == AccountStatus.ACTIVE
+    assert state.reset_at is None
+
+
+def test_state_from_account_does_not_apply_rate_limit_repair_to_quota_exceeded(monkeypatch):
+    now = 1_700_000_000.0
+    implausible_reset = 15_023_672_358
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.QUOTA_EXCEEDED,
+        reset_at=implausible_reset,
+        blocked_at=int(now - 5),
+    )
+    exhausted_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=100.0,
+        reset_at=int(now + 7 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+        window_minutes=10080,
+    )
+    state = _state_from_account(
+        account=account,
+        primary_entry=None,
+        secondary_entry=exhausted_secondary,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.QUOTA_EXCEEDED
+    assert state.reset_at == float(implausible_reset)
+    assert select_account([state], now=now).account is None
+
+
 def test_background_recovery_state_recovers_rate_limited_after_reset_elapses(monkeypatch):
     now = 1_700_000_000.0
     blocked = now - 7200.0
@@ -3290,27 +3644,23 @@ def test_background_recovery_state_keeps_rate_limited_without_persisted_reset(mo
     assert state.blocked_at == pytest.approx(blocked)
 
 
-def test_state_from_account_uses_configured_drain_primary_threshold(monkeypatch):
+def test_state_from_account_drains_at_fixed_primary_threshold(monkeypatch):
+    """Drain thresholds are the fixed constants in ``app.core.balancer.logic``
+    (85% primary by default); ``_state_from_account`` applies them without any
+    settings plumbing.
+    """
     now = 1_700_000_000.0
     monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
     monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
     monkeypatch.setattr(
         "app.modules.proxy.load_balancer.get_settings",
-        lambda: SimpleNamespace(
-            soft_drain_enabled=True,
-            drain_primary_threshold_pct=75.0,
-            drain_secondary_threshold_pct=90.0,
-            drain_error_window_seconds=60.0,
-            drain_error_count_threshold=2,
-            probe_quiet_seconds=60.0,
-            probe_success_streak_required=3,
-        ),
+        lambda: SimpleNamespace(soft_drain_enabled=True),
     )
 
     account = _make_test_account(status=AccountStatus.ACTIVE)
     primary = _make_test_usage(
         window="primary",
-        used_percent=80.0,
+        used_percent=DRAIN_PRIMARY_THRESHOLD_PCT + 1.0,
         reset_at=int(now + 3600),
         recorded_at=_epoch_to_naive_utc(now - 10),
     )
@@ -3325,27 +3675,19 @@ def test_state_from_account_uses_configured_drain_primary_threshold(monkeypatch)
     assert state.health_tier == 1
 
 
-def test_state_from_account_uses_configured_probe_quiet_seconds(monkeypatch):
+def test_state_from_account_promotes_to_probing_after_fixed_quiet_window(monkeypatch):
     now = 1_700_000_000.0
     monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
     monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
     monkeypatch.setattr(
         "app.modules.proxy.load_balancer.get_settings",
-        lambda: SimpleNamespace(
-            soft_drain_enabled=True,
-            drain_primary_threshold_pct=85.0,
-            drain_secondary_threshold_pct=90.0,
-            drain_error_window_seconds=60.0,
-            drain_error_count_threshold=2,
-            probe_quiet_seconds=10.0,
-            probe_success_streak_required=3,
-        ),
+        lambda: SimpleNamespace(soft_drain_enabled=True),
     )
 
     account = _make_test_account(status=AccountStatus.ACTIVE)
     runtime = RuntimeState(
         health_tier=1,
-        drain_entered_at=now - 11.0,
+        drain_entered_at=now - (PROBE_QUIET_SECONDS + 1.0),
         probe_success_streak=0,
     )
     primary = _make_test_usage(
@@ -3417,24 +3759,36 @@ def test_error_backoff_expired_account_does_not_immediately_relock():
 
 
 @pytest.mark.asyncio
-async def test_load_selection_inputs_parallelizes_usage_queries():
-    """Verify that independent usage queries are parallelized with asyncio.gather()."""
-    import asyncio
-    from unittest.mock import AsyncMock, MagicMock
-
+async def test_load_selection_inputs_serializes_usage_queries_on_shared_session():
+    """Usage reads sharing one repository context must never overlap."""
     from app.modules.proxy.load_balancer import LoadBalancer
 
-    # Create mock repositories
     mock_accounts_repo = AsyncMock()
-    mock_accounts_repo.list_accounts = AsyncMock(return_value=[])
+    mock_accounts_repo.list_accounts = AsyncMock(
+        return_value=[_make_test_account(account_id="a", status=AccountStatus.ACTIVE)]
+    )
 
     mock_usage_repo = AsyncMock()
+    in_flight = 0
+    max_in_flight = 0
+    calls: list[str] = []
 
-    async def slow_query():
-        await asyncio.sleep(0.2)
-        return {}
+    async def guarded_query(*, window: str | None = None):
+        nonlocal in_flight, max_in_flight
+        label = window or "primary"
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        if in_flight > 1:
+            in_flight -= 1
+            raise AssertionError(f"overlapping shared-session usage read: {label}")
+        calls.append(label)
+        try:
+            await asyncio.sleep(0)
+            return {"a": _make_test_usage(account_id="a", window=label)}
+        finally:
+            in_flight -= 1
 
-    mock_usage_repo.latest_by_account = AsyncMock(side_effect=slow_query)
+    mock_usage_repo.latest_by_account = AsyncMock(side_effect=guarded_query)
 
     mock_repos = MagicMock()
     mock_repos.accounts = mock_accounts_repo
@@ -3442,20 +3796,14 @@ async def test_load_selection_inputs_parallelizes_usage_queries():
     mock_repos.__aenter__ = AsyncMock(return_value=mock_repos)
     mock_repos.__aexit__ = AsyncMock(return_value=None)
 
-    # Create LoadBalancer with mocked repo factory
     balancer = LoadBalancer(repo_factory=lambda: mock_repos)
-
-    # Measure execution time
-    start = time.time()
     result = await balancer._load_selection_inputs(model=None)
-    elapsed = time.time() - start
 
-    # If queries were sequential, elapsed would be ~0.4s (0.2 + 0.2)
-    # If queries are parallel, elapsed should be ~0.2s
-    # We use a generous threshold of 0.35s to account for test environment overhead
-    assert elapsed < 0.35, f"Queries appear to be sequential (took {elapsed:.3f}s, expected <0.35s)"
-    assert result.latest_primary == {}
-    assert result.latest_secondary == {}
+    assert max_in_flight == 1
+    assert calls == ["primary", "secondary", "monthly"]
+    assert result.latest_primary["a"].window == "primary"
+    assert result.latest_secondary["a"].window == "secondary"
+    assert result.latest_monthly["a"].window == "monthly"
 
 
 @pytest.mark.asyncio
@@ -3470,6 +3818,7 @@ async def test_load_selection_inputs_sets_burn_first_override_for_additional_quo
         limit_name: str,
         explicit_limit: bool,
         repos,
+        require_fresh_evidence_account_ids: frozenset[str],
     ) -> _AdditionalLimitFilterResult:
         return _AdditionalLimitFilterResult(
             accounts=accounts,
@@ -3534,6 +3883,7 @@ async def test_security_work_filter_preserves_additional_quota_metadata():
         limit_name: str,
         explicit_limit: bool,
         repos,
+        require_fresh_evidence_account_ids: frozenset[str],
     ) -> _AdditionalLimitFilterResult:
         return _AdditionalLimitFilterResult(
             accounts=accounts,
@@ -3583,6 +3933,7 @@ async def test_load_selection_inputs_uses_canonicalized_additional_quota_alias_k
         limit_name: str,
         explicit_limit: bool,
         repos,
+        require_fresh_evidence_account_ids: frozenset[str],
     ) -> _AdditionalLimitFilterResult:
         return _AdditionalLimitFilterResult(
             accounts=accounts,
@@ -3647,6 +3998,7 @@ async def test_load_selection_inputs_uses_registry_additional_quota_routing_poli
         limit_name: str,
         explicit_limit: bool,
         repos,
+        require_fresh_evidence_account_ids: frozenset[str],
     ) -> _AdditionalLimitFilterResult:
         return _AdditionalLimitFilterResult(
             accounts=accounts,
@@ -3705,6 +4057,7 @@ async def test_load_selection_inputs_inherits_account_policy_for_additional_quot
         limit_name: str,
         explicit_limit: bool,
         repos,
+        require_fresh_evidence_account_ids: frozenset[str],
     ) -> _AdditionalLimitFilterResult:
         return _AdditionalLimitFilterResult(
             accounts=accounts,

@@ -24,6 +24,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardBadRequestError, DashboardSettingsConflictError
 from app.core.upstream_proxy import resolve_proxy_endpoint
+from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import Account, AccountProxyBinding, AccountStatus, ProxyEndpoint, ProxyPool, ProxyPoolMember
 from app.dependencies import SettingsContext, get_proxy_service_for_app, get_settings_context
 from app.modules.proxy.account_cache import (
@@ -133,6 +134,9 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         upstream_proxy_default_pool_id=settings.upstream_proxy_default_pool_id,
         prefer_earlier_reset_accounts=settings.prefer_earlier_reset_accounts,
         prefer_earlier_reset_window=settings.prefer_earlier_reset_window,
+        show_reset_credit_badges=settings.show_reset_credit_badges,
+        auto_redeem_reset_credits_before_expiry=settings.auto_redeem_reset_credits_before_expiry,
+        show_reset_credit_expiry_badge=settings.show_reset_credit_expiry_badge,
         routing_strategy=settings.routing_strategy,
         relative_availability_power=settings.relative_availability_power,
         relative_availability_top_k=settings.relative_availability_top_k,
@@ -165,6 +169,10 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         guest_access_enabled=settings.guest_access_enabled,
         guest_password_configured=settings.guest_password_configured,
         limit_warmup_staggered_idle_enabled=settings.limit_warmup_staggered_idle_enabled,
+        request_log_retention_days=settings.request_log_retention_days,
+        usage_history_retention_days=settings.usage_history_retention_days,
+        request_log_retention_override_days=settings.request_log_retention_override_days,
+        usage_history_retention_override_days=settings.usage_history_retention_override_days,
         version=settings.version,
     )
 
@@ -339,6 +347,9 @@ async def add_upstream_proxy_pool_member(
         if _is_duplicate_proxy_pool_member_error(exc):
             raise _duplicate_proxy_pool_member_error()
         raise
+    # Pool membership is a route-resolver input: clear + durably bump before
+    # responding (same contract as the account-binding upsert).
+    await get_upstream_route_cache().invalidate()
     endpoint_ids = (
         (
             await context.session.execute(
@@ -461,6 +472,10 @@ async def put_account_proxy_binding(
         account.blocked_at = None
         reactivated = True
     await context.session.commit()
+    # Binding rows are a route-resolver input: clear this replica's route
+    # cache and durably bump ``upstream_route`` before responding so no
+    # request on the mutating replica resolves the pre-mutation binding.
+    await get_upstream_route_cache().invalidate()
     if reactivated:
         # Invalidate + bump only after the status commit so peers (and this
         # replica's poller) never rebuild selection/routing inputs from the
@@ -651,6 +666,21 @@ async def update_settings(
                     else current.prefer_earlier_reset_accounts
                 ),
                 prefer_earlier_reset_window=payload.prefer_earlier_reset_window or current.prefer_earlier_reset_window,
+                show_reset_credit_badges=(
+                    payload.show_reset_credit_badges
+                    if payload.show_reset_credit_badges is not None
+                    else current.show_reset_credit_badges
+                ),
+                auto_redeem_reset_credits_before_expiry=(
+                    payload.auto_redeem_reset_credits_before_expiry
+                    if payload.auto_redeem_reset_credits_before_expiry is not None
+                    else current.auto_redeem_reset_credits_before_expiry
+                ),
+                show_reset_credit_expiry_badge=(
+                    payload.show_reset_credit_expiry_badge
+                    if payload.show_reset_credit_expiry_badge is not None
+                    else current.show_reset_credit_expiry_badge
+                ),
                 routing_strategy=payload.routing_strategy or current.routing_strategy,
                 relative_availability_power=(
                     payload.relative_availability_power
@@ -764,6 +794,24 @@ async def update_settings(
                     if payload.limit_warmup_staggered_idle_enabled is not None
                     else current.limit_warmup_staggered_idle_enabled
                 ),
+                request_log_retention_override_days=(
+                    payload.request_log_retention_override_days
+                    if "request_log_retention_override_days" in payload.model_fields_set
+                    else None
+                ),
+                usage_history_retention_override_days=(
+                    payload.usage_history_retention_override_days
+                    if "usage_history_retention_override_days" in payload.model_fields_set
+                    else None
+                ),
+                clear_request_log_retention_override=(
+                    "request_log_retention_override_days" in payload.model_fields_set
+                    and payload.request_log_retention_override_days is None
+                ),
+                clear_usage_history_retention_override=(
+                    "usage_history_retention_override_days" in payload.model_fields_set
+                    and payload.usage_history_retention_override_days is None
+                ),
             ),
             # CAS anchor: omitted fields above were merged from `current`
             # (version checked against expectedVersion when supplied), so the
@@ -775,6 +823,14 @@ async def update_settings(
     except ValueError as exc:
         raise DashboardBadRequestError(str(exc), code="invalid_totp_config") from exc
 
+    upstream_route_inputs_changed = (
+        current.upstream_proxy_routing_enabled != updated.upstream_proxy_routing_enabled
+        or current.upstream_proxy_default_pool_id != updated.upstream_proxy_default_pool_id
+    )
+    # ``SettingsRepository.commit_refresh`` already cleared the route cache
+    # synchronously between the commit and its refresh await (no concurrent
+    # request can see the committed row alongside the stale cache); only the
+    # durable cross-replica signals remain here.
     await get_settings_cache().invalidate()
     changed_fields = [
         field_name
@@ -790,6 +846,9 @@ async def update_settings(
             "upstream_proxy_default_pool_id",
             "prefer_earlier_reset_accounts",
             "prefer_earlier_reset_window",
+            "show_reset_credit_badges",
+            "auto_redeem_reset_credits_before_expiry",
+            "show_reset_credit_expiry_badge",
             "routing_strategy",
             "relative_availability_power",
             "relative_availability_top_k",
@@ -819,9 +878,19 @@ async def update_settings(
             "weekly_pace_smoothing_minutes",
             "guest_access_enabled",
             "limit_warmup_staggered_idle_enabled",
+            "request_log_retention_override_days",
+            "usage_history_retention_override_days",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]
+    if upstream_route_inputs_changed:
+        # Durably bump ``upstream_route`` (with the coalesced retry fallback)
+        # rather than relying solely on the ``settings`` bump issued above:
+        # that bump is non-raising and enqueues no retry, so a transient write
+        # failure would leave peers on the stale route outcome until the TTL
+        # instead of the first recovered poll cycle. The re-clear inside
+        # ``invalidate`` is harmless; the guarding clear already ran pre-await.
+        await get_upstream_route_cache().invalidate()
     AuditService.log_async(
         "settings_changed",
         actor_ip=request.client.host if request.client else None,

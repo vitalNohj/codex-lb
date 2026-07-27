@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { AlertMessage } from "@/components/alert-message";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,12 @@ import type { QueueWaitChartProps } from "./queue-wait-chart";
 import type { ModelDistributionDonutProps } from "./model-distribution-donut";
 import type { UseragentDistributionDonutProps } from "./useragent-distribution-donut";
 import { DailyDetailTable } from "./daily-detail-table";
-import { daysAgoLocalISO, getBrowserReportsTimeZone, localDateISO } from "../date";
+import {
+  daysAgoLocalISO,
+  getBrowserReportsTimeZone,
+  isReportDateRangeValid,
+  localDateISO,
+} from "../date";
 
 const CostPerDayChart = lazy(() =>
   import("./cost-per-day-chart").then((module) => ({
@@ -72,6 +78,7 @@ export type ReportsPageProps = {
 };
 
 export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
+  const { t } = useTranslation();
   const [filters, setFilters] = useState<ReportsFiltersState>(() => ({
     ...createDefaultFilters(),
     ...initialFilters,
@@ -162,6 +169,11 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
   );
 
   const handleRetry = async () => {
+    if (!isReportDateRangeValid(filters.startDate, filters.endDate)) {
+      await refetchAccounts();
+      return;
+    }
+
     await Promise.allSettled([
       reportsQuery.refetch(),
       filterCatalogQuery.refetch(),
@@ -192,10 +204,10 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
     <div className="mx-auto w-full max-w-[1500px] flex-1 space-y-6 px-4 py-8 sm:px-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-          Cost Report
+          {t("reports.page.title")}
         </h1>
         <p className="text-sm text-muted-foreground">
-          Usage history by date range
+          {t("reports.page.subtitle")}
         </p>
       </div>
 
@@ -211,23 +223,23 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
 
       {mainReportsError ? (
         <AlertMessage variant="error">
-          Failed to load report data: {mainReportsError}
+          {t("reports.errors.data", { error: mainReportsError })}
         </AlertMessage>
       ) : null}
       {sharedOptionsError ? (
         <AlertMessage variant="error">
-          Failed to load model and user-agent options: {sharedOptionsError}
+          {t("reports.errors.options", { error: sharedOptionsError })}
         </AlertMessage>
       ) : null}
       {accountOptionsError ? (
         <AlertMessage variant="error">
-          Failed to load account options: {accountOptionsError}
+          {t("reports.errors.accounts", { error: accountOptionsError })}
         </AlertMessage>
       ) : null}
 
       {reportsQuery.isLoading ? (
         <div className="flex items-center justify-center py-20 text-sm text-muted-foreground">
-          Loading...
+          {t("common.loading")}
         </div>
       ) : reportsQuery.data ? (
         <>
@@ -293,7 +305,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
       ) : hasAnyError ? (
         <div className="space-y-3 rounded-xl border bg-card p-4">
           <AlertMessage variant="warning">
-            Some report data could not be loaded. Try reloading.
+            {t("reports.errors.partial")}
           </AlertMessage>
           <Button
             type="button"
@@ -303,7 +315,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
               void handleRetry();
             }}
           >
-            Retry
+            {t("common.actions.retry")}
           </Button>
         </div>
       ) : null}

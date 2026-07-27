@@ -17,6 +17,10 @@ from app.modules.reports.schemas import (
 )
 
 
+class InvalidReportDateRangeError(ValueError):
+    """Raised when a report starts after it ends."""
+
+
 class ReportsService:
     def __init__(self, repository: ReportsRepository) -> None:
         self._repository = repository
@@ -36,13 +40,14 @@ class ReportsService:
             end_date = now.date()
         if start_date is None:
             start_date = end_date - timedelta(days=6)
+        if start_date > end_date:
+            raise InvalidReportDateRangeError("start_date must be on or before end_date")
         window_days = (end_date - start_date).days + 1
         if window_days > MAX_DAILY_REPORT_DAYS:
             raise DailyReportRangeTooLargeError(f"report date range must be {MAX_DAILY_REPORT_DAYS} days or less")
 
         start_at = _local_midnight_to_utc_naive(start_date, timezone_info)
         end_at = _local_midnight_to_utc_naive(end_date + timedelta(days=1), timezone_info)
-        window_days = max(window_days, 1)
         previous_end_date = start_date - timedelta(days=1)
         previous_start_date = previous_end_date - timedelta(days=window_days - 1)
         previous_start_at = _local_midnight_to_utc_naive(previous_start_date, timezone_info)
@@ -74,6 +79,7 @@ class ReportsService:
                 cached_input_tokens=row.cached_input_tokens,
                 cost_usd=round(row.cost_usd, 4),
                 active_accounts=row.active_accounts,
+                conversations=row.conversation_count,
                 error_count=row.error_count,
                 median_ttft_ms=round(row.median_ttft_ms, 2),
                 median_tps=round(row.median_tps, 2),
@@ -113,6 +119,7 @@ class ReportsService:
                 total_requests=summary.total_requests,
                 total_errors=summary.total_errors,
                 active_accounts=summary.active_accounts,
+                total_conversations=summary.conversation_count,
                 avg_cost_per_day=round(summary.total_cost_usd / day_count, 4),
                 avg_requests_per_day=round(summary.total_requests / day_count, 2),
             ),

@@ -82,10 +82,11 @@ _MANUAL_DRIFT_INDEX_REQUIREMENTS: dict[str, frozenset[str]] = {
             "idx_logs_requested_at_model_tier",
             "idx_logs_model_effort_time",
             "idx_logs_status_error_time",
-            "idx_logs_api_key_time_account",
             "idx_logs_source_requested_at",
+            "idx_logs_dash_usage_covering",
         }
     ),
+    "additional_usage_history": frozenset({"ix_additional_usage_distinct_labels"}),
     "account_limit_warmups": frozenset(
         {
             "idx_account_limit_warmups_account_attempted",
@@ -822,10 +823,17 @@ def wait_for_head(
         time.sleep(min(interval_seconds, timeout_seconds - elapsed))
 
 
+def _non_empty_database_url(value: str) -> str:
+    if value == "":
+        raise argparse.ArgumentTypeError("database URL must not be empty")
+    return value
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Database migration utility for codex-lb.")
     parser.add_argument(
         "--db-url",
+        type=_non_empty_database_url,
         default=None,
         help="Database URL to migrate. Defaults to CODEX_LB_DATABASE_URL from settings.",
     )
@@ -891,7 +899,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    database_url = args.db_url or get_settings().database_url
+    database_url = get_settings().database_url if args.db_url is None else args.db_url
 
     if args.command == "upgrade":
         result = run_upgrade(
