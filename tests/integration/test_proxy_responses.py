@@ -2690,3 +2690,172 @@ async def test_v1_responses_normalizes_tool_messages(async_client, monkeypatch):
         {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'},
         {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
     ]
+
+
+_CURSOR_COMPACT_MODELS = ["gpt-5.2", "gpt-5.5", "gpt-5.6-sol"]
+
+_CONTEXT_LIMIT_FAILED_EVENT = (
+    'data: {"type":"response.failed","response":{"id":"resp_ctx","error":'
+    '{"message":"Input token limit exceeded","type":"invalid_request_error",'
+    '"code":"context_length_exceeded","param":"input"}}}\n\n'
+)
+
+
+def _context_limit_stream_factory(*, emit_created: bool = True):
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **_kw):
+        if emit_created:
+            yield 'data: {"type":"response.created","response":{"id":"resp_ctx"}}\n\n'
+            yield 'data: {"type":"response.output_text.delta","delta":"working"}\n\n'
+        yield _CONTEXT_LIMIT_FAILED_EVENT
+
+    return fake_stream
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", _CURSOR_COMPACT_MODELS)
+async def test_v1_responses_cursor_context_limit_streams_synthetic_compaction_usage(
+    async_client,
+    monkeypatch,
+    model,
+):
+    email = f"cursor-responses-ctx-{model}@example.com"
+    raw_account_id = f"acc_cursor_responses_ctx_{model.replace('.', '_').replace('-', '_')}"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", _context_limit_stream_factory())
+
+    payload = {"model": model, "input": "too much context", "stream": True}
+    async with async_client.stream(
+        "POST",
+        "/v1/responses",
+        json=payload,
+        headers={"user-agent": "Cursor/1.0"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = list(_iter_sse_events(lines))
+    assert not any(event.get("type") == "response.failed" for event in events)
+    completed = [event for event in events if event.get("type") == "response.completed"]
+    assert completed, events
+    usage = completed[-1]["response"]["usage"]
+    assert usage["input_tokens"] == 1000000
+    assert usage["output_tokens"] == 0
+    assert usage["total_tokens"] == 1000000
+    assert lines[-1] == "data: [DONE]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", _CURSOR_COMPACT_MODELS)
+async def test_v1_responses_non_cursor_context_limit_preserves_failure(async_client, monkeypatch, model):
+    email = f"plain-responses-ctx-{model}@example.com"
+    raw_account_id = f"acc_plain_responses_ctx_{model.replace('.', '_').replace('-', '_')}"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", _context_limit_stream_factory())
+
+    payload = {"model": model, "input": "too much context", "stream": True}
+    async with async_client.stream(
+        "POST",
+        "/v1/responses",
+        json=payload,
+        headers={"user-agent": "codex-tui/0.144.5"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = list(_iter_sse_events(lines))
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert failed, events
+    assert failed[-1]["response"]["error"]["code"] == "context_length_exceeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", _CURSOR_COMPACT_MODELS)
+async def test_v1_responses_cursor_context_limit_non_stream_returns_synthetic_usage(
+    async_client,
+    monkeypatch,
+    model,
+):
+    email = f"cursor-responses-ctx-json-{model}@example.com"
+    raw_account_id = f"acc_cursor_responses_ctx_json_{model.replace('.', '_').replace('-', '_')}"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", _context_limit_stream_factory())
+
+    payload = {"model": model, "input": "too much context", "stream": False}
+    resp = await async_client.post(
+        "/v1/responses",
+        json=payload,
+        headers={"user-agent": "Cursor/1.0"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["usage"]["input_tokens"] == 1000000
+    assert body["usage"]["total_tokens"] == 1000000
+    assert "error" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", _CURSOR_COMPACT_MODELS)
+async def test_v1_responses_non_cursor_context_limit_non_stream_returns_error(async_client, monkeypatch, model):
+    email = f"plain-responses-ctx-json-{model}@example.com"
+    raw_account_id = f"acc_plain_responses_ctx_json_{model.replace('.', '_').replace('-', '_')}"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", _context_limit_stream_factory())
+
+    payload = {"model": model, "input": "too much context", "stream": False}
+    resp = await async_client.post(
+        "/v1/responses",
+        json=payload,
+        headers={"user-agent": "codex-tui/0.144.5"},
+    )
+
+    assert resp.status_code >= 400
+    assert resp.json()["error"]["code"] == "context_length_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_responses_cursor_context_limit_streams_synthetic_compaction_usage(
+    async_client,
+    monkeypatch,
+):
+    email = "cursor-backend-responses-ctx@example.com"
+    raw_account_id = "acc_cursor_backend_responses_ctx"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", _context_limit_stream_factory())
+
+    payload = {"model": "gpt-5.6-sol", "input": "too much context", "stream": True}
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        json=payload,
+        headers={"user-agent": "Cursor/1.0"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = list(_iter_sse_events(lines))
+    assert not any(event.get("type") == "response.failed" for event in events)
+    completed = [event for event in events if event.get("type") == "response.completed"]
+    assert completed, events
+    assert completed[-1]["response"]["usage"]["input_tokens"] == 1000000
