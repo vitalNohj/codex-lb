@@ -19,6 +19,7 @@ from app.modules.api_keys.service import ApiKeyData
 logger = logging.getLogger(__name__)
 
 CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS = 1_000_000
+_GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS = 350_000
 
 
 def is_cursor_compat_client(request: Request, api_key: ApiKeyData | None) -> bool:
@@ -53,6 +54,23 @@ def is_context_length_error_envelope(payload: JsonValue) -> bool:
         code=code if isinstance(code, str) else None,
         message=message if isinstance(message, str) else None,
     )
+
+
+def needs_cursor_proactive_compaction(model: str, usage: JsonValue) -> bool:
+    if not model.lower().startswith("gpt-5.6-") or not is_json_mapping(usage):
+        return False
+    prompt_tokens = usage.get("prompt_tokens")
+    return isinstance(prompt_tokens, int) and prompt_tokens >= _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS
+
+
+def _apply_cursor_compaction_usage(usage: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    completion_tokens = usage.get("completion_tokens")
+    completion_count = completion_tokens if isinstance(completion_tokens, int) else 0
+    return {
+        **usage,
+        "prompt_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
+        "total_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS + completion_count,
+    }
 
 
 def cursor_context_limit_usage_stream(
@@ -337,6 +355,21 @@ def apply_cursor_usage_fallback(
     source: str,
 ) -> None:
     usage = result.usage.model_dump(mode="json", exclude_none=True) if result.usage is not None else None
+    if needs_cursor_proactive_compaction(payload.model, usage):
+        assert result.usage is not None
+        result.usage = result.usage.model_copy(
+            update={
+                "prompt_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
+                "total_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS + result.usage.completion_tokens,
+            }
+        )
+        logger.info(
+            "cursor_proactive_compaction source=%s model=%s threshold=%s",
+            source,
+            payload.model,
+            _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS,
+        )
+        return
     if not needs_cursor_usage_fallback(usage):
         return
     prompt_tokens = estimate_cursor_prompt_tokens(payload)
@@ -362,6 +395,16 @@ def apply_cursor_usage_fallback_to_response(
     source: str,
 ) -> dict[str, JsonValue]:
     usage = response_body.get("usage")
+    if needs_cursor_proactive_compaction(payload.model, usage):
+        assert is_json_mapping(usage)
+        response_body["usage"] = _apply_cursor_compaction_usage(cast(dict[str, JsonValue], usage))
+        logger.info(
+            "cursor_proactive_compaction source=%s model=%s threshold=%s",
+            source,
+            payload.model,
+            _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS,
+        )
+        return response_body
     if not needs_cursor_usage_fallback(usage):
         return response_body
     prompt_tokens = estimate_cursor_prompt_tokens(payload)
@@ -453,7 +496,20 @@ class CursorChatSseCompatRewriter:
         self._completion_chars += chat_completion_delta_chars(payload_dict)
         if is_chat_completion_usage_chunk(payload_dict):
             self._usage_emitted = True
-            if needs_cursor_usage_fallback(payload_dict.get("usage")):
+            usage = payload_dict.get("usage")
+            if needs_cursor_proactive_compaction(self._payload.model, usage):
+                assert is_json_mapping(usage)
+                payload_dict["usage"] = _apply_cursor_compaction_usage(cast(dict[str, JsonValue], usage))
+                logger.info(
+                    "cursor_proactive_compaction source=%s model=%s threshold=%s",
+                    self._source,
+                    self._payload.model,
+                    _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS,
+                )
+                rewritten_data = json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
+                lines = [*prefix_lines, f"data: {rewritten_data}"]
+                return [_sse_event_bytes("\n".join(lines))]
+            if needs_cursor_usage_fallback(usage):
                 completion_tokens = max(1, estimate_tokens_from_chars(self._completion_chars))
                 payload_dict["usage"] = {
                     "prompt_tokens": self._prompt_tokens,
