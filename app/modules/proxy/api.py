@@ -205,13 +205,10 @@ from app.modules.proxy.claude_sidecar_dispatch import (
 )
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
-    cursor_context_limit_responses_completion,
-    cursor_context_limit_responses_stream,
     cursor_context_limit_usage_completion,
     cursor_context_limit_usage_stream,
     is_context_length_error,
     is_cursor_compat_client,
-    stream_responses_with_cursor_context_limit_fallback,
     stream_with_cursor_usage_fallback,
 )
 from app.modules.proxy.custom_alias_catalog import (
@@ -4006,12 +4003,6 @@ async def v1_chat_completions(
     stream_with_first = _prepend_first(first, stream)
     result = await collect_chat_completion(stream_with_first, model=responses_payload.model)
     if isinstance(result, OpenAIErrorEnvelopeModel):
-        if cursor_compat_client and _is_context_length_error_envelope(result):
-            logger.info(
-                "cursor_context_limit_fallback source=chat_non_stream model=%s",
-                payload.model,
-            )
-            return cursor_context_limit_usage_completion(payload, headers=rate_limit_headers)
         error = result.error
         code = error.code if error else None
         status_code = 503 if code in _UNAVAILABLE_SELECTION_ERROR_CODES else 502
@@ -4955,7 +4946,6 @@ async def _stream_responses(
             service_tier_was_enforced=service_tier_was_enforced,
         )
     validate_model_access(api_key, payload.model)
-    cursor_compat_client = is_cursor_compat_client(request, api_key)
     compact_payload: ResponsesCompactRequest | None = None
     if codex_session_affinity:
         try:
@@ -5134,15 +5124,6 @@ async def _stream_responses(
     if startup_error is not None:
         if owns_reservation:
             await _release_reservation(reservation)
-        if cursor_compat_client and _is_context_length_startup_error(startup_error):
-            logger.info(
-                "cursor_context_limit_fallback source=responses_startup model=%s",
-                payload.model,
-            )
-            return cursor_context_limit_responses_stream(
-                payload.model,
-                headers={**turn_state_headers, **rate_limit_headers},
-            )
         return _stream_startup_error_response(
             request,
             startup_error,
@@ -5156,11 +5137,6 @@ async def _stream_responses(
         ),
         enforce_openai_sdk_contract=enforce_openai_sdk_contract,
     )
-    if cursor_compat_client:
-        stream = stream_responses_with_cursor_context_limit_fallback(
-            stream,
-            model=payload.model,
-        )
     use_codex_keepalive = native_codex_heartbeat or not enforce_openai_sdk_contract
     keepalive_frame = CODEX_KEEPALIVE_FRAME if use_codex_keepalive else SSE_KEEPALIVE_FRAME
     if use_codex_keepalive:
@@ -5212,7 +5188,6 @@ async def _collect_responses(
         service_tier_was_enforced=service_tier_was_enforced,
     )
     validate_model_access(api_key, payload.model)
-    cursor_compat_client = is_cursor_compat_client(request, api_key)
     admission_denial = await _opportunistic_admission_denial(request, context, api_key, model=payload.model)
     if admission_denial is not None:
         return admission_denial
@@ -5269,12 +5244,6 @@ async def _collect_responses(
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
         error = _parse_error_envelope(exc.payload)
-        if cursor_compat_client and _is_context_length_error_envelope(error):
-            return _cursor_context_limit_responses_response(
-                payload.model,
-                source="responses_collect",
-                headers={**captured_turn_state_headers, **rate_limit_headers},
-            )
         status_code, error = _mask_previous_response_not_found_error(error, default_status=exc.status_code)
         return _logged_error_json_response(
             request,
@@ -5285,12 +5254,6 @@ async def _collect_responses(
     if isinstance(response_payload, OpenAIResponsePayload):
         if response_payload.status == "failed":
             error_payload = _error_envelope_from_response(response_payload.error)
-            if cursor_compat_client and _is_context_length_error_envelope(error_payload):
-                return _cursor_context_limit_responses_response(
-                    payload.model,
-                    source="responses_collect_failed",
-                    headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
-                )
             status_code, error_payload = _mask_previous_response_not_found_error(error_payload)
             return _logged_error_json_response(
                 request,
@@ -5300,12 +5263,6 @@ async def _collect_responses(
             )
         return JSONResponse(
             content=response_payload.model_dump(mode="json", exclude_none=True),
-            headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
-        )
-    if cursor_compat_client and _is_context_length_error_envelope(response_payload):
-        return _cursor_context_limit_responses_response(
-            payload.model,
-            source="responses_collect_envelope",
             headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
         )
     status_code, response_payload = _mask_previous_response_not_found_error(response_payload)
@@ -5898,21 +5855,6 @@ def _startup_error_details(error: ProxyResponseError | OpenAIErrorEnvelopeModel)
     if isinstance(error, ProxyResponseError):
         return _error_details_from_content(error.payload)
     return _error_details_from_content(error)
-
-
-def _is_context_length_error_envelope(error: OpenAIErrorEnvelopeModel) -> bool:
-    code, message = _error_details_from_content(error)
-    return is_context_length_error(code=code, message=message)
-
-
-def _cursor_context_limit_responses_response(
-    model: str,
-    *,
-    source: str,
-    headers: Mapping[str, str],
-) -> JSONResponse:
-    logger.info("cursor_context_limit_fallback source=%s model=%s", source, model)
-    return cursor_context_limit_responses_completion(model, headers=headers)
 
 
 async def _probe_chat_stream_startup_error(
