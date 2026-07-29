@@ -35,8 +35,7 @@ from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
     cursor_context_limit_usage_completion,
     cursor_context_limit_usage_sse_chunks,
-    is_context_length_error,
-    is_context_length_error_envelope,
+    is_sidecar_context_length_error,
     stream_bytes_with_cursor_usage_fallback,
 )
 from app.modules.proxy.deepseek_v4_compat import (
@@ -1134,9 +1133,7 @@ def _float_field(payload: Mapping[str, JsonValue], key: str) -> float | None:
 
 
 def _is_sidecar_context_length_error(exc: ClaudeSidecarError) -> bool:
-    if is_json_mapping(exc.body) and is_context_length_error_envelope(exc.body):
-        return True
-    return is_context_length_error(code=None, message=exc.message)
+    return is_sidecar_context_length_error(body=exc.body, message=exc.message)
 
 
 def _openai_error_content(exc: ClaudeSidecarError) -> OpenAIErrorEnvelope:

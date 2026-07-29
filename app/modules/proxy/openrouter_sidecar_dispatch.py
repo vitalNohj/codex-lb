@@ -36,6 +36,8 @@ from app.modules.proxy.claude_sidecar_dispatch import (
 )
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
+    cursor_context_limit_usage_completion,
+    is_sidecar_context_length_error,
     stream_bytes_with_cursor_usage_fallback,
 )
 from app.modules.proxy.deepseek_v4_compat import (
@@ -201,6 +203,9 @@ async def proxy_chat_to_openrouter(
             headers=dict(rate_limit_headers),
         )
     except OpenRouterSidecarError as exc:
+        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
+            await _release_openrouter_reservation(reservation, api_key=api_key)
+            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         await _release_openrouter_reservation(reservation, api_key=api_key)
         await _log_openrouter_request(
             api_key=api_key,
