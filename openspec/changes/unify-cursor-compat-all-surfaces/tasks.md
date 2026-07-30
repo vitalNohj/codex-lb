@@ -29,9 +29,16 @@
 - [x] 4.4 Add a `/backend-api/codex/responses` Cursor test covering the second Responses route.
 - [x] 4.5 Confirm existing Cursor chat and sidecar suites still pass.
 
-## 5. Validation
+## 5. GPT-5.6 Cursor success-path proactive compaction
 
-- [x] 5.1 `uv run ruff check app/modules/proxy tests/integration/test_proxy_responses.py`.
-- [x] 5.2 `uv run pytest tests/integration/test_proxy_responses.py tests/integration/test_http_responses_bridge.py tests/integration/test_api_keys_api.py`.
-- [x] 5.3 `uv run pytest tests/integration/test_proxy_chat_completions.py tests/integration/test_claude_sidecar_routing.py tests/integration/test_openrouter_sidecar_routing.py tests/integration/test_omniroute_sidecar_routing.py`.
-- [x] 5.4 `openspec validate unify-cursor-compat-all-surfaces --strict`.
+- [x] 5.1 Detect `gpt-5.6-*` chat usage at/above `350_000` prompt tokens and rewrite to synthetic `1_000_000` for Cursor chat handlers.
+- [x] 5.2 Cover helper, non-stream apply paths, and streaming usage-chunk rewrite with unit tests.
+- [x] 5.3 Add OpenSpec delta for proactive Sol compaction (error-path-only for non-gpt-5.6).
+
+## 6. Validation
+
+- [x] 6.1 `uv run ruff check app/modules/proxy tests/integration/test_proxy_responses.py`.
+- [x] 6.2 `uv run pytest tests/integration/test_proxy_responses.py tests/integration/test_http_responses_bridge.py tests/integration/test_api_keys_api.py`.
+- [x] 6.3 `uv run pytest tests/integration/test_proxy_chat_completions.py tests/integration/test_claude_sidecar_routing.py tests/integration/test_openrouter_sidecar_routing.py tests/integration/test_omniroute_sidecar_routing.py`.
+- [x] 6.4 `openspec validate unify-cursor-compat-all-surfaces --strict`.
+- [x] 6.5 `uv run pytest tests/unit/test_cursor_proactive_compaction.py`.
