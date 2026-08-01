@@ -61,6 +61,7 @@ from app.modules.proxy.sidecar_routing import (
     parse_sidecar_full_models,
     parse_sidecar_prefixes,
 )
+from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -223,10 +224,17 @@ async def proxy_chat_to_omniroute(
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
-        return JSONResponse(
+        client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
-            content=_openai_error_content(exc),
-            headers=dict(rate_limit_headers),
+            message=exc.message,
+            error_code="omniroute_sidecar_error",
+            body=exc.body,
+            extra_headers=rate_limit_headers,
+        )
+        return JSONResponse(
+            status_code=client_error.status_code,
+            content=client_error.content,
+            headers=client_error.headers,
         )
 
     usage = extract_usage(response_body)
@@ -323,7 +331,13 @@ async def _omniroute_stream_iterator(
             requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
-        yield _error_sse(_openai_error_content(exc))
+        client_error = client_facing_sidecar_error(
+            status_code=exc.status_code,
+            message=exc.message,
+            error_code="omniroute_sidecar_error",
+            body=exc.body,
+        )
+        yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
     except BaseException as exc:
         await _release_omniroute_reservation(reservation, api_key=api_key)
@@ -405,16 +419,6 @@ def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
     except json.JSONDecodeError:
         return None
     return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
-
-
-def _openai_error_content(exc: OmniRouteSidecarError) -> OpenAIErrorEnvelope:
-    if is_json_mapping(exc.body):
-        error = exc.body.get("error")
-        if is_json_mapping(error):
-            message = error.get("message")
-            if isinstance(message, str) and message:
-                return cast(OpenAIErrorEnvelope, exc.body)
-    return openai_error("omniroute_sidecar_error", exc.message, error_type="upstream_error")
 
 
 def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
@@ -599,10 +603,17 @@ async def proxy_responses_to_omniroute(
             reasoning_effort=effective_reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
         )
-        return JSONResponse(
+        client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
-            content=_openai_error_content(exc),
-            headers=dict(rate_limit_headers),
+            message=exc.message,
+            error_code="omniroute_sidecar_error",
+            body=exc.body,
+            extra_headers=rate_limit_headers,
+        )
+        return JSONResponse(
+            status_code=client_error.status_code,
+            content=client_error.content,
+            headers=client_error.headers,
         )
 
     usage = extract_usage(response_body)
@@ -699,7 +710,13 @@ async def _omniroute_responses_stream_iterator(
             requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
-        yield _error_sse(_openai_error_content(exc))
+        client_error = client_facing_sidecar_error(
+            status_code=exc.status_code,
+            message=exc.message,
+            error_code="omniroute_sidecar_error",
+            body=exc.body,
+        )
+        yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
     except BaseException as exc:
         await _release_omniroute_reservation(reservation, api_key=api_key)
