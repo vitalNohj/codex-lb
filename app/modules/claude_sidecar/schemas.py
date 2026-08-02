@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from app.modules.accounts.schemas import SidecarAuthAccount
 from app.modules.shared.schemas import DashboardModel
@@ -74,3 +74,20 @@ class ClaudeSidecarAccountPriorityUpdate(DashboardModel):
 class ClaudeSidecarAccountPausedUpdate(DashboardModel):
     name: str = Field(min_length=1)
     paused: bool
+
+
+class AnthropicOAuthUsageBucket(BaseModel):
+    """Anthropic ``/api/oauth/usage`` window bucket (snake_case, no camel aliases)."""
+
+    utilization: float
+    resets_at: str | None = None
+
+
+class AnthropicOAuthUsageResponse(BaseModel):
+    """Anthropic-shaped pooled Claude usage payload for API-key callers."""
+
+    five_hour: AnthropicOAuthUsageBucket | None = None
+    seven_day: AnthropicOAuthUsageBucket | None = None
+    seven_day_opus: object | None = None
+    seven_day_sonnet: object | None = None
+    extra_usage: object | None = None
