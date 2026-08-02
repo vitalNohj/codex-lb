@@ -152,6 +152,9 @@ from app.modules.api_keys.service import (
     ApiKeyUsageReservationData,
     _compute_pooled_credits,
 )
+from app.modules.claude_sidecar.schemas import AnthropicOAuthUsageResponse
+from app.modules.claude_sidecar.service import ClaudeSidecarService
+from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.model_sources.catalog import (
@@ -297,6 +300,7 @@ from app.modules.rate_limit_reset_credits.api import serialize_reset_credit_rede
 from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.mappers import usage_history_to_window_row
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import UsageUpdater
@@ -5581,6 +5585,21 @@ async def _transcribe_request(
     finally:
         await _release_reservation(reservation)
     return JSONResponse(content=result, headers=rate_limit_headers)
+
+
+@usage_router.get("/api/oauth/usage", response_model=AnthropicOAuthUsageResponse)
+@usage_router.get("/api/oauth/usage/", response_model=AnthropicOAuthUsageResponse, include_in_schema=False)
+async def anthropic_oauth_usage(
+    api_key: ApiKeyData = Security(validate_usage_api_key),
+) -> JSONResponse:
+    hide_upstream = await _hide_upstream_quota_for_api_key_clients(api_key)
+    async with get_background_session() as session:
+        service = ClaudeSidecarService(
+            SettingsRepository(session),
+            ClaudeSidecarUsageRepository(session),
+        )
+        payload = await service.get_pooled_oauth_usage_payload(hide_upstream=hide_upstream)
+    return JSONResponse(content=payload)
 
 
 @usage_router.get("/api/codex/usage", response_model=RateLimitStatusPayload)
