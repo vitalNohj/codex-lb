@@ -189,6 +189,8 @@ def _dashboard_auth_status(auth: SidecarAuthQuota) -> str | None:
 
 
 def _looks_like_reauth(auth: SidecarAuthQuota) -> bool:
+    # ponytail: require auth-death evidence. Generic status=error (e.g.
+    # "context canceled") is transient unavailable, not reauth.
     message = (auth.status_message or "").lower()
     if (
         "authentication_error" in message
@@ -198,7 +200,7 @@ def _looks_like_reauth(auth: SidecarAuthQuota) -> bool:
     ):
         return True
     status = (auth.status or "").lower()
-    return auth.unavailable and status in {"error", "unauthorized"}
+    return auth.unavailable and status == "unauthorized"
 
 
 def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAccount:
