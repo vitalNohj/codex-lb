@@ -60,6 +60,46 @@ def test_claude_auth_error_maps_to_reauth_required_badge_status() -> None:
     assert summary.sidecar_auths[0].status == "reauth_required"
 
 
+def test_claude_auth_transient_context_canceled_does_not_map_to_reauth() -> None:
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 7, 25, 17, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-vitalnohj@gmail.com.json",
+                auth_index="8956369ab3af3441",
+                email="vitalnohj@gmail.com",
+                provider="claude",
+                credential_path=None,
+                status="error",
+                status_message="context canceled",
+                disabled=False,
+                unavailable=True,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=504,
+                failed=1,
+                last_refresh=None,
+            ),
+        ),
+    )
+    settings = _settings(
+        claude_sidecar_enabled=True,
+        claude_sidecar_api_key_encrypted=b"key",
+        claude_sidecar_base_url="http://127.0.0.1:8317",
+        claude_sidecar_last_health_status="healthy",
+        claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+    )
+
+    summary = build_claude_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "error"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
 def test_claude_auth_unavailable_error_without_message_maps_to_reauth() -> None:
     snapshot = SidecarQuotaSnapshot(
         checked_at=datetime(2026, 7, 25, 17, 0, tzinfo=timezone.utc),
