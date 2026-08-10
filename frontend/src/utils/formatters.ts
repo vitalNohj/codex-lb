@@ -162,7 +162,21 @@ export function formatCompactNumber(value: unknown): string {
 
 export function formatCurrency(value: unknown): string {
   const numeric = toNumber(value);
-  return numeric === null ? "--" : getCurrencyFormatter().format(numeric);
+  if (numeric === null) {
+    return "--";
+  }
+  // Cheap models (e.g. gpt-5.6-luna) routinely land under $0.01; keep enough
+  // fraction digits so the UI does not round a real cost down to "$0.00".
+  if (numeric !== 0 && Math.abs(numeric) < 0.01) {
+    const locale = getIntlLocale();
+    return new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    }).format(numeric);
+  }
+  return getCurrencyFormatter().format(numeric);
 }
 
 export function formatPercent(value: unknown): string {
