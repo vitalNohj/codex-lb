@@ -64,6 +64,9 @@ describe("formatters", () => {
     expect(formatCompactNumber(1430)).toBe("1.43K");
     expect(formatCompactNumber(1_500_000_000)).toBe("1.5B");
     expect(formatCurrency(12)).toMatch(/^\$/);
+    expect(formatCurrency(0.0016)).toBe("$0.0016");
+    expect(formatCurrency(0.01)).toBe("$0.01");
+    expect(formatCurrency(0)).toBe("$0.00");
     expect(formatNumber("abc")).toBe("--");
   });
 
