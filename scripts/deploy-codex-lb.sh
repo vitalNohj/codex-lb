@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Deploy codex-lb from origin/main and restart the systemd user service.
+# Trigger: nohj.dev POST /hooks/github (push to main). Do not use a
+# self-hosted Actions runner on this public repo.
 #
 # Env overrides:
 #   CODEX_LB_DEPLOY_DIR            Install path (default: /home/nohj/personal/codex-lb)
