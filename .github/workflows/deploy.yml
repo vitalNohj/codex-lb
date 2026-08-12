@@ -10,36 +10,38 @@ concurrency:
   group: deploy-codex-lb-main
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     name: Pull main + restart codex-lb
-    runs-on: self-hosted
+    # Default self-hosted labels. Register the runner on this host as user
+    # `nohj` (linger systemd user service), not as root/system, so
+    # `systemctl --user restart codex-lb.service` works.
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     env:
-      # Override on the runner if the live install lives elsewhere.
       CODEX_LB_DEPLOY_DIR: /home/nohj/personal/codex-lb
       CODEX_LB_SERVICE: codex-lb.service
       CODEX_LB_DEPLOY_BRANCH: main
       CODEX_LB_DEPLOY_REMOTE: origin
+      # Live clone is often on an agent feature branch; CI must switch to main.
+      CODEX_LB_DEPLOY_SWITCH_BRANCH: "1"
     steps:
+      - name: Checkout deploy script from this commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Deploy codex-lb
         run: |
           set -euo pipefail
-          SCRIPT="${CODEX_LB_DEPLOY_DIR}/scripts/deploy-codex-lb.sh"
-          LAUNCHER="${HOME}/bin/deploy-codex-lb.sh"
-
-          if [[ -x "$LAUNCHER" ]]; then
-            echo "Using installed launcher: $LAUNCHER"
-            exec "$LAUNCHER"
+          SCRIPT="${GITHUB_WORKSPACE}/scripts/deploy-codex-lb.sh"
+          if [[ ! -f "$SCRIPT" ]]; then
+            echo "::error::Deploy script missing from this commit: $SCRIPT"
+            exit 1
           fi
-
-          if [[ -x "$SCRIPT" ]]; then
-            echo "Using repo script: $SCRIPT"
-            exec "$SCRIPT"
-          fi
-
-          echo "::error::Deploy script not found at $LAUNCHER or $SCRIPT"
-          echo "Bootstrap once on the runner host:"
-          echo "  mkdir -p \"\$HOME/bin\""
-          echo "  install -m 755 \"${CODEX_LB_DEPLOY_DIR}/scripts/deploy-codex-lb.sh\" \"\$HOME/bin/deploy-codex-lb.sh\""
-          exit 1
+          chmod +x "$SCRIPT"
+          echo "Using workflow-checkout script: $SCRIPT"
+          exec bash "$SCRIPT"
