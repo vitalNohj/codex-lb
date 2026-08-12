@@ -1,0 +1,45 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-codex-lb-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull main + restart codex-lb
+    runs-on: self-hosted
+    timeout-minutes: 30
+    env:
+      # Override on the runner if the live install lives elsewhere.
+      CODEX_LB_DEPLOY_DIR: /home/nohj/personal/codex-lb
+      CODEX_LB_SERVICE: codex-lb.service
+      CODEX_LB_DEPLOY_BRANCH: main
+      CODEX_LB_DEPLOY_REMOTE: origin
+    steps:
+      - name: Deploy codex-lb
+        run: |
+          set -euo pipefail
+          SCRIPT="${CODEX_LB_DEPLOY_DIR}/scripts/deploy-codex-lb.sh"
+          LAUNCHER="${HOME}/bin/deploy-codex-lb.sh"
+
+          if [[ -x "$LAUNCHER" ]]; then
+            echo "Using installed launcher: $LAUNCHER"
+            exec "$LAUNCHER"
+          fi
+
+          if [[ -x "$SCRIPT" ]]; then
+            echo "Using repo script: $SCRIPT"
+            exec "$SCRIPT"
+          fi
+
+          echo "::error::Deploy script not found at $LAUNCHER or $SCRIPT"
+          echo "Bootstrap once on the runner host:"
+          echo "  mkdir -p \"\$HOME/bin\""
+          echo "  install -m 755 \"${CODEX_LB_DEPLOY_DIR}/scripts/deploy-codex-lb.sh\" \"\$HOME/bin/deploy-codex-lb.sh\""
+          exit 1
