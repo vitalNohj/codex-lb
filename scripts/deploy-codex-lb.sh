@@ -36,6 +36,8 @@ LOG_KEEP="${CODEX_LB_DEPLOY_LOG_KEEP:-20}"
 
 UV_BIN="${UV_BIN:-$HOME/.local/bin/uv}"
 BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+# systemd-run PATH is often /usr/bin:/bin. bun run build shells out to `bun`.
+export PATH="$(dirname -- "$BUN_BIN"):$PATH"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_FILE="$LOG_DIR/deploy-$TS.log"
 LATEST_LINK="$LOG_DIR/latest.log"
