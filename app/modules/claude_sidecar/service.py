@@ -175,8 +175,9 @@ class ClaudeSidecarService:
         if not active_snapshot.accounts:
             return build_anthropic_oauth_usage_payload(None)
 
-        active_keys = {_auth_key(auth) for auth in active_snapshot.accounts}
-        active_keys.discard(None)
+        active_keys: set[str] = set()
+        for auth in active_snapshot.accounts:
+            active_keys.update(_auth_identity_keys(auth))
 
         plans = [
             plan
@@ -446,6 +447,15 @@ def _auth_key(auth: SidecarAuthQuota) -> str | None:
     if auth.email:
         return f"source:{auth.email.lower()}"
     return None
+
+
+def _auth_identity_keys(auth: SidecarAuthQuota) -> set[str]:
+    keys: set[str] = set()
+    if auth.auth_index:
+        keys.add(f"auth:{auth.auth_index}")
+    if auth.email:
+        keys.add(f"source:{auth.email.lower()}")
+    return keys
 
 
 def _estimate_key(estimate: ClaudeAuthUsageEstimate) -> str | None:

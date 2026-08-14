@@ -20,6 +20,7 @@ function getIntlLocale(): string {
 const numberFormatters = new Map<string, Intl.NumberFormat>();
 const compactFormatters = new Map<string, Intl.NumberFormat>();
 const currencyFormatters = new Map<string, Intl.NumberFormat>();
+const preciseCurrencyFormatters = new Map<string, Intl.NumberFormat>();
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
 const timeFormatters = new Map<string, Intl.DateTimeFormat>();
 const chartDateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
@@ -58,6 +59,16 @@ function getCurrencyFormatter(): Intl.NumberFormat {
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
+  }));
+}
+
+function getPreciseCurrencyFormatter(): Intl.NumberFormat {
+  const locale = getIntlLocale();
+  return getCachedFormatter(preciseCurrencyFormatters, locale, () => new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
   }));
 }
 
@@ -168,13 +179,7 @@ export function formatCurrency(value: unknown): string {
   // Cheap models (e.g. gpt-5.6-luna) routinely land under $0.01; keep enough
   // fraction digits so the UI does not round a real cost down to "$0.00".
   if (numeric !== 0 && Math.abs(numeric) < 0.01) {
-    const locale = getIntlLocale();
-    return new Intl.NumberFormat(locale, {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 6,
-    }).format(numeric);
+    return getPreciseCurrencyFormatter().format(numeric);
   }
   return getCurrencyFormatter().format(numeric);
 }

@@ -16,7 +16,11 @@ from app.modules.claude_sidecar.quota import (
     SidecarQuotaSnapshot,
     snapshot_to_json,
 )
-from app.modules.claude_sidecar.service import ClaudeSidecarService
+from app.modules.claude_sidecar.service import (
+    ClaudeSidecarService,
+    _auth_identity_keys,
+    _event_identity_key,
+)
 from app.modules.claude_sidecar.usage_estimates import ClaudeAggregateUsageEstimate
 
 pytestmark = pytest.mark.unit
@@ -130,6 +134,15 @@ def _settings(
         claude_sidecar_auth_plans_json=plans_json
         or '[{"auth_index":"active","plan_type":"pro","primary_token_budget":40000,"secondary_token_budget":280000}]',
     )
+
+
+def test_auth_identity_keys_match_source_only_events() -> None:
+    auth = _auth("active")
+    keys = _auth_identity_keys(auth)
+    assert "auth:active" in keys
+    assert "source:active@example.com" in keys
+    source_only = SimpleNamespace(auth_index=None, source="active@example.com")
+    assert _event_identity_key(source_only) in keys
 
 
 @pytest.mark.asyncio
