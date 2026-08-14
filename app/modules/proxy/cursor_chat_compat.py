@@ -293,29 +293,44 @@ async def stream_responses_with_cursor_context_limit_fallback(
     """Replace Responses context-length failures with the Cursor compaction signal."""
     saw_created = False
     response_id: str | None = None
-    async for event in stream:
-        payload = parse_sse_data_json(event)
-        if payload is not None:
-            event_type = payload.get("type") if is_json_mapping(payload) else None
-            if event_type == "response.created":
-                saw_created = True
-                response_id = _response_event_id(payload) or response_id
-            elif response_id is None:
-                response_id = _response_event_id(payload)
-            if is_context_length_failure_event(payload):
-                logger.info(
-                    "cursor_context_limit_fallback source=%s model=%s",
-                    source,
-                    model,
+    try:
+        async for event in stream:
+            # Token deltas dominate Responses SSE; only decode events that can
+            # carry created/failure payloads.
+            payload = (
+                parse_sse_data_json(event)
+                if (
+                    "response.failed" in event
+                    or "response.created" in event
+                    or '"error"' in event
                 )
-                for synthetic in cursor_context_limit_responses_sse_events(
-                    model,
-                    response_id=response_id,
-                    emit_created=not saw_created,
-                ):
-                    yield synthetic
-                return
-        yield event
+                else None
+            )
+            if payload is not None:
+                event_type = payload.get("type") if is_json_mapping(payload) else None
+                if event_type == "response.created":
+                    saw_created = True
+                    response_id = _response_event_id(payload) or response_id
+                elif response_id is None:
+                    response_id = _response_event_id(payload)
+                if is_context_length_failure_event(payload):
+                    logger.info(
+                        "cursor_context_limit_fallback source=%s model=%s",
+                        source,
+                        model,
+                    )
+                    for synthetic in cursor_context_limit_responses_sse_events(
+                        model,
+                        response_id=response_id,
+                        emit_created=not saw_created,
+                    ):
+                        yield synthetic
+                    return
+            yield event
+    finally:
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 async def stream_with_cursor_usage_fallback(
