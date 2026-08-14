@@ -13,11 +13,13 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import ChatCompletion, ChatCompletionUsage
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.modules.api_keys.service import ApiKeyData
 
 logger = logging.getLogger(__name__)
 
 CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS = 1_000_000
+_GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS = 350_000
 
 
 def is_cursor_compat_client(request: Request, api_key: ApiKeyData | None) -> bool:
@@ -52,6 +54,23 @@ def is_context_length_error_envelope(payload: JsonValue) -> bool:
         code=code if isinstance(code, str) else None,
         message=message if isinstance(message, str) else None,
     )
+
+
+def needs_cursor_proactive_compaction(model: str, usage: JsonValue) -> bool:
+    if not model.lower().startswith("gpt-5.6-") or not is_json_mapping(usage):
+        return False
+    prompt_tokens = usage.get("prompt_tokens")
+    return isinstance(prompt_tokens, int) and prompt_tokens >= _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS
+
+
+def _apply_cursor_compaction_usage(usage: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    completion_tokens = usage.get("completion_tokens")
+    completion_count = completion_tokens if isinstance(completion_tokens, int) else 0
+    return {
+        **usage,
+        "prompt_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
+        "total_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS + completion_count,
+    }
 
 
 def cursor_context_limit_usage_stream(
@@ -152,6 +171,168 @@ def cursor_context_limit_usage_completion(
     )
 
 
+def is_sidecar_context_length_error(*, body: JsonValue, message: str | None) -> bool:
+    """Shared context-length detection for every sidecar provider error."""
+    if is_json_mapping(body) and is_context_length_error_envelope(body):
+        return True
+    return is_context_length_error(code=None, message=message)
+
+
+def cursor_context_limit_responses_payload(
+    model: str,
+    *,
+    response_id: str | None = None,
+) -> dict[str, JsonValue]:
+    """Responses-shaped twin of the synthetic chat over-limit completion.
+
+    Cursor triggers compaction from reported usage, so a context-length failure
+    has to reach it as a successful turn carrying over-limit usage. Surfacing
+    the upstream error instead leaves Cursor unable to compact.
+    """
+    usage_tokens = CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
+    return {
+        "id": response_id or f"resp_{time.time_ns()}",
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": model,
+        "output": [],
+        "usage": {
+            "input_tokens": usage_tokens,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": 0,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": usage_tokens,
+        },
+    }
+
+
+def cursor_context_limit_responses_sse_events(
+    model: str,
+    *,
+    response_id: str | None = None,
+    emit_created: bool = True,
+) -> list[str]:
+    completed = cursor_context_limit_responses_payload(model, response_id=response_id)
+    events: list[str] = []
+    if emit_created:
+        created = {key: value for key, value in completed.items() if key != "usage"}
+        created["status"] = "in_progress"
+        events.append(format_sse_event({"type": "response.created", "response": created}))
+    events.append(format_sse_event({"type": "response.completed", "response": completed}))
+    events.append("data: [DONE]\n\n")
+    return events
+
+
+def cursor_context_limit_responses_completion(
+    model: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        content=cursor_context_limit_responses_payload(model),
+        status_code=200,
+        headers=dict(headers) if headers else None,
+    )
+
+
+def cursor_context_limit_responses_stream(
+    model: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+) -> StreamingResponse:
+    events = cursor_context_limit_responses_sse_events(model)
+
+    async def body() -> AsyncIterator[str]:
+        for event in events:
+            yield event
+
+    return StreamingResponse(body(), media_type="text/event-stream", headers=dict(headers) if headers else None)
+
+
+def is_context_length_failure_event(event_payload: JsonValue) -> bool:
+    """Detect a Responses stream event reporting a context-length failure."""
+    if not is_json_mapping(event_payload):
+        return False
+    for error in (event_payload.get("error"), _response_error_mapping(event_payload)):
+        if not is_json_mapping(error):
+            continue
+        code = error.get("code")
+        message = error.get("message")
+        if is_context_length_error(
+            code=code if isinstance(code, str) else None,
+            message=message if isinstance(message, str) else None,
+        ):
+            return True
+    return False
+
+
+def _response_error_mapping(event_payload: Mapping[str, JsonValue]) -> JsonValue:
+    response = event_payload.get("response")
+    if not is_json_mapping(response):
+        return None
+    return response.get("error")
+
+
+def _response_event_id(event_payload: JsonValue) -> str | None:
+    if not is_json_mapping(event_payload):
+        return None
+    response = event_payload.get("response")
+    if not is_json_mapping(response):
+        return None
+    response_id = response.get("id")
+    return response_id if isinstance(response_id, str) and response_id else None
+
+
+async def stream_responses_with_cursor_context_limit_fallback(
+    stream: AsyncIterator[str],
+    *,
+    model: str,
+    source: str = "responses_stream",
+) -> AsyncIterator[str]:
+    """Replace Responses context-length failures with the Cursor compaction signal."""
+    saw_created = False
+    response_id: str | None = None
+    try:
+        async for event in stream:
+            # Token deltas dominate Responses SSE; only decode events that can
+            # carry created/failure payloads.
+            payload = (
+                parse_sse_data_json(event)
+                if (
+                    "response.failed" in event
+                    or "response.created" in event
+                    or '"error"' in event
+                )
+                else None
+            )
+            if payload is not None:
+                event_type = payload.get("type") if is_json_mapping(payload) else None
+                if event_type == "response.created":
+                    saw_created = True
+                    response_id = _response_event_id(payload) or response_id
+                elif response_id is None:
+                    response_id = _response_event_id(payload)
+                if is_context_length_failure_event(payload):
+                    logger.info(
+                        "cursor_context_limit_fallback source=%s model=%s",
+                        source,
+                        model,
+                    )
+                    for synthetic in cursor_context_limit_responses_sse_events(
+                        model,
+                        response_id=response_id,
+                        emit_created=not saw_created,
+                    ):
+                        yield synthetic
+                    return
+            yield event
+    finally:
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
 async def stream_with_cursor_usage_fallback(
     stream: AsyncIterator[str],
     payload: ChatCompletionsRequest,
@@ -189,6 +370,21 @@ def apply_cursor_usage_fallback(
     source: str,
 ) -> None:
     usage = result.usage.model_dump(mode="json", exclude_none=True) if result.usage is not None else None
+    if needs_cursor_proactive_compaction(payload.model, usage):
+        assert result.usage is not None
+        result.usage = result.usage.model_copy(
+            update={
+                "prompt_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
+                "total_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS + result.usage.completion_tokens,
+            }
+        )
+        logger.info(
+            "cursor_proactive_compaction source=%s model=%s threshold=%s",
+            source,
+            payload.model,
+            _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS,
+        )
+        return
     if not needs_cursor_usage_fallback(usage):
         return
     prompt_tokens = estimate_cursor_prompt_tokens(payload)
@@ -214,6 +410,16 @@ def apply_cursor_usage_fallback_to_response(
     source: str,
 ) -> dict[str, JsonValue]:
     usage = response_body.get("usage")
+    if needs_cursor_proactive_compaction(payload.model, usage):
+        assert is_json_mapping(usage)
+        response_body["usage"] = _apply_cursor_compaction_usage(cast(dict[str, JsonValue], usage))
+        logger.info(
+            "cursor_proactive_compaction source=%s model=%s threshold=%s",
+            source,
+            payload.model,
+            _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS,
+        )
+        return response_body
     if not needs_cursor_usage_fallback(usage):
         return response_body
     prompt_tokens = estimate_cursor_prompt_tokens(payload)
@@ -305,7 +511,20 @@ class CursorChatSseCompatRewriter:
         self._completion_chars += chat_completion_delta_chars(payload_dict)
         if is_chat_completion_usage_chunk(payload_dict):
             self._usage_emitted = True
-            if needs_cursor_usage_fallback(payload_dict.get("usage")):
+            usage = payload_dict.get("usage")
+            if needs_cursor_proactive_compaction(self._payload.model, usage):
+                assert is_json_mapping(usage)
+                payload_dict["usage"] = _apply_cursor_compaction_usage(cast(dict[str, JsonValue], usage))
+                logger.info(
+                    "cursor_proactive_compaction source=%s model=%s threshold=%s",
+                    self._source,
+                    self._payload.model,
+                    _GPT56_CURSOR_COMPACTION_THRESHOLD_TOKENS,
+                )
+                rewritten_data = json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
+                lines = [*prefix_lines, f"data: {rewritten_data}"]
+                return [_sse_event_bytes("\n".join(lines))]
+            if needs_cursor_usage_fallback(usage):
                 completion_tokens = max(1, estimate_tokens_from_chars(self._completion_chars))
                 payload_dict["usage"] = {
                     "prompt_tokens": self._prompt_tokens,
