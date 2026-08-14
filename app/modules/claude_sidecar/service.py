@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Any
 
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
-from app.modules.claude_sidecar.quota import SidecarAuthQuota, snapshot_from_json, snapshot_to_json
+from app.modules.claude_sidecar.oauth_usage_response import build_anthropic_oauth_usage_payload
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarQuotaSnapshot,
+    snapshot_from_json,
+    snapshot_to_json,
+)
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
     ClaudeSidecarModelSummary,
@@ -27,7 +34,7 @@ from app.modules.claude_sidecar.usage_estimates import (
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
-from app.modules.settings.service import parse_claude_sidecar_auth_plans
+from app.modules.settings.service import ClaudeSidecarAuthPlanData, parse_claude_sidecar_auth_plans
 
 _STRATEGY_TO_WIRE: dict[ClaudeSidecarRoutingStrategy, str] = {
     "round_robin": "round-robin",
@@ -150,6 +157,47 @@ class ClaudeSidecarService:
                 for auth in snapshot.accounts
             ],
         )
+
+    async def get_pooled_oauth_usage_payload(self, *, hide_upstream: bool = False) -> dict[str, Any]:
+        """Return Anthropic-shaped pooled Claude utilization for API-key callers."""
+        if hide_upstream:
+            return build_anthropic_oauth_usage_payload(None)
+
+        settings = await self._settings_repository.get_or_create()
+        if not settings.claude_sidecar_enabled or not settings.claude_sidecar_management_key_encrypted:
+            return build_anthropic_oauth_usage_payload(None)
+
+        snapshot = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        if snapshot is None:
+            return build_anthropic_oauth_usage_payload(None)
+
+        active_snapshot = _snapshot_without_paused(snapshot)
+        if not active_snapshot.accounts:
+            return build_anthropic_oauth_usage_payload(None)
+
+        active_keys: set[str] = set()
+        for auth in active_snapshot.accounts:
+            active_keys.update(_auth_identity_keys(auth))
+
+        plans = [
+            plan
+            for plan in parse_claude_sidecar_auth_plans(settings.claude_sidecar_auth_plans_json)
+            if _plan_identity_key(plan) in active_keys
+        ]
+
+        now = datetime.now(timezone.utc)
+        events = []
+        if self._usage_repository is not None:
+            raw_events = await self._usage_repository.list_events_since(now - SECONDARY_WINDOW)
+            events = [event for event in raw_events if _event_identity_key(event) in active_keys]
+
+        estimates = build_claude_usage_estimates(
+            events=events,
+            plans=plans,
+            snapshot=active_snapshot,
+            now=now,
+        )
+        return build_anthropic_oauth_usage_payload(estimates.aggregate)
 
     async def get_routing(self) -> ClaudeSidecarRoutingResponse:
         settings = await self._settings_repository.get_or_create()
@@ -401,6 +449,15 @@ def _auth_key(auth: SidecarAuthQuota) -> str | None:
     return None
 
 
+def _auth_identity_keys(auth: SidecarAuthQuota) -> set[str]:
+    keys: set[str] = set()
+    if auth.auth_index:
+        keys.add(f"auth:{auth.auth_index}")
+    if auth.email:
+        keys.add(f"source:{auth.email.lower()}")
+    return keys
+
+
 def _estimate_key(estimate: ClaudeAuthUsageEstimate) -> str | None:
     if estimate.auth_index:
         return f"auth:{estimate.auth_index}"
@@ -409,3 +466,28 @@ def _estimate_key(estimate: ClaudeAuthUsageEstimate) -> str | None:
     if estimate.source:
         return f"source:{estimate.source.lower()}"
     return None
+
+
+def _plan_identity_key(plan: ClaudeSidecarAuthPlanData) -> str | None:
+    if plan.auth_index:
+        return f"auth:{plan.auth_index}"
+    if plan.email:
+        return f"source:{plan.email.lower()}"
+    if plan.source:
+        return f"source:{plan.source.lower()}"
+    return None
+
+
+def _event_identity_key(event: object) -> str | None:
+    auth_index = getattr(event, "auth_index", None)
+    source = getattr(event, "source", None)
+    if isinstance(auth_index, str) and auth_index:
+        return f"auth:{auth_index}"
+    if isinstance(source, str) and source:
+        return f"source:{source.lower()}"
+    return None
+
+
+def _snapshot_without_paused(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:
+    active = tuple(auth for auth in snapshot.accounts if not auth.disabled)
+    return replace(snapshot, accounts=active)
