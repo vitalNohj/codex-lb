@@ -1,0 +1,6 @@
+- [x] Add a Claude sidecar request-log mapper that labels `auth_unavailable` / `no auth available` as `claude_sidecar_cooldown`
+- [x] Apply the mapper on non-stream and stream Claude sidecar error log writes; keep client envelopes unchanged
+- [x] Persist the original sidecar message on `failure_detail` for cooldown rows
+- [x] Unit-test the mapper (cooldown vs Overloaded vs unrelated)
+- [x] Integration-test non-stream and stream paths against request logs + client body
+- [x] Validate `openspec validate log-claude-sidecar-cooldown --strict`

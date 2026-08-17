@@ -6,8 +6,10 @@ from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
+    CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
     _SseUsageDecoder,
     build_sidecar_chat_payload,
+    claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
     extract_usage,
     sanitize_sidecar_chat_messages,
@@ -37,6 +39,36 @@ def _config(
     )
 
 
+def test_claude_sidecar_request_log_error_labels_auth_unavailable_as_cooldown() -> None:
+    original = (
+        "auth_unavailable: no auth available (providers=claude, model=claude-opus-5); "
+        "check Claude auth/key session and cooldown state via /v0/management/auth-files"
+    )
+    logged = claude_sidecar_request_log_error(original, model="cc/claude-opus-5")
+
+    assert logged.error_code == CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE
+    assert logged.error_message == "Claude sidecar cooldown for cc/claude-opus-5"
+    assert logged.failure_detail == original
+
+
+def test_claude_sidecar_request_log_error_labels_no_auth_available_as_cooldown() -> None:
+    original = "no auth available (providers=claude, model=claude-opus-5)"
+    logged = claude_sidecar_request_log_error(original, model="claude-opus-5")
+
+    assert logged.error_code == CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE
+    assert logged.error_message == "Claude sidecar cooldown for claude-opus-5"
+    assert logged.failure_detail == original
+
+
+def test_claude_sidecar_request_log_error_keeps_overloaded_sidecar_message() -> None:
+    original = "claude executor: upstream returned error event: Overloaded"
+    logged = claude_sidecar_request_log_error(original, model="cc/claude-opus-5")
+
+    assert logged.error_code == "claude_sidecar_error"
+    assert logged.error_message == original
+    assert logged.failure_detail is None
+
+
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
@@ -60,9 +92,7 @@ def test_build_sidecar_chat_payload_injects_override_effort_when_absent() -> Non
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "medium"
 
@@ -76,9 +106,7 @@ def test_build_sidecar_chat_payload_override_replaces_client_effort() -> None:
         }
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "medium"
 
@@ -92,9 +120,7 @@ def test_build_sidecar_chat_payload_override_replaces_nested_reasoning() -> None
         }
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "medium"
     assert "reasoning" not in payload.body
@@ -105,9 +131,7 @@ def test_build_sidecar_chat_payload_model_suffix_effort_beats_override() -> None
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5-high", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5-high", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "high"
 
@@ -244,9 +268,7 @@ def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() ->
         ("claude-opus-4-5", 32_768),
     ],
 )
-def test_build_sidecar_chat_payload_raises_floor_for_all_thinking_models(
-    model: str, expected_cap: int
-) -> None:
+def test_build_sidecar_chat_payload_raises_floor_for_all_thinking_models(model: str, expected_cap: int) -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": f"cc/{model}",

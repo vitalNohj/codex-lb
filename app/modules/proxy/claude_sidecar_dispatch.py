@@ -71,6 +71,9 @@ from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
+CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE = "claude_sidecar_cooldown"
+_CLAUDE_SIDECAR_COOLDOWN_MARKERS = ("auth_unavailable", "no auth available")
+
 _SIDECAR_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _SIDECAR_TOOL_ID_INVALID_CHAR = re.compile(r"[^a-zA-Z0-9_-]")
 _SIDECAR_TOOL_CALL_ID_FIELDS = ("tool_call_id", "toolCallId", "call_id")
@@ -78,6 +81,25 @@ _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
     {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
 )
 _SIDECAR_MESSAGE_CONTINUATION = "Continue."
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeSidecarRequestLogError:
+    error_code: str
+    error_message: str
+    failure_detail: str | None = None
+
+
+def claude_sidecar_request_log_error(message: str, *, model: str) -> ClaudeSidecarRequestLogError:
+    normalized = message.casefold()
+    if any(marker in normalized for marker in _CLAUDE_SIDECAR_COOLDOWN_MARKERS):
+        return ClaudeSidecarRequestLogError(
+            error_code=CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
+            error_message=f"Claude sidecar cooldown for {model}",
+            failure_detail=message,
+        )
+    return ClaudeSidecarRequestLogError(error_code="claude_sidecar_error", error_message=message)
+
 
 # Per-model output-token bounds applied to a client-supplied ``max_tokens``.
 # Cursor's BYOK chat-completions path sends a generic ``max_tokens: 4096`` on
@@ -155,9 +177,7 @@ async def load_sidecar_config() -> ClaudeSidecarConfig | None:
 
 def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarConfig:
     api_key = _decrypt_sidecar_secret(settings.claude_sidecar_api_key_encrypted, label="API key")
-    management_key = _decrypt_sidecar_secret(
-        settings.claude_sidecar_management_key_encrypted, label="management key"
-    )
+    management_key = _decrypt_sidecar_secret(settings.claude_sidecar_management_key_encrypted, label="management key")
     return ClaudeSidecarConfig(
         enabled=bool(settings.claude_sidecar_enabled),
         base_url=settings.claude_sidecar_base_url.rstrip("/"),
@@ -838,13 +858,15 @@ async def proxy_chat_to_sidecar(
                 headers=dict(rate_limit_headers),
             )
         await _release_sidecar_reservation(reservation, api_key=api_key)
+        log_error = claude_sidecar_request_log_error(exc.message, model=effective_model)
         await _log_sidecar_request(
             api_key=api_key,
             model=effective_model,
             started_at=requested_at,
             status="error",
-            error_code="claude_sidecar_error",
-            error_message=exc.message,
+            error_code=log_error.error_code,
+            error_message=log_error.error_message,
+            failure_detail=log_error.failure_detail,
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
@@ -913,9 +935,7 @@ async def _sidecar_stream_iterator(
     settled = False
     # Observe the raw (pre tool-name-reversal) chunks so the DeepSeek reasoning
     # cache key uses forward-sanitized tool names, matching re-injection.
-    deepseek_recorder = (
-        deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
-    )
+    deepseek_recorder = deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
@@ -971,13 +991,15 @@ async def _sidecar_stream_iterator(
                 yield chunk
             return
         await _release_sidecar_reservation(reservation, api_key=api_key)
+        log_error = claude_sidecar_request_log_error(exc.message, model=model)
         await _log_sidecar_request(
             api_key=api_key,
             model=model,
             started_at=started_at,
             status="error",
-            error_code="claude_sidecar_error",
-            error_message=exc.message,
+            error_code=log_error.error_code,
+            error_message=log_error.error_message,
+            failure_detail=log_error.failure_detail,
             reasoning_effort=reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
         )
@@ -1163,6 +1185,7 @@ async def _log_sidecar_request(
     status: str,
     error_code: str | None = None,
     error_message: str | None = None,
+    failure_detail: str | None = None,
     usage: SidecarUsage | None = None,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
@@ -1181,6 +1204,7 @@ async def _log_sidecar_request(
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                failure_detail=failure_detail,
                 reasoning_effort=reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
                 transport="http",
