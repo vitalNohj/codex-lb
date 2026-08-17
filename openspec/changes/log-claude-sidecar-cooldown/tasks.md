@@ -1,6 +1,7 @@
 - [x] Add a Claude sidecar request-log mapper that labels `auth_unavailable` / `no auth available` as `claude_sidecar_cooldown`
-- [x] Apply the mapper on non-stream and stream Claude sidecar error log writes; keep client envelopes unchanged
+- [x] Apply the mapper on non-stream and stream Claude sidecar error log writes; keep client envelopes unchanged when the wait budget is exhausted
 - [x] Persist the original sidecar message on `failure_detail` for cooldown rows
-- [x] Unit-test the mapper (cooldown vs Overloaded vs unrelated)
-- [x] Integration-test non-stream and stream paths against request logs + client body
+- [x] Retry Claude sidecar cooldown 503s for a bounded wait on non-stream and stream paths; do not retry Overloaded
+- [x] Unit-test the mapper (cooldown vs Overloaded vs unrelated) and the retry helper
+- [x] Integration-test exhausted cooldown (client 503 + cooldown log) and wait-then-success (client 200 + success log)
 - [x] Validate `openspec validate log-claude-sidecar-cooldown --strict`

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
     CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
@@ -12,6 +13,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
     extract_usage,
+    retry_claude_sidecar_cooldown,
     sanitize_sidecar_chat_messages,
     sanitize_sidecar_chat_tool_ids,
     sanitize_sidecar_forward_payload,
@@ -67,6 +69,40 @@ def test_claude_sidecar_request_log_error_keeps_overloaded_sidecar_message() -> 
     assert logged.error_code == "claude_sidecar_error"
     assert logged.error_message == original
     assert logged.failure_detail is None
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_returns_after_transient_auth_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS", 0.0)
+    calls = {"n": 0}
+
+    async def operation() -> dict[str, bool]:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ClaudeSidecarError(503, "auth_unavailable: no auth available")
+        return {"ok": True}
+
+    assert await retry_claude_sidecar_cooldown(operation) == {"ok": True}
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_does_not_retry_overloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 1.0)
+    calls = {"n": 0}
+
+    async def operation() -> dict[str, bool]:
+        calls["n"] += 1
+        raise ClaudeSidecarError(502, "claude executor: upstream returned error event: Overloaded")
+
+    with pytest.raises(ClaudeSidecarError, match="Overloaded"):
+        await retry_claude_sidecar_cooldown(operation)
+    assert calls["n"] == 1
 
 
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:

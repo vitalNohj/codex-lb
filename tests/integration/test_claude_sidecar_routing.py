@@ -31,7 +31,9 @@ class _FakeSidecarClient:
         self.stream_payloads: list[dict] = []
         self.models = [_FakeModel("claude-sonnet-4-5-20250929")]
         self.chat_error: Exception | None = None
+        self.chat_errors: list[Exception] = []
         self.stream_error: Exception | None = None
+        self.stream_errors: list[Exception] = []
         self.stream_include_usage = True
         self.stream_context_error = False
 
@@ -40,6 +42,8 @@ class _FakeSidecarClient:
 
     async def chat_completion(self, payload):
         self.chat_payloads.append(dict(payload))
+        if self.chat_errors:
+            raise self.chat_errors.pop(0)
         if self.chat_error is not None:
             raise self.chat_error
         return {
@@ -52,8 +56,9 @@ class _FakeSidecarClient:
 
     def stream_chat_completion(self, payload):
         self.stream_payloads.append(dict(payload))
+        error = self.stream_errors.pop(0) if self.stream_errors else self.stream_error
         return _FakeStreamContext(
-            self.stream_error,
+            error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
         )
@@ -493,11 +498,36 @@ async def _sidecar_logs() -> list[RequestLog]:
     return [log for log in logs if log.source == "claude_sidecar"]
 
 
+@pytest.fixture
+def fail_fast_sidecar_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS",
+        0.0,
+    )
+
+
+@pytest.fixture
+def short_sidecar_cooldown_wait(monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS",
+        1.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS",
+        0.0,
+    )
+
+
 @pytest.mark.asyncio
 async def test_claude_sidecar_auth_unavailable_logs_cooldown_and_keeps_client_message(
     async_client,
     sidecar_enabled,
     fake_sidecar,
+    fail_fast_sidecar_cooldown,
 ):
     fake_sidecar.chat_error = ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)
 
@@ -520,6 +550,7 @@ async def test_claude_sidecar_stream_auth_unavailable_logs_cooldown_and_keeps_cl
     async_client,
     sidecar_enabled,
     fake_sidecar,
+    fail_fast_sidecar_cooldown,
 ):
     fake_sidecar.stream_error = ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)
 
@@ -543,3 +574,54 @@ async def test_claude_sidecar_stream_auth_unavailable_logs_cooldown_and_keeps_cl
     assert logs[0].error_code == "claude_sidecar_cooldown"
     assert logs[0].error_message == "Claude sidecar cooldown for claude-sonnet-4-5-20250929"
     assert logs[0].failure_detail == _AUTH_UNAVAILABLE_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_auth_unavailable_retries_until_cooldown_clears(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    short_sidecar_cooldown_wait,
+):
+    fake_sidecar.chat_errors = [ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)]
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert "auth_unavailable" not in response.text
+    assert len(fake_sidecar.chat_payloads) == 2
+    logs = await _sidecar_logs()
+    assert len(logs) == 1
+    assert logs[0].status == "success"
+    assert logs[0].error_code is None
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_stream_auth_unavailable_retries_until_cooldown_clears(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    short_sidecar_cooldown_wait,
+):
+    fake_sidecar.stream_errors = [ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)]
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    payloads = _chat_sse_payloads(body)
+    assert all("error" not in payload for payload in payloads)
+    assert len(fake_sidecar.stream_payloads) == 2
+    logs = await _sidecar_logs()
+    assert len(logs) == 1
+    assert logs[0].status == "success"

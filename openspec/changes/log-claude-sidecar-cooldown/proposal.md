@@ -1,14 +1,17 @@
 ## Why
 
-CLIProxyAPI cooldown after Anthropic `Overloaded` / 429 is working as designed: it parks cooled Claude auths and later requests fail fast. The persisted request-log row currently copies the sidecar string `auth_unavailable: no auth available (providers=claude, model=…)`, which reads like missing credentials. Operators then think Claude auth is gone. It is cooldown.
+CLIProxyAPI cooldown after Anthropic `Overloaded` / 429 is working as designed: it parks cooled Claude auths and later requests fail fast. Two operator bugs follow from that 503:
 
-Harnesses already retry; this change does not alter client envelopes or cooldown behavior.
+1. Request logs copy `auth_unavailable: no auth available`, which reads like missing credentials.
+2. BYOK clients such as Kodus record **every** HTTP error (`ByokErrorCounter`, threshold 5 in 15 minutes) and email owners. A review fan-out during the ~60s cool window is 5+ fail-fast 503s, so the email fires on cooldown, not on a real outage.
+
+Harness retries do not help Kodus: it counts each failed `doGenerate()` before retry/fallback.
 
 ## What Changes
 
-- When a Claude sidecar error is `auth_unavailable` / `no auth available`, persist `error_code=claude_sidecar_cooldown` and an error message that names cooldown and the model.
-- Keep the original sidecar message on `failure_detail` for triage.
-- Leave the client-facing HTTP/SSE error unchanged.
+- When a Claude sidecar error is `auth_unavailable` / `no auth available`, retry the sidecar call for up to ~75s (just past CLIProxyAPI's ~60s cool). If it succeeds, the client sees one success. If the budget expires, emit **one** client error with the original sidecar envelope.
+- Persist exhausted cooldown as `error_code=claude_sidecar_cooldown` and an error message that names cooldown and the model; keep the original sidecar string on `failure_detail`.
+- Do not retry Anthropic `Overloaded` / other sidecar errors. Do not change CLIProxyAPI `disable-cooling`.
 
 ## Capabilities
 
@@ -18,10 +21,11 @@ Harnesses already retry; this change does not alter client envelopes or cooldown
 
 ### Modified Capabilities
 
-- `proxy-runtime-observability`: Claude sidecar cooldown failures must be labeled as cooldown in request logs, not as missing auth.
+- `proxy-runtime-observability`: Claude sidecar cooldown 503s must be waited out before the client sees an error, and exhausted cooldown must be labeled as cooldown in request logs.
 
 ## Impact
 
-- Request Logs Error Code / Error Message columns for this failure.
-- Claude sidecar dispatch log writer only.
-- No client retry/status change, no CLIProxyAPI cooldown change.
+- Request Logs Error Code / Error Message for exhausted cooldown.
+- Claude sidecar dispatch: retry loop on non-stream and stream chat completions.
+- Kodus/BYOK: cooldown bursts no longer count as 5 LLM errors. A real `Overloaded` still surfaces as a client error (one per request that actually hit it).
+- Held requests may last ~75s extra during cooldown. SSE keepalives still fire on the stream path.

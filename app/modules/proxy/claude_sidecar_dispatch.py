@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -73,6 +74,13 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE = "claude_sidecar_cooldown"
 _CLAUDE_SIDECAR_COOLDOWN_MARKERS = ("auth_unavailable", "no auth available")
+# CLIProxyAPI cools 408/5xx Claude auths ~60s, then fail-fast 503s with
+# auth_unavailable. BYOK clients such as Kodus record every HTTP error
+# (threshold 5 / 15 min) so those 503s email as "no auth". Wait just past
+# the cooling window and retry; emit at most one client error if it lasts.
+CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS = 75.0
+CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS = 2.0
+_T = TypeVar("_T")
 
 _SIDECAR_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _SIDECAR_TOOL_ID_INVALID_CHAR = re.compile(r"[^a-zA-Z0-9_-]")
@@ -90,15 +98,45 @@ class ClaudeSidecarRequestLogError:
     failure_detail: str | None = None
 
 
-def claude_sidecar_request_log_error(message: str, *, model: str) -> ClaudeSidecarRequestLogError:
+def is_claude_sidecar_cooldown_message(message: str) -> bool:
     normalized = message.casefold()
-    if any(marker in normalized for marker in _CLAUDE_SIDECAR_COOLDOWN_MARKERS):
+    return any(marker in normalized for marker in _CLAUDE_SIDECAR_COOLDOWN_MARKERS)
+
+
+def claude_sidecar_request_log_error(message: str, *, model: str) -> ClaudeSidecarRequestLogError:
+    if is_claude_sidecar_cooldown_message(message):
         return ClaudeSidecarRequestLogError(
             error_code=CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
             error_message=f"Claude sidecar cooldown for {model}",
             failure_detail=message,
         )
     return ClaudeSidecarRequestLogError(error_code="claude_sidecar_error", error_message=message)
+
+
+def _claude_sidecar_cooldown_retry_sleep(exc: ClaudeSidecarError, *, deadline: float) -> float | None:
+    if not is_claude_sidecar_cooldown_message(exc.message):
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    return min(CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS, remaining)
+
+
+async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) -> _T:
+    deadline = time.monotonic() + CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    while True:
+        try:
+            return await operation()
+        except ClaudeSidecarError as exc:
+            sleep_for = _claude_sidecar_cooldown_retry_sleep(exc, deadline=deadline)
+            if sleep_for is None:
+                raise
+            logger.info(
+                "Claude sidecar cooldown; waiting %.1fs then retrying (%.1fs budget left)",
+                sleep_for,
+                deadline - time.monotonic(),
+            )
+            await asyncio.sleep(sleep_for)
 
 
 # Per-model output-token bounds applied to a client-supplied ``max_tokens``.
@@ -828,7 +866,7 @@ async def proxy_chat_to_sidecar(
         )
 
     try:
-        response_body = await client.chat_completion(sidecar_payload.body)
+        response_body = await retry_claude_sidecar_cooldown(lambda: client.chat_completion(sidecar_payload.body))
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
@@ -936,31 +974,48 @@ async def _sidecar_stream_iterator(
     # Observe the raw (pre tool-name-reversal) chunks so the DeepSeek reasoning
     # cache key uses forward-sanitized tool names, matching re-injection.
     deepseek_recorder = deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
+    yielded = False
+    cooldown_deadline = time.monotonic() + CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
     try:
-        async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
-            tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
-            async for raw_chunk in chunks:
-                if deepseek_recorder is not None:
-                    deepseek_recorder.record(raw_chunk)
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
-                    if event == "[DONE]":
-                        completed = True
-                        continue
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
-                    yield rewritten_chunk
-            for rewritten_chunk in tool_name_rewriter.flush():
-                yield rewritten_chunk
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    completed = True
-                    continue
-                event_usage = extract_usage(event)
-                if event_usage is not None:
-                    usage = event_usage
+        while True:
+            try:
+                async with client.stream_chat_completion(payload) as chunks:
+                    decoder = _SseUsageDecoder()
+                    tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
+                    async for raw_chunk in chunks:
+                        if deepseek_recorder is not None:
+                            deepseek_recorder.record(raw_chunk)
+                        for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                            if event == "[DONE]":
+                                completed = True
+                                continue
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                        for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
+                            yielded = True
+                            yield rewritten_chunk
+                    for rewritten_chunk in tool_name_rewriter.flush():
+                        yielded = True
+                        yield rewritten_chunk
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            completed = True
+                            continue
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                break
+            except ClaudeSidecarError as exc:
+                sleep_for = None if yielded else _claude_sidecar_cooldown_retry_sleep(exc, deadline=cooldown_deadline)
+                if sleep_for is None:
+                    raise
+                logger.info(
+                    "Claude sidecar stream cooldown; waiting %.1fs then retrying (%.1fs budget left)",
+                    sleep_for,
+                    cooldown_deadline - time.monotonic(),
+                )
+                await asyncio.sleep(sleep_for)
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
