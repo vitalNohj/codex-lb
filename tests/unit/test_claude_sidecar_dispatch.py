@@ -13,6 +13,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
     extract_usage,
+    reset_claude_sidecar_cooldown_gate,
     retry_claude_sidecar_cooldown,
     sanitize_sidecar_chat_messages,
     sanitize_sidecar_chat_tool_ids,
@@ -77,6 +78,7 @@ async def test_retry_claude_sidecar_cooldown_returns_after_transient_auth_unavai
 ) -> None:
     monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 1.0)
     monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS", 0.0)
+    reset_claude_sidecar_cooldown_gate()
     calls = {"n": 0}
 
     async def operation() -> dict[str, bool]:
@@ -94,6 +96,7 @@ async def test_retry_claude_sidecar_cooldown_does_not_retry_overloaded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 1.0)
+    reset_claude_sidecar_cooldown_gate()
     calls = {"n": 0}
 
     async def operation() -> dict[str, bool]:
@@ -103,6 +106,68 @@ async def test_retry_claude_sidecar_cooldown_does_not_retry_overloaded(
     with pytest.raises(ClaudeSidecarError, match="Overloaded"):
         await retry_claude_sidecar_cooldown(operation)
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_exponential_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 75.0)
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS", 2.0)
+    reset_claude_sidecar_cooldown_gate()
+    clock = {"t": 1_000.0}
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(sidecar_dispatch.time, "monotonic", lambda: clock["t"])
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock["t"] += seconds
+
+    monkeypatch.setattr(sidecar_dispatch.asyncio, "sleep", fake_sleep)
+    calls = {"n": 0}
+
+    async def operation() -> dict[str, bool]:
+        calls["n"] += 1
+        if calls["n"] < 4:
+            raise ClaudeSidecarError(503, "auth_unavailable: no auth available")
+        return {"ok": True}
+
+    assert await retry_claude_sidecar_cooldown(operation) == {"ok": True}
+    assert calls["n"] == 4
+    assert sleeps == [2.0, 4.0, 8.0]
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_single_poller_parks_waiters() -> None:
+    import asyncio
+
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    gate.cooling = True
+    gate.until = sidecar_dispatch.time.monotonic()
+    in_flight = 0
+    max_in_flight = 0
+    first_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def operation() -> dict[str, bool]:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        first_entered.set()
+        await release.wait()
+        in_flight -= 1
+        return {"ok": True}
+
+    tasks = [asyncio.create_task(retry_claude_sidecar_cooldown(operation)) for _ in range(8)]
+    await asyncio.wait_for(first_entered.wait(), timeout=1)
+    await asyncio.sleep(0.05)
+    assert max_in_flight == 1
+    assert in_flight == 1
+    release.set()
+    results = await asyncio.gather(*tasks)
+    assert results == [{"ok": True}] * 8
+    assert in_flight == 0
 
 
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:

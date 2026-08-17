@@ -113,30 +113,178 @@ def claude_sidecar_request_log_error(message: str, *, model: str) -> ClaudeSidec
     return ClaudeSidecarRequestLogError(error_code="claude_sidecar_error", error_message=message)
 
 
+class _ClaudeSidecarCooldownGate:
+    """Process-wide cooldown wait so concurrent requests share one poller.
+
+    CLIProxyAPI cooling is one credential pool. Independent 2s polls would
+    hold N workers for 75s. Extra waiters park until ``until``; they must
+    not fail-fast (that re-emits the Kodus BYOK 503 burst). HTTP calls stay
+    off the lock: only cooldown probes are single-flight.
+    """
+
+    __slots__ = ("until", "backoff", "cooling", "_lock", "_polling", "_idle")
+
+    def __init__(self) -> None:
+        self.until = 0.0
+        self.backoff = CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS
+        self.cooling = False
+        self._lock: asyncio.Lock | None = None
+        self._polling = False
+        self._idle: asyncio.Event | None = None
+
+    def reset(self) -> None:
+        self.until = 0.0
+        self.backoff = CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS
+        self.cooling = False
+        self._lock = None
+        self._polling = False
+        self._idle = None
+
+    def _state(self) -> tuple[asyncio.Lock, asyncio.Event]:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+            self._idle = asyncio.Event()
+            self._idle.set()
+        assert self._idle is not None
+        return self._lock, self._idle
+
+    def remaining(self) -> float:
+        return max(0.0, self.until - time.monotonic())
+
+    def clear_success(self) -> None:
+        self.until = 0.0
+        self.backoff = CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS
+        self.cooling = False
+
+    def note_cooldown(self, sleep_for: float) -> None:
+        now = time.monotonic()
+        new_until = now + max(sleep_for, 0.0)
+        if new_until > self.until:
+            self.until = new_until
+            self.backoff = min(
+                max(self.backoff * 2.0, sleep_for),
+                CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS,
+            )
+        else:
+            self.until = max(self.until, new_until)
+        self.cooling = True
+
+    async def claim_poll(self) -> bool:
+        lock, idle = self._state()
+        async with lock:
+            if self.remaining() > 0.0 or self._polling:
+                return False
+            if not self.cooling:
+                return True
+            self._polling = True
+            idle.clear()
+            return True
+
+    async def end_poll(self, *, success: bool = False, cooldown: bool = False, sleep_for: float = 0.0) -> None:
+        lock, idle = self._state()
+        async with lock:
+            self._polling = False
+            if cooldown:
+                self.note_cooldown(sleep_for)
+            elif success:
+                self.clear_success()
+            idle.set()
+
+    async def wait_for_turn(self, *, deadline: float) -> None:
+        remaining = self.remaining()
+        timeout = max(0.0, deadline - time.monotonic())
+        if remaining > 0.0:
+            await asyncio.sleep(min(remaining, timeout) if timeout > 0.0 else 0.0)
+            return
+        _, idle = self._state()
+        if idle.is_set() or timeout <= 0.0:
+            await asyncio.sleep(0)
+            return
+        try:
+            await asyncio.wait_for(idle.wait(), timeout=timeout)
+        except TimeoutError:
+            return
+
+
+_CLAUDE_SIDECAR_COOLDOWN_GATE = _ClaudeSidecarCooldownGate()
+
+
+def reset_claude_sidecar_cooldown_gate() -> None:
+    _CLAUDE_SIDECAR_COOLDOWN_GATE.reset()
+
+
 def _claude_sidecar_cooldown_retry_sleep(exc: ClaudeSidecarError, *, deadline: float) -> float | None:
     if not is_claude_sidecar_cooldown_message(exc.message):
         return None
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return None
-    return min(CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS, remaining)
+    return min(_CLAUDE_SIDECAR_COOLDOWN_GATE.backoff, remaining)
+
+
+async def _prepare_claude_sidecar_cooldown_attempt(*, deadline: float) -> None:
+    """Park until this request may attempt. Single-flight only while cooling."""
+    gate = _CLAUDE_SIDECAR_COOLDOWN_GATE
+    while True:
+        if not gate.cooling:
+            return
+        now = time.monotonic()
+        if now >= deadline:
+            return
+        remaining = min(gate.remaining(), deadline - now)
+        if remaining > 0.0:
+            await asyncio.sleep(remaining)
+            continue
+        if await gate.claim_poll():
+            return
+        await gate.wait_for_turn(deadline=deadline)
+
+
+async def _finish_claude_sidecar_cooldown_attempt(exc: ClaudeSidecarError | None, *, deadline: float) -> float | None:
+    """Release the poller. Return sleep seconds to retry, or None to raise."""
+    gate = _CLAUDE_SIDECAR_COOLDOWN_GATE
+    if exc is None:
+        await gate.end_poll(success=True)
+        return None
+    sleep_for = _claude_sidecar_cooldown_retry_sleep(exc, deadline=deadline)
+    if sleep_for is None:
+        if is_claude_sidecar_cooldown_message(exc.message):
+            await gate.end_poll(cooldown=True, sleep_for=gate.backoff)
+        else:
+            await gate.end_poll(success=True)
+        return None
+    await gate.end_poll(cooldown=True, sleep_for=sleep_for)
+    logger.info(
+        "Claude sidecar cooldown; waiting %.1fs then retrying (%.1fs budget left)",
+        sleep_for,
+        deadline - time.monotonic(),
+    )
+    return sleep_for
 
 
 async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) -> _T:
-    deadline = time.monotonic() + CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    if wait_seconds <= 0.0:
+        return await operation()
+    deadline = time.monotonic() + wait_seconds
+    last_exc: ClaudeSidecarError | None = None
     while True:
-        try:
+        if time.monotonic() >= deadline:
+            if last_exc is not None:
+                raise last_exc
             return await operation()
+        await _prepare_claude_sidecar_cooldown_attempt(deadline=deadline)
+        if last_exc is not None and time.monotonic() >= deadline:
+            raise last_exc
+        try:
+            result = await operation()
         except ClaudeSidecarError as exc:
-            sleep_for = _claude_sidecar_cooldown_retry_sleep(exc, deadline=deadline)
-            if sleep_for is None:
+            last_exc = exc
+            if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=deadline) is None:
                 raise
-            logger.info(
-                "Claude sidecar cooldown; waiting %.1fs then retrying (%.1fs budget left)",
-                sleep_for,
-                deadline - time.monotonic(),
-            )
-            await asyncio.sleep(sleep_for)
+            continue
+        await _finish_claude_sidecar_cooldown_attempt(None, deadline=deadline)
+        return result
 
 
 # Per-model output-token bounds applied to a client-supplied ``max_tokens``.
@@ -971,14 +1119,25 @@ async def _sidecar_stream_iterator(
     usage: SidecarUsage | None = None
     completed = False
     settled = False
-    # Observe the raw (pre tool-name-reversal) chunks so the DeepSeek reasoning
-    # cache key uses forward-sanitized tool names, matching re-injection.
-    deepseek_recorder = deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
+    deepseek_recorder = None
     yielded = False
-    cooldown_deadline = time.monotonic() + CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    cooldown_deadline = time.monotonic() + wait_seconds
+    last_cooldown_exc: ClaudeSidecarError | None = None
     try:
         while True:
+            if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
+                raise last_cooldown_exc
+            if wait_seconds > 0.0:
+                await _prepare_claude_sidecar_cooldown_attempt(deadline=cooldown_deadline)
+                if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
+                    raise last_cooldown_exc
             try:
+                usage = None
+                completed = False
+                deepseek_recorder = (
+                    deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
+                )
                 async with client.stream_chat_completion(payload) as chunks:
                     decoder = _SseUsageDecoder()
                     tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
@@ -1005,17 +1164,22 @@ async def _sidecar_stream_iterator(
                         event_usage = extract_usage(event)
                         if event_usage is not None:
                             usage = event_usage
+                if wait_seconds > 0.0:
+                    await _finish_claude_sidecar_cooldown_attempt(None, deadline=cooldown_deadline)
                 break
             except ClaudeSidecarError as exc:
-                sleep_for = None if yielded else _claude_sidecar_cooldown_retry_sleep(exc, deadline=cooldown_deadline)
-                if sleep_for is None:
+                if wait_seconds <= 0.0:
                     raise
-                logger.info(
-                    "Claude sidecar stream cooldown; waiting %.1fs then retrying (%.1fs budget left)",
-                    sleep_for,
-                    cooldown_deadline - time.monotonic(),
-                )
-                await asyncio.sleep(sleep_for)
+                if yielded:
+                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll()
+                    raise
+                last_cooldown_exc = exc
+                if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=cooldown_deadline) is None:
+                    raise
+            except BaseException:
+                if wait_seconds > 0.0:
+                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll()
+                raise
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(

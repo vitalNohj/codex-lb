@@ -4,4 +4,5 @@
 - [x] Retry Claude sidecar cooldown 503s for a bounded wait on non-stream and stream paths; do not retry Overloaded
 - [x] Unit-test the mapper (cooldown vs Overloaded vs unrelated) and the retry helper
 - [x] Integration-test exhausted cooldown (client 503 + cooldown log) and wait-then-success (client 200 + success log)
+- [x] Share one cooldown wait (park extras, single-flight probes, exponential backoff); recreate DeepSeek stream recorder per attempt
 - [x] Validate `openspec validate log-claude-sidecar-cooldown --strict`

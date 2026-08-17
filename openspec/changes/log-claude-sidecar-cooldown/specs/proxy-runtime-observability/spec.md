@@ -53,3 +53,15 @@ The proxy MUST retry a Claude sidecar `auth_unavailable` / `no auth available` f
 - **WHEN** the proxy handles the Claude sidecar request
 - **THEN** the error is returned without cooldown retries
 - **AND** `error_code` remains `claude_sidecar_error`
+
+### Requirement: Concurrent Claude sidecar cooldown waiters park on a shared wait
+
+The proxy MUST share one Claude sidecar cooldown wait across concurrent in-flight requests. Extra waiters MUST park until the shared cooldown elapses or a probe succeeds; they MUST NOT fail-fast with a cooldown 503 while the wait budget remains. While cooling, sidecar probes MUST be single-flight.
+
+#### Scenario: Concurrent cooldown waiters park instead of fail-fast
+
+- **GIVEN** CLIProxyAPI is cooling Claude auths and returns `auth_unavailable` to a probe
+- **WHEN** several Claude sidecar `/v1/chat/completions` requests are already in flight
+- **THEN** extra waiters park on the shared cooldown
+- **AND** they do not each receive a fail-fast cooldown 503
+- **AND** only one probe runs at a time until cooling clears

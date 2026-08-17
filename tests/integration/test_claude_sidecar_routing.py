@@ -13,6 +13,7 @@ from app.db.models import ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_cooldown_gate
 from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 
 pytestmark = pytest.mark.integration
@@ -508,6 +509,7 @@ def fail_fast_sidecar_cooldown(monkeypatch):
         "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS",
         0.0,
     )
+    reset_claude_sidecar_cooldown_gate()
 
 
 @pytest.fixture
@@ -520,6 +522,7 @@ def short_sidecar_cooldown_wait(monkeypatch):
         "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS",
         0.0,
     )
+    reset_claude_sidecar_cooldown_gate()
 
 
 @pytest.mark.asyncio
