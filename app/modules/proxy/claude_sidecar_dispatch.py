@@ -204,7 +204,7 @@ class _ClaudeSidecarCooldownGate:
         _, idle = self._state()
         if timeout <= 0.0:
             return
-        if idle.is_set() and not self._polling:
+        if not self.cooling or (idle.is_set() and not self._polling):
             await asyncio.sleep(0)
             return
         if idle.is_set():
