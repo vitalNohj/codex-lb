@@ -201,14 +201,18 @@ class _ClaudeSidecarCooldownGate:
         if remaining > 0.0:
             await asyncio.sleep(min(remaining, timeout) if timeout > 0.0 else 0.0)
             return
-        _, idle = self._state()
+        lock, idle = self._state()
         if timeout <= 0.0:
             return
-        if not self.cooling or (idle.is_set() and not self._polling):
+        async with lock:
+            if not self.cooling or not self._polling:
+                should_wait = False
+            else:
+                should_wait = True
+                idle.clear()
+        if not should_wait:
             await asyncio.sleep(0)
             return
-        if idle.is_set():
-            idle.clear()
         try:
             await asyncio.wait_for(idle.wait(), timeout=timeout)
         except TimeoutError:
