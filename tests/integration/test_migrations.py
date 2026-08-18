@@ -1055,7 +1055,7 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
                         api_key_id, request_count, input_tokens, output_tokens,
                         cached_input_tokens, total_cost_usd
                     )
-                    VALUES ('key_opus5', 3, 3000000, 3000000, 0, 60.0)
+                    VALUES ('key_opus5', 4, 4000000, 4000000, 0, 90.0)
                     """
                 )
             )
@@ -1079,7 +1079,10 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
                        'success', NULL, 'normal'),
                       (NULL, 'key_opus5', 'req_fable_existing', '2026-08-17 00:04:00',
                        'cc/claude-fable-5', 'claude_sidecar', 1000000, 1000000, 0, 0, 100,
-                       'success', 60.0, 'normal')
+                       'success', 60.0, 'normal'),
+                      (NULL, 'key_opus5', 'req_opus_5_priced', '2026-08-17 00:05:00',
+                       'cc/claude-opus-5', 'claude_sidecar', 1000000, 1000000, 0, 0, 100,
+                       'success', 30.0, 'normal')
                     """
                 )
             )
@@ -1120,10 +1123,11 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
     assert costs["req_opus_5_cached"] == pytest.approx(27.75)
     assert costs["req_sidecar_unknown"] is None
     assert costs["req_fable_existing"] == pytest.approx(60.0)
+    assert costs["req_opus_5_priced"] == pytest.approx(30.0)
     assert str(watermark).startswith("2026-08-17 12:00:00")
-    # Folded opus ($30) + sonnet ($12) added to the existing fable $60. Live-tail
-    # cached opus and already-priced fable must not be added again.
-    assert key_rollup_cost == pytest.approx(102.0)
+    # Folded NULL opus ($30) + sonnet ($12) added to fable $60 + already-priced
+    # opus $30. Live-tail cached opus and already-priced opus must not be added.
+    assert key_rollup_cost == pytest.approx(132.0)
     assert rollup_row_count == 1
 
 

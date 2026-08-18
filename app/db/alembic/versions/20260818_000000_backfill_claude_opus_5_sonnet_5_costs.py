@@ -9,10 +9,14 @@ after sidecar traffic had already been logged; those rows persisted
 ``cost_usd = NULL`` because no price resolved at insert time. Recompute
 cost for historical Claude sidecar rows that now resolve so dollar reports
 cover Opus 5 / Sonnet 5 usage. Folded usage rollups then receive a cost-only
-delta; ``folded_through`` is left unchanged.
+delta for rows this migration actually repriced; ``folded_through`` is left
+unchanged.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -64,101 +68,137 @@ def _has_table(connection: Connection, table_name: str) -> bool:
     return sa.inspect(connection).has_table(table_name)
 
 
-def _apply_folded_cost_deltas(bind: Connection, *, sign: int) -> None:
-    """Add (or subtract) newly priced Opus 5 / Sonnet 5 dollars onto existing rollups.
+def _as_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return None
 
-    Those models folded as $0 because ``cost_usd`` was NULL. Adding only their
-    folded cost keeps token/count totals and ``folded_through`` intact. Rewinding
-    the watermark and re-folding cannot rebuild rows retention already deleted.
-    """
+
+def _read_watermark(bind: Connection) -> datetime | None:
     if not _has_table(bind, "account_usage_rollup_state"):
-        return
-    watermark = bind.execute(sa.text("SELECT folded_through FROM account_usage_rollup_state")).scalar()
-    if watermark is None:
-        return
+        return None
+    rollup_state = sa.table(
+        "account_usage_rollup_state",
+        sa.column("folded_through", sa.DateTime()),
+    )
+    return _as_datetime(bind.execute(sa.select(rollup_state.c.folded_through)).scalar())
 
-    request_logs = sa.table(
+
+def _request_logs_table() -> Any:
+    return sa.table(
         "request_logs",
+        sa.column("id", sa.Integer()),
         sa.column("account_id", sa.String()),
         sa.column("api_key_id", sa.String()),
+        sa.column("request_id", sa.String()),
         sa.column("model", sa.String()),
         sa.column("source", sa.String()),
+        sa.column("service_tier", sa.String()),
         sa.column("request_kind", sa.String()),
         sa.column("deleted_at", sa.DateTime()),
         sa.column("requested_at", sa.DateTime()),
+        sa.column("input_tokens", sa.Integer()),
+        sa.column("output_tokens", sa.Integer()),
+        sa.column("cached_input_tokens", sa.Integer()),
+        sa.column("reasoning_tokens", sa.Integer()),
         sa.column("cost_usd", sa.Float()),
     )
-    model_match = sa.or_(
-        request_logs.c.model.like(_DOWNGRADE_MODEL_MATCH[0]),
-        request_logs.c.model.like(_DOWNGRADE_MODEL_MATCH[1]),
-    )
-    folded_priced = sa.and_(
-        request_logs.c.source == "claude_sidecar",
-        model_match,
-        request_logs.c.request_kind.notin_(_EXCLUDED_REQUEST_KINDS),
-        request_logs.c.requested_at <= watermark,
-        request_logs.c.cost_usd.is_not(None),
-    )
 
-    if _has_table(bind, "account_usage_rollups"):
+
+def _accumulate_deltas(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
+    latest_account: dict[tuple[object, object, object], dict[str, Any]] = {}
+    key_deltas: dict[str, float] = {}
+    for row in rows:
+        if row["request_kind"] in _EXCLUDED_REQUEST_KINDS:
+            continue
+        cost = row["cost_usd"]
+        if cost is None:
+            continue
+        cost_f = float(cost)
+        api_key_id = row["api_key_id"]
+        if api_key_id:
+            key_deltas[str(api_key_id)] = key_deltas.get(str(api_key_id), 0.0) + cost_f
+        account_id = row["account_id"]
+        if account_id and row["deleted_at"] is None:
+            group = (account_id, row["request_id"], row["requested_at"])
+            prev = latest_account.get(group)
+            if prev is None or int(row["id"]) > int(prev["id"]):
+                latest_account[group] = row
+    account_deltas: dict[str, float] = {}
+    for row in latest_account.values():
+        account_id = str(row["account_id"])
+        account_deltas[account_id] = account_deltas.get(account_id, 0.0) + float(row["cost_usd"])
+    return account_deltas, key_deltas
+
+
+def _apply_deltas(
+    bind: Connection,
+    account_deltas: dict[str, float],
+    key_deltas: dict[str, float],
+    *,
+    sign: int,
+) -> None:
+    if account_deltas and _has_table(bind, "account_usage_rollups"):
         rollups = sa.table(
             "account_usage_rollups",
             sa.column("account_id", sa.String()),
             sa.column("total_cost_usd", sa.Float()),
         )
-        rows = (
-            bind.execute(
-                sa.select(
-                    request_logs.c.account_id,
-                    sa.func.sum(request_logs.c.cost_usd).label("delta"),
-                )
-                .where(
-                    folded_priced,
-                    request_logs.c.account_id.is_not(None),
-                    request_logs.c.deleted_at.is_(None),
-                )
-                .group_by(request_logs.c.account_id)
-            )
-            .mappings()
-            .all()
-        )
-        for row in rows:
-            delta = row["delta"]
+        for account_id, delta in account_deltas.items():
             if not delta:
                 continue
             bind.execute(
                 sa.update(rollups)
-                .where(rollups.c.account_id == row["account_id"])
-                .values(total_cost_usd=rollups.c.total_cost_usd + (sign * float(delta)))
+                .where(rollups.c.account_id == account_id)
+                .values(total_cost_usd=rollups.c.total_cost_usd + (sign * delta))
             )
-
-    if _has_table(bind, "api_key_usage_rollups"):
+    if key_deltas and _has_table(bind, "api_key_usage_rollups"):
         rollups = sa.table(
             "api_key_usage_rollups",
             sa.column("api_key_id", sa.String()),
             sa.column("total_cost_usd", sa.Float()),
         )
-        rows = (
-            bind.execute(
-                sa.select(
-                    request_logs.c.api_key_id,
-                    sa.func.sum(request_logs.c.cost_usd).label("delta"),
-                )
-                .where(folded_priced, request_logs.c.api_key_id.is_not(None))
-                .group_by(request_logs.c.api_key_id)
-            )
-            .mappings()
-            .all()
-        )
-        for row in rows:
-            delta = row["delta"]
+        for api_key_id, delta in key_deltas.items():
             if not delta:
                 continue
             bind.execute(
                 sa.update(rollups)
-                .where(rollups.c.api_key_id == row["api_key_id"])
-                .values(total_cost_usd=rollups.c.total_cost_usd + (sign * float(delta)))
+                .where(rollups.c.api_key_id == api_key_id)
+                .values(total_cost_usd=rollups.c.total_cost_usd + (sign * delta))
             )
+
+
+def _folded_opus5_sonnet5_rows(bind: Connection, watermark: datetime) -> list[dict[str, Any]]:
+    request_logs = _request_logs_table()
+    model_match = sa.or_(
+        request_logs.c.model.like(_DOWNGRADE_MODEL_MATCH[0]),
+        request_logs.c.model.like(_DOWNGRADE_MODEL_MATCH[1]),
+    )
+    return (
+        bind.execute(
+            sa.select(
+                request_logs.c.id,
+                request_logs.c.account_id,
+                request_logs.c.api_key_id,
+                request_logs.c.request_id,
+                request_logs.c.request_kind,
+                request_logs.c.deleted_at,
+                request_logs.c.requested_at,
+                request_logs.c.cost_usd,
+            ).where(
+                request_logs.c.source == "claude_sidecar",
+                model_match,
+                request_logs.c.cost_usd.is_not(None),
+                request_logs.c.requested_at <= watermark,
+            )
+        )
+        .mappings()
+        .all()
+    )
 
 
 def upgrade() -> None:
@@ -166,18 +206,9 @@ def upgrade() -> None:
     if not _has_table(bind, "request_logs"):
         return
 
-    request_logs = sa.table(
-        "request_logs",
-        sa.column("id", sa.Integer()),
-        sa.column("model", sa.String()),
-        sa.column("service_tier", sa.String()),
-        sa.column("input_tokens", sa.Integer()),
-        sa.column("output_tokens", sa.Integer()),
-        sa.column("cached_input_tokens", sa.Integer()),
-        sa.column("reasoning_tokens", sa.Integer()),
-        sa.column("cost_usd", sa.Float()),
-        sa.column("source", sa.String()),
-    )
+    request_logs = _request_logs_table()
+    watermark = _read_watermark(bind)
+    backfilled_folded: list[dict[str, Any]] = []
 
     last_seen_id = 0
     while True:
@@ -185,6 +216,12 @@ def upgrade() -> None:
             bind.execute(
                 sa.select(
                     request_logs.c.id,
+                    request_logs.c.account_id,
+                    request_logs.c.api_key_id,
+                    request_logs.c.request_id,
+                    request_logs.c.request_kind,
+                    request_logs.c.deleted_at,
+                    request_logs.c.requested_at,
                     request_logs.c.model,
                     request_logs.c.service_tier,
                     request_logs.c.input_tokens,
@@ -217,22 +254,36 @@ def upgrade() -> None:
             if cost is None:
                 continue
             bind.execute(sa.update(request_logs).where(request_logs.c.id == row["id"]).values(cost_usd=cost))
+            requested_at = _as_datetime(row["requested_at"])
+            if watermark is None or requested_at is None or requested_at > watermark:
+                continue
+            backfilled_folded.append(
+                {
+                    "id": row["id"],
+                    "account_id": row["account_id"],
+                    "api_key_id": row["api_key_id"],
+                    "request_id": row["request_id"],
+                    "request_kind": row["request_kind"],
+                    "deleted_at": row["deleted_at"],
+                    "requested_at": row["requested_at"],
+                    "cost_usd": cost,
+                }
+            )
         last_seen_id = int(rows[-1]["id"])
 
-    _apply_folded_cost_deltas(bind, sign=1)
+    account_deltas, key_deltas = _accumulate_deltas(backfilled_folded)
+    _apply_deltas(bind, account_deltas, key_deltas, sign=1)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     if not _has_table(bind, "request_logs"):
         return
-    request_logs = sa.table(
-        "request_logs",
-        sa.column("cost_usd", sa.Float()),
-        sa.column("source", sa.String()),
-        sa.column("model", sa.String()),
-    )
-    _apply_folded_cost_deltas(bind, sign=-1)
+    request_logs = _request_logs_table()
+    watermark = _read_watermark(bind)
+    if watermark is not None:
+        account_deltas, key_deltas = _accumulate_deltas(list(_folded_opus5_sonnet5_rows(bind, watermark)))
+        _apply_deltas(bind, account_deltas, key_deltas, sign=-1)
     bind.execute(
         sa.update(request_logs)
         .where(
