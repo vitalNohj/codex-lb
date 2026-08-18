@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -71,6 +72,16 @@ from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
+CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE = "claude_sidecar_cooldown"
+_CLAUDE_SIDECAR_COOLDOWN_MARKERS = ("auth_unavailable", "no auth available")
+# CLIProxyAPI cools 408/5xx Claude auths ~60s, then fail-fast 503s with
+# auth_unavailable. BYOK clients such as Kodus record every HTTP error
+# (threshold 5 / 15 min) so those 503s email as "no auth". Wait just past
+# the cooling window and retry; emit at most one client error if it lasts.
+CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS = 75.0
+CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS = 2.0
+_T = TypeVar("_T")
+
 _SIDECAR_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _SIDECAR_TOOL_ID_INVALID_CHAR = re.compile(r"[^a-zA-Z0-9_-]")
 _SIDECAR_TOOL_CALL_ID_FIELDS = ("tool_call_id", "toolCallId", "call_id")
@@ -78,6 +89,224 @@ _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
     {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
 )
 _SIDECAR_MESSAGE_CONTINUATION = "Continue."
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeSidecarRequestLogError:
+    error_code: str
+    error_message: str
+    failure_detail: str | None = None
+
+
+def is_claude_sidecar_cooldown_message(message: str) -> bool:
+    normalized = message.casefold()
+    return any(marker in normalized for marker in _CLAUDE_SIDECAR_COOLDOWN_MARKERS)
+
+
+def claude_sidecar_request_log_error(message: str, *, model: str) -> ClaudeSidecarRequestLogError:
+    if is_claude_sidecar_cooldown_message(message):
+        return ClaudeSidecarRequestLogError(
+            error_code=CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
+            error_message=f"Claude sidecar cooldown for {model}",
+            failure_detail=message,
+        )
+    return ClaudeSidecarRequestLogError(error_code="claude_sidecar_error", error_message=message)
+
+
+class _ClaudeSidecarCooldownGate:
+    """Process-wide cooldown wait so concurrent requests share one poller.
+
+    CLIProxyAPI cooling is one credential pool. Independent 2s polls would
+    hold N workers for 75s. Extra waiters park until ``until``; they must
+    not fail-fast (that re-emits the Kodus BYOK 503 burst). HTTP calls stay
+    off the lock: only cooldown probes are single-flight.
+    """
+
+    __slots__ = ("until", "backoff", "cooling", "_lock", "_polling", "_idle")
+
+    def __init__(self) -> None:
+        self.until = 0.0
+        self.backoff = CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS
+        self.cooling = False
+        self._lock: asyncio.Lock | None = None
+        self._polling = False
+        self._idle: asyncio.Event | None = None
+
+    def reset(self) -> None:
+        self.until = 0.0
+        self.backoff = CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS
+        self.cooling = False
+        self._lock = None
+        self._polling = False
+        self._idle = None
+
+    def _state(self) -> tuple[asyncio.Lock, asyncio.Event]:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+            self._idle = asyncio.Event()
+            self._idle.set()
+        assert self._idle is not None
+        return self._lock, self._idle
+
+    def remaining(self) -> float:
+        return max(0.0, self.until - time.monotonic())
+
+    def clear_success(self) -> None:
+        self.until = 0.0
+        self.backoff = CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS
+        self.cooling = False
+
+    def note_cooldown(self, sleep_for: float) -> None:
+        now = time.monotonic()
+        new_round = (not self.cooling) or now >= self.until
+        self.until = max(self.until, now + max(sleep_for, 0.0))
+        if new_round:
+            self.backoff = min(
+                max(self.backoff * 2.0, sleep_for),
+                CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS,
+            )
+        self.cooling = True
+
+    async def claim_poll(self) -> bool:
+        lock, idle = self._state()
+        async with lock:
+            if not self.cooling or self.remaining() > 0.0 or self._polling:
+                return False
+            self._polling = True
+            idle.clear()
+            return True
+
+    async def end_poll(
+        self,
+        *,
+        success: bool = False,
+        cooldown: bool = False,
+        sleep_for: float = 0.0,
+        held: bool = False,
+    ) -> None:
+        lock, idle = self._state()
+        async with lock:
+            if cooldown:
+                self.note_cooldown(sleep_for)
+            elif success:
+                self.clear_success()
+            if held:
+                self._polling = False
+            if not self._polling or not self.cooling:
+                idle.set()
+
+    async def wait_for_turn(self, *, deadline: float) -> None:
+        remaining = self.remaining()
+        timeout = max(0.0, deadline - time.monotonic())
+        if remaining > 0.0:
+            await asyncio.sleep(min(remaining, timeout) if timeout > 0.0 else 0.0)
+            return
+        lock, idle = self._state()
+        if timeout <= 0.0:
+            return
+        async with lock:
+            if not self.cooling or not self._polling:
+                should_wait = False
+            else:
+                should_wait = True
+                idle.clear()
+        if not should_wait:
+            await asyncio.sleep(0)
+            return
+        try:
+            await asyncio.wait_for(idle.wait(), timeout=timeout)
+        except TimeoutError:
+            return
+
+
+_CLAUDE_SIDECAR_COOLDOWN_GATE = _ClaudeSidecarCooldownGate()
+
+
+def reset_claude_sidecar_cooldown_gate() -> None:
+    _CLAUDE_SIDECAR_COOLDOWN_GATE.reset()
+
+
+def _claude_sidecar_cooldown_retry_sleep(exc: ClaudeSidecarError, *, deadline: float) -> float | None:
+    if not is_claude_sidecar_cooldown_message(exc.message):
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    return min(_CLAUDE_SIDECAR_COOLDOWN_GATE.backoff, remaining)
+
+
+async def _prepare_claude_sidecar_cooldown_attempt(*, deadline: float) -> bool:
+    """Park until this request may attempt. True if caller holds the poll slot."""
+    gate = _CLAUDE_SIDECAR_COOLDOWN_GATE
+    while True:
+        if not gate.cooling:
+            return False
+        now = time.monotonic()
+        if now >= deadline:
+            return False
+        remaining = min(gate.remaining(), deadline - now)
+        if remaining > 0.0:
+            await asyncio.sleep(remaining)
+            continue
+        if await gate.claim_poll():
+            return True
+        await gate.wait_for_turn(deadline=deadline)
+
+
+async def _finish_claude_sidecar_cooldown_attempt(
+    exc: ClaudeSidecarError | None, *, deadline: float, held: bool
+) -> float | None:
+    """Release the poller. Return sleep seconds to retry, or None to raise."""
+    gate = _CLAUDE_SIDECAR_COOLDOWN_GATE
+    if exc is None:
+        await gate.end_poll(success=True, held=held)
+        return None
+    sleep_for = _claude_sidecar_cooldown_retry_sleep(exc, deadline=deadline)
+    if sleep_for is None:
+        if is_claude_sidecar_cooldown_message(exc.message):
+            await gate.end_poll(cooldown=True, sleep_for=gate.backoff, held=held)
+        else:
+            await gate.end_poll(held=held)
+        return None
+    await gate.end_poll(cooldown=True, sleep_for=sleep_for, held=held)
+    logger.info(
+        "Claude sidecar cooldown; waiting %.1fs then retrying (%.1fs budget left)",
+        sleep_for,
+        deadline - time.monotonic(),
+    )
+    return sleep_for
+
+
+async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) -> _T:
+    wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    if wait_seconds <= 0.0:
+        return await operation()
+    deadline = time.monotonic() + wait_seconds
+    last_exc: ClaudeSidecarError | None = None
+    while True:
+        if time.monotonic() >= deadline:
+            if last_exc is not None:
+                raise last_exc
+            return await operation()
+        held = await _prepare_claude_sidecar_cooldown_attempt(deadline=deadline)
+        if last_exc is not None and time.monotonic() >= deadline:
+            if held:
+                await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=True)
+            raise last_exc
+        try:
+            result = await operation()
+        except ClaudeSidecarError as exc:
+            last_exc = exc
+            if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=deadline, held=held) is None:
+                raise
+            continue
+        except BaseException:
+            if held:
+                await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=True)
+            raise
+        await _finish_claude_sidecar_cooldown_attempt(None, deadline=deadline, held=held)
+        return result
+
 
 # Per-model output-token bounds applied to a client-supplied ``max_tokens``.
 # Cursor's BYOK chat-completions path sends a generic ``max_tokens: 4096`` on
@@ -155,9 +384,7 @@ async def load_sidecar_config() -> ClaudeSidecarConfig | None:
 
 def sidecar_config_from_settings(settings: DashboardSettings) -> ClaudeSidecarConfig:
     api_key = _decrypt_sidecar_secret(settings.claude_sidecar_api_key_encrypted, label="API key")
-    management_key = _decrypt_sidecar_secret(
-        settings.claude_sidecar_management_key_encrypted, label="management key"
-    )
+    management_key = _decrypt_sidecar_secret(settings.claude_sidecar_management_key_encrypted, label="management key")
     return ClaudeSidecarConfig(
         enabled=bool(settings.claude_sidecar_enabled),
         base_url=settings.claude_sidecar_base_url.rstrip("/"),
@@ -808,7 +1035,7 @@ async def proxy_chat_to_sidecar(
         )
 
     try:
-        response_body = await client.chat_completion(sidecar_payload.body)
+        response_body = await retry_claude_sidecar_cooldown(lambda: client.chat_completion(sidecar_payload.body))
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
@@ -838,13 +1065,15 @@ async def proxy_chat_to_sidecar(
                 headers=dict(rate_limit_headers),
             )
         await _release_sidecar_reservation(reservation, api_key=api_key)
+        log_error = claude_sidecar_request_log_error(exc.message, model=effective_model)
         await _log_sidecar_request(
             api_key=api_key,
             model=effective_model,
             started_at=requested_at,
             status="error",
-            error_code="claude_sidecar_error",
-            error_message=exc.message,
+            error_code=log_error.error_code,
+            error_message=log_error.error_message,
+            failure_detail=log_error.failure_detail,
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
@@ -911,36 +1140,70 @@ async def _sidecar_stream_iterator(
     usage: SidecarUsage | None = None
     completed = False
     settled = False
-    # Observe the raw (pre tool-name-reversal) chunks so the DeepSeek reasoning
-    # cache key uses forward-sanitized tool names, matching re-injection.
-    deepseek_recorder = (
-        deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
-    )
+    deepseek_recorder = None
+    yielded = False
+    wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    cooldown_deadline = time.monotonic() + wait_seconds
+    last_cooldown_exc: ClaudeSidecarError | None = None
     try:
-        async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
-            tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
-            async for raw_chunk in chunks:
-                if deepseek_recorder is not None:
-                    deepseek_recorder.record(raw_chunk)
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
-                    if event == "[DONE]":
-                        completed = True
-                        continue
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
-                    yield rewritten_chunk
-            for rewritten_chunk in tool_name_rewriter.flush():
-                yield rewritten_chunk
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    completed = True
-                    continue
-                event_usage = extract_usage(event)
-                if event_usage is not None:
-                    usage = event_usage
+        while True:
+            if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
+                raise last_cooldown_exc
+            held = False
+            if wait_seconds > 0.0:
+                held = await _prepare_claude_sidecar_cooldown_attempt(deadline=cooldown_deadline)
+                if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
+                    if held:
+                        await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=True)
+                    raise last_cooldown_exc
+            try:
+                usage = None
+                completed = False
+                deepseek_recorder = (
+                    deepseek_make_stream_recorder(deepseek_scope) if deepseek_scope is not None else None
+                )
+                async with client.stream_chat_completion(payload) as chunks:
+                    decoder = _SseUsageDecoder()
+                    tool_name_rewriter = SidecarSseToolNameRewriter(reverse_tool_names)
+                    async for raw_chunk in chunks:
+                        if deepseek_recorder is not None:
+                            deepseek_recorder.record(raw_chunk)
+                        for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                            if event == "[DONE]":
+                                completed = True
+                                continue
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                        for rewritten_chunk in tool_name_rewriter.feed(raw_chunk):
+                            yielded = True
+                            yield rewritten_chunk
+                    for rewritten_chunk in tool_name_rewriter.flush():
+                        yielded = True
+                        yield rewritten_chunk
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            completed = True
+                            continue
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                if wait_seconds > 0.0:
+                    await _finish_claude_sidecar_cooldown_attempt(None, deadline=cooldown_deadline, held=held)
+                break
+            except ClaudeSidecarError as exc:
+                if wait_seconds <= 0.0:
+                    raise
+                if yielded:
+                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held)
+                    raise
+                last_cooldown_exc = exc
+                if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=cooldown_deadline, held=held) is None:
+                    raise
+            except BaseException:
+                if wait_seconds > 0.0:
+                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held)
+                raise
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
@@ -971,13 +1234,15 @@ async def _sidecar_stream_iterator(
                 yield chunk
             return
         await _release_sidecar_reservation(reservation, api_key=api_key)
+        log_error = claude_sidecar_request_log_error(exc.message, model=model)
         await _log_sidecar_request(
             api_key=api_key,
             model=model,
             started_at=started_at,
             status="error",
-            error_code="claude_sidecar_error",
-            error_message=exc.message,
+            error_code=log_error.error_code,
+            error_message=log_error.error_message,
+            failure_detail=log_error.failure_detail,
             reasoning_effort=reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
         )
@@ -1163,6 +1428,7 @@ async def _log_sidecar_request(
     status: str,
     error_code: str | None = None,
     error_message: str | None = None,
+    failure_detail: str | None = None,
     usage: SidecarUsage | None = None,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
@@ -1181,6 +1447,7 @@ async def _log_sidecar_request(
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                failure_detail=failure_detail,
                 reasoning_effort=reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
                 transport="http",

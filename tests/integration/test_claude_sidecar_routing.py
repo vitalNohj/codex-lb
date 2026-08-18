@@ -13,6 +13,7 @@ from app.db.models import ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_cooldown_gate
 from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 
 pytestmark = pytest.mark.integration
@@ -31,7 +32,9 @@ class _FakeSidecarClient:
         self.stream_payloads: list[dict] = []
         self.models = [_FakeModel("claude-sonnet-4-5-20250929")]
         self.chat_error: Exception | None = None
+        self.chat_errors: list[Exception] = []
         self.stream_error: Exception | None = None
+        self.stream_errors: list[Exception] = []
         self.stream_include_usage = True
         self.stream_context_error = False
 
@@ -40,6 +43,8 @@ class _FakeSidecarClient:
 
     async def chat_completion(self, payload):
         self.chat_payloads.append(dict(payload))
+        if self.chat_errors:
+            raise self.chat_errors.pop(0)
         if self.chat_error is not None:
             raise self.chat_error
         return {
@@ -52,8 +57,9 @@ class _FakeSidecarClient:
 
     def stream_chat_completion(self, payload):
         self.stream_payloads.append(dict(payload))
+        error = self.stream_errors.pop(0) if self.stream_errors else self.stream_error
         return _FakeStreamContext(
-            self.stream_error,
+            error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
         )
@@ -78,10 +84,7 @@ class _FakeStreamContext:
         async def chunks():
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
-                yield (
-                    b'data: {"error":{"code":"context_length_exceeded",'
-                    b'"message":"Input token limit exceeded"}}\n\n'
-                )
+                yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
@@ -162,7 +165,7 @@ async def _create_api_key(
 ):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits))
+        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or []))
 
 
 async def _reservation_statuses() -> list[str]:
@@ -482,3 +485,146 @@ async def test_claude_sidecar_non_cursor_stream_does_not_apply_usage_fallback(
     assert response.status_code == 200
     assert _usage_chunks(_chat_sse_payloads(body)) == []
     assert body.rstrip().endswith(b"data: [DONE]")
+
+
+_AUTH_UNAVAILABLE_MESSAGE = (
+    "auth_unavailable: no auth available (providers=claude, model=claude-opus-5); "
+    "check Claude auth/key session and cooldown state via /v0/management/auth-files"
+)
+
+
+async def _sidecar_logs() -> list[RequestLog]:
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    return [log for log in logs if log.source == "claude_sidecar"]
+
+
+@pytest.fixture
+def fail_fast_sidecar_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS",
+        0.0,
+    )
+    reset_claude_sidecar_cooldown_gate()
+
+
+@pytest.fixture
+def short_sidecar_cooldown_wait(monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS",
+        1.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS",
+        0.0,
+    )
+    reset_claude_sidecar_cooldown_gate()
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_auth_unavailable_logs_cooldown_and_keeps_client_message(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    fail_fast_sidecar_cooldown,
+):
+    fake_sidecar.chat_error = ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 503
+    assert "auth_unavailable" in response.json()["error"]["message"]
+    logs = await _sidecar_logs()
+    assert len(logs) == 1
+    assert logs[0].error_code == "claude_sidecar_cooldown"
+    assert logs[0].error_message == "Claude sidecar cooldown for claude-sonnet-4-5-20250929"
+    assert logs[0].failure_detail == _AUTH_UNAVAILABLE_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_stream_auth_unavailable_logs_cooldown_and_keeps_client_message(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    fail_fast_sidecar_cooldown,
+):
+    fake_sidecar.stream_error = ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    payloads = _chat_sse_payloads(body)
+    error_payloads = [payload for payload in payloads if "error" in payload]
+    assert error_payloads
+    assert "no auth available" in error_payloads[0]["error"]["message"]
+    logs = await _sidecar_logs()
+    assert len(logs) == 1
+    assert logs[0].error_code == "claude_sidecar_cooldown"
+    assert logs[0].error_message == "Claude sidecar cooldown for claude-sonnet-4-5-20250929"
+    assert logs[0].failure_detail == _AUTH_UNAVAILABLE_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_auth_unavailable_retries_until_cooldown_clears(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    short_sidecar_cooldown_wait,
+):
+    fake_sidecar.chat_errors = [ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)]
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert "auth_unavailable" not in response.text
+    assert len(fake_sidecar.chat_payloads) == 2
+    logs = await _sidecar_logs()
+    assert len(logs) == 1
+    assert logs[0].status == "success"
+    assert logs[0].error_code is None
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_stream_auth_unavailable_retries_until_cooldown_clears(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    short_sidecar_cooldown_wait,
+):
+    fake_sidecar.stream_errors = [ClaudeSidecarError(503, _AUTH_UNAVAILABLE_MESSAGE)]
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    payloads = _chat_sse_payloads(body)
+    assert all("error" not in payload for payload in payloads)
+    assert len(fake_sidecar.stream_payloads) == 2
+    logs = await _sidecar_logs()
+    assert len(logs) == 1
+    assert logs[0].status == "success"

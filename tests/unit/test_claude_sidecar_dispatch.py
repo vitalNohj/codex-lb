@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
+    CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
     _SseUsageDecoder,
     build_sidecar_chat_payload,
+    claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
     extract_usage,
+    reset_claude_sidecar_cooldown_gate,
+    retry_claude_sidecar_cooldown,
     sanitize_sidecar_chat_messages,
     sanitize_sidecar_chat_tool_ids,
     sanitize_sidecar_forward_payload,
@@ -37,6 +44,185 @@ def _config(
     )
 
 
+def test_claude_sidecar_request_log_error_labels_auth_unavailable_as_cooldown() -> None:
+    original = (
+        "auth_unavailable: no auth available (providers=claude, model=claude-opus-5); "
+        "check Claude auth/key session and cooldown state via /v0/management/auth-files"
+    )
+    logged = claude_sidecar_request_log_error(original, model="cc/claude-opus-5")
+
+    assert logged.error_code == CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE
+    assert logged.error_message == "Claude sidecar cooldown for cc/claude-opus-5"
+    assert logged.failure_detail == original
+
+
+def test_claude_sidecar_request_log_error_labels_no_auth_available_as_cooldown() -> None:
+    original = "no auth available (providers=claude, model=claude-opus-5)"
+    logged = claude_sidecar_request_log_error(original, model="claude-opus-5")
+
+    assert logged.error_code == CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE
+    assert logged.error_message == "Claude sidecar cooldown for claude-opus-5"
+    assert logged.failure_detail == original
+
+
+def test_claude_sidecar_request_log_error_keeps_overloaded_sidecar_message() -> None:
+    original = "claude executor: upstream returned error event: Overloaded"
+    logged = claude_sidecar_request_log_error(original, model="cc/claude-opus-5")
+
+    assert logged.error_code == "claude_sidecar_error"
+    assert logged.error_message == original
+    assert logged.failure_detail is None
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_returns_after_transient_auth_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS", 0.0)
+    reset_claude_sidecar_cooldown_gate()
+    calls = {"n": 0}
+
+    async def operation() -> dict[str, bool]:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ClaudeSidecarError(503, "auth_unavailable: no auth available")
+        return {"ok": True}
+
+    assert await retry_claude_sidecar_cooldown(operation) == {"ok": True}
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_does_not_retry_overloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 1.0)
+    reset_claude_sidecar_cooldown_gate()
+    calls = {"n": 0}
+
+    async def operation() -> dict[str, bool]:
+        calls["n"] += 1
+        raise ClaudeSidecarError(502, "claude executor: upstream returned error event: Overloaded")
+
+    with pytest.raises(ClaudeSidecarError, match="Overloaded"):
+        await retry_claude_sidecar_cooldown(operation)
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_exponential_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 75.0)
+    monkeypatch.setattr(sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS", 2.0)
+    reset_claude_sidecar_cooldown_gate()
+    clock = {"t": 1_000.0}
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(sidecar_dispatch.time, "monotonic", lambda: clock["t"])
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock["t"] += seconds
+
+    monkeypatch.setattr(sidecar_dispatch.asyncio, "sleep", fake_sleep)
+    calls = {"n": 0}
+
+    async def operation() -> dict[str, bool]:
+        calls["n"] += 1
+        if calls["n"] < 4:
+            raise ClaudeSidecarError(503, "auth_unavailable: no auth available")
+        return {"ok": True}
+
+    assert await retry_claude_sidecar_cooldown(operation) == {"ok": True}
+    assert calls["n"] == 4
+    assert sleeps == [2.0, 4.0, 8.0]
+
+
+@pytest.mark.asyncio
+async def test_retry_claude_sidecar_cooldown_single_poller_parks_waiters() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    gate.cooling = True
+    gate.until = sidecar_dispatch.time.monotonic()
+    in_flight = 0
+    max_in_flight = 0
+    first_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def operation() -> dict[str, bool]:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        first_entered.set()
+        await release.wait()
+        in_flight -= 1
+        return {"ok": True}
+
+    tasks = [asyncio.create_task(retry_claude_sidecar_cooldown(operation)) for _ in range(8)]
+    await asyncio.wait_for(first_entered.wait(), timeout=1)
+    await asyncio.sleep(0.05)
+    assert max_in_flight == 1
+    assert in_flight == 1
+    release.set()
+    results = await asyncio.gather(*tasks)
+    assert results == [{"ok": True}] * 8
+    assert in_flight == 0
+
+
+def test_note_cooldown_doubles_backoff_once_per_round() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    reset_claude_sidecar_cooldown_gate()
+    for _ in range(6):
+        gate.note_cooldown(2.0)
+    assert gate.cooling is True
+    assert gate.backoff == 4.0
+    assert gate.until <= sidecar_dispatch.time.monotonic() + 2.5
+
+
+@pytest.mark.asyncio
+async def test_retry_overloaded_does_not_clear_shared_cooldown() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    reset_claude_sidecar_cooldown_gate()
+    gate.cooling = True
+    gate.until = sidecar_dispatch.time.monotonic()
+    gate.backoff = 4.0
+    until_before = gate.until
+
+    async def operation() -> dict[str, bool]:
+        raise ClaudeSidecarError(502, "claude executor: upstream returned error event: Overloaded")
+
+    with pytest.raises(ClaudeSidecarError, match="Overloaded"):
+        await retry_claude_sidecar_cooldown(operation)
+    assert gate.cooling is True
+    assert gate.backoff == 4.0
+    assert gate.until == until_before
+
+
+@pytest.mark.asyncio
+async def test_retry_releases_poll_slot_on_transport_error() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    reset_claude_sidecar_cooldown_gate()
+    gate.cooling = True
+    gate.until = sidecar_dispatch.time.monotonic()
+
+    async def operation() -> dict[str, bool]:
+        raise RuntimeError("transport down")
+
+    with pytest.raises(RuntimeError, match="transport down"):
+        await retry_claude_sidecar_cooldown(operation)
+    assert gate._polling is False
+
+    released = asyncio.Event()
+
+    async def followup() -> dict[str, bool]:
+        released.set()
+        return {"ok": True}
+
+    assert await retry_claude_sidecar_cooldown(followup) == {"ok": True}
+    assert released.is_set()
+
+
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
@@ -60,9 +246,7 @@ def test_build_sidecar_chat_payload_injects_override_effort_when_absent() -> Non
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "medium"
 
@@ -76,9 +260,7 @@ def test_build_sidecar_chat_payload_override_replaces_client_effort() -> None:
         }
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "medium"
 
@@ -92,9 +274,7 @@ def test_build_sidecar_chat_payload_override_replaces_nested_reasoning() -> None
         }
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "medium"
     assert "reasoning" not in payload.body
@@ -105,9 +285,7 @@ def test_build_sidecar_chat_payload_model_suffix_effort_beats_override() -> None
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_sidecar_chat_payload(
-        request, "claude-sonnet-4-5-high", _config(default_reasoning_effort="medium")
-    )
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5-high", _config(default_reasoning_effort="medium"))
 
     assert payload.body["reasoning_effort"] == "high"
 
@@ -244,9 +422,7 @@ def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() ->
         ("claude-opus-4-5", 32_768),
     ],
 )
-def test_build_sidecar_chat_payload_raises_floor_for_all_thinking_models(
-    model: str, expected_cap: int
-) -> None:
+def test_build_sidecar_chat_payload_raises_floor_for_all_thinking_models(model: str, expected_cap: int) -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": f"cc/{model}",

@@ -133,6 +133,15 @@ async def app_instance(_reset_db_state, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_claude_sidecar_cooldown_gate():
+    from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_cooldown_gate
+
+    reset_claude_sidecar_cooldown_gate()
+    yield
+    reset_claude_sidecar_cooldown_gate()
+
+
+@pytest.fixture(autouse=True)
 def _disable_request_log_count_cache(monkeypatch):
     """Zero the request-log COUNT cache TTL so listing totals stay exact
     within a test. The TTL is a fixed constant in production (issue #1340
