@@ -68,6 +68,31 @@ async def test_add_log_computes_cost_for_prefixed_claude_sidecar_model(db_setup)
 
 
 @pytest.mark.asyncio
+async def test_add_log_computes_cost_for_cc_prefixed_claude_opus_5(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_claude_opus_5",
+            model="cc/claude-opus-5",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=500_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            source="claude_sidecar",
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        # Opus 5: $5/M uncached input + $0.50/M cache-hit + $25/M output
+        assert persisted.cost_usd == pytest.approx(27.75)
+
+
+@pytest.mark.asyncio
 async def test_add_log_persists_request_kind(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:

@@ -1020,6 +1020,72 @@ async def test_claude_sidecar_cost_backfill_migration_populates_cost(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-opus-5-cost-backfill.sqlite'}"
+
+    await to_thread.run_sync(
+        lambda: run_upgrade(
+            db_url,
+            "20260727_000000_merge_fork_and_upstream_1_22_heads",
+            bootstrap_legacy=True,
+        )
+    )
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, request_kind
+                    )
+                    VALUES
+                      (NULL, 'req_opus_5', '2026-08-17 00:00:00', 'cc/claude-opus-5', 'claude_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_sonnet_5', '2026-08-17 00:01:00', 'cc/claude-sonnet-5', 'claude_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_opus_5_cached', '2026-08-17 00:02:00', 'cc/claude-opus-5', 'claude_sidecar',
+                       1000000, 1000000, 500000, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_sidecar_unknown', '2026-08-17 00:03:00', 'cc/claude-mystery-99', 'claude_sidecar',
+                       1000, 1000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_fable_existing', '2026-08-17 00:04:00', 'cc/claude-fable-5', 'claude_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', 60.0, 'normal')
+                    """
+                )
+            )
+            await session.commit()
+
+        await to_thread.run_sync(
+            lambda: run_upgrade(
+                db_url,
+                "20260818_000000_backfill_claude_opus_5_sonnet_5_costs",
+                bootstrap_legacy=False,
+            )
+        )
+
+        async with session_factory() as session:
+            rows = (
+                await session.execute(text("SELECT request_id, cost_usd FROM request_logs ORDER BY request_id"))
+            ).all()
+    finally:
+        await engine.dispose()
+
+    costs = {row[0]: row[1] for row in rows}
+    # Opus 5: $5/M input + $25/M output
+    assert costs["req_opus_5"] == pytest.approx(30.0)
+    # Sonnet 5: $2/M input + $10/M output
+    assert costs["req_sonnet_5"] == pytest.approx(12.0)
+    # Opus 5 with 500k cache hits: $2.50 uncached + $0.25 cached + $25 output
+    assert costs["req_opus_5_cached"] == pytest.approx(27.75)
+    assert costs["req_sidecar_unknown"] is None
+    assert costs["req_fable_existing"] == pytest.approx(60.0)
+
+
+@pytest.mark.asyncio
 async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_models(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'sidecar-free-cost-backfill.sqlite'}"
 
