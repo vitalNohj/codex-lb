@@ -40,3 +40,10 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 - **GIVEN** a pre-existing sidecar request log whose model still has no pricing entry
 - **WHEN** the migration runs
 - **THEN** that row's `cost_usd` remains NULL
+
+#### Scenario: Backfill rewinds usage-rollup watermark
+
+- **GIVEN** usage rollups have already folded historical sidecar rows while `cost_usd` was NULL
+- **WHEN** the migration runs
+- **THEN** `account_usage_rollups` and `api_key_usage_rollups` are cleared
+- **AND** `account_usage_rollup_state.folded_through` is reset to epoch so the next fold recomputes cost from the backfilled rows

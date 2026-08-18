@@ -1058,6 +1058,8 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
                 )
             )
             await session.commit()
+            await session.execute(text("UPDATE account_usage_rollup_state SET folded_through = '2026-08-01 00:00:00'"))
+            await session.commit()
 
         await to_thread.run_sync(
             lambda: run_upgrade(
@@ -1071,6 +1073,9 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
             rows = (
                 await session.execute(text("SELECT request_id, cost_usd FROM request_logs ORDER BY request_id"))
             ).all()
+            watermark = (
+                await session.execute(text("SELECT folded_through FROM account_usage_rollup_state"))
+            ).scalar_one()
     finally:
         await engine.dispose()
 
@@ -1083,6 +1088,7 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
     assert costs["req_opus_5_cached"] == pytest.approx(27.75)
     assert costs["req_sidecar_unknown"] is None
     assert costs["req_fable_existing"] == pytest.approx(60.0)
+    assert str(watermark).startswith("1970-01-01")
 
 
 @pytest.mark.asyncio

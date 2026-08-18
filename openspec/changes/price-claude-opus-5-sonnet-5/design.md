@@ -22,6 +22,7 @@
 - Add two canonical `ModelPrice` rows using Anthropic's published API rates: Opus 5 `$5 / $0.50 cache-hit / $25` and Sonnet 5 `$2 / $0.20 / $10` (USD per 1M tokens). Same shape as the existing Opus 4.8 / Fable 5 entries.
 - Add `*claude-opus-5*` and `*claude-sonnet-5*` aliases so sidecar-prefixed ids match the way `*claude-fable-5*` already matches `cc/claude-fable-5`. Longest-match already prevents `*claude-opus-4*` from colliding.
 - Reuse the 20260611 Claude sidecar cost backfill: scan `source = claude_sidecar AND cost_usd IS NULL`, recompute from the current table, skip models that still do not resolve. Downgrade NULLs only Opus 5 / Sonnet 5 sidecar rows so earlier Claude costs stay put.
+- After rewriting costs, clear `account_usage_rollups` / `api_key_usage_rollups` and reset `folded_through` to epoch. The watermark only moves forward, so folded $0 sums would otherwise stick. Same escape hatch as `20260712_020000_add_api_key_usage_rollups`.
 - Parent the migration on `20260727_000000_merge_fork_and_upstream_1_22_heads` (current single head).
 
 ## Risks / Trade-offs

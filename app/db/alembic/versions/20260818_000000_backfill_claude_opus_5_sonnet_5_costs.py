@@ -62,6 +62,22 @@ def _has_table(connection: Connection, table_name: str) -> bool:
     return sa.inspect(connection).has_table(table_name)
 
 
+def _reset_usage_rollups(bind: Connection) -> None:
+    """Drop folded sums and rewind the watermark so the next fold re-reads costs.
+
+    ``folded_through`` only moves forward. NULL ``cost_usd`` folded as $0 would
+    otherwise stay in ``account_usage_rollups`` / ``api_key_usage_rollups`` after
+    this backfill. Same escape hatch as ``20260712_020000_add_api_key_usage_rollups``.
+    """
+    if not _has_table(bind, "account_usage_rollup_state"):
+        return
+    if _has_table(bind, "account_usage_rollups"):
+        bind.execute(sa.text("DELETE FROM account_usage_rollups"))
+    if _has_table(bind, "api_key_usage_rollups"):
+        bind.execute(sa.text("DELETE FROM api_key_usage_rollups"))
+    bind.execute(sa.text("UPDATE account_usage_rollup_state SET folded_through = '1970-01-01 00:00:00'"))
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if not _has_table(bind, "request_logs"):
@@ -120,6 +136,8 @@ def upgrade() -> None:
             bind.execute(sa.update(request_logs).where(request_logs.c.id == row["id"]).values(cost_usd=cost))
         last_seen_id = int(rows[-1]["id"])
 
+    _reset_usage_rollups(bind)
+
 
 def downgrade() -> None:
     bind = op.get_bind()
@@ -142,3 +160,4 @@ def downgrade() -> None:
         )
         .values(cost_usd=None)
     )
+    _reset_usage_rollups(bind)

@@ -7,6 +7,7 @@
 
 - [x] 2.1 Add Alembic migration on `20260727_000000_merge_fork_and_upstream_1_22_heads` that recomputes NULL `claude_sidecar` `cost_usd` from the current pricing table
 - [x] 2.2 Downgrade only Opus 5 / Sonnet 5 sidecar rows
+- [x] 2.3 Reset usage-rollup tables and `folded_through` after the cost rewrite so folded $0 sums are not sticky
 
 ## 3. Regression coverage
 
