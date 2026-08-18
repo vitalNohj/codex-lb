@@ -158,37 +158,42 @@ class _ClaudeSidecarCooldownGate:
 
     def note_cooldown(self, sleep_for: float) -> None:
         now = time.monotonic()
-        new_until = now + max(sleep_for, 0.0)
-        if new_until > self.until:
-            self.until = new_until
+        new_round = (not self.cooling) or now >= self.until
+        self.until = max(self.until, now + max(sleep_for, 0.0))
+        if new_round:
             self.backoff = min(
                 max(self.backoff * 2.0, sleep_for),
                 CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS,
             )
-        else:
-            self.until = max(self.until, new_until)
         self.cooling = True
 
     async def claim_poll(self) -> bool:
         lock, idle = self._state()
         async with lock:
-            if self.remaining() > 0.0 or self._polling:
+            if not self.cooling or self.remaining() > 0.0 or self._polling:
                 return False
-            if not self.cooling:
-                return True
             self._polling = True
             idle.clear()
             return True
 
-    async def end_poll(self, *, success: bool = False, cooldown: bool = False, sleep_for: float = 0.0) -> None:
+    async def end_poll(
+        self,
+        *,
+        success: bool = False,
+        cooldown: bool = False,
+        sleep_for: float = 0.0,
+        held: bool = False,
+    ) -> None:
         lock, idle = self._state()
         async with lock:
-            self._polling = False
             if cooldown:
                 self.note_cooldown(sleep_for)
             elif success:
                 self.clear_success()
-            idle.set()
+            if held:
+                self._polling = False
+            if held or success:
+                idle.set()
 
     async def wait_for_turn(self, *, deadline: float) -> None:
         remaining = self.remaining()
@@ -222,38 +227,40 @@ def _claude_sidecar_cooldown_retry_sleep(exc: ClaudeSidecarError, *, deadline: f
     return min(_CLAUDE_SIDECAR_COOLDOWN_GATE.backoff, remaining)
 
 
-async def _prepare_claude_sidecar_cooldown_attempt(*, deadline: float) -> None:
-    """Park until this request may attempt. Single-flight only while cooling."""
+async def _prepare_claude_sidecar_cooldown_attempt(*, deadline: float) -> bool:
+    """Park until this request may attempt. True if caller holds the poll slot."""
     gate = _CLAUDE_SIDECAR_COOLDOWN_GATE
     while True:
         if not gate.cooling:
-            return
+            return False
         now = time.monotonic()
         if now >= deadline:
-            return
+            return False
         remaining = min(gate.remaining(), deadline - now)
         if remaining > 0.0:
             await asyncio.sleep(remaining)
             continue
         if await gate.claim_poll():
-            return
+            return True
         await gate.wait_for_turn(deadline=deadline)
 
 
-async def _finish_claude_sidecar_cooldown_attempt(exc: ClaudeSidecarError | None, *, deadline: float) -> float | None:
+async def _finish_claude_sidecar_cooldown_attempt(
+    exc: ClaudeSidecarError | None, *, deadline: float, held: bool
+) -> float | None:
     """Release the poller. Return sleep seconds to retry, or None to raise."""
     gate = _CLAUDE_SIDECAR_COOLDOWN_GATE
     if exc is None:
-        await gate.end_poll(success=True)
+        await gate.end_poll(success=True, held=held)
         return None
     sleep_for = _claude_sidecar_cooldown_retry_sleep(exc, deadline=deadline)
     if sleep_for is None:
         if is_claude_sidecar_cooldown_message(exc.message):
-            await gate.end_poll(cooldown=True, sleep_for=gate.backoff)
+            await gate.end_poll(cooldown=True, sleep_for=gate.backoff, held=held)
         else:
-            await gate.end_poll(success=True)
+            await gate.end_poll(held=held)
         return None
-    await gate.end_poll(cooldown=True, sleep_for=sleep_for)
+    await gate.end_poll(cooldown=True, sleep_for=sleep_for, held=held)
     logger.info(
         "Claude sidecar cooldown; waiting %.1fs then retrying (%.1fs budget left)",
         sleep_for,
@@ -273,17 +280,19 @@ async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) 
             if last_exc is not None:
                 raise last_exc
             return await operation()
-        await _prepare_claude_sidecar_cooldown_attempt(deadline=deadline)
+        held = await _prepare_claude_sidecar_cooldown_attempt(deadline=deadline)
         if last_exc is not None and time.monotonic() >= deadline:
+            if held:
+                await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=True)
             raise last_exc
         try:
             result = await operation()
         except ClaudeSidecarError as exc:
             last_exc = exc
-            if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=deadline) is None:
+            if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=deadline, held=held) is None:
                 raise
             continue
-        await _finish_claude_sidecar_cooldown_attempt(None, deadline=deadline)
+        await _finish_claude_sidecar_cooldown_attempt(None, deadline=deadline, held=held)
         return result
 
 
@@ -1128,9 +1137,12 @@ async def _sidecar_stream_iterator(
         while True:
             if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
                 raise last_cooldown_exc
+            held = False
             if wait_seconds > 0.0:
-                await _prepare_claude_sidecar_cooldown_attempt(deadline=cooldown_deadline)
+                held = await _prepare_claude_sidecar_cooldown_attempt(deadline=cooldown_deadline)
                 if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
+                    if held:
+                        await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=True)
                     raise last_cooldown_exc
             try:
                 usage = None
@@ -1165,20 +1177,20 @@ async def _sidecar_stream_iterator(
                         if event_usage is not None:
                             usage = event_usage
                 if wait_seconds > 0.0:
-                    await _finish_claude_sidecar_cooldown_attempt(None, deadline=cooldown_deadline)
+                    await _finish_claude_sidecar_cooldown_attempt(None, deadline=cooldown_deadline, held=held)
                 break
             except ClaudeSidecarError as exc:
                 if wait_seconds <= 0.0:
                     raise
                 if yielded:
-                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll()
+                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held)
                     raise
                 last_cooldown_exc = exc
-                if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=cooldown_deadline) is None:
+                if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=cooldown_deadline, held=held) is None:
                     raise
             except BaseException:
                 if wait_seconds > 0.0:
-                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll()
+                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held)
                 raise
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)

@@ -8,7 +8,7 @@ codex-lb used to store that string as `claude_sidecar_error` and return it immed
 
 1. Detect cooldown via `auth_unavailable` or `no auth available` in the sidecar message. Do not match generic `unavailable`. Do not retry `Overloaded`.
 2. Retry the sidecar call for `CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS` (75s). Probe sleeps start at `CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS` (2s) and double up to the wait budget. Constants, not a new setting.
-3. Share one process-wide `cooldown-until` + single poller. Extra waiters park; they must not fail-fast (a locked-semaphore reject re-emits the Kodus 503 burst). HTTP stays off the lock so healthy traffic is not serialized.
+3. Share one process-wide `cooldown-until` + single poller. Extra waiters park; they must not fail-fast (a locked-semaphore reject re-emits the Kodus 503 burst). HTTP stays off the lock so healthy traffic is not serialized. Double backoff once per probe round, not per concurrent 503. `Overloaded` must not clear an active cooldown window. Only the claim owner releases the poller.
 4. If a retry succeeds, persist one **success** request log. Do not write a log row per 503 attempt.
 5. If the budget expires, persist `error_code=claude_sidecar_cooldown` / `error_message=Claude sidecar cooldown for <model>` / original text on `failure_detail`, and return the original sidecar envelope once.
 6. Stream: retry only before any SSE bytes are yielded. Mid-stream failures stay terminal. Recreate the DeepSeek stream recorder (and reset usage/completed) at the start of each attempt so a failed probe cannot commit into the retry.

@@ -170,6 +170,35 @@ async def test_retry_claude_sidecar_cooldown_single_poller_parks_waiters() -> No
     assert in_flight == 0
 
 
+def test_note_cooldown_doubles_backoff_once_per_round() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    reset_claude_sidecar_cooldown_gate()
+    for _ in range(6):
+        gate.note_cooldown(2.0)
+    assert gate.cooling is True
+    assert gate.backoff == 4.0
+    assert gate.until <= sidecar_dispatch.time.monotonic() + 2.5
+
+
+@pytest.mark.asyncio
+async def test_retry_overloaded_does_not_clear_shared_cooldown() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    reset_claude_sidecar_cooldown_gate()
+    gate.cooling = True
+    gate.until = sidecar_dispatch.time.monotonic()
+    gate.backoff = 4.0
+    until_before = gate.until
+
+    async def operation() -> dict[str, bool]:
+        raise ClaudeSidecarError(502, "claude executor: upstream returned error event: Overloaded")
+
+    with pytest.raises(ClaudeSidecarError, match="Overloaded"):
+        await retry_claude_sidecar_cooldown(operation)
+    assert gate.cooling is True
+    assert gate.backoff == 4.0
+    assert gate.until == until_before
+
+
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
