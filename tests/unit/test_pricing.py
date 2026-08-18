@@ -134,6 +134,35 @@ def test_get_pricing_for_model_claude_sidecar_prefixed_opus():
     assert model == "claude-opus-4-7"
 
 
+def test_get_pricing_for_model_claude_opus_5_canonical():
+    result = get_pricing_for_model("claude-opus-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-opus-5"
+    assert price.input_per_1m == 5.0
+    assert price.cached_input_per_1m == 0.5
+    assert price.output_per_1m == 25.0
+
+
+def test_get_pricing_for_model_claude_opus_5_sidecar_slash_prefix():
+    result = get_pricing_for_model("cc/claude-opus-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-opus-5"
+    assert price.input_per_1m == 5.0
+    assert price.output_per_1m == 25.0
+
+
+def test_get_pricing_for_model_claude_sonnet_5_sidecar_slash_prefix():
+    result = get_pricing_for_model("cc/claude-sonnet-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-sonnet-5"
+    assert price.input_per_1m == 2.0
+    assert price.cached_input_per_1m == 0.2
+    assert price.output_per_1m == 10.0
+
+
 def test_get_pricing_for_model_claude_versioned_beats_family():
     result = get_pricing_for_model("claude-opus-4-1-20250805", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None

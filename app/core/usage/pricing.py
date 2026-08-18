@@ -339,10 +339,10 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=2.0,
         output_per_1m=30.0,
     ),
-    # Anthropic Claude pricing (June 2026 list prices, USD per 1M tokens).
+    # Anthropic Claude pricing (August 2026 list prices, USD per 1M tokens).
     # ``cached_input_per_1m`` maps to Anthropic's cache-hit (read) rate.
     # These cover traffic proxied through the Claude sidecar; request logs
-    # may store prefixed model ids (e.g. ``cp-claude-fable-5``) which the
+    # may store prefixed model ids (e.g. ``cc/claude-opus-5``) which the
     # alias patterns below resolve to these canonical entries.
     "claude-fable-5": ModelPrice(
         input_per_1m=10.0,
@@ -353,6 +353,11 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         input_per_1m=10.0,
         cached_input_per_1m=1.0,
         output_per_1m=50.0,
+    ),
+    "claude-opus-5": ModelPrice(
+        input_per_1m=5.0,
+        cached_input_per_1m=0.5,
+        output_per_1m=25.0,
     ),
     "claude-opus-4-8": ModelPrice(
         input_per_1m=5.0,
@@ -383,6 +388,11 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         input_per_1m=15.0,
         cached_input_per_1m=1.5,
         output_per_1m=75.0,
+    ),
+    "claude-sonnet-5": ModelPrice(
+        input_per_1m=2.0,
+        cached_input_per_1m=0.2,
+        output_per_1m=10.0,
     ),
     "claude-sonnet-4-6": ModelPrice(
         input_per_1m=3.0,
@@ -599,12 +609,14 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     # pattern wins, so version-specific patterns beat the family fallbacks.
     "*claude-fable-5*": "claude-fable-5",
     "*claude-mythos-5*": "claude-mythos-5",
+    "*claude-opus-5*": "claude-opus-5",
     "*claude-opus-4-8*": "claude-opus-4-8",
     "*claude-opus-4-7*": "claude-opus-4-7",
     "*claude-opus-4-6*": "claude-opus-4-6",
     "*claude-opus-4-5*": "claude-opus-4-5",
     "*claude-opus-4-1*": "claude-opus-4-1",
     "*claude-opus-4*": "claude-opus-4",
+    "*claude-sonnet-5*": "claude-sonnet-5",
     "*claude-sonnet-4-6*": "claude-sonnet-4-6",
     "*claude-sonnet-4-5*": "claude-sonnet-4-5",
     "*claude-sonnet-4*": "claude-sonnet-4",
