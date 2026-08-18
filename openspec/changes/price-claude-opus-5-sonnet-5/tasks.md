@@ -17,4 +17,4 @@
 ## 4. Verification
 
 - [x] 4.1 `openspec validate price-claude-opus-5-sonnet-5 --strict`
-- [ ] 4.2 `uv run pytest` for the focused pricing, request-log, and migration tests
+- [x] 4.2 `uv run pytest` for the focused pricing, request-log, and migration tests
