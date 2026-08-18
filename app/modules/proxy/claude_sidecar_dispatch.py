@@ -192,7 +192,7 @@ class _ClaudeSidecarCooldownGate:
                 self.clear_success()
             if held:
                 self._polling = False
-            if not self._polling:
+            if not self._polling or not self.cooling:
                 idle.set()
 
     async def wait_for_turn(self, *, deadline: float) -> None:
@@ -202,9 +202,13 @@ class _ClaudeSidecarCooldownGate:
             await asyncio.sleep(min(remaining, timeout) if timeout > 0.0 else 0.0)
             return
         _, idle = self._state()
-        if idle.is_set() or timeout <= 0.0:
+        if timeout <= 0.0:
+            return
+        if idle.is_set() and not self._polling:
             await asyncio.sleep(0)
             return
+        if idle.is_set():
+            idle.clear()
         try:
             await asyncio.wait_for(idle.wait(), timeout=timeout)
         except TimeoutError:
