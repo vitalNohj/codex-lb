@@ -192,7 +192,7 @@ class _ClaudeSidecarCooldownGate:
                 self.clear_success()
             if held:
                 self._polling = False
-            if held or success:
+            if not self._polling:
                 idle.set()
 
     async def wait_for_turn(self, *, deadline: float) -> None:
@@ -292,6 +292,10 @@ async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) 
             if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=deadline, held=held) is None:
                 raise
             continue
+        except BaseException:
+            if held:
+                await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=True)
+            raise
         await _finish_claude_sidecar_cooldown_attempt(None, deadline=deadline, held=held)
         return result
 

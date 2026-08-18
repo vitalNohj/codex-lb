@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
@@ -140,8 +142,6 @@ async def test_retry_claude_sidecar_cooldown_exponential_backoff(
 
 @pytest.mark.asyncio
 async def test_retry_claude_sidecar_cooldown_single_poller_parks_waiters() -> None:
-    import asyncio
-
     gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
     gate.cooling = True
     gate.until = sidecar_dispatch.time.monotonic()
@@ -197,6 +197,30 @@ async def test_retry_overloaded_does_not_clear_shared_cooldown() -> None:
     assert gate.cooling is True
     assert gate.backoff == 4.0
     assert gate.until == until_before
+
+
+@pytest.mark.asyncio
+async def test_retry_releases_poll_slot_on_transport_error() -> None:
+    gate = sidecar_dispatch._CLAUDE_SIDECAR_COOLDOWN_GATE
+    reset_claude_sidecar_cooldown_gate()
+    gate.cooling = True
+    gate.until = sidecar_dispatch.time.monotonic()
+
+    async def operation() -> dict[str, bool]:
+        raise RuntimeError("transport down")
+
+    with pytest.raises(RuntimeError, match="transport down"):
+        await retry_claude_sidecar_cooldown(operation)
+    assert gate._polling is False
+
+    released = asyncio.Event()
+
+    async def followup() -> dict[str, bool]:
+        released.set()
+        return {"ok": True}
+
+    assert await retry_claude_sidecar_cooldown(followup) == {"ok": True}
+    assert released.is_set()
 
 
 def test_build_sidecar_chat_payload_preserves_extra_fields_and_effective_model() -> None:
