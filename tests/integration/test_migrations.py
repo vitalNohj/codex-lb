@@ -1038,27 +1038,53 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
             await session.execute(
                 text(
                     """
+                    INSERT INTO api_keys (
+                        id, name, key_hash, key_prefix, is_active, created_at
+                    )
+                    VALUES (
+                        'key_opus5', 'opus5', 'hash_opus5', 'sk-opus5', 1,
+                        '2026-08-01 00:00:00'
+                    )
+                    """
+                )
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO api_key_usage_rollups (
+                        api_key_id, request_count, input_tokens, output_tokens,
+                        cached_input_tokens, total_cost_usd
+                    )
+                    VALUES ('key_opus5', 3, 3000000, 3000000, 0, 60.0)
+                    """
+                )
+            )
+            await session.execute(
+                text(
+                    """
                     INSERT INTO request_logs (
-                        account_id, request_id, requested_at, model, source,
+                        account_id, api_key_id, request_id, requested_at, model, source,
                         input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
                         latency_ms, status, cost_usd, request_kind
                     )
                     VALUES
-                      (NULL, 'req_opus_5', '2026-08-17 00:00:00', 'cc/claude-opus-5', 'claude_sidecar',
-                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
-                      (NULL, 'req_sonnet_5', '2026-08-17 00:01:00', 'cc/claude-sonnet-5', 'claude_sidecar',
-                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
-                      (NULL, 'req_opus_5_cached', '2026-08-17 00:02:00', 'cc/claude-opus-5', 'claude_sidecar',
-                       1000000, 1000000, 500000, 0, 100, 'success', NULL, 'normal'),
-                      (NULL, 'req_sidecar_unknown', '2026-08-17 00:03:00', 'cc/claude-mystery-99', 'claude_sidecar',
-                       1000, 1000, 0, 0, 100, 'success', NULL, 'normal'),
-                      (NULL, 'req_fable_existing', '2026-08-17 00:04:00', 'cc/claude-fable-5', 'claude_sidecar',
-                       1000000, 1000000, 0, 0, 100, 'success', 60.0, 'normal')
+                      (NULL, 'key_opus5', 'req_opus_5', '2026-08-17 00:00:00', 'cc/claude-opus-5',
+                       'claude_sidecar', 1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'key_opus5', 'req_sonnet_5', '2026-08-17 00:01:00', 'cc/claude-sonnet-5',
+                       'claude_sidecar', 1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'key_opus5', 'req_opus_5_cached', '2026-08-17 18:00:00', 'cc/claude-opus-5',
+                       'claude_sidecar', 1000000, 1000000, 500000, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'key_opus5', 'req_sidecar_unknown', '2026-08-17 00:03:00',
+                       'cc/claude-mystery-99', 'claude_sidecar', 1000, 1000, 0, 0, 100,
+                       'success', NULL, 'normal'),
+                      (NULL, 'key_opus5', 'req_fable_existing', '2026-08-17 00:04:00',
+                       'cc/claude-fable-5', 'claude_sidecar', 1000000, 1000000, 0, 0, 100,
+                       'success', 60.0, 'normal')
                     """
                 )
             )
             await session.commit()
-            await session.execute(text("UPDATE account_usage_rollup_state SET folded_through = '2026-08-01 00:00:00'"))
+            await session.execute(text("UPDATE account_usage_rollup_state SET folded_through = '2026-08-17 12:00:00'"))
             await session.commit()
 
         await to_thread.run_sync(
@@ -1076,6 +1102,12 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
             watermark = (
                 await session.execute(text("SELECT folded_through FROM account_usage_rollup_state"))
             ).scalar_one()
+            key_rollup_cost = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM api_key_usage_rollups WHERE api_key_id = 'key_opus5'")
+                )
+            ).scalar_one()
+            rollup_row_count = (await session.execute(text("SELECT COUNT(*) FROM api_key_usage_rollups"))).scalar_one()
     finally:
         await engine.dispose()
 
@@ -1088,7 +1120,11 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
     assert costs["req_opus_5_cached"] == pytest.approx(27.75)
     assert costs["req_sidecar_unknown"] is None
     assert costs["req_fable_existing"] == pytest.approx(60.0)
-    assert str(watermark).startswith("1970-01-01")
+    assert str(watermark).startswith("2026-08-17 12:00:00")
+    # Folded opus ($30) + sonnet ($12) added to the existing fable $60. Live-tail
+    # cached opus and already-priced fable must not be added again.
+    assert key_rollup_cost == pytest.approx(102.0)
+    assert rollup_row_count == 1
 
 
 @pytest.mark.asyncio

@@ -41,9 +41,13 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 - **WHEN** the migration runs
 - **THEN** that row's `cost_usd` remains NULL
 
-#### Scenario: Backfill rewinds usage-rollup watermark
+### Requirement: Folded usage rollups receive Opus 5 and Sonnet 5 cost deltas
+
+The backfill migration MUST add newly computed Opus 5 and Sonnet 5 `cost_usd` onto existing usage-rollup rows for request logs already behind `folded_through`, and MUST NOT change `account_usage_rollup_state.folded_through`.
+
+#### Scenario: Backfill adds folded Opus 5 and Sonnet 5 cost into existing usage rollups
 
 - **GIVEN** usage rollups have already folded historical sidecar rows while `cost_usd` was NULL
 - **WHEN** the migration runs
-- **THEN** `account_usage_rollups` and `api_key_usage_rollups` are cleared
-- **AND** `account_usage_rollup_state.folded_through` is reset to epoch so the next fold recomputes cost from the backfilled rows
+- **THEN** existing `account_usage_rollups` and `api_key_usage_rollups` rows gain the newly computed Opus 5 / Sonnet 5 `cost_usd` for folded request logs
+- **AND** `account_usage_rollup_state.folded_through` is left unchanged

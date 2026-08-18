@@ -16,7 +16,7 @@ Live 7-day store before this change:
 - `cc/claude-fable-5`: 777 rows, 773 with cost
 - Cursor key on Opus 5: 134 rows, all NULL cost (Cursor is not special)
 
-After: `add_log` for `cc/claude-opus-5` with 1M input + 1M output stores `$30.00` (5 + 25). Cached tokens use the 10% cache-hit rate.
+After: `add_log` for `cc/claude-opus-5` with 1M input + 1M output stores `$30.00` (5 + 25). Cached tokens use the 10% cache-hit rate. Folded usage rollups gain those dollars via a cost-only delta; the fold watermark stays put.
 
 ## Related
 

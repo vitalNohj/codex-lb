@@ -8,7 +8,8 @@ Claude Opus 5 and Sonnet 5 pricing was added to ``DEFAULT_PRICING_MODELS``
 after sidecar traffic had already been logged; those rows persisted
 ``cost_usd = NULL`` because no price resolved at insert time. Recompute
 cost for historical Claude sidecar rows that now resolve so dollar reports
-cover Opus 5 / Sonnet 5 usage.
+cover Opus 5 / Sonnet 5 usage. Folded usage rollups then receive a cost-only
+delta; ``folded_through`` is left unchanged.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ depends_on = None
 
 _BACKFILL_BATCH_SIZE = 1000
 _DOWNGRADE_MODEL_MATCH = ("%claude-opus-5%", "%claude-sonnet-5%")
+_EXCLUDED_REQUEST_KINDS = ("warmup", "limit_warmup")
 
 
 def _calculate_cost(
@@ -62,20 +64,101 @@ def _has_table(connection: Connection, table_name: str) -> bool:
     return sa.inspect(connection).has_table(table_name)
 
 
-def _reset_usage_rollups(bind: Connection) -> None:
-    """Drop folded sums and rewind the watermark so the next fold re-reads costs.
+def _apply_folded_cost_deltas(bind: Connection, *, sign: int) -> None:
+    """Add (or subtract) newly priced Opus 5 / Sonnet 5 dollars onto existing rollups.
 
-    ``folded_through`` only moves forward. NULL ``cost_usd`` folded as $0 would
-    otherwise stay in ``account_usage_rollups`` / ``api_key_usage_rollups`` after
-    this backfill. Same escape hatch as ``20260712_020000_add_api_key_usage_rollups``.
+    Those models folded as $0 because ``cost_usd`` was NULL. Adding only their
+    folded cost keeps token/count totals and ``folded_through`` intact. Rewinding
+    the watermark and re-folding cannot rebuild rows retention already deleted.
     """
     if not _has_table(bind, "account_usage_rollup_state"):
         return
+    watermark = bind.execute(sa.text("SELECT folded_through FROM account_usage_rollup_state")).scalar()
+    if watermark is None:
+        return
+
+    request_logs = sa.table(
+        "request_logs",
+        sa.column("account_id", sa.String()),
+        sa.column("api_key_id", sa.String()),
+        sa.column("model", sa.String()),
+        sa.column("source", sa.String()),
+        sa.column("request_kind", sa.String()),
+        sa.column("deleted_at", sa.DateTime()),
+        sa.column("requested_at", sa.DateTime()),
+        sa.column("cost_usd", sa.Float()),
+    )
+    model_match = sa.or_(
+        request_logs.c.model.like(_DOWNGRADE_MODEL_MATCH[0]),
+        request_logs.c.model.like(_DOWNGRADE_MODEL_MATCH[1]),
+    )
+    folded_priced = sa.and_(
+        request_logs.c.source == "claude_sidecar",
+        model_match,
+        request_logs.c.request_kind.notin_(_EXCLUDED_REQUEST_KINDS),
+        request_logs.c.requested_at <= watermark,
+        request_logs.c.cost_usd.is_not(None),
+    )
+
     if _has_table(bind, "account_usage_rollups"):
-        bind.execute(sa.text("DELETE FROM account_usage_rollups"))
+        rollups = sa.table(
+            "account_usage_rollups",
+            sa.column("account_id", sa.String()),
+            sa.column("total_cost_usd", sa.Float()),
+        )
+        rows = (
+            bind.execute(
+                sa.select(
+                    request_logs.c.account_id,
+                    sa.func.sum(request_logs.c.cost_usd).label("delta"),
+                )
+                .where(
+                    folded_priced,
+                    request_logs.c.account_id.is_not(None),
+                    request_logs.c.deleted_at.is_(None),
+                )
+                .group_by(request_logs.c.account_id)
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            delta = row["delta"]
+            if not delta:
+                continue
+            bind.execute(
+                sa.update(rollups)
+                .where(rollups.c.account_id == row["account_id"])
+                .values(total_cost_usd=rollups.c.total_cost_usd + (sign * float(delta)))
+            )
+
     if _has_table(bind, "api_key_usage_rollups"):
-        bind.execute(sa.text("DELETE FROM api_key_usage_rollups"))
-    bind.execute(sa.text("UPDATE account_usage_rollup_state SET folded_through = '1970-01-01 00:00:00'"))
+        rollups = sa.table(
+            "api_key_usage_rollups",
+            sa.column("api_key_id", sa.String()),
+            sa.column("total_cost_usd", sa.Float()),
+        )
+        rows = (
+            bind.execute(
+                sa.select(
+                    request_logs.c.api_key_id,
+                    sa.func.sum(request_logs.c.cost_usd).label("delta"),
+                )
+                .where(folded_priced, request_logs.c.api_key_id.is_not(None))
+                .group_by(request_logs.c.api_key_id)
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            delta = row["delta"]
+            if not delta:
+                continue
+            bind.execute(
+                sa.update(rollups)
+                .where(rollups.c.api_key_id == row["api_key_id"])
+                .values(total_cost_usd=rollups.c.total_cost_usd + (sign * float(delta)))
+            )
 
 
 def upgrade() -> None:
@@ -136,7 +219,7 @@ def upgrade() -> None:
             bind.execute(sa.update(request_logs).where(request_logs.c.id == row["id"]).values(cost_usd=cost))
         last_seen_id = int(rows[-1]["id"])
 
-    _reset_usage_rollups(bind)
+    _apply_folded_cost_deltas(bind, sign=1)
 
 
 def downgrade() -> None:
@@ -149,6 +232,7 @@ def downgrade() -> None:
         sa.column("source", sa.String()),
         sa.column("model", sa.String()),
     )
+    _apply_folded_cost_deltas(bind, sign=-1)
     bind.execute(
         sa.update(request_logs)
         .where(
@@ -160,4 +244,3 @@ def downgrade() -> None:
         )
         .values(cost_usd=None)
     )
-    _reset_usage_rollups(bind)
