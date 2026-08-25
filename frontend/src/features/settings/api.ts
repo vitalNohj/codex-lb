@@ -139,8 +139,6 @@ export function listOpenRouterSidecarModels() {
   return get(`${OPENROUTER_SIDECAR_PATH}/models`, OpenRouterSidecarModelsResponseSchema);
 }
 
-export function getOmniRouteSidecarStatus() {
-
 export function getOrcaRouterSidecarStatus() {
   return get(`${ORCAROUTER_SIDECAR_PATH}/status`, OrcaRouterSidecarStatusResponseSchema);
 }

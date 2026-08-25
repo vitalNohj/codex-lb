@@ -47,16 +47,19 @@ export function AccountListItem({
     : null;
   const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || t("accounts.detail.unknownWorkspace");
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
-  const sidecarLabel =
-    account.provider === "openrouter"
-      ? "OpenRouter"
-      : account.provider === "orcarouter"
-        ? "OrcaRouter"
-        : account.provider === "omniroute"
-          ? "OmniRoute"
-          : account.provider === "ollama"
-            ? "Ollama"
-            : "CLIProxyAPI";
+  const isOpenRouter = account.provider === "openrouter";
+  const isOrcaRouter = account.provider === "orcarouter";
+  const isOmniRoute = account.provider === "omniroute";
+  const isOllama = account.provider === "ollama";
+  const sidecarLabel = isOpenRouter
+    ? "OpenRouter"
+    : isOrcaRouter
+      ? "OrcaRouter"
+      : isOmniRoute
+        ? "OmniRoute"
+        : isOllama
+          ? "Ollama"
+          : "CLIProxyAPI";
   const slotSubtitle = account.synthetic
     ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? sidecarLabel}`
     : `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;
@@ -93,7 +96,7 @@ export function AccountListItem({
     : primary !== null || secondary !== null
       ? "estimated"
       : "unavailable";
-  const showSidecarQuota = account.synthetic && !isOpenRouter && !isOmniRoute;
+  const showSidecarQuota = account.synthetic && !isOpenRouter && !isOrcaRouter && !isOmniRoute && !isOllama;
   const availableResetCredits = account.availableResetCredits ?? 0;
   const resetBadgeLabel = availableResetCredits > 99 ? "99+" : String(availableResetCredits);
 

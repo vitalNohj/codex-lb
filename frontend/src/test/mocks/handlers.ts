@@ -2178,8 +2178,6 @@ export const handlers = [
     });
   }),
 
-  http.get("*/api/omniroute-sidecar/status", () => {
-
   http.get("*/api/orcarouter-sidecar/status", () => {
     return HttpResponse.json({
       enabled: true,

@@ -394,9 +394,19 @@ function SyntheticAccountCard({
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
   const isOpenRouter = account.provider === "openrouter";
+  const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLI Proxy API";
-  const isClaude = !isOpenRouter && !isOmniRoute;
+  const isOllama = account.provider === "ollama";
+  const sidecarLabel = isOpenRouter
+    ? "OpenRouter"
+    : isOrcaRouter
+      ? "OrcaRouter"
+      : isOmniRoute
+        ? "OmniRoute"
+        : isOllama
+          ? "Ollama"
+          : "CLI Proxy API";
+  const isClaude = !isOpenRouter && !isOrcaRouter && !isOmniRoute && !isOllama;
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;

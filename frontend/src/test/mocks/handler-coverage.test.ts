@@ -83,7 +83,6 @@ const EXPECTED_ENDPOINTS = [
 	"GET */api/openrouter-sidecar/status",
 	"GET */api/openrouter-sidecar/models",
 	"POST */api/openrouter-sidecar/test",
-	"GET */api/omniroute-sidecar/status",
 	"GET */api/orcarouter-sidecar/status",
 	"GET */api/orcarouter-sidecar/models",
 	"POST */api/orcarouter-sidecar/test",

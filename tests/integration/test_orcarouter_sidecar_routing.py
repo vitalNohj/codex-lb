@@ -167,7 +167,9 @@ async def _create_api_key(
 ):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits))
+        return await service.create_key(
+            ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or [])
+        )
 
 
 async def _reservation_statuses() -> list[str]:
