@@ -101,6 +101,10 @@ describe("DashboardSettingsSchema", () => {
       claudeSidecarFullModels: ["cp-claude-sonnet-4"],
       openrouterSidecarModelPrefixes: [{ prefix: "deepseek/", strip: false }],
       openrouterSidecarFullModels: ["deepseek/deepseek-chat"],
+      orcarouterSidecarEnabled: true,
+      orcarouterSidecarBaseUrl: "https://api.orcarouter.ai/v1",
+      orcarouterSidecarModelPrefixes: [{ prefix: "orcarouter/", strip: false }],
+      orcarouterSidecarFullModels: ["orcarouter/auto"],
       omnirouteSidecarModelPrefixes: [{ prefix: "local/", strip: true }],
       omnirouteSidecarFullModels: ["omniroute/test-chat"],
       omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
@@ -141,6 +145,7 @@ describe("DashboardSettingsSchema", () => {
     ]);
     expect(parsed.claudeSidecarFullModels).toEqual(["cp-claude-sonnet-4"]);
     expect(parsed.openrouterSidecarFullModels).toEqual(["deepseek/deepseek-chat"]);
+    expect(parsed.orcarouterSidecarFullModels).toEqual(["orcarouter/auto"]);
     expect(parsed.omnirouteSidecarFullModels).toEqual(["omniroute/test-chat"]);
     expect(parsed.omnirouteSidecarSelectedModels).toEqual(["omniroute/test-chat"]);
     expect(parsed.ollamaSidecarEnabled).toBe(true);

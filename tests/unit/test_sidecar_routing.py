@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
-from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.proxy.sidecar_routing import (
+    SIDECAR_PROVIDER_ORDER,
+    SidecarRoutingEntry,
+    resolve_sidecar_route,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -122,3 +126,18 @@ def test_ollama_participates_in_longest_prefix_matching() -> None:
     assert decision is not None
     assert decision.provider == "ollama"
     assert decision.wire_model == "oss:120b-cloud"
+
+
+def test_orcarouter_sits_between_openrouter_and_omniroute() -> None:
+    assert SIDECAR_PROVIDER_ORDER == ("claude", "openrouter", "orcarouter", "omniroute", "ollama")
+
+
+def test_orcarouter_auto_is_forwarded_unstripped() -> None:
+    decision = resolve_sidecar_route(
+        "orcarouter/auto",
+        (_entry("orcarouter", prefixes=(SidecarPrefix(prefix="orcarouter/", strip=False),)),),
+    )
+
+    assert decision is not None
+    assert decision.provider == "orcarouter"
+    assert decision.wire_model == "orcarouter/auto"

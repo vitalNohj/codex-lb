@@ -16,24 +16,36 @@ function testProviderFor(provider: string | null | undefined): SidecarConnection
   if (provider === "openrouter") {
     return "openrouter";
   }
+  if (provider === "orcarouter") {
+    return "orcarouter";
+  }
   if (provider === "omniroute") {
     return "omniroute";
+  }
+  if (provider === "ollama") {
+    return "ollama";
   }
   return "claude";
 }
 
 export function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
   const isOpenRouter = account.provider === "openrouter";
+  const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
-  const isClaude = !isOpenRouter && !isOmniRoute;
+  const isOllama = account.provider === "ollama";
+  const isClaude = !isOpenRouter && !isOrcaRouter && !isOmniRoute && !isOllama;
   const testProvider = testProviderFor(account.provider);
   const testMutation = useSidecarConnectionTest(testProvider);
   const pauseMutation = useClaudeSidecarAccountPause();
   const settingsAnchor = isOpenRouter
     ? "/settings#openrouter-sidecar"
-    : isOmniRoute
-      ? "/settings#omniroute-sidecar"
-      : "/settings#claude-sidecar";
+    : isOrcaRouter
+      ? "/settings#orcarouter-sidecar"
+      : isOmniRoute
+        ? "/settings#omniroute-sidecar"
+        : isOllama
+          ? "/settings#ollama-sidecar"
+          : "/settings#claude-sidecar";
   const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
   const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
@@ -58,9 +70,13 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
         <p className="mt-0.5 text-xs text-muted-foreground">
           {isOpenRouter
             ? "Read-only OpenRouter sidecar account"
-            : isOmniRoute
-              ? "Read-only OmniRoute sidecar account"
-              : "Read-only Claude sidecar account"}
+            : isOrcaRouter
+              ? "Read-only OrcaRouter account"
+              : isOmniRoute
+                ? "Read-only OmniRoute sidecar account"
+                : isOllama
+                  ? "Read-only Ollama account"
+                  : "Read-only Claude sidecar account"}
         </p>
       </div>
 

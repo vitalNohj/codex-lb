@@ -8,6 +8,7 @@ from app.core.auth.dependencies import set_dashboard_error_format, validate_dash
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import DashboardContext, get_dashboard_context
@@ -21,6 +22,7 @@ from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
+from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,18 @@ async def list_models() -> dict:
                 continue
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}", "sourceOnly": False})
+    orcarouter_config = await load_orcarouter_sidecar_config()
+    if orcarouter_config is not None and orcarouter_config.enabled:
+        try:
+            orcarouter_models = await OrcaRouterSidecarClient(orcarouter_config).list_models_cached()
+        except Exception:
+            logger.warning("failed to append OrcaRouter models to dashboard model list", exc_info=True)
+            orcarouter_models = []
+        for sidecar_model in orcarouter_models:
+            if sidecar_model.id in seen_model_ids:
+                continue
+            seen_model_ids.add(sidecar_model.id)
+            models.append({"id": sidecar_model.id, "name": f"OrcaRouter: {sidecar_model.id}", "sourceOnly": False})
     omniroute_config = await load_omniroute_sidecar_config()
     if omniroute_config is not None and omniroute_config.enabled:
         try:

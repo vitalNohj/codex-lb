@@ -168,10 +168,12 @@ def _settings_update(
     *,
     claude_prefixes: list[SidecarPrefix] | None = None,
     openrouter_prefixes: list[SidecarPrefix] | None = None,
+    orcarouter_prefixes: list[SidecarPrefix] | None = None,
     omniroute_prefixes: list[SidecarPrefix] | None = None,
     ollama_prefixes: list[SidecarPrefix] | None = None,
     claude_models: list[str] | None = None,
     openrouter_models: list[str] | None = None,
+    orcarouter_models: list[str] | None = None,
     omniroute_models: list[str] | None = None,
     ollama_models: list[str] | None = None,
 ) -> DashboardSettingsUpdateData:
@@ -246,6 +248,16 @@ def _settings_update(
         openrouter_sidecar_request_timeout_seconds=600.0,
         openrouter_sidecar_models_cache_ttl_seconds=60.0,
         openrouter_sidecar_default_reasoning_effort=None,
+        orcarouter_sidecar_enabled=False,
+        orcarouter_sidecar_base_url="https://api.orcarouter.ai/v1",
+        orcarouter_sidecar_api_key=None,
+        orcarouter_sidecar_clear_api_key=False,
+        orcarouter_sidecar_model_prefixes=orcarouter_prefixes or [SidecarPrefix(prefix="orcarouter/", strip=False)],
+        orcarouter_sidecar_full_models=orcarouter_models or [],
+        orcarouter_sidecar_connect_timeout_seconds=8.0,
+        orcarouter_sidecar_request_timeout_seconds=600.0,
+        orcarouter_sidecar_models_cache_ttl_seconds=60.0,
+        orcarouter_sidecar_default_reasoning_effort=None,
         omniroute_sidecar_enabled=False,
         omniroute_sidecar_base_url="http://127.0.0.1:20128/v1",
         omniroute_sidecar_api_key=None,
@@ -352,6 +364,20 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
     assert exc_info.value.conflict.kind == "full_model"
     assert exc_info.value.conflict.owner == "OmniRoute"
     assert exc_info.value.conflict.challenger == "Ollama"
+
+
+def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None:
+    payload = _settings_update(
+        omniroute_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
+        orcarouter_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "prefix"
+    assert exc_info.value.conflict.value == "orcarouter/"
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "OmniRoute"}
 
 
 def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence() -> None:

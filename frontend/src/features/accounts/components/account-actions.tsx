@@ -65,7 +65,16 @@ export function AccountActions({
 }: AccountActionsProps) {
   const { t } = useTranslation();
   if (account.synthetic || account.readOnly) {
-    const sidecarName = account.provider === "openrouter" ? "OpenRouter" : "Claude via CLIProxyAPI";
+    const sidecarName =
+      account.provider === "openrouter"
+        ? "OpenRouter"
+        : account.provider === "orcarouter"
+          ? "OrcaRouter"
+          : account.provider === "omniroute"
+            ? "OmniRoute"
+            : account.provider === "ollama"
+              ? "Ollama"
+              : "Claude via CLIProxyAPI";
     return (
       <div className="space-y-3 border-t pt-4">
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">

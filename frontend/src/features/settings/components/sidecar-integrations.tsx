@@ -6,6 +6,7 @@ import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sid
 import { OllamaSidecarSettings } from "@/features/settings/components/ollama-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
+import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +36,12 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
       label: "OpenRouter",
       enabled: settings.openrouterSidecarEnabled ?? false,
       render: () => <OpenRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
+    },
+    {
+      value: "orcarouter",
+      label: "OrcaRouter",
+      enabled: settings.orcarouterSidecarEnabled ?? false,
+      render: () => <OrcaRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
     {
       value: "omniroute",

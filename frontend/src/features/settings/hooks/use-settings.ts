@@ -13,11 +13,13 @@ import {
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
   getOpenRouterSidecarStatus,
+  getOrcaRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
   listOllamaSidecarModels,
   listOmniRouteSidecarModels,
   listOpenRouterSidecarModels,
+  listOrcaRouterSidecarModels,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
   setClaudeSidecarAccountPaused,
@@ -27,6 +29,7 @@ import {
   testOllamaSidecarConnection,
   testOmniRouteSidecarConnection,
   testOpenRouterSidecarConnection,
+  testOrcaRouterSidecarConnection,
   testUpstreamProxyEndpoint,
   updateSettings,
 } from "@/features/settings/api";
@@ -171,7 +174,7 @@ export function useUpstreamProxyAdmin() {
   };
 }
 
-export type SidecarConnectionProvider = "claude" | "openrouter" | "omniroute" | "ollama";
+export type SidecarConnectionProvider = "claude" | "openrouter" | "orcarouter" | "omniroute" | "ollama";
 
 const SIDECAR_TEST_CONFIG: Record<
   SidecarConnectionProvider,
@@ -193,6 +196,12 @@ const SIDECAR_TEST_CONFIG: Record<
     testConnection: testOpenRouterSidecarConnection,
     successMessage: "OpenRouter sidecar tested",
     errorMessage: "OpenRouter sidecar test failed",
+  },
+  orcarouter: {
+    queryKey: "orcarouter-sidecar",
+    testConnection: testOrcaRouterSidecarConnection,
+    successMessage: "OrcaRouter tested",
+    errorMessage: "OrcaRouter test failed",
   },
   omniroute: {
     queryKey: "omniroute-sidecar",
@@ -312,6 +321,20 @@ export function useOpenRouterSidecar(options?: { modelsEnabled?: boolean }) {
     enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useSidecarConnectionTest("openrouter");
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useOrcaRouterSidecar(options?: { modelsEnabled?: boolean }) {
+  const statusQuery = useQuery({
+    queryKey: ["settings", "orcarouter-sidecar", "status"],
+    queryFn: getOrcaRouterSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "orcarouter-sidecar", "models"],
+    queryFn: listOrcaRouterSidecarModels,
+    enabled: options?.modelsEnabled ?? true,
+  });
+  const testMutation = useSidecarConnectionTest("orcarouter");
   return { statusQuery, modelsQuery, testMutation };
 }
 

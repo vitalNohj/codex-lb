@@ -206,6 +206,21 @@ export const DashboardSettingsSchema = z
     openrouterSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     openrouterSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     openrouterSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
+    orcarouterSidecarEnabled: z.boolean().optional().default(false),
+    orcarouterSidecarBaseUrl: z.string().trim().min(1).optional().default("https://api.orcarouter.ai/v1"),
+    orcarouterSidecarApiKeyConfigured: z.boolean().optional().default(false),
+    orcarouterSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([
+      { prefix: "orcarouter/", strip: false },
+    ]),
+    orcarouterSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
+    orcarouterSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
+    orcarouterSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
+    orcarouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+    orcarouterSidecarLastHealthStatus: z.string().nullable().optional().default(null),
+    orcarouterSidecarLastHealthMessage: z.string().nullable().optional().default(null),
+    orcarouterSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
+    orcarouterSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    orcarouterSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     omnirouteSidecarEnabled: z.boolean().optional().default(false),
     omnirouteSidecarBaseUrl: z.string().trim().min(1).optional().default("http://127.0.0.1:20128/v1"),
     omnirouteSidecarApiKeyConfigured: z.boolean().optional().default(false),
@@ -347,6 +362,16 @@ export const SettingsUpdateRequestSchema = z
     openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
     openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
     openrouterSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    orcarouterSidecarEnabled: z.boolean().optional(),
+    orcarouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+    orcarouterSidecarApiKey: z.string().trim().max(4096).optional(),
+    orcarouterSidecarClearApiKey: z.boolean().optional(),
+    orcarouterSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+    orcarouterSidecarFullModels: SidecarFullModelsSchema.optional(),
+    orcarouterSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+    orcarouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+    orcarouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
+    orcarouterSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
     omnirouteSidecarEnabled: z.boolean().optional(),
     omnirouteSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
     omnirouteSidecarApiKey: z.string().trim().max(4096).optional(),
@@ -460,6 +485,32 @@ export const OpenRouterSidecarTestResponseSchema = OpenRouterSidecarStatusRespon
 
 export const OpenRouterSidecarModelsResponseSchema = z.object({
   models: z.array(OpenRouterSidecarModelSummarySchema).default([]),
+});
+
+const OrcaRouterSidecarStatusValueSchema = ThirdPartySidecarStatusValueSchema;
+
+export const OrcaRouterSidecarModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+});
+
+export const OrcaRouterSidecarStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: OrcaRouterSidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+export const OrcaRouterSidecarTestResponseSchema = OrcaRouterSidecarStatusResponseSchema.extend({
+  models: z.array(OrcaRouterSidecarModelSummarySchema).default([]),
+});
+
+export const OrcaRouterSidecarModelsResponseSchema = z.object({
+  models: z.array(OrcaRouterSidecarModelSummarySchema).default([]),
 });
 
 const OmniRouteSidecarStatusValueSchema = ThirdPartySidecarStatusValueSchema;
@@ -605,6 +656,23 @@ type OpenRouterSidecarSettingsFields = Pick<
   | "openrouterSidecarDefaultReasoningEffort"
 >;
 
+type OrcaRouterSidecarSettingsFields = Pick<
+  ParsedDashboardSettings,
+  | "orcarouterSidecarEnabled"
+  | "orcarouterSidecarBaseUrl"
+  | "orcarouterSidecarApiKeyConfigured"
+  | "orcarouterSidecarModelPrefixes"
+  | "orcarouterSidecarFullModels"
+  | "orcarouterSidecarConnectTimeoutSeconds"
+  | "orcarouterSidecarRequestTimeoutSeconds"
+  | "orcarouterSidecarModelsCacheTtlSeconds"
+  | "orcarouterSidecarLastHealthStatus"
+  | "orcarouterSidecarLastHealthMessage"
+  | "orcarouterSidecarLastCheckedAt"
+  | "orcarouterSidecarLastModelCount"
+  | "orcarouterSidecarDefaultReasoningEffort"
+>;
+
 type OmniRouteSidecarSettingsFields = Pick<
   ParsedDashboardSettings,
   | "omnirouteSidecarEnabled"
@@ -669,6 +737,7 @@ export type DashboardSettings = Omit<
   | keyof StickyThresholdValues
   | keyof ClaudeSidecarSettingsFields
   | keyof OpenRouterSidecarSettingsFields
+  | keyof OrcaRouterSidecarSettingsFields
   | keyof OmniRouteSidecarSettingsFields
   | keyof OllamaSidecarSettingsFields
 > &
@@ -676,6 +745,7 @@ export type DashboardSettings = Omit<
   Partial<StickyThresholdValues> &
   Partial<ClaudeSidecarSettingsFields> &
   Partial<OpenRouterSidecarSettingsFields> &
+  Partial<OrcaRouterSidecarSettingsFields> &
   Partial<OmniRouteSidecarSettingsFields> &
   Partial<OllamaSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
@@ -696,6 +766,10 @@ export type OpenRouterSidecarModelSummary = z.infer<typeof OpenRouterSidecarMode
 export type OpenRouterSidecarStatusResponse = z.infer<typeof OpenRouterSidecarStatusResponseSchema>;
 export type OpenRouterSidecarTestResponse = z.infer<typeof OpenRouterSidecarTestResponseSchema>;
 export type OpenRouterSidecarModelsResponse = z.infer<typeof OpenRouterSidecarModelsResponseSchema>;
+export type OrcaRouterSidecarModelSummary = z.infer<typeof OrcaRouterSidecarModelSummarySchema>;
+export type OrcaRouterSidecarStatusResponse = z.infer<typeof OrcaRouterSidecarStatusResponseSchema>;
+export type OrcaRouterSidecarTestResponse = z.infer<typeof OrcaRouterSidecarTestResponseSchema>;
+export type OrcaRouterSidecarModelsResponse = z.infer<typeof OrcaRouterSidecarModelsResponseSchema>;
 export type OmniRouteSidecarModelSummary = z.infer<typeof OmniRouteSidecarModelSummarySchema>;
 export type OmniRouteSidecarStatusResponse = z.infer<typeof OmniRouteSidecarStatusResponseSchema>;
 export type OmniRouteSidecarTestResponse = z.infer<typeof OmniRouteSidecarTestResponseSchema>;

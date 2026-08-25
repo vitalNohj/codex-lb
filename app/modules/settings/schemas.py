@@ -72,6 +72,18 @@ def _normalize_openrouter_sidecar_base_url(value: str | None) -> str | None:
     return normalized
 
 
+def _normalize_orcarouter_sidecar_base_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("orcarouter_sidecar_base_url must not be blank")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("orcarouter_sidecar_base_url must be an http(s) URL")
+    return normalized
+
+
 def _normalize_sidecar_full_models(value: list[str] | None, *, field_name: str) -> list[str] | None:
     if value is None:
         return None
@@ -291,6 +303,22 @@ class DashboardSettingsResponse(DashboardModel):
     openrouter_sidecar_last_checked_at: datetime | None = None
     openrouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     openrouter_sidecar_default_reasoning_effort: str | None = None
+    orcarouter_sidecar_enabled: bool = False
+    orcarouter_sidecar_base_url: str = Field(default="https://api.orcarouter.ai/v1", min_length=1)
+    orcarouter_sidecar_api_key_configured: bool = False
+    orcarouter_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(
+        default_factory=lambda: [SidecarModelPrefix(prefix="orcarouter/", strip=False)],
+        max_length=32,
+    )
+    orcarouter_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
+    orcarouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    orcarouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    orcarouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    orcarouter_sidecar_last_health_status: str | None = None
+    orcarouter_sidecar_last_health_message: str | None = None
+    orcarouter_sidecar_last_checked_at: datetime | None = None
+    orcarouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
+    orcarouter_sidecar_default_reasoning_effort: str | None = None
     omniroute_sidecar_enabled: bool = False
     omniroute_sidecar_base_url: str = Field(default="http://127.0.0.1:20128/v1", min_length=1)
     omniroute_sidecar_api_key_configured: bool = False
@@ -404,6 +432,16 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     openrouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     openrouter_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
+    orcarouter_sidecar_enabled: bool | None = None
+    orcarouter_sidecar_base_url: str | None = Field(default=None, max_length=2048)
+    orcarouter_sidecar_api_key: str | None = Field(default=None, max_length=4096)
+    orcarouter_sidecar_clear_api_key: bool | None = None
+    orcarouter_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, max_length=32)
+    orcarouter_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
+    orcarouter_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    orcarouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
+    orcarouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
+    orcarouter_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     omniroute_sidecar_enabled: bool | None = None
     omniroute_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     omniroute_sidecar_api_key: str | None = Field(default=None, max_length=4096)
@@ -580,6 +618,36 @@ class DashboardSettingsUpdateRequest(DashboardModel):
             return None
         return value.strip()
 
+    @field_validator("orcarouter_sidecar_base_url")
+    @classmethod
+    def _normalize_orcarouter_sidecar_base_url(cls, value: str | None) -> str | None:
+        return _normalize_orcarouter_sidecar_base_url(value)
+
+    @field_validator("orcarouter_sidecar_model_prefixes")
+    @classmethod
+    def _normalize_orcarouter_sidecar_prefixes(
+        cls,
+        value: list[SidecarModelPrefix] | None,
+    ) -> list[SidecarModelPrefix] | None:
+        return _normalize_sidecar_model_prefixes(value, field_name="orcarouter_sidecar_model_prefixes")
+
+    @field_validator("orcarouter_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _coerce_orcarouter_sidecar_prefixes(cls, value: object) -> object:
+        return _coerce_sidecar_model_prefixes(value)
+
+    @field_validator("orcarouter_sidecar_full_models")
+    @classmethod
+    def _normalize_orcarouter_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_sidecar_full_models(value, field_name="orcarouter_sidecar_full_models")
+
+    @field_validator("orcarouter_sidecar_api_key")
+    @classmethod
+    def _normalize_orcarouter_sidecar_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
     @field_validator("omniroute_sidecar_base_url")
     @classmethod
     def _normalize_omniroute_sidecar_base_url(cls, value: str | None) -> str | None:
@@ -648,6 +716,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator(
         "claude_sidecar_default_reasoning_effort",
         "openrouter_sidecar_default_reasoning_effort",
+        "orcarouter_sidecar_default_reasoning_effort",
         "omniroute_sidecar_default_reasoning_effort",
         "ollama_sidecar_default_reasoning_effort",
     )

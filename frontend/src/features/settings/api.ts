@@ -17,6 +17,9 @@ import {
   OpenRouterSidecarModelsResponseSchema,
   OpenRouterSidecarStatusResponseSchema,
   OpenRouterSidecarTestResponseSchema,
+  OrcaRouterSidecarModelsResponseSchema,
+  OrcaRouterSidecarStatusResponseSchema,
+  OrcaRouterSidecarTestResponseSchema,
   SettingsUpdateRequestSchema,
   UpstreamProxyAdminSchema,
   UpstreamProxyEndpointCreateRequestSchema,
@@ -32,6 +35,7 @@ const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
 const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
+const ORCAROUTER_SIDECAR_PATH = "/api/orcarouter-sidecar";
 const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
 const OLLAMA_SIDECAR_PATH = "/api/ollama-sidecar";
 
@@ -133,6 +137,20 @@ export function testOpenRouterSidecarConnection() {
 
 export function listOpenRouterSidecarModels() {
   return get(`${OPENROUTER_SIDECAR_PATH}/models`, OpenRouterSidecarModelsResponseSchema);
+}
+
+export function getOmniRouteSidecarStatus() {
+
+export function getOrcaRouterSidecarStatus() {
+  return get(`${ORCAROUTER_SIDECAR_PATH}/status`, OrcaRouterSidecarStatusResponseSchema);
+}
+
+export function testOrcaRouterSidecarConnection() {
+  return post(`${ORCAROUTER_SIDECAR_PATH}/test`, OrcaRouterSidecarTestResponseSchema);
+}
+
+export function listOrcaRouterSidecarModels() {
+  return get(`${ORCAROUTER_SIDECAR_PATH}/models`, OrcaRouterSidecarModelsResponseSchema);
 }
 
 export function getOmniRouteSidecarStatus() {

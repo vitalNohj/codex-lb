@@ -20,12 +20,16 @@ import { useSettings } from "@/features/settings/hooks/use-settings";
 type EffortFieldKey =
   | "claudeSidecarDefaultReasoningEffort"
   | "openrouterSidecarDefaultReasoningEffort"
+  | "orcarouterSidecarDefaultReasoningEffort"
   | "omnirouteSidecarDefaultReasoningEffort"
   | "ollamaSidecarDefaultReasoningEffort";
 
 function fieldForProvider(provider: string | null | undefined): EffortFieldKey {
   if (provider === "openrouter") {
     return "openrouterSidecarDefaultReasoningEffort";
+  }
+  if (provider === "orcarouter") {
+    return "orcarouterSidecarDefaultReasoningEffort";
   }
   if (provider === "omniroute") {
     return "omnirouteSidecarDefaultReasoningEffort";

@@ -199,6 +199,36 @@ describe("buildSettingsUpdateRequest", () => {
     expect(payload.claudeSidecarUsageCollectionEnabled).toBe(false);
   });
 
+
+  it("preserves OrcaRouter sidecar settings when saving unrelated fields", () => {
+    const settings = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      orcarouterSidecarEnabled: true,
+      orcarouterSidecarBaseUrl: "https://api.orcarouter.ai/v1",
+      orcarouterSidecarModelPrefixes: [{ prefix: "orcarouter/", strip: false }],
+      orcarouterSidecarFullModels: ["orcarouter/auto"],
+      orcarouterSidecarConnectTimeoutSeconds: 3,
+      orcarouterSidecarRequestTimeoutSeconds: 120,
+      orcarouterSidecarModelsCacheTtlSeconds: 30,
+    });
+
+    const payload = buildSettingsUpdateRequest(settings, { dashboardSessionTtlSeconds: 7200 });
+
+    expect(payload.orcarouterSidecarEnabled).toBe(true);
+    expect(payload.orcarouterSidecarBaseUrl).toBe("https://api.orcarouter.ai/v1");
+    expect(payload.orcarouterSidecarModelPrefixes).toEqual([{ prefix: "orcarouter/", strip: false }]);
+    expect(payload.orcarouterSidecarFullModels).toEqual(["orcarouter/auto"]);
+  });
+
   it("preserves Ollama sidecar settings when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,

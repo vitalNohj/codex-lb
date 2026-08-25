@@ -294,6 +294,13 @@ class Settings(BaseSettings):
     openrouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     openrouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    orcarouter_sidecar_enabled: bool = False
+    orcarouter_sidecar_base_url: str = "https://api.orcarouter.ai/v1"
+    orcarouter_sidecar_api_key: str = ""
+    orcarouter_sidecar_model_prefixes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["orcarouter/"])
+    orcarouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    orcarouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    orcarouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     omniroute_sidecar_enabled: bool = False
     omniroute_sidecar_base_url: str = "http://127.0.0.1:20128/v1"
     omniroute_sidecar_api_key: str = ""
@@ -680,6 +687,21 @@ class Settings(BaseSettings):
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError("openrouter_sidecar_base_url must not be blank")
+        return normalized
+
+    @field_validator("orcarouter_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _normalize_orcarouter_sidecar_model_prefixes(cls, value: StringListInput) -> list[str]:
+        return _normalize_string_list(value, field_name="orcarouter_sidecar_model_prefixes")
+
+    @field_validator("orcarouter_sidecar_base_url", mode="before")
+    @classmethod
+    def _normalize_orcarouter_sidecar_base_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("orcarouter_sidecar_base_url must be a string")
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("orcarouter_sidecar_base_url must not be blank")
         return normalized
 
     @field_validator("omniroute_sidecar_selected_models", mode="before")

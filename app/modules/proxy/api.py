@@ -42,6 +42,7 @@ from app.core.clients.files import FileProxyError
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient
 from app.core.clients.proxy import ProxyResponseError, _is_native_codex_request
 from app.core.clients.rate_limit_reset_credits import (
     ConsumeResetCreditError,
@@ -248,6 +249,11 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     load_openrouter_sidecar_config,
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
+)
+from app.modules.proxy.orcarouter_sidecar_dispatch import (
+    load_orcarouter_sidecar_config,
+    orcarouter_routing_entry,
+    proxy_chat_to_orcarouter,
 )
 from app.modules.proxy.request_policy import (
     _canonical_model_for_access,
@@ -879,6 +885,7 @@ async def _omniroute_responses_dispatch_or_none(
 
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
+    orcarouter_config = await load_orcarouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -887,6 +894,8 @@ async def _omniroute_responses_dispatch_or_none(
         routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if orcarouter_config is not None and orcarouter_config.enabled:
+        routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -3286,6 +3295,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
 
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
+    orcarouter_config = await load_orcarouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -3294,6 +3304,8 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if orcarouter_config is not None and orcarouter_config.enabled:
+        routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -3342,6 +3354,30 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openrouter",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+    if orcarouter_config is not None and orcarouter_config.enabled:
+        discovered_models = await OrcaRouterSidecarClient(orcarouter_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in orcarouter_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "orcarouter":
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "orcarouter",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -3786,6 +3822,7 @@ async def v1_chat_completions(
 
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
+    orcarouter_config = await load_orcarouter_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -3794,6 +3831,8 @@ async def v1_chat_completions(
         routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if orcarouter_config is not None and orcarouter_config.enabled:
+        routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -3832,6 +3871,20 @@ async def v1_chat_completions(
                 rate_limit_headers=rate_limit_headers,
                 sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
                 client=OpenRouterSidecarClient(openrouter_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if decision.provider == "orcarouter":
+            assert orcarouter_config is not None
+            return await proxy_chat_to_orcarouter(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OrcaRouterSidecarClient(orcarouter_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
             )

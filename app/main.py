@@ -81,6 +81,7 @@ from app.modules.oauth import api as oauth_api
 from app.modules.ollama_sidecar import api as ollama_sidecar_api
 from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
 from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
+from app.modules.orcarouter_sidecar import api as orcarouter_sidecar_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.cap_partitioning import refresh_cap_partition
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
@@ -698,6 +699,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_api.router)
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
+    app.include_router(orcarouter_sidecar_api.router)
     app.include_router(omniroute_sidecar_api.router)
     app.include_router(ollama_sidecar_api.router)
     app.include_router(usage_api.router)

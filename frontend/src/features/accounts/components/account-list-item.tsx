@@ -47,9 +47,16 @@ export function AccountListItem({
     : null;
   const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || t("accounts.detail.unknownWorkspace");
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
-  const isOpenRouter = account.provider === "openrouter";
-  const isOmniRoute = account.provider === "omniroute";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLIProxyAPI";
+  const sidecarLabel =
+    account.provider === "openrouter"
+      ? "OpenRouter"
+      : account.provider === "orcarouter"
+        ? "OrcaRouter"
+        : account.provider === "omniroute"
+          ? "OmniRoute"
+          : account.provider === "ollama"
+            ? "Ollama"
+            : "CLIProxyAPI";
   const slotSubtitle = account.synthetic
     ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? sidecarLabel}`
     : `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;

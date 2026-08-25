@@ -372,6 +372,12 @@ const ollamaSidecarModels = [
   { id: "llama3.3:70b-cloud", created: 324, ownedBy: "ollama" },
 ];
 
+const orcarouterSidecarModels = [
+  { id: "orcarouter/auto", created: 423, ownedBy: "orcarouter" },
+  { id: "google/gemini-2.5-pro-preview", created: 424, ownedBy: "google" },
+  { id: "deepseek/deepseek-chat", created: 425, ownedBy: "deepseek" },
+];
+
 function parseDateValue(value: string | null): number | null {
   if (!value) {
     return null;
@@ -2169,6 +2175,37 @@ export const handlers = [
       modelCount: openrouterSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
       models: openrouterSidecarModels,
+    });
+  }),
+
+  http.get("*/api/omniroute-sidecar/status", () => {
+
+  http.get("*/api/orcarouter-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OrcaRouter reachable",
+      baseUrl: "https://api.orcarouter.ai/v1",
+      modelCount: orcarouterSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/orcarouter-sidecar/models", () => {
+    return HttpResponse.json({ models: orcarouterSidecarModels });
+  }),
+
+  http.post("*/api/orcarouter-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OrcaRouter reachable",
+      baseUrl: "https://api.orcarouter.ai/v1",
+      modelCount: orcarouterSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: orcarouterSidecarModels,
     });
   }),
 
