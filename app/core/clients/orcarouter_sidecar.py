@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -47,6 +48,9 @@ class OrcaRouterSidecarUnavailableError(OrcaRouterSidecarError):
         super().__init__(503, message, body=None)
 
 
+_INCLUDE_COST_HEADER = "X-OrcaRouter-Include-Cost"
+
+
 class OrcaRouterSidecarClient:
     def __init__(self, config: OrcaRouterSidecarConfig) -> None:
         self._config = config
@@ -68,6 +72,12 @@ class OrcaRouterSidecarClient:
             "User-Agent": "codex-lb/orcarouter-sidecar",
             "HTTP-Referer": "https://github.com/vitalNohj/codex-lb",
             "X-Title": "codex-lb",
+            # Opt in to the billed figure on the response's usage object. Without
+            # this header OrcaRouter omits ``usage.cost_usd`` entirely, and its
+            # billed amount is not reproducible client-side (tiered pricing,
+            # peak multipliers, cache ratios, minimum-quota rounding).
+            # docs.orcarouter.ai/operations/per-request-cost
+            _INCLUDE_COST_HEADER: "true",
         }
         api_key = (self._config.api_key or "").strip()
         if api_key:
@@ -179,6 +189,39 @@ class OrcaRouterSidecarClient:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise OrcaRouterSidecarUnavailableError(_transport_message(exc, "stream OrcaRouter sidecar")) from exc
+
+
+# Single-entry, config-keyed client cache. ``list_models_cached`` keeps its TTL
+# state on the instance, so a client built inline per request could never hit
+# that cache and every ``GET /v1/models`` paid another upstream round trip.
+#
+# Holding exactly one entry - rather than a dict keyed by config - is what makes
+# a settings change safe: any change to the base URL, API key, prefixes, or TTL
+# produces a different ``OrcaRouterSidecarConfig``, which evicts the previous
+# client together with its cached models and its copy of the old credential.
+_cached_client: OrcaRouterSidecarClient | None = None
+_cached_client_lock = threading.Lock()
+
+
+def get_orcarouter_sidecar_client(config: OrcaRouterSidecarConfig) -> OrcaRouterSidecarClient:
+    """Return a client whose models cache survives across requests."""
+
+    global _cached_client
+    with _cached_client_lock:
+        cached = _cached_client
+        if cached is not None and cached.config == config:
+            return cached
+        client = OrcaRouterSidecarClient(config)
+        _cached_client = client
+        return client
+
+
+def reset_orcarouter_sidecar_client_cache() -> None:
+    """Drop the cached client (and the credential it holds)."""
+
+    global _cached_client
+    with _cached_client_lock:
+        _cached_client = None
 
 
 _PER_TOKEN_TO_PER_1M = 1_000_000.0

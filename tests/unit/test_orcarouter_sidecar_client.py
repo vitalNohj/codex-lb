@@ -8,6 +8,8 @@ from app.core.clients.orcarouter_sidecar import (
     OrcaRouterSidecarConfig,
     OrcaRouterSidecarError,
     OrcaRouterSidecarUnavailableError,
+    get_orcarouter_sidecar_client,
+    reset_orcarouter_sidecar_client_cache,
 )
 
 pytestmark = pytest.mark.unit
@@ -175,3 +177,95 @@ async def test_transport_error_becomes_unavailable(monkeypatch) -> None:
 
     with pytest.raises(OrcaRouterSidecarUnavailableError):
         await client.list_models()
+
+
+@pytest.fixture(autouse=True)
+def _clear_orcarouter_client_cache():
+    reset_orcarouter_sidecar_client_cache()
+    yield
+    reset_orcarouter_sidecar_client_cache()
+
+
+def test_client_cache_returns_the_same_instance_for_an_unchanged_config() -> None:
+    config = _config(api_key="key")
+
+    first = get_orcarouter_sidecar_client(config)
+    second = get_orcarouter_sidecar_client(_config(api_key="key"))
+
+    # Same instance means ``list_models_cached`` keeps its TTL state, so a
+    # second ``GET /v1/models`` inside the TTL costs no upstream round trip.
+    assert first is second
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"api_key": "rotated-key"},
+        {"base_url": "https://orca.internal/v1"},
+        {"models_cache_ttl_seconds": 5.0},
+        {"prefixes": (SidecarPrefix(prefix="orca-", strip=True),)},
+        {"enabled": False},
+    ],
+)
+def test_client_cache_evicts_on_any_config_change(changed) -> None:
+    first = get_orcarouter_sidecar_client(_config(api_key="key"))
+
+    second = get_orcarouter_sidecar_client(_config(**{"api_key": "key", **changed}))
+
+    # A settings change must never be served by a client holding the old
+    # credential, base URL, or cached model list.
+    assert second is not first
+    assert get_orcarouter_sidecar_client(_config(**{"api_key": "key", **changed})) is second
+
+
+@pytest.mark.asyncio
+async def test_client_cache_eviction_drops_the_previous_credential_and_models(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(200, '{"data":[{"id":"orcarouter/auto"}]}'))
+    monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
+
+    stale = get_orcarouter_sidecar_client(_config(api_key="old-key"))
+    assert await stale.list_models_cached() != []
+
+    rotated = get_orcarouter_sidecar_client(_config(api_key="new-key"))
+
+    assert rotated.config.api_key == "new-key"
+    assert rotated._models_cache is None
+    reset_orcarouter_sidecar_client_cache()
+    assert get_orcarouter_sidecar_client(_config(api_key="new-key")) is not rotated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_chat_requests_opt_into_the_orcarouter_billed_cost(monkeypatch, stream) -> None:
+    """Both chat paths must send ``X-OrcaRouter-Include-Cost``.
+
+    Absent the header OrcaRouter omits ``usage.cost_usd`` entirely, and absence
+    means "not requested" rather than "free"
+    (docs.orcarouter.ai/operations/per-request-cost).
+    """
+
+    session = _FakeSession(post_response=_FakeResponse(200, "{}", chunks=[b"data: [DONE]\n\n"]))
+    monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
+    client = OrcaRouterSidecarClient(_config(api_key="orcarouter-key"))
+    payload = {"model": "orcarouter/auto", "messages": []}
+
+    if stream:
+        async with client.stream_chat_completion(payload) as chunks:
+            async for _chunk in chunks:
+                pass
+    else:
+        await client.chat_completion(payload)
+
+    assert session.last_headers["X-OrcaRouter-Include-Cost"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_model_listing_also_opts_into_cost_without_changing_other_headers(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(200, '{"data":[]}'))
+    monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
+
+    await OrcaRouterSidecarClient(_config(api_key="orcarouter-key")).list_models()
+
+    assert session.last_headers["X-OrcaRouter-Include-Cost"] == "true"
+    assert session.last_headers["Authorization"] == "Bearer orcarouter-key"
+    assert session.last_headers["X-Title"] == "codex-lb"

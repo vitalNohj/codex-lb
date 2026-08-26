@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 import pytest
@@ -12,6 +13,7 @@ from app.core.auth.dashboard_session_ttl import (
     DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
     REMOTE_DASHBOARD_SESSION_TTL_SECONDS,
 )
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
@@ -37,6 +39,7 @@ from app.db.migrate import (
 from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.proxy.sidecar_routing import parse_sidecar_prefixes
 
 try:
     from app.db.migrate import check_migration_policy as _check_migration_policy
@@ -1478,3 +1481,78 @@ async def test_request_log_conversation_id_migration_upgrade_and_downgrade(tmp_p
         assert "conversation_id" not in columns
     finally:
         await engine.dispose()
+
+
+_ORCAROUTER_REVISION = "20260825_000000_add_orcarouter_sidecar_dashboard_settings"
+_ORCAROUTER_PARENT_REVISION = "20260818_000000_backfill_claude_opus_5_sonnet_5_costs"
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_migration_leaves_existing_rows_without_an_active_prefix(tmp_path):
+    """An upgrade of an existing deployment must not claim ``orcarouter/``.
+
+    ``_validate_unique_sidecar_prefixes`` rejects a duplicate prefix regardless
+    of ``enabled``, so backfilling this column would break the next settings PUT
+    for any operator whose OmniRoute config already owns ``orcarouter/``.
+    """
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'orcarouter-existing-row.sqlite'}"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _ORCAROUTER_PARENT_REVISION, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text("UPDATE dashboard_settings SET omniroute_sidecar_prefixes_json = :prefixes WHERE id = 1"),
+                {"prefixes": '[{"prefix":"orcarouter/","strip":false}]'},
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _ORCAROUTER_REVISION, bootstrap_legacy=False))
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT orcarouter_sidecar_model_prefixes_json, orcarouter_sidecar_enabled "
+                        "FROM dashboard_settings WHERE id = 1"
+                    )
+                )
+            ).one()
+    finally:
+        await engine.dispose()
+
+    assert json.loads(str(row[0])) == []
+    assert parse_sidecar_prefixes(str(row[0])) == ()
+    assert row[1] in (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_migration_seeds_a_parseable_prefix_on_a_fresh_install(tmp_path):
+    """A fresh install seeds ``orcarouter/`` as valid, non-stripping JSON.
+
+    The seed used to be embedded in a ``sa.text()`` literal, where SQLAlchemy
+    read ``:false`` as a bind parameter and stored ``"strip"NULL`` - JSON that
+    ``parse_sidecar_prefixes`` silently discards, leaving OrcaRouter unroutable.
+    """
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'orcarouter-fresh-install.sqlite'}"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            raw = (
+                await session.execute(
+                    text("SELECT orcarouter_sidecar_model_prefixes_json FROM dashboard_settings WHERE id = 1")
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+
+    assert json.loads(str(raw)) == [{"prefix": "orcarouter/", "strip": False}]
+    assert parse_sidecar_prefixes(str(raw)) == (SidecarPrefix(prefix="orcarouter/", strip=False),)

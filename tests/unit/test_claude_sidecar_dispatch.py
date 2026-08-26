@@ -939,3 +939,37 @@ def test_sse_decoder_extracts_usage_from_split_chunks() -> None:
     assert usage.input_tokens == 12
     assert usage.output_tokens == 4
     assert second[1] == "[DONE]"
+
+
+def test_extract_usage_reads_orcarouter_cost_usd_field() -> None:
+    """OrcaRouter names the billed figure ``usage.cost_usd``, not ``cost``.
+
+    Without this fallback the dispatch layer persisted ``cost_usd=None`` for
+    every OrcaRouter request even after opting in to the billed amount.
+    """
+
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 1100,
+                "completion_tokens": 420,
+                "cost_usd": 0.00846,
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == 1100
+    assert usage.output_tokens == 420
+    assert usage.cost_usd == 0.00846
+
+
+def test_extract_usage_prefers_openrouter_cost_over_cost_usd() -> None:
+    """OpenRouter's field wins so its long-standing behaviour is unchanged."""
+
+    usage = extract_usage(
+        {"usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.5, "cost_usd": 0.25}}
+    )
+
+    assert usage is not None
+    assert usage.cost_usd == 0.5

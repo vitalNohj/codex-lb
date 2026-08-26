@@ -1334,7 +1334,13 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     if is_json_mapping(input_details):
         cached_tokens = _int_field(input_details, "cached_tokens") or cached_tokens
 
+    # OpenRouter reports the billed amount as ``usage.cost``; OrcaRouter uses
+    # ``usage.cost_usd`` (docs.orcarouter.ai/operations/per-request-cost) and
+    # returns it only when the request opted in via ``X-OrcaRouter-Include-Cost``.
+    # Reading ``cost`` first keeps OpenRouter behaviour byte-identical.
     cost_usd = _float_field(usage, "cost")
+    if cost_usd is None:
+        cost_usd = _float_field(usage, "cost_usd")
 
     return SidecarUsage(
         input_tokens=input_tokens,

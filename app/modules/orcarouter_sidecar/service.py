@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from app.core.clients.orcarouter_sidecar import (
@@ -59,14 +60,15 @@ class OrcaRouterSidecarService:
                 models=[],
             )
 
-        client = OrcaRouterSidecarClient(orcarouter_sidecar_config_from_settings(settings))
+        config = orcarouter_sidecar_config_from_settings(settings)
+        client = OrcaRouterSidecarClient(config)
         checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
             models = await client.list_models()
         except OrcaRouterSidecarUnavailableError as exc:
             return await self._record_test_result(
                 status="unreachable",
-                message=_sanitize_message(exc.message),
+                message=_sanitize_message(exc.message, api_key=config.api_key),
                 checked_at=checked_at,
                 models=[],
             )
@@ -74,7 +76,7 @@ class OrcaRouterSidecarService:
             status: OrcaRouterSidecarStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
             return await self._record_test_result(
                 status=status,
-                message=_sanitize_message(exc.message),
+                message=_sanitize_message(exc.message, api_key=config.api_key),
                 checked_at=checked_at,
                 models=[],
             )
@@ -145,5 +147,29 @@ def _model_summaries(models) -> list[OrcaRouterSidecarModelSummary]:
     ]
 
 
-def _sanitize_message(message: str) -> str:
-    return message.replace("Bearer ", "Bearer [redacted]")
+_REDACTION = "[redacted]"
+# Token charset mirrors app/core/runtime_logging.py so the closing quote/brace of
+# an echoed header survives while the credential does not.
+_BEARER_TOKEN_RE = re.compile(r"(?i)(bearer[\s:=]+)[A-Za-z0-9._~+/=-]+")
+# OrcaRouter keys carry an ``sk-orca-`` prefix and can be echoed bare, with no
+# ``Bearer`` in front ("Invalid API key: sk-orca-...").
+_ORCAROUTER_KEY_RE = re.compile(r"(?i)sk-orca-[A-Za-z0-9._~+/=-]+")
+
+
+def _sanitize_message(message: str, *, api_key: str | None = None) -> str:
+    """Strip the OrcaRouter credential out of an operator-visible health message.
+
+    ``test_connection`` persists this string to
+    ``orcarouter_sidecar_last_health_message`` and returns it on the dashboard
+    status response, so an upstream that echoes the Authorization header must not
+    be able to leak the key. The configured key is removed verbatim first - that
+    is exact rather than pattern-guessed - and the ``Bearer``/``sk-orca-``
+    patterns then cover keys that are no longer the configured one.
+    """
+
+    sanitized = message
+    configured_key = (api_key or "").strip()
+    if configured_key:
+        sanitized = sanitized.replace(configured_key, _REDACTION)
+    sanitized = _BEARER_TOKEN_RE.sub(rf"\g<1>{_REDACTION}", sanitized)
+    return _ORCAROUTER_KEY_RE.sub(_REDACTION, sanitized)

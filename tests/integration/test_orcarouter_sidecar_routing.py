@@ -8,8 +8,10 @@ from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.orcarouter_sidecar import (
+    OrcaRouterSidecarClient,
     OrcaRouterSidecarConfig,
     OrcaRouterSidecarUnavailableError,
+    reset_orcarouter_sidecar_client_cache,
 )
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
@@ -39,6 +41,10 @@ class _FakeOrcaRouterClient:
         self.stream_error: Exception | None = None
         self.stream_include_usage = True
         self.stream_context_error = False
+        # OrcaRouter reports the billed amount as ``usage.cost_usd`` when the
+        # request opted in via ``X-OrcaRouter-Include-Cost``. Set to None to
+        # model an upstream that omitted it.
+        self.billed_cost_usd: float | None = None
 
     async def list_models_cached(self):
         return self.models
@@ -47,12 +53,15 @@ class _FakeOrcaRouterClient:
         self.chat_payloads.append(dict(payload))
         if self.chat_error is not None:
             raise self.chat_error
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        if self.billed_cost_usd is not None:
+            usage["cost_usd"] = self.billed_cost_usd
         return {
             "id": "chatcmpl-orcarouter",
             "object": "chat.completion",
             "model": payload["model"],
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "usage": usage,
         }
 
     def stream_chat_completion(self, payload):
@@ -61,6 +70,7 @@ class _FakeOrcaRouterClient:
             self.stream_error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
+            billed_cost_usd=self.billed_cost_usd,
         )
 
 
@@ -71,10 +81,12 @@ class _FakeStreamContext:
         *,
         include_usage: bool = True,
         context_error: bool = False,
+        billed_cost_usd: float | None = None,
     ) -> None:
         self.error = error
         self.include_usage = include_usage
         self.context_error = context_error
+        self.billed_cost_usd = billed_cost_usd
 
     async def __aenter__(self):
         if self.error is not None:
@@ -90,10 +102,16 @@ class _FakeStreamContext:
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
-                yield (
-                    b'data: {"id":"chunk-2","object":"chat.completion.chunk","choices":[],'
-                    b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n'
-                )
+                usage = {"prompt_tokens": 10, "completion_tokens": 5}
+                if self.billed_cost_usd is not None:
+                    usage["cost_usd"] = self.billed_cost_usd
+                trailing = {
+                    "id": "chunk-2",
+                    "object": "chat.completion.chunk",
+                    "choices": [],
+                    "usage": usage,
+                }
+                yield f"data: {json.dumps(trailing)}\n\n".encode()
             yield b"data: [DONE]\n\n"
 
         return chunks()
@@ -439,3 +457,147 @@ async def test_orcarouter_sidecar_alias_is_discoverable_and_routes(async_client,
     assert fake_orcarouter.chat_payloads
     assert fake_orcarouter.chat_payloads[0]["model"] == "orcarouter/auto"
 
+
+
+@pytest.mark.asyncio
+async def test_repeated_model_list_requests_reuse_the_orcarouter_models_cache(
+    async_client,
+    orcarouter_enabled,
+    monkeypatch,
+):
+    """``GET /v1/models`` must not pay an upstream round trip on every call.
+
+    ``list_models_cached`` keeps its TTL state on the client instance, so building
+    a client inline per request made ``models_cache_ttl_seconds`` dead: each call
+    blocked on a fresh HTTPS fetch for up to ``request_timeout_seconds``.
+    """
+
+    reset_orcarouter_sidecar_client_cache()
+    config = OrcaRouterSidecarConfig(
+        enabled=True,
+        base_url="https://api.orcarouter.ai/v1",
+        api_key="orcarouter-key",
+        prefixes=(SidecarPrefix(prefix="orcarouter/", strip=False),),
+        connect_timeout_seconds=8.0,
+        request_timeout_seconds=600.0,
+        models_cache_ttl_seconds=60.0,
+        full_models=("orcarouter/auto",),
+    )
+    upstream_fetches = 0
+
+    async def _counting_list_models(_self):
+        nonlocal upstream_fetches
+        upstream_fetches += 1
+        return [_FakeModel("orcarouter/auto")]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_orcarouter_sidecar_config", load_config)
+    monkeypatch.setattr(OrcaRouterSidecarClient, "list_models", _counting_list_models)
+
+    try:
+        await async_client.put(
+            "/api/settings",
+            json={
+                "orcarouterSidecarEnabled": True,
+                "orcarouterSidecarApiKey": "orcarouter-key",
+                "orcarouterSidecarModelPrefixes": ["orcarouter/"],
+                "orcarouterSidecarFullModels": ["orcarouter/auto"],
+            },
+        )
+        await _enable_api_key_auth(async_client)
+        key = await _create_api_key("models-cache-key", allowed_models=["orcarouter/auto"])
+        headers = {"Authorization": f"Bearer {key.key}"}
+
+        for _ in range(3):
+            response = await async_client.get("/v1/models", headers=headers)
+            assert response.status_code == 200
+            assert "orcarouter/auto" in [item["id"] for item in response.json()["data"]]
+
+        assert upstream_fetches == 1
+    finally:
+        reset_orcarouter_sidecar_client_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_orcarouter_billed_cost_reaches_the_request_log(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+    stream,
+):
+    """The authoritative billed figure must be stored, never re-derived.
+
+    OrcaRouter's amount folds in tiered pricing, peak multipliers, cache ratios
+    and minimum-quota rounding, so list prices are not a substitute
+    (docs.orcarouter.ai/operations/per-request-cost).
+    """
+
+    fake_orcarouter.billed_cost_usd = 0.00846
+    await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "orcarouter-key",
+            "orcarouterSidecarModelPrefixes": ["orcarouter/"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("billed-cost-key")
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={
+            "model": "orcarouter/auto",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        },
+    )
+    assert response.status_code == 200
+    if stream:
+        # Streaming carries cost on the trailing usage frame, which the sidecar
+        # already requests via stream_options.include_usage.
+        assert _usage_chunks(_chat_sse_payloads(response.content))
+
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
+    assert len(sidecar_logs) == 1
+    assert sidecar_logs[0].cost_usd == pytest.approx(0.00846)
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_request_log_cost_stays_null_when_upstream_omits_it(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+):
+    """Absence means "no number to report", never "free" - so never invent one."""
+
+    fake_orcarouter.billed_cost_usd = None
+    await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "orcarouter-key",
+            "orcarouterSidecarModelPrefixes": ["orcarouter/"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("no-billed-cost-key")
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": "orcarouter/auto", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
+    assert len(sidecar_logs) == 1
+    assert sidecar_logs[0].cost_usd is None

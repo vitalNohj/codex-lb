@@ -42,7 +42,7 @@ from app.core.clients.files import FileProxyError
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
-from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient
+from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import ProxyResponseError, _is_native_codex_request
 from app.core.clients.rate_limit_reset_credits import (
     ConsumeResetCreditError,
@@ -3360,7 +3360,9 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                 )
             )
     if orcarouter_config is not None and orcarouter_config.enabled:
-        discovered_models = await OrcaRouterSidecarClient(orcarouter_config).list_models_cached()
+        # Config-keyed client so ``models_cache_ttl_seconds`` actually spans
+        # requests; an inline client resets the TTL state on every call.
+        discovered_models = await get_orcarouter_sidecar_client(orcarouter_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in orcarouter_config.full_models:

@@ -1030,8 +1030,11 @@ class DashboardSettings(Base):
     orcarouter_sidecar_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     orcarouter_sidecar_model_prefixes_json: Mapped[str] = mapped_column(
         Text,
-        default='[{"prefix":"orcarouter/","strip":false}]',
-        server_default=text("'[{\"prefix\":\"orcarouter/\",\"strip\":false}]'"),
+        # Matches the migration: existing rows are never backfilled with an
+        # active ``orcarouter/`` prefix. SettingsRepository.get_or_create seeds
+        # the prefix for genuinely new rows.
+        default="[]",
+        server_default=text("'[]'"),
         nullable=False,
     )
     orcarouter_sidecar_full_models_json: Mapped[str] = mapped_column(
