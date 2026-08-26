@@ -11,6 +11,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.clients.openrouter_sidecar import (
+    OPENROUTER_PRICING_PROVIDER,
     OpenRouterSidecarClient,
     OpenRouterSidecarConfig,
     OpenRouterSidecarError,
@@ -453,7 +454,11 @@ async def _log_openrouter_request(
                 source=OPENROUTER_SIDECAR_SOURCE,
                 failure_phase="sidecar" if status != "success" else None,
                 cost_usd=usage.cost_usd if usage else None,
-                reference_cost_usd=reference_cost_from_sidecar_usage(model, usage),
+                reference_cost_usd=reference_cost_from_sidecar_usage(
+                    model,
+                    usage,
+                    provider=OPENROUTER_PRICING_PROVIDER,
+                ),
             )
     except Exception:
         logger.warning(

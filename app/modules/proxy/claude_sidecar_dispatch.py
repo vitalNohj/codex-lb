@@ -1292,11 +1292,18 @@ async def _sidecar_stream_iterator(
             )
 
 
-def reference_cost_from_sidecar_usage(model: str, usage: SidecarUsage | None) -> float | None:
+def reference_cost_from_sidecar_usage(
+    model: str,
+    usage: SidecarUsage | None,
+    *,
+    provider: str | None = None,
+) -> float | None:
     """Reference (paid-equivalent) cost for a sidecar request, or None.
 
     Used to surface savings when the request was served by a free/cheap model:
     the same token usage priced at the resolved paid-equivalent list price.
+    ``provider`` selects that provider's own runtime price when several
+    integrations publish the same model id at different list prices.
     """
     if usage is None:
         return None
@@ -1307,6 +1314,7 @@ def reference_cost_from_sidecar_usage(model: str, usage: SidecarUsage | None) ->
             output_tokens=float(usage.output_tokens),
             cached_input_tokens=float(usage.cached_input_tokens),
         ),
+        provider=provider,
     )
 
 

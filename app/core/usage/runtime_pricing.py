@@ -1,10 +1,16 @@
 """Runtime model pricing registry for reference-cost (savings) calculations.
 
 This module maintains an in-memory overlay of model pricing discovered at
-runtime (currently from the OpenRouter sidecar ``/models`` response) on top of
-the static :data:`DEFAULT_PRICING_MODELS` table. It is used **only** for
-reference-cost lookups -- i.e. "what would this request have cost on the
-paid-equivalent model" -- and never changes how actual ``cost_usd`` is computed.
+runtime (from a sidecar ``/models`` response) on top of the static
+:data:`DEFAULT_PRICING_MODELS` table. It is used **only** for reference-cost
+lookups -- i.e. "what would this request have cost on the paid-equivalent
+model" -- and never changes how actual ``cost_usd`` is computed.
+
+Providers publish overlapping model ids (``deepseek/deepseek-chat`` is listed by
+both OpenRouter and OrcaRouter) at different list prices, so entries are also
+qualified by the provider that discovered them and a lookup resolves against the
+provider that served the request. The unqualified overlay stays as the fallback
+for callers that do not know a provider and for ids only one provider lists.
 
 A request served by a free model (``...:free``) records ``cost_usd = 0`` but a
 positive reference cost resolved from the paid variant, so dashboards can show
@@ -37,31 +43,54 @@ class RuntimePricingRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pricing: dict[str, ModelPrice] = {}
+        self._pricing_by_provider: dict[str, dict[str, ModelPrice]] = {}
 
-    def update_models(self, models: Iterable[tuple[str, ModelPrice | None]]) -> None:
+    def update_models(
+        self,
+        models: Iterable[tuple[str, ModelPrice | None]],
+        *,
+        provider: str | None = None,
+    ) -> None:
         """Merge runtime pricing for the given ``(model_id, pricing)`` pairs.
 
-        Entries with ``None`` pricing are ignored (no runtime price known).
+        ``provider`` names the integration whose ``/models`` listing supplied the
+        prices. They are recorded in that provider's own key space so a second
+        provider listing the same id cannot redefine them. Entries with ``None``
+        pricing are ignored (no runtime price known).
         """
         updates = {model_id.strip().lower(): price for model_id, price in models if model_id and price is not None}
         if not updates:
             return
+        provider_key = _normalize_key(provider)
         with self._lock:
             self._pricing.update(updates)
+            if provider_key:
+                self._pricing_by_provider.setdefault(provider_key, {}).update(updates)
 
-    def runtime_pricing_for_model(self, model: str) -> ModelPrice | None:
+    def runtime_pricing_for_model(self, model: str, *, provider: str | None = None) -> ModelPrice | None:
         if not model:
             return None
+        model_key = _normalize_key(model)
+        provider_key = _normalize_key(provider)
         with self._lock:
-            return self._pricing.get(model.strip().lower())
+            if provider_key:
+                own_price = self._pricing_by_provider.get(provider_key, {}).get(model_key)
+                if own_price is not None:
+                    return own_price
+            return self._pricing.get(model_key)
 
     def clear(self) -> None:
         with self._lock:
             self._pricing.clear()
+            self._pricing_by_provider.clear()
 
     def snapshot(self) -> Mapping[str, ModelPrice]:
         with self._lock:
             return dict(self._pricing)
+
+
+def _normalize_key(value: str | None) -> str:
+    return (value or "").strip().lower()
 
 
 _REGISTRY = RuntimePricingRegistry()
@@ -71,12 +100,13 @@ def get_runtime_pricing_registry() -> RuntimePricingRegistry:
     return _REGISTRY
 
 
-def _reference_pricing_direct(model: str) -> ModelPrice | None:
+def _reference_pricing_direct(model: str, provider: str | None = None) -> ModelPrice | None:
     """Reference pricing for ``model`` without free->paid resolution.
 
-    Runtime (OpenRouter) pricing wins over the static built-in table.
+    The serving provider's own runtime price wins over another provider's
+    listing of the same id, which in turn wins over the static built-in table.
     """
-    runtime = _REGISTRY.runtime_pricing_for_model(model)
+    runtime = _REGISTRY.runtime_pricing_for_model(model, provider=provider)
     if runtime is not None:
         return runtime
     resolved = get_pricing_for_model(model, DEFAULT_PRICING_MODELS, None)
@@ -94,7 +124,7 @@ def _paid_equivalent_candidates(model: str) -> list[str]:
     return candidates
 
 
-def get_reference_pricing_for_model(model: str | None) -> ModelPrice | None:
+def get_reference_pricing_for_model(model: str | None, *, provider: str | None = None) -> ModelPrice | None:
     """Resolve the paid-equivalent reference pricing for ``model``.
 
     For free models, the paid variant is resolved by stripping the free marker.
@@ -106,12 +136,12 @@ def get_reference_pricing_for_model(model: str | None) -> ModelPrice | None:
 
     if is_known_free_model(model):
         for candidate in _paid_equivalent_candidates(model):
-            price = _reference_pricing_direct(candidate)
+            price = _reference_pricing_direct(candidate, provider)
             if price is not None:
                 return price
         return None
 
-    return _reference_pricing_direct(model)
+    return _reference_pricing_direct(model, provider)
 
 
 def calculate_reference_cost(
@@ -119,6 +149,7 @@ def calculate_reference_cost(
     usage: UsageTokens | None,
     *,
     service_tier: str | None = None,
+    provider: str | None = None,
 ) -> float | None:
     """Compute the paid-equivalent reference cost for a request.
 
@@ -127,7 +158,7 @@ def calculate_reference_cost(
     """
     if usage is None:
         return None
-    price = get_reference_pricing_for_model(model)
+    price = get_reference_pricing_for_model(model, provider=provider)
     if price is None:
         return None
     return calculate_cost_from_usage(usage, price, service_tier=service_tier)

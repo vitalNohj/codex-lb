@@ -72,3 +72,99 @@ def test_calculate_reference_cost_none_when_unresolvable() -> None:
 
 def test_calculate_reference_cost_none_without_usage() -> None:
     assert calculate_reference_cost("gpt-4o", None) is None
+
+
+def test_each_provider_resolves_its_own_price_for_a_shared_model_id() -> None:
+    """Two providers listing the same id must not overwrite each other.
+
+    OpenRouter and OrcaRouter both publish ids such as ``deepseek/deepseek-chat``
+    at their own list prices. With one unqualified key space, whichever refresh
+    ran last defined the entry, so a request served by one provider could be
+    priced from the other's list price and record a wrong ``reference_cost_usd``.
+    """
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("deepseek/deepseek-chat", ModelPrice(input_per_1m=1.0, output_per_1m=2.0))],
+        provider="openrouter",
+    )
+    registry.update_models(
+        [("deepseek/deepseek-chat", ModelPrice(input_per_1m=10.0, output_per_1m=20.0))],
+        provider="orcarouter",
+    )
+
+    usage = UsageTokens(input_tokens=1_000_000, output_tokens=1_000_000, cached_input_tokens=0)
+    openrouter_cost = calculate_reference_cost("deepseek/deepseek-chat", usage, provider="openrouter")
+    orcarouter_cost = calculate_reference_cost("deepseek/deepseek-chat", usage, provider="orcarouter")
+
+    assert openrouter_cost == pytest.approx(3.0)
+    assert orcarouter_cost == pytest.approx(30.0)
+
+
+def test_provider_qualified_price_survives_a_later_refresh_by_another_provider() -> None:
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/shared", ModelPrice(input_per_1m=1.0, output_per_1m=1.0))],
+        provider="openrouter",
+    )
+    registry.update_models(
+        [("vendor/shared", ModelPrice(input_per_1m=9.0, output_per_1m=9.0))],
+        provider="orcarouter",
+    )
+    # A second OrcaRouter refresh (the "last writer") must not move OpenRouter.
+    registry.update_models(
+        [("vendor/shared", ModelPrice(input_per_1m=9.5, output_per_1m=9.5))],
+        provider="orcarouter",
+    )
+
+    openrouter_price = get_reference_pricing_for_model("vendor/shared", provider="openrouter")
+    orcarouter_price = get_reference_pricing_for_model("vendor/shared", provider="orcarouter")
+
+    assert openrouter_price is not None and openrouter_price.input_per_1m == pytest.approx(1.0)
+    assert orcarouter_price is not None and orcarouter_price.input_per_1m == pytest.approx(9.5)
+
+
+def test_free_variant_resolves_the_serving_providers_paid_price() -> None:
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/shared", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))],
+        provider="openrouter",
+    )
+    registry.update_models(
+        [("vendor/shared", ModelPrice(input_per_1m=8.0, output_per_1m=40.0))],
+        provider="orcarouter",
+    )
+
+    cost = calculate_reference_cost(
+        "vendor/shared:free",
+        UsageTokens(input_tokens=10_000, output_tokens=2_000, cached_input_tokens=0),
+        provider="openrouter",
+    )
+
+    assert cost == pytest.approx(0.016)
+
+
+def test_unqualified_lookup_still_resolves_a_runtime_price() -> None:
+    """Callers without a provider keep the pre-existing overlay behavior."""
+
+    get_runtime_pricing_registry().update_models(
+        [("vendor/only-here", ModelPrice(input_per_1m=0.5, output_per_1m=1.5))],
+        provider="orcarouter",
+    )
+
+    price = get_reference_pricing_for_model("vendor/only-here")
+
+    assert price is not None
+    assert price.input_per_1m == pytest.approx(0.5)
+
+
+def test_provider_falls_back_to_another_providers_listing_when_it_publishes_none() -> None:
+    get_runtime_pricing_registry().update_models(
+        [("vendor/only-openrouter", ModelPrice(input_per_1m=2.0, output_per_1m=4.0))],
+        provider="openrouter",
+    )
+
+    price = get_reference_pricing_for_model("vendor/only-openrouter", provider="orcarouter")
+
+    assert price is not None
+    assert price.input_per_1m == pytest.approx(2.0)

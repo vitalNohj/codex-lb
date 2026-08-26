@@ -10,6 +10,7 @@ from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.orcarouter_sidecar import (
     OrcaRouterSidecarClient,
     OrcaRouterSidecarConfig,
+    OrcaRouterSidecarError,
     OrcaRouterSidecarUnavailableError,
     reset_orcarouter_sidecar_client_cache,
 )
@@ -601,3 +602,72 @@ async def test_orcarouter_request_log_cost_stays_null_when_upstream_omits_it(
     sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
     assert len(sidecar_logs) == 1
     assert sidecar_logs[0].cost_usd is None
+
+
+# Not a real credential: a synthetic string shaped like an OrcaRouter key so the
+# assertions below prove the sanitizer removed it.
+_FAKE_ORCAROUTER_KEY = "sk-orca-NOTAREALKEY000000000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "Unauthorized for Authorization: Bearer {key}",
+        'upstream echoed {{"authorization":"Bearer {key}"}}',
+        "Invalid API key: {key}",
+    ],
+)
+async def test_orcarouter_chat_error_never_persists_the_bearer_token(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+    stream,
+    upstream_message,
+):
+    """An upstream that echoes the Authorization header must not leak the key.
+
+    Chat dispatch persists the upstream text to ``request_logs.error_message``,
+    which is durable and rendered (with a copy button) by the dashboard request
+    drawer, and relays it to the calling API key. A 500 keeps the passthrough
+    path live - 401/403 are already remapped by ``client_facing_sidecar_error``.
+    """
+
+    leaked = upstream_message.format(key=_FAKE_ORCAROUTER_KEY)
+    error = OrcaRouterSidecarError(500, leaked, body={"error": {"message": leaked}})
+    if stream:
+        fake_orcarouter.stream_error = error
+    else:
+        fake_orcarouter.chat_error = error
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": _FAKE_ORCAROUTER_KEY,
+            "orcarouterSidecarModelPrefixes": ["orcarouter/"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(f"leak-key-{stream}-{abs(hash(upstream_message))}")
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={
+            "model": "orcarouter/auto",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        },
+    )
+
+    assert _FAKE_ORCAROUTER_KEY.encode() not in response.content
+
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
+    assert len(sidecar_logs) == 1
+    persisted = sidecar_logs[0].error_message or ""
+    assert _FAKE_ORCAROUTER_KEY not in persisted
+    assert "[redacted]" in persisted

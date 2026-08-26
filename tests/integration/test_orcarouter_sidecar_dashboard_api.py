@@ -3,9 +3,21 @@ from __future__ import annotations
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarModel
-from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarError, OrcaRouterSidecarUnavailableError
+from app.core.clients.orcarouter_sidecar import (
+    OrcaRouterSidecarClient,
+    OrcaRouterSidecarError,
+    OrcaRouterSidecarUnavailableError,
+    reset_orcarouter_sidecar_client_cache,
+)
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _clear_orcarouter_client_cache():
+    reset_orcarouter_sidecar_client_cache()
+    yield
+    reset_orcarouter_sidecar_client_cache()
 
 
 class _FakeOrcaRouterClient:
@@ -70,7 +82,10 @@ async def test_orcarouter_sidecar_test_connection_records_error_statuses(
     error,
     expected_status,
 ):
-    monkeypatch.setattr("app.modules.orcarouter_sidecar.service.OrcaRouterSidecarClient", _FakeOrcaRouterClient)
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
     _FakeOrcaRouterClient.error = error
     response = await async_client.put(
         "/api/settings",
@@ -94,7 +109,10 @@ async def test_orcarouter_sidecar_test_connection_records_error_statuses(
 
 @pytest.mark.asyncio
 async def test_orcarouter_sidecar_test_connection_records_healthy_and_lists_models(async_client, monkeypatch):
-    monkeypatch.setattr("app.modules.orcarouter_sidecar.service.OrcaRouterSidecarClient", _FakeOrcaRouterClient)
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
     _FakeOrcaRouterClient.error = None
     _FakeOrcaRouterClient.models = [
         SidecarModel(id="orcarouter/auto", created=123, owned_by="deepseek")
@@ -149,7 +167,10 @@ async def test_orcarouter_test_connection_never_persists_the_bearer_token(
     database.
     """
 
-    monkeypatch.setattr("app.modules.orcarouter_sidecar.service.OrcaRouterSidecarClient", _FakeOrcaRouterClient)
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
     _FakeOrcaRouterClient.error = OrcaRouterSidecarError(401, upstream_message.format(key=_FAKE_ORCAROUTER_KEY))
 
     response = await async_client.put(
@@ -178,3 +199,74 @@ async def test_orcarouter_test_connection_never_persists_the_bearer_token(
     async with SessionLocal() as session:
         stored = (await session.execute(select(DashboardSettings.orcarouter_sidecar_last_health_message))).scalar_one()
     assert _FAKE_ORCAROUTER_KEY not in str(stored)
+
+
+@pytest.mark.asyncio
+async def test_settings_models_endpoint_reuses_the_orcarouter_models_cache(async_client, monkeypatch):
+    """Opening Settings -> OrcaRouter must not block on a fresh upstream fetch.
+
+    ``list_models_cached`` keeps its TTL state on the client instance, so an
+    inline client per request made ``orcarouter_sidecar_models_cache_ttl_seconds``
+    dead: every render paid another round trip of up to
+    ``request_timeout_seconds``.
+    """
+
+    upstream_fetches = 0
+
+    async def _counting_list_models(_self):
+        nonlocal upstream_fetches
+        upstream_fetches += 1
+        return [SidecarModel(id="orcarouter/auto", created=123, owned_by="deepseek")]
+
+    monkeypatch.setattr(OrcaRouterSidecarClient, "list_models", _counting_list_models)
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "orcarouter-key",
+            "orcarouterSidecarModelsCacheTtlSeconds": 60,
+        },
+    )
+    assert response.status_code == 200
+
+    for _ in range(3):
+        models = await async_client.get("/api/orcarouter-sidecar/models")
+        assert models.status_code == 200
+        assert models.json()["models"] == [{"id": "orcarouter/auto", "created": 123, "ownedBy": "deepseek"}]
+
+    assert upstream_fetches == 1
+
+    # The dashboard model-source picker shares the same cache.
+    picker = await async_client.get("/api/models")
+    assert picker.status_code == 200
+    assert "orcarouter/auto" in [entry["id"] for entry in picker.json()["models"]]
+    assert upstream_fetches == 1
+
+
+@pytest.mark.asyncio
+async def test_rotating_the_orcarouter_key_evicts_the_cached_models_client(async_client, monkeypatch):
+    """A credential change must never be served by a client holding the old key."""
+
+    seen_keys: list[str | None] = []
+
+    async def _recording_list_models(self):
+        seen_keys.append(self.config.api_key)
+        return [SidecarModel(id="orcarouter/auto", created=123, owned_by="deepseek")]
+
+    monkeypatch.setattr(OrcaRouterSidecarClient, "list_models", _recording_list_models)
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "first-key",
+            "orcarouterSidecarModelsCacheTtlSeconds": 60,
+        },
+    )
+    assert (await async_client.get("/api/orcarouter-sidecar/models")).status_code == 200
+
+    await async_client.put("/api/settings", json={"orcarouterSidecarApiKey": "rotated-key"})
+    assert (await async_client.get("/api/orcarouter-sidecar/models")).status_code == 200
+
+    assert seen_keys == ["first-key", "rotated-key"]

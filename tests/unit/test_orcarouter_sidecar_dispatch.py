@@ -173,6 +173,77 @@ async def test_log_orcarouter_free_request_records_reference_cost(monkeypatch: p
     assert calls[0]["reference_cost_usd"] == pytest.approx(0.016)
 
 
+@pytest.mark.asyncio
+async def test_shared_model_id_is_priced_per_provider_in_the_request_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each provider's request log must use that provider's own list price.
+
+    OpenRouter and OrcaRouter both list ids like ``deepseek/deepseek-chat``. With
+    one unqualified pricing key space the last refresh won, so one provider's
+    request could record the other's ``reference_cost_usd``.
+    """
+
+    from app.core.usage.pricing import ModelPrice
+    from app.core.usage.runtime_pricing import get_runtime_pricing_registry
+    from app.modules.proxy.openrouter_sidecar_dispatch import _log_openrouter_request
+
+    registry = get_runtime_pricing_registry()
+    registry.clear()
+    registry.update_models(
+        [("deepseek/deepseek-chat", ModelPrice(input_per_1m=1.0, output_per_1m=2.0))],
+        provider="openrouter",
+    )
+    # OrcaRouter refreshes last, which used to redefine the shared entry.
+    registry.update_models(
+        [("deepseek/deepseek-chat", ModelPrice(input_per_1m=10.0, output_per_1m=20.0))],
+        provider="orcarouter",
+    )
+
+    calls: list[dict[str, object]] = []
+
+    class _SessionContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class _Repository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def add_log(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    for module in (
+        "app.modules.proxy.orcarouter_sidecar_dispatch",
+        "app.modules.proxy.openrouter_sidecar_dispatch",
+    ):
+        monkeypatch.setattr(f"{module}.get_background_session", _SessionContext)
+        monkeypatch.setattr(f"{module}.RequestLogsRepository", _Repository)
+        monkeypatch.setattr(f"{module}.get_request_id", lambda: "req-shared-model")
+
+    usage = SidecarUsage(input_tokens=1_000_000, output_tokens=1_000_000, cost_usd=None)
+    await _log_openrouter_request(
+        api_key=None,
+        model="deepseek/deepseek-chat",
+        started_at=0,
+        status="success",
+        usage=usage,
+    )
+    await _log_orcarouter_request(
+        api_key=None,
+        model="deepseek/deepseek-chat",
+        started_at=0,
+        status="success",
+        usage=usage,
+    )
+
+    registry.clear()
+    by_source = {call["source"]: call for call in calls}
+    assert by_source["openrouter_sidecar"]["reference_cost_usd"] == pytest.approx(3.0)
+    assert by_source["orcarouter_sidecar"]["reference_cost_usd"] == pytest.approx(30.0)
+
+
 def test_build_orcarouter_chat_payload_captures_requested_and_effective_with_override() -> None:
     request = ChatCompletionsRequest.model_validate(
         {

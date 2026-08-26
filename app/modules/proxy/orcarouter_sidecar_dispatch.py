@@ -11,10 +11,13 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.clients.orcarouter_sidecar import (
+    ORCAROUTER_PRICING_PROVIDER,
     OrcaRouterSidecarClient,
     OrcaRouterSidecarConfig,
     OrcaRouterSidecarError,
     OrcaRouterSidecarUnavailableError,
+    sanitize_orcarouter_error_body,
+    sanitize_orcarouter_message,
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
@@ -214,15 +217,15 @@ async def proxy_chat_to_orcarouter(
             started_at=requested_at,
             status="error",
             error_code="orcarouter_sidecar_error",
-            error_message=exc.message,
+            error_message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
         )
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
-            message=exc.message,
+            message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
             error_code="orcarouter_sidecar_error",
-            body=exc.body,
+            body=sanitize_orcarouter_error_body(exc.body, api_key=client.config.api_key),
             extra_headers=rate_limit_headers,
         )
         return JSONResponse(
@@ -320,16 +323,16 @@ async def _orcarouter_stream_iterator(
             started_at=started_at,
             status="error",
             error_code="orcarouter_sidecar_error",
-            error_message=exc.message,
+            error_message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
             reasoning_effort=reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
         )
         settled = True
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
-            message=exc.message,
+            message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
             error_code="orcarouter_sidecar_error",
-            body=exc.body,
+            body=sanitize_orcarouter_error_body(exc.body, api_key=client.config.api_key),
         )
         yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
@@ -341,7 +344,10 @@ async def _orcarouter_stream_iterator(
             started_at=started_at,
             status="error",
             error_code="orcarouter_sidecar_stream_interrupted",
-            error_message=str(exc) or exc.__class__.__name__,
+            error_message=sanitize_orcarouter_message(
+                str(exc) or exc.__class__.__name__,
+                api_key=client.config.api_key,
+            ),
             reasoning_effort=reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
         )
@@ -453,7 +459,11 @@ async def _log_orcarouter_request(
                 source=ORCAROUTER_SIDECAR_SOURCE,
                 failure_phase="sidecar" if status != "success" else None,
                 cost_usd=usage.cost_usd if usage else None,
-                reference_cost_usd=reference_cost_from_sidecar_usage(model, usage),
+                reference_cost_usd=reference_cost_from_sidecar_usage(
+                    model,
+                    usage,
+                    provider=ORCAROUTER_PRICING_PROVIDER,
+                ),
             )
     except Exception:
         logger.warning(

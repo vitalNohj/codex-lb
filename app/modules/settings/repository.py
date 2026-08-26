@@ -130,13 +130,19 @@ class SettingsRepository:
                 if static_settings.orcarouter_sidecar_api_key.strip()
                 else None
             ),
+            # The ``orcarouter/`` seed lives in the settings default, so an
+            # absent CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES still seeds it
+            # while an explicitly emptied value is honoured as empty. Falling
+            # back here instead would re-seed an active prefix for the operator
+            # who cleared it precisely because OmniRoute owns ``orcarouter/``,
+            # making the next settings PUT fail closed with 400
+            # ``sidecar_routing_conflict``.
             orcarouter_sidecar_model_prefixes_json=json.dumps(
                 [
                     {"prefix": prefix.strip().lower(), "strip": prefix.strip().endswith(("-", "_"))}
                     for prefix in static_settings.orcarouter_sidecar_model_prefixes
                     if prefix.strip()
-                ]
-                or [{"prefix": "orcarouter/", "strip": False}],
+                ],
                 separators=(",", ":"),
             ),
             orcarouter_sidecar_full_models_json="[]",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -49,6 +50,12 @@ class OrcaRouterSidecarUnavailableError(OrcaRouterSidecarError):
 
 
 _INCLUDE_COST_HEADER = "X-OrcaRouter-Include-Cost"
+
+# Runtime pricing key space for this integration. OrcaRouter and OpenRouter both
+# list ids such as ``deepseek/deepseek-chat`` at their own list prices, so a
+# shared unqualified key space would let whichever refresh ran last define the
+# reference cost for the other provider's requests.
+ORCAROUTER_PRICING_PROVIDER = "orcarouter"
 
 
 class OrcaRouterSidecarClient:
@@ -131,7 +138,10 @@ class OrcaRouterSidecarClient:
                     pricing=_parse_orcarouter_pricing(entry.get("pricing")),
                 )
             )
-        get_runtime_pricing_registry().update_models((model.id, model.pricing) for model in models)
+        get_runtime_pricing_registry().update_models(
+            ((model.id, model.pricing) for model in models),
+            provider=ORCAROUTER_PRICING_PROVIDER,
+        )
         return models
 
     async def list_models_cached(self) -> list[SidecarModel]:
@@ -222,6 +232,53 @@ def reset_orcarouter_sidecar_client_cache() -> None:
     global _cached_client
     with _cached_client_lock:
         _cached_client = None
+
+
+_REDACTION = "[redacted]"
+# Token charset mirrors app/core/runtime_logging.py so the closing quote/brace of
+# an echoed header survives while the credential does not.
+_BEARER_TOKEN_RE = re.compile(r"(?i)(bearer[\s:=]+)[A-Za-z0-9._~+/=-]+")
+# OrcaRouter keys carry an ``sk-orca-`` prefix and can be echoed bare, with no
+# ``Bearer`` in front ("Invalid API key: sk-orca-...").
+_ORCAROUTER_KEY_RE = re.compile(r"(?i)sk-orca-[A-Za-z0-9._~+/=-]+")
+
+
+def sanitize_orcarouter_message(message: str, *, api_key: str | None = None) -> str:
+    """Strip the OrcaRouter credential out of an operator- or client-visible string.
+
+    Every path that surfaces upstream text shares this one implementation: the
+    health check persists it to ``orcarouter_sidecar_last_health_message``, and
+    chat dispatch persists it to ``request_logs.error_message`` (rendered by the
+    dashboard request drawer) and hands it back to the calling API key. An
+    upstream that echoes the Authorization header must not leak the key on any of
+    them. The configured key is removed verbatim first - that is exact rather
+    than pattern-guessed - and the ``Bearer``/``sk-orca-`` patterns then cover
+    keys that are no longer the configured one.
+    """
+
+    sanitized = message
+    configured_key = (api_key or "").strip()
+    if configured_key:
+        sanitized = sanitized.replace(configured_key, _REDACTION)
+    sanitized = _BEARER_TOKEN_RE.sub(rf"\g<1>{_REDACTION}", sanitized)
+    return _ORCAROUTER_KEY_RE.sub(_REDACTION, sanitized)
+
+
+def sanitize_orcarouter_error_body(body: JsonValue | None, *, api_key: str | None = None) -> JsonValue | None:
+    """Sanitize every string inside an upstream error body.
+
+    ``client_facing_sidecar_error`` relays the upstream body verbatim to the
+    calling API key for non-401/403 statuses, so the credential has to be removed
+    from the nested payload too, not only from the flattened message.
+    """
+
+    if isinstance(body, str):
+        return sanitize_orcarouter_message(body, api_key=api_key)
+    if isinstance(body, list):
+        return [sanitize_orcarouter_error_body(entry, api_key=api_key) for entry in body]
+    if is_json_mapping(body):
+        return {key: sanitize_orcarouter_error_body(value, api_key=api_key) for key, value in body.items()}
+    return body
 
 
 _PER_TOKEN_TO_PER_1M = 1_000_000.0

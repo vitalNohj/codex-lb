@@ -8,7 +8,7 @@ from app.core.auth.dependencies import set_dashboard_error_format, validate_dash
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
-from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient
+from app.core.clients.orcarouter_sidecar import get_orcarouter_sidecar_client
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import DashboardContext, get_dashboard_context
@@ -107,7 +107,9 @@ async def list_models() -> dict:
     orcarouter_config = await load_orcarouter_sidecar_config()
     if orcarouter_config is not None and orcarouter_config.enabled:
         try:
-            orcarouter_models = await OrcaRouterSidecarClient(orcarouter_config).list_models_cached()
+            # Config-keyed client so ``models_cache_ttl_seconds`` spans requests;
+            # an inline client discards the TTL state on every model-picker load.
+            orcarouter_models = await get_orcarouter_sidecar_client(orcarouter_config).list_models_cached()
         except Exception:
             logger.warning("failed to append OrcaRouter models to dashboard model list", exc_info=True)
             orcarouter_models = []
