@@ -40,6 +40,7 @@ from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.proxy.sidecar_routing import parse_sidecar_prefixes
+from app.modules.settings.service import _validate_unique_sidecar_prefixes
 
 try:
     from app.db.migrate import check_migration_policy as _check_migration_policy
@@ -1556,3 +1557,65 @@ async def test_orcarouter_migration_seeds_a_parseable_prefix_on_a_fresh_install(
 
     assert json.loads(str(raw)) == [{"prefix": "orcarouter/", "strip": False}]
     assert parse_sidecar_prefixes(str(raw)) == (SidecarPrefix(prefix="orcarouter/", strip=False),)
+
+
+async def _fresh_install_orcarouter_prefix_json(tmp_path, name: str) -> str:
+    db_url = f"sqlite+aiosqlite:///{tmp_path / name}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_factory() as session:
+            raw = (
+                await session.execute(
+                    text("SELECT orcarouter_sidecar_model_prefixes_json FROM dashboard_settings WHERE id = 1")
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    return str(raw)
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_migration_seeds_the_default_prefix_when_the_env_var_is_absent(tmp_path, monkeypatch):
+    """An unconfigured fresh install still gets the documented ``orcarouter/`` seed."""
+
+    monkeypatch.delenv("CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES", raising=False)
+    get_settings.cache_clear()
+    try:
+        raw = await _fresh_install_orcarouter_prefix_json(tmp_path, "orcarouter-seed-absent.sqlite")
+    finally:
+        get_settings.cache_clear()
+
+    assert parse_sidecar_prefixes(raw) == (SidecarPrefix(prefix="orcarouter/", strip=False),)
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_migration_honours_an_explicitly_empty_prefix_env_var(tmp_path, monkeypatch):
+    """Clearing the variable must actually seed nothing on a real fresh install.
+
+    A migration-managed install never reaches ``SettingsRepository.get_or_create``
+    (migration 20260213 already inserted row id=1), so seeding an active
+    ``orcarouter/`` here anyway would make the next settings PUT fail closed with
+    400 ``sidecar_routing_conflict`` for the operator whose OmniRoute config owns
+    that prefix - the documented escape hatch would not work.
+    """
+
+    monkeypatch.setenv("CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES", "")
+    get_settings.cache_clear()
+    try:
+        raw = await _fresh_install_orcarouter_prefix_json(tmp_path, "orcarouter-seed-empty.sqlite")
+    finally:
+        get_settings.cache_clear()
+
+    assert json.loads(raw) == []
+    assert parse_sidecar_prefixes(raw) == ()
+
+    # The same uniqueness gate the settings PUT runs now accepts OmniRoute
+    # claiming ``orcarouter/``.
+    _validate_unique_sidecar_prefixes(
+        (
+            ("OrcaRouter", list(parse_sidecar_prefixes(raw))),
+            ("OmniRoute", [SidecarPrefix(prefix="orcarouter/", strip=False)]),
+        )
+    )

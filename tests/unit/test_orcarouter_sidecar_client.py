@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -10,6 +12,7 @@ from app.core.clients.orcarouter_sidecar import (
     OrcaRouterSidecarUnavailableError,
     get_orcarouter_sidecar_client,
     reset_orcarouter_sidecar_client_cache,
+    sanitize_orcarouter_message,
 )
 
 pytestmark = pytest.mark.unit
@@ -269,3 +272,100 @@ async def test_model_listing_also_opts_into_cost_without_changing_other_headers(
     assert session.last_headers["X-OrcaRouter-Include-Cost"] == "true"
     assert session.last_headers["Authorization"] == "Bearer orcarouter-key"
     assert session.last_headers["X-Title"] == "codex-lb"
+
+
+# Not a real credential: a synthetic string shaped like an OrcaRouter key so the
+# assertions below prove the sanitizer removed it.
+_FAKE_ORCAROUTER_KEY = "sk-orca-NOTAREALKEY000000000"
+_ORCAROUTER_LOGGER = "app.core.clients.orcarouter_sidecar"
+
+
+@pytest.mark.asyncio
+async def test_models_refresh_failure_never_logs_the_credential(monkeypatch, caplog) -> None:
+    """An upstream echoing the Authorization header must not leak via the log.
+
+    ``list_models_cached`` swallows the upstream failure and logs it, so an
+    ``exc_info=True`` traceback carried the raw upstream text - and with it the
+    credential - into the application log, where runtime_logging redaction never
+    reaches it.
+    """
+
+    leaked = f'upstream echoed {{\\"authorization\\":\\"Bearer {_FAKE_ORCAROUTER_KEY}\\"}}'
+    session = _FakeSession(get_response=_FakeResponse(401, f'{{"error":{{"message":"{leaked}"}}}}'))
+    monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
+    client = OrcaRouterSidecarClient(_config(api_key=_FAKE_ORCAROUTER_KEY))
+
+    with caplog.at_level(logging.WARNING, logger=_ORCAROUTER_LOGGER):
+        assert await client.list_models_cached() == []
+
+    assert caplog.records
+    assert _FAKE_ORCAROUTER_KEY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stale_models_reuse_after_failure_never_logs_the_credential(monkeypatch, caplog) -> None:
+    """The cached-fallback branch logs the same upstream text and must be safe too."""
+
+    leaked = f"Unauthorized for Authorization: Bearer {_FAKE_ORCAROUTER_KEY}"
+    session = _FakeSession(get_response=_FakeResponse(200, '{"data":[{"id":"orcarouter/auto"}]}'))
+    monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
+    client = OrcaRouterSidecarClient(_config(api_key=_FAKE_ORCAROUTER_KEY, models_cache_ttl_seconds=0.0))
+    assert [model.id for model in await client.list_models_cached()] == ["orcarouter/auto"]
+
+    session.get_response = _FakeResponse(401, f'{{"error":{{"message":"{leaked}"}}}}')
+    with caplog.at_level(logging.WARNING, logger=_ORCAROUTER_LOGGER):
+        assert [model.id for model in await client.list_models_cached()] == ["orcarouter/auto"]
+
+    assert caplog.records
+    assert _FAKE_ORCAROUTER_KEY not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "Unauthorized for Authorization: Bearer {key}",
+        "rejected header bearer {key}",
+        'upstream echoed {{"authorization":"Bearer {key}"}}',
+        "BEARER  {key}!",
+        "Invalid API key: {key}",
+        "{key}",
+    ],
+)
+def test_sanitizer_removes_a_credential_shaped_configured_key(upstream_message) -> None:
+    sanitized = sanitize_orcarouter_message(
+        upstream_message.format(key=_FAKE_ORCAROUTER_KEY),
+        api_key=_FAKE_ORCAROUTER_KEY,
+    )
+
+    assert _FAKE_ORCAROUTER_KEY not in sanitized
+    assert "[redacted]" in sanitized
+
+
+def test_sanitizer_keeps_the_json_structure_around_an_echoed_header() -> None:
+    sanitized = sanitize_orcarouter_message(
+        f'{{"authorization":"Bearer {_FAKE_ORCAROUTER_KEY}"}}',
+        api_key=_FAKE_ORCAROUTER_KEY,
+    )
+
+    assert sanitized == '{"authorization":"Bearer [redacted]"}'
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Invalid API key",
+        "monkey business upstream",
+        "keyboard interrupt while streaming",
+    ],
+)
+def test_sanitizer_leaves_ordinary_text_untouched_for_a_non_credential_key(message) -> None:
+    """A short configured value must not be scrubbed out of unrelated prose."""
+
+    assert sanitize_orcarouter_message(message, api_key="key") == message
+
+
+def test_sanitizer_still_redacts_a_short_configured_key_in_a_credential_position() -> None:
+    """Even a weak configured value is a secret where it is presented as one."""
+
+    assert sanitize_orcarouter_message("Authorization: key", api_key="key") == "Authorization: [redacted]"
+    assert sanitize_orcarouter_message("Bearer key", api_key="key") == "Bearer [redacted]"

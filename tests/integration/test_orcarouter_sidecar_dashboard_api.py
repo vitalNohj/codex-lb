@@ -201,6 +201,41 @@ async def test_orcarouter_test_connection_never_persists_the_bearer_token(
     assert _FAKE_ORCAROUTER_KEY not in str(stored)
 
 
+# A configured value that is not credential-shaped and also appears as an
+# ordinary English word in upstream prose.
+_NON_CREDENTIAL_CONFIGURED_VALUE = "key"
+_ORDINARY_UPSTREAM_MESSAGE = "Invalid API key"
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_test_connection_relays_ordinary_upstream_text_unchanged(async_client, monkeypatch):
+    """Sanitizing must not garble a message that carries no credential.
+
+    Removing the configured value verbatim and unanchored rewrote an upstream
+    ``Invalid API key`` into ``Invalid API [redacted]`` whenever the configured
+    value happened to be a short ordinary word.
+    """
+
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
+    _FakeOrcaRouterClient.error = OrcaRouterSidecarError(500, _ORDINARY_UPSTREAM_MESSAGE)
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": _NON_CREDENTIAL_CONFIGURED_VALUE,
+        },
+    )
+    assert response.status_code == 200
+
+    test_payload = (await async_client.post("/api/orcarouter-sidecar/test")).json()
+
+    assert test_payload["message"] == _ORDINARY_UPSTREAM_MESSAGE
+
+
 @pytest.mark.asyncio
 async def test_settings_models_endpoint_reuses_the_orcarouter_models_cache(async_client, monkeypatch):
     """Opening Settings -> OrcaRouter must not block on a fresh upstream fetch.

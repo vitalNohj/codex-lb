@@ -151,11 +151,16 @@ class OrcaRouterSidecarClient:
             return list(self._models_cache)
         try:
             models = await self.list_models()
-        except OrcaRouterSidecarError:
+        except OrcaRouterSidecarError as exc:
+            # Never ``exc_info=True`` here: the traceback carries the upstream
+            # text verbatim, and an upstream that echoes the Authorization
+            # header would write the credential into the application log, which
+            # runtime_logging redaction does not cover.
+            detail = sanitize_orcarouter_message(exc.message, api_key=self._config.api_key)
             if self._models_cache is not None:
-                logger.warning("using cached OrcaRouter sidecar models after refresh failure", exc_info=True)
+                logger.warning("using cached OrcaRouter sidecar models after refresh failure: %s", detail)
                 return list(self._models_cache)
-            logger.warning("OrcaRouter sidecar models unavailable", exc_info=True)
+            logger.warning("OrcaRouter sidecar models unavailable: %s", detail)
             return []
         self._models_cache = list(models)
         self._models_cache_fetched_at = now
@@ -237,29 +242,60 @@ def reset_orcarouter_sidecar_client_cache() -> None:
 _REDACTION = "[redacted]"
 # Token charset mirrors app/core/runtime_logging.py so the closing quote/brace of
 # an echoed header survives while the credential does not.
-_BEARER_TOKEN_RE = re.compile(r"(?i)(bearer[\s:=]+)[A-Za-z0-9._~+/=-]+")
+_TOKEN_CHARS = r"A-Za-z0-9._~+/=-"
+_BEARER_TOKEN_RE = re.compile(rf"(?i)(bearer[\s:=]+)[{_TOKEN_CHARS}]+")
 # OrcaRouter keys carry an ``sk-orca-`` prefix and can be echoed bare, with no
 # ``Bearer`` in front ("Invalid API key: sk-orca-...").
-_ORCAROUTER_KEY_RE = re.compile(r"(?i)sk-orca-[A-Za-z0-9._~+/=-]+")
+_ORCAROUTER_KEY_RE = re.compile(rf"(?i)sk-orca-[{_TOKEN_CHARS}]+")
+# Shortest opaque token any credential scheme we accept issues; an OrcaRouter
+# ``sk-orca-`` key is far longer. Below this length a configured value is more
+# likely an ordinary word that also occurs in upstream prose ("key" inside
+# "Invalid API key"), where blanket redaction would corrupt the operator- and
+# client-visible message without protecting anything the patterns above miss.
+_MIN_OPAQUE_CREDENTIAL_LENGTH = 16
+_OPAQUE_TOKEN_RE = re.compile(rf"[{_TOKEN_CHARS}]{{{_MIN_OPAQUE_CREDENTIAL_LENGTH},}}")
+_CREDENTIAL_LABEL_RE = r"(?i)((?:bearer|authorization|api[-_ ]?key)[\s:=\"']+)"
+
+
+def _looks_credential_bearing(value: str) -> bool:
+    """Is this configured value shaped like a secret rather than ordinary text?"""
+
+    return bool(_ORCAROUTER_KEY_RE.fullmatch(value)) or bool(_OPAQUE_TOKEN_RE.fullmatch(value))
 
 
 def sanitize_orcarouter_message(message: str, *, api_key: str | None = None) -> str:
     """Strip the OrcaRouter credential out of an operator- or client-visible string.
 
-    Every path that surfaces upstream text shares this one implementation: the
-    health check persists it to ``orcarouter_sidecar_last_health_message``, and
-    chat dispatch persists it to ``request_logs.error_message`` (rendered by the
-    dashboard request drawer) and hands it back to the calling API key. An
-    upstream that echoes the Authorization header must not leak the key on any of
-    them. The configured key is removed verbatim first - that is exact rather
-    than pattern-guessed - and the ``Bearer``/``sk-orca-`` patterns then cover
-    keys that are no longer the configured one.
+    Shared by every path this integration uses to surface upstream text: the
+    health check persists it to ``orcarouter_sidecar_last_health_message``, chat
+    dispatch persists it to ``request_logs.error_message`` (rendered by the
+    dashboard request drawer) and hands it back to the calling API key, and the
+    models refresh logs it. An upstream that echoes the Authorization header must
+    not leak the key on any of them.
+
+    The configured key is matched exactly rather than pattern-guessed, but only
+    as a whole token and only when it is credential-bearing or sits in a
+    credential position, so a short configured value cannot garble unrelated
+    words. The ``Bearer``/``sk-orca-`` patterns then cover keys that are no
+    longer the configured one.
     """
 
     sanitized = message
     configured_key = (api_key or "").strip()
     if configured_key:
-        sanitized = sanitized.replace(configured_key, _REDACTION)
+        token = re.escape(configured_key)
+        if _looks_credential_bearing(configured_key):
+            sanitized = re.sub(
+                rf"(?<![{_TOKEN_CHARS}]){token}(?![{_TOKEN_CHARS}])",
+                _REDACTION,
+                sanitized,
+            )
+        else:
+            sanitized = re.sub(
+                rf"{_CREDENTIAL_LABEL_RE}{token}(?![{_TOKEN_CHARS}])",
+                rf"\g<1>{_REDACTION}",
+                sanitized,
+            )
     sanitized = _BEARER_TOKEN_RE.sub(rf"\g<1>{_REDACTION}", sanitized)
     return _ORCAROUTER_KEY_RE.sub(_REDACTION, sanitized)
 

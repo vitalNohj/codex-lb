@@ -11,6 +11,9 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.engine import Connection
 
+from app.core.config.settings import get_settings
+from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
+
 revision = "20260825_000000_add_orcarouter_sidecar_dashboard_settings"
 down_revision = "20260818_000000_backfill_claude_opus_5_sonnet_5_costs"
 branch_labels = None
@@ -18,12 +21,6 @@ depends_on = None
 
 _TABLE_NAME = "dashboard_settings"
 _PREFIX_COLUMN = "orcarouter_sidecar_model_prefixes_json"
-# Seeded only on a fresh install. Backfilling existing rows would hand every
-# deployment an *active* ``orcarouter/`` prefix, which collides with an operator
-# who already routes ``orcarouter/`` through OmniRoute and makes the next
-# settings PUT fail closed with 400 ``sidecar_routing_conflict``
-# (_validate_unique_sidecar_prefixes enforces uniqueness regardless of enabled).
-_FRESH_INSTALL_PREFIX_SEED = '[{"prefix":"orcarouter/","strip":false}]'
 
 
 def _columns(connection: Connection, table_name: str) -> set[str]:
@@ -114,11 +111,22 @@ def upgrade() -> None:
 
 
 def _seed_fresh_install_prefixes(bind: Connection, *, previously_present: bool) -> None:
-    """Seed ``orcarouter/`` only when this migration creates the database.
+    """Seed the configured prefixes only when this migration creates the database.
 
     Existing deployments keep an empty prefix list so the operator opts in from
     the Settings UI, where the uniqueness check reports an OmniRoute collision
-    before anything is persisted.
+    before anything is persisted. Backfilling existing rows would hand every
+    deployment an *active* ``orcarouter/`` prefix and make the next settings PUT
+    fail closed with 400 ``sidecar_routing_conflict``
+    (_validate_unique_sidecar_prefixes enforces uniqueness regardless of
+    enabled).
+
+    On a fresh install the seed comes from
+    ``CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES`` through the same settings
+    object ``SettingsRepository.get_or_create`` reads, so absent configuration
+    seeds the documented ``orcarouter/`` default while an explicitly emptied
+    value seeds nothing - the escape hatch for an operator whose OmniRoute config
+    already owns ``orcarouter/``.
     """
 
     if previously_present:
@@ -126,11 +134,12 @@ def _seed_fresh_install_prefixes(bind: Connection, *, previously_present: bool) 
     config = op.get_context().config
     if config is None or not bool(config.attributes.get("codex_lb_fresh_install")):
         return
+    seed = dump_configured_sidecar_prefixes(get_settings().orcarouter_sidecar_model_prefixes)
     # Bind the JSON as a parameter: embedding it in a text() literal makes
     # SQLAlchemy read ``:false`` as a bind parameter and persist broken JSON.
     bind.execute(
         sa.text(f"UPDATE {_TABLE_NAME} SET {_PREFIX_COLUMN} = :prefixes WHERE id = 1"),
-        {"prefixes": _FRESH_INSTALL_PREFIX_SEED},
+        {"prefixes": seed},
     )
 
 

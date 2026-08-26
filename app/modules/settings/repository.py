@@ -12,6 +12,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
+from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import DashboardSettings
@@ -136,14 +137,10 @@ class SettingsRepository:
             # back here instead would re-seed an active prefix for the operator
             # who cleared it precisely because OmniRoute owns ``orcarouter/``,
             # making the next settings PUT fail closed with 400
-            # ``sidecar_routing_conflict``.
-            orcarouter_sidecar_model_prefixes_json=json.dumps(
-                [
-                    {"prefix": prefix.strip().lower(), "strip": prefix.strip().endswith(("-", "_"))}
-                    for prefix in static_settings.orcarouter_sidecar_model_prefixes
-                    if prefix.strip()
-                ],
-                separators=(",", ":"),
+            # ``sidecar_routing_conflict``. The migration's fresh-install seed
+            # shares this helper so both entry points agree.
+            orcarouter_sidecar_model_prefixes_json=dump_configured_sidecar_prefixes(
+                static_settings.orcarouter_sidecar_model_prefixes
             ),
             orcarouter_sidecar_full_models_json="[]",
             orcarouter_sidecar_connect_timeout_seconds=static_settings.orcarouter_sidecar_connect_timeout_seconds,
