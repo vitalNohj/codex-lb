@@ -406,7 +406,9 @@ function SyntheticAccountCard({
         : isOllama
           ? "Ollama"
           : "CLI Proxy API";
-  const isClaude = !isOpenRouter && !isOrcaRouter && !isOmniRoute && !isOllama;
+  // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
+  // integration must never inherit Claude pause and quota controls by default.
+  const isClaude = account.provider === "claude";
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;

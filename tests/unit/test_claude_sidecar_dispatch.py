@@ -967,9 +967,7 @@ def test_extract_usage_reads_orcarouter_cost_usd_field() -> None:
 def test_extract_usage_prefers_openrouter_cost_over_cost_usd() -> None:
     """OpenRouter's field wins so its long-standing behaviour is unchanged."""
 
-    usage = extract_usage(
-        {"usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.5, "cost_usd": 0.25}}
-    )
+    usage = extract_usage({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.5, "cost_usd": 0.25}})
 
     assert usage is not None
     assert usage.cost_usd == 0.5

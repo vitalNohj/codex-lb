@@ -39,3 +39,29 @@ Effort override MUST always force the operator value when set. DeepSeek V4 `reas
 - **GIVEN** OrcaRouter is enabled and owns `orcarouter/auto`
 - **WHEN** a client sends `POST /v1/responses` with that model
 - **THEN** the service does not forward the request to OrcaRouter
+
+### Requirement: Request logs record the OrcaRouter billed cost
+
+OrcaRouter chat requests MUST opt in to the billed figure by sending `X-OrcaRouter-Include-Cost: true`. When OrcaRouter returns `usage.cost_usd`, the request log MUST persist that value as `cost_usd`.
+
+The stored cost MUST be the amount OrcaRouter reports, never re-derived from `/models` list prices: the billed amount folds in tiered pricing, peak multipliers, cache ratios, and minimum-quota rounding. When the field is absent, `cost_usd` MUST stay null rather than be inferred as zero.
+
+OpenRouter's `usage.cost` MUST keep precedence so OpenRouter behavior is unchanged.
+
+#### Scenario: Non-streaming billed cost reaches the request log
+
+- **GIVEN** OrcaRouter returns `usage.cost_usd`
+- **WHEN** a client completes a non-streaming OrcaRouter chat request
+- **THEN** the request log `cost_usd` equals the reported value
+
+#### Scenario: Streaming billed cost reaches the request log
+
+- **GIVEN** the trailing usage frame carries `usage.cost_usd`
+- **WHEN** a client completes a streaming OrcaRouter chat request
+- **THEN** the request log `cost_usd` equals the reported value
+
+#### Scenario: Absent cost is not treated as free
+
+- **GIVEN** OrcaRouter omits `usage.cost_usd`
+- **WHEN** the request completes
+- **THEN** the request log `cost_usd` is null

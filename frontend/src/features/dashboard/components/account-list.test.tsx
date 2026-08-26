@@ -375,4 +375,40 @@ describe("AccountList", () => {
     const resetButton = screen.getByRole("button", { name: "Redeem reset credit for Many Reset Account" });
     expect(within(resetButton).getByText("99+")).toBeInTheDocument();
   });
+
+  // Regression: same accumulating-exclusion bug in the list expander.
+  it("does not expand a non-Claude synthetic into Claude auth rows", () => {
+    renderWithProviders(
+      <AccountList
+        accounts={[
+          createAccountSummary({
+            accountId: "orcarouter-sidecar",
+            displayName: "OrcaRouter",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "orcarouter",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "orca-1",
+                authIndex: "0",
+                email: "orca-auth@example.com",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByTestId("account-list-row")).toHaveLength(1);
+    expect(screen.queryByText("orca-auth@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause orca-auth@example.com" })).not.toBeInTheDocument();
+  });
 });

@@ -33,7 +33,9 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
-  const isClaude = !isOpenRouter && !isOrcaRouter && !isOmniRoute && !isOllama;
+  // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
+  // integration must never inherit Claude pause and quota controls by default.
+  const isClaude = account.provider === "claude";
   const testProvider = testProviderFor(account.provider);
   const testMutation = useSidecarConnectionTest(testProvider);
   const pauseMutation = useClaudeSidecarAccountPause();

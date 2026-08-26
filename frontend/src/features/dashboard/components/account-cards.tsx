@@ -4,15 +4,7 @@ import { useTranslation } from "react-i18next";
 import { EmptyState } from "@/components/empty-state";
 import { AccountCard, ClaudeAuthCard, type AccountCardProps } from "@/features/dashboard/components/account-card";
 import type { AccountSummary } from "@/features/dashboard/schemas";
-
-function isClaudeSidecar(account: AccountSummary): boolean {
-  return (
-    account.synthetic === true &&
-    account.provider !== "openrouter" &&
-    account.provider !== "omniroute" &&
-    (account.sidecarAuths?.length ?? 0) > 0
-  );
-}
+import { isClaudeSidecar } from "@/features/dashboard/utils";
 
 const ACCOUNT_CARD_VISIBLE_ROWS = 2;
 // Account cards can grow when the optional email row is rendered.

@@ -125,8 +125,22 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getByRole("tab", { name: /OpenRouter/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OmniRoute/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OrcaRouter/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /OmniRoute/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Ollama/ })).toBeInTheDocument();
+  });
+
+  // Replaces a duplicated OmniRoute assertion that re-checked the same tab.
+  // Tab order is the locked surface contract: OrcaRouter sits after OpenRouter
+  // and before OmniRoute, matching SIDECAR_PROVIDER_ORDER on the backend.
+  it("orders the integration tabs to match the sidecar provider order", () => {
+    renderCard(BASE_SETTINGS);
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
+      "CLIProxyAPI",
+      "OpenRouter",
+      "OrcaRouter",
+      "OmniRoute",
+      "Ollama",
+    ]);
   });
 
   it("defaults to the first enabled integration's tab", () => {

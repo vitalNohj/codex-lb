@@ -9,6 +9,7 @@ import type { AccountAction } from "@/features/dashboard/components/account-card
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import type { AccountSummary } from "@/features/dashboard/schemas";
+import { isClaudeSidecar } from "@/features/dashboard/utils";
 import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { cn } from "@/lib/utils";
@@ -21,15 +22,6 @@ import {
   formatSingleUnitRemaining,
   formatSlug,
 } from "@/utils/formatters";
-
-function isClaudeSidecar(account: AccountSummary): boolean {
-  return (
-    account.synthetic === true &&
-    account.provider !== "openrouter" &&
-    account.provider !== "omniroute" &&
-    (account.sidecarAuths?.length ?? 0) > 0
-  );
-}
 
 const ACCOUNT_LIST_VISIBLE_ROWS = 8;
 const ACCOUNT_LIST_ROW_HEIGHT_REM = 4.5;
