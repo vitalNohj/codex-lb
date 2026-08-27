@@ -253,3 +253,62 @@ def test_owner_refresh_after_another_provider_claims_nothing_keeps_ownership() -
     assert unqualified.input_per_1m == pytest.approx(5.0)
     assert orcarouter_price is not None
     assert orcarouter_price.input_per_1m == pytest.approx(9.0)
+
+
+def test_owner_that_stops_listing_an_id_releases_the_unqualified_entry() -> None:
+    """Ownership must not outlive the listing that created it.
+
+    ``update_models`` receives a complete ``/models`` response, so an id the
+    owner no longer publishes is genuinely gone. Merging the provider key space
+    made the owner look like a live publisher forever, which froze its last
+    price in the unqualified overlay that OmniRoute and Ollama dispatch read.
+    """
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/dropped", ModelPrice(input_per_1m=9.0, output_per_1m=9.0))],
+        provider="orcarouter",
+    )
+    # The owner refreshes and no longer lists the id.
+    registry.update_models(
+        [("vendor/still-here", ModelPrice(input_per_1m=5.0, output_per_1m=5.0))],
+        provider="orcarouter",
+    )
+    registry.update_models(
+        [("vendor/dropped", ModelPrice(input_per_1m=1.0, output_per_1m=1.0))],
+        provider="openrouter",
+    )
+
+    released = get_reference_pricing_for_model("vendor/dropped")
+
+    assert released is not None
+    assert released.input_per_1m == pytest.approx(1.0)
+    # The dropped id is no longer resolvable under its former owner.
+    assert get_reference_pricing_for_model("vendor/dropped", provider="orcarouter") is not None
+
+
+def test_a_live_owner_still_blocks_another_provider_from_redefining_a_shared_id() -> None:
+    """Releasing stale ownership must not reopen last-writer-wins."""
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/contested", ModelPrice(input_per_1m=1.0, output_per_1m=1.0))],
+        provider="openrouter",
+    )
+    # The owner keeps publishing the id on its next refresh.
+    registry.update_models(
+        [("vendor/contested", ModelPrice(input_per_1m=2.0, output_per_1m=2.0))],
+        provider="openrouter",
+    )
+    registry.update_models(
+        [("vendor/contested", ModelPrice(input_per_1m=9.0, output_per_1m=9.0))],
+        provider="orcarouter",
+    )
+
+    unqualified = get_reference_pricing_for_model("vendor/contested")
+
+    assert unqualified is not None
+    assert unqualified.input_per_1m == pytest.approx(2.0)
+    challenger = get_reference_pricing_for_model("vendor/contested", provider="orcarouter")
+    assert challenger is not None
+    assert challenger.input_per_1m == pytest.approx(9.0)

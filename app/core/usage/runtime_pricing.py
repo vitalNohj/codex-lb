@@ -66,17 +66,29 @@ class RuntimePricingRegistry:
         provider_key = _normalize_key(provider)
         with self._lock:
             if provider_key:
-                self._pricing_by_provider.setdefault(provider_key, {}).update(updates)
+                # A ``/models`` response is a complete listing, so it replaces
+                # this provider's key space rather than merging into it. Merging
+                # let a provider appear to still publish an id it had dropped,
+                # which kept ownership below alive forever.
+                self._pricing_by_provider[provider_key] = dict(updates)
                 # The unqualified overlay is a compatibility fallback for callers
                 # that cannot name a provider (OmniRoute and Ollama dispatch).
                 # The first provider to publish an id owns the entry and keeps it
                 # current across its later refreshes; a second provider listing
-                # the same id cannot redefine it. Letting whichever /models
-                # refresh ran last win made those callers persist another
-                # provider's list price as ``reference_cost_usd``.
+                # the same id cannot redefine it while the owner still publishes
+                # it. Letting whichever refresh ran last win made those callers
+                # persist another provider's list price as ``reference_cost_usd``.
                 for model_id, price in updates.items():
                     owner = self._pricing_owner.get(model_id)
-                    if owner is not None and owner != provider_key:
+                    # Ownership lasts only while the owner still lists the id.
+                    # Otherwise a disabled provider's last price stayed frozen in
+                    # the overlay for the process lifetime and the provider-less
+                    # callers kept persisting that dead value.
+                    if (
+                        owner is not None
+                        and owner != provider_key
+                        and model_id in self._pricing_by_provider.get(owner, {})
+                    ):
                         continue
                     self._pricing[model_id] = price
                     self._pricing_owner[model_id] = provider_key
