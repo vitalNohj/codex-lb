@@ -408,7 +408,9 @@ function SyntheticAccountCard({
           : "CLI Proxy API";
   // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
   // integration must never inherit Claude pause and quota controls by default.
-  const isClaude = account.provider === "claude";
+  // An absent provider still means Claude, matching the subtitle fallback below
+  // and the schema, which declares provider as nullable/optional.
+  const isClaude = (account.provider ?? "claude") === "claude";
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;

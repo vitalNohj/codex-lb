@@ -51,7 +51,9 @@ export function AccountListItem({
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
-  const isClaude = account.provider === "claude";
+  // An absent provider still means Claude, matching the subtitle fallback below
+  // and the schema, which declares provider as nullable/optional.
+  const isClaude = (account.provider ?? "claude") === "claude";
   const sidecarLabel = isOpenRouter
     ? "OpenRouter"
     : isOrcaRouter

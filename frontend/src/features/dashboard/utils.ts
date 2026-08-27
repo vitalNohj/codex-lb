@@ -33,7 +33,9 @@ import {
  */
 export function isClaudeSidecar(account: AccountSummary): boolean {
   return (
-    account.synthetic === true && account.provider === "claude" && (account.sidecarAuths?.length ?? 0) > 0
+    account.synthetic === true &&
+    (account.provider ?? "claude") === "claude" &&
+    (account.sidecarAuths?.length ?? 0) > 0
   );
 }
 

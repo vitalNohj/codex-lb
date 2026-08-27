@@ -363,3 +363,91 @@ async def test_rotating_the_orcarouter_key_evicts_the_cached_models_client(async
     assert (await async_client.get("/api/orcarouter-sidecar/models")).status_code == 200
 
     assert seen_keys == ["first-key", "rotated-key"]
+
+
+# Synthetic, deliberately shorter than the old 16-character opaque-credential
+# threshold. Not a real credential.
+_FAKE_SHORT_ORCAROUTER_KEY = "sk-x1y2z3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "rejected token {key}",
+        "Invalid credential {key}.",
+        "upstream said {key} is not valid",
+    ],
+)
+async def test_short_configured_key_is_redacted_even_when_echoed_bare(
+    async_client,
+    monkeypatch,
+    upstream_message,
+):
+    """A configured key shorter than the old length gate is still a secret.
+
+    Redaction used to require >= 16 characters, so a short key echoed without a
+    ``bearer``/``api key`` label survived into
+    ``orcarouter_sidecar_last_health_message`` and the dashboard status response.
+    """
+
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
+    _FakeOrcaRouterClient.error = OrcaRouterSidecarError(
+        401, upstream_message.format(key=_FAKE_SHORT_ORCAROUTER_KEY)
+    )
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": _FAKE_SHORT_ORCAROUTER_KEY,
+        },
+    )
+    assert response.status_code == 200
+
+    test_payload = (await async_client.post("/api/orcarouter-sidecar/test")).json()
+    assert _FAKE_SHORT_ORCAROUTER_KEY not in test_payload["message"]
+    assert "[redacted]" in test_payload["message"]
+
+    status_payload = (await async_client.get("/api/orcarouter-sidecar/status")).json()
+    assert _FAKE_SHORT_ORCAROUTER_KEY not in status_payload["message"]
+
+    from sqlalchemy import select
+
+    from app.db.models import DashboardSettings
+    from app.db.session import SessionLocal
+
+    async with SessionLocal() as session:
+        stored = (await session.execute(select(DashboardSettings.orcarouter_sidecar_last_health_message))).scalar_one()
+    assert _FAKE_SHORT_ORCAROUTER_KEY not in str(stored)
+
+
+@pytest.mark.asyncio
+async def test_alphabetic_configured_value_leaves_ordinary_prose_byte_exact(
+    async_client,
+    monkeypatch,
+):
+    """Redacting by shape must not garble upstream prose.
+
+    A purely alphabetic configured value is ambiguous with an ordinary word, so
+    it stays label-gated: ``Invalid API key`` must survive byte for byte while a
+    credential-positioned occurrence is still removed.
+    """
+
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
+    _FakeOrcaRouterClient.error = OrcaRouterSidecarError(401, "Invalid API key")
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"orcarouterSidecarEnabled": True, "orcarouterSidecarApiKey": "key"},
+    )
+    assert response.status_code == 200
+
+    test_payload = (await async_client.post("/api/orcarouter-sidecar/test")).json()
+    assert test_payload["message"] == "Invalid API key"

@@ -168,3 +168,34 @@ def test_provider_falls_back_to_another_providers_listing_when_it_publishes_none
 
     assert price is not None
     assert price.input_per_1m == pytest.approx(2.0)
+
+
+def test_second_provider_listing_a_shared_id_does_not_redefine_the_unqualified_price() -> None:
+    """A provider-less lookup must not swing to whichever refresh ran last.
+
+    ``_log_omniroute_request`` and ``_log_ollama_request`` resolve reference cost
+    without naming a provider, so an overwrite here persisted another provider's
+    list price as ``reference_cost_usd``.
+    """
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/shared-id", ModelPrice(input_per_1m=1.0, output_per_1m=2.0))],
+        provider="openrouter",
+    )
+    registry.update_models(
+        [("vendor/shared-id", ModelPrice(input_per_1m=9.0, output_per_1m=9.0))],
+        provider="orcarouter",
+    )
+
+    unqualified = get_reference_pricing_for_model("vendor/shared-id")
+    openrouter_price = get_reference_pricing_for_model("vendor/shared-id", provider="openrouter")
+    orcarouter_price = get_reference_pricing_for_model("vendor/shared-id", provider="orcarouter")
+
+    assert unqualified is not None
+    assert unqualified.input_per_1m == pytest.approx(1.0)
+    # Each provider still resolves to its own published price.
+    assert openrouter_price is not None
+    assert openrouter_price.input_per_1m == pytest.approx(1.0)
+    assert orcarouter_price is not None
+    assert orcarouter_price.input_per_1m == pytest.approx(9.0)

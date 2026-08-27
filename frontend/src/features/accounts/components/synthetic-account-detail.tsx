@@ -35,7 +35,9 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const isOllama = account.provider === "ollama";
   // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
   // integration must never inherit Claude pause and quota controls by default.
-  const isClaude = account.provider === "claude";
+  // An absent provider still means Claude, matching testProviderFor's default
+  // and the schema, which declares provider as nullable/optional.
+  const isClaude = (account.provider ?? "claude") === "claude";
   const testProvider = testProviderFor(account.provider);
   const testMutation = useSidecarConnectionTest(testProvider);
   const pauseMutation = useClaudeSidecarAccountPause();

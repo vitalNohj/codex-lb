@@ -180,4 +180,45 @@ describe("AccountCards", () => {
     expect(screen.queryByText("orca-auth@example.com")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause orca-auth@example.com" })).not.toBeInTheDocument();
   });
+
+  // Regression: the allowlist required provider === "claude" exactly, but the
+  // schema declares provider as nullable/optional and the card subtitle already
+  // falls back to Claude, so a Claude summary without a provider silently lost
+  // its per-auth cards and pause controls.
+  it("still expands a Claude synthetic whose provider is absent", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "claude-sidecar",
+            displayName: "CLI Proxy API",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: null,
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "claude-1",
+                authIndex: "0",
+                email: "one@example.com",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    // ClaudeAuthCard titles each card with the auth identity; the fallback
+    // SyntheticAccountCard would title it with the account displayName instead.
+    expect(screen.getByText("one@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("CLI Proxy API")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
+  });
 });

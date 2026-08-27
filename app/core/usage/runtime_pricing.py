@@ -63,9 +63,18 @@ class RuntimePricingRegistry:
             return
         provider_key = _normalize_key(provider)
         with self._lock:
-            self._pricing.update(updates)
             if provider_key:
                 self._pricing_by_provider.setdefault(provider_key, {}).update(updates)
+                # The unqualified overlay is a compatibility fallback for callers
+                # that cannot name a provider (OmniRoute and Ollama dispatch).
+                # Only fill ids no provider has claimed yet: overwriting here let
+                # whichever /models refresh ran last redefine a shared id such as
+                # ``deepseek/deepseek-chat``, so those callers persisted another
+                # provider's list price as ``reference_cost_usd``.
+                for model_id, price in updates.items():
+                    self._pricing.setdefault(model_id, price)
+            else:
+                self._pricing.update(updates)
 
     def runtime_pricing_for_model(self, model: str, *, provider: str | None = None) -> ModelPrice | None:
         if not model:
