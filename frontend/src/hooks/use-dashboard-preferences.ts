@@ -11,13 +11,19 @@ const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
 export type DashboardAccountViewMode = "cards" | "list";
 export type DashboardRequestLogViewMode = "simplified" | "expanded";
 
-export type AccountTypeKey = "codex" | "cliproxy" | "openrouter" | "omniroute";
+export type AccountTypeKey = "codex" | "cliproxy" | "openrouter" | "omniroute" | "orcarouter";
 export type AccountTypeVisibility = Record<AccountTypeKey, boolean>;
 
-export const ACCOUNT_TYPE_KEYS: AccountTypeKey[] = ["codex", "cliproxy", "openrouter", "omniroute"];
+export const ACCOUNT_TYPE_KEYS: AccountTypeKey[] = [
+  "codex",
+  "cliproxy",
+  "openrouter",
+  "omniroute",
+  "orcarouter",
+];
 
 function defaultAccountTypeVisibility(): AccountTypeVisibility {
-  return { codex: true, cliproxy: true, openrouter: true, omniroute: true };
+  return { codex: true, cliproxy: true, openrouter: true, omniroute: true, orcarouter: true };
 }
 
 type DashboardPreferencesState = {

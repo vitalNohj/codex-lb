@@ -49,6 +49,9 @@ export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other
   if (account.provider === "omniroute") {
     return "omniroute";
   }
+  if (account.provider === "orcarouter") {
+    return "orcarouter";
+  }
   if ((account.provider ?? "claude") === "claude") {
     return "cliproxy";
   }

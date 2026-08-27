@@ -8,7 +8,7 @@ describe("AccountTypeFilterToggle", () => {
   it("reflects enabled state via aria-pressed", () => {
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: false, openrouter: true, omniroute: false }}
+        value={{ codex: true, cliproxy: false, openrouter: true, omniroute: false, orcarouter: true }}
         onToggle={vi.fn()}
       />,
     );
@@ -29,6 +29,10 @@ describe("AccountTypeFilterToggle", () => {
       "aria-pressed",
       "false",
     );
+    expect(screen.getByRole("button", { name: "Hide OrcaRouter accounts" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("calls onToggle with the account type key when clicked", async () => {
@@ -36,7 +40,7 @@ describe("AccountTypeFilterToggle", () => {
     const onToggle = vi.fn();
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: true, openrouter: true, omniroute: true }}
+        value={{ codex: true, cliproxy: true, openrouter: true, omniroute: true, orcarouter: true }}
         onToggle={onToggle}
       />,
     );
@@ -44,5 +48,9 @@ describe("AccountTypeFilterToggle", () => {
     await user.click(screen.getByRole("button", { name: "Hide OpenRouter accounts" }));
 
     expect(onToggle).toHaveBeenCalledWith("openrouter");
+
+    await user.click(screen.getByRole("button", { name: "Hide OrcaRouter accounts" }));
+
+    expect(onToggle).toHaveBeenCalledWith("orcarouter");
   });
 });

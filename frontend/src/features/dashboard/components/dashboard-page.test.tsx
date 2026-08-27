@@ -44,27 +44,14 @@ vi.mock("@/features/dashboard/hooks/use-request-logs", () => ({
   useRequestLogs: vi.fn(),
 }));
 
-vi.mock("@/features/dashboard/utils", () => ({
-  buildDashboardView: vi.fn(),
-  accountTypeKey: (account: {
-    synthetic?: boolean;
-    provider?: string | null;
-  }) => {
-    if (!account.synthetic) {
-      return "codex";
-    }
-    if (account.provider === "openrouter") {
-      return "openrouter";
-    }
-    if (account.provider === "omniroute") {
-      return "omniroute";
-    }
-    if (account.provider === "claude") {
-      return "cliproxy";
-    }
-    return "other";
-  },
-}));
+vi.mock("@/features/dashboard/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/features/dashboard/utils")>("@/features/dashboard/utils");
+  return {
+    ...actual,
+    buildDashboardView: vi.fn(),
+  };
+});
 
 vi.mock("@/features/dashboard/components/account-cards", () => ({
   AccountCards: ({ accounts }: { accounts: Array<{ accountId: string }> }) => {
@@ -166,7 +153,13 @@ describe("DashboardPage", () => {
       accountBurnrateEnabled: true,
       accountViewMode: "cards",
       requestLogViewMode: "simplified",
-      accountTypeVisibility: { codex: true, cliproxy: true, openrouter: true, omniroute: true },
+      accountTypeVisibility: {
+        codex: true,
+        cliproxy: true,
+        openrouter: true,
+        omniroute: true,
+        orcarouter: true,
+      },
       accountListSort: null,
       initialized: true,
     });
@@ -352,6 +345,54 @@ describe("DashboardPage", () => {
     expect(useDashboardPreferencesStore.getState().accountTypeVisibility.openrouter).toBe(false);
     // Summary line keeps using the full, unfiltered account list.
     expect(accountSummaryLineSpy).toHaveBeenLastCalledWith(overview.accounts);
+  });
+
+  it("hides and shows the OrcaRouter synthetic account through its own filter toggle", async () => {
+    const user = userEvent.setup();
+    const codexAccount = createAccountSummary({ accountId: "acc_codex" });
+    const orcaRouterAccount = createAccountSummary({
+      accountId: "orcarouter-sidecar",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "orcarouter",
+      displayName: "OrcaRouter",
+    });
+    mockReadyDashboard(createDashboardOverview({ accounts: [codexAccount, orcaRouterAccount] }));
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, orcaRouterAccount]);
+
+    await user.click(screen.getByRole("button", { name: "Hide OrcaRouter accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.orcarouter).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Show OrcaRouter accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, orcaRouterAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.orcarouter).toBe(true);
+  });
+
+  it("hides a Claude sidecar without a provider when the CLIProxy filter is off", async () => {
+    const user = userEvent.setup();
+    const codexAccount = createAccountSummary({ accountId: "acc_codex" });
+    const claudeSidecarAccount = createAccountSummary({
+      accountId: "claude-sidecar",
+      synthetic: true,
+      kind: "sidecar",
+      provider: null,
+      displayName: "CLIProxyAPI",
+    });
+    mockReadyDashboard(createDashboardOverview({ accounts: [codexAccount, claudeSidecarAccount] }));
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, claudeSidecarAccount]);
+
+    await user.click(screen.getByRole("button", { name: "Hide CLIProxy accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount]);
   });
 
   it("passes persisted account list sort through and updates it from the list", async () => {

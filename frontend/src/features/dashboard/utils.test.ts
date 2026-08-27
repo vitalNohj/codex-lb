@@ -71,6 +71,7 @@ describe("accountTypeKey", () => {
 
     expect(accountTypeKey({ ...synthetic, provider: "openrouter" })).toBe("openrouter");
     expect(accountTypeKey({ ...synthetic, provider: "omniroute" })).toBe("omniroute");
+    expect(accountTypeKey({ ...synthetic, provider: "orcarouter" })).toBe("orcarouter");
     expect(accountTypeKey({ ...synthetic, provider: "ollama" })).toBe("other");
     expect(accountTypeKey({ ...synthetic, synthetic: false, provider: null })).toBe("codex");
   });

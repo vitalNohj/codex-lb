@@ -15,6 +15,7 @@ const LABELS: Record<AccountTypeKey, string> = {
   cliproxy: "CLIProxy",
   openrouter: "OpenRouter",
   omniroute: "Omniroute",
+  orcarouter: "OrcaRouter",
 };
 
 export function AccountTypeFilterToggle({ value, onToggle }: AccountTypeFilterToggleProps) {
