@@ -105,8 +105,8 @@ describe("useDashboardPreferencesStore", () => {
         codex: true,
         cliproxy: true,
         openrouter: true,
-        omniroute: true,
         orcarouter: true,
+        omniroute: true,
       }),
     );
   });
@@ -128,8 +128,8 @@ describe("useDashboardPreferencesStore", () => {
         codex: true,
         cliproxy: true,
         openrouter: false,
-        omniroute: true,
         orcarouter: true,
+        omniroute: true,
       }),
     );
   });

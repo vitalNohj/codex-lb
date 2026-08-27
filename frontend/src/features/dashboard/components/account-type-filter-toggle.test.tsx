@@ -35,6 +35,23 @@ describe("AccountTypeFilterToggle", () => {
     );
   });
 
+  it("orders the filter buttons to match the sidecar provider order", () => {
+    render(
+      <AccountTypeFilterToggle
+        value={{ codex: true, cliproxy: true, openrouter: true, orcarouter: true, omniroute: true }}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole("button").map((button) => button.textContent?.trim())).toEqual([
+      "Codex",
+      "CLIProxy",
+      "OpenRouter",
+      "OrcaRouter",
+      "Omniroute",
+    ]);
+  });
+
   it("calls onToggle with the account type key when clicked", async () => {
     const user = userEvent.setup();
     const onToggle = vi.fn();
