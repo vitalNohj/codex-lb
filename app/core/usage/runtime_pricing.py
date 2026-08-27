@@ -10,7 +10,8 @@ Providers publish overlapping model ids (``deepseek/deepseek-chat`` is listed by
 both OpenRouter and OrcaRouter) at different list prices, so entries are also
 qualified by the provider that discovered them and a lookup resolves against the
 provider that served the request. The unqualified overlay stays as the fallback
-for callers that do not know a provider and for ids only one provider lists.
+for callers that cannot name a provider; see :meth:`RuntimePricingRegistry.update_models`
+for how ownership of a shared id is assigned there.
 
 A request served by a free model (``...:free``) records ``cost_usd = 0`` but a
 positive reference cost resolved from the paid variant, so dashboards can show

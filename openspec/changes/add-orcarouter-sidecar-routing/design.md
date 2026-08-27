@@ -33,7 +33,7 @@ Bearer `sk-orca-…` is required. Missing key: skip network; dashboard status is
 
 Headers on every request: `User-Agent`, `HTTP-Referer`, `X-Title`, plus `Authorization` when a key is stored.
 
-If `/models` returns OpenRouter-shaped `pricing` objects, parse them into the runtime pricing registry. Do not add invented rows to `DEFAULT_PRICING_MODELS`. Unknown models log `cost_usd = null`. Models ending in `-free` still go through `is_known_free_model`.
+If `/models` returns OpenRouter-shaped `pricing` objects, parse them into the runtime pricing registry under `provider="orcarouter"`. OrcaRouter and OpenRouter both list ids such as `deepseek/deepseek-chat` at different prices, so a provider-qualified lookup must return that provider's own price and an OrcaRouter refresh must not redefine a shared id in the unqualified overlay that the provider-less OmniRoute and Ollama callers read; `app/core/usage/runtime_pricing.py` owns that rule. Do not add invented rows to `DEFAULT_PRICING_MODELS`. Unknown models log `cost_usd = null`. Models ending in `-free` still go through `is_known_free_model`.
 
 ## Routing
 
@@ -53,4 +53,4 @@ Idempotent Alembic column adds cloned from the Ollama dashboard-settings migrati
 
 One new tab in the existing External Integrations card. Enable toggle above the callout. Prefixes, full models, discovered models, timeouts, effort override. Autosave via `SidecarIntegrationCard`. External links open in a new tab with `rel="noopener noreferrer"`.
 
-`synthetic-account-detail.tsx` must have an explicit `orcarouter` branch. Anything that is not OpenRouter/OmniRoute/OrcaRouter must not inherit Claude pause/quota UI for this account.
+`synthetic-account-detail.tsx` must have an explicit `orcarouter` branch. Claude pause/quota UI is picked by an allowlist on the Claude provider, never by excluding the known non-Claude ones; `specs/frontend-architecture/spec.md` owns that rule, the absent-provider case, and the account-type filter key.

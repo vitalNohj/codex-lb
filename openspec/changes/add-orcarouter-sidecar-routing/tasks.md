@@ -53,6 +53,7 @@
 - [x] 8.3 Add one OrcaRouter tab after OpenRouter.
 - [x] 8.4 Extend `SidecarIntegrationId`, names, and `integrationValues`.
 - [x] 8.5 Update effort select, request-log labels, and every `BASE_SETTINGS` fixture.
+- [x] 8.6 Add the `orcarouter` dashboard account-type filter key (after OpenRouter, before Omniroute) and classify a provider-less Claude synthetic as `cliproxy`.
 
 ## 9. Verification
 
