@@ -29,6 +29,8 @@ Account detail, list subtitle, effort override, and read-only actions MUST treat
 
 Claude-specific UI MUST be selected by an allowlist on `provider === "claude"`, not by excluding known non-Claude providers, so a provider added later cannot inherit Claude pause and quota controls by default. This applies to the dashboard card and list expanders as well as account detail.
 
+The accounts list item's generic sidecar status rows (`Quota`, `Models`) are NOT Claude-specific UI and MUST NOT be folded into that allowlist. They MUST stay hidden for the hosted aggregators (OpenRouter, OrcaRouter, OmniRoute), so OrcaRouter matches OpenRouter exactly, and MUST remain visible for the other synthetic providers. Only the 5h and Weekly subscription-window bars are allowlisted on `provider === "claude"`.
+
 #### Scenario: OrcaRouter synthetic account is not Claude
 
 - **GIVEN** a synthetic account with `provider: "orcarouter"`
@@ -42,3 +44,11 @@ Claude-specific UI MUST be selected by an allowlist on `provider === "claude"`, 
 - **WHEN** the dashboard renders the account cards or the account list
 - **THEN** the account renders as a single OrcaRouter entry
 - **AND** no Claude per-auth pause controls are rendered
+
+#### Scenario: Generic sidecar status rows follow the aggregator rule, not the Claude allowlist
+
+- **GIVEN** synthetic accounts for OrcaRouter, OpenRouter, and Ollama
+- **WHEN** the accounts list renders each item
+- **THEN** the OrcaRouter item hides `Quota` and `Models`, matching OpenRouter
+- **AND** the Ollama item still renders `Quota` and `Models`
+- **AND** none of the three render the 5h or Weekly subscription bars

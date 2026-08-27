@@ -51,8 +51,6 @@ export function AccountListItem({
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
-  // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
-  // integration must never inherit Claude pause and quota controls by default.
   const isClaude = account.provider === "claude";
   const sidecarLabel = isOpenRouter
     ? "OpenRouter"
@@ -99,7 +97,15 @@ export function AccountListItem({
     : primary !== null || secondary !== null
       ? "estimated"
       : "unavailable";
-  const showSidecarQuota = account.synthetic === true && isClaude;
+  // Allowlisted, not "everything that is not one of the HTTP sidecars": only
+  // build_claude_sidecar_summary reports subscription-window usage, so a
+  // provider added later must not inherit these bars by default.
+  const showClaudeQuotaBars = account.synthetic === true && isClaude;
+  // Quota and Models are generic sidecar status, not Claude-only: every sidecar
+  // summary reports a status and a model count. They stay hidden for the hosted
+  // aggregators, where the status collapses to an uninformative OK/--.
+  const showSidecarStatusRows =
+    account.synthetic === true && !isOpenRouter && !isOrcaRouter && !isOmniRoute;
   const availableResetCredits = account.availableResetCredits ?? 0;
   const resetBadgeLabel = availableResetCredits > 99 ? "99+" : String(availableResetCredits);
 
@@ -145,7 +151,7 @@ export function AccountListItem({
       </div>
       {account.synthetic ? (
         <div className="mt-2 grid gap-2 text-xs text-muted-foreground">
-          {showSidecarQuota ? (
+          {showClaudeQuotaBars ? (
           <div className="grid grid-cols-2 gap-2">
             <MiniQuotaRow label={`5h ${sidecarUsageLabel}`} percent={primary} resetAt={account.resetAtPrimary} />
             <MiniQuotaRow label={`Weekly ${sidecarUsageLabel}`} percent={secondary} resetAt={account.resetAtSecondary} />
@@ -155,7 +161,7 @@ export function AccountListItem({
             <span>Connection</span>
             <span className="truncate font-medium text-foreground">{formatSlug(account.healthStatus ?? account.status)}</span>
           </div>
-          {showSidecarQuota ? (
+          {showSidecarStatusRows ? (
           <div className="flex items-center justify-between gap-2">
             <span>Quota</span>
             <span className="truncate font-medium text-foreground">
@@ -163,7 +169,7 @@ export function AccountListItem({
             </span>
           </div>
           ) : null}
-          {showSidecarQuota ? (
+          {showSidecarStatusRows ? (
           <div className="flex items-center justify-between gap-2">
             <span>Models</span>
             <span className="font-medium text-foreground">{account.modelCount ?? "--"}</span>
