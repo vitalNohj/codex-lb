@@ -240,8 +240,9 @@ def reset_orcarouter_sidecar_client_cache() -> None:
 
 
 _REDACTION = "[redacted]"
-# Token charset mirrors app/core/runtime_logging.py so the closing quote/brace of
-# an echoed header survives while the credential does not.
+# Characters that may appear *inside* a credential. Mirrors
+# app/core/runtime_logging.py so the closing quote/brace of an echoed header
+# survives while the credential does not.
 _TOKEN_CHARS = r"A-Za-z0-9._~+/=-"
 _BEARER_TOKEN_RE = re.compile(rf"(?i)(bearer[\s:=]+)[{_TOKEN_CHARS}]+")
 # OrcaRouter keys carry an ``sk-orca-`` prefix and can be echoed bare, with no
@@ -255,6 +256,13 @@ _ORCAROUTER_KEY_RE = re.compile(rf"(?i)sk-orca-[{_TOKEN_CHARS}]+")
 _MIN_OPAQUE_CREDENTIAL_LENGTH = 16
 _OPAQUE_TOKEN_RE = re.compile(rf"[{_TOKEN_CHARS}]{{{_MIN_OPAQUE_CREDENTIAL_LENGTH},}}")
 _CREDENTIAL_LABEL_RE = r"(?i)((?:bearer|authorization|api[-_ ]?key)[\s:=\"']+)"
+# Characters that may *end* a credential are not the same set as the characters
+# that may appear inside one: upstream text echoes keys next to '=', ':', ',',
+# '.', quotes and brackets, all of which delimit the token rather than continue
+# it. Only an adjacent alphanumeric means the match is an interior slice of a
+# longer word, which is the single case the boundary exists to reject.
+_NOT_AFTER_TOKEN_CHAR = r"(?<![A-Za-z0-9])"
+_NOT_BEFORE_TOKEN_CHAR = r"(?![A-Za-z0-9])"
 
 
 def _looks_credential_bearing(value: str) -> bool:
@@ -276,8 +284,8 @@ def sanitize_orcarouter_message(message: str, *, api_key: str | None = None) -> 
     The configured key is matched exactly rather than pattern-guessed, but only
     as a whole token and only when it is credential-bearing or sits in a
     credential position, so a short configured value cannot garble unrelated
-    words. The ``Bearer``/``sk-orca-`` patterns then cover keys that are no
-    longer the configured one.
+    words. The ``Bearer``/``sk-orca-`` patterns run unconditionally and cover
+    keys that are no longer the configured one.
     """
 
     sanitized = message
@@ -286,13 +294,13 @@ def sanitize_orcarouter_message(message: str, *, api_key: str | None = None) -> 
         token = re.escape(configured_key)
         if _looks_credential_bearing(configured_key):
             sanitized = re.sub(
-                rf"(?<![{_TOKEN_CHARS}]){token}(?![{_TOKEN_CHARS}])",
+                rf"{_NOT_AFTER_TOKEN_CHAR}{token}{_NOT_BEFORE_TOKEN_CHAR}",
                 _REDACTION,
                 sanitized,
             )
         else:
             sanitized = re.sub(
-                rf"{_CREDENTIAL_LABEL_RE}{token}(?![{_TOKEN_CHARS}])",
+                rf"{_CREDENTIAL_LABEL_RE}{token}{_NOT_BEFORE_TOKEN_CHAR}",
                 rf"\g<1>{_REDACTION}",
                 sanitized,
             )

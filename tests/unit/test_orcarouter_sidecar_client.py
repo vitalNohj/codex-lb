@@ -277,6 +277,11 @@ async def test_model_listing_also_opts_into_cost_without_changing_other_headers(
 # Not a real credential: a synthetic string shaped like an OrcaRouter key so the
 # assertions below prove the sanitizer removed it.
 _FAKE_ORCAROUTER_KEY = "sk-orca-NOTAREALKEY000000000"
+# Not a real credential either: an opaque, credential-length synthetic value with
+# no ``sk-orca-`` prefix, so only the configured-key rule can redact it. The base
+# URL is operator-configurable and the stored key has no format constraint, so
+# this shape is reachable in a real deployment.
+_FAKE_OPAQUE_KEY = "notarealorcakey0123456789"
 _ORCAROUTER_LOGGER = "app.core.clients.orcarouter_sidecar"
 
 
@@ -369,3 +374,51 @@ def test_sanitizer_still_redacts_a_short_configured_key_in_a_credential_position
 
     assert sanitize_orcarouter_message("Authorization: key", api_key="key") == "Authorization: [redacted]"
     assert sanitize_orcarouter_message("Bearer key", api_key="key") == "Bearer [redacted]"
+
+
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "invalid api_key={key}",
+        "Invalid credential {key}.",
+        "rejected ?key={key}",
+        "rejected ({key}), retry",
+        "a,{key};b",
+        "<{key}>",
+        "'{key}'",
+        '{{"key":"{key}"}}',
+        "upstream echoed {key}",
+    ],
+)
+def test_sanitizer_redacts_an_opaque_configured_key_next_to_punctuation(upstream_message) -> None:
+    """Punctuation delimits a credential; it must not shield one from redaction.
+
+    A configured key with no ``sk-orca-`` prefix is only covered by the
+    configured-key rule. Treating '=', '.', quotes and brackets as token
+    characters left the raw key in ``request_logs.error_message`` and in the body
+    handed back to the calling API key.
+    """
+
+    sanitized = sanitize_orcarouter_message(
+        upstream_message.format(key=_FAKE_OPAQUE_KEY),
+        api_key=_FAKE_OPAQUE_KEY,
+    )
+
+    assert _FAKE_OPAQUE_KEY not in sanitized
+    assert "[redacted]" in sanitized
+
+
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "prefix{key}",
+        "x{key}y",
+        "{key}suffix",
+    ],
+)
+def test_sanitizer_leaves_an_interior_substring_of_a_longer_word_alone(upstream_message) -> None:
+    """An alphanumeric neighbour means this is a longer word, not the credential."""
+
+    message = upstream_message.format(key=_FAKE_OPAQUE_KEY)
+
+    assert sanitize_orcarouter_message(message, api_key=_FAKE_OPAQUE_KEY) == message
