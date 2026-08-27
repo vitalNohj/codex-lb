@@ -199,3 +199,57 @@ def test_second_provider_listing_a_shared_id_does_not_redefine_the_unqualified_p
     assert openrouter_price.input_per_1m == pytest.approx(1.0)
     assert orcarouter_price is not None
     assert orcarouter_price.input_per_1m == pytest.approx(9.0)
+
+
+def test_owning_provider_refresh_updates_the_unqualified_price() -> None:
+    """A later refresh by the id's owner must not serve a retired list price.
+
+    Refusing every overwrite froze the unqualified overlay for the process
+    lifetime, so ``_log_omniroute_request`` and ``_log_ollama_request`` persisted
+    a ``reference_cost_usd`` the publishing provider had already changed.
+    """
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/owned", ModelPrice(input_per_1m=1.0, output_per_1m=2.0))],
+        provider="orcarouter",
+    )
+    registry.update_models(
+        [("vendor/owned", ModelPrice(input_per_1m=3.0, output_per_1m=6.0))],
+        provider="orcarouter",
+    )
+
+    unqualified = get_reference_pricing_for_model("vendor/owned")
+    owner_price = get_reference_pricing_for_model("vendor/owned", provider="orcarouter")
+
+    assert unqualified is not None
+    assert unqualified.input_per_1m == pytest.approx(3.0)
+    assert unqualified.output_per_1m == pytest.approx(6.0)
+    assert owner_price is not None
+    assert owner_price.input_per_1m == pytest.approx(3.0)
+
+
+def test_owner_refresh_after_another_provider_claims_nothing_keeps_ownership() -> None:
+    """A non-owner refresh must never take over an already claimed id."""
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/claimed", ModelPrice(input_per_1m=1.0, output_per_1m=2.0))],
+        provider="openrouter",
+    )
+    registry.update_models(
+        [("vendor/claimed", ModelPrice(input_per_1m=9.0, output_per_1m=9.0))],
+        provider="orcarouter",
+    )
+    registry.update_models(
+        [("vendor/claimed", ModelPrice(input_per_1m=5.0, output_per_1m=7.0))],
+        provider="openrouter",
+    )
+
+    unqualified = get_reference_pricing_for_model("vendor/claimed")
+    orcarouter_price = get_reference_pricing_for_model("vendor/claimed", provider="orcarouter")
+
+    assert unqualified is not None
+    assert unqualified.input_per_1m == pytest.approx(5.0)
+    assert orcarouter_price is not None
+    assert orcarouter_price.input_per_1m == pytest.approx(9.0)

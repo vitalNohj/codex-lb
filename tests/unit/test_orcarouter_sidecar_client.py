@@ -376,6 +376,43 @@ def test_sanitizer_still_redacts_a_short_configured_key_in_a_credential_position
     assert sanitize_orcarouter_message("Bearer key", api_key="key") == "Bearer [redacted]"
 
 
+# Not a real credential: a synthetic all-letter value long enough that no
+# ordinary upstream message would contain it by coincidence. Nothing constrains
+# the shape of a stored key, so this is reachable in a real deployment.
+_FAKE_ALPHABETIC_KEY = "notarealorcakeyalphabeticvalue"
+# Not a real credential: a synthetic mixed-shape value shorter than the
+# all-letter threshold, so only the shape rule can classify it as a secret.
+_FAKE_SHORT_MIXED_KEY = "sk-x1y2z3"
+
+
+@pytest.mark.parametrize("configured_key", [_FAKE_ALPHABETIC_KEY, _FAKE_SHORT_MIXED_KEY])
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "rejected token {key}",
+        "upstream said {key} is not valid",
+        "Invalid credential {key}.",
+        "{key}",
+    ],
+)
+def test_sanitizer_redacts_an_opaque_key_of_any_shape_echoed_bare(upstream_message, configured_key) -> None:
+    """Neither shape nor length alone decides: both opaque shapes must redact.
+
+    A length-only gate missed the short mixed key; a shape-only gate missed the
+    long all-letter key. Either miss leaves the raw credential in
+    ``orcarouter_sidecar_last_health_message``, ``request_logs.error_message``
+    and the caller's response.
+    """
+
+    sanitized = sanitize_orcarouter_message(
+        upstream_message.format(key=configured_key),
+        api_key=configured_key,
+    )
+
+    assert configured_key not in sanitized
+    assert "[redacted]" in sanitized
+
+
 @pytest.mark.parametrize(
     "upstream_message",
     [

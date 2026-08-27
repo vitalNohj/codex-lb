@@ -250,18 +250,18 @@ _BEARER_TOKEN_RE = re.compile(rf"(?i)(bearer[\s:=]+){_CREDENTIAL_VALUE}")
 # OrcaRouter keys carry an ``sk-orca-`` prefix and can be echoed bare, with no
 # ``Bearer`` in front ("Invalid API key: sk-orca-...").
 _ORCAROUTER_KEY_RE = re.compile(rf"(?i)sk-orca-{_CREDENTIAL_VALUE}")
-# Shortest opaque token any credential scheme we accept issues; an OrcaRouter
-# ``sk-orca-`` key is far longer. Below this length a configured value is more
-# likely an ordinary word that also occurs in upstream prose ("key" inside
-# "Invalid API key"), where blanket redaction would corrupt the operator- and
-# client-visible message without protecting anything the patterns above miss.
 _WHITESPACE_RE = re.compile(r"\s")
-# A configured value made only of letters is indistinguishable from an ordinary
-# word in upstream prose ("key", "token"), so redacting it verbatim would garble
-# messages like "Invalid API key". Every other shape - digits, punctuation, or
-# mixed - cannot occur as a bare prose word and is treated as a secret whatever
-# its length.
+# A configured value made only of letters is the one shape that can also occur as
+# an ordinary word in upstream prose ("key" inside "Invalid API key"), where
+# blanket redaction would corrupt the operator- and client-visible message. Every
+# other shape - digits, punctuation, or mixed - cannot be a bare prose word and
+# is treated as a secret whatever its length.
 _ALPHABETIC_WORD_RE = re.compile(r"^[A-Za-z]+$")
+# Applies to the purely alphabetic case only, where shape alone cannot decide:
+# below this length the value is plausibly a word an upstream echoes in prose,
+# at or above it no ordinary message would contain the value by coincidence, so
+# an opaque all-letter key is redacted wherever it appears.
+_MIN_ALPHABETIC_CREDENTIAL_LENGTH = 16
 _CREDENTIAL_LABEL_RE = r"(?i)((?:bearer|authorization|api[-_ ]?key)[\s:=\"']+)"
 # Characters that may *end* a credential are not the same set as the characters
 # that may appear inside one: upstream text echoes keys next to '=', ':', ',',
@@ -280,18 +280,22 @@ def _looks_credential_bearing(value: str) -> bool:
     the shape of ``orcarouter_sidecar_api_key``, so a key carrying ':' or any
     other punctuation is still a secret.
 
-    Shape, not length, is the discriminator. A short key such as ``sk-x1y2z3`` is
-    still a stored secret, and an upstream that echoes it bare ("rejected token
-    sk-x1y2z3") would otherwise persist it to
+    Shape and length are combined, because either alone is too narrow. A short
+    key such as ``sk-x1y2z3`` is still a stored secret, and an upstream that
+    echoes it bare ("rejected token sk-x1y2z3") would otherwise persist it to
     ``orcarouter_sidecar_last_health_message`` and ``request_logs.error_message``
-    and hand it back to the caller. Only a purely alphabetic value is ambiguous
-    with prose, and that case stays label-gated so "Invalid API key" is returned
-    byte for byte.
+    and hand it back to the caller, so every non-alphabetic shape is a secret at
+    any length. Only a purely alphabetic value is ambiguous with prose, and there
+    length decides: a short one stays label-gated so "Invalid API key" is
+    returned byte for byte, while an opaque all-letter key is still redacted
+    wherever it is echoed.
     """
 
     if not value or _WHITESPACE_RE.search(value):
         return False
-    return not _ALPHABETIC_WORD_RE.match(value)
+    if _ALPHABETIC_WORD_RE.match(value):
+        return len(value) >= _MIN_ALPHABETIC_CREDENTIAL_LENGTH
+    return True
 
 
 def sanitize_orcarouter_message(message: str, *, api_key: str | None = None) -> str:

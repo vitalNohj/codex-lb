@@ -49,7 +49,7 @@ export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other
   if (account.provider === "omniroute") {
     return "omniroute";
   }
-  if (account.provider === "claude") {
+  if ((account.provider ?? "claude") === "claude") {
     return "cliproxy";
   }
   return "other";

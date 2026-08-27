@@ -365,12 +365,19 @@ async def test_rotating_the_orcarouter_key_evicts_the_cached_models_client(async
     assert seen_keys == ["first-key", "rotated-key"]
 
 
-# Synthetic, deliberately shorter than the old 16-character opaque-credential
-# threshold. Not a real credential.
+# Synthetic, deliberately shorter than the 16-character threshold that applies to
+# purely alphabetic values. Not a real credential.
 _FAKE_SHORT_ORCAROUTER_KEY = "sk-x1y2z3"
+# Synthetic all-letter key, long enough that no ordinary upstream message would
+# contain it by coincidence. Not a real credential.
+_FAKE_ALPHABETIC_ORCAROUTER_KEY = "notarealorcakeyalphabeticvalue"
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured_key",
+    [_FAKE_SHORT_ORCAROUTER_KEY, _FAKE_ALPHABETIC_ORCAROUTER_KEY],
+)
 @pytest.mark.parametrize(
     "upstream_message",
     [
@@ -383,10 +390,12 @@ async def test_short_configured_key_is_redacted_even_when_echoed_bare(
     async_client,
     monkeypatch,
     upstream_message,
+    configured_key,
 ):
-    """A configured key shorter than the old length gate is still a secret.
+    """An opaque configured key is a secret whatever its shape or length.
 
-    Redaction used to require >= 16 characters, so a short key echoed without a
+    A length-only gate let a short mixed-shape key through, and a shape-only gate
+    let a long all-letter key through. Either way a key echoed without a
     ``bearer``/``api key`` label survived into
     ``orcarouter_sidecar_last_health_message`` and the dashboard status response.
     """
@@ -395,25 +404,23 @@ async def test_short_configured_key_is_redacted_even_when_echoed_bare(
         "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
         _FakeOrcaRouterClient,
     )
-    _FakeOrcaRouterClient.error = OrcaRouterSidecarError(
-        401, upstream_message.format(key=_FAKE_SHORT_ORCAROUTER_KEY)
-    )
+    _FakeOrcaRouterClient.error = OrcaRouterSidecarError(401, upstream_message.format(key=configured_key))
 
     response = await async_client.put(
         "/api/settings",
         json={
             "orcarouterSidecarEnabled": True,
-            "orcarouterSidecarApiKey": _FAKE_SHORT_ORCAROUTER_KEY,
+            "orcarouterSidecarApiKey": configured_key,
         },
     )
     assert response.status_code == 200
 
     test_payload = (await async_client.post("/api/orcarouter-sidecar/test")).json()
-    assert _FAKE_SHORT_ORCAROUTER_KEY not in test_payload["message"]
+    assert configured_key not in test_payload["message"]
     assert "[redacted]" in test_payload["message"]
 
     status_payload = (await async_client.get("/api/orcarouter-sidecar/status")).json()
-    assert _FAKE_SHORT_ORCAROUTER_KEY not in status_payload["message"]
+    assert configured_key not in status_payload["message"]
 
     from sqlalchemy import select
 
@@ -422,7 +429,7 @@ async def test_short_configured_key_is_redacted_even_when_echoed_bare(
 
     async with SessionLocal() as session:
         stored = (await session.execute(select(DashboardSettings.orcarouter_sidecar_last_health_message))).scalar_one()
-    assert _FAKE_SHORT_ORCAROUTER_KEY not in str(stored)
+    assert configured_key not in str(stored)
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,7 @@ class RuntimePricingRegistry:
         self._lock = threading.Lock()
         self._pricing: dict[str, ModelPrice] = {}
         self._pricing_by_provider: dict[str, dict[str, ModelPrice]] = {}
+        self._pricing_owner: dict[str, str] = {}
 
     def update_models(
         self,
@@ -67,14 +68,21 @@ class RuntimePricingRegistry:
                 self._pricing_by_provider.setdefault(provider_key, {}).update(updates)
                 # The unqualified overlay is a compatibility fallback for callers
                 # that cannot name a provider (OmniRoute and Ollama dispatch).
-                # Only fill ids no provider has claimed yet: overwriting here let
-                # whichever /models refresh ran last redefine a shared id such as
-                # ``deepseek/deepseek-chat``, so those callers persisted another
+                # The first provider to publish an id owns the entry and keeps it
+                # current across its later refreshes; a second provider listing
+                # the same id cannot redefine it. Letting whichever /models
+                # refresh ran last win made those callers persist another
                 # provider's list price as ``reference_cost_usd``.
                 for model_id, price in updates.items():
-                    self._pricing.setdefault(model_id, price)
+                    owner = self._pricing_owner.get(model_id)
+                    if owner is not None and owner != provider_key:
+                        continue
+                    self._pricing[model_id] = price
+                    self._pricing_owner[model_id] = provider_key
             else:
                 self._pricing.update(updates)
+                for model_id in updates:
+                    self._pricing_owner.pop(model_id, None)
 
     def runtime_pricing_for_model(self, model: str, *, provider: str | None = None) -> ModelPrice | None:
         if not model:
@@ -92,6 +100,7 @@ class RuntimePricingRegistry:
         with self._lock:
             self._pricing.clear()
             self._pricing_by_provider.clear()
+            self._pricing_owner.clear()
 
     def snapshot(self) -> Mapping[str, ModelPrice]:
         with self._lock:
