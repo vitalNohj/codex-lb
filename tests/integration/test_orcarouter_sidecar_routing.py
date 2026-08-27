@@ -96,10 +96,7 @@ class _FakeStreamContext:
         async def chunks():
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
-                yield (
-                    b'data: {"error":{"code":"context_length_exceeded",'
-                    b'"message":"Input token limit exceeded"}}\n\n'
-                )
+                yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
@@ -190,9 +187,7 @@ async def _create_api_key(
 ):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(
-            ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or [])
-        )
+        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or []))
 
 
 async def _reservation_statuses() -> list[str]:
@@ -461,7 +456,6 @@ async def test_orcarouter_sidecar_alias_is_discoverable_and_routes(async_client,
     assert response.status_code == 200
     assert fake_orcarouter.chat_payloads
     assert fake_orcarouter.chat_payloads[0]["model"] == "orcarouter/auto"
-
 
 
 @pytest.mark.asyncio

@@ -53,9 +53,7 @@ def test_build_orcarouter_chat_payload_injects_override_effort_when_absent() -> 
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_orcarouter_chat_payload(
-        request, "orcarouter/auto", _config(default_reasoning_effort="high")
-    )
+    payload = build_orcarouter_chat_payload(request, "orcarouter/auto", _config(default_reasoning_effort="high"))
 
     assert payload.body["reasoning_effort"] == "high"
 
@@ -69,9 +67,7 @@ def test_build_orcarouter_chat_payload_override_replaces_client_effort() -> None
         }
     )
 
-    payload = build_orcarouter_chat_payload(
-        request, "orcarouter/auto", _config(default_reasoning_effort="high")
-    )
+    payload = build_orcarouter_chat_payload(request, "orcarouter/auto", _config(default_reasoning_effort="high"))
 
     assert payload.body["reasoning_effort"] == "high"
 
@@ -85,9 +81,7 @@ def test_build_orcarouter_chat_payload_override_replaces_nested_reasoning() -> N
         }
     )
 
-    payload = build_orcarouter_chat_payload(
-        request, "orcarouter/auto", _config(default_reasoning_effort="high")
-    )
+    payload = build_orcarouter_chat_payload(request, "orcarouter/auto", _config(default_reasoning_effort="high"))
 
     assert payload.body["reasoning_effort"] == "high"
     assert "reasoning" not in payload.body
@@ -253,9 +247,7 @@ def test_build_orcarouter_chat_payload_captures_requested_and_effective_with_ove
         }
     )
 
-    payload = build_orcarouter_chat_payload(
-        request, "orcarouter/auto", _config(default_reasoning_effort="high")
-    )
+    payload = build_orcarouter_chat_payload(request, "orcarouter/auto", _config(default_reasoning_effort="high"))
 
     assert payload.requested_reasoning_effort == "medium"
     assert payload.effective_reasoning_effort == "high"
@@ -281,9 +273,7 @@ def test_build_orcarouter_chat_payload_requested_none_effective_override() -> No
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_orcarouter_chat_payload(
-        request, "orcarouter/auto", _config(default_reasoning_effort="low")
-    )
+    payload = build_orcarouter_chat_payload(request, "orcarouter/auto", _config(default_reasoning_effort="low"))
 
     assert payload.requested_reasoning_effort is None
     assert payload.effective_reasoning_effort == "low"

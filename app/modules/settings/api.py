@@ -237,9 +237,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         orcarouter_sidecar_enabled=settings.orcarouter_sidecar_enabled,
         orcarouter_sidecar_base_url=settings.orcarouter_sidecar_base_url,
         orcarouter_sidecar_api_key_configured=settings.orcarouter_sidecar_api_key_configured,
-        orcarouter_sidecar_model_prefixes=[
-            asdict(prefix) for prefix in settings.orcarouter_sidecar_model_prefixes
-        ],
+        orcarouter_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.orcarouter_sidecar_model_prefixes],
         orcarouter_sidecar_full_models=settings.orcarouter_sidecar_full_models,
         orcarouter_sidecar_connect_timeout_seconds=settings.orcarouter_sidecar_connect_timeout_seconds,
         orcarouter_sidecar_request_timeout_seconds=settings.orcarouter_sidecar_request_timeout_seconds,

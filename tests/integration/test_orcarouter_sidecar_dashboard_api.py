@@ -114,9 +114,7 @@ async def test_orcarouter_sidecar_test_connection_records_healthy_and_lists_mode
         _FakeOrcaRouterClient,
     )
     _FakeOrcaRouterClient.error = None
-    _FakeOrcaRouterClient.models = [
-        SidecarModel(id="orcarouter/auto", created=123, owned_by="deepseek")
-    ]
+    _FakeOrcaRouterClient.models = [SidecarModel(id="orcarouter/auto", created=123, owned_by="deepseek")]
     response = await async_client.put(
         "/api/settings",
         json={

@@ -109,9 +109,7 @@ class OrcaRouterSidecarClient:
         except OrcaRouterSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise OrcaRouterSidecarUnavailableError(
-                _transport_message(exc, "fetch OrcaRouter sidecar models")
-            ) from exc
+            raise OrcaRouterSidecarUnavailableError(_transport_message(exc, "fetch OrcaRouter sidecar models")) from exc
 
         if not is_json_mapping(data):
             raise OrcaRouterSidecarError(502, "Invalid response format from OrcaRouter models API", body=data)

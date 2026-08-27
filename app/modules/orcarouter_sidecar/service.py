@@ -146,6 +146,5 @@ def _classify_status(settings) -> tuple[OrcaRouterSidecarStatus, str | None]:
 
 def _model_summaries(models) -> list[OrcaRouterSidecarModelSummary]:
     return [
-        OrcaRouterSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by)
-        for model in models
+        OrcaRouterSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models
     ]

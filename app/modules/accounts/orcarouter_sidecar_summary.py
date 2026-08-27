@@ -10,16 +10,12 @@ def build_orcarouter_sidecar_summary(
     request_usage: AccountRequestUsage | None,
 ) -> AccountSummary | None:
     """Return a synthetic AccountSummary for the OrcaRouter sidecar, or None when hidden."""
-    configured = (
-        settings.orcarouter_sidecar_api_key_encrypted is not None
-        or bool(settings.orcarouter_sidecar_base_url)
-    )
+    configured = settings.orcarouter_sidecar_api_key_encrypted is not None or bool(settings.orcarouter_sidecar_base_url)
     if not configured and not settings.orcarouter_sidecar_enabled:
         return None
 
     enabled_and_configured = (
-        settings.orcarouter_sidecar_enabled
-        and settings.orcarouter_sidecar_api_key_encrypted is not None
+        settings.orcarouter_sidecar_enabled and settings.orcarouter_sidecar_api_key_encrypted is not None
     )
     health_status = resolve_sidecar_health_status(
         enabled=bool(settings.orcarouter_sidecar_enabled),

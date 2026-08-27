@@ -13,7 +13,7 @@ See `openspec/specs/chat-completions-compat/spec.md` for normative requirements.
 - **Strict role/content rules:** System/developer messages are text-only; user content parts are validated for supported types.
 - **Usage streaming:** When `stream_options.include_usage` is enabled, usage appears in the final chunk while earlier chunks include `usage: null`.
 - **Obfuscation passthrough:** `stream_options.include_obfuscation` is forwarded to upstream when present.
-- **Unified sidecar routing:** CLIProxyAPI, OpenRouter, and OmniRoute share one resolver so a model has exactly one sidecar owner. Exact full-model entries are checked before prefixes across all enabled integrations, then longest matching prefix wins, with CLIProxyAPI -> OpenRouter -> OmniRoute retained only as a deterministic tie-break.
+- **Unified sidecar routing:** the enabled integrations share one resolver so a model has exactly one sidecar owner. Exact full-model entries are checked before prefixes across all enabled integrations, then longest matching prefix wins, with the `SIDECAR_PROVIDER_ORDER` sequence in `app/modules/proxy/sidecar_routing.py` (CLIProxyAPI -> OpenRouter -> OrcaRouter -> OmniRoute -> Ollama) retained only as a deterministic tie-break.
 
 ## Constraints
 

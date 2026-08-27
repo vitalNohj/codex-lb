@@ -11,8 +11,8 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
 from app.core.config.settings import get_settings
-from app.core.crypto import TokenEncryptor
 from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
+from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import DashboardSettings
