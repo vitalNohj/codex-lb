@@ -244,17 +244,21 @@ _REDACTION = "[redacted]"
 # app/core/runtime_logging.py so the closing quote/brace of an echoed header
 # survives while the credential does not.
 _TOKEN_CHARS = r"A-Za-z0-9._~+/=-"
-_BEARER_TOKEN_RE = re.compile(rf"(?i)(bearer[\s:=]+)[{_TOKEN_CHARS}]+")
+# Credential values are also issued colon-delimited ("<env>:<id>:<secret>"). A
+# colon continues the token only when more token characters follow it, so an
+# ordinary "Bearer <token>: retry" separator is still left in place.
+_CREDENTIAL_VALUE = rf"[{_TOKEN_CHARS}]+(?::[{_TOKEN_CHARS}]+)*"
+_BEARER_TOKEN_RE = re.compile(rf"(?i)(bearer[\s:=]+){_CREDENTIAL_VALUE}")
 # OrcaRouter keys carry an ``sk-orca-`` prefix and can be echoed bare, with no
 # ``Bearer`` in front ("Invalid API key: sk-orca-...").
-_ORCAROUTER_KEY_RE = re.compile(rf"(?i)sk-orca-[{_TOKEN_CHARS}]+")
+_ORCAROUTER_KEY_RE = re.compile(rf"(?i)sk-orca-{_CREDENTIAL_VALUE}")
 # Shortest opaque token any credential scheme we accept issues; an OrcaRouter
 # ``sk-orca-`` key is far longer. Below this length a configured value is more
 # likely an ordinary word that also occurs in upstream prose ("key" inside
 # "Invalid API key"), where blanket redaction would corrupt the operator- and
 # client-visible message without protecting anything the patterns above miss.
 _MIN_OPAQUE_CREDENTIAL_LENGTH = 16
-_OPAQUE_TOKEN_RE = re.compile(rf"[{_TOKEN_CHARS}]{{{_MIN_OPAQUE_CREDENTIAL_LENGTH},}}")
+_WHITESPACE_RE = re.compile(r"\s")
 _CREDENTIAL_LABEL_RE = r"(?i)((?:bearer|authorization|api[-_ ]?key)[\s:=\"']+)"
 # Characters that may *end* a credential are not the same set as the characters
 # that may appear inside one: upstream text echoes keys next to '=', ':', ',',
@@ -266,9 +270,16 @@ _NOT_BEFORE_TOKEN_CHAR = r"(?![A-Za-z0-9])"
 
 
 def _looks_credential_bearing(value: str) -> bool:
-    """Is this configured value shaped like a secret rather than ordinary text?"""
+    """Is this configured value shaped like a secret rather than ordinary text?
 
-    return bool(_ORCAROUTER_KEY_RE.fullmatch(value)) or bool(_OPAQUE_TOKEN_RE.fullmatch(value))
+    Deliberately independent of ``_TOKEN_CHARS``: that class answers "where does
+    a token start and end", not "what may an operator store". Nothing constrains
+    the shape of ``orcarouter_sidecar_api_key``, so a key carrying ':' or any
+    other punctuation is still a secret. Length plus the absence of whitespace is
+    what separates an opaque credential from an ordinary word in prose.
+    """
+
+    return len(value) >= _MIN_OPAQUE_CREDENTIAL_LENGTH and not _WHITESPACE_RE.search(value)
 
 
 def sanitize_orcarouter_message(message: str, *, api_key: str | None = None) -> str:

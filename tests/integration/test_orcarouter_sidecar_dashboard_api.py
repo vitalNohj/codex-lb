@@ -201,6 +201,66 @@ async def test_orcarouter_test_connection_never_persists_the_bearer_token(
     assert _FAKE_ORCAROUTER_KEY not in str(stored)
 
 
+# Not a real credential: a synthetic colon-delimited value, the shape schemes
+# that namespace their keys ("<env>:<id>:<secret>") issue. Nothing constrains the
+# stored key format, so an operator can configure this today.
+_FAKE_PUNCTUATED_ORCAROUTER_KEY = "notarealorca:live:0123456789abcdef"
+_FAKE_PUNCTUATED_KEY_TAIL = "0123456789abcdef"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "Invalid credential {key} for project",
+        "invalid api_key={key}",
+        "Invalid credential {key}.",
+        '{{"authorization":"Bearer {key}"}}',
+    ],
+)
+async def test_orcarouter_test_connection_never_persists_a_punctuated_key(
+    async_client,
+    monkeypatch,
+    upstream_message,
+):
+    """A configured key carrying ':' is still a credential on the health path."""
+
+    monkeypatch.setattr(
+        "app.modules.orcarouter_sidecar.service.get_orcarouter_sidecar_client",
+        _FakeOrcaRouterClient,
+    )
+    _FakeOrcaRouterClient.error = OrcaRouterSidecarError(
+        401,
+        upstream_message.format(key=_FAKE_PUNCTUATED_ORCAROUTER_KEY),
+    )
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": _FAKE_PUNCTUATED_ORCAROUTER_KEY,
+        },
+    )
+    assert response.status_code == 200
+
+    test_payload = (await async_client.post("/api/orcarouter-sidecar/test")).json()
+    assert _FAKE_PUNCTUATED_ORCAROUTER_KEY not in test_payload["message"]
+    assert _FAKE_PUNCTUATED_KEY_TAIL not in test_payload["message"]
+    assert "[redacted]" in test_payload["message"]
+
+    status_payload = (await async_client.get("/api/orcarouter-sidecar/status")).json()
+    assert _FAKE_PUNCTUATED_KEY_TAIL not in status_payload["message"]
+
+    from sqlalchemy import select
+
+    from app.db.models import DashboardSettings
+    from app.db.session import SessionLocal
+
+    async with SessionLocal() as session:
+        stored = (await session.execute(select(DashboardSettings.orcarouter_sidecar_last_health_message))).scalar_one()
+    assert _FAKE_PUNCTUATED_KEY_TAIL not in str(stored)
+
+
 # A configured value that is not credential-shaped and also appears as an
 # ordinary English word in upstream prose.
 _NON_CREDENTIAL_CONFIGURED_VALUE = "key"

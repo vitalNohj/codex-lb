@@ -248,6 +248,51 @@ describe("AccountListItem", () => {
     expect(screen.queryByText("99+")).not.toBeInTheDocument();
   });
 
+  // Claude-only quota UI must be selected by an allowlist on provider ===
+  // "claude", not by excluding each known non-Claude provider, so a provider
+  // added later cannot inherit Claude's quota controls by default.
+  it.each(["orcarouter", "newprovider"])(
+    "hides Claude-only quota UI for the synthetic %s sidecar account",
+    (provider) => {
+      const account = createAccountSummary({
+        accountId: `acc_${provider}`,
+        displayName: provider,
+        email: `${provider}@example.com`,
+        synthetic: true,
+        provider,
+        healthStatus: "healthy",
+        modelCount: 7,
+      });
+
+      render(<AccountListItem account={account} selected={false} onSelect={vi.fn()} />);
+
+      expect(screen.getByText("Connection")).toBeInTheDocument();
+      expect(screen.queryByText(/^5h /)).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Weekly /)).not.toBeInTheDocument();
+      expect(screen.queryByText("Quota")).not.toBeInTheDocument();
+      expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps Claude-only quota UI for a synthetic Claude sidecar account", () => {
+    const account = createAccountSummary({
+      accountId: "acc_claude",
+      displayName: "CLIProxyAPI",
+      email: "claude@example.com",
+      synthetic: true,
+      provider: "claude",
+      healthStatus: "healthy",
+      modelCount: 7,
+    });
+
+    render(<AccountListItem account={account} selected={false} onSelect={vi.fn()} />);
+
+    expect(screen.getByText(/^5h /)).toBeInTheDocument();
+    expect(screen.getByText(/^Weekly /)).toBeInTheDocument();
+    expect(screen.getByText("Quota")).toBeInTheDocument();
+    expect(screen.getByText("Models")).toBeInTheDocument();
+  });
+
   it("hides the reset-credit badge when badge display is disabled", () => {
     const account = createAccountSummary({ availableResetCredits: 3 });
 

@@ -755,6 +755,81 @@ async def test_orcarouter_chat_error_never_persists_an_opaque_key_next_to_punctu
     assert "[redacted]" in persisted
 
 
+# Not a real credential: a synthetic colon-delimited value, the shape schemes
+# that namespace their keys ("<env>:<id>:<secret>") issue. Nothing constrains the
+# stored key format, so an operator can configure this today.
+_FAKE_PUNCTUATED_ORCAROUTER_KEY = "notarealorca:live:0123456789abcdef"
+_FAKE_PUNCTUATED_KEY_TAIL = "0123456789abcdef"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "Invalid credential {key} for project",
+        "invalid api_key={key}",
+        "Invalid credential {key}.",
+        '{{"authorization":"Bearer {key}"}}',
+    ],
+)
+async def test_orcarouter_chat_error_never_persists_a_punctuated_key(
+    async_client,
+    monkeypatch,
+    orcarouter_enabled,
+    stream,
+    upstream_message,
+):
+    """A configured key carrying ':' must be redacted like any other credential.
+
+    Deciding "is this a secret" from the token character class used for boundary
+    detection dropped colon-delimited keys out of the configured-key rule
+    entirely, so the raw value reached ``request_logs.error_message`` and the
+    calling API key, and the ``Bearer`` rule leaked the key's tail.
+    """
+
+    fake_orcarouter = _install_fake_orcarouter(monkeypatch, api_key=_FAKE_PUNCTUATED_ORCAROUTER_KEY)
+    leaked = upstream_message.format(key=_FAKE_PUNCTUATED_ORCAROUTER_KEY)
+    error = OrcaRouterSidecarError(500, leaked, body={"error": {"message": leaked}})
+    if stream:
+        fake_orcarouter.stream_error = error
+    else:
+        fake_orcarouter.chat_error = error
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": _FAKE_PUNCTUATED_ORCAROUTER_KEY,
+            "orcarouterSidecarModelPrefixes": ["orcarouter/"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(f"punctuated-leak-key-{stream}-{abs(hash(upstream_message))}")
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={
+            "model": "orcarouter/auto",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        },
+    )
+
+    assert _FAKE_PUNCTUATED_ORCAROUTER_KEY.encode() not in response.content
+    assert _FAKE_PUNCTUATED_KEY_TAIL.encode() not in response.content
+
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
+    assert len(sidecar_logs) == 1
+    persisted = sidecar_logs[0].error_message or ""
+    assert _FAKE_PUNCTUATED_ORCAROUTER_KEY not in persisted
+    assert _FAKE_PUNCTUATED_KEY_TAIL not in persisted
+    assert "[redacted]" in persisted
+
+
 # A configured value that is not credential-shaped and also appears as an
 # ordinary English word in upstream prose.
 _NON_CREDENTIAL_CONFIGURED_VALUE = "key"

@@ -422,3 +422,50 @@ def test_sanitizer_leaves_an_interior_substring_of_a_longer_word_alone(upstream_
     message = upstream_message.format(key=_FAKE_OPAQUE_KEY)
 
     assert sanitize_orcarouter_message(message, api_key=_FAKE_OPAQUE_KEY) == message
+
+
+# Not a real credential: a synthetic colon-delimited value, the shape schemes
+# that namespace their keys ("<env>:<id>:<secret>") issue. ':' is outside the
+# token character class used for boundary detection, so this pins that the
+# "is it a secret" decision does not depend on that class.
+_FAKE_PUNCTUATED_KEY = "notarealorca:live:0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    "upstream_message",
+    [
+        "Invalid credential {key} for project",
+        "invalid api_key={key}",
+        "Invalid credential {key}.",
+        '{{"authorization":"Bearer {key}"}}',
+        "rejected ({key}), retry",
+        "{key}",
+    ],
+)
+def test_sanitizer_redacts_a_configured_key_containing_punctuation(upstream_message) -> None:
+    """A configured key is a secret whatever characters it happens to contain.
+
+    Gating redaction on the key matching the token character class dropped every
+    colon-delimited key out of the configured-key rule entirely, and truncated
+    the ``Bearer`` match at the first ':' so the key's tail survived.
+    """
+
+    sanitized = sanitize_orcarouter_message(
+        upstream_message.format(key=_FAKE_PUNCTUATED_KEY),
+        api_key=_FAKE_PUNCTUATED_KEY,
+    )
+
+    assert _FAKE_PUNCTUATED_KEY not in sanitized
+    assert "0123456789abcdef" not in sanitized
+    assert "[redacted]" in sanitized
+
+
+def test_bearer_rule_redacts_a_punctuated_token_without_any_configured_key() -> None:
+    """The pattern rules stay unconditional, including for a rotated-away key."""
+
+    sanitized = sanitize_orcarouter_message(
+        f'{{"authorization":"Bearer {_FAKE_PUNCTUATED_KEY}"}}',
+        api_key=None,
+    )
+
+    assert sanitized == '{"authorization":"Bearer [redacted]"}'

@@ -51,6 +51,9 @@ export function AccountListItem({
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
+  // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
+  // integration must never inherit Claude pause and quota controls by default.
+  const isClaude = account.provider === "claude";
   const sidecarLabel = isOpenRouter
     ? "OpenRouter"
     : isOrcaRouter
@@ -96,7 +99,7 @@ export function AccountListItem({
     : primary !== null || secondary !== null
       ? "estimated"
       : "unavailable";
-  const showSidecarQuota = account.synthetic && !isOpenRouter && !isOrcaRouter && !isOmniRoute && !isOllama;
+  const showSidecarQuota = account.synthetic === true && isClaude;
   const availableResetCredits = account.availableResetCredits ?? 0;
   const resetBadgeLabel = availableResetCredits > 99 ? "99+" : String(availableResetCredits);
 
