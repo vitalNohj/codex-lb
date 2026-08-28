@@ -102,6 +102,19 @@ class DashboardSettingsData:
     openrouter_sidecar_last_checked_at: datetime | None
     openrouter_sidecar_last_model_count: int | None
     openrouter_sidecar_default_reasoning_effort: str | None
+    orcarouter_sidecar_enabled: bool
+    orcarouter_sidecar_base_url: str
+    orcarouter_sidecar_api_key_configured: bool
+    orcarouter_sidecar_model_prefixes: list[SidecarPrefix]
+    orcarouter_sidecar_full_models: list[str]
+    orcarouter_sidecar_connect_timeout_seconds: float
+    orcarouter_sidecar_request_timeout_seconds: float
+    orcarouter_sidecar_models_cache_ttl_seconds: float
+    orcarouter_sidecar_last_health_status: str | None
+    orcarouter_sidecar_last_health_message: str | None
+    orcarouter_sidecar_last_checked_at: datetime | None
+    orcarouter_sidecar_last_model_count: int | None
+    orcarouter_sidecar_default_reasoning_effort: str | None
     omniroute_sidecar_enabled: bool
     omniroute_sidecar_base_url: str
     omniroute_sidecar_api_key_configured: bool
@@ -211,6 +224,16 @@ class DashboardSettingsUpdateData:
     openrouter_sidecar_request_timeout_seconds: float
     openrouter_sidecar_models_cache_ttl_seconds: float
     openrouter_sidecar_default_reasoning_effort: str | None
+    orcarouter_sidecar_enabled: bool
+    orcarouter_sidecar_base_url: str
+    orcarouter_sidecar_api_key: str | None
+    orcarouter_sidecar_clear_api_key: bool
+    orcarouter_sidecar_model_prefixes: list[SidecarPrefix]
+    orcarouter_sidecar_full_models: list[str]
+    orcarouter_sidecar_connect_timeout_seconds: float
+    orcarouter_sidecar_request_timeout_seconds: float
+    orcarouter_sidecar_models_cache_ttl_seconds: float
+    orcarouter_sidecar_default_reasoning_effort: str | None
     omniroute_sidecar_enabled: bool
     omniroute_sidecar_base_url: str
     omniroute_sidecar_api_key: str | None
@@ -299,6 +322,14 @@ class SettingsService:
             openrouter_api_key_value = payload.openrouter_sidecar_api_key.strip()
             openrouter_api_key_encrypted = (
                 self._encryptor.encrypt(openrouter_api_key_value) if openrouter_api_key_value else None
+            )
+        orcarouter_api_key_encrypted = current.orcarouter_sidecar_api_key_encrypted
+        if payload.orcarouter_sidecar_clear_api_key:
+            orcarouter_api_key_encrypted = None
+        elif payload.orcarouter_sidecar_api_key is not None:
+            orcarouter_api_key_value = payload.orcarouter_sidecar_api_key.strip()
+            orcarouter_api_key_encrypted = (
+                self._encryptor.encrypt(orcarouter_api_key_value) if orcarouter_api_key_value else None
             )
         omniroute_api_key_encrypted = current.omniroute_sidecar_api_key_encrypted
         if payload.omniroute_sidecar_clear_api_key:
@@ -389,6 +420,17 @@ class SettingsService:
             openrouter_sidecar_request_timeout_seconds=payload.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=payload.openrouter_sidecar_models_cache_ttl_seconds,
             openrouter_sidecar_default_reasoning_effort=payload.openrouter_sidecar_default_reasoning_effort,
+            orcarouter_sidecar_enabled=payload.orcarouter_sidecar_enabled,
+            orcarouter_sidecar_base_url=payload.orcarouter_sidecar_base_url,
+            orcarouter_sidecar_api_key_encrypted=orcarouter_api_key_encrypted,
+            orcarouter_sidecar_model_prefixes_json=_dump_orcarouter_sidecar_model_prefixes(
+                payload.orcarouter_sidecar_model_prefixes
+            ),
+            orcarouter_sidecar_full_models_json=_dump_sidecar_full_models(payload.orcarouter_sidecar_full_models),
+            orcarouter_sidecar_connect_timeout_seconds=payload.orcarouter_sidecar_connect_timeout_seconds,
+            orcarouter_sidecar_request_timeout_seconds=payload.orcarouter_sidecar_request_timeout_seconds,
+            orcarouter_sidecar_models_cache_ttl_seconds=payload.orcarouter_sidecar_models_cache_ttl_seconds,
+            orcarouter_sidecar_default_reasoning_effort=payload.orcarouter_sidecar_default_reasoning_effort,
             omniroute_sidecar_enabled=payload.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=payload.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_encrypted=omniroute_api_key_encrypted,
@@ -520,6 +562,21 @@ class SettingsService:
             openrouter_sidecar_last_checked_at=row.openrouter_sidecar_last_checked_at,
             openrouter_sidecar_last_model_count=row.openrouter_sidecar_last_model_count,
             openrouter_sidecar_default_reasoning_effort=row.openrouter_sidecar_default_reasoning_effort,
+            orcarouter_sidecar_enabled=row.orcarouter_sidecar_enabled,
+            orcarouter_sidecar_base_url=row.orcarouter_sidecar_base_url,
+            orcarouter_sidecar_api_key_configured=row.orcarouter_sidecar_api_key_encrypted is not None,
+            orcarouter_sidecar_model_prefixes=_parse_orcarouter_sidecar_model_prefixes(
+                row.orcarouter_sidecar_model_prefixes_json
+            ),
+            orcarouter_sidecar_full_models=_parse_sidecar_full_models(row.orcarouter_sidecar_full_models_json),
+            orcarouter_sidecar_connect_timeout_seconds=row.orcarouter_sidecar_connect_timeout_seconds,
+            orcarouter_sidecar_request_timeout_seconds=row.orcarouter_sidecar_request_timeout_seconds,
+            orcarouter_sidecar_models_cache_ttl_seconds=row.orcarouter_sidecar_models_cache_ttl_seconds,
+            orcarouter_sidecar_last_health_status=row.orcarouter_sidecar_last_health_status,
+            orcarouter_sidecar_last_health_message=row.orcarouter_sidecar_last_health_message,
+            orcarouter_sidecar_last_checked_at=row.orcarouter_sidecar_last_checked_at,
+            orcarouter_sidecar_last_model_count=row.orcarouter_sidecar_last_model_count,
+            orcarouter_sidecar_default_reasoning_effort=row.orcarouter_sidecar_default_reasoning_effort,
             omniroute_sidecar_enabled=row.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=row.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_configured=row.omniroute_sidecar_api_key_encrypted is not None,
@@ -795,6 +852,14 @@ def _dump_openrouter_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> st
     return _dump_sidecar_model_prefixes(prefixes)
 
 
+def _parse_orcarouter_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
+    return _parse_sidecar_model_prefixes(raw)
+
+
+def _dump_orcarouter_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str:
+    return _dump_sidecar_model_prefixes(prefixes)
+
+
 def _parse_omniroute_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
     return _parse_sidecar_model_prefixes(raw)
 
@@ -856,6 +921,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
         (
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
+            ("OrcaRouter", payload.orcarouter_sidecar_model_prefixes),
             ("OmniRoute", payload.omniroute_sidecar_model_prefixes),
             ("Ollama", payload.ollama_sidecar_model_prefixes),
         )
@@ -864,6 +930,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
         (
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
+            ("OrcaRouter", payload.orcarouter_sidecar_full_models),
             ("OmniRoute", payload.omniroute_sidecar_full_models),
             ("Ollama", payload.ollama_sidecar_full_models),
         )

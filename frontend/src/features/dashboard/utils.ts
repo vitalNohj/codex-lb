@@ -22,6 +22,23 @@ import {
   formatWindowMinutes,
 } from "@/utils/formatters";
 
+/**
+ * Whether a synthetic account should expand into per-auth Claude rows.
+ *
+ * Allowlisted on `provider === "claude"` rather than excluding each new
+ * integration: `build_claude_sidecar_summary` is the only summary that sets
+ * both `provider: "claude"` and a non-empty `sidecar_auths`, so any other
+ * provider that later starts emitting auth rows must not inherit Claude's
+ * pause and quota controls by default.
+ */
+export function isClaudeSidecar(account: AccountSummary): boolean {
+  return (
+    account.synthetic === true &&
+    (account.provider ?? "claude") === "claude" &&
+    (account.sidecarAuths?.length ?? 0) > 0
+  );
+}
+
 export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other" {
   if (!account.synthetic) {
     return "codex";
@@ -32,7 +49,10 @@ export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other
   if (account.provider === "omniroute") {
     return "omniroute";
   }
-  if (account.provider === "claude") {
+  if (account.provider === "orcarouter") {
+    return "orcarouter";
+  }
+  if ((account.provider ?? "claude") === "claude") {
     return "cliproxy";
   }
   return "other";

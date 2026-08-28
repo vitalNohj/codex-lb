@@ -6,6 +6,7 @@ from app.db.models import DashboardSettings
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
+from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -188,6 +189,35 @@ def test_openrouter_summary_paused_when_disabled() -> None:
     summary = build_openrouter_sidecar_summary(settings, request_usage=None)
 
     assert summary is not None
+    assert summary.status == "paused"
+
+
+def test_orcarouter_summary_active_when_enabled_and_configured() -> None:
+    settings = _settings(
+        orcarouter_sidecar_enabled=True,
+        orcarouter_sidecar_api_key_encrypted=b"key",
+    )
+
+    summary = build_orcarouter_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.account_id == "orcarouter-sidecar"
+    assert summary.display_name == "OrcaRouter"
+    assert summary.provider == "orcarouter"
+    assert summary.status == "active"
+
+
+def test_orcarouter_summary_paused_when_missing_api_key() -> None:
+    settings = _settings(
+        orcarouter_sidecar_enabled=True,
+        orcarouter_sidecar_api_key_encrypted=None,
+        orcarouter_sidecar_base_url="https://api.orcarouter.ai/v1",
+    )
+
+    summary = build_orcarouter_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.display_name == "OrcaRouter"
     assert summary.status == "paused"
 
 

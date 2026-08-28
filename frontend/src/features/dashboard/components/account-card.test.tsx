@@ -455,6 +455,42 @@ describe("AccountCard", () => {
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
   });
 
+  it("shows OrcaRouter health and requests without Claude pause/quota UI", () => {
+    const orcaRouter = createAccountSummary({
+      accountId: "orcarouter-sidecar",
+      email: "orcarouter.ai",
+      displayName: "OrcaRouter",
+      planType: "orcarouter",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "orcarouter",
+      healthStatus: "healthy",
+      baseUrl: "https://api.orcarouter.ai/v1",
+      modelCount: 3,
+      usage: null,
+      requestUsage: {
+        requestCount: 4,
+        totalTokens: 100,
+        cachedInputTokens: 0,
+        totalCostUsd: 0,
+        totalSavingsUsd: 0.42,
+      },
+    });
+
+    renderWithProviders(<AccountCard account={orcaRouter} />);
+
+    expect(screen.getAllByText("OrcaRouter")).toHaveLength(1);
+    expect(screen.getByText("Health")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
+    expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    expect(screen.getByText("Requests")).toBeInTheDocument();
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(screen.getByText("$0.42")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  });
+
   it("disables the limit warm-up toggle for read-only guests", () => {
     const account = createAccountSummary({
       displayName: "Read Only Account",

@@ -11,6 +11,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
 from app.core.config.settings import get_settings
+from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
@@ -123,6 +124,28 @@ class SettingsRepository:
             openrouter_sidecar_connect_timeout_seconds=static_settings.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=static_settings.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=static_settings.openrouter_sidecar_models_cache_ttl_seconds,
+            orcarouter_sidecar_enabled=static_settings.orcarouter_sidecar_enabled,
+            orcarouter_sidecar_base_url=static_settings.orcarouter_sidecar_base_url,
+            orcarouter_sidecar_api_key_encrypted=(
+                TokenEncryptor().encrypt(static_settings.orcarouter_sidecar_api_key.strip())
+                if static_settings.orcarouter_sidecar_api_key.strip()
+                else None
+            ),
+            # The ``orcarouter/`` seed lives in the settings default, so an
+            # absent CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES still seeds it
+            # while an explicitly emptied value is honoured as empty. Falling
+            # back here instead would re-seed an active prefix for the operator
+            # who cleared it precisely because OmniRoute owns ``orcarouter/``,
+            # making the next settings PUT fail closed with 400
+            # ``sidecar_routing_conflict``. The migration's fresh-install seed
+            # shares this helper so both entry points agree.
+            orcarouter_sidecar_model_prefixes_json=dump_configured_sidecar_prefixes(
+                static_settings.orcarouter_sidecar_model_prefixes
+            ),
+            orcarouter_sidecar_full_models_json="[]",
+            orcarouter_sidecar_connect_timeout_seconds=static_settings.orcarouter_sidecar_connect_timeout_seconds,
+            orcarouter_sidecar_request_timeout_seconds=static_settings.orcarouter_sidecar_request_timeout_seconds,
+            orcarouter_sidecar_models_cache_ttl_seconds=static_settings.orcarouter_sidecar_models_cache_ttl_seconds,
             omniroute_sidecar_enabled=static_settings.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=static_settings.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_encrypted=(
@@ -256,6 +279,19 @@ class SettingsRepository:
         openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         openrouter_sidecar_last_model_count: int | None | object = _UNSET,
         openrouter_sidecar_default_reasoning_effort: str | None | object = _UNSET,
+        orcarouter_sidecar_enabled: bool | None = None,
+        orcarouter_sidecar_base_url: str | None = None,
+        orcarouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        orcarouter_sidecar_model_prefixes_json: str | None = None,
+        orcarouter_sidecar_full_models_json: str | None = None,
+        orcarouter_sidecar_connect_timeout_seconds: float | None = None,
+        orcarouter_sidecar_request_timeout_seconds: float | None = None,
+        orcarouter_sidecar_models_cache_ttl_seconds: float | None = None,
+        orcarouter_sidecar_last_health_status: str | None | object = _UNSET,
+        orcarouter_sidecar_last_health_message: str | None | object = _UNSET,
+        orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        orcarouter_sidecar_last_model_count: int | None | object = _UNSET,
+        orcarouter_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         omniroute_sidecar_enabled: bool | None = None,
         omniroute_sidecar_base_url: str | None = None,
         omniroute_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -461,6 +497,32 @@ class SettingsRepository:
             settings.openrouter_sidecar_last_model_count = openrouter_sidecar_last_model_count
         if openrouter_sidecar_default_reasoning_effort is not _UNSET:
             settings.openrouter_sidecar_default_reasoning_effort = openrouter_sidecar_default_reasoning_effort
+        if orcarouter_sidecar_enabled is not None:
+            settings.orcarouter_sidecar_enabled = orcarouter_sidecar_enabled
+        if orcarouter_sidecar_base_url is not None:
+            settings.orcarouter_sidecar_base_url = orcarouter_sidecar_base_url
+        if orcarouter_sidecar_api_key_encrypted is not _UNSET:
+            settings.orcarouter_sidecar_api_key_encrypted = orcarouter_sidecar_api_key_encrypted
+        if orcarouter_sidecar_model_prefixes_json is not None:
+            settings.orcarouter_sidecar_model_prefixes_json = orcarouter_sidecar_model_prefixes_json
+        if orcarouter_sidecar_full_models_json is not None:
+            settings.orcarouter_sidecar_full_models_json = orcarouter_sidecar_full_models_json
+        if orcarouter_sidecar_connect_timeout_seconds is not None:
+            settings.orcarouter_sidecar_connect_timeout_seconds = orcarouter_sidecar_connect_timeout_seconds
+        if orcarouter_sidecar_request_timeout_seconds is not None:
+            settings.orcarouter_sidecar_request_timeout_seconds = orcarouter_sidecar_request_timeout_seconds
+        if orcarouter_sidecar_models_cache_ttl_seconds is not None:
+            settings.orcarouter_sidecar_models_cache_ttl_seconds = orcarouter_sidecar_models_cache_ttl_seconds
+        if orcarouter_sidecar_last_health_status is not _UNSET:
+            settings.orcarouter_sidecar_last_health_status = orcarouter_sidecar_last_health_status
+        if orcarouter_sidecar_last_health_message is not _UNSET:
+            settings.orcarouter_sidecar_last_health_message = orcarouter_sidecar_last_health_message
+        if orcarouter_sidecar_last_checked_at is not _UNSET:
+            settings.orcarouter_sidecar_last_checked_at = orcarouter_sidecar_last_checked_at
+        if orcarouter_sidecar_last_model_count is not _UNSET:
+            settings.orcarouter_sidecar_last_model_count = orcarouter_sidecar_last_model_count
+        if orcarouter_sidecar_default_reasoning_effort is not _UNSET:
+            settings.orcarouter_sidecar_default_reasoning_effort = orcarouter_sidecar_default_reasoning_effort
         if omniroute_sidecar_enabled is not None:
             settings.omniroute_sidecar_enabled = omniroute_sidecar_enabled
         if omniroute_sidecar_base_url is not None:

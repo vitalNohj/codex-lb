@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { AccountSummary, Depletion } from "@/features/dashboard/schemas";
 import {
+  accountTypeKey,
   applySecondaryConstraint,
   buildDashboardView,
   buildDepletionView,
   buildRemainingItems,
   buildWeeklyCreditPace,
+  isClaudeSidecar,
   sumRemaining,
   weeklyCreditPaceStatus,
   type RemainingItem,
@@ -40,10 +42,64 @@ function account(overrides: Partial<AccountSummary> & Pick<AccountSummary, "acco
     auth: overrides.auth ?? null,
     additionalQuotas: overrides.additionalQuotas ?? [],
     synthetic: overrides.synthetic,
+    provider: overrides.provider,
     sidecarAuths: overrides.sidecarAuths ?? [],
     isEmailDuplicate: overrides.isEmailDuplicate,
   };
 }
+
+describe("accountTypeKey", () => {
+  it("classifies a Claude synthetic without a provider as the CLIProxyAPI type", () => {
+    // The schema declares provider nullable/optional, and isClaudeSidecar
+    // already falls back to Claude. Falling through to "other" here made the
+    // account permanently visible: dashboard-page skips the visibility filter
+    // for "other", so turning the CLIProxyAPI filter off could not hide it.
+    const claudeSidecar = account({
+      accountId: "claude-sidecar",
+      email: "claude@example.com",
+      synthetic: true,
+      provider: null,
+      sidecarAuths: [],
+    });
+
+    expect(accountTypeKey(claudeSidecar)).toBe("cliproxy");
+    expect(accountTypeKey({ ...claudeSidecar, provider: "claude" })).toBe("cliproxy");
+  });
+
+  it("keeps the other synthetic providers on their own keys", () => {
+    const synthetic = account({ accountId: "s", email: "s@example.com", synthetic: true });
+
+    expect(accountTypeKey({ ...synthetic, provider: "openrouter" })).toBe("openrouter");
+    expect(accountTypeKey({ ...synthetic, provider: "omniroute" })).toBe("omniroute");
+    expect(accountTypeKey({ ...synthetic, provider: "orcarouter" })).toBe("orcarouter");
+    expect(accountTypeKey({ ...synthetic, provider: "ollama" })).toBe("other");
+    expect(accountTypeKey({ ...synthetic, synthetic: false, provider: null })).toBe("codex");
+  });
+
+  it("agrees with isClaudeSidecar on an absent provider", () => {
+    const claudeSidecar = account({
+      accountId: "claude-sidecar",
+      email: "claude@example.com",
+      synthetic: true,
+      provider: null,
+      sidecarAuths: [
+        {
+          name: "claude-1",
+          authIndex: "0",
+          email: "one@example.com",
+          paused: false,
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 0,
+          failed: 0,
+        },
+      ],
+    });
+
+    expect(isClaudeSidecar(claudeSidecar)).toBe(true);
+    expect(accountTypeKey(claudeSidecar)).toBe("cliproxy");
+  });
+});
 
 describe("buildDepletionView", () => {
   it("returns null for null depletion", () => {

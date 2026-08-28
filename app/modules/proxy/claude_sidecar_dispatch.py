@@ -1292,11 +1292,18 @@ async def _sidecar_stream_iterator(
             )
 
 
-def reference_cost_from_sidecar_usage(model: str, usage: SidecarUsage | None) -> float | None:
+def reference_cost_from_sidecar_usage(
+    model: str,
+    usage: SidecarUsage | None,
+    *,
+    provider: str | None = None,
+) -> float | None:
     """Reference (paid-equivalent) cost for a sidecar request, or None.
 
     Used to surface savings when the request was served by a free/cheap model:
     the same token usage priced at the resolved paid-equivalent list price.
+    ``provider`` selects that provider's own runtime price when several
+    integrations publish the same model id at different list prices.
     """
     if usage is None:
         return None
@@ -1307,6 +1314,7 @@ def reference_cost_from_sidecar_usage(model: str, usage: SidecarUsage | None) ->
             output_tokens=float(usage.output_tokens),
             cached_input_tokens=float(usage.cached_input_tokens),
         ),
+        provider=provider,
     )
 
 
@@ -1334,7 +1342,18 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     if is_json_mapping(input_details):
         cached_tokens = _int_field(input_details, "cached_tokens") or cached_tokens
 
+    # OpenRouter reports the billed amount as ``usage.cost``; OrcaRouter uses
+    # ``usage.cost_usd`` (docs.orcarouter.ai/operations/per-request-cost) and
+    # returns it only when the request opted in via ``X-OrcaRouter-Include-Cost``.
+    # Reading ``cost`` first keeps OpenRouter behaviour byte-identical. This
+    # helper is shared, so the ``cost_usd`` fallback also reaches the OmniRoute
+    # dispatch path, which logs ``SidecarUsage.cost_usd`` and therefore now
+    # persists a ``usage.cost_usd`` it previously ignored. The Claude path
+    # parses the field but never forwards it to ``add_log``, so its request-log
+    # cost stays pricing-table derived.
     cost_usd = _float_field(usage, "cost")
+    if cost_usd is None:
+        cost_usd = _float_field(usage, "cost_usd")
 
     return SidecarUsage(
         input_tokens=input_tokens,

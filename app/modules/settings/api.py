@@ -234,6 +234,19 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_last_checked_at=settings.openrouter_sidecar_last_checked_at,
         openrouter_sidecar_last_model_count=settings.openrouter_sidecar_last_model_count,
         openrouter_sidecar_default_reasoning_effort=settings.openrouter_sidecar_default_reasoning_effort,
+        orcarouter_sidecar_enabled=settings.orcarouter_sidecar_enabled,
+        orcarouter_sidecar_base_url=settings.orcarouter_sidecar_base_url,
+        orcarouter_sidecar_api_key_configured=settings.orcarouter_sidecar_api_key_configured,
+        orcarouter_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.orcarouter_sidecar_model_prefixes],
+        orcarouter_sidecar_full_models=settings.orcarouter_sidecar_full_models,
+        orcarouter_sidecar_connect_timeout_seconds=settings.orcarouter_sidecar_connect_timeout_seconds,
+        orcarouter_sidecar_request_timeout_seconds=settings.orcarouter_sidecar_request_timeout_seconds,
+        orcarouter_sidecar_models_cache_ttl_seconds=settings.orcarouter_sidecar_models_cache_ttl_seconds,
+        orcarouter_sidecar_last_health_status=settings.orcarouter_sidecar_last_health_status,
+        orcarouter_sidecar_last_health_message=settings.orcarouter_sidecar_last_health_message,
+        orcarouter_sidecar_last_checked_at=settings.orcarouter_sidecar_last_checked_at,
+        orcarouter_sidecar_last_model_count=settings.orcarouter_sidecar_last_model_count,
+        orcarouter_sidecar_default_reasoning_effort=settings.orcarouter_sidecar_default_reasoning_effort,
         omniroute_sidecar_enabled=settings.omniroute_sidecar_enabled,
         omniroute_sidecar_base_url=settings.omniroute_sidecar_base_url,
         omniroute_sidecar_api_key_configured=settings.omniroute_sidecar_api_key_configured,
@@ -1024,6 +1037,48 @@ async def update_settings(
                     if "openrouter_sidecar_default_reasoning_effort" in payload.model_fields_set
                     else current.openrouter_sidecar_default_reasoning_effort
                 ),
+                orcarouter_sidecar_enabled=(
+                    payload.orcarouter_sidecar_enabled
+                    if payload.orcarouter_sidecar_enabled is not None
+                    else current.orcarouter_sidecar_enabled
+                ),
+                orcarouter_sidecar_base_url=payload.orcarouter_sidecar_base_url or current.orcarouter_sidecar_base_url,
+                orcarouter_sidecar_api_key=(
+                    payload.orcarouter_sidecar_api_key
+                    if "orcarouter_sidecar_api_key" in payload.model_fields_set
+                    else None
+                ),
+                orcarouter_sidecar_clear_api_key=payload.orcarouter_sidecar_clear_api_key is True,
+                orcarouter_sidecar_model_prefixes=(
+                    [_sidecar_prefix_data(prefix) for prefix in payload.orcarouter_sidecar_model_prefixes]
+                    if payload.orcarouter_sidecar_model_prefixes is not None
+                    else current.orcarouter_sidecar_model_prefixes
+                ),
+                orcarouter_sidecar_full_models=(
+                    payload.orcarouter_sidecar_full_models
+                    if payload.orcarouter_sidecar_full_models is not None
+                    else current.orcarouter_sidecar_full_models
+                ),
+                orcarouter_sidecar_connect_timeout_seconds=(
+                    payload.orcarouter_sidecar_connect_timeout_seconds
+                    if payload.orcarouter_sidecar_connect_timeout_seconds is not None
+                    else current.orcarouter_sidecar_connect_timeout_seconds
+                ),
+                orcarouter_sidecar_request_timeout_seconds=(
+                    payload.orcarouter_sidecar_request_timeout_seconds
+                    if payload.orcarouter_sidecar_request_timeout_seconds is not None
+                    else current.orcarouter_sidecar_request_timeout_seconds
+                ),
+                orcarouter_sidecar_models_cache_ttl_seconds=(
+                    payload.orcarouter_sidecar_models_cache_ttl_seconds
+                    if payload.orcarouter_sidecar_models_cache_ttl_seconds is not None
+                    else current.orcarouter_sidecar_models_cache_ttl_seconds
+                ),
+                orcarouter_sidecar_default_reasoning_effort=(
+                    payload.orcarouter_sidecar_default_reasoning_effort
+                    if "orcarouter_sidecar_default_reasoning_effort" in payload.model_fields_set
+                    else current.orcarouter_sidecar_default_reasoning_effort
+                ),
                 omniroute_sidecar_enabled=(
                     payload.omniroute_sidecar_enabled
                     if payload.omniroute_sidecar_enabled is not None
@@ -1259,6 +1314,19 @@ async def update_settings(
             "openrouter_sidecar_last_checked_at",
             "openrouter_sidecar_last_model_count",
             "openrouter_sidecar_default_reasoning_effort",
+            "orcarouter_sidecar_enabled",
+            "orcarouter_sidecar_base_url",
+            "orcarouter_sidecar_api_key_configured",
+            "orcarouter_sidecar_model_prefixes",
+            "orcarouter_sidecar_full_models",
+            "orcarouter_sidecar_connect_timeout_seconds",
+            "orcarouter_sidecar_request_timeout_seconds",
+            "orcarouter_sidecar_models_cache_ttl_seconds",
+            "orcarouter_sidecar_last_health_status",
+            "orcarouter_sidecar_last_health_message",
+            "orcarouter_sidecar_last_checked_at",
+            "orcarouter_sidecar_last_model_count",
+            "orcarouter_sidecar_default_reasoning_effort",
             "omniroute_sidecar_enabled",
             "omniroute_sidecar_base_url",
             "omniroute_sidecar_api_key_configured",

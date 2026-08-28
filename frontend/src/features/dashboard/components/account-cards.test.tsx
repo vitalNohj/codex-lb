@@ -142,4 +142,83 @@ describe("AccountCards", () => {
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume two@example.com" })).toBeInTheDocument();
   });
+
+  // Regression: the expanders classified any synthetic that was not OpenRouter
+  // or OmniRoute as Claude, so a provider that later emits sidecarAuths would
+  // silently inherit Claude pause controls. The check is now an allowlist.
+  it("does not expand a non-Claude synthetic into Claude auth cards", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "orcarouter-sidecar",
+            displayName: "OrcaRouter",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "orcarouter",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "orca-1",
+                authIndex: "0",
+                email: "orca-auth@example.com",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("OrcaRouter")).toBeInTheDocument();
+    expect(screen.queryByText("orca-auth@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause orca-auth@example.com" })).not.toBeInTheDocument();
+  });
+
+  // Regression: the allowlist required provider === "claude" exactly, but the
+  // schema declares provider as nullable/optional and the card subtitle already
+  // falls back to Claude, so a Claude summary without a provider silently lost
+  // its per-auth cards and pause controls.
+  it("still expands a Claude synthetic whose provider is absent", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "claude-sidecar",
+            displayName: "CLI Proxy API",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: null,
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "claude-1",
+                authIndex: "0",
+                email: "one@example.com",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                success: 0,
+                failed: 0,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    // ClaudeAuthCard titles each card with the auth identity; the fallback
+    // SyntheticAccountCard would title it with the account displayName instead.
+    expect(screen.getByText("one@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("CLI Proxy API")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
+  });
 });

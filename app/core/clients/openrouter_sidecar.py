@@ -47,6 +47,11 @@ class OpenRouterSidecarUnavailableError(OpenRouterSidecarError):
         super().__init__(503, message, body=None)
 
 
+# Runtime pricing key space for this integration; see the sibling constant in
+# ``app/core/clients/orcarouter_sidecar.py`` for why the ids are qualified.
+OPENROUTER_PRICING_PROVIDER = "openrouter"
+
+
 class OpenRouterSidecarClient:
     def __init__(self, config: OpenRouterSidecarConfig) -> None:
         self._config = config
@@ -119,7 +124,10 @@ class OpenRouterSidecarClient:
                     pricing=_parse_openrouter_pricing(entry.get("pricing")),
                 )
             )
-        get_runtime_pricing_registry().update_models((model.id, model.pricing) for model in models)
+        get_runtime_pricing_registry().update_models(
+            ((model.id, model.pricing) for model in models),
+            provider=OPENROUTER_PRICING_PROVIDER,
+        )
         return models
 
     async def list_models_cached(self) -> list[SidecarModel]:

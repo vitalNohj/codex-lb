@@ -394,9 +394,23 @@ function SyntheticAccountCard({
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
   const isOpenRouter = account.provider === "openrouter";
+  const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
-  const sidecarLabel = isOpenRouter ? "OpenRouter" : isOmniRoute ? "OmniRoute" : "CLI Proxy API";
-  const isClaude = !isOpenRouter && !isOmniRoute;
+  const isOllama = account.provider === "ollama";
+  const sidecarLabel = isOpenRouter
+    ? "OpenRouter"
+    : isOrcaRouter
+      ? "OrcaRouter"
+      : isOmniRoute
+        ? "OmniRoute"
+        : isOllama
+          ? "Ollama"
+          : "CLI Proxy API";
+  // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
+  // integration must never inherit Claude pause and quota controls by default.
+  // An absent provider still means Claude, matching the subtitle fallback below
+  // and the schema, which declares provider as nullable/optional.
+  const isClaude = (account.provider ?? "claude") === "claude";
   const status = normalizeStatus(account.status);
   const requestCount = account.requestUsage?.requestCount ?? null;
   const totalTokens = account.requestUsage?.totalTokens ?? null;

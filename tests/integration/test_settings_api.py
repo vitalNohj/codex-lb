@@ -391,6 +391,61 @@ async def test_settings_api_rejects_unknown_routing_strategy(async_client):
     assert response.status_code == 422
 
 
+async def _reseed_settings_row(monkeypatch, orcarouter_prefixes_env: str | None):
+    """Drop the settings row and let the repository seed a new one from the env."""
+    from app.core.config.settings import get_settings
+
+    async with SessionLocal() as session:
+        await session.execute(text("DELETE FROM dashboard_settings"))
+        await session.commit()
+
+    if orcarouter_prefixes_env is None:
+        monkeypatch.delenv("CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES", raising=False)
+    else:
+        monkeypatch.setenv("CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES", orcarouter_prefixes_env)
+    get_settings.cache_clear()
+    await get_settings_cache().invalidate()
+
+
+@pytest.mark.asyncio
+async def test_settings_seed_keeps_the_default_orcarouter_prefix_when_the_env_var_is_absent(
+    async_client,
+    monkeypatch,
+):
+    """An unconfigured deployment still gets the documented ``orcarouter/`` seed."""
+
+    await _reseed_settings_row(monkeypatch, None)
+
+    response = await async_client.get("/api/settings")
+
+    assert response.status_code == 200
+    assert response.json()["orcarouterSidecarModelPrefixes"] == [{"prefix": "orcarouter/", "strip": False}]
+
+
+@pytest.mark.asyncio
+async def test_settings_seed_honours_an_explicitly_empty_orcarouter_prefix_list(async_client, monkeypatch):
+    """Clearing the variable is the escape hatch for an OmniRoute ``orcarouter/`` owner.
+
+    Seeding an active ``orcarouter/`` prefix anyway made the next settings PUT
+    fail closed with 400 ``sidecar_routing_conflict`` - the failure the migration
+    seeding rule already removed.
+    """
+
+    await _reseed_settings_row(monkeypatch, "")
+
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    assert response.json()["orcarouterSidecarModelPrefixes"] == []
+
+    claimed = await async_client.put(
+        "/api/settings",
+        json={"omnirouteSidecarModelPrefixes": [{"prefix": "orcarouter/", "strip": False}]},
+    )
+
+    assert claimed.status_code == 200
+    assert claimed.json()["omnirouteSidecarModelPrefixes"] == [{"prefix": "orcarouter/", "strip": False}]
+
+
 @pytest.mark.asyncio
 async def test_settings_full_put_rejects_conflicting_sticky_threshold_aliases(async_client):
     response = await async_client.get("/api/settings")

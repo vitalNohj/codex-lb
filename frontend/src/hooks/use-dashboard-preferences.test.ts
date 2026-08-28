@@ -98,9 +98,16 @@ describe("useDashboardPreferencesStore", () => {
       cliproxy: true,
       openrouter: true,
       omniroute: true,
+      orcarouter: true,
     });
     expect(window.localStorage.getItem("codex-lb-dashboard-account-type-visibility")).toBe(
-      JSON.stringify({ codex: true, cliproxy: true, openrouter: true, omniroute: true }),
+      JSON.stringify({
+        codex: true,
+        cliproxy: true,
+        openrouter: true,
+        orcarouter: true,
+        omniroute: true,
+      }),
     );
   });
 
@@ -114,10 +121,35 @@ describe("useDashboardPreferencesStore", () => {
       cliproxy: true,
       openrouter: false,
       omniroute: true,
+      orcarouter: true,
     });
     expect(window.localStorage.getItem("codex-lb-dashboard-account-type-visibility")).toBe(
-      JSON.stringify({ codex: true, cliproxy: true, openrouter: false, omniroute: true }),
+      JSON.stringify({
+        codex: true,
+        cliproxy: true,
+        openrouter: false,
+        orcarouter: true,
+        omniroute: true,
+      }),
     );
+  });
+
+  it("hydrates preferences persisted before the orcarouter key existed without resetting other toggles", async () => {
+    window.localStorage.setItem(
+      "codex-lb-dashboard-account-type-visibility",
+      JSON.stringify({ codex: true, cliproxy: false, openrouter: false, omniroute: true }),
+    );
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility).toEqual({
+      codex: true,
+      cliproxy: false,
+      openrouter: false,
+      omniroute: true,
+      orcarouter: true,
+    });
   });
 
   it("reads stored account type visibility on init and fills missing keys", async () => {
@@ -134,6 +166,7 @@ describe("useDashboardPreferencesStore", () => {
       cliproxy: true,
       openrouter: true,
       omniroute: true,
+      orcarouter: true,
     });
   });
 

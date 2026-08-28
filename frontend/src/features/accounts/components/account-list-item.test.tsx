@@ -248,6 +248,65 @@ describe("AccountListItem", () => {
     expect(screen.queryByText("99+")).not.toBeInTheDocument();
   });
 
+  function renderSynthetic(provider: string) {
+    const account = createAccountSummary({
+      accountId: `acc_${provider}`,
+      displayName: provider,
+      email: `${provider}@example.com`,
+      synthetic: true,
+      provider,
+      healthStatus: "healthy",
+      modelCount: 7,
+    });
+
+    render(<AccountListItem account={account} selected={false} onSelect={vi.fn()} />);
+  }
+
+  // The 5h/Weekly subscription bars are Claude-only, selected by an allowlist on
+  // provider === "claude" rather than by excluding each known non-Claude
+  // provider, so a provider added later cannot inherit them by default.
+  it.each(["openrouter", "orcarouter", "omniroute", "ollama", "newprovider"])(
+    "hides the Claude subscription quota bars for the synthetic %s account",
+    (provider) => {
+      renderSynthetic(provider);
+
+      expect(screen.getByText("Connection")).toBeInTheDocument();
+      expect(screen.queryByText(/^5h /)).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Weekly /)).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps the Claude subscription quota bars for a synthetic Claude account", () => {
+    renderSynthetic("claude");
+
+    expect(screen.getByText(/^5h /)).toBeInTheDocument();
+    expect(screen.getByText(/^Weekly /)).toBeInTheDocument();
+  });
+
+  // Quota and Models are generic sidecar status rows, not Claude-only: they are
+  // hidden for the hosted aggregators and shown for everything else.
+  it.each(["claude", "ollama", "newprovider"])(
+    "renders the generic Quota and Models rows for the synthetic %s account",
+    (provider) => {
+      renderSynthetic(provider);
+
+      expect(screen.getByText("Quota")).toBeInTheDocument();
+      expect(screen.getByText("Models")).toBeInTheDocument();
+      expect(screen.getByText("7")).toBeInTheDocument();
+    },
+  );
+
+  it.each(["openrouter", "orcarouter", "omniroute"])(
+    "hides the generic Quota and Models rows for the synthetic %s account",
+    (provider) => {
+      renderSynthetic(provider);
+
+      expect(screen.getByText("Connection")).toBeInTheDocument();
+      expect(screen.queryByText("Quota")).not.toBeInTheDocument();
+      expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    },
+  );
+
   it("hides the reset-credit badge when badge display is disabled", () => {
     const account = createAccountSummary({ availableResetCredits: 3 });
 

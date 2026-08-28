@@ -37,6 +37,7 @@ from app.modules.oauth.service import OauthService
 from app.modules.ollama_sidecar.service import OllamaSidecarService
 from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
 from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
+from app.modules.orcarouter_sidecar.service import OrcaRouterSidecarService
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.proxy.service import ProxyService
 from app.modules.proxy.sticky_repository import StickySessionsRepository
@@ -136,6 +137,13 @@ class OpenRouterSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OpenRouterSidecarService
+
+
+@dataclass(slots=True)
+class OrcaRouterSidecarContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: OrcaRouterSidecarService
 
 
 @dataclass(slots=True)
@@ -349,6 +357,14 @@ def get_openrouter_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OpenRouterSidecarService(settings_repository)
     return OpenRouterSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_orcarouter_sidecar_context(
+    session: AsyncSession = Depends(get_session),
+) -> OrcaRouterSidecarContext:
+    settings_repository = SettingsRepository(session)
+    service = OrcaRouterSidecarService(settings_repository)
+    return OrcaRouterSidecarContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_omniroute_sidecar_context(
