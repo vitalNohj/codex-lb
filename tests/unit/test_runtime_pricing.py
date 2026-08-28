@@ -258,10 +258,10 @@ def test_owner_refresh_after_another_provider_claims_nothing_keeps_ownership() -
 def test_owner_that_stops_listing_an_id_releases_the_unqualified_entry() -> None:
     """Ownership must not outlive the listing that created it.
 
-    ``update_models`` receives a complete ``/models`` response, so an id the
-    owner no longer publishes is genuinely gone. Merging the provider key space
-    made the owner look like a live publisher forever, which froze its last
-    price in the unqualified overlay that OmniRoute and Ollama dispatch read.
+    ``update_models`` receives the owner's current catalogue, so an id the owner
+    no longer lists is gone from that source. Merging the provider key space made
+    the owner look like a live publisher forever, which froze its last price in
+    the unqualified overlay that OmniRoute and Ollama dispatch read.
     """
 
     registry = get_runtime_pricing_registry()
@@ -299,8 +299,8 @@ def test_delisted_id_no_other_provider_publishes_resolves_to_no_price() -> None:
 
     Releasing ownership alone left the last value in the unqualified overlay, so
     ``_log_omniroute_request`` and ``_log_ollama_request`` kept persisting a
-    ``reference_cost_usd`` that no live listing backed. An absent price must stay
-    absent rather than be inherited from a retired listing.
+    ``reference_cost_usd`` that no live listing backed. An id no source currently
+    lists must resolve to no price rather than a retired one.
     """
 
     registry = get_runtime_pricing_registry()
@@ -330,32 +330,97 @@ def test_delisted_id_no_other_provider_publishes_resolves_to_no_price() -> None:
     assert kept.input_per_1m == pytest.approx(4.0)
 
 
-def test_refresh_that_prices_nothing_releases_and_evicts_that_providers_ids() -> None:
-    """A complete listing with zero priced entries is still authoritative.
+def test_listed_id_whose_price_stops_parsing_keeps_its_last_parsed_value() -> None:
+    """An upstream pricing-shape change is not a delisting.
 
-    ``update_models`` used to return early whenever a refresh yielded no priced
-    entries -- an empty ``data`` list, or entries whose ``pricing`` object failed
-    to parse -- so the provider's key space was never replaced and its stale
-    claims survived, still blocking a second provider from publishing the id.
+    Eviction used to key on the priced subset of a refresh, so a listing whose
+    ``pricing`` objects all failed to parse read as an authoritative empty
+    catalogue and wiped that source's entire runtime price set, zeroing every
+    savings figure derived from it. The source still lists the id, so its last
+    successfully parsed price must survive.
     """
 
     registry = get_runtime_pricing_registry()
     registry.update_models(
-        [("vendor/unparseable", ModelPrice(input_per_1m=10.0, output_per_1m=20.0))],
+        [
+            ("vendor/unparseable", ModelPrice(input_per_1m=10.0, output_per_1m=20.0)),
+            ("vendor/also-listed", ModelPrice(input_per_1m=3.0, output_per_1m=6.0)),
+        ],
         provider="orcarouter",
     )
-    # The next refresh returns entries whose pricing object did not parse.
-    registry.update_models([("vendor/unparseable", None)], provider="orcarouter")
-
-    assert get_reference_pricing_for_model("vendor/unparseable") is None
-    assert get_reference_pricing_for_model("vendor/unparseable", provider="orcarouter") is None
-
+    # The next refresh still lists both ids, but upstream renamed the pricing
+    # fields, so every entry parses to no price.
     registry.update_models(
-        [("vendor/unparseable", ModelPrice(input_per_1m=1.0, output_per_1m=2.0))],
-        provider="openrouter",
+        [("vendor/unparseable", None), ("vendor/also-listed", None)],
+        provider="orcarouter",
     )
 
     unqualified = get_reference_pricing_for_model("vendor/unparseable")
+    assert unqualified is not None
+    assert unqualified.input_per_1m == pytest.approx(10.0)
+    assert unqualified.output_per_1m == pytest.approx(20.0)
+    owner_price = get_reference_pricing_for_model("vendor/unparseable", provider="orcarouter")
+    assert owner_price is not None
+    assert owner_price.input_per_1m == pytest.approx(10.0)
+    sibling = get_reference_pricing_for_model("vendor/also-listed", provider="orcarouter")
+    assert sibling is not None
+    assert sibling.input_per_1m == pytest.approx(3.0)
+
+
+def test_id_listed_only_with_an_unparseable_price_never_gains_a_price() -> None:
+    """Preserving a last parsed value must not invent one that never existed."""
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models([("vendor/never-priced", None)], provider="orcarouter")
+
+    assert get_reference_pricing_for_model("vendor/never-priced") is None
+    assert get_reference_pricing_for_model("vendor/never-priced", provider="orcarouter") is None
+
+
+def test_listed_id_with_a_changed_price_is_replaced_immediately() -> None:
+    """A newer authoritative price always wins for its own source."""
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/repriced", ModelPrice(input_per_1m=10.0, output_per_1m=20.0))],
+        provider="orcarouter",
+    )
+    registry.update_models(
+        [("vendor/repriced", ModelPrice(input_per_1m=2.0, output_per_1m=4.0))],
+        provider="orcarouter",
+    )
+
+    owner_price = get_reference_pricing_for_model("vendor/repriced", provider="orcarouter")
+    assert owner_price is not None
+    assert owner_price.input_per_1m == pytest.approx(2.0)
+    assert owner_price.output_per_1m == pytest.approx(4.0)
+    unqualified = get_reference_pricing_for_model("vendor/repriced")
+    assert unqualified is not None
+    assert unqualified.input_per_1m == pytest.approx(2.0)
+
+
+def test_a_source_that_stops_listing_an_id_removes_only_its_own_entry() -> None:
+    """Dropping an id from one source says nothing about another source."""
+
+    registry = get_runtime_pricing_registry()
+    registry.update_models(
+        [("vendor/two-sources", ModelPrice(input_per_1m=9.0, output_per_1m=9.0))],
+        provider="orcarouter",
+    )
+    registry.update_models(
+        [("vendor/two-sources", ModelPrice(input_per_1m=1.0, output_per_1m=1.0))],
+        provider="openrouter",
+    )
+    # OrcaRouter (the unqualified owner) stops listing it entirely.
+    registry.update_models([("vendor/orca-other", None)], provider="orcarouter")
+
+    orcarouter_price = get_reference_pricing_for_model("vendor/two-sources", provider="orcarouter")
+    assert orcarouter_price is not None
+    assert orcarouter_price.input_per_1m == pytest.approx(1.0)
+    openrouter_price = get_reference_pricing_for_model("vendor/two-sources", provider="openrouter")
+    assert openrouter_price is not None
+    assert openrouter_price.input_per_1m == pytest.approx(1.0)
+    unqualified = get_reference_pricing_for_model("vendor/two-sources")
     assert unqualified is not None
     assert unqualified.input_per_1m == pytest.approx(1.0)
 

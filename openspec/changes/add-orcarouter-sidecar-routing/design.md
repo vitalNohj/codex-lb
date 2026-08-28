@@ -15,7 +15,7 @@ OrcaRouter is a first-class HTTP sidecar cloned from the OpenRouter aiohttp clie
 | DB/API prefix | `orcarouter_sidecar_*` |
 | Frontend camelCase | `orcarouterSidecar*` |
 | Default base URL | `https://api.orcarouter.ai/v1` |
-| Seeded prefix | `[{"prefix":"orcarouter/","strip":false}]` |
+| Seeded prefix (fresh install only) | `[{"prefix":"orcarouter/","strip":false}]` |
 | User-Agent | `codex-lb/orcarouter-sidecar` |
 | Referer | `https://github.com/vitalNohj/codex-lb` |
 | X-Title | `codex-lb` |
@@ -33,7 +33,7 @@ Bearer `sk-orca-…` is required. Missing key: skip network; dashboard status is
 
 Headers on every request: `User-Agent`, `HTTP-Referer`, `X-Title`, plus `Authorization` when a key is stored.
 
-If `/models` returns OpenRouter-shaped `pricing` objects, parse them into the runtime pricing registry under `provider="orcarouter"`. OrcaRouter and OpenRouter both list ids such as `deepseek/deepseek-chat` at different prices, so a provider-qualified lookup must return that provider's own price and an OrcaRouter refresh must not redefine a shared id in the unqualified overlay that the provider-less OmniRoute and Ollama callers read; `app/core/usage/runtime_pricing.py` owns that rule. A `/models` response is an authoritative complete listing (the client raises instead of recording on a failed or unparseable refresh), so it replaces that provider's key space, and an id the provider stops publishing is evicted from the unqualified overlay unless another provider currently lists it. A delisted model therefore has no runtime reference price rather than a retired one. Do not add invented rows to `DEFAULT_PRICING_MODELS`. Unknown models log `cost_usd = null`. Models ending in `-free` still go through `is_known_free_model`.
+If `/models` returns OpenRouter-shaped `pricing` objects, parse them into the runtime pricing registry under `provider="orcarouter"`. OrcaRouter and OpenRouter both list ids such as `deepseek/deepseek-chat` at different prices, so a provider-qualified lookup must return that provider's own price and an OrcaRouter refresh must not redefine a shared id in the unqualified overlay that the provider-less OmniRoute and Ollama callers read; `app/core/usage/runtime_pricing.py` owns that rule. A `/models` response is that source's current catalogue snapshot and never a statement that a model is gone everywhere (the client raises instead of recording on transport, HTTP, or response-shape failure). It replaces that source's key space keyed on the ids the response actually listed, not on the subset that produced a usable price: an id the source stops listing is dropped from that source and from the unqualified overlay unless another source currently lists it, while an id the source still lists but prices in an unparseable shape keeps its last successfully parsed value. An id no source currently lists therefore has no runtime reference price rather than a retired one, and an upstream pricing-shape change cannot wipe a source's prices. Do not add invented rows to `DEFAULT_PRICING_MODELS`. Unknown models log `cost_usd = null`. Models ending in `-free` still go through `is_known_free_model`.
 
 ## Routing
 
@@ -47,7 +47,7 @@ Chat Completions only. `/v1/responses` is not dispatched to OrcaRouter. Unique p
 
 ## Persistence
 
-Idempotent Alembic column adds cloned from the Ollama dashboard-settings migration, parented on the live head `20260818_000000_backfill_claude_opus_5_sonnet_5_costs`. Prefix JSON server default is `[{"prefix":"orcarouter/","strip":false}]`. `enabled` defaults false. Downgrade drops only the new columns.
+Idempotent Alembic column adds cloned from the Ollama dashboard-settings migration, parented on the live head `20260818_000000_backfill_claude_opus_5_sonnet_5_costs`. Prefix JSON server default is `[]`, so existing rows are never backfilled with an active `orcarouter/` prefix that would collide with a deployment where OmniRoute already owns it; the seeded `[{"prefix":"orcarouter/","strip":false}]` is applied only on a fresh install (`_seed_fresh_install_prefixes`). `enabled` defaults false. Downgrade drops only the new columns.
 
 ## UI
 
