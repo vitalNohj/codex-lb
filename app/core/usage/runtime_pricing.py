@@ -11,7 +11,13 @@ both OpenRouter and OrcaRouter) at different list prices, so entries are also
 qualified by the provider that discovered them and a lookup resolves against the
 provider that served the request. The unqualified overlay stays as the fallback
 for callers that cannot name a provider; see :meth:`RuntimePricingRegistry.update_models`
-for how ownership of a shared id is assigned there.
+for how ownership of a shared id is assigned and released there.
+
+Every price served by this overlay is backed by a live listing: an id a provider
+stops publishing is evicted rather than kept at its last known value. The one
+case this cannot cover is a provider that stops refreshing altogether (a
+disabled integration never calls ``list_models`` again), so its already-recorded
+prices stay until the process restarts.
 
 A request served by a free model (``...:free``) records ``cost_usd = 0`` but a
 positive reference cost resolved from the paid variant, so dashboards can show
@@ -53,49 +59,90 @@ class RuntimePricingRegistry:
         *,
         provider: str | None = None,
     ) -> None:
-        """Merge runtime pricing for the given ``(model_id, pricing)`` pairs.
+        """Record runtime pricing for the given ``(model_id, pricing)`` pairs.
 
         ``provider`` names the integration whose ``/models`` listing supplied the
         prices. They are recorded in that provider's own key space so a second
         provider listing the same id cannot redefine them. Entries with ``None``
-        pricing are ignored (no runtime price known).
+        pricing carry no runtime price and count as unpublished by that provider.
+
+        A named ``provider`` call is treated as an authoritative complete
+        listing: the callers (:meth:`OpenRouterSidecarClient.list_models` and
+        :meth:`OrcaRouterSidecarClient.list_models`) only reach this method after
+        a whole ``/models`` response parsed successfully, and they raise instead
+        of calling it on transport or protocol failure, so a failed refresh can
+        never be mistaken for an empty catalogue. A refresh that authoritatively
+        prices nothing is still a complete listing and releases everything that
+        provider had claimed.
+
+        Without a ``provider`` the pairs are merged into the unqualified overlay
+        only; a partial update carries no listing authority, so nothing is
+        evicted.
         """
         updates = {model_id.strip().lower(): price for model_id, price in models if model_id and price is not None}
-        if not updates:
-            return
         provider_key = _normalize_key(provider)
-        with self._lock:
-            if provider_key:
-                # A ``/models`` response is a complete listing, so it replaces
-                # this provider's key space rather than merging into it. Merging
-                # let a provider appear to still publish an id it had dropped,
-                # which kept ownership below alive forever.
-                self._pricing_by_provider[provider_key] = dict(updates)
-                # The unqualified overlay is a compatibility fallback for callers
-                # that cannot name a provider (OmniRoute and Ollama dispatch).
-                # The first provider to publish an id owns the entry and keeps it
-                # current across its later refreshes; a second provider listing
-                # the same id cannot redefine it while the owner still publishes
-                # it. Letting whichever refresh ran last win made those callers
-                # persist another provider's list price as ``reference_cost_usd``.
-                for model_id, price in updates.items():
-                    owner = self._pricing_owner.get(model_id)
-                    # Ownership lasts only while the owner still lists the id.
-                    # Otherwise a disabled provider's last price stayed frozen in
-                    # the overlay for the process lifetime and the provider-less
-                    # callers kept persisting that dead value.
-                    if (
-                        owner is not None
-                        and owner != provider_key
-                        and model_id in self._pricing_by_provider.get(owner, {})
-                    ):
-                        continue
-                    self._pricing[model_id] = price
-                    self._pricing_owner[model_id] = provider_key
-            else:
+        if not provider_key:
+            if not updates:
+                return
+            with self._lock:
                 self._pricing.update(updates)
                 for model_id in updates:
                     self._pricing_owner.pop(model_id, None)
+            return
+        with self._lock:
+            # A ``/models`` response is a complete listing, so it replaces this
+            # provider's key space rather than merging into it. Merging let a
+            # provider appear to still publish an id it had dropped, which kept
+            # ownership below alive forever. This runs before any early exit so
+            # a listing that prices nothing still releases the provider's claims.
+            self._pricing_by_provider[provider_key] = dict(updates)
+            # The unqualified overlay is a compatibility fallback for callers
+            # that cannot name a provider (OmniRoute and Ollama dispatch).
+            # The first provider to publish an id owns the entry and keeps it
+            # current across its later refreshes; a second provider listing
+            # the same id cannot redefine it while the owner still publishes
+            # it. Letting whichever refresh ran last win made those callers
+            # persist another provider's list price as ``reference_cost_usd``.
+            for model_id, price in updates.items():
+                owner = self._pricing_owner.get(model_id)
+                if owner is not None and owner != provider_key and model_id in self._pricing_by_provider.get(owner, {}):
+                    continue
+                self._pricing[model_id] = price
+                self._pricing_owner[model_id] = provider_key
+            self._evict_delisted(provider_key, updates)
+
+    def _evict_delisted(self, provider_key: str, listed: Mapping[str, ModelPrice]) -> None:
+        """Drop overlay entries ``provider_key`` owns but no longer publishes.
+
+        Releasing ownership alone left the dead value in place whenever no other
+        provider republished the id, so the provider-less callers kept persisting
+        a price no live listing backed. An id another provider still publishes is
+        handed to that provider instead of being dropped. Caller holds the lock.
+        """
+        stale = [
+            model_id
+            for model_id, owner in self._pricing_owner.items()
+            if owner == provider_key and model_id not in listed
+        ]
+        for model_id in stale:
+            successor = self._live_publisher(model_id, exclude=provider_key)
+            if successor is None:
+                self._pricing.pop(model_id, None)
+                self._pricing_owner.pop(model_id, None)
+                continue
+            new_owner, price = successor
+            self._pricing[model_id] = price
+            self._pricing_owner[model_id] = new_owner
+
+    def _live_publisher(self, model_id: str, *, exclude: str) -> tuple[str, ModelPrice] | None:
+        """First provider other than ``exclude`` whose current listing has ``model_id``."""
+        for candidate, prices in self._pricing_by_provider.items():
+            if candidate == exclude:
+                continue
+            price = prices.get(model_id)
+            if price is not None:
+                return candidate, price
+        return None
 
     def runtime_pricing_for_model(self, model: str, *, provider: str | None = None) -> ModelPrice | None:
         if not model:
