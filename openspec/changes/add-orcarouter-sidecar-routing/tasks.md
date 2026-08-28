@@ -6,9 +6,10 @@
 ## 2. Database and env defaults
 
 - [x] 2.1 Add OrcaRouter columns to `DashboardSettings`.
-- [x] 2.2 Create an idempotent Alembic migration parented on the live head, seeded `orcarouter/` strip-off, `enabled=false`. Downgrade drops only the new columns.
+- [x] 2.2 Create an idempotent Alembic migration parented on the live head, prefix JSON server default `[]` with the `orcarouter/` strip-off seed applied on fresh install only, `enabled=false`. Downgrade drops only the new columns.
 - [x] 2.3 Add env defaults in `app/core/config/settings.py` and `.env.example`.
 - [x] 2.4 Seed prefixes in the settings repository create path.
+- [x] 2.5 Derive the migration's fresh-install prefix seed from `CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES` via the shared helper, honouring an explicitly empty value.
 
 ## 3. Settings module
 
@@ -22,6 +23,7 @@
 - [x] 4.1 Copy `openrouter_sidecar.py` to `orcarouter_sidecar.py` (aiohttp GET /models + POST /chat/completions).
 - [x] 4.2 Send User-Agent, HTTP-Referer, X-Title, and Bearer key. Default `owned_by` is `orcarouter`.
 - [x] 4.3 Add unit tests for headers, models parse, errors, and cache.
+- [x] 4.4 Record parsed prices under `provider="orcarouter"`, and make a `/models` refresh replace that provider's key space so a delisted id no longer resolves to a retired price.
 
 ## 5. Dispatch and routing
 

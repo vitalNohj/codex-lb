@@ -6,7 +6,7 @@ The dashboard settings API MUST persist OrcaRouter enabled state, base URL, API 
 
 The API key MUST be encrypted at rest. Settings responses MUST expose whether a key is configured and MUST NOT return the raw key.
 
-Default base URL MUST be `https://api.orcarouter.ai/v1`. New rows MUST seed prefixes `[{"prefix":"orcarouter/","strip":false}]` and MUST NOT seed `openai/`, `google/`, `anthropic/`, or `deepseek/`. Enabled MUST default to false.
+Default base URL MUST be `https://api.orcarouter.ai/v1`. New rows MUST seed the prefixes the operator configured, which default to `[{"prefix":"orcarouter/","strip":false}]` and MUST seed nothing when `CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES` is set to an explicitly empty value. The seed MUST NOT include `openai/`, `google/`, `anthropic/`, or `deepseek/`. Enabled MUST default to false. `specs/database-migrations/spec.md` owns the rule that this seed reaches fresh installs only.
 
 #### Scenario: Save and reload OrcaRouter settings
 

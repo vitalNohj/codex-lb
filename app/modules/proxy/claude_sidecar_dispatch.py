@@ -1346,9 +1346,11 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     # ``usage.cost_usd`` (docs.orcarouter.ai/operations/per-request-cost) and
     # returns it only when the request opted in via ``X-OrcaRouter-Include-Cost``.
     # Reading ``cost`` first keeps OpenRouter behaviour byte-identical. This
-    # helper is shared, so the ``cost_usd`` fallback also applies to the Claude
-    # and OmniRoute dispatch paths, which now persist a ``usage.cost_usd`` they
-    # previously ignored.
+    # helper is shared, so the ``cost_usd`` fallback also reaches the OmniRoute
+    # dispatch path, which logs ``SidecarUsage.cost_usd`` and therefore now
+    # persists a ``usage.cost_usd`` it previously ignored. The Claude path
+    # parses the field but never forwards it to ``add_log``, so its request-log
+    # cost stays pricing-table derived.
     cost_usd = _float_field(usage, "cost")
     if cost_usd is None:
         cost_usd = _float_field(usage, "cost_usd")

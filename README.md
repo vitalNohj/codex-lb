@@ -164,9 +164,9 @@ This fork separates actual spend from reference value:
 - `reference_cost_usd` is the paid-equivalent price when codex-lb can resolve one.
 - `savings_usd` is `reference_cost_usd - cost_usd`, floored at zero.
 
-Free models accessed through OpenRouter or OmniRoute, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
+Free models accessed through OpenRouter, OrcaRouter, or OmniRoute, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
 
-When a provider reports what it billed for a request (OpenRouter's `usage.cost`, OrcaRouter's `usage.cost_usd`), that figure is stored as-is rather than re-derived from catalog list prices, so tiered pricing, peak multipliers, and cache discounts stay accurate.
+When an integration reports what it billed for a request (OpenRouter's `usage.cost`, OrcaRouter's `usage.cost_usd`, or either field from OmniRoute), that figure is stored as-is rather than re-derived from catalog list prices, so tiered pricing, peak multipliers, and cache discounts stay accurate. Reference cost comes only from the `/models` listings codex-lb already fetches, never from extra price lookups: once an integration stops listing a model and no other integration lists it, the retired price is dropped rather than kept, so reference cost falls back to the built-in pricing table or stays null.
 
 ## Cursor And Codex Compatibility
 

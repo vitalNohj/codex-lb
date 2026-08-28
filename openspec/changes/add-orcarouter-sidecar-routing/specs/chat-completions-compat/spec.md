@@ -46,7 +46,7 @@ OrcaRouter chat requests MUST opt in to the billed figure by sending `X-OrcaRout
 
 The stored cost MUST be the amount OrcaRouter reports, never re-derived from `/models` list prices: the billed amount folds in tiered pricing, peak multipliers, cache ratios, and minimum-quota rounding. When the field is absent, `cost_usd` MUST stay null rather than be inferred as zero.
 
-OpenRouter's `usage.cost` MUST keep precedence so OpenRouter behavior is unchanged.
+OpenRouter's `usage.cost` MUST keep precedence so OpenRouter behavior is unchanged. Usage extraction is shared, so the `usage.cost_usd` fallback also reaches the OmniRoute chat path: an OmniRoute upstream that reports `usage.cost_usd` now persists it instead of leaving `cost_usd` null.
 
 #### Scenario: Non-streaming billed cost reaches the request log
 
