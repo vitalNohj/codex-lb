@@ -1345,7 +1345,10 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     # OpenRouter reports the billed amount as ``usage.cost``; OrcaRouter uses
     # ``usage.cost_usd`` (docs.orcarouter.ai/operations/per-request-cost) and
     # returns it only when the request opted in via ``X-OrcaRouter-Include-Cost``.
-    # Reading ``cost`` first keeps OpenRouter behaviour byte-identical.
+    # Reading ``cost`` first keeps OpenRouter behaviour byte-identical. This
+    # helper is shared, so the ``cost_usd`` fallback also applies to the Claude
+    # and OmniRoute dispatch paths, which now persist a ``usage.cost_usd`` they
+    # previously ignored.
     cost_usd = _float_field(usage, "cost")
     if cost_usd is None:
         cost_usd = _float_field(usage, "cost_usd")

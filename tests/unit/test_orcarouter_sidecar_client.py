@@ -104,7 +104,10 @@ async def test_list_models_sends_bearer_key_and_parses_models(monkeypatch) -> No
     session = _FakeSession(
         get_response=_FakeResponse(
             200,
-            '{"object":"list","data":[{"id":"orcarouter/auto","created":123,"owned_by":"deepseek"}]}',
+            '{"object":"list","data":['
+            '{"id":"orcarouter/auto","created":123,"owned_by":"deepseek"},'
+            '{"id":"orcarouter/unowned","created":456}'
+            "]}",
         )
     )
     monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
@@ -117,9 +120,12 @@ async def test_list_models_sends_bearer_key_and_parses_models(monkeypatch) -> No
     assert session.last_headers["User-Agent"] == "codex-lb/orcarouter-sidecar"
     assert session.last_headers["HTTP-Referer"] == "https://github.com/vitalNohj/codex-lb"
     assert session.last_headers["X-Title"] == "codex-lb"
-    assert [model.id for model in models] == ["orcarouter/auto"]
+    assert [model.id for model in models] == ["orcarouter/auto", "orcarouter/unowned"]
     assert models[0].created == 123
-    assert models[0].owned_by == "deepseek" or models[0].owned_by == "orcarouter"
+    # The upstream owner is preserved when supplied; ``orcarouter`` is only the
+    # fallback for an entry that names no owner.
+    assert models[0].owned_by == "deepseek"
+    assert models[1].owned_by == "orcarouter"
 
 
 @pytest.mark.asyncio
@@ -153,8 +159,13 @@ async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> N
     assert by_id["vendor/model-z"].pricing is None
 
     registry = get_runtime_pricing_registry()
-    assert registry.runtime_pricing_for_model("vendor/model-x") is not None
+    recorded = registry.runtime_pricing_for_model("vendor/model-x")
+    assert recorded is not None
+    assert recorded.input_per_1m == pytest.approx(0.8)
+    assert recorded.output_per_1m == pytest.approx(4.0)
+    assert recorded.cached_input_per_1m == pytest.approx(0.2)
     assert registry.runtime_pricing_for_model("vendor/model-y") is None
+    assert registry.runtime_pricing_for_model("vendor/model-z") is None
 
 
 @pytest.mark.asyncio
@@ -227,12 +238,16 @@ async def test_client_cache_eviction_drops_the_previous_credential_and_models(mo
     monkeypatch.setattr("app.core.clients.orcarouter_sidecar.lease_http_session", lambda: _Lease(session))
 
     stale = get_orcarouter_sidecar_client(_config(api_key="old-key"))
-    assert await stale.list_models_cached() != []
+    assert [model.id for model in await stale.list_models_cached()] == ["orcarouter/auto"]
 
     rotated = get_orcarouter_sidecar_client(_config(api_key="new-key"))
+    session.get_response = _FakeResponse(200, '{"data":[{"id":"orcarouter/rotated"}]}')
 
     assert rotated.config.api_key == "new-key"
-    assert rotated._models_cache is None
+    # The rotated client refetches instead of replaying the evicted client's
+    # cached list, and it does so with the new credential.
+    assert [model.id for model in await rotated.list_models_cached()] == ["orcarouter/rotated"]
+    assert session.last_headers["Authorization"] == "Bearer new-key"
     reset_orcarouter_sidecar_client_cache()
     assert get_orcarouter_sidecar_client(_config(api_key="new-key")) is not rotated
 
