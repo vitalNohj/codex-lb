@@ -199,6 +199,13 @@ export const RequestLogSchema = z.object({
   reasoningEffort: z.string().nullable(),
   requestedReasoningEffort: z.string().nullable().optional().default(null),
   costUsd: z.number().nullable(),
+  // Provenance of costUsd: "upstream_billed" is the amount the integration
+  // reported debiting, "catalog_calculated" is published token rates times
+  // recorded usage. Null means unknown, not billed.
+  costSource: z.string().nullable().optional().default(null),
+  // Outcome of external list-price resolution. Null for integrations that do not
+  // participate (Ollama, OmniRoute, the main proxy path).
+  priceStatus: z.string().nullable().optional().default(null),
   costBreakdown: RequestLogCostBreakdownSchema.nullable().optional().default(null),
   referenceCostUsd: z.number().nullable().optional(),
   savingsUsd: z.number().nullable().optional(),

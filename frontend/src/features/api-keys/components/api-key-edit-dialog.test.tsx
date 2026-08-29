@@ -247,7 +247,9 @@ describe("ApiKeyEditDialog", () => {
     renderWithProviders(<ControlledApiKeyEditDialog />);
 
     await user.click(await screen.findByRole("button", { name: "All models" }));
-    await user.click(await screen.findByRole("menuitemcheckbox", { name: "gpt-5.1" }));
+    // Each item renders the display name above the raw id, so the accessible
+    // name carries both. Matching the exact id alone never hits.
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: /^GPT 5\.1gpt-5\.1$/ }));
     await user.keyboard("{Escape}");
 
     expect(await screen.findByRole("dialog", { name: "Edit API key" })).toBeInTheDocument();

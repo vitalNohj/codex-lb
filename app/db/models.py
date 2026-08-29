@@ -66,6 +66,31 @@ class RequestKind(str, Enum):
     WARMUP = "warmup"
 
 
+class CostSource(str, Enum):
+    """Provenance of ``RequestLog.cost_usd``.
+
+    ``UPSTREAM_BILLED`` is an amount the serving integration reported as its own
+    debit and is authoritative actual spend. ``CATALOG_CALCULATED`` is published
+    input/output token rates multiplied by recorded token usage: deterministic
+    arithmetic over an authoritative catalog rate, but list price rather than the
+    actual debit. ``OPERATOR_CONFIGURED`` comes from a model source's own rates.
+    """
+
+    UPSTREAM_BILLED = "upstream_billed"
+    CATALOG_CALCULATED = "catalog_calculated"
+    OPERATOR_CONFIGURED = "operator_configured"
+    STATIC_TABLE = "static_table"
+
+
+class ExternalPriceStatus(str, Enum):
+    """Lifecycle of one persisted external-integration price resolution."""
+
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+    AMBIGUOUS = "ambiguous"
+    NOT_TOKEN_PRICED = "not_token_priced"
+
+
 class Account(Base):
     __tablename__ = "accounts"
 
@@ -321,6 +346,14 @@ class RequestLog(Base):
     upstream_proxy_endpoint_id: Mapped[str | None] = mapped_column(String, nullable=True)
     upstream_proxy_fallback_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     upstream_proxy_fail_closed_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Provenance for ``cost_usd``. NULL on rows written before the column
+    # existed: unknown provenance, not "billed".
+    cost_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Outcome of external-integration list-price resolution for this row, as an
+    # ``ExternalPriceStatus`` value. NULL means the row's integration does not
+    # participate in external price resolution at all (Ollama, OmniRoute, the
+    # main proxy path), which the UI renders as ``--`` rather than as a defect.
+    price_status: Mapped[str | None] = mapped_column(String, nullable=True)
     account: Mapped[Account | None] = relationship(
         "Account",
         back_populates="request_logs",
@@ -330,6 +363,56 @@ class RequestLog(Base):
         back_populates="request_logs",
         primaryjoin="foreign(RequestLog.model_source_id) == ModelSource.id",
     )
+
+
+class ExternalModelPrice(Base):
+    """One durable resolution record for an external-integration model id.
+
+    The row is keyed on ``(provider, incoming_model)`` -- the id exactly as the
+    request carried it -- so the request path is a single primary-key read and
+    never re-derives a mapping it already made. Rates are whatever the
+    authoritative catalog published; no per-model price is declared in code.
+
+    ``status`` distinguishes a usable rate from the three unusable outcomes that
+    must not be retried on every request: nothing matched, several catalog models
+    matched, and the model is genuinely not token-priced. Unresolved rows carry
+    bounded backoff state so traffic cannot drive repeated lookup work.
+    """
+
+    __tablename__ = "external_model_prices"
+    __table_args__ = (
+        UniqueConstraint("provider", "incoming_model", name="uq_external_model_prices_provider_model"),
+        Index("idx_external_model_prices_retry", "status", "next_retry_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Serving integration that received the request (``orcarouter``,
+    # ``openrouter``, ``cliproxy``). Never a pricing-reference identity.
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    # Lower-cased incoming model id, exactly as routed, prefix included.
+    incoming_model: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    # Catalog identity the incoming id was mapped to, when one was chosen.
+    catalog_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Catalog that published the rates (``orcarouter``, ``openrouter``,
+    # ``anthropic``...). Distinct from ``provider``: OpenRouter is a pricing
+    # reference for ids other integrations serve.
+    catalog_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    output_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Resolution step that produced the mapping (``alias``, ``prefix-exact``,
+    # ``exact``...), retained so any recorded price is explainable.
+    resolution_step: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Free-form diagnostic: the competing candidates for an ambiguous record,
+    # or the reason a lookup failed.
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    # Consecutive failed lookups, bounding the backoff below.
+    attempt_count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    # Earliest time an unresolved record may be looked up again. NULL on a
+    # resolved record: it is never retried on the request path.
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ClaudeSidecarUsageEvent(Base):

@@ -81,6 +81,8 @@ def to_request_log_entry(
         reasoning_tokens=log.reasoning_tokens,
         cached_input_tokens=cached_input_tokens_from_log(log_like),
         cost_usd=cost_breakdown.total_usd,
+        cost_source=log.cost_source,
+        price_status=log.price_status,
         cost_breakdown=RequestLogCostBreakdown(**cost_breakdown.__dict__),
         reference_cost_usd=reference_cost_usd,
         savings_usd=savings_usd,

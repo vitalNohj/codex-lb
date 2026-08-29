@@ -21,7 +21,7 @@ from app.core.usage.types import (
 )
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
+from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, CostSource, RequestKind, RequestLog
 from app.db.session import sqlite_writer_section
 
 # CLIProxyAPI records its usage event within a couple of seconds of the
@@ -480,6 +480,8 @@ class RequestLogsRepository:
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
         cost_usd: float | None = None,
+        cost_source: str | None = None,
+        price_status: str | None = None,
         reference_cost_usd: float | None = None,
         archive_request_id: str | None = None,
     ) -> RequestLog:
@@ -548,15 +550,31 @@ class RequestLogsRepository:
                 upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
                 upstream_proxy_fallback_used=upstream_proxy_fallback_used,
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
+                price_status=price_status,
                 requested_at=requested_at or utcnow(),
             )
-            log.cost_usd = (
-                cost_usd
-                if cost_usd is not None
-                else 0.0
-                if model_source_id is not None
-                else calculated_cost_from_log(typing_cast(RequestLogLike, log))
-            )
+            # Callers that resolved a cost also state where it came from, and that
+            # answer is final: an external integration whose model stayed
+            # unresolved must record no cost rather than fall through to the
+            # static table, whose stem-matching aliases priced ids by substring
+            # and produced multiples of the real rate.
+            if cost_source is not None:
+                log.cost_usd = cost_usd
+                log.cost_source = cost_source
+            elif cost_usd is not None:
+                log.cost_usd = cost_usd
+                log.cost_source = CostSource.UPSTREAM_BILLED.value
+            elif price_status is not None:
+                # An eligible external model with no usable price. Leave the cost
+                # NULL so the UI can mark it rather than show an invented number.
+                log.cost_usd = None
+            elif model_source_id is not None:
+                log.cost_usd = 0.0
+                log.cost_source = CostSource.OPERATOR_CONFIGURED.value
+            else:
+                calculated = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                log.cost_usd = calculated
+                log.cost_source = CostSource.STATIC_TABLE.value if calculated is not None else None
             self._session.add(log)
             try:
                 await self._session.commit()

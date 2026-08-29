@@ -394,6 +394,13 @@ async def lifespan(app: FastAPI):
 
     await cache_poller.start()
 
+    # Declare how each participating integration reaches its own catalog. This is
+    # registration only: no catalog is fetched here, and nothing is scheduled.
+    # Prices are looked up lazily, once per previously unseen model id.
+    from app.modules.proxy.external_pricing_sources import register_external_pricing_sources
+
+    register_external_pricing_sources()
+
     usage_scheduler = build_usage_refresh_scheduler()
     api_key_limit_reset_scheduler = build_api_key_limit_reset_scheduler()
     model_scheduler = build_model_refresh_scheduler()

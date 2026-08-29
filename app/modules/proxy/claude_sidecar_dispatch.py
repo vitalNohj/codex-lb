@@ -72,6 +72,12 @@ from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
+# External pricing key space for the CLIProxyAPI integration. Its ids are
+# prefixed handles for other vendors' models (``cc/claude-fable-5``), so they are
+# resolved through the configured prefixes and aliases rather than by trimming
+# the prefix and hoping the remainder names a catalog model.
+CLIPROXY_PRICING_PROVIDER = "cliproxy"
+
 CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE = "claude_sidecar_cooldown"
 _CLAUDE_SIDECAR_COOLDOWN_MARKERS = ("auth_unavailable", "no auth available")
 # CLIProxyAPI cools 408/5xx Claude auths ~60s, then fail-fast 503s with
@@ -1453,6 +1459,20 @@ async def _log_sidecar_request(
     requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
+        # CLIProxyAPI reports no billed amount on the chat response, so the cost
+        # here is always a catalog-calculated list price, marked as such. Its
+        # per-account token attribution is collected separately and is untouched.
+        from app.modules.proxy.external_pricing_logging import (
+            external_request_cost,
+            usage_tokens_from_sidecar,
+        )
+
+        cost = await external_request_cost(
+            provider=CLIPROXY_PRICING_PROVIDER,
+            model=model,
+            usage=usage_tokens_from_sidecar(usage),
+            billed_cost_usd=usage.cost_usd if usage else None,
+        )
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -1473,6 +1493,9 @@ async def _log_sidecar_request(
                 api_key_id=api_key.id if api_key else None,
                 source="claude_sidecar",
                 failure_phase="sidecar" if status != "success" else None,
+                cost_usd=cost.cost_usd,
+                cost_source=cost.cost_source,
+                price_status=cost.price_status,
             )
     except Exception:
         logger.warning(

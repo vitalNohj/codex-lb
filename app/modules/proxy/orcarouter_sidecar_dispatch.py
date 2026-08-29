@@ -52,6 +52,10 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
+from app.modules.proxy.external_pricing_logging import (
+    external_request_cost,
+    usage_tokens_from_sidecar,
+)
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -439,6 +443,14 @@ async def _log_orcarouter_request(
     requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
+        # Resolved from persisted state before the write: an already-priced id
+        # costs one indexed read and never touches the network here.
+        cost = await external_request_cost(
+            provider=ORCAROUTER_PRICING_PROVIDER,
+            model=model,
+            usage=usage_tokens_from_sidecar(usage),
+            billed_cost_usd=usage.cost_usd if usage else None,
+        )
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -458,7 +470,9 @@ async def _log_orcarouter_request(
                 api_key_id=api_key.id if api_key else None,
                 source=ORCAROUTER_SIDECAR_SOURCE,
                 failure_phase="sidecar" if status != "success" else None,
-                cost_usd=usage.cost_usd if usage else None,
+                cost_usd=cost.cost_usd,
+                cost_source=cost.cost_source,
+                price_status=cost.price_status,
                 reference_cost_usd=reference_cost_from_sidecar_usage(
                     model,
                     usage,

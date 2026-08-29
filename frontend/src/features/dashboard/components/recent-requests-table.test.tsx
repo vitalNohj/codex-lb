@@ -872,9 +872,11 @@ describe("RecentRequestsTable", () => {
 
     expect(within(dialog).getByText("Cost")).toBeInTheDocument();
     expect(costSection).toHaveTextContent("$0.01 =");
-    expect(costSection).toHaveTextContent("800 Input ($0.00)");
-    expect(costSection).toHaveTextContent("200 Cached ($0.00)");
-    expect(costSection).toHaveTextContent("400 Output ($0.00)");
+    // Sub-cent segments render at extra precision so a real cost is not rounded
+    // away to "$0.00" (formatCurrency's precise branch).
+    expect(costSection).toHaveTextContent("800 Input ($0.004)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.002)");
+    expect(costSection).toHaveTextContent("400 Output ($0.004)");
   });
 
   it("shows the full user agent in request details when present", () => {
@@ -1101,8 +1103,8 @@ describe("RecentRequestsTable", () => {
 
     expect(within(dialog).getByText("Cost")).toBeInTheDocument();
     expect(costSection).toHaveTextContent("$0.01 =");
-    expect(costSection).toHaveTextContent("500 Input ($0.01)");
-    expect(costSection).toHaveTextContent("200 Cached ($0.00)");
+    expect(costSection).toHaveTextContent("500 Input ($0.006)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.004)");
     expect(costSection).not.toHaveTextContent("Output");
   });
 
@@ -1158,8 +1160,8 @@ describe("RecentRequestsTable", () => {
 
     expect(within(dialog).getByText("Cost")).toBeInTheDocument();
     expect(costSection).not.toHaveTextContent("=");
-    expect(costSection).toHaveTextContent("800 Input ($0.01)");
-    expect(costSection).toHaveTextContent("200 Cached ($0.00)");
+    expect(costSection).toHaveTextContent("800 Input ($0.006)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.004)");
     expect(costSection).not.toHaveTextContent("Output");
   });
 
@@ -1418,6 +1420,7 @@ describe("RecentRequestsTable", () => {
             errorCode: null,
             errorMessage: null,
             ...NULL_FAILURE_METADATA,
+            conversationId: "conv_plain_text_render",
             tokens: 1,
             inputTokens: 1,
             outputTokens: 0,
@@ -1548,5 +1551,74 @@ describe("RecentRequestsTable", () => {
     expect(textEl.tagName).toBe("P");
     expect(textEl).toHaveClass("truncate");
     expect(textEl).toHaveAttribute("title", longId);
+  });
+
+  describe("cost column price markers", () => {
+    const renderCost = (overrides: Partial<RequestLog>) => {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[]}
+          requests={[{ ...VIEW_MODE_REQUEST, ...overrides }]}
+        />,
+      );
+    };
+
+    it("marks an eligible model that stayed unresolved with !! and explains why", () => {
+      renderCost({ costUsd: null, costSource: null, priceStatus: "unresolved" });
+
+      const marker = screen.getByText("!!");
+      expect(marker).toBeInTheDocument();
+      expect(marker).toHaveAttribute("title", expect.stringContaining("No published price"));
+    });
+
+    it("marks an ambiguous model with !! and names the ambiguity", () => {
+      renderCost({ costUsd: null, costSource: null, priceStatus: "ambiguous" });
+
+      const marker = screen.getByText("!!");
+      expect(marker).toHaveAttribute("title", expect.stringContaining("more than one catalog entry"));
+    });
+
+    it("keeps -- for an integration that is not externally priced", () => {
+      // Ollama and OmniRoute rows carry no price status at all. A marker here
+      // would report a defect where none exists.
+      renderCost({ costUsd: null, costSource: null, priceStatus: null });
+
+      expect(screen.queryByText("!!")).not.toBeInTheDocument();
+      expect(screen.getAllByText("--").length).toBeGreaterThan(0);
+    });
+
+    it("keeps -- for a model the catalog lists without a per-token price", () => {
+      renderCost({ costUsd: null, costSource: null, priceStatus: "not_token_priced" });
+
+      expect(screen.queryByText("!!")).not.toBeInTheDocument();
+    });
+
+    it("keeps -- when a priced model reported no token usage", () => {
+      renderCost({
+        costUsd: null,
+        costSource: null,
+        priceStatus: "resolved",
+        tokens: null,
+        inputTokens: null,
+        outputTokens: null,
+      });
+
+      expect(screen.queryByText("!!")).not.toBeInTheDocument();
+    });
+
+    it("labels a catalog-calculated cost as list price without hiding the number", () => {
+      renderCost({ costUsd: 0.25, costSource: "catalog_calculated", priceStatus: "resolved" });
+
+      const cell = screen.getByTitle(/list price/i);
+      expect(cell).toHaveTextContent("$0.25");
+    });
+
+    it("shows an upstream-billed cost with no list-price caveat", () => {
+      renderCost({ costUsd: 0.25, costSource: "upstream_billed", priceStatus: "resolved" });
+
+      expect(screen.queryByTitle(/list price/i)).not.toBeInTheDocument();
+      expect(screen.getAllByText("$0.25").length).toBeGreaterThan(0);
+    });
   });
 });
