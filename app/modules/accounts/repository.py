@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import case, delete, func, or_, select, text, update
+from sqlalchemy import and_, case, delete, func, or_, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -161,6 +161,13 @@ class AccountsRepository:
         per_request_savings = case(
             (
                 RequestLog.reference_cost_usd.is_(None),
+                0.0,
+            ),
+            (
+                # A row that participates in external price resolution and has no
+                # recorded cost has an unknown actual spend, not a zero one.
+                # Counting it as zero would report the whole reference as saved.
+                and_(RequestLog.price_status.is_not(None), RequestLog.cost_usd.is_(None)),
                 0.0,
             ),
             (savings_diff > 0.0, savings_diff),

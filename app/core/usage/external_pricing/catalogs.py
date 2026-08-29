@@ -37,21 +37,34 @@ import aiohttp
 
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
-from app.core.usage.external_pricing.resolution import Catalog, CatalogEntry
+from app.core.usage.external_pricing.providers import (
+    EXTERNAL_PRICED_PROVIDERS,
+    PROVIDER_CLIPROXY,
+    PROVIDER_OPENROUTER,
+    PROVIDER_ORCAROUTER,
+    is_external_priced_provider,
+)
+from app.core.usage.external_pricing.resolution import Catalog, CatalogEntry, UnpricedReason
 from app.core.usage.pricing import ModelPrice
 from app.core.utils.json_guards import is_json_mapping
 
 logger = logging.getLogger(__name__)
 
-# Serving integrations that participate in external price resolution. Ollama and
-# OmniRoute are excluded by design: Ollama is local inference with no published
-# external rate, and OmniRoute's routing does not identify a catalog model to
-# price. Their request-log cost stays ``--``.
-PROVIDER_OPENROUTER = "openrouter"
-PROVIDER_ORCAROUTER = "orcarouter"
-PROVIDER_CLIPROXY = "cliproxy"
-
-EXTERNAL_PRICED_PROVIDERS: frozenset[str] = frozenset({PROVIDER_OPENROUTER, PROVIDER_ORCAROUTER, PROVIDER_CLIPROXY})
+__all__ = [
+    "EXTERNAL_PRICED_PROVIDERS",
+    "PROVIDER_CLIPROXY",
+    "PROVIDER_OPENROUTER",
+    "PROVIDER_ORCAROUTER",
+    "Catalog",
+    "CatalogEntry",
+    "CatalogFetchError",
+    "catalog_from_sidecar_models",
+    "fetch_openrouter_catalog",
+    "is_external_priced_provider",
+    "order_catalogs",
+    "parse_openai_style_catalog",
+    "parse_per_token_pricing",
+]
 
 # Broad pricing reference. Public, unauthenticated, and structured.
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
@@ -68,10 +81,6 @@ class CatalogFetchError(RuntimeError):
     """
 
 
-def is_external_priced_provider(provider: str | None) -> bool:
-    return bool(provider) and provider.strip().lower() in EXTERNAL_PRICED_PROVIDERS
-
-
 async def fetch_openrouter_catalog(*, url: str = OPENROUTER_CATALOG_URL) -> Catalog:
     """Fetch OpenRouter's structured catalog as the broad pricing reference."""
 
@@ -86,6 +95,11 @@ def parse_openai_style_catalog(payload: JsonValue, *, source: str) -> Catalog:
     string prices. An entry that lists a model without per-token rates (per-request
     image models, per-minute audio, routers) is kept with ``price=None``: the
     listing is real and must not be retried as a fetch failure.
+
+    An entry that *does* carry a ``pricing`` block this parser could not read is
+    kept as ``UNPARSEABLE`` instead. That is not the same fact: an upstream schema
+    change would otherwise settle every model as "not token priced", clear its
+    rate, and set no retry.
     """
 
     if not is_json_mapping(payload):
@@ -100,10 +114,34 @@ def parse_openai_style_catalog(payload: JsonValue, *, source: str) -> Catalog:
         model_id = raw.get("id")
         if not isinstance(model_id, str) or not model_id.strip():
             continue
-        entries.append(CatalogEntry(model_id=model_id.strip(), price=parse_per_token_pricing(raw.get("pricing"))))
+        raw_pricing = raw.get("pricing")
+        price = parse_per_token_pricing(raw_pricing)
+        entries.append(
+            CatalogEntry(
+                model_id=model_id.strip(),
+                price=price,
+                unpriced_reason=_unpriced_reason(price, raw_pricing),
+            )
+        )
     if not entries:
         raise CatalogFetchError(f"{source} catalog listed no usable models")
     return Catalog.from_entries(source, entries)
+
+
+def _unpriced_reason(price: ModelPrice | None, raw_pricing: JsonValue) -> UnpricedReason:
+    """Whether an unpriced entry lacks rate fields or carries unreadable ones.
+
+    A catalog that publishes no ``prompt``/``completion`` keys at all has said the
+    model is not token priced. One that publishes them in a shape this build
+    cannot read has said nothing this build can act on, so the prior rate stands.
+    """
+
+    if price is not None:
+        return UnpricedReason.NO_TOKEN_RATE
+    if not is_json_mapping(raw_pricing):
+        return UnpricedReason.NO_TOKEN_RATE
+    declares_token_rates = any(key in raw_pricing for key in ("prompt", "completion"))
+    return UnpricedReason.UNPARSEABLE if declares_token_rates else UnpricedReason.NO_TOKEN_RATE
 
 
 def parse_per_token_pricing(pricing: JsonValue) -> ModelPrice | None:
@@ -146,15 +184,27 @@ def _parse_per_token_usd(value: JsonValue) -> float | None:
 
 def catalog_from_sidecar_models(
     source: str,
-    models: Sequence[tuple[str, ModelPrice | None]],
+    models: Sequence[tuple[str, ModelPrice | None, JsonValue]],
 ) -> Catalog:
     """Build a catalog from an already-fetched sidecar ``/models`` listing.
 
     Reuses the listing the serving integration fetched for routing, so resolving a
-    price costs no additional upstream call in the common case.
+    price costs no additional upstream call in the common case. The raw ``pricing``
+    payload travels with each entry so an id the sidecar listed with unreadable
+    rate fields is not mistaken for one it listed with no rates at all.
     """
 
-    return Catalog.from_entries(source, (CatalogEntry(model_id=model_id, price=price) for model_id, price in models))
+    return Catalog.from_entries(
+        source,
+        (
+            CatalogEntry(
+                model_id=model_id,
+                price=price,
+                unpriced_reason=_unpriced_reason(price, raw_pricing),
+            )
+            for model_id, price, raw_pricing in models
+        ),
+    )
 
 
 async def _fetch_json(url: str, *, source: str) -> JsonValue:

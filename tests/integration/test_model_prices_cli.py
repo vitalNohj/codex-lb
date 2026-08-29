@@ -99,10 +99,33 @@ async def test_refresh_updates_a_persisted_rate_and_reports_it(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        # SQLite reports a missing table as operational.
+        pytest.param(
+            sa_exc.OperationalError("SELECT 1", {}, Exception("no such table: external_model_prices")),
+            id="sqlite-operational",
+        ),
+        # PostgreSQL reports the same condition as UndefinedTable, a
+        # ProgrammingError. It is a sibling of OperationalError, not a subclass,
+        # so a handler catching only the latter left Postgres operators with a
+        # raw traceback for exactly the case the message exists to explain.
+        pytest.param(
+            sa_exc.ProgrammingError(
+                "SELECT 1",
+                {},
+                Exception('relation "external_model_prices" does not exist'),
+            ),
+            id="postgres-undefined-table",
+        ),
+    ],
+)
 async def test_refresh_reports_a_missing_table_as_a_diagnosable_error(
     db_setup,
     monkeypatch,
     _offline_catalogs,
+    error: Exception,
 ) -> None:
     """An unmigrated database must name the fix, not surface a raw SQL error."""
 
@@ -110,7 +133,7 @@ async def test_refresh_reports_a_missing_table_as_a_diagnosable_error(
     del _offline_catalogs
 
     async def _list_all(_self):
-        raise sa_exc.OperationalError("SELECT 1", {}, Exception("no such table: external_model_prices"))
+        raise error
 
     monkeypatch.setattr(ExternalModelPriceStore, "list_all", _list_all)
 

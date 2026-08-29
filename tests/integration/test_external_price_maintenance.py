@@ -12,6 +12,7 @@ import pytest
 from app.core.usage.external_pricing import service as pricing_service
 from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
 from app.core.usage.external_pricing.maintenance import run_maintenance_pass
+from app.core.usage.external_pricing.resolution import UnpricedReason
 from app.core.usage.external_pricing.service import (
     ServingContext,
     register_serving_context_loader,
@@ -29,6 +30,15 @@ def _catalog(source: str, entries: dict[str, ModelPrice | None]) -> Catalog:
     return Catalog.from_entries(
         source,
         [CatalogEntry(model_id=model_id, price=price) for model_id, price in entries.items()],
+    )
+
+
+def _catalog_with_unparseable(source: str, model_id: str) -> Catalog:
+    """A catalog that still lists ``model_id`` but priced it unreadably."""
+
+    return Catalog.from_entries(
+        source,
+        [CatalogEntry(model_id=model_id, price=None, unpriced_reason=UnpricedReason.UNPARSEABLE)],
     )
 
 
@@ -273,6 +283,149 @@ async def test_a_priceless_providers_record_dropped_by_the_reference_becomes_unr
     assert record is not None
     assert record.status is ExternalPriceStatus.UNRESOLVED
     assert record.price is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_reference_preserves_a_record_its_serving_catalog_dropped(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """A reference outage must not delete rates the reference itself supplied.
+
+    The record was resolved from OpenRouter precisely because OrcaRouter does not
+    list it. When OrcaRouter answers (without it, as always) and OpenRouter times
+    out, no source that could price this id actually answered, so the rate stays.
+    """
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference_times_out():
+        return None, "openrouter: failed to fetch openrouter catalog: timeout"
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference_times_out)
+    await _seed_resolved("vendor/reference-priced", ModelPrice(2.0, 4.0))
+    # OrcaRouter is reachable and, as always, does not list the id.
+    _install_catalog("orcarouter", {"vendor/orca-native": ModelPrice(1.0, 1.0)})
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 1
+    assert report.unresolved == []
+    record = await _record("vendor/reference-priced")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(2.0)
+    assert record.status is ExternalPriceStatus.RESOLVED
+
+
+@pytest.mark.asyncio
+async def test_a_reachable_reference_that_drops_a_record_still_marks_it_unresolved(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """Preservation is scoped to failures; a source that answered is authoritative."""
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference():
+        return _catalog("openrouter", {"vendor/something-else": ModelPrice(9.0, 9.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+    await _seed_resolved("vendor/reference-priced", ModelPrice(2.0, 4.0))
+    _install_catalog("orcarouter", {"vendor/orca-native": ModelPrice(1.0, 1.0)})
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 0
+    assert len(report.unresolved) == 1
+    record = await _record("vendor/reference-priced")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.UNRESOLVED
+    assert record.price is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_published_price_keeps_the_last_parsed_rate(db_setup) -> None:
+    """Carried forward from PR 24: a parse failure is not a delisting.
+
+    Settling this as "not token priced" would clear the rate, set no retry so the
+    model reads ``--`` forever, and count under "Unchanged" so the operator sees
+    no signal. One upstream schema rename would erase every rate in one pass.
+    """
+
+    del db_setup
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+
+    async def _loader(_provider: str) -> ServingContext:
+        return ServingContext(
+            catalog=_catalog_with_unparseable("orcarouter", "vendor/model-x"),
+            aliases={},
+            prefixes=(),
+        )
+
+    register_serving_context_loader("orcarouter", _loader)
+
+    report = await run_maintenance_pass()
+
+    assert len(report.preserved_unparseable) == 1
+    assert report.unchanged == 0, "a dropped rate must never be reported as unchanged"
+    assert report.unresolved == []
+
+    record = await _record("vendor/model-x")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(2.0)
+    assert record.price.output_per_1m == pytest.approx(4.0)
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.next_retry_at is not None, "the source must be re-read, not settled"
+    assert "Preserved after an unreadable published price" in report.render()
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_unpriced_model_is_still_settled_as_not_token_priced(db_setup) -> None:
+    """The distinction must not turn every unpriced listing into a retry loop."""
+
+    del db_setup
+    await _seed_resolved("vendor/router-model", ModelPrice(2.0, 4.0))
+    _install_catalog("orcarouter", {"vendor/router-model": None})
+
+    await run_maintenance_pass()
+
+    record = await _record("vendor/router-model")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.next_retry_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_never_priced_id_with_an_unreadable_price_stays_unresolved(db_setup) -> None:
+    """Preserving a last parsed value must not invent one that never existed."""
+
+    del db_setup
+    async with SessionLocal() as session:
+        await ExternalModelPriceStore(session).record_unresolved(
+            provider="orcarouter",
+            incoming_model="vendor/never-priced",
+            status=ExternalPriceStatus.UNRESOLVED,
+            detail="no catalog entry",
+        )
+
+    async def _loader(_provider: str) -> ServingContext:
+        return ServingContext(
+            catalog=_catalog_with_unparseable("orcarouter", "vendor/never-priced"),
+            aliases={},
+            prefixes=(),
+        )
+
+    register_serving_context_loader("orcarouter", _loader)
+
+    await run_maintenance_pass()
+
+    record = await _record("vendor/never-priced")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.UNRESOLVED
+    assert record.price is None
+    assert record.next_retry_at is not None
 
 
 @pytest.mark.asyncio

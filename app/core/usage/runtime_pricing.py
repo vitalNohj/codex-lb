@@ -32,6 +32,7 @@ import re
 import threading
 from collections.abc import Collection, Iterable, Mapping
 
+from app.core.usage.external_pricing.providers import is_external_priced_provider
 from app.core.usage.pricing import (
     DEFAULT_PRICING_MODELS,
     ModelPrice,
@@ -213,10 +214,20 @@ def _reference_pricing_direct(model: str, provider: str | None = None) -> ModelP
 
     The serving provider's own runtime price wins over another provider's
     listing of the same id, which in turn wins over the static built-in table.
+
+    The static table is skipped entirely for a provider that participates in
+    external price resolution. Its aliases match by substring, so it answers for
+    ids it has never heard of: ``orcarouter/gpt-4o-lookalike`` resolves to
+    ``gpt-4o``'s rate. Because an unresolved row for these providers records no
+    ``cost_usd``, that borrowed rate would become the entire savings figure on
+    the provider card -- money reported as saved on a request whose real cost is
+    unknown. Ollama and OmniRoute do not participate and keep the table.
     """
     runtime = _REGISTRY.runtime_pricing_for_model(model, provider=provider)
     if runtime is not None:
         return runtime
+    if is_external_priced_provider(provider):
+        return None
     resolved = get_pricing_for_model(model, DEFAULT_PRICING_MODELS, None)
     if resolved is None:
         return None

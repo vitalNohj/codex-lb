@@ -40,10 +40,12 @@ import {
   formatTimeLong,
 } from "@/utils/formatters";
 
-// Statuses meaning "this model should have had a published token price and does
-// not". They are the only ones that earn a visible marker: everything else that
-// lacks a cost lacks one for an ordinary reason (no token usage, an integration
-// that is not externally priced, a model billed per request) and stays "--".
+// Statuses meaning "a lookup ran for this model and produced no published token
+// price". They are the only ones that earn a visible marker. Everything else
+// that lacks a cost lacks one for an ordinary reason and stays "--": no token
+// usage, an integration that is not externally priced, a model billed per
+// request, or "pending" - a first sighting whose lookup had not finished when
+// the row was written, which is not yet evidence that no price exists.
 const UNRESOLVED_PRICE_STATUSES = new Set(["unresolved", "ambiguous"]);
 
 const STATUS_CLASS_MAP: Record<string, string> = {

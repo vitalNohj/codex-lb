@@ -34,8 +34,8 @@ Calculated costs are included in cost totals.
 | Display | Meaning |
 |---|---|
 | A figure | A cost was recorded. Hover to see whether it is billed or list price. |
-| `!!` | This model should have a published token price and does not. Hover for the reason. |
-| `--` | No cost is expected: an excluded integration, no reported token usage, or a model billed per request rather than per token. |
+| `!!` | A lookup ran for this model and found no published token price. Hover for the reason. |
+| `--` | No cost is expected yet: an excluded integration, no reported token usage, a model billed per request rather than per token, or the very first request for a model whose lookup had not finished. |
 
 `!!` has two causes, both shown in the tooltip:
 
@@ -73,6 +73,10 @@ The first request for a model id you have not routed before records no cost and
 schedules one background lookup. Requests never wait on it. From the second
 request onward the price comes from local storage with no network work.
 
+That first row shows `--`, not `!!`. No lookup had concluded anything when it was
+written, so it is not evidence that the model has no price. `!!` appears only
+after a lookup has actually run and failed to find one.
+
 A model that could not be priced is retried on a widening schedule (5 minutes,
 30 minutes, 2 hours, 6 hours, then daily) rather than on every request, so an
 unknown model cannot generate lookup traffic.
@@ -105,10 +109,17 @@ you expect to be priced.
 Two outcomes are worth knowing:
 
 - If a catalog cannot be reached, records that depend on it keep their existing
-  rates. A network failure is never treated as a price change.
+  rates. A network failure is never treated as a price change. This covers the
+  OpenRouter pricing reference too: a record that was resolved from it keeps its
+  rate when the reference is unreachable, even if the serving catalog answered.
 - If a catalog is reachable and no longer lists a model, that model becomes
   unresolved. Continuing to report its old rate would show a price no live
   listing supports.
+- If a catalog still lists a model but publishes its price in a shape codex-lb
+  cannot read, the last successfully read rate is kept and the model is retried
+  later. This is reported under "Preserved after an unreadable published price"
+  rather than counted as unchanged, so an upstream schema change is visible
+  instead of silently clearing rates.
 
 CLIProxyAPI publishes no rates of its own, by design. That is not a fetch
 failure: it is never reported as an unavailable catalog, and its records are
@@ -124,6 +135,9 @@ no longer listed becomes unresolved instead of keeping a stale rate.
   one.
 - Rows written before this feature shipped have no recorded provenance. They are
   shown as-is and are not reclassified.
+- A participating request whose price is unknown reports no savings figure. Its
+  actual cost is unknown rather than zero, so counting the full reference as
+  money saved would invent a number.
 
 ---
 

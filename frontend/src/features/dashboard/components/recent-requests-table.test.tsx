@@ -1594,6 +1594,16 @@ describe("RecentRequestsTable", () => {
       expect(screen.queryByText("!!")).not.toBeInTheDocument();
     });
 
+    it("keeps -- for a first sighting whose lookup had not finished", () => {
+      // The very first request for a newly routed model is written before any
+      // lookup concludes. Marking it !! would flag every new model permanently,
+      // even when the background lookup priced it moments later.
+      renderCost({ costUsd: null, costSource: null, priceStatus: "pending" });
+
+      expect(screen.queryByText("!!")).not.toBeInTheDocument();
+      expect(screen.getAllByText("--").length).toBeGreaterThan(0);
+    });
+
     it("keeps -- when a priced model reported no token usage", () => {
       renderCost({
         costUsd: null,

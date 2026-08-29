@@ -100,20 +100,21 @@ class RequestLogsService:
                 aggregated_cost_usd=result.aggregated_cost_usd,
             )
         api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
-        claude_sidecar_logs = [
-            (log.request_id, log.requested_at)
-            for log in logs
-            if log.source == "claude_sidecar"
-        ]
+        claude_sidecar_logs = [(log.request_id, log.requested_at) for log in logs if log.source == "claude_sidecar"]
         api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids)
-        sidecar_account_label_by_request_id = (
-            await self._repo.get_claude_sidecar_account_labels_for_logs(claude_sidecar_logs)
+        sidecar_account_label_by_request_id = await self._repo.get_claude_sidecar_account_labels_for_logs(
+            claude_sidecar_logs
         )
+        # One query for the whole page. These are the rates that produced the
+        # persisted costs, so the request-details cost split can be shown for
+        # externally priced rows without reaching for the static table.
+        resolved_prices = await self._repo.get_external_price_rates_for_logs(logs)
         requests = [
             to_request_log_entry(
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
                 sidecar_account_label=sidecar_account_label_by_request_id.get(log.request_id),
+                resolved_price=resolved_prices.get((log.model or "").strip().lower()),
             )
             for log in logs
         ]

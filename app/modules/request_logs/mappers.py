@@ -9,6 +9,7 @@ from app.core.usage.logs import (
     output_tokens_from_log,
     total_tokens_from_log,
 )
+from app.core.usage.pricing import ModelPrice
 from app.db.models import RequestLog
 from app.modules.request_logs.schemas import RequestLogCostBreakdown, RequestLogEntry
 
@@ -35,11 +36,16 @@ def to_request_log_entry(
     *,
     api_key_name: str | None = None,
     sidecar_account_label: str | None = None,
+    resolved_price: ModelPrice | None = None,
 ) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
-    cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
+    cost_breakdown = cost_breakdown_from_log(log_like, precision=6, resolved_price=resolved_price)
     reference_cost_usd = round(log.reference_cost_usd, 6) if log.reference_cost_usd is not None else None
-    savings_usd = _savings_usd(actual=cost_breakdown.total_usd, reference=reference_cost_usd)
+    savings_usd = _savings_usd(
+        actual=cost_breakdown.total_usd,
+        reference=reference_cost_usd,
+        cost_is_unknown=cost_breakdown.total_usd is None and log.price_status is not None,
+    )
     return RequestLogEntry(
         requested_at=log.requested_at,
         conversation_id=log.conversation_id,
@@ -92,8 +98,14 @@ def to_request_log_entry(
     )
 
 
-def _savings_usd(*, actual: float | None, reference: float | None) -> float | None:
+def _savings_usd(*, actual: float | None, reference: float | None, cost_is_unknown: bool = False) -> float | None:
     if reference is None:
+        return None
+    if cost_is_unknown:
+        # The row participates in external price resolution and the resolver
+        # deliberately recorded no cost. Treating that unknown as $0 spent would
+        # report the whole reference as money saved, which is a fabricated figure
+        # rather than a missing one.
         return None
     savings = reference - (actual or 0.0)
     if savings <= 0:

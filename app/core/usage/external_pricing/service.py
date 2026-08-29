@@ -210,10 +210,15 @@ async def calculated_cost_for_request(
             (provider_key, model_key),
             lambda: _run_lookup(provider_key, model_key, previous=record),
         )
-        status = record.status if record is not None else ExternalPriceStatus.UNRESOLVED
-        return None, status
-
-    if not record.is_priced:
+        if record is None:
+            # First sighting. No lookup has concluded anything yet, so this row
+            # is pending rather than unresolved: an eligible model is only worth
+            # marking once a lookup has actually failed to price it.
+            return None, ExternalPriceStatus.PENDING
+        if not record.is_priced:
+            return None, record.status
+        # A rate preserved through an unreadable upstream price still serves.
+    elif not record.is_priced:
         return None, record.status
 
     if usage is None:
@@ -296,6 +301,20 @@ async def _persist_resolution(
                 catalog_source=resolution.catalog_source,
                 price=resolution.price,
                 resolution_step=resolution.step or "exact",
+            )
+            return
+        if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
+            # The source listed the model and priced it in a shape this build
+            # cannot read. Preserve whatever was last parsed and retry later
+            # rather than settling a question the source did not answer.
+            await store.record_price_unparseable(
+                provider=provider_key,
+                incoming_model=model_key,
+                record=previous,
+                catalog_model=resolution.catalog_model,
+                catalog_source=resolution.catalog_source,
+                detail=resolution.detail or "catalog price could not be parsed",
+                previous_attempts=previous.attempt_count if previous is not None else 0,
             )
             return
         if resolution.outcome is ResolutionOutcome.NOT_TOKEN_PRICED:

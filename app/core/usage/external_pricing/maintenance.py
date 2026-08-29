@@ -47,6 +47,7 @@ class MaintenanceReport:
     newly_resolved: list[RecordChange] = field(default_factory=list)
     unchanged: int = 0
     preserved_on_failure: int = 0
+    preserved_unparseable: list[RecordChange] = field(default_factory=list)
     unresolved: list[RecordChange] = field(default_factory=list)
     ambiguous: list[RecordChange] = field(default_factory=list)
     catalog_failures: list[str] = field(default_factory=list)
@@ -59,12 +60,14 @@ class MaintenanceReport:
             f"- Newly resolved: {len(self.newly_resolved)}",
             f"- Unchanged: {self.unchanged}",
             f"- Preserved after a source failure: {self.preserved_on_failure}",
+            f"- Preserved after an unreadable published price: {len(self.preserved_unparseable)}",
             f"- Still unresolved: {len(self.unresolved)}",
             f"- Ambiguous: {len(self.ambiguous)}",
         ]
         for label, changes in (
             ("Updated", self.updated),
             ("Newly resolved", self.newly_resolved),
+            ("Preserved after an unreadable published price", self.preserved_unparseable),
             ("Unresolved", self.unresolved),
             ("Ambiguous", self.ambiguous),
         ):
@@ -109,6 +112,7 @@ async def run_maintenance_pass() -> MaintenanceReport:
             unavailable_providers.add(provider)
             report.catalog_failures.append(f"{provider}: serving catalog unavailable")
 
+    reference_unavailable = reference_error is not None
     for record in records:
         context = contexts.get(record.provider)
         serving_catalog = context.catalog if context is not None else None
@@ -123,6 +127,7 @@ async def run_maintenance_pass() -> MaintenanceReport:
             serving=serving_catalog,
             serving_unavailable=serving_unavailable,
             reference=reference,
+            reference_unavailable=reference_unavailable,
             context=context,
             report=report,
         )
@@ -143,6 +148,7 @@ async def _refresh_record(
     serving: Catalog | None,
     serving_unavailable: bool,
     reference: Catalog | None,
+    reference_unavailable: bool,
     context: ServingContext | None,
     report: MaintenanceReport,
 ) -> None:
@@ -154,12 +160,42 @@ async def _refresh_record(
         prefixes=context.prefixes if context is not None else (),
     )
 
-    if resolution.outcome is ResolutionOutcome.UNRESOLVED and record.is_priced and serving_unavailable:
-        # The record's own catalog could not be fetched and the reference alone did
-        # not recognise the id. That is a fetch gap, not a delisting, so the known
-        # rate stays. A provider that never publishes a catalog does not qualify:
-        # for it the reference answered in full and its verdict is authoritative.
+    if (
+        resolution.outcome is ResolutionOutcome.UNRESOLVED
+        and record.is_priced
+        and (serving_unavailable or reference_unavailable)
+    ):
+        # At least one source this record could have been resolved from could not
+        # be fetched, and the ones that answered did not recognise the id. That is
+        # a fetch gap, not a delisting, so the known rate stays. Only when every
+        # source that could price this id answered is an absence authoritative --
+        # which includes a provider that publishes no catalog by design, since for
+        # it the reference is the whole answer.
         report.preserved_on_failure += 1
+        return
+
+    if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
+        # The source still lists the model and priced it in a shape this build
+        # could not read. Settling that as "not token priced" would clear a good
+        # rate, set no retry, and report the loss as "unchanged", so one upstream
+        # schema change would silently erase every rate in a single pass.
+        async with get_background_session() as session:
+            await ExternalModelPriceStore(session).record_price_unparseable(
+                provider=record.provider,
+                incoming_model=record.incoming_model,
+                record=record,
+                catalog_model=resolution.catalog_model,
+                catalog_source=resolution.catalog_source,
+                detail=resolution.detail or "catalog price could not be parsed",
+                previous_attempts=record.attempt_count,
+            )
+        report.preserved_unparseable.append(
+            RecordChange(
+                provider=record.provider,
+                incoming_model=record.incoming_model,
+                description=resolution.detail or "catalog price could not be parsed",
+            )
+        )
         return
 
     async with get_background_session() as session:

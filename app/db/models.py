@@ -83,8 +83,17 @@ class CostSource(str, Enum):
 
 
 class ExternalPriceStatus(str, Enum):
-    """Lifecycle of one persisted external-integration price resolution."""
+    """Lifecycle of one external-integration price resolution.
 
+    ``PENDING`` is the only member that is never persisted in
+    ``external_model_prices``: it describes a request log row written before any
+    lookup for that model had run, which is not yet evidence that the model has
+    no published price. Marking it as ``UNRESOLVED`` would put a permanent "no
+    price found" marker on the first request for every newly routed model, even
+    when the background lookup priced it a moment later.
+    """
+
+    PENDING = "pending"
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
     AMBIGUOUS = "ambiguous"
@@ -982,14 +991,12 @@ class DashboardSettings(Base):
     claude_sidecar_model_prefixes_json: Mapped[str] = mapped_column(
         Text,
         default=(
-            '[{"prefix": "claude", "strip": false}, '
-            '{"prefix": "cp-", "strip": true}, '
-            '{"prefix": "cp_", "strip": true}]'
+            '[{"prefix": "claude", "strip": false}, {"prefix": "cp-", "strip": true}, {"prefix": "cp_", "strip": true}]'
         ),
         server_default=text(
-            "'[{\"prefix\": \"claude\", \"strip\": false}, "
-            "{\"prefix\": \"cp-\", \"strip\": true}, "
-            "{\"prefix\": \"cp_\", \"strip\": true}]'"
+            '\'[{"prefix": "claude", "strip": false}, '
+            '{"prefix": "cp-", "strip": true}, '
+            '{"prefix": "cp_", "strip": true}]\''
         ),
         nullable=False,
     )

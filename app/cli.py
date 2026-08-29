@@ -209,7 +209,11 @@ def _run_model_prices_refresh() -> None:
 
     try:
         print(asyncio.run(_run()))
-    except sa_exc.OperationalError as exc:
+    except sa_exc.DatabaseError as exc:
+        # ``DatabaseError`` rather than ``OperationalError``: SQLite reports a
+        # missing table as operational, PostgreSQL reports the same condition as
+        # ``ProgrammingError`` (UndefinedTable). Both are exactly the case this
+        # message exists to explain, so both must reach it.
         raise SystemExit(
             "Failed to read persisted model prices. Run 'codex-lb-db upgrade' to apply pending "
             f"migrations, then retry. Underlying error: {exc}"

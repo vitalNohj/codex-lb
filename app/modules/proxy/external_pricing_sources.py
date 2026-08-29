@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import logging
 
-from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
+from app.core.types import JsonValue
 from app.core.usage.external_pricing.catalogs import (
     PROVIDER_CLIPROXY,
     PROVIDER_OPENROUTER,
@@ -34,6 +35,7 @@ from app.core.usage.external_pricing.catalogs import (
     catalog_from_sidecar_models,
 )
 from app.core.usage.external_pricing.service import ServingContext, register_serving_context_loader
+from app.core.usage.pricing import ModelPrice
 from app.modules.proxy.model_aliasing import load_model_aliases
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,21 @@ logger = logging.getLogger(__name__)
 
 def _prefix_pairs(prefixes: tuple[SidecarPrefix, ...]) -> tuple[tuple[str, bool], ...]:
     return tuple((prefix.prefix, prefix.strip) for prefix in prefixes)
+
+
+def _catalog_rows(models: list[SidecarModel]) -> list[tuple[str, ModelPrice | None, JsonValue]]:
+    """Carry each model's raw ``pricing`` block alongside its parsed price.
+
+    Without the raw block an id the sidecar listed with rate fields this build
+    could not parse is indistinguishable from one it listed with no rates, and the
+    resolver would settle the former as permanently not token priced.
+    """
+
+    rows: list[tuple[str, ModelPrice | None, JsonValue]] = []
+    for model in models:
+        raw_pricing = model.raw.get("pricing") if model.raw is not None else None
+        rows.append((model.id, model.pricing, raw_pricing))
+    return rows
 
 
 async def _load_orcarouter_context(_provider: str) -> ServingContext | None:
@@ -62,7 +79,7 @@ async def _load_orcarouter_context(_provider: str) -> ServingContext | None:
     return ServingContext(
         catalog=catalog_from_sidecar_models(
             ORCAROUTER_PRICING_PROVIDER,
-            [(model.id, model.pricing) for model in models],
+            _catalog_rows(list(models)),
         ),
         aliases=await load_model_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
@@ -83,7 +100,7 @@ async def _load_openrouter_context(_provider: str) -> ServingContext | None:
     return ServingContext(
         catalog=catalog_from_sidecar_models(
             OPENROUTER_PRICING_PROVIDER,
-            [(model.id, model.pricing) for model in models],
+            _catalog_rows(list(models)),
         ),
         aliases=await load_model_aliases(),
         prefixes=_prefix_pairs(config.prefixes),

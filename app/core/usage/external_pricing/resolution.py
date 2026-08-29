@@ -65,6 +65,22 @@ class ResolutionOutcome(str, Enum):
     UNRESOLVED = "unresolved"
     AMBIGUOUS = "ambiguous"
     NOT_TOKEN_PRICED = "not_token_priced"
+    PRICE_UNPARSEABLE = "price_unparseable"
+
+
+class UnpricedReason(str, Enum):
+    """Why a listed catalog entry carries no ``ModelPrice``.
+
+    These are different facts and must not share one representation.
+    ``NO_TOKEN_RATE`` is a settled answer: the catalog listed the model and
+    published no per-token rate for it, so there is nothing to find.
+    ``UNPARSEABLE`` means the catalog did publish rate fields this build could
+    not read, which is a parse failure rather than an answer. The last
+    successfully parsed value must survive it, and the lookup must be retried.
+    """
+
+    NO_TOKEN_RATE = "no_token_rate"
+    UNPARSEABLE = "unparseable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +91,16 @@ class CatalogEntry:
     token (per-request image models, per-minute audio, routers with no fixed
     upstream). That is a real listing, not a lookup failure, and must not be
     retried as though the catalog were unreachable.
+
+    ``unpriced_reason`` separates that settled answer from an entry whose
+    published rate fields could not be parsed. It defaults to ``NO_TOKEN_RATE``
+    so a source that cannot tell the two apart keeps the reading it always had;
+    a parser that can tell says so explicitly.
     """
 
     model_id: str
     price: ModelPrice | None
+    unpriced_reason: UnpricedReason = UnpricedReason.NO_TOKEN_RATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +353,18 @@ def _unique_candidate(
 
 def _entry_resolution(entry: CatalogEntry, catalog: Catalog, *, step: str) -> Resolution:
     if entry.price is None:
+        if entry.unpriced_reason is UnpricedReason.UNPARSEABLE:
+            # The source listed the model and published rate fields this build
+            # could not read. Saying "not token priced" here would settle a
+            # question the catalog actually answered, clear a good rate, and set
+            # no retry, so one upstream schema change would erase every rate.
+            return Resolution(
+                outcome=ResolutionOutcome.PRICE_UNPARSEABLE,
+                catalog_model=entry.model_id,
+                catalog_source=catalog.source,
+                step=step,
+                detail="catalog published a price in a shape this build could not parse",
+            )
         return Resolution(
             outcome=ResolutionOutcome.NOT_TOKEN_PRICED,
             catalog_model=entry.model_id,

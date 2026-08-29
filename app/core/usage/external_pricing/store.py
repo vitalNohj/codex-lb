@@ -13,6 +13,7 @@ instead of racing a read-then-write.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -62,17 +63,17 @@ class PriceRecord:
         return self.status is ExternalPriceStatus.RESOLVED and self.price is not None
 
     def retry_due(self, *, now: datetime | None = None) -> bool:
-        """Whether an unresolved record may be looked up again.
+        """Whether this record may be looked up again.
 
-        A resolved or not-token-priced record is never due: both are settled
-        answers, and re-deriving them per request is exactly the work this store
-        exists to eliminate. Only maintenance revisits them.
+        A settled answer carries no deadline, so it is never due: re-deriving one
+        per request is exactly the work this store exists to eliminate. The one
+        exception is a rate preserved through an unreadable upstream price, which
+        stays ``RESOLVED`` and keeps serving while carrying a deadline, so the
+        source is re-read rather than the question being closed.
         """
 
-        if self.status in (ExternalPriceStatus.RESOLVED, ExternalPriceStatus.NOT_TOKEN_PRICED):
-            return False
         if self.next_retry_at is None:
-            return True
+            return self.status not in (ExternalPriceStatus.RESOLVED, ExternalPriceStatus.NOT_TOKEN_PRICED)
         return (now or utcnow()) >= self.next_retry_at
 
 
@@ -106,6 +107,33 @@ class ExternalModelPriceStore:
             select(ExternalModelPrice).order_by(ExternalModelPrice.provider, ExternalModelPrice.incoming_model)
         )
         return [_to_record(row) for row in result.scalars().all()]
+
+    async def rates_for_models(self, incoming_models: Sequence[str]) -> dict[str, ModelPrice]:
+        """Persisted rates keyed by incoming model id, for a page of request logs.
+
+        One query for the whole page: the read path may not turn rendering a list
+        into a lookup per row. Keyed on the incoming id alone because a request log
+        records the model as routed but not which provider key space priced it; a
+        row's own persisted total is what ultimately decides whether the rate is
+        accepted, so an id two providers price differently simply fails to
+        reconcile and shows no component split.
+        """
+
+        keys = {model.strip().lower() for model in incoming_models if model and model.strip()}
+        if not keys:
+            return {}
+        result = await self._session.execute(
+            select(ExternalModelPrice).where(
+                ExternalModelPrice.incoming_model.in_(sorted(keys)),
+                ExternalModelPrice.status == ExternalPriceStatus.RESOLVED.value,
+            )
+        )
+        rates: dict[str, ModelPrice] = {}
+        for row in result.scalars().all():
+            record = _to_record(row)
+            if record.price is not None:
+                rates.setdefault(record.incoming_model, record.price)
+        return rates
 
     async def record_resolved(
         self,
@@ -164,6 +192,59 @@ class ExternalModelPriceStore:
             retry_at=None,
         )
 
+    async def record_price_unparseable(
+        self,
+        *,
+        provider: str,
+        incoming_model: str,
+        record: PriceRecord | None,
+        catalog_model: str | None,
+        catalog_source: str | None,
+        detail: str,
+        previous_attempts: int = 0,
+    ) -> None:
+        """The source still lists the model but priced it unreadably.
+
+        Neither a resolution nor a delisting. Whatever rate was last parsed
+        successfully stays exactly as it is -- an upstream schema change must not
+        be able to erase a good rate -- and only the retry deadline advances, so
+        the next lookup re-reads the source instead of settling the question.
+        """
+
+        attempts = previous_attempts + 1
+        if record is not None and record.is_priced:
+            assert record.price is not None
+            await self._upsert(
+                provider=provider,
+                incoming_model=incoming_model,
+                status=ExternalPriceStatus.RESOLVED,
+                catalog_model=catalog_model or record.catalog_model,
+                catalog_source=catalog_source or record.catalog_source,
+                input_per_1m=record.price.input_per_1m,
+                output_per_1m=record.price.output_per_1m,
+                resolution_step=record.resolution_step,
+                detail=detail,
+                attempt_count=0,
+                retry_at=next_retry_at(attempts),
+                retrieved_at=record.retrieved_at,
+            )
+            return
+        # Nothing was ever parsed for this id, so there is no value to preserve.
+        # It stays unresolved with backoff rather than being settled as unpriced.
+        await self._upsert(
+            provider=provider,
+            incoming_model=incoming_model,
+            status=ExternalPriceStatus.UNRESOLVED,
+            catalog_model=catalog_model,
+            catalog_source=catalog_source,
+            input_per_1m=None,
+            output_per_1m=None,
+            resolution_step=None,
+            detail=detail,
+            attempt_count=attempts,
+            retry_at=next_retry_at(attempts),
+        )
+
     async def record_unresolved(
         self,
         *,
@@ -211,6 +292,7 @@ class ExternalModelPriceStore:
         detail: str | None,
         attempt_count: int,
         retry_at: datetime | None,
+        retrieved_at: datetime | None = None,
     ) -> None:
         provider_key, model_key = normalize_lookup_key(provider, incoming_model)
         if not provider_key or not model_key:
@@ -226,7 +308,10 @@ class ExternalModelPriceStore:
             "output_per_1m": output_per_1m,
             "resolution_step": resolution_step,
             "detail": detail,
-            "retrieved_at": now,
+            # A preserved rate keeps the retrieval time of the fetch that produced
+            # it: nothing new was retrieved, so claiming otherwise would overstate
+            # the freshness of a number this pass could not confirm.
+            "retrieved_at": retrieved_at or now,
             "updated_at": now,
             "attempt_count": attempt_count,
             "next_retry_at": retry_at,

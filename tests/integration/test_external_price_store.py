@@ -117,13 +117,40 @@ async def test_first_sighting_returns_no_cost_and_schedules_one_lookup(db_setup)
     )
 
     assert cost is None
-    assert status is ExternalPriceStatus.UNRESOLVED
+    # Pending, not unresolved. Nothing has concluded that this model has no
+    # published price, and this very lookup is about to resolve it; recording
+    # UNRESOLVED here would put a permanent "no price found" marker on the first
+    # request for every newly routed model.
+    assert status is ExternalPriceStatus.PENDING
     await get_lookup_coordinator().drain()
     assert loader.calls == 1
     records = await _records()
     assert len(records) == 1
     assert records[0].status == ExternalPriceStatus.RESOLVED.value
     assert records[0].input_per_1m == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_second_sighting_of_an_unpriceable_id_reports_it_as_unresolved(db_setup) -> None:
+    """The marker is earned once a lookup has actually run and found nothing."""
+
+    del db_setup
+    await _install_serving_catalog("orcarouter", {"vendor/something-else": ModelPrice(2.0, 4.0)})
+
+    _cost, first_status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/never-listed",
+        usage=ONE_MILLION,
+    )
+    await get_lookup_coordinator().drain()
+    _cost, second_status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/never-listed",
+        usage=ONE_MILLION,
+    )
+
+    assert first_status is ExternalPriceStatus.PENDING
+    assert second_status is ExternalPriceStatus.UNRESOLVED
 
 
 @pytest.mark.asyncio

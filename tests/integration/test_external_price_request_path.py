@@ -181,7 +181,9 @@ async def test_the_first_request_records_no_cost_and_the_second_records_the_list
     first = (await _sidecar_logs())[0]
     assert first.cost_usd is None
     assert first.cost_source is None
-    assert first.price_status == ExternalPriceStatus.UNRESOLVED.value
+    # Pending, not unresolved: no lookup had concluded anything when this row was
+    # written, so it is not evidence that the model has no published price.
+    assert first.price_status == ExternalPriceStatus.PENDING.value
 
     await _post_chat(async_client, key)
     await get_lookup_coordinator().drain()
@@ -245,11 +247,14 @@ async def test_an_unresolvable_model_records_no_cost_instead_of_a_glob_derived_o
         assert response.status_code == 200
         await get_lookup_coordinator().drain()
 
-    logs = [log for log in await _sidecar_logs() if log.model == unlisted]
+    logs = sorted((log for log in await _sidecar_logs() if log.model == unlisted), key=lambda log: log.id)
     assert logs, "the request must still be served and logged"
     for log in logs:
         assert log.cost_usd is None, "an unresolved model must not borrow another model's rate"
-        assert log.price_status == ExternalPriceStatus.UNRESOLVED.value
+    # The first row predates the lookup, so it is pending. The second is written
+    # after the lookup concluded nothing, which is what earns the marker.
+    assert logs[0].price_status == ExternalPriceStatus.PENDING.value
+    assert logs[-1].price_status == ExternalPriceStatus.UNRESOLVED.value
 
     # The name matches the retired ``*gpt-4o*`` alias glob, so the read path is
     # where the wrong number used to reappear: the database said NULL while the
@@ -265,7 +270,9 @@ async def test_an_unresolvable_model_records_no_cost_instead_of_a_glob_derived_o
     for entry in entries:
         assert entry["costUsd"] is None, "the API must not price an unresolved model from the static table"
         assert entry["costBreakdown"]["totalUsd"] is None
-        assert entry["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value
+    statuses = {entry["priceStatus"] for entry in entries}
+    assert ExternalPriceStatus.UNRESOLVED.value in statuses, "the post-lookup row must earn the marker"
+    assert statuses <= {ExternalPriceStatus.PENDING.value, ExternalPriceStatus.UNRESOLVED.value}
 
 
 @pytest.mark.asyncio
@@ -373,6 +380,94 @@ async def test_the_request_log_api_exposes_cost_provenance(
     assert entries
 
     calculated = [entry for entry in entries if entry["costSource"] == CostSource.CATALOG_CALCULATED.value]
-    unresolved = [entry for entry in entries if entry["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value]
+    pending = [entry for entry in entries if entry["priceStatus"] == ExternalPriceStatus.PENDING.value]
     assert calculated, f"expected a calculated row in {json.dumps(entries)[:400]}"
-    assert unresolved, "the first, pre-lookup request must be marked unresolved"
+    assert pending, "the first, pre-lookup request must be marked pending"
+    assert not [entry for entry in entries if entry["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value], (
+        "a model that resolved must not leave an unresolved row behind"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_resolved_row_exposes_its_cost_breakdown_to_the_details_view(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+) -> None:
+    """Suppressing the glob total must not also remove the real component split.
+
+    The request-details dialog renders no Cost section at all when every component
+    is null, so a resolved OpenRouter/OrcaRouter/CLIProxyAPI row silently lost the
+    "$X = N Input + M Output" line it used to show.
+    """
+
+    fake_orcarouter.billed_cost_usd = None
+    _install_catalog({_MODEL: ModelPrice(input_per_1m=2.0, output_per_1m=4.0)})
+    await _enable_sidecar(async_client)
+    key = await _create_api_key("breakdown-api-key")
+
+    await _post_chat(async_client, key)
+    await get_lookup_coordinator().drain()
+    await _post_chat(async_client, key)
+    await get_lookup_coordinator().drain()
+
+    response = await async_client.get("/api/request-logs")
+    assert response.status_code == 200
+    priced = [
+        entry
+        for entry in response.json()["requests"]
+        if entry["source"] == "orcarouter_sidecar" and entry["costUsd"] is not None
+    ]
+    assert priced, "expected the resolved row"
+    breakdown = priced[0]["costBreakdown"]
+    assert breakdown["inputUsd"] == pytest.approx(_INPUT_TOKENS * 2.0 / 1e6)
+    assert breakdown["outputUsd"] == pytest.approx(_OUTPUT_TOKENS * 4.0 / 1e6)
+    assert breakdown["totalUsd"] == pytest.approx(priced[0]["costUsd"])
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_row_reports_no_savings_from_the_retired_glob_table(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+) -> None:
+    """Phantom savings regression.
+
+    ``orcarouter/gpt-4o-lookalike`` matches the retired ``*gpt-4o*`` alias, so its
+    reference cost used to come from GPT-4o's rate. With the actual cost now NULL,
+    the whole reference read as money saved on the provider card.
+    """
+
+    from app.core.usage.pricing import get_pricing_for_model
+
+    fake_orcarouter.billed_cost_usd = None
+    unlisted = "orcarouter/gpt-4o-lookalike"
+    assert get_pricing_for_model(unlisted, None, None) is not None, "this id must still match a glob"
+
+    _install_catalog({_MODEL: ModelPrice(input_per_1m=2.0, output_per_1m=4.0)})
+    await _enable_sidecar(async_client)
+    await async_client.put("/api/settings", json={"orcarouterSidecarFullModels": [_MODEL, unlisted]})
+    key = await _create_api_key("phantom-savings-key")
+
+    for _ in range(2):
+        response = await async_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key.key}"},
+            json={"model": unlisted, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert response.status_code == 200
+        await get_lookup_coordinator().drain()
+
+    for log in await _sidecar_logs():
+        if log.model != unlisted:
+            continue
+        assert log.cost_usd is None
+        assert log.reference_cost_usd is None, "no glob-derived reference may be persisted"
+
+    response = await async_client.get("/api/request-logs")
+    assert response.status_code == 200
+    entries = [entry for entry in response.json()["requests"] if entry["model"] == unlisted]
+    assert entries
+    for entry in entries:
+        assert entry["costUsd"] is None
+        assert not entry.get("savingsUsd"), "an unknown cost must not report savings"
