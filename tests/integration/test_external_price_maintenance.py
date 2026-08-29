@@ -69,6 +69,20 @@ def _install_catalog(provider: str, entries: dict[str, ModelPrice | None] | None
     register_serving_context_loader(provider, _loader)
 
 
+def _install_priceless_provider(provider: str, *, prefixes: tuple[tuple[str, bool], ...] = ()) -> None:
+    """A provider that contributes routing identity but no rates, like CLIProxyAPI."""
+
+    async def _loader(_provider: str) -> ServingContext | None:
+        return ServingContext(
+            catalog=None,
+            aliases={},
+            prefixes=prefixes,
+            publishes_price_catalog=False,
+        )
+
+    register_serving_context_loader(provider, _loader)
+
+
 async def _seed_resolved(model: str, price: ModelPrice, *, provider: str = "orcarouter") -> None:
     async with SessionLocal() as session:
         await ExternalModelPriceStore(session).record_resolved(
@@ -202,6 +216,62 @@ async def test_a_newly_ambiguous_id_is_reported_and_loses_its_price(db_setup) ->
     record = await _record("qwen3.8-27b")
     assert record is not None
     assert record.status is ExternalPriceStatus.AMBIGUOUS
+    assert record.price is None
+
+
+@pytest.mark.asyncio
+async def test_a_provider_that_publishes_no_rates_is_not_reported_as_a_failure(db_setup, monkeypatch) -> None:
+    """CLIProxyAPI contributes no catalog by design; that is not a fetch failure."""
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference():
+        return _catalog("openrouter", {"claude-fable-5": ModelPrice(5.0, 25.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+    _install_priceless_provider("cliproxy", prefixes=(("cc/", True),))
+    await _seed_resolved("cc/claude-fable-5", ModelPrice(1.0, 2.0), provider="cliproxy")
+
+    report = await run_maintenance_pass()
+
+    assert report.catalog_failures == []
+    assert report.preserved_on_failure == 0
+    assert len(report.updated) == 1
+    record = await _record("cc/claude-fable-5", provider="cliproxy")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_a_priceless_providers_record_dropped_by_the_reference_becomes_unresolved(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """The reference answered in full for a provider with no catalog of its own.
+
+    Treating that as "a source failed" would keep a stale rate forever behind a
+    failure that never happened.
+    """
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference():
+        return _catalog("openrouter", {"claude-still-listed": ModelPrice(5.0, 25.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+    _install_priceless_provider("cliproxy", prefixes=(("cc/", True),))
+    await _seed_resolved("cc/claude-delisted", ModelPrice(1.0, 2.0), provider="cliproxy")
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 0
+    assert len(report.unresolved) == 1
+    assert report.unresolved[0].incoming_model == "cc/claude-delisted"
+    record = await _record("cc/claude-delisted", provider="cliproxy")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.UNRESOLVED
     assert record.price is None
 
 

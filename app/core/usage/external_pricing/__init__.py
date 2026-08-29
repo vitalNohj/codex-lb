@@ -32,6 +32,7 @@ from app.core.usage.external_pricing.service import (
     CalculatedCost,
     ServingContext,
     calculated_cost_for_request,
+    drain_pending_lookups,
     register_serving_context_loader,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "CalculatedCost",
     "ServingContext",
     "calculated_cost_for_request",
+    "drain_pending_lookups",
     "is_external_priced_provider",
     "register_serving_context_loader",
 ]

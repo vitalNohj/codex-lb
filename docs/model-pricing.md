@@ -110,6 +110,11 @@ Two outcomes are worth knowing:
   unresolved. Continuing to report its old rate would show a price no live
   listing supports.
 
+CLIProxyAPI publishes no rates of its own, by design. That is not a fetch
+failure: it is never reported as an unavailable catalog, and its records are
+judged against the OpenRouter pricing reference alone, so one that is genuinely
+no longer listed becomes unresolved instead of keeping a stale rate.
+
 ## Notes
 
 - Cached input tokens are priced at the full input rate. Not every catalog

@@ -195,6 +195,14 @@ The system MUST NOT continuously poll or refresh prices. It MUST provide a separ
 - **THEN** the record becomes unresolved
 - **AND** the report names it
 
+#### Scenario: An integration that publishes no rates is not a failed source
+
+- **GIVEN** an integration that contributes no price catalog by design (CLIProxyAPI)
+- **AND** a persisted record for it whose id the reachable pricing reference no longer lists
+- **WHEN** the maintenance command runs
+- **THEN** the report names no unavailable catalog for that integration
+- **AND** the record becomes unresolved rather than being preserved as if a source had failed
+
 ### Requirement: Request logs mark eligible models that stay unresolved
 
 The request-log UI MUST show `!!` with an explanatory tooltip for an OpenRouter, OrcaRouter, or CLIProxyAPI model that should be token-priceable but remains unresolved after lookup. It MUST keep `--` for Ollama, OmniRoute, missing token usage, and genuinely non-token-priced or router cases.

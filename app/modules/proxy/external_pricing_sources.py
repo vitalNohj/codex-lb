@@ -110,6 +110,11 @@ async def _load_cliproxy_context(_provider: str) -> ServingContext | None:
         catalog=None,
         aliases=await load_model_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
+        # Not a fetch failure: this integration has no rates to publish. Saying so
+        # explicitly is what lets maintenance treat the pricing reference as the
+        # authoritative answer for these ids instead of preserving stale rates
+        # forever behind a phantom "catalog unavailable".
+        publishes_price_catalog=False,
     )
 
 

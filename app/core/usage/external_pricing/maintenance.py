@@ -15,7 +15,6 @@ replacing it with nothing because a request timed out.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from app.core.usage.external_pricing.catalogs import (
@@ -98,15 +97,22 @@ async def run_maintenance_pass() -> MaintenanceReport:
 
     providers = sorted({record.provider for record in records})
     contexts: dict[str, ServingContext | None] = {}
+    unavailable_providers: set[str] = set()
     for provider in providers:
         context = await load_serving_context(provider)
         contexts[provider] = context
-        if context is None or context.catalog is None:
+        # An integration that publishes no price catalog by design contributes
+        # nothing here and has not failed. Reporting it as a failure would also
+        # make every one of its records look "preserved after a source failure",
+        # so a genuinely delisted model would keep a stale rate forever.
+        if context is None or context.serving_catalog_missing:
+            unavailable_providers.add(provider)
             report.catalog_failures.append(f"{provider}: serving catalog unavailable")
 
     for record in records:
         context = contexts.get(record.provider)
         serving_catalog = context.catalog if context is not None else None
+        serving_unavailable = record.provider in unavailable_providers
         if serving_catalog is None and reference is None:
             # Every source this record could have used is unavailable. Leaving the
             # row exactly as it is preserves a rate that is probably still correct.
@@ -115,6 +121,7 @@ async def run_maintenance_pass() -> MaintenanceReport:
         await _refresh_record(
             record,
             serving=serving_catalog,
+            serving_unavailable=serving_unavailable,
             reference=reference,
             context=context,
             report=report,
@@ -134,6 +141,7 @@ async def _refresh_record(
     record: PriceRecord,
     *,
     serving: Catalog | None,
+    serving_unavailable: bool,
     reference: Catalog | None,
     context: ServingContext | None,
     report: MaintenanceReport,
@@ -146,10 +154,11 @@ async def _refresh_record(
         prefixes=context.prefixes if context is not None else (),
     )
 
-    if resolution.outcome is ResolutionOutcome.UNRESOLVED and record.is_priced and serving is None:
-        # The record's own catalog was unreachable and the reference alone did not
-        # recognise the id. That is a fetch gap, not a delisting, so the known rate
-        # stays.
+    if resolution.outcome is ResolutionOutcome.UNRESOLVED and record.is_priced and serving_unavailable:
+        # The record's own catalog could not be fetched and the reference alone did
+        # not recognise the id. That is a fetch gap, not a delisting, so the known
+        # rate stays. A provider that never publishes a catalog does not qualify:
+        # for it the reference answered in full and its verdict is authoritative.
         report.preserved_on_failure += 1
         return
 
@@ -227,10 +236,3 @@ def _rates_changed(record: PriceRecord, input_per_1m: float, output_per_1m: floa
     if record.price is None:
         return True
     return record.price.input_per_1m != input_per_1m or record.price.output_per_1m != output_per_1m
-
-
-def summarize_by_status(records: Sequence[PriceRecord]) -> Mapping[str, int]:
-    counts: dict[str, int] = {}
-    for record in records:
-        counts[record.status.value] = counts.get(record.status.value, 0) + 1
-    return counts

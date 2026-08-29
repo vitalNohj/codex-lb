@@ -251,6 +251,22 @@ async def test_an_unresolvable_model_records_no_cost_instead_of_a_glob_derived_o
         assert log.cost_usd is None, "an unresolved model must not borrow another model's rate"
         assert log.price_status == ExternalPriceStatus.UNRESOLVED.value
 
+    # The name matches the retired ``*gpt-4o*`` alias glob, so the read path is
+    # where the wrong number used to reappear: the database said NULL while the
+    # API returned GPT-4o's rate and the UI therefore never showed ``!!``.
+    from app.core.usage.pricing import get_pricing_for_model
+
+    assert get_pricing_for_model(unlisted, None, None) is not None, "this id must still match a glob"
+
+    response = await async_client.get("/api/request-logs")
+    assert response.status_code == 200
+    entries = [entry for entry in response.json()["requests"] if entry["model"] == unlisted]
+    assert entries
+    for entry in entries:
+        assert entry["costUsd"] is None, "the API must not price an unresolved model from the static table"
+        assert entry["costBreakdown"]["totalUsd"] is None
+        assert entry["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value
+
 
 @pytest.mark.asyncio
 async def test_an_unresolved_model_is_still_served_and_still_counted(

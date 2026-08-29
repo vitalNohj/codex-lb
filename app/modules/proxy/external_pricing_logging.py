@@ -51,9 +51,6 @@ class ExternalRequestCost:
     price_status: str | None
 
 
-_NO_COST = ExternalRequestCost(cost_usd=None, cost_source=None, price_status=None)
-
-
 async def external_request_cost(
     *,
     provider: str,
@@ -101,23 +98,6 @@ async def external_request_cost(
         )
 
     return ExternalRequestCost(cost_usd=None, cost_source=None, price_status=status_value)
-
-
-def no_external_cost() -> ExternalRequestCost:
-    """Cost fields for an integration that does not participate.
-
-    Ollama and OmniRoute land here. A NULL ``price_status`` is what tells the UI to
-    render ``--`` rather than an unresolved marker: these rows were never expected
-    to carry an external list price.
-    """
-
-    return _NO_COST
-
-
-def is_unresolved_status(price_status: str | None) -> bool:
-    """Whether a row should be marked as an eligible model that stayed unpriced."""
-
-    return price_status in (ExternalPriceStatus.UNRESOLVED.value, ExternalPriceStatus.AMBIGUOUS.value)
 
 
 def usage_tokens_from_sidecar(usage: SidecarUsageLike | None) -> UsageTokens | None:

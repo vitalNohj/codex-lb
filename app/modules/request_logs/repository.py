@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
+from app.core.usage.logs import RequestLogLike, calculated_cost_from_log, declares_price_provenance
 from app.core.usage.types import (
     BucketConversationAggregate,
     BucketModelAggregate,
@@ -561,6 +561,14 @@ class RequestLogsRepository:
             if cost_source is not None:
                 log.cost_usd = cost_usd
                 log.cost_source = cost_source
+            elif model_source_id is not None:
+                # A model source prices its own traffic from operator-configured
+                # rates, whether or not this particular row had usage to price.
+                # Reading the provenance off the caller rather than off whether a
+                # number happened to be present keeps one source from producing
+                # two different provenances.
+                log.cost_usd = cost_usd if cost_usd is not None else 0.0
+                log.cost_source = CostSource.OPERATOR_CONFIGURED.value
             elif cost_usd is not None:
                 log.cost_usd = cost_usd
                 log.cost_source = CostSource.UPSTREAM_BILLED.value
@@ -568,9 +576,6 @@ class RequestLogsRepository:
                 # An eligible external model with no usable price. Leave the cost
                 # NULL so the UI can mark it rather than show an invented number.
                 log.cost_usd = None
-            elif model_source_id is not None:
-                log.cost_usd = 0.0
-                log.cost_source = CostSource.OPERATOR_CONFIGURED.value
             else:
                 calculated = calculated_cost_from_log(typing_cast(RequestLogLike, log))
                 log.cost_usd = calculated
@@ -614,7 +619,13 @@ class RequestLogsRepository:
                     return 0
                 for log in logs:
                     log.model = model
-                    log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    log_like = typing_cast(RequestLogLike, log)
+                    if declares_price_provenance(log_like):
+                        # The row's cost already came from a resolved source, so a
+                        # relabelled model does not entitle us to overwrite it with
+                        # a static-table figure.
+                        continue
+                    log.cost_usd = calculated_cost_from_log(log_like)
                 await self._session.commit()
             except sa_exc.ResourceClosedError:
                 return 0

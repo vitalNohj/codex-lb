@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 import aiohttp
@@ -189,9 +189,3 @@ def order_catalogs(serving: Catalog | None, reference: Catalog | None) -> list[C
         if catalog is not None:
             ordered.append(catalog)
     return ordered
-
-
-def catalog_sizes(catalogs: Sequence[Catalog]) -> Mapping[str, int]:
-    """Per-source entry counts, for operational diagnostics."""
-
-    return {catalog.source: len(catalog.entries) for catalog in catalogs}

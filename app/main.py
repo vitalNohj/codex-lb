@@ -590,6 +590,20 @@ async def lifespan(app: FastAPI):
 
         await claude_sidecar_usage_collector.stop()
         await claude_sidecar_quota_poller.stop()
+        # Finish any external price lookup already in flight while the HTTP client
+        # and both engines are still up. Abandoning one would leave a record
+        # half-written and its backoff unset, so the next request re-dispatches it.
+        try:
+            from app.core.usage.external_pricing.service import drain_pending_lookups
+
+            await asyncio.wait_for(
+                drain_pending_lookups(),
+                timeout=settings.shutdown_drain_timeout_seconds,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning("Timed out draining external price lookups during shutdown")
+        except Exception:
+            logger.warning("Failed to drain external price lookups during shutdown", exc_info=True)
         # Detached control-plane work must finish while usage singleflight,
         # shared HTTP clients, and both database engines are still available.
         # The replica heartbeat is already stopped/staled so this grace period

@@ -9,6 +9,7 @@ from app.core.usage.pricing import (
     calculate_cost_from_usage,
     get_pricing_for_model,
 )
+from app.db.models import CostSource
 
 
 class RequestLogLike(Protocol):
@@ -32,6 +33,23 @@ class RequestLogLike(Protocol):
 
     @property
     def cost_usd(self) -> float | None: ...
+
+
+def declares_price_provenance(log: RequestLogLike) -> bool:
+    """Whether the row already states where its cost did or did not come from.
+
+    Rows written by an integration that participates in external price resolution
+    carry a ``price_status``, and any row priced from a resolved source other than
+    the static table carries that ``cost_source``. In both cases the persisted
+    ``cost_usd`` is the final answer, including when it is NULL: re-deriving it
+    from the substring-matching static table would put a different model's rate on
+    the row, which is exactly the mispricing the resolver replaces.
+    """
+
+    if getattr(log, "price_status", None) is not None:
+        return True
+    cost_source = getattr(log, "cost_source", None)
+    return cost_source is not None and cost_source != CostSource.STATIC_TABLE.value
 
 
 def cached_input_tokens_from_log(log: RequestLogLike) -> int | None:
@@ -73,6 +91,8 @@ def output_tokens_from_log(log: RequestLogLike) -> int | None:
 def calculated_cost_from_log(log: RequestLogLike, *, precision: int | None = None) -> float | None:
     if not log.model:
         return None
+    if declares_price_provenance(log):
+        return None
     usage = usage_tokens_from_log(log)
     if not usage:
         return None
@@ -112,6 +132,18 @@ def cost_breakdown_from_log(log: RequestLogLike, *, precision: int | None = None
     output_usd: float | None = None
     raw_total_usd: float | None = None
     total_usd: float | None = None
+    if declares_price_provenance(log):
+        # The writer already settled this row's price. A NULL cost here means the
+        # model stayed unresolved, and it must stay NULL end to end so the API and
+        # the UI mark it instead of showing a glob-matched rate. Per-component
+        # figures are omitted for the same reason: they would come from the static
+        # table rather than from the rate that produced the persisted total.
+        return UsageCostBreakdown(
+            input_usd=None,
+            cached_input_usd=None,
+            output_usd=None,
+            total_usd=cost_from_log(log, precision=precision),
+        )
     if log.model:
         resolved = get_pricing_for_model(log.model, None, None)
         if resolved is not None:

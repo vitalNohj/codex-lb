@@ -186,6 +186,9 @@ def _run_model_prices_refresh() -> None:
 
     import asyncio
 
+    import sqlalchemy.exc as sa_exc
+
+    from app.core.clients.http import close_http_client, init_http_client
     from app.core.usage.external_pricing.maintenance import run_maintenance_pass
     from app.db.session import init_background_db
     from app.modules.proxy.external_pricing_sources import register_external_pricing_sources
@@ -193,10 +196,24 @@ def _run_model_prices_refresh() -> None:
     async def _run() -> str:
         init_background_db()
         register_external_pricing_sources()
-        report = await run_maintenance_pass()
-        return report.render()
+        # Every catalog fetch leases the shared HTTP client, which only the API
+        # server's lifespan otherwise builds. Without it the pass either aborts
+        # on the pricing reference or silently reports every catalog unavailable
+        # and changes nothing.
+        await init_http_client()
+        try:
+            report = await run_maintenance_pass()
+            return report.render()
+        finally:
+            await close_http_client()
 
-    print(asyncio.run(_run()))
+    try:
+        print(asyncio.run(_run()))
+    except sa_exc.OperationalError as exc:
+        raise SystemExit(
+            "Failed to read persisted model prices. Run 'codex-lb-db upgrade' to apply pending "
+            f"migrations, then retry. Underlying error: {exc}"
+        ) from exc
 
 
 def _run_codex_sessions_retag(args: argparse.Namespace) -> None:

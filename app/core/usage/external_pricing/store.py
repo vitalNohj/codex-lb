@@ -13,7 +13,6 @@ instead of racing a read-then-write.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -25,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.usage.pricing import ModelPrice
 from app.core.utils.time import utcnow
 from app.db.models import ExternalModelPrice, ExternalPriceStatus
+from app.db.session import sqlite_writer_section
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +240,13 @@ class ExternalModelPriceStore:
             index_elements=[ExternalModelPrice.provider, ExternalModelPrice.incoming_model],
             set_={key: value for key, value in values.items() if key not in ("provider", "incoming_model")},
         )
-        await self._session.execute(statement)
-        await self._session.commit()
+        # Background lookups write while requests are writing their logs. On
+        # file-backed SQLite that is the contention this section serializes; a
+        # "database is locked" here would leave the record with no backoff row and
+        # let the next request re-dispatch the same lookup.
+        async with sqlite_writer_section():
+            await self._session.execute(statement)
+            await self._session.commit()
 
     @staticmethod
     def _select_one(provider_key: str, model_key: str) -> Select[tuple[ExternalModelPrice]]:
@@ -284,9 +289,3 @@ def _parse_status(raw: str) -> ExternalPriceStatus:
         # no price and maintenance rewrites it.
         logger.warning("unknown external price status %r; treating as unresolved", raw)
         return ExternalPriceStatus.UNRESOLVED
-
-
-def statuses_requiring_attention() -> Sequence[ExternalPriceStatus]:
-    """Statuses the maintenance command reports for operator review."""
-
-    return (ExternalPriceStatus.UNRESOLVED, ExternalPriceStatus.AMBIGUOUS)

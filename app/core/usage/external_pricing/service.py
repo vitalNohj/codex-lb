@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -45,6 +46,16 @@ from app.db.session import get_background_session
 
 logger = logging.getLogger(__name__)
 
+# Ceiling on lookups running at once. Lookups are rare by construction, so this
+# only bites when many previously unseen ids arrive together; it keeps that burst
+# from becoming an unbounded fan-out of catalog fetches.
+_MAX_CONCURRENT_LOOKUPS = 4
+
+# How long one fetched pricing reference is reused across lookups. Long enough to
+# collapse a burst of first sightings onto a single fetch, short enough that it is
+# not a cache of record: the persisted store is.
+_REFERENCE_CATALOG_MEMO_SECONDS = 60.0
+
 # Supplies the serving integration's own catalog and routing configuration for a
 # background lookup. Returning ``None`` for the catalog means the integration
 # could not be consulted this time; resolution then falls back to the pricing
@@ -54,11 +65,26 @@ ServingContextLoader = Callable[[str], Awaitable["ServingContext | None"]]
 
 @dataclass(frozen=True, slots=True)
 class ServingContext:
-    """What the serving integration contributes to one lookup."""
+    """What the serving integration contributes to one lookup.
+
+    ``catalog`` is ``None`` in two situations that must not be confused.
+    ``publishes_price_catalog=False`` means the integration has no rates to give by
+    design (CLIProxyAPI proxies other vendors' models and publishes none), so the
+    pricing reference is the whole answer and its verdict is authoritative. With
+    ``publishes_price_catalog=True`` a ``None`` catalog means the listing could not
+    be fetched or parsed this time, and callers must preserve prior values instead.
+    """
 
     catalog: Catalog | None
     aliases: Mapping[str, str]
     prefixes: Sequence[tuple[str, bool]]
+    publishes_price_catalog: bool = True
+
+    @property
+    def serving_catalog_missing(self) -> bool:
+        """Whether a catalog that should have been available was not."""
+
+        return self.publishes_price_catalog and self.catalog is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,13 +106,26 @@ class _LookupCoordinator:
     next one.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_concurrent: int = _MAX_CONCURRENT_LOOKUPS) -> None:
         self._lock = asyncio.Lock()
         self._in_flight: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._max_concurrent = max_concurrent
 
     async def submit(self, key: tuple[str, str], factory: Callable[[], Awaitable[None]]) -> None:
         async with self._lock:
             if key in self._in_flight:
+                return
+            if len(self._in_flight) >= self._max_concurrent:
+                # A client enumerating models, or a routing-prefix change, can
+                # present many unseen ids at once. Shedding the excess is safe and
+                # bounded: nothing was persisted, so the next request for that id
+                # schedules it again once the queue has drained.
+                logger.debug(
+                    "external price lookup deferred, %d already in flight provider=%s model=%s",
+                    len(self._in_flight),
+                    key[0],
+                    key[1],
+                )
                 return
             task = asyncio.create_task(self._run(key, factory))
             self._in_flight[key] = task
@@ -112,12 +151,11 @@ class _LookupCoordinator:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def in_flight_count(self) -> int:
-        return len(self._in_flight)
-
 
 _coordinator = _LookupCoordinator()
 _serving_context_loaders: dict[str, ServingContextLoader] = {}
+_reference_catalog_memo: tuple[float, Catalog | None] | None = None
+_reference_catalog_lock = asyncio.Lock()
 
 
 def register_serving_context_loader(provider: str, loader: ServingContextLoader) -> None:
@@ -132,7 +170,9 @@ def register_serving_context_loader(provider: str, loader: ServingContextLoader)
 
 
 def reset_serving_context_loaders() -> None:
+    global _reference_catalog_memo
     _serving_context_loaders.clear()
+    _reference_catalog_memo = None
 
 
 def get_lookup_coordinator() -> _LookupCoordinator:
@@ -212,7 +252,8 @@ async def _run_lookup(provider_key: str, model_key: str, *, previous: PriceRecor
     serving = await load_serving_context(provider_key)
     reference = await _load_reference_catalog()
 
-    if serving is None and reference is None:
+    serving_catalog = serving.catalog if serving is not None else None
+    if serving_catalog is None and reference is None:
         # Nothing could be consulted. Persisting an unresolved record here still
         # matters: it is what bounds retries so traffic cannot keep re-dispatching
         # this lookup while the catalogs are down.
@@ -320,11 +361,35 @@ async def load_serving_context(provider_key: str) -> ServingContext | None:
         return None
 
 
+async def drain_pending_lookups() -> None:
+    """Let every scheduled lookup finish. Called on shutdown and by tests."""
+
+    await _coordinator.drain()
+
+
 async def _load_reference_catalog() -> Catalog | None:
-    try:
-        return await fetch_openrouter_catalog()
-    except CatalogFetchError as exc:
-        # OpenRouter is a pricing reference, not an availability authority: its
-        # being unreachable removes a price source and nothing else.
-        logger.warning("OpenRouter pricing reference unavailable: %s", exc)
-        return None
+    """The pricing reference, memoised for a short window.
+
+    Several previously unseen ids commonly appear together (a prefix change, a
+    fresh deployment, a client enumerating models). Each one needs the same ~600
+    entry catalog, so fetching it once for the burst keeps the cache-first
+    semantics without the fan-out. The window is short enough that a maintenance
+    pass or a later lookup still sees fresh rates.
+    """
+
+    global _reference_catalog_memo
+    async with _reference_catalog_lock:
+        memo = _reference_catalog_memo
+        if memo is not None and (time.monotonic() - memo[0]) < _REFERENCE_CATALOG_MEMO_SECONDS:
+            return memo[1]
+        try:
+            catalog: Catalog | None = await fetch_openrouter_catalog()
+        except CatalogFetchError as exc:
+            # OpenRouter is a pricing reference, not an availability authority: its
+            # being unreachable removes a price source and nothing else. The
+            # failure is memoised too, so a burst arriving during an outage does
+            # not become a burst of failing fetches.
+            logger.warning("OpenRouter pricing reference unavailable: %s", exc)
+            catalog = None
+        _reference_catalog_memo = (time.monotonic(), catalog)
+        return catalog
