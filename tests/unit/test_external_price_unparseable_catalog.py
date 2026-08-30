@@ -53,9 +53,40 @@ def test_an_entry_priced_only_per_request_is_still_not_token_priced() -> None:
 @pytest.mark.parametrize(
     "pricing",
     [
+        pytest.param({"prompt": "-1", "completion": "-1", "request": "-1"}, id="negative-sentinel"),
+        pytest.param({"prompt": -1, "completion": -1}, id="negative-sentinel-numeric"),
+        pytest.param({"prompt": None, "completion": None, "request": "0.04"}, id="explicit-null"),
+        pytest.param({"prompt": "", "completion": ""}, id="empty-string"),
+        pytest.param({"prompt": "-1", "completion": "0.000002"}, id="one-side-declared-none"),
+    ],
+)
+def test_a_catalog_declared_no_price_is_a_settled_not_token_priced_answer(pricing: object) -> None:
+    """A sentinel is the catalog answering, not this build failing to read it.
+
+    ``openrouter/auto`` publishes ``-1`` for prompt and completion to say it has
+    no per-token rate. Reading that as a parse failure marks a genuine router
+    model ``!!`` and re-looks it up on the backoff schedule forever, instead of
+    settling it as ``--`` with no retry state.
+    """
+
+    catalog = parse_openai_style_catalog(_payload("openrouter/auto", pricing), source="openrouter")
+
+    entry = catalog.exact("openrouter/auto")
+    assert entry is not None
+    assert entry.price is None
+    assert entry.unpriced_reason is UnpricedReason.NO_TOKEN_RATE
+
+    resolution = resolve_model_price("openrouter/auto", catalogs=[catalog])
+    assert resolution.outcome is ResolutionOutcome.NOT_TOKEN_PRICED
+
+
+@pytest.mark.parametrize(
+    "pricing",
+    [
         pytest.param({"prompt": "not-a-number", "completion": "0.000002"}, id="unreadable-value"),
         pytest.param({"prompt": {"per_1m": 3.0}, "completion": {"per_1m": 6.0}}, id="restructured-shape"),
         pytest.param({"prompt": "0.000001"}, id="half-a-rate"),
+        pytest.param({"prompt_usd_per_1m": "3.0", "completion": "0.000002"}, id="renamed-unit-field"),
     ],
 )
 def test_an_entry_whose_declared_token_rates_cannot_be_read_is_unparseable(pricing: object) -> None:

@@ -15,7 +15,8 @@ import pytest
 from sqlalchemy import select
 
 from app.core.usage.external_pricing import service as pricing_service
-from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
+from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry, parse_openai_style_catalog
+from app.core.usage.external_pricing.resolution import UnpricedReason
 from app.core.usage.external_pricing.service import (
     ServingContext,
     calculated_cost_for_request,
@@ -319,6 +320,84 @@ async def test_a_non_token_priced_model_settles_without_retry_state(db_setup) ->
     await calculated_cost_for_request(provider="orcarouter", model="orcarouter/fusion", usage=ONE_MILLION)
     await get_lookup_coordinator().drain()
     assert loader.calls == 1, "a settled non-token-priced model must not be retried"
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_sentinel_price_settles_the_model_without_retry_state(db_setup) -> None:
+    """``openrouter/auto`` publishes ``-1`` to say it has no per-token rate.
+
+    Reading that sentinel as a parse failure marked a genuine router model ``!!``
+    and re-looked it up on the backoff schedule forever. It must settle as ``--``.
+    """
+
+    del db_setup
+    sentinel_catalog = parse_openai_style_catalog(
+        {"data": [{"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1", "request": "-1"}}]},
+        source="orcarouter",
+    )
+    loader = _CountingLoader(ServingContext(catalog=sentinel_catalog, aliases={}, prefixes=()))
+    register_serving_context_loader("orcarouter", loader)
+
+    await calculated_cost_for_request(provider="orcarouter", model="openrouter/auto", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.NOT_TOKEN_PRICED.value
+    assert record.next_retry_at is None
+
+    cost, status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="openrouter/auto",
+        usage=ONE_MILLION,
+    )
+    await get_lookup_coordinator().drain()
+
+    assert cost is None
+    assert status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert loader.calls == 1, "a settled router model must never be looked up again"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_upstream_price_widens_its_backoff_each_round(db_setup) -> None:
+    """Preserving a rate must still bound the work that re-reads the source.
+
+    A reset attempt count pins the deadline at the first backoff step, so an
+    upstream schema change that lasts a day re-fetches every five minutes forever.
+    """
+
+    del db_setup
+    unreadable = Catalog.from_entries(
+        "orcarouter",
+        [CatalogEntry(model_id="vendor/model-x", price=None, unpriced_reason=UnpricedReason.UNPARSEABLE)],
+    )
+    loader = _CountingLoader(ServingContext(catalog=unreadable, aliases={}, prefixes=()))
+    register_serving_context_loader("orcarouter", loader)
+    async with SessionLocal() as session:
+        await ExternalModelPriceStore(session).record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+        )
+
+    deadlines = []
+    for expected_attempts in (1, 2, 3):
+        async with SessionLocal() as session:
+            record = (await session.execute(select(ExternalModelPrice))).scalar_one()
+            record.next_retry_at = utcnow() - timedelta(seconds=1)
+            await session.commit()
+        await calculated_cost_for_request(provider="orcarouter", model="vendor/model-x", usage=ONE_MILLION)
+        await get_lookup_coordinator().drain()
+        record = (await _records())[0]
+        assert record.attempt_count == expected_attempts
+        assert record.input_per_1m == pytest.approx(2.0), "the last parsed rate must survive"
+        assert record.next_retry_at is not None
+        deadlines.append(record.next_retry_at)
+
+    gaps = [later - earlier for earlier, later in zip(deadlines, deadlines[1:])]
+    assert all(gap > timedelta(0) for gap in gaps), "the retry schedule must widen, not repeat"
 
 
 @pytest.mark.asyncio

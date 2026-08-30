@@ -67,24 +67,44 @@ ServingContextLoader = Callable[[str], Awaitable["ServingContext | None"]]
 class ServingContext:
     """What the serving integration contributes to one lookup.
 
-    ``catalog`` is ``None`` in two situations that must not be confused.
+    ``catalog`` is ``None`` in three situations that must not be confused.
     ``publishes_price_catalog=False`` means the integration has no rates to give by
     design (CLIProxyAPI proxies other vendors' models and publishes none), so the
-    pricing reference is the whole answer and its verdict is authoritative. With
-    ``publishes_price_catalog=True`` a ``None`` catalog means the listing could not
-    be fetched or parsed this time, and callers must preserve prior values instead.
+    pricing reference is the whole answer and its verdict is authoritative.
+    ``integration_enabled=False`` means the operator switched the integration off,
+    which is not a failure and not an answer -- nothing was asked. With both flags
+    at their defaults a ``None`` catalog means the listing could not be fetched or
+    parsed this time, and callers must preserve prior values instead.
     """
 
     catalog: Catalog | None
     aliases: Mapping[str, str]
     prefixes: Sequence[tuple[str, bool]]
     publishes_price_catalog: bool = True
+    integration_enabled: bool = True
+
+    @classmethod
+    def disabled(cls) -> "ServingContext":
+        """The context of an integration the operator turned off.
+
+        Distinct from a loader that raised: a switched-off integration has not
+        failed to answer, so reporting it as an unavailable catalog would put a
+        permanent failure line in front of an operator who did this on purpose.
+        """
+
+        return cls(
+            catalog=None,
+            aliases={},
+            prefixes=(),
+            publishes_price_catalog=False,
+            integration_enabled=False,
+        )
 
     @property
     def serving_catalog_missing(self) -> bool:
         """Whether a catalog that should have been available was not."""
 
-        return self.publishes_price_catalog and self.catalog is None
+        return self.integration_enabled and self.publishes_price_catalog and self.catalog is None
 
 
 @dataclass(frozen=True, slots=True)

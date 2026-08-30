@@ -62,6 +62,17 @@ class PriceRecord:
     def is_priced(self) -> bool:
         return self.status is ExternalPriceStatus.RESOLVED and self.price is not None
 
+    @property
+    def is_settled(self) -> bool:
+        """Whether this record already holds an answer a source produced.
+
+        A priced record and a not-token-priced one are both answers. Neither may
+        be discarded because some *other* source failed to answer this pass: the
+        outage says nothing about a question that was already closed.
+        """
+
+        return self.is_priced or self.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+
     def retry_due(self, *, now: datetime | None = None) -> bool:
         """Whether this record may be looked up again.
 
@@ -224,7 +235,10 @@ class ExternalModelPriceStore:
                 output_per_1m=record.price.output_per_1m,
                 resolution_step=record.resolution_step,
                 detail=detail,
-                attempt_count=0,
+                # The incremented count is what widens the schedule. Resetting it
+                # would pin the deadline at the first backoff step, so an upstream
+                # schema change would re-fetch every five minutes indefinitely.
+                attempt_count=attempts,
                 retry_at=next_retry_at(attempts),
                 retrieved_at=record.retrieved_at,
             )

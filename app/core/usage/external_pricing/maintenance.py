@@ -48,9 +48,12 @@ class MaintenanceReport:
     unchanged: int = 0
     preserved_on_failure: int = 0
     preserved_unparseable: list[RecordChange] = field(default_factory=list)
+    became_not_token_priced: list[RecordChange] = field(default_factory=list)
     unresolved: list[RecordChange] = field(default_factory=list)
     ambiguous: list[RecordChange] = field(default_factory=list)
     catalog_failures: list[str] = field(default_factory=list)
+    disabled_integrations: list[str] = field(default_factory=list)
+    skipped_disabled: int = 0
 
     def render(self) -> str:
         lines = [
@@ -59,14 +62,17 @@ class MaintenanceReport:
             f"- Rates updated: {len(self.updated)}",
             f"- Newly resolved: {len(self.newly_resolved)}",
             f"- Unchanged: {self.unchanged}",
+            f"- Now listed without a per-token price: {len(self.became_not_token_priced)}",
             f"- Preserved after a source failure: {self.preserved_on_failure}",
             f"- Preserved after an unreadable published price: {len(self.preserved_unparseable)}",
+            f"- Skipped, integration disabled: {self.skipped_disabled}",
             f"- Still unresolved: {len(self.unresolved)}",
             f"- Ambiguous: {len(self.ambiguous)}",
         ]
         for label, changes in (
             ("Updated", self.updated),
             ("Newly resolved", self.newly_resolved),
+            ("Now listed without a per-token price", self.became_not_token_priced),
             ("Preserved after an unreadable published price", self.preserved_unparseable),
             ("Unresolved", self.unresolved),
             ("Ambiguous", self.ambiguous),
@@ -80,6 +86,10 @@ class MaintenanceReport:
             lines.append("")
             lines.append("Catalog sources unavailable (prior values preserved):")
             lines.extend(f"  {failure}" for failure in self.catalog_failures)
+        if self.disabled_integrations:
+            lines.append("")
+            lines.append("Integrations disabled (records left untouched):")
+            lines.extend(f"  {provider}" for provider in self.disabled_integrations)
         return "\n".join(lines)
 
 
@@ -101,9 +111,17 @@ async def run_maintenance_pass() -> MaintenanceReport:
     providers = sorted({record.provider for record in records})
     contexts: dict[str, ServingContext | None] = {}
     unavailable_providers: set[str] = set()
+    disabled_providers: set[str] = set()
     for provider in providers:
         context = await load_serving_context(provider)
         contexts[provider] = context
+        if context is not None and not context.integration_enabled:
+            # The operator switched this integration off. Nothing was asked of it,
+            # so it has neither failed nor answered; its records are left exactly
+            # as they are and the report says why.
+            disabled_providers.add(provider)
+            report.disabled_integrations.append(provider)
+            continue
         # An integration that publishes no price catalog by design contributes
         # nothing here and has not failed. Reporting it as a failure would also
         # make every one of its records look "preserved after a source failure",
@@ -114,6 +132,9 @@ async def run_maintenance_pass() -> MaintenanceReport:
 
     reference_unavailable = reference_error is not None
     for record in records:
+        if record.provider in disabled_providers:
+            report.skipped_disabled += 1
+            continue
         context = contexts.get(record.provider)
         serving_catalog = context.catalog if context is not None else None
         serving_unavailable = record.provider in unavailable_providers
@@ -162,15 +183,16 @@ async def _refresh_record(
 
     if (
         resolution.outcome is ResolutionOutcome.UNRESOLVED
-        and record.is_priced
+        and record.is_settled
         and (serving_unavailable or reference_unavailable)
     ):
         # At least one source this record could have been resolved from could not
         # be fetched, and the ones that answered did not recognise the id. That is
-        # a fetch gap, not a delisting, so the known rate stays. Only when every
-        # source that could price this id answered is an absence authoritative --
-        # which includes a provider that publishes no catalog by design, since for
-        # it the reference is the whole answer.
+        # a fetch gap, not a delisting, so the settled answer stays -- a priced
+        # record keeps its rate and a not-token-priced one keeps its settled
+        # state. Only when every source that could price this id answered is an
+        # absence authoritative, which includes a provider that publishes no
+        # catalog by design, since for it the reference is the whole answer.
         report.preserved_on_failure += 1
         return
 
@@ -241,7 +263,21 @@ async def _refresh_record(
                 resolution_step=resolution.step or "exact",
                 detail=resolution.detail or "not token priced",
             )
-            report.unchanged += 1
+            if record.status is ExternalPriceStatus.NOT_TOKEN_PRICED:
+                report.unchanged += 1
+            else:
+                # This clears the stored rates and drops the retry deadline. A
+                # dropped rate must never read as "unchanged".
+                report.became_not_token_priced.append(
+                    RecordChange(
+                        provider=record.provider,
+                        incoming_model=record.incoming_model,
+                        description=(
+                            f"{resolution.catalog_source}:{resolution.catalog_model} "
+                            "is listed without a per-token price"
+                        ),
+                    )
+                )
             return
 
         status = (

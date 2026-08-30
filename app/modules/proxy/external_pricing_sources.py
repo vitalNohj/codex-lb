@@ -69,7 +69,9 @@ async def _load_orcarouter_context(_provider: str) -> ServingContext | None:
 
     config = await load_orcarouter_sidecar_config()
     if config is None or not config.enabled:
-        return None
+        # Switched off, not unreachable. Returning ``None`` here would make the
+        # maintenance pass report a catalog failure that never happened.
+        return ServingContext.disabled()
     # ``list_models`` rather than ``list_models_cached``: the cached variant
     # degrades a failed fetch to an empty list, which a resolver cannot tell from
     # a catalogue that genuinely lists nothing. Raising lets the caller preserve
@@ -95,7 +97,7 @@ async def _load_openrouter_context(_provider: str) -> ServingContext | None:
 
     config = await load_openrouter_sidecar_config()
     if config is None or not config.enabled:
-        return None
+        return ServingContext.disabled()
     models = await OpenRouterSidecarClient(config).list_models()
     return ServingContext(
         catalog=catalog_from_sidecar_models(
@@ -122,7 +124,7 @@ async def _load_cliproxy_context(_provider: str) -> ServingContext | None:
 
     config = await load_sidecar_config()
     if config is None or not config.enabled:
-        return None
+        return ServingContext.disabled()
     return ServingContext(
         catalog=None,
         aliases=await load_model_aliases(),

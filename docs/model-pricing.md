@@ -98,7 +98,10 @@ External model price maintenance
 - Rates updated: 2
 - Newly resolved: 1
 - Unchanged: 38
+- Now listed without a per-token price: 0
 - Preserved after a source failure: 0
+- Preserved after an unreadable published price: 0
+- Skipped, integration disabled: 0
 - Still unresolved: 1
 - Ambiguous: 0
 ```
@@ -117,9 +120,22 @@ Two outcomes are worth knowing:
   listing supports.
 - If a catalog still lists a model but publishes its price in a shape codex-lb
   cannot read, the last successfully read rate is kept and the model is retried
-  later. This is reported under "Preserved after an unreadable published price"
-  rather than counted as unchanged, so an upstream schema change is visible
-  instead of silently clearing rates.
+  later on a widening schedule. This is reported under "Preserved after an
+  unreadable published price" rather than counted as unchanged, so an upstream
+  schema change is visible instead of silently clearing rates. A catalog that
+  publishes a no-price value (`-1`, `null`, or an empty string) is not that case:
+  it is the catalog stating the model has no per-token rate, so the model settles
+  as `--` and is never retried.
+- If a catalog reachable in an earlier pass no longer answers, a record that was
+  already settled keeps its answer, whether that answer was a rate or "not token
+  priced". Both are answers a source produced, and an outage is not evidence
+  against either.
+- If a rate is replaced by a listing with no per-token price, the change is
+  reported under "Now listed without a per-token price". Clearing a stored rate
+  is never counted as unchanged.
+- If an integration is switched off, its records are left untouched and it is
+  listed under "Integrations disabled". A disabled integration has not failed to
+  answer, so it is never reported as an unavailable catalog.
 
 CLIProxyAPI publishes no rates of its own, by design. That is not a fetch
 failure: it is never reported as an unavailable catalog, and its records are

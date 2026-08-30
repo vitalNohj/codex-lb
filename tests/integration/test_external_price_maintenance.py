@@ -93,6 +93,27 @@ def _install_priceless_provider(provider: str, *, prefixes: tuple[tuple[str, boo
     register_serving_context_loader(provider, _loader)
 
 
+def _install_disabled_provider(provider: str) -> None:
+    """An integration the operator switched off, not one that failed to answer."""
+
+    async def _loader(_provider: str) -> ServingContext:
+        return ServingContext.disabled()
+
+    register_serving_context_loader(provider, _loader)
+
+
+async def _seed_not_token_priced(model: str, *, provider: str = "orcarouter") -> None:
+    async with SessionLocal() as session:
+        await ExternalModelPriceStore(session).record_not_token_priced(
+            provider=provider,
+            incoming_model=model,
+            catalog_model=model,
+            catalog_source=provider,
+            resolution_step="exact",
+            detail="catalog lists the model without a per-token price",
+        )
+
+
 async def _seed_resolved(model: str, price: ModelPrice, *, provider: str = "orcarouter") -> None:
     async with SessionLocal() as session:
         await ExternalModelPriceStore(session).record_resolved(
@@ -426,6 +447,78 @@ async def test_a_never_priced_id_with_an_unreadable_price_stays_unresolved(db_se
     assert record.status is ExternalPriceStatus.UNRESOLVED
     assert record.price is None
     assert record.next_retry_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_settled_unpriced_record_survives_a_serving_catalog_outage(db_setup, monkeypatch) -> None:
+    """A router model already settled as not token priced is an answer.
+
+    A serving-catalog outage says nothing about it, so turning it unresolved would
+    put ``!!`` on a model that legitimately has no per-token rate, and would file
+    it under "Still unresolved" rather than as preserved.
+    """
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference():
+        return _catalog("openrouter", {"vendor/something-else": ModelPrice(9.0, 9.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+    await _seed_not_token_priced("orcarouter/fusion")
+    _install_catalog("orcarouter", None)
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 1
+    assert report.unresolved == []
+    record = await _record("orcarouter/fusion")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.next_retry_at is None, "a settled answer must not gain retry state from an outage"
+
+
+@pytest.mark.asyncio
+async def test_a_rate_that_becomes_unpriced_is_reported_rather_than_counted_unchanged(db_setup) -> None:
+    """Clearing a stored rate is a state change the operator must see."""
+
+    del db_setup
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+    _install_catalog("orcarouter", {"vendor/model-x": None})
+
+    first = await run_maintenance_pass()
+
+    assert len(first.became_not_token_priced) == 1
+    assert first.became_not_token_priced[0].incoming_model == "vendor/model-x"
+    assert first.unchanged == 0, "a dropped rate must never read as unchanged"
+    assert "Now listed without a per-token price" in first.render()
+
+    # Idempotence: the second pass confirms the same settled answer, which is
+    # genuinely unchanged.
+    second = await run_maintenance_pass()
+    assert second.became_not_token_priced == []
+    assert second.unchanged == 1
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_integration_is_not_reported_as_a_catalog_failure(db_setup) -> None:
+    """Switching an integration off is not the same as it failing to answer."""
+
+    del db_setup
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+    _install_disabled_provider("orcarouter")
+
+    report = await run_maintenance_pass()
+
+    assert report.catalog_failures == []
+    assert report.disabled_integrations == ["orcarouter"]
+    assert report.skipped_disabled == 1
+    assert report.preserved_on_failure == 0
+    assert report.unresolved == []
+    assert "Integrations disabled" in report.render()
+    record = await _record("vendor/model-x")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(2.0)
 
 
 @pytest.mark.asyncio

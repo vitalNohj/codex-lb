@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Sequence
+from enum import Enum
 from typing import cast
 
 import aiohttp
@@ -128,20 +129,79 @@ def parse_openai_style_catalog(payload: JsonValue, *, source: str) -> Catalog:
     return Catalog.from_entries(source, entries)
 
 
-def _unpriced_reason(price: ModelPrice | None, raw_pricing: JsonValue) -> UnpricedReason:
-    """Whether an unpriced entry lacks rate fields or carries unreadable ones.
+class _RateReading(Enum):
+    """What one published rate field says.
 
-    A catalog that publishes no ``prompt``/``completion`` keys at all has said the
-    model is not token priced. One that publishes them in a shape this build
-    cannot read has said nothing this build can act on, so the prior rate stands.
+    The distinction is between the catalog answering and this build failing.
+    ``DECLARED_NONE`` is an answer: catalogs say "no per-token rate" by publishing
+    a negative sentinel (``"-1"`` on ``openrouter/auto``), an explicit ``null``, or
+    an empty string. ``UNREADABLE`` is a shape this build cannot interpret -- a
+    nested object, a renamed unit field, a non-numeric string -- which is a parse
+    failure and must never settle the question.
+    """
+
+    MISSING = "missing"
+    DECLARED_NONE = "declared_none"
+    PARSED = "parsed"
+    UNREADABLE = "unreadable"
+
+
+def _read_rate(value: JsonValue) -> tuple[_RateReading, float | None]:
+    if value is None:
+        return _RateReading.DECLARED_NONE, None
+    if isinstance(value, bool):
+        return _RateReading.UNREADABLE, None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return _RateReading.DECLARED_NONE, None
+        try:
+            number = float(stripped)
+        except ValueError:
+            return _RateReading.UNREADABLE, None
+    else:
+        return _RateReading.UNREADABLE, None
+    if number < 0:
+        return _RateReading.DECLARED_NONE, None
+    return _RateReading.PARSED, number
+
+
+def _read_rate_field(raw_pricing: dict[str, JsonValue], key: str) -> _RateReading:
+    if key not in raw_pricing:
+        return _RateReading.MISSING
+    return _read_rate(raw_pricing[key])[0]
+
+
+def _unpriced_reason(price: ModelPrice | None, raw_pricing: JsonValue) -> UnpricedReason:
+    """Whether an unpriced entry declares no token rate or carries unreadable ones.
+
+    Keyed on the published *values*, not on which keys exist. A catalog that omits
+    ``prompt``/``completion``, or publishes them as a negative sentinel, ``null``,
+    or an empty string, has said the model is not token priced -- a settled answer
+    that carries no retry state. Only a shape this build genuinely could not read,
+    or a half-published pair it cannot turn into a price, leaves the question open
+    so the prior rate stands and the source is re-read.
     """
 
     if price is not None:
         return UnpricedReason.NO_TOKEN_RATE
     if not is_json_mapping(raw_pricing):
         return UnpricedReason.NO_TOKEN_RATE
-    declares_token_rates = any(key in raw_pricing for key in ("prompt", "completion"))
-    return UnpricedReason.UNPARSEABLE if declares_token_rates else UnpricedReason.NO_TOKEN_RATE
+    readings = [_read_rate_field(raw_pricing, key) for key in ("prompt", "completion")]
+    if _RateReading.UNREADABLE in readings:
+        return UnpricedReason.UNPARSEABLE
+    if _RateReading.DECLARED_NONE in readings:
+        # The catalog published the field and used it to say there is no rate.
+        # That is its answer, and half a declared rate still cannot be multiplied
+        # by tokens, so the model is not token priced.
+        return UnpricedReason.NO_TOKEN_RATE
+    # A readable rate whose counterpart key is absent entirely is the shape a
+    # renamed or restructured schema produces. Nothing is settled by it.
+    if _RateReading.PARSED in readings:
+        return UnpricedReason.UNPARSEABLE
+    return UnpricedReason.NO_TOKEN_RATE
 
 
 def parse_per_token_pricing(pricing: JsonValue) -> ModelPrice | None:
@@ -163,21 +223,8 @@ def parse_per_token_pricing(pricing: JsonValue) -> ModelPrice | None:
 
 
 def _parse_per_token_usd(value: JsonValue) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        per_token = float(value)
-    elif isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            per_token = float(stripped)
-        except ValueError:
-            return None
-    else:
-        return None
-    if per_token < 0:
+    reading, per_token = _read_rate(value)
+    if reading is not _RateReading.PARSED or per_token is None:
         return None
     return per_token * _PER_TOKEN_TO_PER_1M
 
