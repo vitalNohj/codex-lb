@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.core.clients.omniroute_sidecar import OmniRouteSidecarConfig
+from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
 from app.core.config.settings import get_settings
 from app.modules.proxy.deepseek_v4_compat import get_reasoning_cache
 
@@ -28,8 +28,8 @@ class _FakeStreamContext:
         return None
 
 
-class _FakeOmniRouteClient:
-    def __init__(self, config: OmniRouteSidecarConfig) -> None:
+class _FakeOrcaRouterClient:
+    def __init__(self, config: OrcaRouterSidecarConfig) -> None:
         self.config = config
         self.chat_payloads: list[dict] = []
         self.stream_payloads: list[dict] = []
@@ -50,31 +50,32 @@ class _FakeOmniRouteClient:
 
 
 @pytest.fixture
-async def omniroute_enabled(monkeypatch):
-    monkeypatch.setenv("CODEX_LB_OMNIROUTE_SIDECAR_ENABLED", "true")
+async def orcarouter_enabled(monkeypatch):
+    monkeypatch.setenv("CODEX_LB_ORCAROUTER_SIDECAR_ENABLED", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
 
 
 @pytest.fixture
-async def fake_omniroute(monkeypatch):
-    config = OmniRouteSidecarConfig(
+async def fake_orcarouter(monkeypatch):
+    config = OrcaRouterSidecarConfig(
         enabled=True,
-        base_url="http://127.0.0.1:20128/v1",
-        api_key="omniroute-key",
+        base_url="https://api.orcarouter.ai/v1",
+        api_key="sk-orca-key",
+        prefixes=(),
         full_models=(DEEPSEEK_MODEL,),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
     )
-    client = _FakeOmniRouteClient(config)
+    client = _FakeOrcaRouterClient(config)
 
     async def load_config():
         return config
 
-    monkeypatch.setattr("app.modules.proxy.api.load_omniroute_sidecar_config", load_config)
-    monkeypatch.setattr("app.modules.proxy.api.OmniRouteSidecarClient", lambda _config: client)
+    monkeypatch.setattr("app.modules.proxy.api.load_orcarouter_sidecar_config", load_config)
+    monkeypatch.setattr("app.modules.proxy.api.OrcaRouterSidecarClient", lambda _config: client)
     get_reasoning_cache().clear()
     return client
 
@@ -83,9 +84,9 @@ async def _configure(async_client) -> None:
     await async_client.put(
         "/api/settings",
         json={
-            "omnirouteSidecarEnabled": True,
-            "omnirouteSidecarApiKey": "omniroute-key",
-            "omnirouteSidecarSelectedModels": [DEEPSEEK_MODEL],
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "sk-orca-key",
+            "orcarouterSidecarFullModels": [DEEPSEEK_MODEL],
         },
     )
 
@@ -116,9 +117,9 @@ _TOOLS = [
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_repair_reinjects_reasoning_on_next_turn(async_client, omniroute_enabled, fake_omniroute):
+async def test_non_streaming_repair_reinjects_reasoning_on_next_turn(async_client, orcarouter_enabled, fake_orcarouter):
     await _configure(async_client)
-    fake_omniroute.chat_response = {
+    fake_orcarouter.chat_response = {
         "id": "c1",
         "object": "chat.completion",
         "model": DEEPSEEK_MODEL,
@@ -148,7 +149,7 @@ async def test_non_streaming_repair_reinjects_reasoning_on_next_turn(async_clien
     )
     assert first.status_code == 200
     # The forwarded payload for turn 1 has no reasoning to inject
-    assert "reasoning_content" not in json.dumps(fake_omniroute.chat_payloads[0]["messages"])
+    assert "reasoning_content" not in json.dumps(fake_orcarouter.chat_payloads[0]["messages"])
 
     # Turn 2: client echoes assistant tool_calls (without reasoning) + tool result
     second = await async_client.post(
@@ -164,14 +165,14 @@ async def test_non_streaming_repair_reinjects_reasoning_on_next_turn(async_clien
         },
     )
     assert second.status_code == 200
-    forwarded = fake_omniroute.chat_payloads[1]["messages"]
+    forwarded = fake_orcarouter.chat_payloads[1]["messages"]
     assert forwarded[1]["reasoning_content"] == "thinking about Paris"
 
 
 @pytest.mark.asyncio
-async def test_streaming_repair_reinjects_accumulated_reasoning(async_client, omniroute_enabled, fake_omniroute):
+async def test_streaming_repair_reinjects_accumulated_reasoning(async_client, orcarouter_enabled, fake_orcarouter):
     await _configure(async_client)
-    fake_omniroute.stream_chunks = [
+    fake_orcarouter.stream_chunks = [
         b'data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"step 1 "}}]}\n\n',
         b'data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"step 2"}}]}\n\n',
         (
@@ -197,7 +198,7 @@ async def test_streaming_repair_reinjects_accumulated_reasoning(async_client, om
     assert "data: [DONE]" in first.text
 
     # Now non-streaming continuation gets the accumulated reasoning re-injected
-    fake_omniroute.chat_response = {
+    fake_orcarouter.chat_response = {
         "id": "c2",
         "object": "chat.completion",
         "model": DEEPSEEK_MODEL,
@@ -217,14 +218,14 @@ async def test_streaming_repair_reinjects_accumulated_reasoning(async_client, om
         },
     )
     assert second.status_code == 200
-    forwarded = fake_omniroute.chat_payloads[0]["messages"]
+    forwarded = fake_orcarouter.chat_payloads[0]["messages"]
     assert forwarded[1]["reasoning_content"] == "step 1 step 2"
 
 
 @pytest.mark.asyncio
-async def test_missing_cache_forwards_unchanged(async_client, omniroute_enabled, fake_omniroute):
+async def test_missing_cache_forwards_unchanged(async_client, orcarouter_enabled, fake_orcarouter):
     await _configure(async_client)
-    fake_omniroute.chat_response = {
+    fake_orcarouter.chat_response = {
         "id": "c1",
         "object": "chat.completion",
         "model": DEEPSEEK_MODEL,
@@ -244,15 +245,15 @@ async def test_missing_cache_forwards_unchanged(async_client, omniroute_enabled,
         },
     )
     assert response.status_code == 200
-    forwarded = fake_omniroute.chat_payloads[0]["messages"]
+    forwarded = fake_orcarouter.chat_payloads[0]["messages"]
     assert "reasoning_content" not in forwarded[1]
 
 
 @pytest.mark.asyncio
-async def test_cursor_usage_fallback_preserved_for_deepseek(async_client, omniroute_enabled, fake_omniroute):
+async def test_cursor_usage_fallback_preserved_for_deepseek(async_client, orcarouter_enabled, fake_orcarouter):
     await _configure(async_client)
     # No usage in response -> cursor fallback should synthesize it
-    fake_omniroute.chat_response = {
+    fake_orcarouter.chat_response = {
         "id": "c1",
         "object": "chat.completion",
         "model": DEEPSEEK_MODEL,
@@ -270,38 +271,39 @@ async def test_cursor_usage_fallback_preserved_for_deepseek(async_client, omniro
 
 
 @pytest.mark.asyncio
-async def test_non_deepseek_model_is_not_intercepted(async_client, omniroute_enabled, monkeypatch):
+async def test_non_deepseek_model_is_not_intercepted(async_client, orcarouter_enabled, monkeypatch):
     # Configure a non-DeepSeek selected model and confirm no reasoning capture occurs.
-    config = OmniRouteSidecarConfig(
+    config = OrcaRouterSidecarConfig(
         enabled=True,
-        base_url="http://127.0.0.1:20128/v1",
-        api_key="omniroute-key",
-        full_models=("omniroute/plain-chat",),
+        base_url="https://api.orcarouter.ai/v1",
+        api_key="sk-orca-key",
+        prefixes=(),
+        full_models=("orcarouter/plain-chat",),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
     )
-    client = _FakeOmniRouteClient(config)
+    client = _FakeOrcaRouterClient(config)
 
     async def load_config():
         return config
 
-    monkeypatch.setattr("app.modules.proxy.api.load_omniroute_sidecar_config", load_config)
-    monkeypatch.setattr("app.modules.proxy.api.OmniRouteSidecarClient", lambda _config: client)
+    monkeypatch.setattr("app.modules.proxy.api.load_orcarouter_sidecar_config", load_config)
+    monkeypatch.setattr("app.modules.proxy.api.OrcaRouterSidecarClient", lambda _config: client)
     get_reasoning_cache().clear()
 
     await async_client.put(
         "/api/settings",
         json={
-            "omnirouteSidecarEnabled": True,
-            "omnirouteSidecarApiKey": "omniroute-key",
-            "omnirouteSidecarSelectedModels": ["omniroute/plain-chat"],
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "sk-orca-key",
+            "orcarouterSidecarFullModels": ["orcarouter/plain-chat"],
         },
     )
     client.chat_response = {
         "id": "c1",
         "object": "chat.completion",
-        "model": "omniroute/plain-chat",
+        "model": "orcarouter/plain-chat",
         "choices": [
             {
                 "index": 0,
@@ -319,7 +321,7 @@ async def test_non_deepseek_model_is_not_intercepted(async_client, omniroute_ena
     first = await async_client.post(
         "/v1/chat/completions",
         json={
-            "model": "omniroute/plain-chat",
+            "model": "orcarouter/plain-chat",
             "messages": [{"role": "user", "content": "weather in Paris?"}],
             "tools": _TOOLS,
         },
@@ -331,7 +333,7 @@ async def test_non_deepseek_model_is_not_intercepted(async_client, omniroute_ena
     second = await async_client.post(
         "/v1/chat/completions",
         json={
-            "model": "omniroute/plain-chat",
+            "model": "orcarouter/plain-chat",
             "messages": [
                 {"role": "user", "content": "weather in Paris?"},
                 dict(_ASSISTANT_TOOL_CALL),

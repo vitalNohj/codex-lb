@@ -56,6 +56,7 @@ from app.core.clients.usage import (
     ConsumeRateLimitResetCreditResponse as UpstreamConsumeRateLimitResetCreditResponse,
 )
 from app.core.clients.usage import UsageFetchError, consume_rate_limit_reset_credit
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
@@ -905,6 +906,9 @@ async def _omniroute_responses_dispatch_or_none(
     # Only OmniRoute supports Responses dispatch today; other sidecars fall
     # through to the existing Codex Responses path.
     if decision is None or decision.provider != "omniroute" or omniroute_config is None:
+        return None
+    if not omniroute_enabled():
+        # Defense in depth on the externally callable Responses path.
         return None
     validate_model_access(api_key, effective_model)
     rate_limit_headers = await context.service.rate_limit_headers()
@@ -3904,6 +3908,11 @@ async def v1_chat_completions(
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
             )
+        # Defense in depth at an externally callable path: the OmniRoute
+        # capability gate already empties ``omniroute_config`` and drops the
+        # routing entry, so reaching this branch with the capability disabled
+        # would be a routing bug, not a client-reachable state.
+        assert omniroute_enabled(), "OmniRoute routing decision reached a disabled capability"
         assert omniroute_config is not None
         return await proxy_chat_to_omniroute(
             request,
@@ -3978,9 +3987,7 @@ async def v1_chat_completions(
         api_key,
         request_model=request_model,
         request_service_tier=responses_payload.service_tier,
-        request_usage_budget=None
-        if cursor_compat_client
-        else estimate_api_key_request_usage(responses_payload),
+        request_usage_budget=None if cursor_compat_client else estimate_api_key_request_usage(responses_payload),
     )
     if source is not None:
         return await _source_chat_completion_response(

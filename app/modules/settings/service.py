@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.modules.settings.repository import SettingsRepository
@@ -298,6 +299,25 @@ class SettingsService:
         expected_version: int | None = None,
     ) -> DashboardSettingsData:
         current = await self._repository.get_or_create()
+        omniroute_is_enabled = omniroute_enabled()
+        if not omniroute_is_enabled:
+            stored_models = _parse_omniroute_sidecar_selected_models(current.omniroute_sidecar_selected_models_json)
+            payload = replace(
+                payload,
+                omniroute_sidecar_enabled=current.omniroute_sidecar_enabled,
+                omniroute_sidecar_base_url=current.omniroute_sidecar_base_url,
+                omniroute_sidecar_api_key=None,
+                omniroute_sidecar_clear_api_key=False,
+                omniroute_sidecar_model_prefixes=_parse_omniroute_sidecar_model_prefixes(
+                    current.omniroute_sidecar_prefixes_json
+                ),
+                omniroute_sidecar_full_models=stored_models,
+                omniroute_sidecar_selected_models=stored_models,
+                omniroute_sidecar_connect_timeout_seconds=current.omniroute_sidecar_connect_timeout_seconds,
+                omniroute_sidecar_request_timeout_seconds=current.omniroute_sidecar_request_timeout_seconds,
+                omniroute_sidecar_models_cache_ttl_seconds=current.omniroute_sidecar_models_cache_ttl_seconds,
+                omniroute_sidecar_default_reasoning_effort=current.omniroute_sidecar_default_reasoning_effort,
+            )
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
         _validate_unique_sidecar_routes(payload)
@@ -312,9 +332,7 @@ class SettingsService:
             management_key_encrypted = None
         elif payload.claude_sidecar_management_key is not None:
             management_key_value = payload.claude_sidecar_management_key.strip()
-            management_key_encrypted = (
-                self._encryptor.encrypt(management_key_value) if management_key_value else None
-            )
+            management_key_encrypted = self._encryptor.encrypt(management_key_value) if management_key_value else None
         openrouter_api_key_encrypted = current.openrouter_sidecar_api_key_encrypted
         if payload.openrouter_sidecar_clear_api_key:
             openrouter_api_key_encrypted = None
@@ -397,7 +415,9 @@ class SettingsService:
             claude_sidecar_enabled=payload.claude_sidecar_enabled,
             claude_sidecar_base_url=payload.claude_sidecar_base_url,
             claude_sidecar_api_key_encrypted=api_key_encrypted,
-            claude_sidecar_model_prefixes_json=_dump_claude_sidecar_model_prefixes(payload.claude_sidecar_model_prefixes),
+            claude_sidecar_model_prefixes_json=_dump_claude_sidecar_model_prefixes(
+                payload.claude_sidecar_model_prefixes
+            ),
             claude_sidecar_full_models_json=_dump_sidecar_full_models(payload.claude_sidecar_full_models),
             claude_sidecar_connect_timeout_seconds=payload.claude_sidecar_connect_timeout_seconds,
             claude_sidecar_request_timeout_seconds=payload.claude_sidecar_request_timeout_seconds,
@@ -434,11 +454,15 @@ class SettingsService:
             omniroute_sidecar_enabled=payload.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=payload.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_encrypted=omniroute_api_key_encrypted,
-            omniroute_sidecar_selected_models_json=_dump_omniroute_sidecar_selected_models(
-                payload.omniroute_sidecar_full_models
+            omniroute_sidecar_selected_models_json=(
+                _dump_omniroute_sidecar_selected_models(payload.omniroute_sidecar_full_models)
+                if omniroute_is_enabled
+                else current.omniroute_sidecar_selected_models_json
             ),
-            omniroute_sidecar_prefixes_json=_dump_omniroute_sidecar_model_prefixes(
-                payload.omniroute_sidecar_model_prefixes
+            omniroute_sidecar_prefixes_json=(
+                _dump_omniroute_sidecar_model_prefixes(payload.omniroute_sidecar_model_prefixes)
+                if omniroute_is_enabled
+                else current.omniroute_sidecar_prefixes_json
             ),
             omniroute_sidecar_connect_timeout_seconds=payload.omniroute_sidecar_connect_timeout_seconds,
             omniroute_sidecar_request_timeout_seconds=payload.omniroute_sidecar_request_timeout_seconds,
@@ -600,9 +624,7 @@ class SettingsService:
             ollama_sidecar_enabled=row.ollama_sidecar_enabled,
             ollama_sidecar_base_url=row.ollama_sidecar_base_url,
             ollama_sidecar_api_key_configured=row.ollama_sidecar_api_key_encrypted is not None,
-            ollama_sidecar_model_prefixes=_parse_ollama_sidecar_model_prefixes(
-                row.ollama_sidecar_model_prefixes_json
-            ),
+            ollama_sidecar_model_prefixes=_parse_ollama_sidecar_model_prefixes(row.ollama_sidecar_model_prefixes_json),
             ollama_sidecar_full_models=_parse_sidecar_full_models(row.ollama_sidecar_full_models_json),
             ollama_sidecar_connect_timeout_seconds=row.ollama_sidecar_connect_timeout_seconds,
             ollama_sidecar_request_timeout_seconds=row.ollama_sidecar_request_timeout_seconds,
@@ -917,12 +939,14 @@ def _dump_sidecar_full_models(models: list[str]) -> str:
 
 
 def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> None:
+    omniroute_prefixes = (("OmniRoute", payload.omniroute_sidecar_model_prefixes),) if omniroute_enabled() else ()
+    omniroute_full_models = (("OmniRoute", payload.omniroute_sidecar_full_models),) if omniroute_enabled() else ()
     _validate_unique_sidecar_prefixes(
         (
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
             ("OrcaRouter", payload.orcarouter_sidecar_model_prefixes),
-            ("OmniRoute", payload.omniroute_sidecar_model_prefixes),
+            *omniroute_prefixes,
             ("Ollama", payload.ollama_sidecar_model_prefixes),
         )
     )
@@ -931,7 +955,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
             ("OrcaRouter", payload.orcarouter_sidecar_full_models),
-            ("OmniRoute", payload.omniroute_sidecar_full_models),
+            *omniroute_full_models,
             ("Ollama", payload.ollama_sidecar_full_models),
         )
     )
@@ -1040,9 +1064,7 @@ def _dump_claude_sidecar_auth_plans(plans: list[ClaudeSidecarAuthPlanData]) -> s
             continue
         if plan.plan_type not in {"pro", "max5", "max20", "custom"}:
             continue
-        if plan.plan_type == "custom" and (
-            plan.primary_token_budget is None or plan.secondary_token_budget is None
-        ):
+        if plan.plan_type == "custom" and (plan.primary_token_budget is None or plan.secondary_token_budget is None):
             raise ValueError("custom Claude auth plan requires both token budgets")
         payload.append(
             {

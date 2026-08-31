@@ -205,12 +205,29 @@ describe("OllamaSidecarSettings", () => {
 
   it("rejects duplicate full models owned by another integration", async () => {
     const user = userEvent.setup();
+    renderWithQueryClient(
+      <OllamaSidecarSettings
+        settings={{ ...BASE_SETTINGS, orcarouterSidecarFullModels: ["orcarouter/auto"] }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("New full model for Ollama Integration"), "orcarouter/auto");
+    await user.click(screen.getByRole("button", { name: "Add full model" }));
+
+    expect(screen.getByText("Full model orcarouter/auto is already used by OrcaRouter.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove orcarouter/auto" })).not.toBeInTheDocument();
+  });
+
+  it("accepts a full model that stored OmniRoute settings still claim", async () => {
+    const user = userEvent.setup();
     renderWithQueryClient(<OllamaSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
 
     await user.type(screen.getByLabelText("New full model for Ollama Integration"), "omniroute/test-chat");
     await user.click(screen.getByRole("button", { name: "Add full model" }));
 
-    expect(screen.getByText("Full model omniroute/test-chat is already used by OmniRoute.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Remove omniroute/test-chat" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/already used by OmniRoute/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove omniroute/test-chat" })).toBeInTheDocument();
   });
 });

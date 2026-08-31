@@ -13,7 +13,7 @@ See `openspec/specs/chat-completions-compat/spec.md` for normative requirements.
 - **Strict role/content rules:** System/developer messages are text-only; user content parts are validated for supported types.
 - **Usage streaming:** When `stream_options.include_usage` is enabled, usage appears in the final chunk while earlier chunks include `usage: null`.
 - **Obfuscation passthrough:** `stream_options.include_obfuscation` is forwarded to upstream when present.
-- **Unified sidecar routing:** the enabled integrations share one resolver so a model has exactly one sidecar owner. Exact full-model entries are checked before prefixes across all enabled integrations, then longest matching prefix wins, with the `SIDECAR_PROVIDER_ORDER` sequence in `app/modules/proxy/sidecar_routing.py` (CLIProxyAPI -> OpenRouter -> OrcaRouter -> OmniRoute -> Ollama) retained only as a deterministic tie-break.
+- **Unified sidecar routing:** the enabled integrations share one resolver so a model has exactly one sidecar owner. Exact full-model entries are checked before prefixes across all enabled integrations, then longest matching prefix wins, with `SIDECAR_PROVIDER_ORDER` in `app/modules/proxy/sidecar_routing.py` retained only as a deterministic tie-break. Product-disabled integrations are excluded before resolution even when persisted configuration remains enabled.
 
 ## Constraints
 
@@ -56,12 +56,12 @@ Sidecar full-model precedence example:
 
 ```json
 {
-  "model": "minimax/minimax-m3",
+  "model": "orcarouter/auto",
   "messages": [{"role": "user", "content": "hi"}]
 }
 ```
 
-If OpenRouter has prefix `minimax/` and OmniRoute has full model `minimax/minimax-m3`, the full-model pass routes this request to OmniRoute and forwards `minimax/minimax-m3` unchanged. A different model such as `minimax/other` can still fall through to OpenRouter's prefix route when no exact full-model owner exists.
+If OpenRouter has prefix `orcarouter/` and OrcaRouter has full model `orcarouter/auto`, the full-model pass routes this request to OrcaRouter and forwards `orcarouter/auto` unchanged. A different model such as `orcarouter/other` can still fall through to OpenRouter's prefix route when no exact full-model owner exists.
 
 ## Operational Notes
 

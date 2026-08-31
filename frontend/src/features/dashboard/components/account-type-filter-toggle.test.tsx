@@ -25,14 +25,22 @@ describe("AccountTypeFilterToggle", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Show Omniroute accounts" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
     expect(screen.getByRole("button", { name: "Hide OrcaRouter accounts" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
+  });
+
+  it("offers no OmniRoute filter while the capability is disabled", () => {
+    render(
+      <AccountTypeFilterToggle
+        value={{ codex: true, cliproxy: true, openrouter: true, orcarouter: true, omniroute: true }}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /omniroute/i })).toBeNull();
+    expect(screen.queryByText(/omniroute/i)).toBeNull();
   });
 
   it("orders the filter buttons to match the sidecar provider order", () => {
@@ -48,7 +56,6 @@ describe("AccountTypeFilterToggle", () => {
       "CLIProxy",
       "OpenRouter",
       "OrcaRouter",
-      "Omniroute",
     ]);
   });
 

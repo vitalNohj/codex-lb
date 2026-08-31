@@ -27,6 +27,7 @@ import { useSettings, useUpstreamProxyAdmin } from "@/features/settings/hooks/us
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
 import type { AccountAuthExportResponse } from "@/features/accounts/schemas";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
+import { isDisabledCapabilityAccount } from "@/lib/product-capabilities";
 import { getErrorMessageOrNull } from "@/utils/errors";
 
 const OauthDialog = lazy(() =>
@@ -69,7 +70,9 @@ export function AccountsPage() {
   const [deleteHistory, setDeleteHistory] = useState(false);
 
   const accounts = useMemo(
-    () => accountsQuery.data ?? [],
+    // Product-capability boundary: accounts from a disabled integration are
+    // never listed or selectable, even if a stale response carries one.
+    () => (accountsQuery.data ?? []).filter((account) => !isDisabledCapabilityAccount(account)),
     [accountsQuery.data],
   );
   const showResetCreditBadges = settingsQuery.data?.showResetCreditBadges ?? true;

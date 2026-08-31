@@ -168,7 +168,26 @@ describe("shared sidecar integration settings", () => {
       <OpenRouterSidecarSettings
         settings={{
           ...BASE_SETTINGS,
+          openrouterSidecarFullModels: ["orcarouter/auto"],
+          orcarouterSidecarFullModels: ["orcarouter/auto"],
+        }}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    expect(screen.getByText("Full model orcarouter/auto is already used by OrcaRouter.")).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("never names OmniRoute as a conflicting owner while the capability is disabled", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(
+      <OpenRouterSidecarSettings
+        settings={{
+          ...BASE_SETTINGS,
           openrouterSidecarFullModels: ["omniroute/test-chat"],
+          omnirouteSidecarEnabled: true,
           omnirouteSidecarFullModels: ["omniroute/test-chat"],
           omnirouteSidecarSelectedModels: ["omniroute/test-chat"],
         }}
@@ -177,8 +196,7 @@ describe("shared sidecar integration settings", () => {
       />,
     );
 
-    expect(screen.getByText("Full model omniroute/test-chat is already used by OmniRoute.")).toBeInTheDocument();
-    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.queryByText(/already used by OmniRoute/i)).toBeNull();
   });
 
   it("surfaces backend sidecar conflict details from error.details", async () => {

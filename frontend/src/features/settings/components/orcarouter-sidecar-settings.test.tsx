@@ -87,12 +87,20 @@ describe("OrcaRouterSidecarSettings", () => {
     expect(screen.getByRole("heading", { name: "OrcaRouter Integration" })).toBeInTheDocument();
   });
 
-  it("renders the enable toggle above the OmniRoute prefix callout", () => {
+  it("renders the enable toggle above the prefix-ownership callout", () => {
     renderWithQueryClient(<OrcaRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />);
 
     const enable = screen.getByRole("switch", { name: "Enable OrcaRouter Integration" });
-    const callout = screen.getByText(/remove that OmniRoute prefix/i);
+    const callout = screen.getByText(/remove that prefix before enabling/i);
     expect(enable.compareDocumentPosition(callout) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("never mentions OmniRoute in its guidance copy", () => {
+    const { container } = renderWithQueryClient(
+      <OrcaRouterSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn()} />,
+    );
+
+    expect(container.textContent).not.toMatch(/omniroute/i);
   });
 
   it("does not render Save or Clear buttons", () => {

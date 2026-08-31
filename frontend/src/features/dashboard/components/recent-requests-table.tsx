@@ -28,6 +28,7 @@ import { PaginationControls } from "@/features/dashboard/components/filters/pagi
 import { RequestArchivePanel } from "@/features/conversation-archive/components/request-archive-panel";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
 import type { DashboardRequestLogViewMode } from "@/hooks/use-dashboard-preferences";
+import { isDisabledCapabilityRequestSource } from "@/lib/product-capabilities";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
 import {
   formatDateTimeInline,
@@ -77,16 +78,24 @@ const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
   ollama_sidecar: "Ollama",
 };
 
-function sidecarSourceLabel(source: string | null | undefined): string | null {
-  if (!source) {
+/**
+ * Display text for a request's `source` column.
+ *
+ * Historical logs are never deleted or rewritten, so rows from a disabled
+ * integration can still exist. Those rows remain listed, but neither their
+ * provider label nor their raw source slug is rendered, so the disabled
+ * integration's branding never reaches the user.
+ */
+function sidecarSourceDisplay(source: string | null | undefined): string | null {
+  if (!source || isDisabledCapabilityRequestSource(source)) {
     return null;
   }
-  return SIDECAR_SOURCE_LABELS[source] ?? null;
+  return SIDECAR_SOURCE_LABELS[source] ?? source;
 }
 
 function sidecarAccountLabel(request: RequestLog): string | null {
   const source = request.source;
-  if (!source) {
+  if (!source || isDisabledCapabilityRequestSource(source)) {
     return null;
   }
   const providerLabel = SIDECAR_ACCOUNT_LABELS[source];
@@ -97,6 +106,24 @@ function sidecarAccountLabel(request: RequestLog): string | null {
     return `${providerLabel}: ${request.sidecarAccountLabel}`;
   }
   return providerLabel;
+}
+
+function visibleRequestError(request: RequestLog | null | undefined): {
+  errorCode: string | null;
+  errorMessage: string | null;
+  isSuppressed: boolean;
+} {
+  if (!request) {
+    return { errorCode: null, errorMessage: null, isSuppressed: false };
+  }
+  if (isDisabledCapabilityRequestSource(request.source)) {
+    return { errorCode: null, errorMessage: null, isSuppressed: true };
+  }
+  return {
+    errorCode: request.errorCode,
+    errorMessage: request.errorMessage,
+    isSuppressed: false,
+  };
 }
 
 const PLAN_CLASS_MAP: Record<string, string> = {
@@ -217,6 +244,7 @@ export function RecentRequestsTable({
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
   const blurred = usePrivacyStore((s) => s.blurred);
   const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest, t);
+  const selectedRequestError = visibleRequestError(selectedRequest);
 
   const accountLabelMap = useMemo(() => {
     const index = new Map<string, string>();
@@ -294,8 +322,9 @@ export function RecentRequestsTable({
                 ? (accountLabelMap.get(request.accountId) ?? request.accountId)
                 : t("dashboard.requests.unassigned");
               const isEmailLabel = !!(request.accountId && emailLabelIds.has(request.accountId));
-              const errorPreview = request.errorMessage || request.errorCode || "-";
-              const hasError = !!(request.errorCode || request.errorMessage);
+              const requestError = visibleRequestError(request);
+              const errorPreview = requestError.errorMessage || requestError.errorCode || "—";
+              const hasError = !!(requestError.errorCode || requestError.errorMessage);
               const visibleServiceTier = request.actualServiceTier ?? request.serviceTier;
               const showRequestedTier =
                 !!request.requestedServiceTier && request.requestedServiceTier !== visibleServiceTier;
@@ -440,10 +469,10 @@ export function RecentRequestsTable({
                   <TableCell className="pr-4 align-top whitespace-normal">
                     {hasError ? (
                       <div className="space-y-2">
-                        {request.errorCode ? (
+                        {requestError.errorCode ? (
                           <div>
                             <Badge variant="outline" className="max-w-full font-mono text-[10px]">
-                              <span className="truncate">{request.errorCode}</span>
+                              <span className="truncate">{requestError.errorCode}</span>
                             </Badge>
                           </div>
                         ) : null}
@@ -523,9 +552,9 @@ export function RecentRequestsTable({
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
-                <RequestDetailField label="Source" value={sidecarSourceLabel(selectedRequest?.source) ?? selectedRequest?.source ?? "—"} />
+                <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source) ?? "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
-                <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequest?.errorCode ?? "—"} mono />
+                <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequestError.errorCode ?? "—"} mono />
               </div>
               <RequestDetailField
                 label={t("dashboard.requestDetails.userAgent")}
@@ -595,19 +624,23 @@ export function RecentRequestsTable({
               </div>
             ) : null}
 
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-medium">{t("dashboard.requestDetails.fullError")}</h3>
-                {selectedRequest?.errorMessage ? (
-                  <CopyButton value={selectedRequest.errorMessage} label={t("dashboard.requestDetails.copyError")} iconOnly />
-                ) : null}
+            {selectedRequestError.isSuppressed ? null : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-medium">{t("dashboard.requestDetails.fullError")}</h3>
+                  {selectedRequestError.errorMessage ? (
+                    <CopyButton value={selectedRequestError.errorMessage} label={t("dashboard.requestDetails.copyError")} iconOnly />
+                  ) : null}
+                </div>
+                <div className="max-h-[36vh] overflow-y-auto rounded-md bg-muted/50 p-3">
+                  <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+                    {selectedRequestError.errorMessage ??
+                      selectedRequestError.errorCode ??
+                      t("dashboard.requestDetails.noErrorDetail")}
+                  </p>
+                </div>
               </div>
-              <div className="max-h-[36vh] overflow-y-auto rounded-md bg-muted/50 p-3">
-                <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
-                  {selectedRequest?.errorMessage ?? selectedRequest?.errorCode ?? t("dashboard.requestDetails.noErrorDetail")}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
           <DialogFooter showCloseButton />
         </DialogContent>

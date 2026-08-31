@@ -2,6 +2,22 @@ import type {
   DashboardSettings,
   SettingsUpdateRequest,
 } from "@/features/settings/schemas";
+import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
+
+/** Update fields the server refuses while the OmniRoute capability is off. */
+const OMNIROUTE_UPDATE_FIELDS = [
+  "omnirouteSidecarEnabled",
+  "omnirouteSidecarBaseUrl",
+  "omnirouteSidecarApiKey",
+  "omnirouteSidecarClearApiKey",
+  "omnirouteSidecarModelPrefixes",
+  "omnirouteSidecarFullModels",
+  "omnirouteSidecarSelectedModels",
+  "omnirouteSidecarConnectTimeoutSeconds",
+  "omnirouteSidecarRequestTimeoutSeconds",
+  "omnirouteSidecarModelsCacheTtlSeconds",
+  "omnirouteSidecarDefaultReasoningEffort",
+] as const satisfies readonly (keyof SettingsUpdateRequest)[];
 
 export function buildSettingsUpdateRequest(
   settings: DashboardSettings,
@@ -74,15 +90,19 @@ export function buildSettingsUpdateRequest(
     orcarouterSidecarRequestTimeoutSeconds: settings.orcarouterSidecarRequestTimeoutSeconds,
     orcarouterSidecarModelsCacheTtlSeconds: settings.orcarouterSidecarModelsCacheTtlSeconds,
     orcarouterSidecarDefaultReasoningEffort: settings.orcarouterSidecarDefaultReasoningEffort ?? null,
-    omnirouteSidecarEnabled: settings.omnirouteSidecarEnabled,
-    omnirouteSidecarBaseUrl: settings.omnirouteSidecarBaseUrl,
-    omnirouteSidecarModelPrefixes: settings.omnirouteSidecarModelPrefixes,
-    omnirouteSidecarFullModels: settings.omnirouteSidecarFullModels,
-    omnirouteSidecarSelectedModels: settings.omnirouteSidecarSelectedModels,
-    omnirouteSidecarConnectTimeoutSeconds: settings.omnirouteSidecarConnectTimeoutSeconds,
-    omnirouteSidecarRequestTimeoutSeconds: settings.omnirouteSidecarRequestTimeoutSeconds,
-    omnirouteSidecarModelsCacheTtlSeconds: settings.omnirouteSidecarModelsCacheTtlSeconds,
-    omnirouteSidecarDefaultReasoningEffort: settings.omnirouteSidecarDefaultReasoningEffort ?? null,
+    ...(OMNIROUTE_ENABLED
+      ? {
+          omnirouteSidecarEnabled: settings.omnirouteSidecarEnabled,
+          omnirouteSidecarBaseUrl: settings.omnirouteSidecarBaseUrl,
+          omnirouteSidecarModelPrefixes: settings.omnirouteSidecarModelPrefixes,
+          omnirouteSidecarFullModels: settings.omnirouteSidecarFullModels,
+          omnirouteSidecarSelectedModels: settings.omnirouteSidecarSelectedModels,
+          omnirouteSidecarConnectTimeoutSeconds: settings.omnirouteSidecarConnectTimeoutSeconds,
+          omnirouteSidecarRequestTimeoutSeconds: settings.omnirouteSidecarRequestTimeoutSeconds,
+          omnirouteSidecarModelsCacheTtlSeconds: settings.omnirouteSidecarModelsCacheTtlSeconds,
+          omnirouteSidecarDefaultReasoningEffort: settings.omnirouteSidecarDefaultReasoningEffort ?? null,
+        }
+      : {}),
     ollamaSidecarEnabled: settings.ollamaSidecarEnabled,
     ollamaSidecarBaseUrl: settings.ollamaSidecarBaseUrl,
     ollamaSidecarModelPrefixes: settings.ollamaSidecarModelPrefixes,
@@ -125,6 +145,13 @@ export function buildSettingsUpdateRequest(
     settings.__stickyReallocationBudgetThresholdPctProvided !== false
   ) {
     payload.stickyReallocationBudgetThresholdPct = patch.stickyReallocationPrimaryBudgetThresholdPct;
+  }
+  if (!OMNIROUTE_ENABLED) {
+    // A disabled capability must never be written, even if a caller passes an
+    // OmniRoute field through `patch`. The server rejects these fields too.
+    for (const field of OMNIROUTE_UPDATE_FIELDS) {
+      delete payload[field];
+    }
   }
   return payload;
 }
