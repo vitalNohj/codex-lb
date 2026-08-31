@@ -14,15 +14,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import aiohttp
 import pytest
 from sqlalchemy import select
 
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
 from app.core.config.settings import get_settings
+from app.core.crypto import TokenEncryptor
 from app.db.models import DashboardSettings, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService
+from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
+from app.modules.proxy.omniroute_sidecar_dispatch import omniroute_sidecar_config_from_settings
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -156,6 +161,42 @@ async def test_runtime_capabilities_reports_omniroute_disabled(async_client):
 
     assert response.status_code == 200
     assert response.json()["omniroute"] is False
+
+
+@pytest.mark.asyncio
+async def test_dormant_factory_and_service_fail_closed_without_network(
+    async_client,
+    monkeypatch,
+    stored_omniroute_configuration,
+):
+    requested_urls: list[str] = []
+
+    async def record_request(_session, _method, url, **_kwargs):
+        requested_urls.append(str(url))
+        raise AssertionError("unexpected outbound HTTP request")
+
+    def reject_decryption(_encryptor, _encrypted):
+        raise AssertionError("stored OmniRoute credential was decrypted")
+
+    monkeypatch.setattr(aiohttp.ClientSession, "_request", record_request)
+    monkeypatch.setattr(TokenEncryptor, "decrypt", reject_decryption)
+
+    async with SessionLocal() as session:
+        settings = (await session.execute(select(DashboardSettings))).scalars().first()
+        assert settings is not None
+
+        with pytest.raises(RuntimeError, match="capability is disabled"):
+            omniroute_sidecar_config_from_settings(settings)
+
+        service = OmniRouteSidecarService(SettingsRepository(session))
+        test_result = await service.test_connection()
+        models_result = await service.list_models()
+
+    assert test_result.enabled is False
+    assert test_result.status == "disabled"
+    assert test_result.models == []
+    assert models_result.models == []
+    assert requested_urls == []
 
 
 @pytest.mark.asyncio

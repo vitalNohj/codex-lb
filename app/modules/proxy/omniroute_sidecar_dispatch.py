@@ -105,9 +105,11 @@ async def load_omniroute_sidecar_config() -> OmniRouteSidecarConfig | None:
 
 
 def omniroute_sidecar_config_from_settings(settings: DashboardSettings) -> OmniRouteSidecarConfig:
+    if not omniroute_enabled():
+        raise RuntimeError("OmniRoute product capability is disabled")
     api_key = _decrypt_omniroute_secret(settings.omniroute_sidecar_api_key_encrypted)
     return OmniRouteSidecarConfig(
-        enabled=omniroute_enabled() and bool(settings.omniroute_sidecar_enabled),
+        enabled=bool(settings.omniroute_sidecar_enabled),
         base_url=settings.omniroute_sidecar_base_url.rstrip("/"),
         api_key=api_key,
         full_models=parse_sidecar_full_models(settings.omniroute_sidecar_selected_models_json),

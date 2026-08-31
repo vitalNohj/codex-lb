@@ -7,6 +7,7 @@ from app.core.clients.omniroute_sidecar import (
     OmniRouteSidecarError,
     OmniRouteSidecarUnavailableError,
 )
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.omniroute_sidecar.schemas import (
     OmniRouteSidecarModelsResponse,
@@ -27,7 +28,7 @@ class OmniRouteSidecarService:
         settings = await self._settings_repository.get_or_create()
         status, message = _classify_status(settings)
         return OmniRouteSidecarStatusResponse(
-            enabled=bool(settings.omniroute_sidecar_enabled),
+            enabled=_sidecar_enabled(settings),
             configured=settings.omniroute_sidecar_api_key_encrypted is not None,
             status=status,
             message=settings.omniroute_sidecar_last_health_message or message,
@@ -49,7 +50,7 @@ class OmniRouteSidecarService:
             )
             await get_settings_cache().invalidate()
             return OmniRouteSidecarTestResponse(
-                enabled=bool(settings.omniroute_sidecar_enabled),
+                enabled=_sidecar_enabled(settings),
                 configured=settings.omniroute_sidecar_api_key_encrypted is not None,
                 status=static_status,
                 message=static_message,
@@ -109,7 +110,7 @@ class OmniRouteSidecarService:
         )
         await get_settings_cache().invalidate()
         return OmniRouteSidecarTestResponse(
-            enabled=bool(settings.omniroute_sidecar_enabled),
+            enabled=_sidecar_enabled(settings),
             configured=settings.omniroute_sidecar_api_key_encrypted is not None,
             status=status,
             message=message,
@@ -121,11 +122,15 @@ class OmniRouteSidecarService:
 
 
 def _classify_static_status(settings) -> tuple[OmniRouteSidecarStatus, str | None]:
-    if not settings.omniroute_sidecar_enabled:
+    if not _sidecar_enabled(settings):
         return "disabled", "OmniRoute sidecar is disabled"
     if settings.omniroute_sidecar_api_key_encrypted is None:
         return "missing_api_key", "OmniRoute sidecar API key is not configured"
     return "healthy", None
+
+
+def _sidecar_enabled(settings) -> bool:
+    return omniroute_enabled() and bool(settings.omniroute_sidecar_enabled)
 
 
 def _classify_status(settings) -> tuple[OmniRouteSidecarStatus, str | None]:
