@@ -205,6 +205,7 @@ async def calculated_cost_for_request(
     model: str,
     usage: UsageTokens | None,
     service_tier: str | None = None,
+    schedule_lookup: bool = True,
 ) -> tuple[CalculatedCost | None, ExternalPriceStatus | None]:
     """List-price cost for one request, plus the resolution status to record.
 
@@ -214,6 +215,12 @@ async def calculated_cost_for_request(
     The status is returned even when a cost is not, because an eligible model that
     stays unresolved must be visibly distinguishable from a model that was never
     supposed to have a price.
+
+    ``schedule_lookup=False`` answers from persisted state without dispatching a
+    background lookup. One request can ask this question twice -- once to settle a
+    cost limit and once to write its log row -- and only one of those may own
+    dispatch, or the second answer would depend on whether the first one's job
+    happened to finish in between.
     """
 
     if not is_external_priced_provider(provider):
@@ -226,10 +233,11 @@ async def calculated_cost_for_request(
 
     if record is None or record.retry_due():
         # The request never waits on remote work; it reports what is known now.
-        await _coordinator.submit(
-            (provider_key, model_key),
-            lambda: _run_lookup(provider_key, model_key, previous=record),
-        )
+        if schedule_lookup:
+            await _coordinator.submit(
+                (provider_key, model_key),
+                lambda: _run_lookup(provider_key, model_key, previous=record),
+            )
         if record is None:
             # First sighting. No lookup has concluded anything yet, so this row
             # is pending rather than unresolved: an eligible model is only worth

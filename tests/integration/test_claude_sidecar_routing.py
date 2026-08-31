@@ -37,6 +37,9 @@ class _FakeSidecarClient:
         self.stream_errors: list[Exception] = []
         self.stream_include_usage = True
         self.stream_context_error = False
+        # CLIProxyAPI proxies other vendors and can echo their ``usage.cost``
+        # straight back. It debits nothing of its own, so this is not spend.
+        self.echoed_cost_usd: float | None = None
 
     async def list_models_cached(self):
         return self.models
@@ -47,12 +50,15 @@ class _FakeSidecarClient:
             raise self.chat_errors.pop(0)
         if self.chat_error is not None:
             raise self.chat_error
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        if self.echoed_cost_usd is not None:
+            usage["cost"] = self.echoed_cost_usd
         return {
             "id": "chatcmpl-sidecar",
             "object": "chat.completion",
             "model": payload["model"],
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "usage": usage,
         }
 
     def stream_chat_completion(self, payload):
@@ -234,6 +240,40 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
     sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
     assert len(sidecar_logs) == 1
     assert sidecar_logs[0].model == "cp_claude-fable-5"
+
+
+@pytest.mark.asyncio
+async def test_an_echoed_upstream_cost_is_not_recorded_as_cliproxy_spend(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    """CLIProxyAPI debits nothing, so an echoed ``usage.cost`` is not actual spend.
+
+    ``extract_usage`` reads ``usage.cost`` for the OpenRouter path, and a
+    CLIProxyAPI response can carry the same field verbatim from whichever upstream
+    it fronted. Forwarding it as a billed amount would label another party's debit
+    as this request's authoritative spend, which the mapper and the savings
+    arithmetic then treat as final.
+    """
+
+    from app.db.models import CostSource
+
+    fake_sidecar.echoed_cost_usd = 4.2
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
+    assert sidecar_logs
+    for log in sidecar_logs:
+        assert log.cost_source != CostSource.UPSTREAM_BILLED.value
+        assert log.cost_usd != pytest.approx(4.2)
 
 
 @pytest.mark.asyncio

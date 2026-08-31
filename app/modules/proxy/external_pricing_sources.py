@@ -68,7 +68,12 @@ async def _load_orcarouter_context(_provider: str) -> ServingContext | None:
     from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
 
     config = await load_orcarouter_sidecar_config()
-    if config is None or not config.enabled:
+    if config is None:
+        # The loader could not read dashboard settings. Nothing is known about
+        # this integration, least of all whether the operator turned it off, so
+        # this is a failure to consult and callers must preserve prior values.
+        return None
+    if not config.enabled:
         # Switched off, not unreachable. Returning ``None`` here would make the
         # maintenance pass report a catalog failure that never happened.
         return ServingContext.disabled()
@@ -96,7 +101,9 @@ async def _load_openrouter_context(_provider: str) -> ServingContext | None:
     from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
 
     config = await load_openrouter_sidecar_config()
-    if config is None or not config.enabled:
+    if config is None:
+        return None
+    if not config.enabled:
         return ServingContext.disabled()
     models = await OpenRouterSidecarClient(config).list_models()
     return ServingContext(
@@ -123,7 +130,9 @@ async def _load_cliproxy_context(_provider: str) -> ServingContext | None:
     from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
 
     config = await load_sidecar_config()
-    if config is None or not config.enabled:
+    if config is None:
+        return None
+    if not config.enabled:
         return ServingContext.disabled()
     return ServingContext(
         catalog=None,

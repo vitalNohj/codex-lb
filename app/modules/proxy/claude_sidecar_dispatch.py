@@ -1354,9 +1354,9 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     # Reading ``cost`` first keeps OpenRouter behaviour byte-identical. This
     # helper is shared, so the ``cost_usd`` fallback also reaches the OmniRoute
     # dispatch path, which logs ``SidecarUsage.cost_usd`` and therefore now
-    # persists a ``usage.cost_usd`` it previously ignored. The Claude path
-    # parses the field but never forwards it to ``add_log``, so its request-log
-    # cost stays pricing-table derived.
+    # persists a ``usage.cost_usd`` it previously ignored. The CLIProxyAPI path
+    # still parses the field without forwarding it as a billed amount: see
+    # ``_log_sidecar_request`` for why an echoed figure is not a debit there.
     cost_usd = _float_field(usage, "cost")
     if cost_usd is None:
         cost_usd = _float_field(usage, "cost_usd")
@@ -1459,9 +1459,13 @@ async def _log_sidecar_request(
     requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
-        # CLIProxyAPI reports no billed amount on the chat response, so the cost
-        # here is always a catalog-calculated list price, marked as such. Its
-        # per-account token attribution is collected separately and is untouched.
+        # CLIProxyAPI debits nothing of its own: it proxies other vendors and can
+        # echo their ``usage.cost``/``usage.cost_usd`` back verbatim. Forwarding
+        # that as ``billed_cost_usd`` would record another party's debit as this
+        # request's authoritative actual spend, which the mapper and the savings
+        # arithmetic then treat as final. The cost recorded here is therefore
+        # always a catalog-calculated list price, marked as such. Its per-account
+        # token attribution is collected separately and is untouched.
         from app.modules.proxy.external_pricing_logging import (
             external_request_cost,
             usage_tokens_from_sidecar,
@@ -1471,7 +1475,7 @@ async def _log_sidecar_request(
             provider=CLIPROXY_PRICING_PROVIDER,
             model=model,
             usage=usage_tokens_from_sidecar(usage),
-            billed_cost_usd=usage.cost_usd if usage else None,
+            billed_cost_usd=None,
         )
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
@@ -1521,6 +1525,13 @@ async def _finalize_or_release_sidecar_reservation(
             if usage is None:
                 await service.release_usage_reservation(reservation.reservation_id)
                 return
+            # Imported here for the same reason the logging path does: the
+            # pricing module reaches back into this one for routing identity.
+            from app.modules.proxy.external_pricing_logging import (
+                external_cost_microdollars,
+                usage_tokens_from_sidecar,
+            )
+
             await service.finalize_usage_reservation(
                 reservation.reservation_id,
                 model=model,
@@ -1528,6 +1539,17 @@ async def _finalize_or_release_sidecar_reservation(
                 output_tokens=usage.output_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 service_tier=None,
+                # Stated explicitly so settlement cannot fall through to the
+                # substring-glob table this integration no longer prices from.
+                # ``billed_cost_usd`` stays None here for the same reason it does
+                # on the logging path: CLIProxyAPI echoes another vendor's figure
+                # and debits nothing itself.
+                cost_microdollars=await external_cost_microdollars(
+                    provider=CLIPROXY_PRICING_PROVIDER,
+                    model=model,
+                    usage=usage_tokens_from_sidecar(usage),
+                    billed_cost_usd=None,
+                ),
             )
     except Exception:
         logger.warning(

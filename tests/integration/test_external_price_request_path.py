@@ -25,10 +25,10 @@ from app.core.usage.external_pricing.service import (
     reset_serving_context_loaders,
 )
 from app.core.usage.pricing import ModelPrice
-from app.db.models import CostSource, ExternalPriceStatus, RequestLog
+from app.db.models import ApiKeyLimit, CostSource, ExternalPriceStatus, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
-from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService
+from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
 
 pytestmark = pytest.mark.integration
 
@@ -136,10 +136,16 @@ async def _enable_sidecar(async_client) -> None:
     assert response.status_code == 200
 
 
-async def _create_api_key(name: str):
+async def _create_api_key(name: str, *, limits: list[LimitRuleInput] | None = None):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=None, limits=[]))
+        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=None, limits=limits or []))
+
+
+async def _limit_values(key_id: str) -> dict[str, int]:
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(ApiKeyLimit).where(ApiKeyLimit.api_key_id == key_id))).scalars().all()
+    return {row.limit_type.value: row.current_value for row in rows}
 
 
 async def _post_chat(async_client, key) -> None:
@@ -471,3 +477,83 @@ async def test_an_unresolved_row_reports_no_savings_from_the_retired_glob_table(
     for entry in entries:
         assert entry["costUsd"] is None
         assert not entry.get("savingsUsd"), "an unknown cost must not report savings"
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_model_accrues_no_cost_quota_but_is_still_token_counted(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+) -> None:
+    """A cost limit must never be charged at a retired glob rate.
+
+    ``orcarouter/gpt-4o-lookalike`` matches ``*gpt-4o*``, so reservation
+    settlement used to debit GPT-4o's rate against the key's COST_USD limit while
+    the request log recorded NULL for the same request -- two owners of one fact
+    disagreeing, with the log being what a re-created limit backfills from.
+    Token limits are unaffected: the request is served and counted as before.
+    """
+
+    from app.core.usage.pricing import get_pricing_for_model
+
+    fake_orcarouter.billed_cost_usd = None
+    unlisted = "orcarouter/gpt-4o-lookalike"
+    assert get_pricing_for_model(unlisted, None, None) is not None, "this id must still match a glob"
+
+    _install_catalog({_MODEL: ModelPrice(input_per_1m=2.0, output_per_1m=4.0)})
+    await _enable_sidecar(async_client)
+    await async_client.put("/api/settings", json={"orcarouterSidecarFullModels": [_MODEL, unlisted]})
+    key = await _create_api_key(
+        "unresolved-quota-key",
+        limits=[
+            LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000),
+            LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000),
+        ],
+    )
+
+    for _ in range(2):
+        response = await async_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key.key}"},
+            json={"model": unlisted, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert response.status_code == 200, "an unresolved price must not deny the request"
+        await get_lookup_coordinator().drain()
+
+    values = await _limit_values(key.id)
+    assert values["cost_usd"] == 0, "an unresolved model must not be charged a glob-derived rate"
+    assert values["total_tokens"] == 2 * (_INPUT_TOKENS + _OUTPUT_TOKENS)
+
+    for log in await _sidecar_logs():
+        if log.model == unlisted:
+            assert log.cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_a_resolved_model_charges_the_cost_limit_the_price_it_recorded(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+) -> None:
+    """The quota and the request log must agree on the same number."""
+
+    fake_orcarouter.billed_cost_usd = None
+    _install_catalog({_MODEL: ModelPrice(input_per_1m=2_000_000.0, output_per_1m=4_000_000.0)})
+    await _enable_sidecar(async_client)
+    key = await _create_api_key(
+        "resolved-quota-key",
+        limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000_000)],
+    )
+
+    await _post_chat(async_client, key)
+    await get_lookup_coordinator().drain()
+    await _post_chat(async_client, key)
+    await get_lookup_coordinator().drain()
+
+    priced = [log for log in await _sidecar_logs() if log.cost_usd is not None]
+    assert priced, "the second request must be priced from the catalog"
+    expected_microdollars = int(priced[0].cost_usd * 1_000_000)
+    assert expected_microdollars > 0
+
+    values = await _limit_values(key.id)
+    assert values["cost_usd"] == expected_microdollars

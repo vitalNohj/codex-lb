@@ -117,3 +117,62 @@ def test_without_a_resolved_rate_the_total_stands_alone() -> None:
 
     assert entry.cost_usd == pytest.approx(EXPECTED_TOTAL)
     assert entry.cost_breakdown.input_usd is None
+
+
+# A row that does not participate in external price resolution but does state its
+# own provenance. ``gpt-5.1`` is an exact static-table entry, so the split below
+# is the model's real rate, not a substring match on some other model's name.
+_STATIC_TOTAL = 0.006025
+
+
+def _non_participating_log(**overrides):
+    values = {
+        "model": "gpt-5.1",
+        "source": "omniroute_sidecar",
+        "input_tokens": 1_000,
+        "output_tokens": 500,
+        "cached_input_tokens": 200,
+        "cost_usd": _STATIC_TOTAL,
+        "price_status": None,
+    }
+    values.update(overrides)
+    return _log(**values)
+
+
+@pytest.mark.parametrize(
+    "cost_source",
+    [CostSource.UPSTREAM_BILLED.value, CostSource.OPERATOR_CONFIGURED.value],
+)
+def test_a_non_participating_row_keeps_its_component_split(cost_source: str) -> None:
+    """Suppression must not reach rows the external resolver does not own.
+
+    An OmniRoute/Ollama row whose upstream reported a billed amount, and every
+    operator-configured model-source row, state a ``cost_source`` without
+    participating in external price resolution. They kept showing
+    "$0.01 = 800 Input + 200 Cached" before this work and must keep showing it:
+    the request-details dialog renders no Cost section at all when every component
+    is null.
+    """
+
+    entry = to_request_log_entry(_non_participating_log(cost_source=cost_source))
+
+    assert entry.cost_usd == pytest.approx(_STATIC_TOTAL)
+    assert entry.cost_breakdown.input_usd is not None
+    assert entry.cost_breakdown.cached_input_usd is not None
+    assert entry.cost_breakdown.output_usd is not None
+    components = (
+        entry.cost_breakdown.input_usd + entry.cost_breakdown.cached_input_usd + entry.cost_breakdown.output_usd
+    )
+    assert components == pytest.approx(entry.cost_breakdown.total_usd)
+
+
+def test_a_non_participating_row_whose_total_disagrees_shows_no_invented_split() -> None:
+    """An upstream debit that does not reconcile with list price stands alone."""
+
+    entry = to_request_log_entry(
+        _non_participating_log(cost_usd=0.5, cost_source=CostSource.UPSTREAM_BILLED.value),
+    )
+
+    assert entry.cost_usd == pytest.approx(0.5)
+    assert entry.cost_breakdown.input_usd is None
+    assert entry.cost_breakdown.output_usd is None

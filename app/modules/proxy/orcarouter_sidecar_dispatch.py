@@ -53,6 +53,7 @@ from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
 from app.modules.proxy.external_pricing_logging import (
+    external_cost_microdollars,
     external_request_cost,
     usage_tokens_from_sidecar,
 )
@@ -510,6 +511,14 @@ async def _finalize_or_release_orcarouter_reservation(
                 output_tokens=usage.output_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 service_tier=None,
+                # Stated explicitly so settlement cannot fall through to the
+                # substring-glob table this integration no longer prices from.
+                cost_microdollars=await external_cost_microdollars(
+                    provider=ORCAROUTER_PRICING_PROVIDER,
+                    model=model,
+                    usage=usage_tokens_from_sidecar(usage),
+                    billed_cost_usd=usage.cost_usd,
+                ),
             )
     except Exception:
         logger.warning(

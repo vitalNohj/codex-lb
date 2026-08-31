@@ -58,6 +58,7 @@ async def external_request_cost(
     usage: UsageTokens | None,
     billed_cost_usd: float | None,
     service_tier: str | None = None,
+    schedule_lookup: bool = True,
 ) -> ExternalRequestCost:
     """Resolve the cost fields for one request on a participating integration.
 
@@ -71,6 +72,7 @@ async def external_request_cost(
             model=model,
             usage=usage,
             service_tier=service_tier,
+            schedule_lookup=schedule_lookup,
         )
     except Exception:
         # Pricing is reporting, not routing. A failure here must cost the caller
@@ -98,6 +100,44 @@ async def external_request_cost(
         )
 
     return ExternalRequestCost(cost_usd=None, cost_source=None, price_status=status_value)
+
+
+async def external_cost_microdollars(
+    *,
+    provider: str,
+    model: str,
+    usage: UsageTokens | None,
+    billed_cost_usd: float | None,
+    service_tier: str | None = None,
+) -> int:
+    """What one request on a participating integration may charge a cost limit.
+
+    A cost-limited API key must accrue the same number the request log records.
+    Left to itself, reservation settlement prices the model from the substring-glob
+    static table, so an id the resolver deliberately left unpriced would still be
+    debited at some other model's rate -- and would then disagree with the NULL the
+    log stored, which is also what a re-created limit backfills from.
+
+    An unknown price therefore charges nothing rather than a fabricated amount.
+    Only the cost accrues differently: the request is served and its tokens are
+    counted exactly as before, so allow and deny behavior is unchanged.
+
+    Reads persisted state without dispatching a lookup: the log write for the same
+    request owns that, and letting both schedule would make the row's recorded
+    status depend on which of the two ran first.
+    """
+
+    cost = await external_request_cost(
+        provider=provider,
+        model=model,
+        usage=usage,
+        billed_cost_usd=billed_cost_usd,
+        service_tier=service_tier,
+        schedule_lookup=False,
+    )
+    if cost.cost_usd is None:
+        return 0
+    return int(cost.cost_usd * 1_000_000)
 
 
 def usage_tokens_from_sidecar(usage: SidecarUsageLike | None) -> UsageTokens | None:

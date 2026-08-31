@@ -132,12 +132,19 @@ async def run_maintenance_pass() -> MaintenanceReport:
 
     reference_unavailable = reference_error is not None
     for record in records:
-        if record.provider in disabled_providers:
+        disabled = record.provider in disabled_providers
+        if disabled and reference is None:
+            # Nothing at all can be consulted for this record: its own integration
+            # is switched off and the pricing reference did not answer either.
             report.skipped_disabled += 1
             continue
         context = contexts.get(record.provider)
         serving_catalog = context.catalog if context is not None else None
-        serving_unavailable = record.provider in unavailable_providers
+        # A switched-off integration did not answer, so its silence is no evidence
+        # against a settled record -- but the reference is still a reachable
+        # source, and refusing to apply what it says would leave the pass unable
+        # to refresh anything while an integration is temporarily off.
+        serving_unavailable = disabled or record.provider in unavailable_providers
         if serving_catalog is None and reference is None:
             # Every source this record could have used is unavailable. Leaving the
             # row exactly as it is preserves a rate that is probably still correct.

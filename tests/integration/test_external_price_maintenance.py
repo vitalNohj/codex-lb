@@ -522,6 +522,66 @@ async def test_a_disabled_integration_is_not_reported_as_a_catalog_failure(db_se
 
 
 @pytest.mark.asyncio
+async def test_a_disabled_integration_still_lets_the_reference_refresh_its_records(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """Switching an integration off must not freeze the whole pass.
+
+    The pricing reference is a separate, reachable source. Skipping every record
+    of a switched-off integration made the pass unable to apply a rate change the
+    reference was publishing, and reported it as a healthy no-op.
+    """
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+    _install_disabled_provider("orcarouter")
+
+    async def _reference():
+        return _catalog("openrouter", {"vendor/model-x": ModelPrice(3.0, 6.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.catalog_failures == []
+    assert report.disabled_integrations == ["orcarouter"]
+    assert len(report.updated) == 1
+    record = await _record("vendor/model-x")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_integrations_silence_is_no_evidence_against_a_settled_record(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """An integration that was never asked cannot delist anything."""
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+    _install_disabled_provider("orcarouter")
+
+    async def _reference():
+        return _catalog("openrouter", {"vendor/other": ModelPrice(9.0, 9.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.unresolved == [], "a switched-off integration must not delist a record"
+    assert report.preserved_on_failure == 1
+    record = await _record("vendor/model-x")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
 async def test_a_pass_over_an_empty_store_is_a_no_op(db_setup) -> None:
     del db_setup
     _install_catalog("orcarouter", {"vendor/model-x": ModelPrice(2.0, 4.0)})

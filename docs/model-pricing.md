@@ -133,9 +133,16 @@ Two outcomes are worth knowing:
 - If a rate is replaced by a listing with no per-token price, the change is
   reported under "Now listed without a per-token price". Clearing a stored rate
   is never counted as unchanged.
-- If an integration is switched off, its records are left untouched and it is
-  listed under "Integrations disabled". A disabled integration has not failed to
-  answer, so it is never reported as an unavailable catalog.
+- If an integration is switched off, it is listed under "Integrations disabled"
+  and never reported as an unavailable catalog: it has not failed to answer. Its
+  records are still judged against the OpenRouter pricing reference, which is a
+  reachable source, but the switched-off integration's silence never counts as
+  evidence against a settled record. With the reference also unreachable there is
+  nothing to consult, and those records are counted under "Skipped, integration
+  disabled" and left exactly as they are.
+- If reading an integration's configuration fails, that is a failure rather than
+  a switch-off: it is reported as an unavailable catalog so a transient settings
+  or database problem is never mistaken for an integration you turned off.
 
 CLIProxyAPI publishes no rates of its own, by design. That is not a fetch
 failure: it is never reported as an unavailable catalog, and its records are
