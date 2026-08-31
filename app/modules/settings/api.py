@@ -5,6 +5,7 @@ import os
 import socket
 import time
 from dataclasses import asdict
+from typing import Any
 
 import aiohttp
 import httpx
@@ -223,9 +224,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_enabled=settings.openrouter_sidecar_enabled,
         openrouter_sidecar_base_url=settings.openrouter_sidecar_base_url,
         openrouter_sidecar_api_key_configured=settings.openrouter_sidecar_api_key_configured,
-        openrouter_sidecar_model_prefixes=[
-            asdict(prefix) for prefix in settings.openrouter_sidecar_model_prefixes
-        ],
+        openrouter_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.openrouter_sidecar_model_prefixes],
         openrouter_sidecar_full_models=settings.openrouter_sidecar_full_models,
         openrouter_sidecar_connect_timeout_seconds=settings.openrouter_sidecar_connect_timeout_seconds,
         openrouter_sidecar_request_timeout_seconds=settings.openrouter_sidecar_request_timeout_seconds,
@@ -339,7 +338,7 @@ def _reject_disabled_capability_fields(payload: DashboardSettingsUpdateRequest) 
     )
 
 
-def _neutralized_omniroute_response_fields(settings) -> dict[str, object]:
+def _neutralized_omniroute_response_fields(settings) -> dict[str, Any]:
     """Return the OmniRoute response fields, blanked while the capability is off.
 
     Stored rows stay untouched in the database; the API simply never advertises
@@ -802,9 +801,7 @@ async def update_settings(
         single_account_id = (
             payload.single_account_id if "single_account_id" in payload.model_fields_set else current.single_account_id
         )
-        resolved_model_aliases = (
-            payload.model_aliases if payload.model_aliases is not None else current.model_aliases
-        )
+        resolved_model_aliases = payload.model_aliases if payload.model_aliases is not None else current.model_aliases
         if payload.custom_alias_catalog is not None:
             resolved_custom_alias_catalog = _custom_alias_catalog_to_service(payload.custom_alias_catalog)
         else:
@@ -1007,9 +1004,7 @@ async def update_settings(
                 ),
                 claude_sidecar_base_url=payload.claude_sidecar_base_url or current.claude_sidecar_base_url,
                 claude_sidecar_api_key=(
-                    payload.claude_sidecar_api_key
-                    if "claude_sidecar_api_key" in payload.model_fields_set
-                    else None
+                    payload.claude_sidecar_api_key if "claude_sidecar_api_key" in payload.model_fields_set else None
                 ),
                 claude_sidecar_clear_api_key=payload.claude_sidecar_clear_api_key is True,
                 claude_sidecar_model_prefixes=(

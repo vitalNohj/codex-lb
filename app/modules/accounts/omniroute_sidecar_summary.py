@@ -22,8 +22,7 @@ def build_omniroute_sidecar_summary(
         return None
 
     enabled_and_configured = (
-        settings.omniroute_sidecar_enabled
-        and settings.omniroute_sidecar_api_key_encrypted is not None
+        settings.omniroute_sidecar_enabled and settings.omniroute_sidecar_api_key_encrypted is not None
     )
     health_status = resolve_sidecar_health_status(
         enabled=bool(settings.omniroute_sidecar_enabled),

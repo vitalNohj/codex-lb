@@ -3987,9 +3987,7 @@ async def v1_chat_completions(
         api_key,
         request_model=request_model,
         request_service_tier=responses_payload.service_tier,
-        request_usage_budget=None
-        if cursor_compat_client
-        else estimate_api_key_request_usage(responses_payload),
+        request_usage_budget=None if cursor_compat_client else estimate_api_key_request_usage(responses_payload),
     )
     if source is not None:
         return await _source_chat_completion_response(

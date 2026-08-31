@@ -16,13 +16,13 @@ Resources
 
 <p align="center">
   <a href="https://github.com/Soju06/codex-lb"><img alt="Fork of Soju06/codex-lb" src="https://img.shields.io/badge/fork%20of-Soju06%2Fcodex--lb-2563eb"></a>
-  <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OrcaRouter%20%7C%20OmniRoute%20%7C%20Ollama%20Cloud-059669">
+  <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OrcaRouter%20%7C%20Ollama%20Cloud-059669">
   <img alt="Cursor compatible" src="https://img.shields.io/badge/Cursor-compatible-7c3aed">
 </p>
 
 > [Upstream codex-lb](https://github.com/Soju06/codex-lb) is a “Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.”
 >
-> This fork keeps that native Codex path and adds a model-resolution layer in front of it. Aliases can target native or external models; configured exact-model and prefix matches route selected requests to CLIProxyAPI, OpenRouter, OrcaRouter, OmniRoute, or Ollama Cloud. Requests without an external match continue through codex-lb's native account pool.
+> This fork keeps that native Codex path and adds a model-resolution layer in front of it. Aliases can target native or external models; configured exact-model and prefix matches route selected requests to CLIProxyAPI, OpenRouter, OrcaRouter, or Ollama Cloud. Requests without an external match continue through codex-lb's native account pool.
 
 Build from this repository when you want the integration and routing additions described below. Official upstream packages, images, and charts track upstream codex-lb rather than this fork.
 
@@ -74,11 +74,6 @@ flowchart TB
     OrcaModels["OrcaRouter-hosted models<br/>including the orcarouter/auto channel"]
     OrcaRouter --> OrcaRouting --> OrcaModels
 
-    OmniRoute["OmniRoute integration"]
-    OmniRouting["OmniRoute-owned Smart Combos and routing<br/>account and key cooling · layered fallback<br/>provider selection · optional token compression"]
-    OmniModels["200+ providers · 90+ free tiers<br/>free-forever options · $0 start<br/>no paid provider API key or card required"]
-    OmniRoute --> OmniRouting --> OmniModels
-
     Ollama["Ollama Cloud integration"]
     OllamaRouting["Ollama API and hosted model execution"]
     OllamaModels["Ollama-hosted cloud models"]
@@ -88,7 +83,6 @@ flowchart TB
     Resolve -->|"CLIProxyAPI match"| CLI
     Resolve -->|"OpenRouter match"| OpenRouter
     Resolve -->|"OrcaRouter match"| OrcaRouter
-    Resolve -->|"OmniRoute match"| OmniRoute
     Resolve -->|"Ollama Cloud match"| Ollama
 ```
 
@@ -100,20 +94,18 @@ The fork selects the path; it does not absorb the integrated projects' internal 
 | **CLIProxyAPI Integration** | **CLIProxyAPI:** provider and account management, translation, OAuth, account rotation, proxying, token refresh, routing, and failover | Claude, Gemini, Codex, Grok, Qwen, and other CLIProxyAPI-supported providers |
 | **OpenRouter Integration** | **OpenRouter:** large model catalog, provider selection, automatic fallback, pass-through inference pricing, and one billing/usage surface | Hundreds of models across 70+ providers, including major labs, specialist inference providers, and open-model hosts |
 | **OrcaRouter Integration** | **OrcaRouter:** catalog and channel selection behind an OpenAI-compatible Chat Completions API, with the billed per-request cost reported back to codex-lb | OrcaRouter-hosted models, including the `orcarouter/auto` channel |
-| **OmniRoute Integration** | **OmniRoute:** Smart Combos, account/key cooling, layered fallback, provider selection, and optional token compression | 200+ providers, 90+ free tiers, and free-forever options; no paid provider API key or credit card required to start |
 | **Ollama Cloud Integration** | **Ollama:** hosted model execution through the Ollama API | Ollama-hosted cloud models |
 
 ## What This Fork Adds
 
 | Upgrade | What you get |
 | --- | --- |
-| **Unified provider routing** | Exact model matches and configurable prefixes select CLIProxyAPI, OpenRouter, OrcaRouter, OmniRoute, or Ollama Cloud without changing client base URLs; unmatched models retain the native Codex path. |
+| **Unified provider routing** | Exact model matches and configurable prefixes select CLIProxyAPI, OpenRouter, OrcaRouter, or Ollama Cloud without changing client base URLs; unmatched models retain the native Codex path. |
 | **Prefix stripping controls** | Use ergonomic client-facing names like `or-deepseek/deepseek-chat` or `ollama-gpt-oss:120b-cloud`, then strip the prefix only on the upstream wire request. |
 | **Cursor image (vision) input** | Accepts the Anthropic-native `image` content parts Cursor sends and converts them to the shape CLIProxyAPI expects, so screenshots and pasted images work against Claude models without breaking tool calls. |
 | **User-configurable model aliases** | Map friendly client-facing names to concrete native or external models (for example `custom_r1` → `cc/claude-opus-4-8`) from the dashboard. |
-| **Per-provider reasoning effort** | Configure a true reasoning-effort override for CLIProxyAPI, OpenRouter, OrcaRouter, OmniRoute, or Ollama Cloud. The configured value replaces client-supplied effort; request logs retain requested and effective values. |
-| **External Integrations dashboard** | Configure CLIProxyAPI, OpenRouter, OrcaRouter, OmniRoute, and Ollama Cloud from one tabbed dashboard card with provider-specific labels, connection tests, discovered models, prefixes, and full-model rules. |
-| **OmniRoute integration** | Route selected OmniRoute models through codex-lb while retaining codex-lb API-key restrictions, request logs, cost tracking, and model discovery around OmniRoute-owned routing. |
+| **Per-provider reasoning effort** | Configure a true reasoning-effort override for CLIProxyAPI, OpenRouter, OrcaRouter, or Ollama Cloud. The configured value replaces client-supplied effort; request logs retain requested and effective values. |
+| **External Integrations dashboard** | Configure CLIProxyAPI, OpenRouter, OrcaRouter, and Ollama Cloud from one tabbed dashboard card with provider-specific labels, connection tests, discovered models, prefixes, and full-model rules. |
 | **Cost and savings telemetry** | Track actual spend, paid-equivalent reference cost, and derived savings for free or discounted external models. |
 | **Cursor and Codex compatibility** | Preserve raw Codex control endpoints, compaction behavior, context-window metadata, model aliases, and sidecar tool/reasoning quirks that real clients depend on. |
 | **Integrated operator UI** | Synthetic provider accounts, normal request-log rows, provider-specific labels, and account-level controls for integrations that expose them. |
@@ -122,7 +114,7 @@ The fork selects the path; it does not absorb the integrated projects' internal 
 
 The fork ships a shared resolver for all external integrations. The rules are simple and predictable:
 
-1. **Full model exact match wins globally.** If `oc/big-pickle` is configured as an OmniRoute full model, it routes to OmniRoute even if another provider owns a broader prefix.
+1. **Full model exact match wins globally.** If `orcarouter/auto` is configured as an OrcaRouter full model, it routes to OrcaRouter even if another provider owns a broader prefix.
 2. **Longest prefix wins next.** If one provider owns `deepseek/` and another owns `deepseek/deepseek-`, the more specific prefix gets the request.
 3. **Each prefix chooses whether to strip.** `or-deepseek/deepseek-chat` can be logged and rate-limited as `or-deepseek/deepseek-chat`, while OpenRouter receives `deepseek/deepseek-chat`.
 4. **Full model matches are never stripped.** Exact model IDs are forwarded as the operator configured them.
@@ -138,7 +130,6 @@ That means one model list can safely mix official Codex models, external provide
 | `claude-sonnet-4-5` | CLIProxyAPI prefix `claude`, strip off | CLIProxyAPI | `claude-sonnet-4-5` |
 | `or-deepseek/deepseek-chat` | OpenRouter prefix `or-`, strip on | OpenRouter | `deepseek/deepseek-chat` |
 | `orcarouter/auto` | OrcaRouter prefix `orcarouter/`, strip off | OrcaRouter | `orcarouter/auto` |
-| `oc/big-pickle` | OmniRoute full model `oc/big-pickle` | OmniRoute | `oc/big-pickle` |
 | `ollama-gpt-oss:120b-cloud` | Ollama prefix `ollama-`, strip on | Ollama Cloud | `gpt-oss:120b-cloud` |
 
 ## What You Can Do With It
@@ -152,9 +143,9 @@ That means one model list can safely mix official Codex models, external provide
 
 ## External Integrations
 
-Configure integrations in **Settings -> External Integrations**. Each provider - CLIProxyAPI, OpenRouter, OrcaRouter, OmniRoute, and Ollama Cloud - gets its own tab, but the routing rules are shared. Every integration is disabled until you enable it; the `CODEX_LB_*_SIDECAR_*` defaults (enable flag, base URL, prefixes, timeouts) live in [`.env.example`](.env.example).
+Configure integrations in **Settings -> External Integrations**. Each provider - CLIProxyAPI, OpenRouter, OrcaRouter, and Ollama Cloud - gets its own tab, but the routing rules are shared. Every integration is disabled until you enable it; the `CODEX_LB_*_SIDECAR_*` defaults (enable flag, base URL, prefixes, timeouts) live in [`.env.example`](.env.example).
 
-The dashboard stores API keys encrypted at rest, runs connection tests, shows discovered models, and prevents duplicate full-model or prefix ownership across providers. OmniRoute owns its own provider cooling and dashboard; codex-lb routes to it and records the traffic, but does not manage the OmniRoute process lifecycle.
+The dashboard stores API keys encrypted at rest, runs connection tests, shows discovered models, and prevents duplicate full-model or prefix ownership across providers.
 
 ## Cost, Reference Cost, And Savings
 
@@ -164,9 +155,9 @@ This fork separates actual spend from reference value:
 - `reference_cost_usd` is the paid-equivalent price when codex-lb can resolve one.
 - `savings_usd` is `reference_cost_usd - cost_usd`, floored at zero.
 
-Free models accessed through OpenRouter, OrcaRouter, or OmniRoute, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
+Free models accessed through OpenRouter or OrcaRouter, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
 
-When an integration reports what it billed for a request (OpenRouter's `usage.cost`, OrcaRouter's `usage.cost_usd`, or either field from OmniRoute), that figure is stored as-is rather than re-derived from catalog list prices, so tiered pricing, peak multipliers, and cache discounts stay accurate. Reference cost comes only from the `/models` listings codex-lb already fetches, never from extra price lookups: once an integration stops listing a model and no other integration lists it, the retired price is dropped rather than kept, so reference cost falls back to the built-in pricing table or stays null.
+When an integration reports what it billed for a request (OpenRouter's `usage.cost` or OrcaRouter's `usage.cost_usd`), that figure is stored as-is rather than re-derived from catalog list prices, so tiered pricing, peak multipliers, and cache discounts stay accurate. Reference cost comes only from the `/models` listings codex-lb already fetches, never from extra price lookups: once an integration stops listing a model and no other integration lists it, the retired price is dropped rather than kept, so reference cost falls back to the built-in pricing table or stays null.
 
 ## Cursor And Codex Compatibility
 

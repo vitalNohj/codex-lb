@@ -6,10 +6,11 @@ regardless of persisted dashboard settings, environment variables, or
 migrated database columns. Dormant implementation modules stay in the tree so
 the capability can be re-enabled by flipping one constant here.
 
-The single source of truth lives in :data:`DISABLED_PRODUCT_CAPABILITIES`.
+The server source of truth lives in :data:`DISABLED_PRODUCT_CAPABILITIES`.
 Server code asks :func:`is_capability_enabled` (or the named helper) at every
-externally reachable path; the dashboard reads the same answer from
-``GET /api/runtime/capabilities`` so UI and server never disagree.
+externally reachable path, and ``GET /api/runtime/capabilities`` exposes the
+state to API clients. The bundled dashboard mirrors this boundary in its
+compile-time capability constants because it ships with the server.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ OMNIROUTE: Final = "omniroute"
 #: Every capability the product knows about, enabled or not.
 KNOWN_PRODUCT_CAPABILITIES: Final[tuple[str, ...]] = (OMNIROUTE,)
 
-#: Capabilities disabled at the product level. Remove an entry to re-enable
-#: the integration everywhere at once; no other code change is required.
+#: Capabilities disabled at the product level. Remove an entry here and enable
+#: the matching bundled-dashboard constant to re-enable an integration.
 DISABLED_PRODUCT_CAPABILITIES: Final[frozenset[str]] = frozenset({OMNIROUTE})
 
 

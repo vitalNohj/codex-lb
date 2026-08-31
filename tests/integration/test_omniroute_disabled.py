@@ -301,9 +301,7 @@ async def test_dormant_omniroute_routes_do_not_conflict_with_orcarouter(
     )
 
     assert response.status_code == 200
-    assert response.json()["orcarouterSidecarModelPrefixes"] == [
-        {"prefix": "orcarouter/", "strip": False}
-    ]
+    assert response.json()["orcarouterSidecarModelPrefixes"] == [{"prefix": "orcarouter/", "strip": False}]
 
     async with SessionLocal() as session:
         settings = (await session.execute(select(DashboardSettings))).scalars().first()
