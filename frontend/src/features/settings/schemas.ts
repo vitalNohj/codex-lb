@@ -603,7 +603,11 @@ export const ClaudeSidecarQuotaResponseSchema = z.object({
   accounts: z.array(ClaudeSidecarQuotaAuthSchema).default([]),
 });
 
-export const ClaudeSidecarRoutingStrategySchema = z.enum(["round_robin", "fill_first"]);
+export const ClaudeSidecarRoutingStrategySchema = z.enum([
+  "round_robin",
+  "fill_first",
+  "weighted_round_robin",
+]);
 export const ClaudeSidecarRoutingStatusSchema = z.enum([
   "healthy",
   "disabled",

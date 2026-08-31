@@ -13,7 +13,7 @@ ClaudeSidecarQuotaStatus = Literal[
     "healthy", "unauthorized", "unreachable", "error", "unknown", "disabled", "not_configured"
 ]
 ClaudeSidecarRoutingStatus = Literal["healthy", "disabled", "not_configured", "unreachable", "unauthorized", "error"]
-ClaudeSidecarRoutingStrategy = Literal["round_robin", "fill_first"]
+ClaudeSidecarRoutingStrategy = Literal["round_robin", "fill_first", "weighted_round_robin"]
 
 
 class ClaudeSidecarModelSummary(DashboardModel):

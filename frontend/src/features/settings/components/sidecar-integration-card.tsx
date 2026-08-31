@@ -1107,11 +1107,12 @@ function Routing({
           <SelectContent>
             <SelectItem value="round_robin">Round robin</SelectItem>
             <SelectItem value="fill_first">Fill first</SelectItem>
+            <SelectItem value="weighted_round_robin">Weighted round robin</SelectItem>
           </SelectContent>
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">
-        Fill first burns the highest-priority available account until it cools down; round robin spreads requests within the top-priority group.
+        Fill first burns the highest-priority available account until it cools down. Round robin and weighted round robin mix within the top-priority group; weighted round robin uses each auth file's integer weight (omitted weights default to 1).
       </p>
       {message ? <p className="text-xs text-muted-foreground">{message}</p> : null}
       <div className="space-y-2">

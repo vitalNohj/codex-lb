@@ -406,6 +406,51 @@ async def test_put_routing_strategy_round_trips(async_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_routing_maps_weighted_round_robin(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    _FakeSidecarClient.routing_strategy = "weighted-round-robin"
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/routing")
+
+    assert response.status_code == 200
+    assert response.json()["strategy"] == "weighted_round_robin"
+
+
+@pytest.mark.asyncio
+async def test_put_routing_strategy_weighted_round_robin_round_trips(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/strategy",
+        json={"strategy": "weighted_round_robin"},
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.strategy_updates == ["weighted-round-robin"]
+    assert response.json()["strategy"] == "weighted_round_robin"
+
+
+@pytest.mark.asyncio
 async def test_put_routing_strategy_rejects_invalid(async_client, monkeypatch):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()
