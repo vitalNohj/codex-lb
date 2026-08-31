@@ -343,6 +343,11 @@ def _neutralized_omniroute_response_fields(settings) -> dict[str, Any]:
 
     Stored rows stay untouched in the database; the API simply never advertises
     a disabled integration as enabled or configured.
+
+    Only enablement-bearing fields are blanked. The inert transport fields
+    (base URL, timeouts, cache TTL) are echoed from storage because omitting
+    them would let the response model's schema defaults fabricate values that
+    do not match the retained configuration.
     """
 
     if omniroute_enabled():
@@ -370,6 +375,10 @@ def _neutralized_omniroute_response_fields(settings) -> dict[str, Any]:
         "omniroute_sidecar_model_prefixes": [],
         "omniroute_sidecar_full_models": [],
         "omniroute_sidecar_selected_models": [],
+        "omniroute_sidecar_base_url": settings.omniroute_sidecar_base_url,
+        "omniroute_sidecar_connect_timeout_seconds": settings.omniroute_sidecar_connect_timeout_seconds,
+        "omniroute_sidecar_request_timeout_seconds": settings.omniroute_sidecar_request_timeout_seconds,
+        "omniroute_sidecar_models_cache_ttl_seconds": settings.omniroute_sidecar_models_cache_ttl_seconds,
         "omniroute_sidecar_last_health_status": None,
         "omniroute_sidecar_last_health_message": None,
         "omniroute_sidecar_last_checked_at": None,

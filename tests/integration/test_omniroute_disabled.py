@@ -79,7 +79,9 @@ async def stored_omniroute_configuration():
         settings = (await session.execute(select(DashboardSettings))).scalars().first()
         assert settings is not None
         settings.omniroute_sidecar_enabled = True
-        settings.omniroute_sidecar_base_url = "http://127.0.0.1:20128/v1"
+        # Deliberately not the schema default, so a response that echoes the
+        # stored value is distinguishable from one filled in by the default.
+        settings.omniroute_sidecar_base_url = "http://stored-omniroute.internal:20999/v1"
         settings.omniroute_sidecar_api_key_encrypted = b"stored-omniroute-key"
         settings.omniroute_sidecar_selected_models_json = f'["{OMNIROUTE_MODEL}"]'
         settings.omniroute_sidecar_prefixes_json = '[{"prefix": "omniroute/", "strip": false}]'
@@ -203,6 +205,13 @@ async def test_settings_response_never_advertises_stored_omniroute_configuration
     assert payload["omnirouteSidecarModelPrefixes"] == []
     assert payload["omnirouteSidecarLastHealthStatus"] is None
     assert payload["omnirouteSidecarLastModelCount"] is None
+    # Inert transport values are echoed from storage rather than omitted: an
+    # omitted field would be replaced by the response model's schema default,
+    # fabricating configuration that does not match the retained row.
+    assert payload["omnirouteSidecarBaseUrl"] == "http://stored-omniroute.internal:20999/v1"
+    assert payload["omnirouteSidecarConnectTimeoutSeconds"] == 3.25
+    assert payload["omnirouteSidecarRequestTimeoutSeconds"] == 451.5
+    assert payload["omnirouteSidecarModelsCacheTtlSeconds"] == 73.0
 
 
 @pytest.mark.asyncio
@@ -274,7 +283,7 @@ async def test_settings_get_put_round_trip_preserves_stored_omniroute_configurat
         settings = (await session.execute(select(DashboardSettings))).scalars().first()
         assert settings is not None
         assert settings.omniroute_sidecar_enabled is True
-        assert settings.omniroute_sidecar_base_url == "http://127.0.0.1:20128/v1"
+        assert settings.omniroute_sidecar_base_url == "http://stored-omniroute.internal:20999/v1"
         assert settings.omniroute_sidecar_api_key_encrypted == b"stored-omniroute-key"
         assert settings.omniroute_sidecar_prefixes_json == '[{"prefix": "omniroute/", "strip": false}]'
         assert settings.omniroute_sidecar_selected_models_json == f'["{OMNIROUTE_MODEL}"]'
