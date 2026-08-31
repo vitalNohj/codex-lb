@@ -61,6 +61,7 @@ def upgrade() -> None:
             sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
             sa.Column("attempt_count", sa.Integer(), server_default=sa.text("0"), nullable=False),
             sa.Column("next_retry_at", sa.DateTime(), nullable=True),
+            sa.Column("lookup_token", sa.String(), nullable=True),
             sa.PrimaryKeyConstraint("id"),
             sa.UniqueConstraint("provider", "incoming_model", name="uq_external_model_prices_provider_model"),
         )

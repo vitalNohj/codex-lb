@@ -231,6 +231,7 @@ def resolve_model_price(
     seen: set[str] = set()
     candidate = normalized_input.lower()
     step_prefix = ""
+    excluded_prefixed_ids: set[str] = set()
 
     while candidate not in seen:
         seen.add(candidate)
@@ -245,15 +246,20 @@ def resolve_model_price(
             candidate = aliased
             continue
 
-        resolution = _resolve_against_catalogs(candidate, catalogs)
-        if resolution.outcome is not ResolutionOutcome.UNRESOLVED:
-            return _with_step_prefix(resolution, step_prefix)
-
         stripped = _strip_configured_prefix(candidate, prefixes)
         if stripped is not None and stripped not in seen:
+            excluded_prefixed_ids.add(candidate)
             step_prefix = f"{step_prefix}prefix+"
             candidate = stripped
             continue
+
+        resolution = _resolve_against_catalogs(
+            candidate,
+            catalogs,
+            excluded_model_ids=excluded_prefixed_ids,
+        )
+        if resolution.outcome is not ResolutionOutcome.UNRESOLVED:
+            return _with_step_prefix(resolution, step_prefix)
 
         undated = _strip_release_date_suffix(candidate)
         if undated is not None and undated not in seen:
@@ -322,7 +328,12 @@ def _strip_configured_prefix(model_key: str, prefixes: Sequence[tuple[str, bool]
     return remainder or None
 
 
-def _resolve_against_catalogs(model_key: str, catalogs: Sequence[Catalog]) -> Resolution:
+def _resolve_against_catalogs(
+    model_key: str,
+    catalogs: Sequence[Catalog],
+    *,
+    excluded_model_ids: set[str] | None = None,
+) -> Resolution:
     """Run the exact/normalized/vendor-qualified steps over ``catalogs`` in order.
 
     Each step is tried across every catalog before the next, weaker step begins,
@@ -337,7 +348,13 @@ def _resolve_against_catalogs(model_key: str, catalogs: Sequence[Catalog]) -> Re
             return _entry_resolution(entry, catalog, step="exact")
 
     for catalog in catalogs:
-        resolution = _unique_candidate(model_key, catalog, catalog.normalized_candidates(model_key), step="normalized")
+        resolution = _unique_candidate(
+            model_key,
+            catalog,
+            catalog.normalized_candidates(model_key),
+            step="normalized",
+            excluded_model_ids=excluded_model_ids,
+        )
         if resolution is not None:
             return resolution
 
@@ -355,6 +372,7 @@ def _resolve_against_catalogs(model_key: str, catalogs: Sequence[Catalog]) -> Re
             catalog,
             catalog.bare_candidates(model_key),
             step="vendor-qualified",
+            excluded_model_ids=excluded_model_ids,
         )
         if resolution is not None:
             return resolution
@@ -368,6 +386,7 @@ def _unique_candidate(
     candidates: Sequence[str],
     *,
     step: str,
+    excluded_model_ids: set[str] | None = None,
 ) -> Resolution | None:
     """One resolution from ``candidates``, or an abstention, or ``None`` to continue.
 
@@ -376,6 +395,8 @@ def _unique_candidate(
     plausible answers, which no later step can improve on.
     """
 
+    if excluded_model_ids:
+        candidates = [candidate for candidate in candidates if candidate.lower() not in excluded_model_ids]
     if not candidates:
         return None
     # A base id and its own variants are not competing answers to an unsuffixed

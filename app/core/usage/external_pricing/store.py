@@ -5,9 +5,9 @@ writes; the background lookup and the maintenance command are the only writers.
 Keeping writes off the request path is what makes a known id cost exactly one
 indexed read no matter how much traffic it carries.
 
-Upserts are expressed as dialect-native ``INSERT ... ON CONFLICT DO UPDATE`` so
-two workers that resolve the same first-sighting concurrently converge on one row
-instead of racing a read-then-write.
+Lookups atomically claim a short lease in that row. Outcome writes carry the
+claim token, so stale work cannot replace a newer result and a crashed worker
+cannot strand the model indefinitely.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from uuid import uuid4
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +40,8 @@ _RETRY_BACKOFF: tuple[timedelta, ...] = (
     timedelta(hours=6),
     timedelta(hours=24),
 )
+
+_LOOKUP_LEASE = timedelta(minutes=2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +91,12 @@ class PriceRecord:
         return (now or utcnow()) >= self.next_retry_at
 
 
+@dataclass(frozen=True, slots=True)
+class LookupClaim:
+    token: str
+    record: PriceRecord
+
+
 def next_retry_at(attempt_count: int, *, now: datetime | None = None) -> datetime:
     """Backoff deadline after ``attempt_count`` consecutive failed lookups."""
 
@@ -119,32 +128,90 @@ class ExternalModelPriceStore:
         )
         return [_to_record(row) for row in result.scalars().all()]
 
-    async def rates_for_models(self, incoming_models: Sequence[str]) -> dict[str, ModelPrice]:
-        """Persisted rates keyed by incoming model id, for a page of request logs.
+    async def rates_for_models(
+        self,
+        lookup_keys: Sequence[tuple[str, str]],
+    ) -> dict[tuple[str, str], ModelPrice]:
+        """Persisted rates keyed by provider and incoming model id.
 
         One query for the whole page: the read path may not turn rendering a list
-        into a lookup per row. Keyed on the incoming id alone because a request log
-        records the model as routed but not which provider key space priced it; a
-        row's own persisted total is what ultimately decides whether the rate is
-        accepted, so an id two providers price differently simply fails to
-        reconcile and shows no component split.
+        into a lookup per row. The provider remains part of the key because two
+        integrations may publish different component rates for the same id.
         """
 
-        keys = {model.strip().lower() for model in incoming_models if model and model.strip()}
+        keys = {
+            normalize_lookup_key(provider, model)
+            for provider, model in lookup_keys
+            if provider and model and model.strip()
+        }
         if not keys:
             return {}
+        providers = sorted({provider for provider, _model in keys})
+        models = sorted({model for _provider, model in keys})
         result = await self._session.execute(
             select(ExternalModelPrice).where(
-                ExternalModelPrice.incoming_model.in_(sorted(keys)),
+                ExternalModelPrice.provider.in_(providers),
+                ExternalModelPrice.incoming_model.in_(models),
                 ExternalModelPrice.status == ExternalPriceStatus.RESOLVED.value,
             )
         )
-        rates: dict[str, ModelPrice] = {}
+        rates: dict[tuple[str, str], ModelPrice] = {}
         for row in result.scalars().all():
             record = _to_record(row)
-            if record.price is not None:
-                rates.setdefault(record.incoming_model, record.price)
+            key = (record.provider, record.incoming_model)
+            if key in keys and record.price is not None:
+                rates[key] = record.price
         return rates
+
+    async def claim_lookup(self, provider: str, incoming_model: str) -> LookupClaim | None:
+        provider_key, model_key = normalize_lookup_key(provider, incoming_model)
+        if not provider_key or not model_key:
+            return None
+        now = utcnow()
+        token = uuid4().hex
+        lease_until = now + _LOOKUP_LEASE
+        values = {
+            "provider": provider_key,
+            "incoming_model": model_key,
+            "status": ExternalPriceStatus.PENDING.value,
+            "catalog_model": None,
+            "catalog_source": None,
+            "input_per_1m": None,
+            "output_per_1m": None,
+            "resolution_step": None,
+            "detail": "lookup in progress",
+            "retrieved_at": now,
+            "updated_at": now,
+            "attempt_count": 0,
+            "next_retry_at": lease_until,
+            "lookup_token": token,
+        }
+        dialect = self._session.bind.dialect.name if self._session.bind is not None else "sqlite"
+        insert = pg_insert if dialect == "postgresql" else sqlite_insert
+        statement = insert(ExternalModelPrice).values(**values)
+        due = or_(ExternalModelPrice.next_retry_at.is_(None), ExternalModelPrice.next_retry_at <= now)
+        retryable = or_(
+            ExternalModelPrice.status.not_in(
+                (ExternalPriceStatus.RESOLVED.value, ExternalPriceStatus.NOT_TOKEN_PRICED.value)
+            ),
+            ExternalModelPrice.next_retry_at.is_not(None),
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[ExternalModelPrice.provider, ExternalModelPrice.incoming_model],
+            set_={
+                "lookup_token": token,
+                "next_retry_at": lease_until,
+                "updated_at": now,
+            },
+            where=and_(retryable, due),
+        ).returning(ExternalModelPrice)
+        async with sqlite_writer_section():
+            result = await self._session.execute(statement)
+            row = result.scalar_one_or_none()
+            await self._session.commit()
+        if row is None:
+            return None
+        return LookupClaim(token=token, record=_to_record(row))
 
     async def record_resolved(
         self,
@@ -155,10 +222,11 @@ class ExternalModelPriceStore:
         catalog_source: str,
         price: ModelPrice,
         resolution_step: str,
-    ) -> None:
+        claim_token: str | None = None,
+    ) -> bool:
         """Persist a successful resolution, clearing any prior failure state."""
 
-        await self._upsert(
+        return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,
             status=ExternalPriceStatus.RESOLVED,
@@ -170,6 +238,7 @@ class ExternalModelPriceStore:
             detail=None,
             attempt_count=0,
             retry_at=None,
+            claim_token=claim_token,
         )
 
     async def record_not_token_priced(
@@ -181,7 +250,8 @@ class ExternalModelPriceStore:
         catalog_source: str,
         resolution_step: str,
         detail: str,
-    ) -> None:
+        claim_token: str | None = None,
+    ) -> bool:
         """Persist a model the catalog lists but does not price per token.
 
         This is a settled answer, not a failure: the model has no token rate to
@@ -189,7 +259,7 @@ class ExternalModelPriceStore:
         unresolved marker.
         """
 
-        await self._upsert(
+        return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,
             status=ExternalPriceStatus.NOT_TOKEN_PRICED,
@@ -201,6 +271,7 @@ class ExternalModelPriceStore:
             detail=detail,
             attempt_count=0,
             retry_at=None,
+            claim_token=claim_token,
         )
 
     async def record_price_unparseable(
@@ -213,7 +284,8 @@ class ExternalModelPriceStore:
         catalog_source: str | None,
         detail: str,
         previous_attempts: int = 0,
-    ) -> None:
+        claim_token: str | None = None,
+    ) -> bool:
         """The source still lists the model but priced it unreadably.
 
         Neither a resolution nor a delisting. Whatever rate was last parsed
@@ -222,10 +294,33 @@ class ExternalModelPriceStore:
         the next lookup re-reads the source instead of settling the question.
         """
 
+        return await self.record_retryable_failure(
+            provider=provider,
+            incoming_model=incoming_model,
+            record=record,
+            detail=detail,
+            catalog_model=catalog_model,
+            catalog_source=catalog_source,
+            previous_attempts=previous_attempts,
+            claim_token=claim_token,
+        )
+
+    async def record_retryable_failure(
+        self,
+        *,
+        provider: str,
+        incoming_model: str,
+        record: PriceRecord | None,
+        detail: str,
+        catalog_model: str | None = None,
+        catalog_source: str | None = None,
+        previous_attempts: int = 0,
+        claim_token: str | None = None,
+    ) -> bool:
         attempts = previous_attempts + 1
         if record is not None and record.is_priced:
             assert record.price is not None
-            await self._upsert(
+            return await self._upsert(
                 provider=provider,
                 incoming_model=incoming_model,
                 status=ExternalPriceStatus.RESOLVED,
@@ -241,11 +336,11 @@ class ExternalModelPriceStore:
                 attempt_count=attempts,
                 retry_at=next_retry_at(attempts),
                 retrieved_at=record.retrieved_at,
+                claim_token=claim_token,
             )
-            return
         # Nothing was ever parsed for this id, so there is no value to preserve.
         # It stays unresolved with backoff rather than being settled as unpriced.
-        await self._upsert(
+        return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,
             status=ExternalPriceStatus.UNRESOLVED,
@@ -257,6 +352,7 @@ class ExternalModelPriceStore:
             detail=detail,
             attempt_count=attempts,
             retry_at=next_retry_at(attempts),
+            claim_token=claim_token,
         )
 
     async def record_unresolved(
@@ -268,7 +364,8 @@ class ExternalModelPriceStore:
         detail: str | None,
         resolution_step: str | None = None,
         previous_attempts: int = 0,
-    ) -> None:
+        claim_token: str | None = None,
+    ) -> bool:
         """Persist a failed or abstained lookup with bounded backoff.
 
         Both the "nothing matched" and "several catalog models matched" outcomes
@@ -278,7 +375,7 @@ class ExternalModelPriceStore:
         """
 
         attempts = previous_attempts + 1
-        await self._upsert(
+        return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,
             status=status,
@@ -290,6 +387,7 @@ class ExternalModelPriceStore:
             detail=detail,
             attempt_count=attempts,
             retry_at=next_retry_at(attempts),
+            claim_token=claim_token,
         )
 
     async def _upsert(
@@ -307,10 +405,11 @@ class ExternalModelPriceStore:
         attempt_count: int,
         retry_at: datetime | None,
         retrieved_at: datetime | None = None,
-    ) -> None:
+        claim_token: str | None = None,
+    ) -> bool:
         provider_key, model_key = normalize_lookup_key(provider, incoming_model)
         if not provider_key or not model_key:
-            return
+            return False
         now = utcnow()
         values = {
             "provider": provider_key,
@@ -329,7 +428,22 @@ class ExternalModelPriceStore:
             "updated_at": now,
             "attempt_count": attempt_count,
             "next_retry_at": retry_at,
+            "lookup_token": None,
         }
+        if claim_token is not None:
+            statement = (
+                update(ExternalModelPrice)
+                .where(
+                    ExternalModelPrice.provider == provider_key,
+                    ExternalModelPrice.incoming_model == model_key,
+                    ExternalModelPrice.lookup_token == claim_token,
+                )
+                .values(**{key: value for key, value in values.items() if key not in ("provider", "incoming_model")})
+            )
+            async with sqlite_writer_section():
+                result = await self._session.execute(statement)
+                await self._session.commit()
+            return bool(result.rowcount)
         dialect = self._session.bind.dialect.name if self._session.bind is not None else "sqlite"
         insert = pg_insert if dialect == "postgresql" else sqlite_insert
         statement = insert(ExternalModelPrice).values(**values)
@@ -346,6 +460,7 @@ class ExternalModelPriceStore:
         async with sqlite_writer_section():
             await self._session.execute(statement)
             await self._session.commit()
+        return True
 
     @staticmethod
     def _select_one(provider_key: str, model_key: str) -> Select[tuple[ExternalModelPrice]]:

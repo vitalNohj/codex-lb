@@ -37,6 +37,12 @@ EXTERNAL_PRICED_LOG_SOURCES: frozenset[str] = frozenset(
     }
 )
 
+_LOG_SOURCE_PROVIDERS: dict[str, str] = {
+    "openrouter_sidecar": PROVIDER_OPENROUTER,
+    "orcarouter_sidecar": PROVIDER_ORCAROUTER,
+    "claude_sidecar": PROVIDER_CLIPROXY,
+}
+
 
 def is_external_priced_provider(provider: str | None) -> bool:
     return bool(provider) and provider.strip().lower() in EXTERNAL_PRICED_PROVIDERS
@@ -44,3 +50,9 @@ def is_external_priced_provider(provider: str | None) -> bool:
 
 def is_external_priced_log_source(source: str | None) -> bool:
     return bool(source) and source.strip().lower() in EXTERNAL_PRICED_LOG_SOURCES
+
+
+def external_priced_provider_for_log_source(source: str | None) -> str | None:
+    if not source:
+        return None
+    return _LOG_SOURCE_PROVIDERS.get(source.strip().lower())

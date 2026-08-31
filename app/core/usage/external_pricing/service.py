@@ -11,9 +11,8 @@ A model id is looked up remotely in exactly two situations:
   passed.
 
 Either way the request returns immediately; the lookup runs as a background job.
-Concurrent first sightings of the same id collapse onto one in-flight job through
-:class:`_LookupCoordinator`, so a burst of traffic to a new model produces one
-catalog fetch, not one per request.
+Concurrent first sightings collapse through a process-local coordinator and a
+durable lookup lease, so replicas share one crash-recoverable job.
 
 An unresolved model keeps whatever allow and quota behavior it had. Not knowing a
 price is not a reason to refuse or to reprice a request.
@@ -121,13 +120,12 @@ class CalculatedCost:
 
 
 class _LookupCoordinator:
-    """Collapses concurrent lookups of the same key onto one job.
+    """Collapses concurrent lookups of the same key within this process.
 
     Without this, the first burst of traffic to a newly routed model would start
     one catalog fetch per request. The in-flight map is keyed on
     ``(provider, incoming_model)`` and an entry is removed only after its task
-    finishes, so a later request either joins the running job or starts the single
-    next one.
+    finishes. The store lease provides the equivalent guarantee across replicas.
     """
 
     def __init__(self, *, max_concurrent: int = _MAX_CONCURRENT_LOOKUPS) -> None:
@@ -240,7 +238,7 @@ async def calculated_cost_for_request(
         if schedule_lookup:
             await _coordinator.submit(
                 (provider_key, model_key),
-                lambda: _run_lookup(provider_key, model_key, previous=record),
+                lambda: _run_lookup(provider_key, model_key),
             )
         if record is None:
             # First sighting. No lookup has concluded anything yet, so this row
@@ -296,41 +294,25 @@ def serving_source_did_not_answer(serving: ServingContext | None) -> bool:
     return serving is None or serving.serving_catalog_missing
 
 
-def would_weaken_ownership(record: PriceRecord, resolution: Resolution) -> bool:
-    """Whether applying ``resolution`` would take a record off its own source.
-
-    Only true for a settled record the serving provider itself supplied, when the
-    new answer comes from somewhere else. A record the reference supplied is not
-    protected here: the serving catalog is the stronger source, so it taking
-    ownership is a correction rather than a downgrade.
-    """
-
-    if not record.is_settled or record.catalog_source is None:
-        return False
-    if record.catalog_source != record.provider:
-        return False
-    return resolution.catalog_source != record.catalog_source
-
-
-def _keeps_existing_ownership(
-    previous: PriceRecord | None,
+def settlement_requires_silent_serving_source(
     provider_key: str,
     resolution: Resolution,
+    *,
+    serving_unavailable: bool,
 ) -> bool:
-    """Whether settling ``resolution`` claims no ownership a silent source holds.
-
-    True when the answer came from the serving provider's own catalog (for
-    OpenRouter the pricing reference *is* that catalog), or when it came from the
-    same source that already owns the record, so nothing changes hands.
-    """
-
-    if resolution.catalog_source == provider_key:
-        return True
-    return previous is not None and previous.catalog_source == resolution.catalog_source
+    return (
+        serving_unavailable and resolution.outcome in _SETTLING_OUTCOMES and resolution.catalog_source != provider_key
+    )
 
 
-async def _run_lookup(provider_key: str, model_key: str, *, previous: PriceRecord | None) -> None:
+async def _run_lookup(provider_key: str, model_key: str) -> None:
     """One bounded lookup for a single id, persisting whatever it concludes."""
+
+    async with get_background_session() as session:
+        claim = await ExternalModelPriceStore(session).claim_lookup(provider_key, model_key)
+    if claim is None:
+        return
+    previous = claim.record
 
     serving = await load_serving_context(provider_key)
     reference = await _load_reference_catalog()
@@ -340,12 +322,12 @@ async def _run_lookup(provider_key: str, model_key: str, *, previous: PriceRecor
         # Nothing could be consulted. Persisting an unresolved record here still
         # matters: it is what bounds retries so traffic cannot keep re-dispatching
         # this lookup while the catalogs are down.
-        await _persist_unresolved(
+        await _persist_retryable_failure(
             provider_key,
             model_key,
-            status=ExternalPriceStatus.UNRESOLVED,
             detail="no catalog source was reachable",
             previous=previous,
+            claim_token=claim.token,
         )
         return
 
@@ -357,27 +339,27 @@ async def _run_lookup(provider_key: str, model_key: str, *, previous: PriceRecor
         prefixes=serving.prefixes if serving is not None else (),
     )
 
-    if serving_source_did_not_answer(serving) and resolution.outcome in _SETTLING_OUTCOMES:
-        if previous is not None and would_weaken_ownership(previous, resolution):
-            # The serving catalog owns this rate and could not answer this time.
-            # Adopting the reference's number would price the request at a rate
-            # the serving provider does not charge, and would settle it with no
-            # retry deadline, so nothing would ever revisit it.
-            return
-        if not _keeps_existing_ownership(previous, provider_key, resolution):
-            # Settling here would hand a silent source's models to another source
-            # permanently. Staying retryable costs one unpriced row and heals
-            # itself the moment the serving catalog answers again.
-            await _persist_unresolved(
-                provider_key,
-                model_key,
-                status=ExternalPriceStatus.UNRESOLVED,
-                detail="serving catalog unavailable; not settled from another source",
-                previous=previous,
-            )
-            return
+    if settlement_requires_silent_serving_source(
+        provider_key,
+        resolution,
+        serving_unavailable=serving_source_did_not_answer(serving),
+    ):
+        await _persist_retryable_failure(
+            provider_key,
+            model_key,
+            detail="serving catalog unavailable; not settled from another source",
+            previous=previous,
+            claim_token=claim.token,
+        )
+        return
 
-    await _persist_resolution(provider_key, model_key, resolution, previous=previous)
+    await _persist_resolution(
+        provider_key,
+        model_key,
+        resolution,
+        previous=previous,
+        claim_token=claim.token,
+    )
 
 
 async def _persist_resolution(
@@ -386,6 +368,7 @@ async def _persist_resolution(
     resolution: Resolution,
     *,
     previous: PriceRecord | None,
+    claim_token: str,
 ) -> None:
     async with get_background_session() as session:
         store = ExternalModelPriceStore(session)
@@ -400,6 +383,7 @@ async def _persist_resolution(
                 catalog_source=resolution.catalog_source,
                 price=resolution.price,
                 resolution_step=resolution.step or "exact",
+                claim_token=claim_token,
             )
             return
         if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
@@ -414,6 +398,7 @@ async def _persist_resolution(
                 catalog_source=resolution.catalog_source,
                 detail=resolution.detail or "catalog price could not be parsed",
                 previous_attempts=previous.attempt_count if previous is not None else 0,
+                claim_token=claim_token,
             )
             return
         if resolution.outcome is ResolutionOutcome.NOT_TOKEN_PRICED:
@@ -426,6 +411,7 @@ async def _persist_resolution(
                 catalog_source=resolution.catalog_source,
                 resolution_step=resolution.step or "exact",
                 detail=resolution.detail or "not token priced",
+                claim_token=claim_token,
             )
             return
         status = (
@@ -440,24 +426,26 @@ async def _persist_resolution(
             detail=resolution.detail,
             resolution_step=resolution.step,
             previous_attempts=previous.attempt_count if previous is not None else 0,
+            claim_token=claim_token,
         )
 
 
-async def _persist_unresolved(
+async def _persist_retryable_failure(
     provider_key: str,
     model_key: str,
     *,
-    status: ExternalPriceStatus,
     detail: str,
     previous: PriceRecord | None,
+    claim_token: str,
 ) -> None:
     async with get_background_session() as session:
-        await ExternalModelPriceStore(session).record_unresolved(
+        await ExternalModelPriceStore(session).record_retryable_failure(
             provider=provider_key,
             incoming_model=model_key,
-            status=status,
+            record=previous,
             detail=detail,
             previous_attempts=previous.attempt_count if previous is not None else 0,
+            claim_token=claim_token,
         )
 
 

@@ -85,12 +85,9 @@ class CostSource(str, Enum):
 class ExternalPriceStatus(str, Enum):
     """Lifecycle of one external-integration price resolution.
 
-    ``PENDING`` is the only member that is never persisted in
-    ``external_model_prices``: it describes a request log row written before any
-    lookup for that model had run, which is not yet evidence that the model has
-    no published price. Marking it as ``UNRESOLVED`` would put a permanent "no
-    price found" marker on the first request for every newly routed model, even
-    when the background lookup priced it a moment later.
+    ``PENDING`` describes a request log row written before any lookup for that
+    model has completed. It is also persisted while a worker holds the durable
+    lookup lease, so another replica cannot start the same work.
     """
 
     PENDING = "pending"
@@ -422,6 +419,7 @@ class ExternalModelPrice(Base):
     # Earliest time an unresolved record may be looked up again. NULL on a
     # resolved record: it is never retried on the request path.
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lookup_token: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ClaudeSidecarUsageEvent(Base):

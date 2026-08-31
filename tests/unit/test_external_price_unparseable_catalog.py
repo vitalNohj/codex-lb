@@ -87,6 +87,8 @@ def test_a_catalog_declared_no_price_is_a_settled_not_token_priced_answer(pricin
         pytest.param({"prompt": {"per_1m": 3.0}, "completion": {"per_1m": 6.0}}, id="restructured-shape"),
         pytest.param({"prompt": "0.000001"}, id="half-a-rate"),
         pytest.param({"prompt_usd_per_1m": "3.0", "completion": "0.000002"}, id="renamed-unit-field"),
+        pytest.param({"prompt": "NaN", "completion": "0.000002"}, id="nan"),
+        pytest.param({"prompt": "Infinity", "completion": "0.000002"}, id="infinity"),
     ],
 )
 def test_an_entry_whose_declared_token_rates_cannot_be_read_is_unparseable(pricing: object) -> None:

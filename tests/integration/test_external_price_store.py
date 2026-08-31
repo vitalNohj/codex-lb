@@ -27,8 +27,9 @@ from app.core.usage.external_pricing.service import (
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, next_retry_at
 from app.core.usage.pricing import ModelPrice, UsageTokens
 from app.core.utils.time import utcnow
-from app.db.models import ExternalModelPrice, ExternalPriceStatus
+from app.db.models import ExternalModelPrice, ExternalPriceStatus, RequestLog
 from app.db.session import SessionLocal
+from app.modules.request_logs.repository import RequestLogsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -513,6 +514,56 @@ async def test_every_catalog_source_failing_still_bounds_future_lookups(db_setup
 
 
 @pytest.mark.asyncio
+async def test_an_outage_preserves_the_last_good_rate_and_advances_backoff(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+        )
+        record = await store.get("orcarouter", "vendor/model-x")
+        assert record is not None
+        await store.record_price_unparseable(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            record=record,
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            detail="temporary unreadable price",
+        )
+
+    async with SessionLocal() as session:
+        row = (await session.execute(select(ExternalModelPrice))).scalar_one()
+        row.next_retry_at = utcnow() - timedelta(seconds=1)
+        await session.commit()
+
+    class _FailingLoader(_CountingLoader):
+        async def __call__(self, _provider: str) -> ServingContext | None:
+            self.calls += 1
+            raise RuntimeError("catalog unreachable")
+
+    loader = _FailingLoader(None)
+    register_serving_context_loader("orcarouter", loader)
+    await calculated_cost_for_request(provider="orcarouter", model="vendor/model-x", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.RESOLVED.value
+    assert record.catalog_model == "vendor/model-x"
+    assert record.catalog_source == "orcarouter"
+    assert record.input_per_1m == pytest.approx(2.0)
+    assert record.output_per_1m == pytest.approx(4.0)
+    assert record.attempt_count == 2
+    assert record.next_retry_at is not None and record.next_retry_at > utcnow()
+    assert loader.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_an_unavailable_serving_catalog_does_not_settle_a_reference_rate(db_setup, monkeypatch) -> None:
     """A source that could not be consulted must not lose ownership of its rate.
 
@@ -686,6 +737,88 @@ async def test_the_store_upsert_is_idempotent_for_the_same_key(db_setup) -> None
     assert len(records) == 1
     assert records[0].provider == "orcarouter"
     assert records[0].incoming_model == "vendor/model-x"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_failed_lookup_cannot_replace_a_newer_resolution(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as first_session:
+        first_store = ExternalModelPriceStore(first_session)
+        first_claim = await first_store.claim_lookup("orcarouter", "vendor/race")
+    assert first_claim is not None
+
+    async with SessionLocal() as session:
+        row = (await session.execute(select(ExternalModelPrice))).scalar_one()
+        row.next_retry_at = utcnow() - timedelta(seconds=1)
+        await session.commit()
+
+    async with SessionLocal() as second_session:
+        second_store = ExternalModelPriceStore(second_session)
+        second_claim = await second_store.claim_lookup("orcarouter", "vendor/race")
+        assert second_claim is not None
+        applied = await second_store.record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/race",
+            catalog_model="vendor/race",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+            claim_token=second_claim.token,
+        )
+    assert applied is True
+
+    async with SessionLocal() as stale_session:
+        stale_applied = await ExternalModelPriceStore(stale_session).record_unresolved(
+            provider="orcarouter",
+            incoming_model="vendor/race",
+            status=ExternalPriceStatus.UNRESOLVED,
+            detail="stale timeout",
+            claim_token=first_claim.token,
+        )
+    assert stale_applied is False
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.RESOLVED.value
+    assert record.input_per_1m == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
+async def test_component_rates_remain_provider_specific_for_a_shared_id(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model="deepseek/deepseek-chat",
+            catalog_model="deepseek/deepseek-chat",
+            catalog_source="orcarouter",
+            price=ModelPrice(0.27, 1.1),
+            resolution_step="exact",
+        )
+        await store.record_resolved(
+            provider="openrouter",
+            incoming_model="deepseek/deepseek-chat",
+            catalog_model="deepseek/deepseek-chat",
+            catalog_source="openrouter",
+            price=ModelPrice(0.9, 0.9),
+            resolution_step="exact",
+        )
+        rates = await RequestLogsRepository(session).get_external_price_rates_for_logs(
+            [
+                RequestLog(
+                    model="deepseek/deepseek-chat",
+                    source="orcarouter_sidecar",
+                    price_status=ExternalPriceStatus.RESOLVED.value,
+                ),
+                RequestLog(
+                    model="deepseek/deepseek-chat",
+                    source="openrouter_sidecar",
+                    price_status=ExternalPriceStatus.RESOLVED.value,
+                ),
+            ]
+        )
+
+    assert rates[("orcarouter", "deepseek/deepseek-chat")] == ModelPrice(0.27, 1.1)
+    assert rates[("openrouter", "deepseek/deepseek-chat")] == ModelPrice(0.9, 0.9)
 
 
 @pytest.mark.asyncio

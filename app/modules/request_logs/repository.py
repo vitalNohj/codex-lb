@@ -13,6 +13,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
+from app.core.usage.external_pricing.providers import external_priced_provider_for_log_source
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log, declares_price_provenance
 from app.core.usage.pricing import ModelPrice
 from app.core.usage.types import (
@@ -873,7 +874,10 @@ class RequestLogsRepository:
         result = await self._session.execute(select(ApiKey.id, ApiKey.name).where(ApiKey.id.in_(unique_ids)))
         return {key_id: name for key_id, name in result.all() if key_id and name}
 
-    async def get_external_price_rates_for_logs(self, logs: list[RequestLog]) -> dict[str, ModelPrice]:
+    async def get_external_price_rates_for_logs(
+        self,
+        logs: list[RequestLog],
+    ) -> dict[tuple[str, str], ModelPrice]:
         """Resolved rates for the externally priced models on one page of logs.
 
         Only rows that declare a price status can use these: for every other row
@@ -882,11 +886,17 @@ class RequestLogsRepository:
         detail view while a raised error would fail the whole listing.
         """
 
-        models = [log.model for log in logs if log.model and log.price_status is not None]
-        if not models:
+        lookup_keys = [
+            (provider, log.model)
+            for log in logs
+            if log.model
+            and log.price_status is not None
+            and (provider := external_priced_provider_for_log_source(log.source)) is not None
+        ]
+        if not lookup_keys:
             return {}
         try:
-            return await ExternalModelPriceStore(self._session).rates_for_models(models)
+            return await ExternalModelPriceStore(self._session).rates_for_models(lookup_keys)
         except sa_exc.SQLAlchemyError:
             return {}
 

@@ -26,7 +26,7 @@ from app.core.usage.external_pricing.resolution import ResolutionOutcome, resolv
 from app.core.usage.external_pricing.service import (
     ServingContext,
     load_serving_context,
-    would_weaken_ownership,
+    settlement_requires_silent_serving_source,
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord
 from app.db.models import ExternalPriceStatus
@@ -212,7 +212,11 @@ async def _refresh_record(
         prefixes=context.prefixes if context is not None else (),
     )
 
-    if serving_unavailable and would_weaken_ownership(record, resolution):
+    if settlement_requires_silent_serving_source(
+        record.provider,
+        resolution,
+        serving_unavailable=(serving_failed or (serving_disabled and record.catalog_source == record.provider)),
+    ):
         # The serving catalog owns this record's rate and was not able to answer
         # this pass, yet the pricing reference did and lists the same id. Adopting
         # the reference's number would re-source the record to a rate the serving

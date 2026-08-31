@@ -466,6 +466,26 @@ def test_an_explicit_operator_alias_takes_precedence_over_every_other_step() -> 
     assert resolution.catalog_model == "anthropic/claude-fable-5"
 
 
+def test_a_configured_prefix_precedes_a_misleading_catalog_exact_match() -> None:
+    catalog = _catalog(
+        "openrouter",
+        {
+            "cc/foo": _price(99.0, 99.0),
+            "vendor/foo": _price(1.0, 2.0),
+        },
+    )
+
+    resolution = resolve_model_price(
+        "cc/foo",
+        catalogs=[catalog],
+        prefixes=[("cc/", True)],
+    )
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "vendor/foo"
+    assert resolution.price == _price(1.0, 2.0)
+
+
 def test_an_alias_applied_after_a_prefix_is_kept_in_the_recorded_provenance() -> None:
     """Provenance must name every step, including the operator's own alias.
 

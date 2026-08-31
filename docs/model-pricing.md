@@ -79,6 +79,8 @@ competing candidates are saved so you can see them in the maintenance report.
 The first request for a model id you have not routed before records no cost and
 schedules one background lookup. Requests never wait on it. From the second
 request onward the price comes from local storage with no network work.
+The lookup is claimed with a short durable lease, so separate replicas still run
+one job and a worker crash becomes retryable when the lease expires.
 
 That first row shows `--`, not `!!`. No lookup had concluded anything when it was
 written, so it is not evidence that the model has no price. `!!` appears only
@@ -107,6 +109,7 @@ External model price maintenance
 - Unchanged: 38
 - Now listed without a per-token price: 0
 - Preserved after a source failure: 0
+- Preserved while an integration is disabled: 0
 - Preserved after an unreadable published price: 0
 - Skipped, integration disabled: 0
 - Still unresolved: 1

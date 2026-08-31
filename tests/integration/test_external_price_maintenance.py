@@ -485,6 +485,38 @@ async def test_a_settled_unpriced_record_survives_a_serving_catalog_outage(db_se
 
 
 @pytest.mark.asyncio
+async def test_an_unsettled_record_is_not_resolved_by_reference_during_serving_outage(
+    db_setup,
+    monkeypatch,
+) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async with SessionLocal() as session:
+        await ExternalModelPriceStore(session).record_unresolved(
+            provider="orcarouter",
+            incoming_model="deepseek/deepseek-chat",
+            status=ExternalPriceStatus.UNRESOLVED,
+            detail="serving catalog unavailable",
+        )
+
+    async def _reference():
+        return _catalog("openrouter", {"deepseek/deepseek-chat": ModelPrice(0.9, 0.9)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+    _install_catalog("orcarouter", None)
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 1
+    assert report.newly_resolved == []
+    record = await _record("deepseek/deepseek-chat")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.UNRESOLVED
+    assert record.price is None
+
+
+@pytest.mark.asyncio
 async def test_a_rate_that_becomes_unpriced_is_reported_rather_than_counted_unchanged(db_setup) -> None:
     """Clearing a stored rate is a state change the operator must see."""
 

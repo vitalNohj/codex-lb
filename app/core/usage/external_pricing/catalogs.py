@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from collections.abc import Sequence
 from enum import Enum
 from typing import cast
@@ -162,6 +163,8 @@ def _read_rate(value: JsonValue) -> tuple[_RateReading, float | None]:
         except ValueError:
             return _RateReading.UNREADABLE, None
     else:
+        return _RateReading.UNREADABLE, None
+    if not math.isfinite(number):
         return _RateReading.UNREADABLE, None
     if number < 0:
         return _RateReading.DECLARED_NONE, None

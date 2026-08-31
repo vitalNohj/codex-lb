@@ -9,6 +9,7 @@ from app.modules.request_logs.mappers import (
     normalize_log_status,
     to_request_log_entry,
 )
+from app.core.usage.external_pricing.providers import external_priced_provider_for_log_source
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.request_logs.schemas import RequestLogConversation, RequestLogEntry
 
@@ -114,7 +115,12 @@ class RequestLogsService:
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
                 sidecar_account_label=sidecar_account_label_by_request_id.get(log.request_id),
-                resolved_price=resolved_prices.get((log.model or "").strip().lower()),
+                resolved_price=resolved_prices.get(
+                    (
+                        external_priced_provider_for_log_source(log.source) or "",
+                        (log.model or "").strip().lower(),
+                    )
+                ),
             )
             for log in logs
         ]
