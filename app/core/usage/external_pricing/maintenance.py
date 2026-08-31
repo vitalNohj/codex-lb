@@ -22,8 +22,12 @@ from app.core.usage.external_pricing.catalogs import (
     CatalogFetchError,
     fetch_openrouter_catalog,
 )
-from app.core.usage.external_pricing.resolution import Resolution, ResolutionOutcome, resolve_model_price
-from app.core.usage.external_pricing.service import ServingContext, load_serving_context
+from app.core.usage.external_pricing.resolution import ResolutionOutcome, resolve_model_price
+from app.core.usage.external_pricing.service import (
+    ServingContext,
+    load_serving_context,
+    would_weaken_ownership,
+)
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord
 from app.db.models import ExternalPriceStatus
 from app.db.session import get_background_session
@@ -47,6 +51,7 @@ class MaintenanceReport:
     newly_resolved: list[RecordChange] = field(default_factory=list)
     unchanged: int = 0
     preserved_on_failure: int = 0
+    preserved_while_disabled: int = 0
     preserved_unparseable: list[RecordChange] = field(default_factory=list)
     became_not_token_priced: list[RecordChange] = field(default_factory=list)
     unresolved: list[RecordChange] = field(default_factory=list)
@@ -64,6 +69,7 @@ class MaintenanceReport:
             f"- Unchanged: {self.unchanged}",
             f"- Now listed without a per-token price: {len(self.became_not_token_priced)}",
             f"- Preserved after a source failure: {self.preserved_on_failure}",
+            f"- Preserved while an integration is disabled: {self.preserved_while_disabled}",
             f"- Preserved after an unreadable published price: {len(self.preserved_unparseable)}",
             f"- Skipped, integration disabled: {self.skipped_disabled}",
             f"- Still unresolved: {len(self.unresolved)}",
@@ -147,17 +153,20 @@ async def run_maintenance_pass() -> MaintenanceReport:
         # A switched-off integration did not answer, so its silence is no evidence
         # against a settled record -- but the reference is still a reachable
         # source, and refusing to apply what it says would leave the pass unable
-        # to refresh anything while an integration is temporarily off.
-        serving_unavailable = disabled or record.provider in unavailable_providers
+        # to refresh anything while an integration is temporarily off. The two are
+        # reported separately: an operator who turned an integration off must not
+        # read a failure count that describes a failure that never happened.
+        serving_failed = record.provider in unavailable_providers
         if serving_catalog is None and reference is None:
             # Every source this record could have used is unavailable. Leaving the
             # row exactly as it is preserves a rate that is probably still correct.
-            report.preserved_on_failure += 1
+            _count_preserved(report, disabled=disabled)
             continue
         await _refresh_record(
             record,
             serving=serving_catalog,
-            serving_unavailable=serving_unavailable,
+            serving_disabled=disabled,
+            serving_failed=serving_failed,
             reference=reference,
             reference_unavailable=reference_unavailable,
             context=context,
@@ -174,16 +183,27 @@ async def _fetch_reference() -> tuple[Catalog | None, str | None]:
         return None, f"openrouter: {exc}"
 
 
+def _count_preserved(report: MaintenanceReport, *, disabled: bool) -> None:
+    """Record one preserved record under the reason it was preserved for."""
+
+    if disabled:
+        report.preserved_while_disabled += 1
+    else:
+        report.preserved_on_failure += 1
+
+
 async def _refresh_record(
     record: PriceRecord,
     *,
     serving: Catalog | None,
-    serving_unavailable: bool,
+    serving_disabled: bool,
+    serving_failed: bool,
     reference: Catalog | None,
     reference_unavailable: bool,
     context: ServingContext | None,
     report: MaintenanceReport,
 ) -> None:
+    serving_unavailable = serving_disabled or serving_failed
     catalogs = [catalog for catalog in (serving, reference) if catalog is not None]
     resolution = resolve_model_price(
         record.incoming_model,
@@ -192,7 +212,7 @@ async def _refresh_record(
         prefixes=context.prefixes if context is not None else (),
     )
 
-    if serving_unavailable and _would_weaken_ownership(record, resolution):
+    if serving_unavailable and would_weaken_ownership(record, resolution):
         # The serving catalog owns this record's rate and was not able to answer
         # this pass, yet the pricing reference did and lists the same id. Adopting
         # the reference's number would re-source the record to a rate the serving
@@ -200,7 +220,7 @@ async def _refresh_record(
         # differently, by up to 2.8x -- and would settle it ``RESOLVED`` with no
         # retry deadline, so the request path would never revisit it. A source
         # that did not answer keeps ownership until it does.
-        report.preserved_on_failure += 1
+        _count_preserved(report, disabled=serving_disabled and not serving_failed)
         return
 
     if (
@@ -215,7 +235,10 @@ async def _refresh_record(
         # state. Only when every source that could price this id answered is an
         # absence authoritative, which includes a provider that publishes no
         # catalog by design, since for it the reference is the whole answer.
-        report.preserved_on_failure += 1
+        _count_preserved(
+            report,
+            disabled=serving_disabled and not serving_failed and not reference_unavailable,
+        )
         return
 
     if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
@@ -324,22 +347,6 @@ async def _refresh_record(
             report.ambiguous.append(change)
         else:
             report.unresolved.append(change)
-
-
-def _would_weaken_ownership(record: PriceRecord, resolution: Resolution) -> bool:
-    """Whether applying ``resolution`` would take a record off its own source.
-
-    Only true for a settled record the serving provider itself supplied, when the
-    new answer comes from somewhere else. A record the reference supplied is not
-    protected here: the serving catalog is the stronger source, so it taking
-    ownership is a correction rather than a downgrade.
-    """
-
-    if not record.is_settled or record.catalog_source is None:
-        return False
-    if record.catalog_source != record.provider:
-        return False
-    return resolution.catalog_source != record.catalog_source
 
 
 def _rates_changed(record: PriceRecord, input_per_1m: float, output_per_1m: float) -> bool:

@@ -237,7 +237,11 @@ def resolve_model_price(
 
         aliased = _resolve_alias(candidate, aliases)
         if aliased is not None and aliased not in seen:
-            step_prefix = "alias+" if not step_prefix else step_prefix
+            # Accumulated like every sibling step: an alias applied after a prefix
+            # or dated-release rewrite is still part of why this price was
+            # recorded, and it is the operator's own statement, so dropping it
+            # would make the persisted provenance unable to explain the answer.
+            step_prefix = f"{step_prefix}alias+"
             candidate = aliased
             continue
 

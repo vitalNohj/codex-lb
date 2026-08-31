@@ -513,6 +513,161 @@ async def test_every_catalog_source_failing_still_bounds_future_lookups(db_setup
 
 
 @pytest.mark.asyncio
+async def test_an_unavailable_serving_catalog_does_not_settle_a_reference_rate(db_setup, monkeypatch) -> None:
+    """A source that could not be consulted must not lose ownership of its rate.
+
+    ``deepseek/deepseek-chat`` is listed by both OrcaRouter and OpenRouter at
+    different rates. With OrcaRouter's loader failing, adopting OpenRouter's
+    number would settle the record ``RESOLVED`` with no retry deadline, so every
+    later OrcaRouter request would be priced -- and charged -- at a rate OrcaRouter
+    does not charge, forever.
+    """
+
+    del db_setup
+
+    async def _reference():
+        return _catalog("openrouter", {"deepseek/deepseek-chat": ModelPrice(0.9, 0.9)})
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+
+    async def _failing_loader(_provider: str) -> ServingContext | None:
+        raise RuntimeError("orcarouter /models timed out")
+
+    register_serving_context_loader("orcarouter", _failing_loader)
+
+    cost, _status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="deepseek/deepseek-chat",
+        usage=ONE_MILLION,
+    )
+    await get_lookup_coordinator().drain()
+
+    assert cost is None
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.UNRESOLVED.value
+    assert record.input_per_1m is None, "the reference must not own a serving provider's id"
+    assert record.next_retry_at is not None, "the record must stay retryable until the source answers"
+
+    cost, status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="deepseek/deepseek-chat",
+        usage=ONE_MILLION,
+    )
+    assert cost is None
+    assert status is ExternalPriceStatus.UNRESOLVED
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_serving_catalog_prices_the_id_it_owns(db_setup, monkeypatch) -> None:
+    """Withholding the reference rate must heal itself, not strand the record."""
+
+    del db_setup
+
+    async def _reference():
+        return _catalog("openrouter", {"deepseek/deepseek-chat": ModelPrice(0.9, 0.9)})
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+
+    async def _failing_loader(_provider: str) -> ServingContext | None:
+        raise RuntimeError("orcarouter /models timed out")
+
+    register_serving_context_loader("orcarouter", _failing_loader)
+    await calculated_cost_for_request(provider="orcarouter", model="deepseek/deepseek-chat", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    await _install_serving_catalog("orcarouter", {"deepseek/deepseek-chat": ModelPrice(0.27, 1.1)})
+    async with SessionLocal() as session:
+        result = await session.execute(select(ExternalModelPrice))
+        row = result.scalar_one()
+        row.next_retry_at = utcnow() - timedelta(seconds=1)
+        await session.commit()
+
+    await calculated_cost_for_request(provider="orcarouter", model="deepseek/deepseek-chat", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    cost, status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="deepseek/deepseek-chat",
+        usage=ONE_MILLION,
+    )
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    assert cost.cost_usd == pytest.approx(0.27 + 1.1)
+    assert cost.catalog_source == "orcarouter"
+
+
+@pytest.mark.asyncio
+async def test_a_priceless_provider_still_settles_from_the_reference(db_setup, monkeypatch) -> None:
+    """CLIProxyAPI publishes no rates by design, so the reference is the answer.
+
+    Its empty catalog is not a source failure, and treating it as one would leave
+    every CLIProxyAPI id permanently unpriced.
+    """
+
+    del db_setup
+
+    async def _reference():
+        return _catalog("openrouter", {"anthropic/claude-fable-5": ModelPrice(10.0, 50.0)})
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+
+    async def _loader(_provider: str) -> ServingContext:
+        return ServingContext(
+            catalog=None,
+            aliases={},
+            prefixes=(("cc/", True),),
+            publishes_price_catalog=False,
+        )
+
+    register_serving_context_loader("cliproxy", _loader)
+
+    await calculated_cost_for_request(provider="cliproxy", model="cc/claude-fable-5", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    cost, status = await calculated_cost_for_request(
+        provider="cliproxy",
+        model="cc/claude-fable-5",
+        usage=ONE_MILLION,
+    )
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    assert cost.cost_usd == pytest.approx(60.0)
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_serving_catalog_still_settles_its_own_reference_ids(db_setup, monkeypatch) -> None:
+    """For OpenRouter the pricing reference *is* its serving catalog.
+
+    Withholding a rate the provider itself published would strand its own ids
+    behind an outage of a source that never owned them.
+    """
+
+    del db_setup
+
+    async def _reference():
+        return _catalog("openrouter", {"vendor/model-x": ModelPrice(2.0, 4.0)})
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+
+    async def _failing_loader(_provider: str) -> ServingContext | None:
+        raise RuntimeError("openrouter /models timed out")
+
+    register_serving_context_loader("openrouter", _failing_loader)
+
+    await calculated_cost_for_request(provider="openrouter", model="vendor/model-x", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    cost, status = await calculated_cost_for_request(
+        provider="openrouter",
+        model="vendor/model-x",
+        usage=ONE_MILLION,
+    )
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    assert cost.cost_usd == pytest.approx(6.0)
+
+
+@pytest.mark.asyncio
 async def test_the_store_upsert_is_idempotent_for_the_same_key(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:

@@ -46,6 +46,10 @@ from app.db.session import get_background_session
 
 logger = logging.getLogger(__name__)
 
+# Outcomes that close the question: they are persisted without a retry deadline,
+# so nothing on the request path revisits them.
+_SETTLING_OUTCOMES = (ResolutionOutcome.RESOLVED, ResolutionOutcome.NOT_TOKEN_PRICED)
+
 # Ceiling on lookups running at once. Lookups are rare by construction, so this
 # only bites when many previously unseen ids arrive together; it keeps that burst
 # from becoming an unbounded fan-out of catalog fetches.
@@ -279,6 +283,52 @@ async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None:
         return None
 
 
+def serving_source_did_not_answer(serving: ServingContext | None) -> bool:
+    """Whether the serving integration failed to supply a catalog it owes.
+
+    ``None`` means the loader raised -- a timeout, a settings-read failure, or no
+    registered loader -- and ``serving_catalog_missing`` means it was consulted and
+    produced nothing. Neither is an answer. An integration that publishes no rates
+    by design, or one the operator switched off, is excluded: the first has
+    nothing to say and the second was never asked.
+    """
+
+    return serving is None or serving.serving_catalog_missing
+
+
+def would_weaken_ownership(record: PriceRecord, resolution: Resolution) -> bool:
+    """Whether applying ``resolution`` would take a record off its own source.
+
+    Only true for a settled record the serving provider itself supplied, when the
+    new answer comes from somewhere else. A record the reference supplied is not
+    protected here: the serving catalog is the stronger source, so it taking
+    ownership is a correction rather than a downgrade.
+    """
+
+    if not record.is_settled or record.catalog_source is None:
+        return False
+    if record.catalog_source != record.provider:
+        return False
+    return resolution.catalog_source != record.catalog_source
+
+
+def _keeps_existing_ownership(
+    previous: PriceRecord | None,
+    provider_key: str,
+    resolution: Resolution,
+) -> bool:
+    """Whether settling ``resolution`` claims no ownership a silent source holds.
+
+    True when the answer came from the serving provider's own catalog (for
+    OpenRouter the pricing reference *is* that catalog), or when it came from the
+    same source that already owns the record, so nothing changes hands.
+    """
+
+    if resolution.catalog_source == provider_key:
+        return True
+    return previous is not None and previous.catalog_source == resolution.catalog_source
+
+
 async def _run_lookup(provider_key: str, model_key: str, *, previous: PriceRecord | None) -> None:
     """One bounded lookup for a single id, persisting whatever it concludes."""
 
@@ -299,13 +349,34 @@ async def _run_lookup(provider_key: str, model_key: str, *, previous: PriceRecor
         )
         return
 
-    catalogs = order_catalogs(serving.catalog if serving is not None else None, reference)
+    catalogs = order_catalogs(serving_catalog, reference)
     resolution = resolve_model_price(
         model_key,
         catalogs=catalogs,
         aliases=serving.aliases if serving is not None else None,
         prefixes=serving.prefixes if serving is not None else (),
     )
+
+    if serving_source_did_not_answer(serving) and resolution.outcome in _SETTLING_OUTCOMES:
+        if previous is not None and would_weaken_ownership(previous, resolution):
+            # The serving catalog owns this rate and could not answer this time.
+            # Adopting the reference's number would price the request at a rate
+            # the serving provider does not charge, and would settle it with no
+            # retry deadline, so nothing would ever revisit it.
+            return
+        if not _keeps_existing_ownership(previous, provider_key, resolution):
+            # Settling here would hand a silent source's models to another source
+            # permanently. Staying retryable costs one unpriced row and heals
+            # itself the moment the serving catalog answers again.
+            await _persist_unresolved(
+                provider_key,
+                model_key,
+                status=ExternalPriceStatus.UNRESOLVED,
+                detail="serving catalog unavailable; not settled from another source",
+                previous=previous,
+            )
+            return
+
     await _persist_resolution(provider_key, model_key, resolution, previous=previous)
 
 

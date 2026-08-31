@@ -466,6 +466,35 @@ def test_an_explicit_operator_alias_takes_precedence_over_every_other_step() -> 
     assert resolution.catalog_model == "anthropic/claude-fable-5"
 
 
+def test_an_alias_applied_after_a_prefix_is_kept_in_the_recorded_provenance() -> None:
+    """Provenance must name every step, including the operator's own alias.
+
+    Recording only ``prefix+exact`` omits the strongest step in the chain, so a
+    persisted price could no longer be explained by the record that holds it.
+    """
+
+    catalog = _catalog("openrouter", {"vendor/bar": _price(1.0, 2.0)})
+
+    resolution = resolve_model_price(
+        "cp-foo",
+        catalogs=[catalog],
+        aliases={"foo": "vendor/bar"},
+        prefixes=[("cp-", True)],
+    )
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "vendor/bar"
+    assert resolution.step == "prefix+alias+exact"
+
+
+def test_an_alias_applied_first_still_records_only_its_own_step() -> None:
+    catalog = _catalog("openrouter", {"vendor/bar": _price(1.0, 2.0)})
+
+    resolution = resolve_model_price("foo", catalogs=[catalog], aliases={"foo": "vendor/bar"})
+
+    assert resolution.step == "alias+exact"
+
+
 def test_an_alias_pointing_at_itself_terminates() -> None:
     """A self-referential alias must not spin the rewrite loop."""
 

@@ -102,7 +102,7 @@ async def external_request_cost(
     return ExternalRequestCost(cost_usd=None, cost_source=None, price_status=status_value)
 
 
-def cost_microdollars(cost: ExternalRequestCost) -> int:
+def cost_microdollars(cost: ExternalRequestCost | None) -> int:
     """What one already-resolved request cost may charge a cost limit.
 
     A cost-limited API key must accrue the same number the request log records.
@@ -116,41 +116,18 @@ def cost_microdollars(cost: ExternalRequestCost) -> int:
     counted exactly as before, so allow and deny behavior is unchanged.
 
     Takes an already-resolved cost rather than resolving its own so the quota and
-    the log row are literally the same answer. Two separate reads could not be
-    made to agree: a concurrent request's lookup completing between them would
+    the log row are literally the same answer. This is the only conversion entry
+    point on purpose: a second one that resolved its own cost would reintroduce
+    two reads of the same fact, and a concurrent lookup landing between them would
     charge nothing against a row that recorded a price.
+
+    ``None`` is a caller that has no resolved cost to state, which charges nothing
+    for the same reason an unresolved price does.
     """
 
-    if cost.cost_usd is None:
+    if cost is None or cost.cost_usd is None:
         return 0
     return int(cost.cost_usd * 1_000_000)
-
-
-async def external_cost_microdollars(
-    *,
-    provider: str,
-    model: str,
-    usage: UsageTokens | None,
-    billed_cost_usd: float | None,
-    service_tier: str | None = None,
-) -> int:
-    """Resolve and convert in one step, for a caller with no cost to share.
-
-    Does not dispatch a lookup: the log write for the same request owns that, and
-    letting both schedule would make the row's recorded status depend on which of
-    the two ran first.
-    """
-
-    return cost_microdollars(
-        await external_request_cost(
-            provider=provider,
-            model=model,
-            usage=usage,
-            billed_cost_usd=billed_cost_usd,
-            service_tier=service_tier,
-            schedule_lookup=False,
-        )
-    )
 
 
 def usage_tokens_from_sidecar(usage: SidecarUsageLike | None) -> UsageTokens | None:

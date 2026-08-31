@@ -1543,6 +1543,15 @@ async def _finalize_or_release_sidecar_reservation(
     usage: SidecarUsage | None,
     cost: "ExternalRequestCost | None" = None,
 ) -> None:
+    """Settle or release one reservation using the caller's resolved cost.
+
+    ``cost`` is whatever the caller already resolved for this request, so the
+    quota charge and the log row are the same answer. Settlement resolves nothing
+    itself: doing so would read the store a second time inside an open background
+    session, and a concurrent lookup landing between the two reads would make the
+    two disagree. No cost means nothing is charged.
+    """
+
     if reservation is None:
         return
     try:
@@ -1555,8 +1564,6 @@ async def _finalize_or_release_sidecar_reservation(
             # pricing module reaches back into this one for routing identity.
             from app.modules.proxy.external_pricing_logging import cost_microdollars
 
-            if cost is None:
-                cost = await _sidecar_request_cost(model, usage)
             await service.finalize_usage_reservation(
                 reservation.reservation_id,
                 model=model,

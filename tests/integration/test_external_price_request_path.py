@@ -530,6 +530,53 @@ async def test_an_unresolved_model_accrues_no_cost_quota_but_is_still_token_coun
 
 
 @pytest.mark.asyncio
+async def test_reservation_settlement_resolves_no_price_of_its_own(
+    async_client,
+    orcarouter_enabled,
+    fake_orcarouter,
+    monkeypatch,
+) -> None:
+    """One request resolves its cost once, and settlement reuses that answer.
+
+    Settlement resolving again would read the store a second time from inside an
+    already-open background session, and a concurrent lookup landing between the
+    two reads would charge a quota figure the log row does not carry.
+    """
+
+    from app.modules.proxy import orcarouter_sidecar_dispatch
+
+    fake_orcarouter.billed_cost_usd = None
+    _install_catalog({_MODEL: ModelPrice(input_per_1m=2_000_000.0, output_per_1m=4_000_000.0)})
+    await _enable_sidecar(async_client)
+
+    resolutions: list[str] = []
+    original = orcarouter_sidecar_dispatch._orcarouter_request_cost
+
+    async def _counting(model, usage):
+        resolutions.append(model)
+        return await original(model, usage)
+
+    monkeypatch.setattr(orcarouter_sidecar_dispatch, "_orcarouter_request_cost", _counting)
+
+    key = await _create_api_key(
+        "single-resolution-key",
+        limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000_000)],
+    )
+    await _post_chat(async_client, key)
+    await get_lookup_coordinator().drain()
+    resolutions.clear()
+    await _post_chat(async_client, key)
+    await get_lookup_coordinator().drain()
+
+    assert resolutions == [_MODEL], "the quota charge and the log row must share one resolution"
+
+    priced = [log for log in await _sidecar_logs() if log.cost_usd is not None]
+    assert priced
+    values = await _limit_values(key.id)
+    assert values["cost_usd"] == int(priced[-1].cost_usd * 1_000_000)
+
+
+@pytest.mark.asyncio
 async def test_a_resolved_model_charges_the_cost_limit_the_price_it_recorded(
     async_client,
     orcarouter_enabled,

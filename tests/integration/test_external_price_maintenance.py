@@ -589,7 +589,9 @@ async def test_a_disabled_serving_catalogs_record_is_not_re_sourced_to_the_refer
     report = await run_maintenance_pass()
 
     assert report.updated == [], "a switched-off source's rate must not be re-sourced"
-    assert report.preserved_on_failure == 1
+    assert report.preserved_while_disabled == 1
+    assert report.preserved_on_failure == 0, "a switched-off integration has not failed"
+    assert "Preserved after a source failure: 0" in report.render()
     record = await _record("deepseek/deepseek-chat")
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(0.27)
@@ -648,7 +650,8 @@ async def test_a_disabled_integrations_silence_is_no_evidence_against_a_settled_
     report = await run_maintenance_pass()
 
     assert report.unresolved == [], "a switched-off integration must not delist a record"
-    assert report.preserved_on_failure == 1
+    assert report.preserved_while_disabled == 1
+    assert report.preserved_on_failure == 0, "a switched-off integration has not failed"
     record = await _record("vendor/model-x")
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(2.0)
