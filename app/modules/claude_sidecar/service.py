@@ -39,6 +39,7 @@ from app.modules.settings.service import ClaudeSidecarAuthPlanData, parse_claude
 _STRATEGY_TO_WIRE: dict[ClaudeSidecarRoutingStrategy, str] = {
     "round_robin": "round-robin",
     "fill_first": "fill-first",
+    "weighted_round_robin": "weighted-round-robin",
 }
 _WIRE_TO_STRATEGY: dict[str, ClaudeSidecarRoutingStrategy] = {
     value: key for key, value in _STRATEGY_TO_WIRE.items()

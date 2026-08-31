@@ -292,6 +292,61 @@ describe("ClaudeSidecarSettings", () => {
     await waitFor(() => expect(receivedStrategy).toBe("round_robin"));
   });
 
+  it("offers weighted round robin and updates the strategy immediately", async () => {
+    const user = userEvent.setup();
+    let receivedStrategy: string | undefined;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/strategy", async ({ request }) => {
+        const body = (await request.json()) as { strategy?: string };
+        receivedStrategy = body.strategy;
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: body.strategy,
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("CLIProxyAPI routing");
+    await user.click(screen.getByRole("combobox", { name: /Routing strategy/ }));
+    await user.click(await screen.findByRole("option", { name: "Weighted round robin" }));
+
+    await waitFor(() => expect(receivedStrategy).toBe("weighted_round_robin"));
+  });
+
+  it("shows weighted round robin when that is the live strategy", async () => {
+    server.use(
+      http.get("*/api/claude-sidecar/routing", () => {
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "weighted_round_robin",
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("CLIProxyAPI routing");
+    expect(await screen.findByRole("combobox", { name: /Routing strategy/ })).toHaveTextContent(
+      "Weighted round robin",
+    );
+  });
+
   it("updates account priority on blur", async () => {
     const user = userEvent.setup();
     let receivedBody: unknown;
