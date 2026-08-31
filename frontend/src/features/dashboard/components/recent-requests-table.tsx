@@ -108,6 +108,16 @@ function sidecarAccountLabel(request: RequestLog): string | null {
   return providerLabel;
 }
 
+function visibleRequestError(request: RequestLog | null | undefined): {
+  errorCode: string | null;
+  errorMessage: string | null;
+} {
+  if (!request || isDisabledCapabilityRequestSource(request.source)) {
+    return { errorCode: null, errorMessage: null };
+  }
+  return { errorCode: request.errorCode, errorMessage: request.errorMessage };
+}
+
 const PLAN_CLASS_MAP: Record<string, string> = {
   free: "bg-zinc-500/10 text-zinc-700 border-zinc-500/20 hover:bg-zinc-500/15 dark:text-zinc-300",
   plus: "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 hover:bg-emerald-500/20 dark:text-emerald-400",
@@ -226,6 +236,7 @@ export function RecentRequestsTable({
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
   const blurred = usePrivacyStore((s) => s.blurred);
   const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest, t);
+  const selectedRequestError = visibleRequestError(selectedRequest);
 
   const accountLabelMap = useMemo(() => {
     const index = new Map<string, string>();
@@ -303,8 +314,9 @@ export function RecentRequestsTable({
                 ? (accountLabelMap.get(request.accountId) ?? request.accountId)
                 : t("dashboard.requests.unassigned");
               const isEmailLabel = !!(request.accountId && emailLabelIds.has(request.accountId));
-              const errorPreview = request.errorMessage || request.errorCode || "-";
-              const hasError = !!(request.errorCode || request.errorMessage);
+              const requestError = visibleRequestError(request);
+              const errorPreview = requestError.errorMessage || requestError.errorCode || "—";
+              const hasError = !!(requestError.errorCode || requestError.errorMessage);
               const visibleServiceTier = request.actualServiceTier ?? request.serviceTier;
               const showRequestedTier =
                 !!request.requestedServiceTier && request.requestedServiceTier !== visibleServiceTier;
@@ -449,10 +461,10 @@ export function RecentRequestsTable({
                   <TableCell className="pr-4 align-top whitespace-normal">
                     {hasError ? (
                       <div className="space-y-2">
-                        {request.errorCode ? (
+                        {requestError.errorCode ? (
                           <div>
                             <Badge variant="outline" className="max-w-full font-mono text-[10px]">
-                              <span className="truncate">{request.errorCode}</span>
+                              <span className="truncate">{requestError.errorCode}</span>
                             </Badge>
                           </div>
                         ) : null}
@@ -534,7 +546,7 @@ export function RecentRequestsTable({
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
                 <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source) ?? "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
-                <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequest?.errorCode ?? "—"} mono />
+                <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequestError.errorCode ?? "—"} mono />
               </div>
               <RequestDetailField
                 label={t("dashboard.requestDetails.userAgent")}
@@ -607,13 +619,15 @@ export function RecentRequestsTable({
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-medium">{t("dashboard.requestDetails.fullError")}</h3>
-                {selectedRequest?.errorMessage ? (
-                  <CopyButton value={selectedRequest.errorMessage} label={t("dashboard.requestDetails.copyError")} iconOnly />
+                {selectedRequestError.errorMessage ? (
+                  <CopyButton value={selectedRequestError.errorMessage} label={t("dashboard.requestDetails.copyError")} iconOnly />
                 ) : null}
               </div>
               <div className="max-h-[36vh] overflow-y-auto rounded-md bg-muted/50 p-3">
                 <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
-                  {selectedRequest?.errorMessage ?? selectedRequest?.errorCode ?? t("dashboard.requestDetails.noErrorDetail")}
+                  {selectedRequestError.errorMessage ??
+                    selectedRequestError.errorCode ??
+                    t("dashboard.requestDetails.noErrorDetail")}
                 </p>
               </div>
             </div>

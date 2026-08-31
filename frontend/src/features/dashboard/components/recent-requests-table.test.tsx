@@ -292,6 +292,70 @@ describe("RecentRequestsTable", () => {
     expect(writeText).toHaveBeenCalledWith(longError);
   });
 
+  it("neutralizes errors from disabled capability request rows", () => {
+    const request = {
+      ...VIEW_MODE_REQUEST,
+      accountId: null,
+      requestId: "req-disabled-provider",
+      model: "omniroute/test-chat",
+      source: "omniroute_sidecar",
+      status: "error",
+      errorCode: "omniroute_sidecar_unavailable",
+      errorMessage: "OmniRoute sidecar unavailable",
+    } satisfies RequestLog;
+
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[request]}
+      />,
+    );
+
+    const row = screen.getByText("omniroute/test-chat").closest("tr");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText("Error")).toBeInTheDocument();
+    expect(within(row as HTMLElement).queryByText("omniroute_sidecar_unavailable")).not.toBeInTheDocument();
+    expect(within(row as HTMLElement).queryByText("OmniRoute sidecar unavailable")).not.toBeInTheDocument();
+
+    const dialog = openRequestDetails();
+    expect(within(dialog).getByText("omniroute/test-chat")).toBeInTheDocument();
+    expect(within(dialog).queryByText("omniroute_sidecar_unavailable")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("OmniRoute sidecar unavailable")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Copy Error/ })).not.toBeInTheDocument();
+  });
+
+  it("preserves errors from enabled capability request rows", () => {
+    const request = {
+      ...VIEW_MODE_REQUEST,
+      accountId: null,
+      requestId: "req-enabled-provider",
+      model: "orcarouter/test-chat",
+      source: "orcarouter_sidecar",
+      status: "error",
+      errorCode: "orcarouter_upstream_unavailable",
+      errorMessage: "OrcaRouter upstream unavailable",
+    } satisfies RequestLog;
+
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[request]}
+      />,
+    );
+
+    const row = screen.getByText("orcarouter/test-chat").closest("tr");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText("orcarouter_upstream_unavailable")).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText("OrcaRouter upstream unavailable")).toBeInTheDocument();
+
+    const dialog = openRequestDetails();
+    expect(within(dialog).getByText("orcarouter_upstream_unavailable")).toBeInTheDocument();
+    expect(within(dialog).getByText("OrcaRouter upstream unavailable")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Copy Error" })).toBeInTheDocument();
+  });
+
   it("renders sidecar rows with standard model and transport labels", () => {
     render(
       <RecentRequestsTable
