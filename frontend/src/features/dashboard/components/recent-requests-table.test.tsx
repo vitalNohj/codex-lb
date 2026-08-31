@@ -353,7 +353,7 @@ describe("RecentRequestsTable", () => {
     expect(within(row as HTMLElement).getByText("OrcaRouter upstream unavailable")).toBeInTheDocument();
 
     const dialog = openRequestDetails();
-    expect(within(dialog).getByRole("heading", { name: "Full error" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Full Error" })).toBeInTheDocument();
     expect(within(dialog).getByText("orcarouter_upstream_unavailable")).toBeInTheDocument();
     expect(within(dialog).getByText("OrcaRouter upstream unavailable")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Copy Error" })).toBeInTheDocument();
