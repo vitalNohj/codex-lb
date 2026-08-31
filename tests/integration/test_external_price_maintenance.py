@@ -517,6 +517,83 @@ async def test_an_unsettled_record_is_not_resolved_by_reference_during_serving_o
 
 
 @pytest.mark.asyncio
+async def test_an_ambiguous_reference_cannot_erase_a_serving_rate_during_an_outage(
+    db_setup,
+    monkeypatch,
+) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    await _seed_resolved("model-x", ModelPrice(2.0, 4.0))
+    _install_catalog("orcarouter", None)
+
+    async def _reference():
+        return (
+            _catalog(
+                "openrouter",
+                {
+                    "first/model-x": ModelPrice(9.0, 9.0),
+                    "second/model-x": ModelPrice(10.0, 10.0),
+                },
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 1
+    assert report.ambiguous == []
+    record = await _record("model-x")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_maintenance_write_cannot_clear_a_concurrent_resolution(db_setup, monkeypatch) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        await ExternalModelPriceStore(session).record_unresolved(
+            provider="orcarouter",
+            incoming_model="vendor/race",
+            status=ExternalPriceStatus.UNRESOLVED,
+            detail="not found",
+        )
+    _install_catalog("orcarouter", {"vendor/other": ModelPrice(1.0, 1.0)})
+
+    original = ExternalModelPriceStore.record_unresolved
+    raced = False
+
+    async def _race_then_record(self, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            async with SessionLocal() as session:
+                await ExternalModelPriceStore(session).record_resolved(
+                    provider="orcarouter",
+                    incoming_model="vendor/race",
+                    catalog_model="vendor/race",
+                    catalog_source="orcarouter",
+                    price=ModelPrice(2.0, 4.0),
+                    resolution_step="exact",
+                )
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(ExternalModelPriceStore, "record_unresolved", _race_then_record)
+
+    report = await run_maintenance_pass()
+
+    assert raced is True
+    assert report.unresolved == []
+    record = await _record("vendor/race")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
+
+
+@pytest.mark.asyncio
 async def test_a_rate_that_becomes_unpriced_is_reported_rather_than_counted_unchanged(db_setup) -> None:
     """Clearing a stored rate is a state change the operator must see."""
 

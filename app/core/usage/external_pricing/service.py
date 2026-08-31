@@ -294,15 +294,18 @@ def serving_source_did_not_answer(serving: ServingContext | None) -> bool:
     return serving is None or serving.serving_catalog_missing
 
 
-def settlement_requires_silent_serving_source(
+def should_preserve_silent_serving_state(
+    record: PriceRecord | None,
     provider_key: str,
     resolution: Resolution,
     *,
     serving_unavailable: bool,
 ) -> bool:
-    return (
-        serving_unavailable and resolution.outcome in _SETTLING_OUTCOMES and resolution.catalog_source != provider_key
-    )
+    if not serving_unavailable or resolution.catalog_source == provider_key:
+        return False
+    if record is not None and record.is_settled and record.catalog_source == provider_key:
+        return True
+    return resolution.outcome in _SETTLING_OUTCOMES
 
 
 async def _run_lookup(provider_key: str, model_key: str) -> None:
@@ -339,7 +342,8 @@ async def _run_lookup(provider_key: str, model_key: str) -> None:
         prefixes=serving.prefixes if serving is not None else (),
     )
 
-    if settlement_requires_silent_serving_source(
+    if should_preserve_silent_serving_state(
+        previous,
         provider_key,
         resolution,
         serving_unavailable=serving_source_did_not_answer(serving),

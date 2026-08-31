@@ -159,39 +159,10 @@ def _totals_match(left: float | None, right: float | None, *, precision: int | N
     return abs(left - right) < (10 ** (-precision)) / 2
 
 
-def resolved_cost_breakdown(
-    log: RequestLogLike,
-    price: ModelPrice,
-    *,
-    precision: int | None = None,
-) -> UsageCostBreakdown | None:
-    """Split a declared-provenance row's persisted total using its own rate.
-
-    ``price`` must be the rate the resolver persisted for this model, not a
-    static-table guess. The split is only returned when recomputing it reproduces
-    the total already stored on the row, which is what proves the rate is the one
-    that produced that total: an upstream-billed amount, or a rate changed since
-    the request, will not reconcile and yields no components rather than a
-    plausible-looking fiction.
-    """
-
-    persisted_raw = cost_from_log(log)
-    if persisted_raw is None:
-        return None
-    usage = usage_tokens_from_log(log)
-    if usage is None:
-        return None
-    raw = calculate_cost_breakdown_from_usage(usage, price, service_tier=log.service_tier)
-    if raw is None or not _totals_match(persisted_raw, raw.total_usd, precision=precision):
-        return None
-    return calculate_cost_breakdown_from_usage(usage, price, service_tier=log.service_tier, precision=precision)
-
-
 def cost_breakdown_from_log(
     log: RequestLogLike,
     *,
     precision: int | None = None,
-    resolved_price: ModelPrice | None = None,
 ) -> UsageCostBreakdown:
     full_breakdown: UsageCostBreakdown | None = None
     input_usd: float | None = None
@@ -211,15 +182,10 @@ def cost_breakdown_from_log(
                 output_usd=None,
                 total_usd=None,
             )
-        # The row does have a settled cost, so the components are still worth
-        # showing -- but only when derived from the rate that actually produced
-        # it. The static table is not that rate, and reaching for it here is what
-        # would put another model's split under a correct total.
-        components = resolved_cost_breakdown(log, resolved_price, precision=precision) if resolved_price else None
         return UsageCostBreakdown(
-            input_usd=components.input_usd if components is not None else None,
-            cached_input_usd=components.cached_input_usd if components is not None else None,
-            output_usd=components.output_usd if components is not None else None,
+            input_usd=None,
+            cached_input_usd=None,
+            output_usd=None,
             total_usd=persisted,
         )
     if log.model:

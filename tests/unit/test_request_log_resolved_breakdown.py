@@ -1,14 +1,4 @@
-"""A correctly resolved external row keeps its per-component cost breakdown.
-
-Suppressing the static-table fallback for these rows is required, but it was
-applied to every row carrying a ``price_status``, including resolved ones. The
-request-details dialog renders nothing at all when every component is null, so
-the whole "Cost" section vanished for OpenRouter/OrcaRouter/CLIProxyAPI rows that
-previously showed "$0.01 = 800 Input + 200 Cached".
-
-The components must come from the rate that produced the persisted total, never
-from the substring-matching static table.
-"""
+"""External request totals never acquire an unprovable component split."""
 
 from __future__ import annotations
 
@@ -16,13 +6,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.core.usage.pricing import ModelPrice
 from app.db.models import CostSource, ExternalPriceStatus, RequestLog
 from app.modules.request_logs.mappers import to_request_log_entry
 
 pytestmark = pytest.mark.unit
 
-RATE = ModelPrice(input_per_1m=2.0, output_per_1m=4.0)
 # 800 uncached input + 200 cached input, both at the full input rate, + 500 out.
 EXPECTED_INPUT_USD = 800 * 2.0 / 1e6
 EXPECTED_CACHED_USD = 200 * 2.0 / 1e6
@@ -53,44 +41,37 @@ def _log(**overrides) -> RequestLog:
     return RequestLog(**values)
 
 
-def test_a_resolved_row_reports_its_components_from_the_resolved_rate() -> None:
-    entry = to_request_log_entry(_log(), resolved_price=RATE)
+def test_a_resolved_external_row_reports_only_its_persisted_total() -> None:
+    entry = to_request_log_entry(_log())
 
     assert entry.cost_usd == pytest.approx(EXPECTED_TOTAL)
     assert entry.cost_breakdown.total_usd == pytest.approx(EXPECTED_TOTAL)
-    assert entry.cost_breakdown.input_usd == pytest.approx(EXPECTED_INPUT_USD)
-    assert entry.cost_breakdown.cached_input_usd == pytest.approx(EXPECTED_CACHED_USD)
-    assert entry.cost_breakdown.output_usd == pytest.approx(EXPECTED_OUTPUT_USD)
-
-
-def test_the_components_sum_to_the_persisted_total() -> None:
-    """What the dialog renders must reconcile with the figure in the column."""
-
-    breakdown = to_request_log_entry(_log(), resolved_price=RATE).cost_breakdown
-
-    assert breakdown.input_usd is not None
-    assert breakdown.cached_input_usd is not None
-    assert breakdown.output_usd is not None
-    assert breakdown.input_usd + breakdown.cached_input_usd + breakdown.output_usd == pytest.approx(breakdown.total_usd)
-
-
-def test_a_rate_that_does_not_reproduce_the_total_yields_no_components() -> None:
-    """A rate changed since the request must not relabel the stored total's split."""
-
-    entry = to_request_log_entry(_log(), resolved_price=ModelPrice(input_per_1m=99.0, output_per_1m=99.0))
-
-    assert entry.cost_usd == pytest.approx(EXPECTED_TOTAL)
     assert entry.cost_breakdown.input_usd is None
+    assert entry.cost_breakdown.cached_input_usd is None
+    assert entry.cost_breakdown.output_usd is None
+
+
+def test_equal_totals_cannot_prove_the_historical_component_rate() -> None:
+    entry = to_request_log_entry(
+        _log(
+            input_tokens=1_000,
+            output_tokens=1_000,
+            cached_input_tokens=0,
+            cost_usd=0.000003,
+        )
+    )
+
+    assert entry.cost_usd == pytest.approx(0.000003)
+    assert entry.cost_breakdown.total_usd == pytest.approx(0.000003)
+    assert entry.cost_breakdown.input_usd is None
+    assert entry.cost_breakdown.cached_input_usd is None
     assert entry.cost_breakdown.output_usd is None
 
 
 def test_an_upstream_billed_total_is_never_split_by_a_list_rate() -> None:
     """The billed debit is authoritative and is not reconciled against list price."""
 
-    entry = to_request_log_entry(
-        _log(cost_usd=0.00846, cost_source=CostSource.UPSTREAM_BILLED.value),
-        resolved_price=RATE,
-    )
+    entry = to_request_log_entry(_log(cost_usd=0.00846, cost_source=CostSource.UPSTREAM_BILLED.value))
 
     assert entry.cost_usd == pytest.approx(0.00846)
     assert entry.cost_breakdown.input_usd is None
@@ -101,21 +82,11 @@ def test_an_unresolved_row_still_reports_nothing_at_all() -> None:
     """The acceptance-critical property is unchanged by restoring the split."""
 
     entry = to_request_log_entry(
-        _log(cost_usd=None, cost_source=None, price_status=ExternalPriceStatus.UNRESOLVED.value),
-        resolved_price=RATE,
+        _log(cost_usd=None, cost_source=None, price_status=ExternalPriceStatus.UNRESOLVED.value)
     )
 
     assert entry.cost_usd is None
     assert entry.cost_breakdown.total_usd is None
-    assert entry.cost_breakdown.input_usd is None
-
-
-def test_without_a_resolved_rate_the_total_stands_alone() -> None:
-    """No rate on hand must never mean "fall back to the glob table"."""
-
-    entry = to_request_log_entry(_log(), resolved_price=None)
-
-    assert entry.cost_usd == pytest.approx(EXPECTED_TOTAL)
     assert entry.cost_breakdown.input_usd is None
 
 

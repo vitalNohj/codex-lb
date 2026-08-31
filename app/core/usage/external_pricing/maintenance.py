@@ -26,7 +26,7 @@ from app.core.usage.external_pricing.resolution import ResolutionOutcome, resolv
 from app.core.usage.external_pricing.service import (
     ServingContext,
     load_serving_context,
-    settlement_requires_silent_serving_source,
+    should_preserve_silent_serving_state,
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord
 from app.db.models import ExternalPriceStatus
@@ -212,7 +212,8 @@ async def _refresh_record(
         prefixes=context.prefixes if context is not None else (),
     )
 
-    if settlement_requires_silent_serving_source(
+    if should_preserve_silent_serving_state(
+        record,
         record.provider,
         resolution,
         serving_unavailable=(serving_failed or (serving_disabled and record.catalog_source == record.provider)),
@@ -251,7 +252,7 @@ async def _refresh_record(
         # rate, set no retry, and report the loss as "unchanged", so one upstream
         # schema change would silently erase every rate in a single pass.
         async with get_background_session() as session:
-            await ExternalModelPriceStore(session).record_price_unparseable(
+            applied = await ExternalModelPriceStore(session).record_price_unparseable(
                 provider=record.provider,
                 incoming_model=record.incoming_model,
                 record=record,
@@ -259,7 +260,10 @@ async def _refresh_record(
                 catalog_source=resolution.catalog_source,
                 detail=resolution.detail or "catalog price could not be parsed",
                 previous_attempts=record.attempt_count,
+                expected_updated_at=record.updated_at,
             )
+        if not applied:
+            return
         report.preserved_unparseable.append(
             RecordChange(
                 provider=record.provider,
@@ -277,14 +281,17 @@ async def _refresh_record(
             assert resolution.catalog_source is not None
             changed = _rates_changed(record, resolution.price.input_per_1m, resolution.price.output_per_1m)
             was_priced = record.is_priced
-            await store.record_resolved(
+            applied = await store.record_resolved(
                 provider=record.provider,
                 incoming_model=record.incoming_model,
                 catalog_model=resolution.catalog_model,
                 catalog_source=resolution.catalog_source,
                 price=resolution.price,
                 resolution_step=resolution.step or "exact",
+                expected_updated_at=record.updated_at,
             )
+            if not applied:
+                return
             change = RecordChange(
                 provider=record.provider,
                 incoming_model=record.incoming_model,
@@ -304,14 +311,17 @@ async def _refresh_record(
         if resolution.outcome is ResolutionOutcome.NOT_TOKEN_PRICED:
             assert resolution.catalog_model is not None
             assert resolution.catalog_source is not None
-            await store.record_not_token_priced(
+            applied = await store.record_not_token_priced(
                 provider=record.provider,
                 incoming_model=record.incoming_model,
                 catalog_model=resolution.catalog_model,
                 catalog_source=resolution.catalog_source,
                 resolution_step=resolution.step or "exact",
                 detail=resolution.detail or "not token priced",
+                expected_updated_at=record.updated_at,
             )
+            if not applied:
+                return
             if record.status is ExternalPriceStatus.NOT_TOKEN_PRICED:
                 report.unchanged += 1
             else:
@@ -334,14 +344,17 @@ async def _refresh_record(
             if resolution.outcome is ResolutionOutcome.AMBIGUOUS
             else ExternalPriceStatus.UNRESOLVED
         )
-        await store.record_unresolved(
+        applied = await store.record_unresolved(
             provider=record.provider,
             incoming_model=record.incoming_model,
             status=status,
             detail=resolution.detail,
             resolution_step=resolution.step,
             previous_attempts=record.attempt_count,
+            expected_updated_at=record.updated_at,
         )
+        if not applied:
+            return
         change = RecordChange(
             provider=record.provider,
             incoming_model=record.incoming_model,

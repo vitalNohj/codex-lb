@@ -1618,15 +1618,15 @@ describe("RecentRequestsTable", () => {
     });
 
     it.each(["unresolved", "ambiguous"] as const)(
-      "keeps -- for a %s model when the request reported no token usage",
+      "keeps -- for a %s model when the request reported incomplete token usage",
       (priceStatus) => {
         const request = {
           ...VIEW_MODE_REQUEST,
           costUsd: null,
           costSource: null,
           priceStatus,
-          tokens: null,
-          inputTokens: null,
+          tokens: 10,
+          inputTokens: 10,
           outputTokens: null,
         };
 

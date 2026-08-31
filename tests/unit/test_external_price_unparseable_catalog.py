@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.usage.external_pricing.catalogs import parse_openai_style_catalog
+from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models, parse_openai_style_catalog
 from app.core.usage.external_pricing.resolution import (
     ResolutionOutcome,
     UnpricedReason,
     resolve_model_price,
 )
+from app.core.usage.pricing import ModelPrice
 
 pytestmark = pytest.mark.unit
 
@@ -89,6 +90,8 @@ def test_a_catalog_declared_no_price_is_a_settled_not_token_priced_answer(pricin
         pytest.param({"prompt_usd_per_1m": "3.0", "completion": "0.000002"}, id="renamed-unit-field"),
         pytest.param({"prompt": "NaN", "completion": "0.000002"}, id="nan"),
         pytest.param({"prompt": "Infinity", "completion": "0.000002"}, id="infinity"),
+        pytest.param("temporarily unavailable", id="invalid-scalar"),
+        pytest.param(["temporarily unavailable"], id="invalid-list"),
     ],
 )
 def test_an_entry_whose_declared_token_rates_cannot_be_read_is_unparseable(pricing: object) -> None:
@@ -102,6 +105,26 @@ def test_an_entry_whose_declared_token_rates_cannot_be_read_is_unparseable(prici
     resolution = resolve_model_price("vendor/model-x", catalogs=[catalog])
     assert resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE
     assert resolution.catalog_model == "vendor/model-x"
+
+
+@pytest.mark.parametrize(
+    "price",
+    [
+        pytest.param(ModelPrice(float("nan"), 2.0), id="nan-input"),
+        pytest.param(ModelPrice(1.0, float("inf")), id="infinite-output"),
+    ],
+)
+def test_a_non_finite_preparsed_sidecar_rate_is_unparseable(price: ModelPrice) -> None:
+    catalog = catalog_from_sidecar_models(
+        "orcarouter",
+        [("vendor/model-x", price, {"prompt": "0.000001", "completion": "0.000002"})],
+    )
+
+    entry = catalog.exact("vendor/model-x")
+    assert entry is not None
+    assert entry.price is None
+    assert entry.unpriced_reason is UnpricedReason.UNPARSEABLE
+    assert resolve_model_price("vendor/model-x", catalogs=[catalog]).outcome is ResolutionOutcome.PRICE_UNPARSEABLE
 
 
 def test_a_readable_price_is_unaffected_by_the_distinction() -> None:

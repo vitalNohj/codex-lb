@@ -9,7 +9,6 @@ from app.core.usage.logs import (
     output_tokens_from_log,
     total_tokens_from_log,
 )
-from app.core.usage.pricing import ModelPrice
 from app.db.models import RequestLog
 from app.modules.request_logs.schemas import RequestLogCostBreakdown, RequestLogEntry
 
@@ -36,10 +35,9 @@ def to_request_log_entry(
     *,
     api_key_name: str | None = None,
     sidecar_account_label: str | None = None,
-    resolved_price: ModelPrice | None = None,
 ) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
-    cost_breakdown = cost_breakdown_from_log(log_like, precision=6, resolved_price=resolved_price)
+    cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
     reference_cost_usd = round(log.reference_cost_usd, 6) if log.reference_cost_usd is not None else None
     savings_usd = _savings_usd(
         actual=cost_breakdown.total_usd,

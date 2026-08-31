@@ -190,8 +190,10 @@ def _unpriced_reason(price: ModelPrice | None, raw_pricing: JsonValue) -> Unpric
 
     if price is not None:
         return UnpricedReason.NO_TOKEN_RATE
-    if not is_json_mapping(raw_pricing):
+    if raw_pricing is None or (isinstance(raw_pricing, str) and not raw_pricing.strip()):
         return UnpricedReason.NO_TOKEN_RATE
+    if not is_json_mapping(raw_pricing):
+        return UnpricedReason.UNPARSEABLE
     readings = [_read_rate_field(raw_pricing, key) for key in ("prompt", "completion")]
     if _RateReading.UNREADABLE in readings:
         return UnpricedReason.UNPARSEABLE
@@ -244,17 +246,15 @@ def catalog_from_sidecar_models(
     rate fields is not mistaken for one it listed with no rates at all.
     """
 
-    return Catalog.from_entries(
-        source,
-        (
-            CatalogEntry(
-                model_id=model_id,
-                price=price,
-                unpriced_reason=_unpriced_reason(price, raw_pricing),
-            )
-            for model_id, price, raw_pricing in models
-        ),
-    )
+    entries: list[CatalogEntry] = []
+    for model_id, price, raw_pricing in models:
+        valid_price = price
+        reason = _unpriced_reason(price, raw_pricing)
+        if price is not None and not (math.isfinite(price.input_per_1m) and math.isfinite(price.output_per_1m)):
+            valid_price = None
+            reason = UnpricedReason.UNPARSEABLE
+        entries.append(CatalogEntry(model_id=model_id, price=valid_price, unpriced_reason=reason))
+    return Catalog.from_entries(source, entries)
 
 
 async def _fetch_json(url: str, *, source: str) -> JsonValue:
