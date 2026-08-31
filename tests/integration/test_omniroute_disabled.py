@@ -83,6 +83,10 @@ async def stored_omniroute_configuration():
         settings.omniroute_sidecar_api_key_encrypted = b"stored-omniroute-key"
         settings.omniroute_sidecar_selected_models_json = f'["{OMNIROUTE_MODEL}"]'
         settings.omniroute_sidecar_prefixes_json = '[{"prefix": "omniroute/", "strip": false}]'
+        settings.omniroute_sidecar_connect_timeout_seconds = 3.25
+        settings.omniroute_sidecar_request_timeout_seconds = 451.5
+        settings.omniroute_sidecar_models_cache_ttl_seconds = 73.0
+        settings.omniroute_sidecar_default_reasoning_effort = "high"
         settings.omniroute_sidecar_last_health_status = "healthy"
         settings.omniroute_sidecar_last_health_message = "OmniRoute sidecar reachable"
         settings.omniroute_sidecar_last_model_count = 1
@@ -253,6 +257,58 @@ async def test_stored_omniroute_configuration_is_preserved_in_the_database(
         assert settings.omniroute_sidecar_enabled is True
         assert settings.omniroute_sidecar_api_key_encrypted == b"stored-omniroute-key"
         assert OMNIROUTE_MODEL in (settings.omniroute_sidecar_selected_models_json or "")
+
+
+@pytest.mark.asyncio
+async def test_settings_get_put_round_trip_preserves_stored_omniroute_configuration(
+    async_client,
+    stored_omniroute_configuration,
+):
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+
+    response = await async_client.put("/api/settings", json=response.json())
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        settings = (await session.execute(select(DashboardSettings))).scalars().first()
+        assert settings is not None
+        assert settings.omniroute_sidecar_enabled is True
+        assert settings.omniroute_sidecar_base_url == "http://127.0.0.1:20128/v1"
+        assert settings.omniroute_sidecar_api_key_encrypted == b"stored-omniroute-key"
+        assert settings.omniroute_sidecar_prefixes_json == '[{"prefix": "omniroute/", "strip": false}]'
+        assert settings.omniroute_sidecar_selected_models_json == f'["{OMNIROUTE_MODEL}"]'
+        assert settings.omniroute_sidecar_connect_timeout_seconds == 3.25
+        assert settings.omniroute_sidecar_request_timeout_seconds == 451.5
+        assert settings.omniroute_sidecar_models_cache_ttl_seconds == 73.0
+        assert settings.omniroute_sidecar_default_reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_dormant_omniroute_routes_do_not_conflict_with_orcarouter(
+    async_client,
+    stored_omniroute_configuration,
+):
+    async with SessionLocal() as session:
+        settings = (await session.execute(select(DashboardSettings))).scalars().first()
+        assert settings is not None
+        settings.omniroute_sidecar_prefixes_json = '[{"prefix": "orcarouter/", "strip": false}]'
+        await session.commit()
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"orcarouterSidecarModelPrefixes": [{"prefix": "orcarouter/", "strip": False}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["orcarouterSidecarModelPrefixes"] == [
+        {"prefix": "orcarouter/", "strip": False}
+    ]
+
+    async with SessionLocal() as session:
+        settings = (await session.execute(select(DashboardSettings))).scalars().first()
+        assert settings is not None
+        assert settings.omniroute_sidecar_prefixes_json == '[{"prefix": "orcarouter/", "strip": false}]'
 
 
 @pytest.mark.asyncio
