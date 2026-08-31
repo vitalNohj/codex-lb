@@ -43,9 +43,9 @@ export function OrcaRouterSidecarSettings({ settings, busy, onSave, bare = false
               orcarouter.ai/console
             </a>
             . Seeded prefix <code>orcarouter/</code> is forwarded unchanged (strip off), so{" "}
-            <code>orcarouter/auto</code> stays <code>orcarouter/auto</code>. If OmniRoute already owns{" "}
-            <code>orcarouter/</code>, remove that OmniRoute prefix before enabling. Pin Orca vendor IDs as
-            full models; do not seed openai/, google/, anthropic/, or deepseek/.
+            <code>orcarouter/auto</code> stays <code>orcarouter/auto</code>. If another integration already
+            owns <code>orcarouter/</code>, remove that prefix before enabling. Pin Orca vendor IDs as full
+            models; do not seed openai/, google/, anthropic/, or deepseek/.
           </>
         ),
         baseUrlPlaceholder: DEFAULT_BASE_URL,

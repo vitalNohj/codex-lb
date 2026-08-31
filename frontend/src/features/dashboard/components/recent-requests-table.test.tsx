@@ -449,13 +449,13 @@ describe("RecentRequestsTable", () => {
     expect(openRouterCells[1]).toHaveTextContent("OpenRouter");
     expect(openRouterCells[1]).not.toHaveTextContent("OpenRouter sidecar");
 
+    // Historical OmniRoute rows are retained (never deleted or rewritten) but
+    // render without the disabled integration's branding.
     const omniRouteRow = screen.getByText("omniroute/test-chat").closest("tr");
     expect(omniRouteRow).not.toBeNull();
     const omniRouteCells = within(omniRouteRow as HTMLElement).getAllByRole("cell");
-    expect(omniRouteCells[1]).toHaveTextContent("OmniRoute");
-    expect(omniRouteCells[1]).not.toHaveTextContent("OmniRoute sidecar");
+    expect(omniRouteCells[1]).not.toHaveTextContent("OmniRoute");
     expect(omniRouteCells[4]).toHaveTextContent("omniroute/test-chat");
-    expect(omniRouteCells[4]).not.toHaveTextContent("OmniRoute sidecar");
 
     const ollamaRow = screen.getByText("gpt-oss:120b-cloud").closest("tr");
     expect(ollamaRow).not.toBeNull();

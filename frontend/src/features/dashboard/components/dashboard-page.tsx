@@ -34,6 +34,7 @@ import {
 } from "@/features/dashboard/schemas";
 import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences";
 import { useThemeStore } from "@/hooks/use-theme";
+import { isDisabledCapabilityAccount } from "@/lib/product-capabilities";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
 import { formatModelLabel, formatCurrency, formatSlug } from "@/utils/formatters";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -156,6 +157,11 @@ export function DashboardPage() {
   const visibleAccounts = useMemo(
     () =>
       (overview?.accounts ?? []).filter((account) => {
+        // Product-capability boundary first: a disabled integration is never
+        // rendered, regardless of the user's account-type filter state.
+        if (isDisabledCapabilityAccount(account)) {
+          return false;
+        }
         const key = accountTypeKey(account);
         return key === "other" || accountTypeVisibility[key];
       }),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.core.config.product_capabilities import omniroute_enabled
 from app.db.models import DashboardSettings
 from app.modules.accounts.schemas import AccountRequestUsage, AccountSummary
 from app.modules.accounts.sidecar_health import resolve_sidecar_health_status
@@ -9,7 +10,13 @@ def build_omniroute_sidecar_summary(
     settings: DashboardSettings,
     request_usage: AccountRequestUsage | None,
 ) -> AccountSummary | None:
-    """Return a synthetic AccountSummary for the OmniRoute sidecar, or None when hidden."""
+    """Return a synthetic AccountSummary for the OmniRoute sidecar, or None when hidden.
+
+    A disabled OmniRoute capability hides the card unconditionally, so stored
+    settings cannot surface it on the Accounts or Dashboard surfaces.
+    """
+    if not omniroute_enabled():
+        return None
     configured = settings.omniroute_sidecar_api_key_encrypted is not None or bool(settings.omniroute_sidecar_base_url)
     if not configured and not settings.omniroute_sidecar_enabled:
         return None

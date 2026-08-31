@@ -5,6 +5,16 @@ from datetime import datetime
 from app.modules.shared.schemas import DashboardModel
 
 
+class RuntimeCapabilitiesResponse(DashboardModel):
+    """Product-capability flags the dashboard must mirror.
+
+    Disabled capabilities are hidden in the UI *and* refused by the server;
+    this response exists so both sides read the same boundary.
+    """
+
+    omniroute: bool
+
+
 class RuntimeVersionResponse(DashboardModel):
     current_version: str
     latest_version: str | None = None

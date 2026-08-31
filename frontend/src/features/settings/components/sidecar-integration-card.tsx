@@ -28,6 +28,7 @@ import type {
   ClaudeSidecarRoutingStrategy,
 } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
+import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 
 export type SidecarIntegrationId = "claude" | "openrouter" | "orcarouter" | "omniroute" | "ollama";
 
@@ -222,12 +223,18 @@ function integrationValues(settings: DashboardSettings, current?: IntegrationVal
       prefixes: settings.orcarouterSidecarModelPrefixes ?? [],
       fullModels: settings.orcarouterSidecarFullModels ?? [],
     },
-    {
-      id: "omniroute",
-      name: INTEGRATION_NAMES.omniroute,
-      prefixes: settings.omnirouteSidecarModelPrefixes ?? [],
-      fullModels: settings.omnirouteSidecarFullModels ?? settings.omnirouteSidecarSelectedModels ?? [],
-    },
+    // OmniRoute is omitted while its capability is disabled: it owns no routes,
+    // so it must never be named as a conflicting owner in the UI.
+    ...(OMNIROUTE_ENABLED
+      ? [
+          {
+            id: "omniroute" as const,
+            name: INTEGRATION_NAMES.omniroute,
+            prefixes: settings.omnirouteSidecarModelPrefixes ?? [],
+            fullModels: settings.omnirouteSidecarFullModels ?? settings.omnirouteSidecarSelectedModels ?? [],
+          },
+        ]
+      : []),
     {
       id: "ollama",
       name: INTEGRATION_NAMES.ollama,

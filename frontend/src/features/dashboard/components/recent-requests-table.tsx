@@ -28,6 +28,7 @@ import { PaginationControls } from "@/features/dashboard/components/filters/pagi
 import { RequestArchivePanel } from "@/features/conversation-archive/components/request-archive-panel";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
 import type { DashboardRequestLogViewMode } from "@/hooks/use-dashboard-preferences";
+import { isDisabledCapabilityRequestSource } from "@/lib/product-capabilities";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
 import {
   formatDateTimeInline,
@@ -77,16 +78,24 @@ const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
   ollama_sidecar: "Ollama",
 };
 
-function sidecarSourceLabel(source: string | null | undefined): string | null {
-  if (!source) {
+/**
+ * Display text for a request's `source` column.
+ *
+ * Historical logs are never deleted or rewritten, so rows from a disabled
+ * integration can still exist. Those rows remain listed, but neither their
+ * provider label nor their raw source slug is rendered, so the disabled
+ * integration's branding never reaches the user.
+ */
+function sidecarSourceDisplay(source: string | null | undefined): string | null {
+  if (!source || isDisabledCapabilityRequestSource(source)) {
     return null;
   }
-  return SIDECAR_SOURCE_LABELS[source] ?? null;
+  return SIDECAR_SOURCE_LABELS[source] ?? source;
 }
 
 function sidecarAccountLabel(request: RequestLog): string | null {
   const source = request.source;
-  if (!source) {
+  if (!source || isDisabledCapabilityRequestSource(source)) {
     return null;
   }
   const providerLabel = SIDECAR_ACCOUNT_LABELS[source];
@@ -523,7 +532,7 @@ export function RecentRequestsTable({
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
-                <RequestDetailField label="Source" value={sidecarSourceLabel(selectedRequest?.source) ?? selectedRequest?.source ?? "—"} />
+                <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source) ?? "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequest?.errorCode ?? "—"} mono />
               </div>

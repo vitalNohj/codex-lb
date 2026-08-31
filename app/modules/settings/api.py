@@ -22,6 +22,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.http import _build_ssl_context
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardBadRequestError, DashboardSettingsConflictError
@@ -247,22 +248,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         orcarouter_sidecar_last_checked_at=settings.orcarouter_sidecar_last_checked_at,
         orcarouter_sidecar_last_model_count=settings.orcarouter_sidecar_last_model_count,
         orcarouter_sidecar_default_reasoning_effort=settings.orcarouter_sidecar_default_reasoning_effort,
-        omniroute_sidecar_enabled=settings.omniroute_sidecar_enabled,
-        omniroute_sidecar_base_url=settings.omniroute_sidecar_base_url,
-        omniroute_sidecar_api_key_configured=settings.omniroute_sidecar_api_key_configured,
-        omniroute_sidecar_model_prefixes=[
-            asdict(prefix) for prefix in settings.omniroute_sidecar_model_prefixes
-        ],
-        omniroute_sidecar_full_models=settings.omniroute_sidecar_full_models,
-        omniroute_sidecar_selected_models=settings.omniroute_sidecar_full_models,
-        omniroute_sidecar_connect_timeout_seconds=settings.omniroute_sidecar_connect_timeout_seconds,
-        omniroute_sidecar_request_timeout_seconds=settings.omniroute_sidecar_request_timeout_seconds,
-        omniroute_sidecar_models_cache_ttl_seconds=settings.omniroute_sidecar_models_cache_ttl_seconds,
-        omniroute_sidecar_last_health_status=settings.omniroute_sidecar_last_health_status,
-        omniroute_sidecar_last_health_message=settings.omniroute_sidecar_last_health_message,
-        omniroute_sidecar_last_checked_at=settings.omniroute_sidecar_last_checked_at,
-        omniroute_sidecar_last_model_count=settings.omniroute_sidecar_last_model_count,
-        omniroute_sidecar_default_reasoning_effort=settings.omniroute_sidecar_default_reasoning_effort,
+        **_neutralized_omniroute_response_fields(settings),
         ollama_sidecar_enabled=settings.ollama_sidecar_enabled,
         ollama_sidecar_base_url=settings.ollama_sidecar_base_url,
         ollama_sidecar_api_key_configured=settings.ollama_sidecar_api_key_configured,
@@ -300,6 +286,97 @@ def _auth_plan_data(plan) -> ClaudeSidecarAuthPlanData:
 
 def _sidecar_prefix_data(prefix) -> SidecarPrefix:
     return SidecarPrefix(prefix=prefix.prefix, strip=prefix.strip)
+
+
+#: OmniRoute update fields, paired with the only value accepted while the
+#: capability is disabled. A client that reads ``GET /api/settings`` and writes
+#: the whole object back submits exactly these neutral values, so the standard
+#: read-modify-write cycle keeps working; anything that would enable or
+#: configure the integration is refused.
+OMNIROUTE_NEUTRAL_UPDATE_VALUES: dict[str, object] = {
+    "omniroute_sidecar_enabled": False,
+    "omniroute_sidecar_api_key": None,
+    "omniroute_sidecar_clear_api_key": False,
+    "omniroute_sidecar_model_prefixes": [],
+    "omniroute_sidecar_full_models": [],
+    "omniroute_sidecar_selected_models": [],
+    "omniroute_sidecar_default_reasoning_effort": None,
+}
+
+
+def _is_neutral_omniroute_value(field_name: str, value: object) -> bool:
+    if field_name not in OMNIROUTE_NEUTRAL_UPDATE_VALUES:
+        # Transport tunables (base URL, timeouts, cache TTL) cannot enable or
+        # route to the integration on their own, so they round-trip freely.
+        return True
+    neutral = OMNIROUTE_NEUTRAL_UPDATE_VALUES[field_name]
+    if isinstance(neutral, list):
+        return not value
+    return value == neutral or (neutral is False and value is None)
+
+
+def _reject_disabled_capability_fields(payload: DashboardSettingsUpdateRequest) -> None:
+    """Refuse settings writes that would enable or configure a disabled capability.
+
+    Persisted OmniRoute columns are retained for a future re-enable, so this
+    guard blocks activating writes rather than clearing existing rows.
+    """
+
+    if omniroute_enabled():
+        return
+    activating = sorted(
+        field_name
+        for field_name in payload.model_fields_set
+        if field_name.startswith("omniroute_sidecar_")
+        and not _is_neutral_omniroute_value(field_name, getattr(payload, field_name, None))
+    )
+    if not activating:
+        return
+    raise DashboardBadRequestError(
+        "The OmniRoute integration is disabled and cannot be configured",
+        code="capability_disabled",
+        details={"capability": "omniroute", "fields": activating},
+    )
+
+
+def _neutralized_omniroute_response_fields(settings) -> dict[str, object]:
+    """Return the OmniRoute response fields, blanked while the capability is off.
+
+    Stored rows stay untouched in the database; the API simply never advertises
+    a disabled integration as enabled or configured.
+    """
+
+    if omniroute_enabled():
+        return {
+            "omniroute_sidecar_enabled": settings.omniroute_sidecar_enabled,
+            "omniroute_sidecar_base_url": settings.omniroute_sidecar_base_url,
+            "omniroute_sidecar_api_key_configured": settings.omniroute_sidecar_api_key_configured,
+            "omniroute_sidecar_model_prefixes": [
+                asdict(prefix) for prefix in settings.omniroute_sidecar_model_prefixes
+            ],
+            "omniroute_sidecar_full_models": settings.omniroute_sidecar_full_models,
+            "omniroute_sidecar_selected_models": settings.omniroute_sidecar_full_models,
+            "omniroute_sidecar_connect_timeout_seconds": settings.omniroute_sidecar_connect_timeout_seconds,
+            "omniroute_sidecar_request_timeout_seconds": settings.omniroute_sidecar_request_timeout_seconds,
+            "omniroute_sidecar_models_cache_ttl_seconds": settings.omniroute_sidecar_models_cache_ttl_seconds,
+            "omniroute_sidecar_last_health_status": settings.omniroute_sidecar_last_health_status,
+            "omniroute_sidecar_last_health_message": settings.omniroute_sidecar_last_health_message,
+            "omniroute_sidecar_last_checked_at": settings.omniroute_sidecar_last_checked_at,
+            "omniroute_sidecar_last_model_count": settings.omniroute_sidecar_last_model_count,
+            "omniroute_sidecar_default_reasoning_effort": settings.omniroute_sidecar_default_reasoning_effort,
+        }
+    return {
+        "omniroute_sidecar_enabled": False,
+        "omniroute_sidecar_api_key_configured": False,
+        "omniroute_sidecar_model_prefixes": [],
+        "omniroute_sidecar_full_models": [],
+        "omniroute_sidecar_selected_models": [],
+        "omniroute_sidecar_last_health_status": None,
+        "omniroute_sidecar_last_health_message": None,
+        "omniroute_sidecar_last_checked_at": None,
+        "omniroute_sidecar_last_model_count": None,
+        "omniroute_sidecar_default_reasoning_effort": None,
+    }
 
 
 @router.get("", response_model=DashboardSettingsResponse)
@@ -676,6 +753,7 @@ async def update_settings(
     _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> DashboardSettingsResponse:
+    _reject_disabled_capability_fields(payload)
     current = await context.service.get_settings()
     if payload.expected_version is not None and payload.expected_version != current.version:
         raise DashboardSettingsConflictError(

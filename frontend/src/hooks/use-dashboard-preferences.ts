@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type { AccountListSort, AccountListSortKey } from "@/features/dashboard/components/account-list";
+import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 
 const ACCOUNT_BURNRATE_STORAGE_KEY = "codex-lb-account-burnrate-enabled";
 const ACCOUNT_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-account-view-mode";
@@ -14,12 +15,19 @@ export type DashboardRequestLogViewMode = "simplified" | "expanded";
 export type AccountTypeKey = "codex" | "cliproxy" | "openrouter" | "orcarouter" | "omniroute";
 export type AccountTypeVisibility = Record<AccountTypeKey, boolean>;
 
+/**
+ * Account-type filters offered in the UI.
+ *
+ * `omniroute` stays in the `AccountTypeKey` union (stored preferences and the
+ * visibility record still carry it) but is not offered as a filter while the
+ * capability is disabled, since no OmniRoute account can be rendered.
+ */
 export const ACCOUNT_TYPE_KEYS: AccountTypeKey[] = [
   "codex",
   "cliproxy",
   "openrouter",
   "orcarouter",
-  "omniroute",
+  ...(OMNIROUTE_ENABLED ? (["omniroute"] as const) : []),
 ];
 
 function defaultAccountTypeVisibility(): AccountTypeVisibility {

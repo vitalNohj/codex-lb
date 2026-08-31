@@ -27,6 +27,7 @@ from app.core.balancer import configure_replica_salt
 from app.core.bootstrap import ensure_auto_bootstrap_token, log_bootstrap_token
 from app.core.clients.http import close_http_client, init_http_client
 from app.core.config.key_fingerprint import verify_encryption_key_fingerprint
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings import (
     _bridge_advertise_hostname_is_replica_specific,
     get_settings,
@@ -700,7 +701,11 @@ def create_app() -> FastAPI:
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
     app.include_router(orcarouter_sidecar_api.router)
-    app.include_router(omniroute_sidecar_api.router)
+    if omniroute_enabled():
+        # Dormant while the OmniRoute capability is disabled: the module stays
+        # importable for a future re-enable, but its status/test/models routes
+        # are never mounted, so they 404 instead of reaching the sidecar.
+        app.include_router(omniroute_sidecar_api.router)
     app.include_router(ollama_sidecar_api.router)
     app.include_router(usage_api.router)
     app.include_router(request_logs_api.router)

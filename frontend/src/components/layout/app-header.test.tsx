@@ -28,12 +28,11 @@ function renderHeader(initialEntry = "/dashboard") {
 }
 
 describe("AppHeader", () => {
-  it("opens the OmniRoute link in a new tab", () => {
+  it("renders no OmniRoute navigation while the capability is disabled", () => {
     renderHeader();
 
-    const link = screen.getAllByRole("link", { name: /omniroute/i })[0];
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.queryAllByRole("link", { name: /omniroute/i })).toHaveLength(0);
+    expect(screen.queryByText(/omniroute/i)).toBeNull();
   });
 
   it("shows the summed Accounts reset-credit badge capped at 99+", async () => {

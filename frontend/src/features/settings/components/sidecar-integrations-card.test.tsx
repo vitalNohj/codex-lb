@@ -123,14 +123,12 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getByRole("heading", { name: "External Integrations" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /CLIProxyAPI/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OpenRouter/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /OmniRoute/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OrcaRouter/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Ollama/ })).toBeInTheDocument();
   });
 
-  // Replaces a duplicated OmniRoute assertion that re-checked the same tab.
-  // Tab order is the locked surface contract: OrcaRouter sits after OpenRouter
-  // and before OmniRoute, matching SIDECAR_PROVIDER_ORDER on the backend.
+  // Tab order is the locked surface contract, matching SIDECAR_PROVIDER_ORDER
+  // on the backend minus capabilities disabled at the product level.
   it("orders the integration tabs to match the sidecar provider order", () => {
     renderCard(BASE_SETTINGS);
 
@@ -138,9 +136,19 @@ describe("SidecarIntegrationsCard", () => {
       "CLIProxyAPI",
       "OpenRouter",
       "OrcaRouter",
-      "OmniRoute",
       "Ollama",
     ]);
+  });
+
+  it("offers no OmniRoute tab or settings even when stored settings enable it", () => {
+    renderCard({
+      ...BASE_SETTINGS,
+      omnirouteSidecarEnabled: true,
+      omnirouteSidecarApiKeyConfigured: true,
+    });
+
+    expect(screen.queryByRole("tab", { name: /omniroute/i })).toBeNull();
+    expect(screen.queryByText(/omniroute/i)).toBeNull();
   });
 
   it("defaults to the first enabled integration's tab", () => {

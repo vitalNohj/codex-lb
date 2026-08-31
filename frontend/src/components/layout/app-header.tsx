@@ -17,6 +17,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { listAccounts } from "@/features/accounts/api";
 import { getSettings } from "@/features/settings/api";
 import { usePrivacyStore } from "@/hooks/use-privacy";
+import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 import { cn } from "@/lib/utils";
 
 const CORE_NAV_ITEMS = [
@@ -129,15 +130,17 @@ export function AppHeader({
               </span>
             </NavLink>
           ))}
-          <a
-            href={OMNIROUTE_PATH}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="relative inline-flex h-7 items-center gap-1 rounded-md px-3.5 text-xs leading-none font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
-          >
-            OmniRoute
-            <ExternalLink className="h-3 w-3" aria-hidden="true" />
-          </a>
+          {OMNIROUTE_ENABLED ? (
+            <a
+              href={OMNIROUTE_PATH}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="relative inline-flex h-7 items-center gap-1 rounded-md px-3.5 text-xs leading-none font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
+            >
+              OmniRoute
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+          ) : null}
           <DropdownMenu>
             <DropdownMenuTrigger
               data-active={advancedActive}
@@ -239,16 +242,18 @@ export function AppHeader({
                     )}
                   </NavLink>
                 ))}
-                <a
-                  href={OMNIROUTE_PATH}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  OmniRoute
-                </a>
+                {OMNIROUTE_ENABLED ? (
+                  <a
+                    href={OMNIROUTE_PATH}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    OmniRoute
+                  </a>
+                ) : null}
                 <div className="my-2 h-px bg-border" />
                 <p className="px-3 pb-1 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
                   {t("nav.advanced")}

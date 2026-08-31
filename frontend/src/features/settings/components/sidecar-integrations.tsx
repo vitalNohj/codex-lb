@@ -8,6 +8,7 @@ import { OmniRouteSidecarSettings } from "@/features/settings/components/omnirou
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
+import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 import { cn } from "@/lib/utils";
 
 export type SidecarIntegrationsCardProps = {
@@ -43,12 +44,16 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
       enabled: settings.orcarouterSidecarEnabled ?? false,
       render: () => <OrcaRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
-    {
-      value: "omniroute",
-      label: "OmniRoute",
-      enabled: settings.omnirouteSidecarEnabled ?? false,
-      render: () => <OmniRouteSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
-    },
+    ...(OMNIROUTE_ENABLED
+      ? [
+          {
+            value: "omniroute",
+            label: "OmniRoute",
+            enabled: settings.omnirouteSidecarEnabled ?? false,
+            render: () => <OmniRouteSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
+          },
+        ]
+      : []),
     {
       value: "ollama",
       label: "Ollama",

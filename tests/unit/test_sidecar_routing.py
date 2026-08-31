@@ -40,13 +40,35 @@ def test_longest_prefix_wins_across_providers() -> None:
         "minimax/minimax-m3",
         (
             _entry("openrouter", prefixes=(SidecarPrefix(prefix="minimax/", strip=False),)),
-            _entry("omniroute", prefixes=(SidecarPrefix(prefix="minimax/minimax-", strip=False),)),
+            _entry("orcarouter", prefixes=(SidecarPrefix(prefix="minimax/minimax-", strip=False),)),
         ),
     )
 
     assert decision is not None
-    assert decision.provider == "omniroute"
+    assert decision.provider == "orcarouter"
     assert decision.wire_model == "minimax/minimax-m3"
+
+
+def test_omniroute_entries_never_win_a_route_while_the_capability_is_disabled() -> None:
+    """An OmniRoute entry cannot route, even as the only or longest match."""
+
+    assert (
+        resolve_sidecar_route(
+            "omniroute/test-chat",
+            (_entry("omniroute", full_models=("omniroute/test-chat",)),),
+        )
+        is None
+    )
+    # A longer OmniRoute prefix loses to a shorter enabled-provider prefix.
+    decision = resolve_sidecar_route(
+        "minimax/minimax-m3",
+        (
+            _entry("openrouter", prefixes=(SidecarPrefix(prefix="minimax/", strip=False),)),
+            _entry("omniroute", prefixes=(SidecarPrefix(prefix="minimax/minimax-", strip=False),)),
+        ),
+    )
+    assert decision is not None
+    assert decision.provider == "openrouter"
 
 
 def test_per_prefix_strip_toggle_controls_wire_model() -> None:

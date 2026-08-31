@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass
 
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.config.product_capabilities import is_capability_enabled
 
 # Deterministic tiebreak order. Lower index wins.
 SIDECAR_PROVIDER_ORDER: tuple[str, ...] = ("claude", "openrouter", "orcarouter", "omniroute", "ollama")
@@ -68,8 +69,13 @@ def resolve_sidecar_route(
     """Resolve the owning integration and wire model for ``model``.
 
     ``entries`` must contain only enabled integrations.
+
+    Entries whose provider maps to a product capability that is disabled are
+    dropped here as well, so a stale or hand-built entry can never win a route
+    even if a caller forgets the capability check.
     """
 
+    entries = tuple(entry for entry in entries if is_capability_enabled(entry.provider))
     normalized = model.strip()
     if not normalized:
         return None

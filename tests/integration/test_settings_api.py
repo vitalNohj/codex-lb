@@ -424,7 +424,7 @@ async def test_settings_seed_keeps_the_default_orcarouter_prefix_when_the_env_va
 
 @pytest.mark.asyncio
 async def test_settings_seed_honours_an_explicitly_empty_orcarouter_prefix_list(async_client, monkeypatch):
-    """Clearing the variable is the escape hatch for an OmniRoute ``orcarouter/`` owner.
+    """Clearing the variable leaves ``orcarouter/`` unclaimed for another owner.
 
     Seeding an active ``orcarouter/`` prefix anyway made the next settings PUT
     fail closed with 400 ``sidecar_routing_conflict`` - the failure the migration
@@ -439,11 +439,11 @@ async def test_settings_seed_honours_an_explicitly_empty_orcarouter_prefix_list(
 
     claimed = await async_client.put(
         "/api/settings",
-        json={"omnirouteSidecarModelPrefixes": [{"prefix": "orcarouter/", "strip": False}]},
+        json={"ollamaSidecarModelPrefixes": [{"prefix": "orcarouter/", "strip": False}]},
     )
 
     assert claimed.status_code == 200
-    assert claimed.json()["omnirouteSidecarModelPrefixes"] == [{"prefix": "orcarouter/", "strip": False}]
+    assert claimed.json()["ollamaSidecarModelPrefixes"] == [{"prefix": "orcarouter/", "strip": False}]
 
 
 @pytest.mark.asyncio
@@ -871,44 +871,6 @@ async def test_settings_api_saves_redacts_preserves_and_clears_sidecar_api_key(a
     response = await async_client.put("/api/settings", json={"claudeSidecarClearApiKey": True})
     assert response.status_code == 200
     assert response.json()["claudeSidecarApiKeyConfigured"] is False
-
-
-@pytest.mark.asyncio
-async def test_settings_api_saves_redacts_preserves_and_clears_omniroute_sidecar_api_key(async_client):
-    response = await async_client.put(
-        "/api/settings",
-        json={
-            "omnirouteSidecarEnabled": True,
-            "omnirouteSidecarBaseUrl": "http://127.0.0.1:20128/v1/",
-            "omnirouteSidecarApiKey": " omniroute-secret ",
-            "omnirouteSidecarSelectedModels": ["omniroute/test-chat", " local/model "],
-            "omnirouteSidecarConnectTimeoutSeconds": 2.5,
-            "omnirouteSidecarRequestTimeoutSeconds": 45,
-            "omnirouteSidecarModelsCacheTtlSeconds": 10,
-        },
-    )
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["omnirouteSidecarEnabled"] is True
-    assert payload["omnirouteSidecarBaseUrl"] == "http://127.0.0.1:20128/v1"
-    assert payload["omnirouteSidecarApiKeyConfigured"] is True
-    assert "omniroute-secret" not in response.text
-    assert payload["omnirouteSidecarSelectedModels"] == ["omniroute/test-chat", "local/model"]
-    assert payload["omnirouteSidecarConnectTimeoutSeconds"] == 2.5
-    assert payload["omnirouteSidecarRequestTimeoutSeconds"] == 45.0
-    assert payload["omnirouteSidecarModelsCacheTtlSeconds"] == 10.0
-
-    response = await async_client.put("/api/settings", json={"omnirouteSidecarEnabled": False})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["omnirouteSidecarEnabled"] is False
-    assert payload["omnirouteSidecarApiKeyConfigured"] is True
-    assert payload["omnirouteSidecarSelectedModels"] == ["omniroute/test-chat", "local/model"]
-    assert "omniroute-secret" not in response.text
-
-    response = await async_client.put("/api/settings", json={"omnirouteSidecarClearApiKey": True})
-    assert response.status_code == 200
-    assert response.json()["omnirouteSidecarApiKeyConfigured"] is False
 
 
 @pytest.mark.asyncio

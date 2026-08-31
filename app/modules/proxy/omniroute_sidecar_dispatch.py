@@ -16,6 +16,7 @@ from app.core.clients.omniroute_sidecar import (
     OmniRouteSidecarError,
     OmniRouteSidecarUnavailableError,
 )
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
@@ -85,6 +86,16 @@ def omniroute_routing_entry(config: OmniRouteSidecarConfig) -> SidecarRoutingEnt
 
 
 async def load_omniroute_sidecar_config() -> OmniRouteSidecarConfig | None:
+    """Load the OmniRoute config, or ``None`` when the capability is disabled.
+
+    Returning ``None`` at the product boundary keeps every caller (routing,
+    model discovery, chat and responses dispatch) on the same already-existing
+    "integration absent" branch, so stored ``omniroute_sidecar_enabled=true``
+    rows cannot reactivate the integration.
+    """
+
+    if not omniroute_enabled():
+        return None
     try:
         dashboard_settings = await get_settings_cache().get()
     except Exception:
@@ -96,7 +107,7 @@ async def load_omniroute_sidecar_config() -> OmniRouteSidecarConfig | None:
 def omniroute_sidecar_config_from_settings(settings: DashboardSettings) -> OmniRouteSidecarConfig:
     api_key = _decrypt_omniroute_secret(settings.omniroute_sidecar_api_key_encrypted)
     return OmniRouteSidecarConfig(
-        enabled=bool(settings.omniroute_sidecar_enabled),
+        enabled=omniroute_enabled() and bool(settings.omniroute_sidecar_enabled),
         base_url=settings.omniroute_sidecar_base_url.rstrip("/"),
         api_key=api_key,
         full_models=parse_sidecar_full_models(settings.omniroute_sidecar_selected_models_json),

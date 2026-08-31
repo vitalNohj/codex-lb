@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.db.models import DashboardSettings
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
@@ -234,55 +236,27 @@ def test_openrouter_summary_paused_when_missing_api_key() -> None:
     assert summary.status == "paused"
 
 
-def test_omniroute_summary_active_when_enabled_and_configured() -> None:
-    settings = _settings(
-        omniroute_sidecar_enabled=True,
-        omniroute_sidecar_api_key_encrypted=b"key",
-    )
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"omniroute_sidecar_enabled": True, "omniroute_sidecar_api_key_encrypted": b"key"},
+        {"omniroute_sidecar_enabled": False, "omniroute_sidecar_api_key_encrypted": b"key"},
+        {
+            "omniroute_sidecar_enabled": True,
+            "omniroute_sidecar_api_key_encrypted": None,
+            "omniroute_sidecar_base_url": "http://127.0.0.1:20128/v1",
+        },
+        {
+            "omniroute_sidecar_enabled": True,
+            "omniroute_sidecar_api_key_encrypted": b"key",
+            "omniroute_sidecar_last_health_status": "healthy",
+        },
+    ],
+)
+def test_omniroute_summary_is_never_built_while_the_capability_is_disabled(stored) -> None:
+    """No stored configuration can surface an OmniRoute account card."""
 
-    summary = build_omniroute_sidecar_summary(settings, request_usage=None)
-
-    assert summary is not None
-    assert summary.status == "active"
-
-
-def test_omniroute_summary_paused_when_disabled() -> None:
-    settings = _settings(
-        omniroute_sidecar_enabled=False,
-        omniroute_sidecar_api_key_encrypted=b"key",
-    )
-
-    summary = build_omniroute_sidecar_summary(settings, request_usage=None)
-
-    assert summary is not None
-    assert summary.status == "paused"
-
-
-def test_omniroute_summary_paused_when_missing_api_key() -> None:
-    settings = _settings(
-        omniroute_sidecar_enabled=True,
-        omniroute_sidecar_api_key_encrypted=None,
-        omniroute_sidecar_base_url="http://127.0.0.1:20128/v1",
-    )
-
-    summary = build_omniroute_sidecar_summary(settings, request_usage=None)
-
-    assert summary is not None
-    assert summary.status == "paused"
-
-
-def test_omniroute_summary_ignores_stale_missing_key_health_when_configured() -> None:
-    settings = _settings(
-        omniroute_sidecar_enabled=True,
-        omniroute_sidecar_api_key_encrypted=b"key",
-        omniroute_sidecar_last_health_status="missing_api_key",
-    )
-
-    summary = build_omniroute_sidecar_summary(settings, request_usage=None)
-
-    assert summary is not None
-    assert summary.status == "active"
-    assert summary.health_status == "healthy"
+    assert build_omniroute_sidecar_summary(_settings(**stored), request_usage=None) is None
 
 
 def test_ollama_summary_active_when_enabled_and_configured() -> None:
