@@ -176,3 +176,34 @@ def test_a_non_participating_row_whose_total_disagrees_shows_no_invented_split()
     assert entry.cost_usd == pytest.approx(0.5)
     assert entry.cost_breakdown.input_usd is None
     assert entry.cost_breakdown.output_usd is None
+
+
+def test_a_participating_billed_row_with_no_status_still_avoids_the_static_table() -> None:
+    """A participating row can carry a billed amount and no ``price_status``.
+
+    ``external_request_cost`` reports no status when the resolver had no question
+    to answer for the id, yet the billed branch still fires, so the row is written
+    ``upstream_billed`` with ``price_status`` NULL. Keying participation on the
+    status alone let that row fall into the static-table path, where the glob
+    aliases answer for ids they have never heard of. The serving integration is
+    what settles ownership, not a column that may legitimately be NULL.
+
+    The total below is exactly what the static table computes for these tokens, so
+    the fallback reconciles and does produce a split -- which is what makes the
+    difference observable rather than hidden behind a mismatch.
+    """
+
+    entry = to_request_log_entry(
+        _log(
+            model="gpt-5.1",
+            source="orcarouter_sidecar",
+            cost_usd=_STATIC_TOTAL,
+            cost_source=CostSource.UPSTREAM_BILLED.value,
+            price_status=None,
+        )
+    )
+
+    assert entry.cost_usd == pytest.approx(_STATIC_TOTAL), "the billed amount stays authoritative"
+    assert entry.cost_breakdown.input_usd is None, "no static-table split on a participating row"
+    assert entry.cost_breakdown.cached_input_usd is None
+    assert entry.cost_breakdown.output_usd is None

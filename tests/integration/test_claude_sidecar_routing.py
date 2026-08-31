@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
-from app.db.models import ApiKeyUsageReservation, RequestLog
+from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
@@ -240,6 +240,85 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
     sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
     assert len(sidecar_logs) == 1
     assert sidecar_logs[0].model == "cp_claude-fable-5"
+
+
+@pytest.mark.asyncio
+async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    """CLIProxyAPI serves date-stamped ids; the catalog publishes undated ones.
+
+    Without recognising the trailing ``-YYYYMMDD`` release stamp every CLIProxyAPI
+    row rendered ``!!`` and accrued no cost quota at all, for exactly the ids whose
+    real Anthropic rate the pricing reference does publish.
+    """
+
+    from app.core.usage.external_pricing import service as pricing_service
+    from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
+    from app.core.usage.external_pricing.service import get_lookup_coordinator, reset_serving_context_loaders
+    from app.core.usage.pricing import ModelPrice
+    from app.db.models import CostSource, ExternalPriceStatus
+
+    async def _reference():
+        return Catalog.from_entries(
+            "openrouter",
+            [CatalogEntry(model_id="anthropic/claude-sonnet-4.5", price=ModelPrice(3.0, 15.0))],
+        )
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+    reset_serving_context_loaders()
+    try:
+        from app.modules.proxy.external_pricing_sources import register_external_pricing_sources
+
+        register_external_pricing_sources()
+        monkeypatch.setattr(
+            "app.modules.proxy.claude_sidecar_dispatch.load_sidecar_config",
+            lambda: _resolved(fake_sidecar.config),
+        )
+
+        await _enable_api_key_auth(async_client)
+        key = await _create_api_key(
+            "dated-claude-key",
+            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000_000)],
+        )
+
+        for _ in range(2):
+            response = await async_client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key.key}"},
+                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200
+            await get_lookup_coordinator().drain()
+
+        async with SessionLocal() as session:
+            logs = list((await session.execute(select(RequestLog))).scalars().all())
+        sidecar_logs = sorted((log for log in logs if log.source == "claude_sidecar"), key=lambda log: log.id)
+        priced = [log for log in sidecar_logs if log.cost_usd is not None]
+        assert priced, "a dated Claude id must resolve against the Anthropic reference rate"
+        # 10 input tokens at $3/M + 5 output at $15/M.
+        assert priced[-1].cost_usd == pytest.approx(10 * 3.0 / 1e6 + 5 * 15.0 / 1e6)
+        assert priced[-1].cost_source == CostSource.CATALOG_CALCULATED.value
+        assert priced[-1].price_status == ExternalPriceStatus.RESOLVED.value
+        assert not [log for log in sidecar_logs if log.price_status == ExternalPriceStatus.UNRESOLVED.value], (
+            "a model that resolved must never render the unresolved marker"
+        )
+
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(ApiKeyLimit).where(ApiKeyLimit.api_key_id == key.id))).scalars().all()
+        charged = {row.limit_type.value: row.current_value for row in rows}
+        assert charged["cost_usd"] == int(priced[-1].cost_usd * 1_000_000), (
+            "a resolved model must resume accruing cost quota, and at the price it recorded"
+        )
+    finally:
+        reset_serving_context_loaders()
+
+
+async def _resolved(value):
+    return value
 
 
 @pytest.mark.asyncio

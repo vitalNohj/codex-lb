@@ -56,9 +56,16 @@ Resolution stops at the first match:
 3. An exact catalog id.
 4. The same id with `.` or `_` written as `-`.
 5. A bare name matched to exactly one vendor-qualified catalog id.
+6. The same id with a trailing `-YYYYMMDD` release stamp removed, re-checked from
+   the top. `claude-sonnet-4-5-20250929` is the September release of the model
+   catalogs list as `anthropic/claude-sonnet-4.5`, not a different model. Only
+   that exact shape is removed, and only when the digits are a real date, so an
+   id like `cohere/command-r7b-12-2024` keeps its trailing segment.
 
 The serving provider's own catalog is checked before OpenRouter's, because
-providers list overlapping model ids at different prices.
+providers list overlapping model ids at different prices. When a provider's own
+catalog cannot be reached, records it supplied keep its rates rather than being
+re-priced from OpenRouter's.
 
 OpenRouter is used as a **pricing reference only**. A model's presence in or
 absence from OpenRouter never affects whether codex-lb considers it available or
@@ -105,6 +112,10 @@ External model price maintenance
 - Still unresolved: 1
 - Ambiguous: 0
 ```
+
+A switched-off integration is listed separately. It is not consulted, so the
+rates it supplied are preserved; records supplied by OpenRouter are still
+refreshed as usual.
 
 Run it after a provider announces a price change, or when you see `!!` on a model
 you expect to be priced.

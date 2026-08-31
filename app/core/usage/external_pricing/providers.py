@@ -25,5 +25,22 @@ EXTERNAL_PRICED_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+# ``RequestLog.source`` values written by the dispatchers that participate. The
+# request log records the serving integration, not the pricing provider key, so a
+# reader that needs to know whether the resolver owns a row's cost matches on
+# these rather than inferring it from a column that may legitimately be NULL.
+EXTERNAL_PRICED_LOG_SOURCES: frozenset[str] = frozenset(
+    {
+        "openrouter_sidecar",
+        "orcarouter_sidecar",
+        "claude_sidecar",
+    }
+)
+
+
 def is_external_priced_provider(provider: str | None) -> bool:
     return bool(provider) and provider.strip().lower() in EXTERNAL_PRICED_PROVIDERS
+
+
+def is_external_priced_log_source(source: str | None) -> bool:
+    return bool(source) and source.strip().lower() in EXTERNAL_PRICED_LOG_SOURCES

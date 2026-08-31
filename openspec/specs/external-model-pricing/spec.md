@@ -111,9 +111,24 @@ Resolution MUST first honor operator-configured routing prefixes and explicit al
 - **WHEN** a request served by the first provider is priced
 - **THEN** the first provider's own published rate is used
 
+#### Scenario: A dated vendor release resolves to its canonical catalog entry
+
+- **GIVEN** a catalog listing `anthropic/claude-sonnet-4.5`
+- **WHEN** `claude-sonnet-4-5-20250929` is resolved
+- **THEN** the canonical catalog model is `anthropic/claude-sonnet-4.5`
+- **AND** the same holds through a configured strip-enabled prefix such as `cc/`
+
+#### Scenario: A shortened dated id that matches two catalog models abstains
+
+- **GIVEN** a catalog listing one bare name under two vendors at different rates
+- **WHEN** the dated form of that name is resolved
+- **THEN** the outcome is ambiguous and no price is recorded
+
 ### Requirement: Unsafe substring-glob pricing is retired for these paths
 
-The system MUST NOT price an external-integration model by matching the model name against a substring or glob pattern. Punctuation-only spelling differences MUST resolve to the same catalog entry. A variant suffix, a vendor prefix, a date suffix, or any other name extension MUST NOT inherit a shorter entry's price.
+The system MUST NOT price an external-integration model by matching the model name against a substring or glob pattern. Punctuation-only spelling differences MUST resolve to the same catalog entry. A variant suffix, a vendor prefix, or any other name extension MUST NOT inherit a shorter entry's price.
+
+A trailing `-YYYYMMDD` release stamp is the sole exception, because it names a release of one model rather than a second model. It MUST be recognised only in that exact shape, only when the digits form a real calendar date, and the shortened id MUST re-enter resolution from the top so it still abstains on ambiguity. Any other trailing segment MUST NOT be removed.
 
 #### Scenario: Punctuation variants share one price
 
@@ -186,6 +201,15 @@ The system MUST NOT continuously poll or refresh prices. It MUST provide a separ
 - **WHEN** the maintenance command runs
 - **THEN** the record keeps its prior rate and provenance
 - **AND** the report names the unavailable source
+
+#### Scenario: A source that did not answer keeps ownership of its rate
+
+- **GIVEN** a persisted record supplied by the serving provider's own catalog
+- **AND** that catalog is unreachable or the integration is switched off
+- **AND** the pricing reference is reachable and lists the same id at a different rate
+- **WHEN** the maintenance command runs
+- **THEN** the record keeps the serving provider's rate and provenance
+- **AND** the pass reports it as preserved rather than updated
 
 #### Scenario: A reachable catalog that drops a model is authoritative
 

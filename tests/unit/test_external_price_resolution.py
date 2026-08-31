@@ -131,7 +131,8 @@ def test_a_third_party_finetune_does_not_inherit_the_base_model_price() -> None:
 def test_a_dated_release_does_not_inherit_a_shorter_family_price() -> None:
     """``cohere/command-r7b-12-2024`` is not ``cohere/command-r``.
 
-    The glob mispriced it by 13.3x, the largest error measured.
+    The glob mispriced it by 13.3x, the largest error measured. The trailing
+    segment here is not a ``-YYYYMMDD`` release stamp, so nothing is removed.
     """
 
     catalog = _catalog("openrouter", {"cohere/command-r": _price(0.5, 1.5)})
@@ -139,6 +140,144 @@ def test_a_dated_release_does_not_inherit_a_shorter_family_price() -> None:
     resolution = resolve_model_price("cohere/command-r7b-12-2024", catalogs=[catalog])
 
     assert resolution.outcome is ResolutionOutcome.UNRESOLVED
+
+
+CLAUDE_VENDOR_CATALOG = _catalog(
+    "openrouter",
+    {
+        "anthropic/claude-sonnet-4.5": _price(3.0, 15.0),
+        "anthropic/claude-opus-4.1": _price(15.0, 75.0),
+        "anthropic/claude-3.5-haiku": _price(0.8, 4.0),
+    },
+)
+
+
+@pytest.mark.parametrize(
+    ("incoming", "expected", "expected_input_per_1m"),
+    [
+        ("claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5", 3.0),
+        ("claude-opus-4-1-20250805", "anthropic/claude-opus-4.1", 15.0),
+        ("claude-3-5-haiku-20241022", "anthropic/claude-3.5-haiku", 0.8),
+    ],
+)
+def test_a_dated_vendor_release_resolves_to_its_canonical_catalog_entry(
+    incoming: str,
+    expected: str,
+    expected_input_per_1m: float,
+) -> None:
+    """CLIProxyAPI serves date-stamped Claude ids; catalogs publish undated ones.
+
+    A trailing ``-YYYYMMDD`` names a release of one model, not a second model.
+    Without this every CLIProxyAPI row rendered ``!!`` and accrued no cost quota,
+    for ids whose real Anthropic rate the catalog does publish.
+    """
+
+    resolution = resolve_model_price(incoming, catalogs=[CLAUDE_VENDOR_CATALOG])
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == expected
+    assert resolution.price is not None
+    assert resolution.price.input_per_1m == pytest.approx(expected_input_per_1m)
+
+
+@pytest.mark.parametrize("incoming", ["cc/claude-sonnet-4-5-20250929", "cp-claude-sonnet-4-5-20250929"])
+def test_a_prefixed_dated_release_resolves_through_the_prefix_then_the_date(incoming: str) -> None:
+    resolution = resolve_model_price(
+        incoming,
+        catalogs=[CLAUDE_VENDOR_CATALOG],
+        prefixes=[("cc/", True), ("cp-", True)],
+    )
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "anthropic/claude-sonnet-4.5"
+    assert resolution.price is not None
+    assert resolution.price.input_per_1m == pytest.approx(3.0)
+
+
+def test_a_dated_id_whose_shortened_form_matches_two_vendors_abstains() -> None:
+    """Removing the date must not become a licence to guess.
+
+    The shortened id re-enters resolution from the top, so it abstains exactly as
+    the undated form would.
+    """
+
+    catalog = _catalog(
+        "openrouter",
+        {
+            "vendor-a/model-x": _price(1.0, 1.0),
+            "vendor-b/model-x": _price(9.0, 9.0),
+        },
+    )
+
+    resolution = resolve_model_price("model-x-20250929", catalogs=[catalog])
+
+    assert resolution.outcome is ResolutionOutcome.AMBIGUOUS
+    assert resolution.price is None
+
+
+@pytest.mark.parametrize(
+    "incoming",
+    [
+        # Not eight digits.
+        "claude-sonnet-4-5-2025092",
+        # Eight digits that are not a calendar date.
+        "claude-sonnet-4-5-20259999",
+        "claude-sonnet-4-5-20250230",
+        # A trailing segment that is not a date at all.
+        "claude-sonnet-4-5-turbo",
+    ],
+)
+def test_a_trailing_segment_that_is_not_a_release_date_is_never_removed(incoming: str) -> None:
+    """Only a real ``-YYYYMMDD`` stamp is a release marker on the same model.
+
+    Anything looser is the stem matching this module exists to remove.
+    """
+
+    resolution = resolve_model_price(incoming, catalogs=[CLAUDE_VENDOR_CATALOG])
+
+    assert resolution.outcome is ResolutionOutcome.UNRESOLVED
+    assert resolution.price is None
+
+
+def test_an_exact_dated_catalog_id_wins_over_removing_its_date() -> None:
+    """A catalog that lists the dated id itself is answering about that id."""
+
+    catalog = _catalog(
+        "openrouter",
+        {
+            "anthropic/claude-sonnet-4.5": _price(3.0, 15.0),
+            "anthropic/claude-sonnet-4-5-20250929": _price(7.0, 21.0),
+        },
+    )
+
+    resolution = resolve_model_price("anthropic/claude-sonnet-4-5-20250929", catalogs=[catalog])
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "anthropic/claude-sonnet-4-5-20250929"
+    assert resolution.price is not None
+    assert resolution.price.input_per_1m == pytest.approx(7.0)
+
+
+def test_an_operator_alias_for_a_dated_id_wins_over_removing_its_date() -> None:
+    resolution = resolve_model_price(
+        "claude-sonnet-4-5-20250929",
+        catalogs=[CLAUDE_VENDOR_CATALOG],
+        aliases={"claude-sonnet-4-5-20250929": "anthropic/claude-opus-4.1"},
+    )
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "anthropic/claude-opus-4.1"
+
+
+def test_a_dated_variant_id_still_refuses_to_inherit_its_base_rate() -> None:
+    """``:free``/``:batch`` are billed differently; the date changes nothing."""
+
+    catalog = _catalog("openrouter", {"anthropic/claude-sonnet-4.5": _price(3.0, 15.0)})
+
+    resolution = resolve_model_price("claude-sonnet-4-5-20250929:free", catalogs=[catalog])
+
+    assert resolution.outcome is ResolutionOutcome.UNRESOLVED
+    assert resolution.price is None
 
 
 def test_bare_name_resolves_to_a_uniquely_vendor_qualified_catalog_id() -> None:

@@ -7,7 +7,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -69,6 +69,9 @@ from app.modules.proxy.sidecar_tool_mapper import (
 )
 from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
 from app.modules.request_logs.repository import RequestLogsRepository
+
+if TYPE_CHECKING:
+    from app.modules.proxy.external_pricing_logging import ExternalRequestCost
 
 logger = logging.getLogger(__name__)
 
@@ -1097,11 +1100,16 @@ async def proxy_chat_to_sidecar(
         )
 
     usage = extract_usage(response_body)
+    # One resolution for the whole request: the quota charge and the log row must
+    # be the same number, and two separate reads could disagree if a concurrent
+    # lookup landed between them.
+    cost = await _sidecar_request_cost(effective_model, usage)
     await _finalize_or_release_sidecar_reservation(
         reservation,
         api_key=api_key,
         model=effective_model,
         usage=usage,
+        cost=cost,
     )
     await _log_sidecar_request(
         api_key=api_key,
@@ -1111,6 +1119,7 @@ async def proxy_chat_to_sidecar(
         usage=usage,
         reasoning_effort=sidecar_payload.effective_reasoning_effort,
         requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        cost=cost,
     )
     if deepseek_scope is not None:
         deepseek_capture_non_streaming(deepseek_scope, response_body)
@@ -1280,11 +1289,13 @@ async def _sidecar_stream_iterator(
             deepseek_recorder.commit()
         if not settled:
             usage_to_settle = usage if completed else None
+            cost = await _sidecar_request_cost(model, usage_to_settle)
             await _finalize_or_release_sidecar_reservation(
                 reservation,
                 api_key=api_key,
                 model=model,
                 usage=usage_to_settle,
+                cost=cost,
             )
             await _log_sidecar_request(
                 api_key=api_key,
@@ -1295,6 +1306,7 @@ async def _sidecar_stream_iterator(
                 usage=usage_to_settle,
                 reasoning_effort=reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
+                cost=cost,
             )
 
 
@@ -1355,8 +1367,8 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     # helper is shared, so the ``cost_usd`` fallback also reaches the OmniRoute
     # dispatch path, which logs ``SidecarUsage.cost_usd`` and therefore now
     # persists a ``usage.cost_usd`` it previously ignored. The CLIProxyAPI path
-    # still parses the field without forwarding it as a billed amount: see
-    # ``_log_sidecar_request`` for why an echoed figure is not a debit there.
+    # parses the field but never forwards it as a billed amount: see
+    # ``_sidecar_request_cost`` for why an echoed figure is not a debit there.
     cost_usd = _float_field(usage, "cost")
     if cost_usd is None:
         cost_usd = _float_field(usage, "cost_usd")
@@ -1445,6 +1457,34 @@ def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
     return f"data: {data}\n\n".encode("utf-8")
 
 
+async def _sidecar_request_cost(model: str, usage: SidecarUsage | None) -> "ExternalRequestCost":
+    """Resolve this request's cost once, for both the quota charge and the log.
+
+    CLIProxyAPI debits nothing of its own: it proxies other vendors and can echo
+    their ``usage.cost``/``usage.cost_usd`` back verbatim. Forwarding that as
+    ``billed_cost_usd`` would record another party's debit as this request's
+    authoritative actual spend, which the mapper and the savings arithmetic then
+    treat as final. The cost here is therefore always a catalog-calculated list
+    price, marked as such. Its per-account token attribution is collected
+    separately and is untouched.
+
+    Imported lazily for the same reason the rest of this file does it: the pricing
+    module reaches back into this one for routing identity.
+    """
+
+    from app.modules.proxy.external_pricing_logging import (
+        external_request_cost,
+        usage_tokens_from_sidecar,
+    )
+
+    return await external_request_cost(
+        provider=CLIPROXY_PRICING_PROVIDER,
+        model=model,
+        usage=usage_tokens_from_sidecar(usage),
+        billed_cost_usd=None,
+    )
+
+
 async def _log_sidecar_request(
     *,
     api_key: ApiKeyData | None,
@@ -1457,26 +1497,11 @@ async def _log_sidecar_request(
     usage: SidecarUsage | None = None,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
+    cost: "ExternalRequestCost | None" = None,
 ) -> None:
     try:
-        # CLIProxyAPI debits nothing of its own: it proxies other vendors and can
-        # echo their ``usage.cost``/``usage.cost_usd`` back verbatim. Forwarding
-        # that as ``billed_cost_usd`` would record another party's debit as this
-        # request's authoritative actual spend, which the mapper and the savings
-        # arithmetic then treat as final. The cost recorded here is therefore
-        # always a catalog-calculated list price, marked as such. Its per-account
-        # token attribution is collected separately and is untouched.
-        from app.modules.proxy.external_pricing_logging import (
-            external_request_cost,
-            usage_tokens_from_sidecar,
-        )
-
-        cost = await external_request_cost(
-            provider=CLIPROXY_PRICING_PROVIDER,
-            model=model,
-            usage=usage_tokens_from_sidecar(usage),
-            billed_cost_usd=None,
-        )
+        if cost is None:
+            cost = await _sidecar_request_cost(model, usage)
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -1516,6 +1541,7 @@ async def _finalize_or_release_sidecar_reservation(
     api_key: ApiKeyData | None,
     model: str,
     usage: SidecarUsage | None,
+    cost: "ExternalRequestCost | None" = None,
 ) -> None:
     if reservation is None:
         return
@@ -1527,11 +1553,10 @@ async def _finalize_or_release_sidecar_reservation(
                 return
             # Imported here for the same reason the logging path does: the
             # pricing module reaches back into this one for routing identity.
-            from app.modules.proxy.external_pricing_logging import (
-                external_cost_microdollars,
-                usage_tokens_from_sidecar,
-            )
+            from app.modules.proxy.external_pricing_logging import cost_microdollars
 
+            if cost is None:
+                cost = await _sidecar_request_cost(model, usage)
             await service.finalize_usage_reservation(
                 reservation.reservation_id,
                 model=model,
@@ -1541,15 +1566,7 @@ async def _finalize_or_release_sidecar_reservation(
                 service_tier=None,
                 # Stated explicitly so settlement cannot fall through to the
                 # substring-glob table this integration no longer prices from.
-                # ``billed_cost_usd`` stays None here for the same reason it does
-                # on the logging path: CLIProxyAPI echoes another vendor's figure
-                # and debits nothing itself.
-                cost_microdollars=await external_cost_microdollars(
-                    provider=CLIPROXY_PRICING_PROVIDER,
-                    model=model,
-                    usage=usage_tokens_from_sidecar(usage),
-                    billed_cost_usd=None,
-                ),
+                cost_microdollars=cost_microdollars(cost),
             )
     except Exception:
         logger.warning(

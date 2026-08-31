@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.core.usage.external_pricing.providers import is_external_priced_log_source
 from app.core.usage.pricing import (
     ModelPrice,
     UsageCostBreakdown,
@@ -65,11 +66,24 @@ def participates_in_external_pricing(log: RequestLogLike) -> bool:
     participating here. Their totals stay authoritative and their split is still
     shown when the static-table computation reproduces that total, exactly as
     before external price resolution existed.
+
+    ``price_status`` alone is not sufficient. A participating row whose upstream
+    reported a billed amount for a model id that normalizes to nothing carries
+    ``cost_source=upstream_billed`` with no status, so the serving integration is
+    consulted too. A row written before this resolver existed states no
+    ``cost_source`` at all and keeps its historical static-table split.
     """
 
     if getattr(log, "price_status", None) is not None:
         return True
-    return getattr(log, "cost_source", None) == CostSource.CATALOG_CALCULATED.value
+    cost_source = getattr(log, "cost_source", None)
+    if cost_source == CostSource.CATALOG_CALCULATED.value:
+        return True
+    return (
+        cost_source is not None
+        and cost_source != CostSource.STATIC_TABLE.value
+        and is_external_priced_log_source(getattr(log, "source", None))
+    )
 
 
 def cached_input_tokens_from_log(log: RequestLogLike) -> int | None:

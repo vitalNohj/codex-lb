@@ -114,13 +114,19 @@ async def _seed_not_token_priced(model: str, *, provider: str = "orcarouter") ->
         )
 
 
-async def _seed_resolved(model: str, price: ModelPrice, *, provider: str = "orcarouter") -> None:
+async def _seed_resolved(
+    model: str,
+    price: ModelPrice,
+    *,
+    provider: str = "orcarouter",
+    catalog_source: str | None = None,
+) -> None:
     async with SessionLocal() as session:
         await ExternalModelPriceStore(session).record_resolved(
             provider=provider,
             incoming_model=model,
             catalog_model=model,
-            catalog_source=provider,
+            catalog_source=catalog_source or provider,
             price=price,
             resolution_step="exact",
         )
@@ -522,21 +528,22 @@ async def test_a_disabled_integration_is_not_reported_as_a_catalog_failure(db_se
 
 
 @pytest.mark.asyncio
-async def test_a_disabled_integration_still_lets_the_reference_refresh_its_records(
+async def test_a_disabled_integration_still_lets_the_reference_refresh_records_it_owns(
     db_setup,
     monkeypatch,
 ) -> None:
     """Switching an integration off must not freeze the whole pass.
 
-    The pricing reference is a separate, reachable source. Skipping every record
-    of a switched-off integration made the pass unable to apply a rate change the
-    reference was publishing, and reported it as a healthy no-op.
+    The pricing reference is a separate, reachable source and still owns the
+    records it supplied. Skipping every record of a switched-off integration made
+    the pass unable to apply a rate change the reference was publishing, and
+    reported it as a healthy no-op.
     """
 
     del db_setup
     import app.core.usage.external_pricing.maintenance as maintenance_module
 
-    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0), catalog_source="openrouter")
     _install_disabled_provider("orcarouter")
 
     async def _reference():
@@ -552,6 +559,72 @@ async def test_a_disabled_integration_still_lets_the_reference_refresh_its_recor
     record = await _record("vendor/model-x")
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_serving_catalogs_record_is_not_re_sourced_to_the_reference(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """A source that did not answer must not have its rate replaced by another's.
+
+    ``deepseek/deepseek-chat`` is listed by both OrcaRouter and OpenRouter at
+    different rates. With OrcaRouter switched off, adopting OpenRouter's number
+    would price every later OrcaRouter request at a rate OrcaRouter does not
+    charge -- and would settle it ``RESOLVED`` with no retry, so the request path
+    would never revisit it.
+    """
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    await _seed_resolved("deepseek/deepseek-chat", ModelPrice(0.27, 1.1))
+    _install_disabled_provider("orcarouter")
+
+    async def _reference():
+        return _catalog("openrouter", {"deepseek/deepseek-chat": ModelPrice(0.9, 0.9)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.updated == [], "a switched-off source's rate must not be re-sourced"
+    assert report.preserved_on_failure == 1
+    record = await _record("deepseek/deepseek-chat")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(0.27)
+    assert record.catalog_source == "orcarouter"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_serving_catalogs_record_is_not_re_sourced_to_the_reference(
+    db_setup,
+    monkeypatch,
+) -> None:
+    """Same rule for an outage as for a switched-off integration.
+
+    A timeout is not permission for another source to take ownership of a rate.
+    """
+
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    await _seed_resolved("deepseek/deepseek-chat", ModelPrice(0.27, 1.1))
+    _install_catalog("orcarouter", None)
+
+    async def _reference():
+        return _catalog("openrouter", {"deepseek/deepseek-chat": ModelPrice(0.9, 0.9)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.updated == []
+    assert report.preserved_on_failure == 1
+    record = await _record("deepseek/deepseek-chat")
+    assert record is not None and record.price is not None
+    assert record.price.input_per_1m == pytest.approx(0.27)
+    assert record.catalog_source == "orcarouter"
 
 
 @pytest.mark.asyncio

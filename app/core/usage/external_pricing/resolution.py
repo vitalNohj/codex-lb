@@ -30,6 +30,15 @@ Resolution order, first hit wins:
     A bare name matched against catalog ids' trailing path segment
     (``claude-opus-5`` -> ``anthropic/claude-opus-5``). Only a unique match counts;
     ``qwen3.8-27b`` listed by two vendors at different prices abstains.
+``dated-release``
+    A trailing ``-YYYYMMDD`` release stamp is removed and the remainder re-enters
+    resolution from the top. Vendors publish ``claude-sonnet-4-5-20250929`` for
+    the model catalogs list as ``anthropic/claude-sonnet-4.5``: the date names a
+    release of one model, not a second model. Only that exact shape is
+    recognised, and only when the digits are a real calendar date, so
+    ``cohere/command-r7b-12-2024`` keeps its trailing segment and stays
+    unresolved. The re-entered id goes through the same steps, so it still
+    abstains when the shortened name matches more than one catalog entry.
 
 Variant suffixes (``:free``, ``:batch``) are never dropped to reach a base entry:
 those variants are billed at different rates, so inheriting the base price is a
@@ -47,6 +56,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
 
 from app.core.usage.pricing import ModelPrice
@@ -58,6 +68,11 @@ _PUNCTUATION_RE = re.compile(r"[._]")
 
 # Suffixes that denote a separately priced variant of another id.
 VARIANT_SUFFIX_SEPARATOR = ":"
+
+# A trailing ``-YYYYMMDD`` release stamp. Anchored and fixed-width on purpose:
+# this is the one name extension that denotes the same model, and widening it to
+# "any trailing segment" would be the stem matching this module exists to remove.
+_RELEASE_DATE_SUFFIX_RE = re.compile(r"^(?P<base>.+?)-(?P<date>\d{8})$")
 
 
 class ResolutionOutcome(str, Enum):
@@ -168,6 +183,26 @@ def _has_variant_suffix(model_key: str) -> bool:
     return VARIANT_SUFFIX_SEPARATOR in _bare_name(model_key)
 
 
+def _strip_release_date_suffix(model_key: str) -> str | None:
+    """``model-20250929`` -> ``model``, or ``None`` when there is no date stamp.
+
+    The eight digits must form a real calendar date. Without that check any id
+    ending in eight digits would be shortened, which is a guess rather than a
+    reading of the id.
+    """
+
+    match = _RELEASE_DATE_SUFFIX_RE.match(model_key)
+    if match is None:
+        return None
+    stamp = match.group("date")
+    try:
+        date(int(stamp[0:4]), int(stamp[4:6]), int(stamp[6:8]))
+    except ValueError:
+        return None
+    base = match.group("base").strip()
+    return base or None
+
+
 def resolve_model_price(
     incoming_model: str,
     *,
@@ -214,6 +249,12 @@ def resolve_model_price(
         if stripped is not None and stripped not in seen:
             step_prefix = f"{step_prefix}prefix+"
             candidate = stripped
+            continue
+
+        undated = _strip_release_date_suffix(candidate)
+        if undated is not None and undated not in seen:
+            step_prefix = f"{step_prefix}dated-release+"
+            candidate = undated
             continue
 
         break

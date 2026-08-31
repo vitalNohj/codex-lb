@@ -22,7 +22,7 @@ from app.core.usage.external_pricing.catalogs import (
     CatalogFetchError,
     fetch_openrouter_catalog,
 )
-from app.core.usage.external_pricing.resolution import ResolutionOutcome, resolve_model_price
+from app.core.usage.external_pricing.resolution import Resolution, ResolutionOutcome, resolve_model_price
 from app.core.usage.external_pricing.service import ServingContext, load_serving_context
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord
 from app.db.models import ExternalPriceStatus
@@ -88,7 +88,11 @@ class MaintenanceReport:
             lines.extend(f"  {failure}" for failure in self.catalog_failures)
         if self.disabled_integrations:
             lines.append("")
-            lines.append("Integrations disabled (records left untouched):")
+            # A disabled integration was not consulted, so its own records are
+            # preserved rather than left "untouched" by accident -- but records it
+            # never owned are still judged against the pricing reference. Saying
+            # both is what keeps the section honest about what the pass did.
+            lines.append("Integrations disabled (not consulted; their own rates preserved):")
             lines.extend(f"  {provider}" for provider in self.disabled_integrations)
         return "\n".join(lines)
 
@@ -187,6 +191,17 @@ async def _refresh_record(
         aliases=context.aliases if context is not None else None,
         prefixes=context.prefixes if context is not None else (),
     )
+
+    if serving_unavailable and _would_weaken_ownership(record, resolution):
+        # The serving catalog owns this record's rate and was not able to answer
+        # this pass, yet the pricing reference did and lists the same id. Adopting
+        # the reference's number would re-source the record to a rate the serving
+        # provider does not charge -- the two price 37 of 98 shared ids
+        # differently, by up to 2.8x -- and would settle it ``RESOLVED`` with no
+        # retry deadline, so the request path would never revisit it. A source
+        # that did not answer keeps ownership until it does.
+        report.preserved_on_failure += 1
+        return
 
     if (
         resolution.outcome is ResolutionOutcome.UNRESOLVED
@@ -309,6 +324,22 @@ async def _refresh_record(
             report.ambiguous.append(change)
         else:
             report.unresolved.append(change)
+
+
+def _would_weaken_ownership(record: PriceRecord, resolution: Resolution) -> bool:
+    """Whether applying ``resolution`` would take a record off its own source.
+
+    Only true for a settled record the serving provider itself supplied, when the
+    new answer comes from somewhere else. A record the reference supplied is not
+    protected here: the serving catalog is the stronger source, so it taking
+    ownership is a correction rather than a downgrade.
+    """
+
+    if not record.is_settled or record.catalog_source is None:
+        return False
+    if record.catalog_source != record.provider:
+        return False
+    return resolution.catalog_source != record.catalog_source
 
 
 def _rates_changed(record: PriceRecord, input_per_1m: float, output_per_1m: float) -> bool:
