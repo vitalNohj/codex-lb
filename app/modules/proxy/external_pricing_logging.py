@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from math import isfinite
 from typing import Protocol
 
 from app.core.usage.external_pricing import calculated_cost_for_request
@@ -85,7 +86,7 @@ async def external_request_cost(
 
     status_value = status.value if status is not None else None
 
-    if billed_cost_usd is not None:
+    if billed_cost_usd is not None and isfinite(billed_cost_usd) and billed_cost_usd >= 0:
         return ExternalRequestCost(
             cost_usd=billed_cost_usd,
             cost_source=CostSource.UPSTREAM_BILLED.value,

@@ -289,16 +289,16 @@ class ExternalModelPriceStore:
         expected_updated_at: datetime | None = None,
     ) -> bool:
         attempts = previous_attempts + 1
-        if record is not None and record.is_priced:
-            assert record.price is not None
+        if record is not None and record.is_settled:
+            price = record.price
             return await self._upsert(
                 provider=provider,
                 incoming_model=incoming_model,
-                status=ExternalPriceStatus.RESOLVED,
+                status=record.status,
                 catalog_model=record.catalog_model,
                 catalog_source=record.catalog_source,
-                input_per_1m=record.price.input_per_1m,
-                output_per_1m=record.price.output_per_1m,
+                input_per_1m=price.input_per_1m if price is not None else None,
+                output_per_1m=price.output_per_1m if price is not None else None,
                 resolution_step=record.resolution_step,
                 detail=detail,
                 # The incremented count is what widens the schedule. Resetting it

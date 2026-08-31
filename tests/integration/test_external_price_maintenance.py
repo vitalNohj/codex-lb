@@ -15,11 +15,12 @@ from app.core.usage.external_pricing.maintenance import run_maintenance_pass
 from app.core.usage.external_pricing.resolution import UnpricedReason
 from app.core.usage.external_pricing.service import (
     ServingContext,
+    calculated_cost_for_request,
     register_serving_context_loader,
     reset_serving_context_loaders,
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
-from app.core.usage.pricing import ModelPrice
+from app.core.usage.pricing import ModelPrice, UsageTokens
 from app.db.models import ExternalPriceStatus
 from app.db.session import SessionLocal
 
@@ -422,6 +423,45 @@ async def test_a_genuinely_unpriced_model_is_still_settled_as_not_token_priced(d
     assert record is not None
     assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
     assert record.next_retry_at is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_price_preserves_a_settled_not_token_priced_model(db_setup) -> None:
+    del db_setup
+    await _seed_not_token_priced("vendor/router-model")
+    before = await _record("vendor/router-model")
+    assert before is not None
+
+    async def _loader(_provider: str) -> ServingContext:
+        return ServingContext(
+            catalog=_catalog_with_unparseable("orcarouter", "vendor/router-model"),
+            aliases={},
+            prefixes=(),
+        )
+
+    register_serving_context_loader("orcarouter", _loader)
+
+    report = await run_maintenance_pass()
+
+    record = await _record("vendor/router-model")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.price is None
+    assert record.catalog_model == "vendor/router-model"
+    assert record.catalog_source == "orcarouter"
+    assert record.resolution_step == "exact"
+    assert record.retrieved_at == before.retrieved_at
+    assert record.attempt_count == 1
+    assert record.next_retry_at is not None
+    assert len(report.preserved_unparseable) == 1
+
+    cost, status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/router-model",
+        usage=UsageTokens(input_tokens=10, output_tokens=5),
+    )
+    assert cost is None
+    assert status is ExternalPriceStatus.NOT_TOKEN_PRICED
 
 
 @pytest.mark.asyncio
