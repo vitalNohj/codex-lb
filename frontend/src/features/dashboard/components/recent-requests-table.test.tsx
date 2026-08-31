@@ -1617,6 +1617,27 @@ describe("RecentRequestsTable", () => {
       expect(screen.queryByText("!!")).not.toBeInTheDocument();
     });
 
+    it.each(["unresolved", "ambiguous"] as const)(
+      "keeps -- for a %s model when the request reported no token usage",
+      (priceStatus) => {
+        const request = {
+          ...VIEW_MODE_REQUEST,
+          costUsd: null,
+          costSource: null,
+          priceStatus,
+          tokens: null,
+          inputTokens: null,
+          outputTokens: null,
+        };
+
+        renderCost(request);
+
+        expect(screen.queryByText("!!")).not.toBeInTheDocument();
+        expect(screen.getAllByText("--").length).toBeGreaterThan(0);
+        expect(request.priceStatus).toBe(priceStatus);
+      },
+    );
+
     it("labels a catalog-calculated cost as list price without hiding the number", () => {
       renderCost({ costUsd: 0.25, costSource: "catalog_calculated", priceStatus: "resolved" });
 

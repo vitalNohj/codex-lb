@@ -564,6 +564,66 @@ async def test_an_outage_preserves_the_last_good_rate_and_advances_backoff(db_se
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_reference_cannot_relabel_a_preserved_serving_rate(db_setup, monkeypatch) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+        )
+        record = await store.get("orcarouter", "vendor/model-x")
+        assert record is not None
+        await store.record_price_unparseable(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            record=record,
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            detail="temporary unreadable serving price",
+        )
+
+    async with SessionLocal() as session:
+        row = (await session.execute(select(ExternalModelPrice))).scalar_one()
+        row.next_retry_at = utcnow() - timedelta(seconds=1)
+        await session.commit()
+
+    reference = Catalog.from_entries(
+        "openrouter",
+        [
+            CatalogEntry(
+                model_id="vendor/model-x",
+                price=None,
+                unpriced_reason=UnpricedReason.UNPARSEABLE,
+            )
+        ],
+    )
+
+    async def _reference() -> Catalog:
+        return reference
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+
+    async def _failing_loader(_provider: str) -> ServingContext | None:
+        raise RuntimeError("serving catalog unavailable")
+
+    register_serving_context_loader("orcarouter", _failing_loader)
+    await calculated_cost_for_request(provider="orcarouter", model="vendor/model-x", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.RESOLVED.value
+    assert record.input_per_1m == pytest.approx(2.0)
+    assert record.output_per_1m == pytest.approx(4.0)
+    assert record.catalog_model == "vendor/model-x"
+    assert record.catalog_source == "orcarouter"
+
+
+@pytest.mark.asyncio
 async def test_an_unavailable_serving_catalog_does_not_settle_a_reference_rate(db_setup, monkeypatch) -> None:
     """A source that could not be consulted must not lose ownership of its rate.
 

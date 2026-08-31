@@ -161,7 +161,11 @@ export type RecentRequestsTableProps = {
 };
 
 function isUnresolvedExternalPrice(request: RequestLog): boolean {
-  return request.costUsd == null && UNRESOLVED_PRICE_STATUSES.has(request.priceStatus ?? "");
+  return (
+    request.costUsd == null &&
+    request.tokens != null &&
+    UNRESOLVED_PRICE_STATUSES.has(request.priceStatus ?? "")
+  );
 }
 
 function RequestCost({ request }: { request: RequestLog }) {
