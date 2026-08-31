@@ -320,8 +320,10 @@ describe("RecentRequestsTable", () => {
 
     const dialog = openRequestDetails();
     expect(within(dialog).getByText("omniroute/test-chat")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("heading", { name: "Full error" })).not.toBeInTheDocument();
     expect(within(dialog).queryByText("omniroute_sidecar_unavailable")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("OmniRoute sidecar unavailable")).not.toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent("OmniRoute");
     expect(within(dialog).queryByRole("button", { name: /Copy Error/ })).not.toBeInTheDocument();
   });
 
@@ -351,6 +353,7 @@ describe("RecentRequestsTable", () => {
     expect(within(row as HTMLElement).getByText("OrcaRouter upstream unavailable")).toBeInTheDocument();
 
     const dialog = openRequestDetails();
+    expect(within(dialog).getByRole("heading", { name: "Full error" })).toBeInTheDocument();
     expect(within(dialog).getByText("orcarouter_upstream_unavailable")).toBeInTheDocument();
     expect(within(dialog).getByText("OrcaRouter upstream unavailable")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Copy Error" })).toBeInTheDocument();

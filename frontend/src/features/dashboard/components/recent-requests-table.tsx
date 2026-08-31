@@ -111,11 +111,19 @@ function sidecarAccountLabel(request: RequestLog): string | null {
 function visibleRequestError(request: RequestLog | null | undefined): {
   errorCode: string | null;
   errorMessage: string | null;
+  isSuppressed: boolean;
 } {
-  if (!request || isDisabledCapabilityRequestSource(request.source)) {
-    return { errorCode: null, errorMessage: null };
+  if (!request) {
+    return { errorCode: null, errorMessage: null, isSuppressed: false };
   }
-  return { errorCode: request.errorCode, errorMessage: request.errorMessage };
+  if (isDisabledCapabilityRequestSource(request.source)) {
+    return { errorCode: null, errorMessage: null, isSuppressed: true };
+  }
+  return {
+    errorCode: request.errorCode,
+    errorMessage: request.errorMessage,
+    isSuppressed: false,
+  };
 }
 
 const PLAN_CLASS_MAP: Record<string, string> = {
@@ -616,21 +624,23 @@ export function RecentRequestsTable({
               </div>
             ) : null}
 
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-medium">{t("dashboard.requestDetails.fullError")}</h3>
-                {selectedRequestError.errorMessage ? (
-                  <CopyButton value={selectedRequestError.errorMessage} label={t("dashboard.requestDetails.copyError")} iconOnly />
-                ) : null}
+            {selectedRequestError.isSuppressed ? null : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-medium">{t("dashboard.requestDetails.fullError")}</h3>
+                  {selectedRequestError.errorMessage ? (
+                    <CopyButton value={selectedRequestError.errorMessage} label={t("dashboard.requestDetails.copyError")} iconOnly />
+                  ) : null}
+                </div>
+                <div className="max-h-[36vh] overflow-y-auto rounded-md bg-muted/50 p-3">
+                  <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+                    {selectedRequestError.errorMessage ??
+                      selectedRequestError.errorCode ??
+                      t("dashboard.requestDetails.noErrorDetail")}
+                  </p>
+                </div>
               </div>
-              <div className="max-h-[36vh] overflow-y-auto rounded-md bg-muted/50 p-3">
-                <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
-                  {selectedRequestError.errorMessage ??
-                    selectedRequestError.errorCode ??
-                    t("dashboard.requestDetails.noErrorDetail")}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
           <DialogFooter showCloseButton />
         </DialogContent>
