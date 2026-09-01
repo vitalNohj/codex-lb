@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -306,7 +307,7 @@ async def calculated_cost_for_request(
 
     assert record.price is not None
     cost = calculate_cost_from_usage(usage, record.price, service_tier=service_tier)
-    if cost is None:
+    if cost is None or not math.isfinite(cost) or cost < 0:
         return None, record.status
     return (
         CalculatedCost(
