@@ -309,30 +309,8 @@ class ExternalModelPriceStore:
         expected_updated_at: datetime | None = None,
     ) -> bool:
         attempts = previous_attempts + 1
-        if record is not None and record.is_priced:
+        if record is not None and record.is_settled:
             return False
-        if record is not None and record.status is not ExternalPriceStatus.PENDING:
-            price = record.price
-            return await self._upsert(
-                provider=provider,
-                incoming_model=incoming_model,
-                status=record.status,
-                catalog_model=record.catalog_model,
-                catalog_source=record.catalog_source,
-                input_per_1m=price.input_per_1m if price is not None else None,
-                output_per_1m=price.output_per_1m if price is not None else None,
-                resolution_step=record.resolution_step,
-                detail=detail,
-                # The incremented count is what widens the schedule. Resetting it
-                # would pin the deadline at the first backoff step, so an upstream
-                # schema change would re-fetch every five minutes indefinitely.
-                attempt_count=attempts,
-                retry_at=next_retry_at(attempts),
-                retrieved_at=record.retrieved_at,
-                claim_token=claim_token,
-                expected_updated_at=expected_updated_at,
-                preserve_existing_price=price is None,
-            )
         return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,

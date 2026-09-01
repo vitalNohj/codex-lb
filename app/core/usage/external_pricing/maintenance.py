@@ -216,7 +216,7 @@ async def _refresh_record(
         consultations=consultations,
     )
     if reason is not None:
-        if record.is_priced:
+        if record.is_settled:
             applied = True
         else:
             applied = await preserve_record_for_retry(

@@ -23,6 +23,7 @@ from app.core.usage.external_pricing.resolution import UnpricedReason
 from app.core.usage.external_pricing.service import (
     ServingContext,
     calculated_cost_for_request,
+    get_lookup_coordinator,
     register_serving_context_loader,
     reset_serving_context_loaders,
 )
@@ -496,8 +497,11 @@ async def test_an_unreadable_price_preserves_a_settled_not_token_priced_model(db
     await _seed_not_token_priced("vendor/router-model")
     before = await _record("vendor/router-model")
     assert before is not None
+    loader_calls = 0
 
     async def _loader(_provider: str) -> ServingContext:
+        nonlocal loader_calls
+        loader_calls += 1
         return ServingContext(
             catalog=_catalog_with_unparseable("orcarouter", "vendor/router-model"),
             aliases={},
@@ -510,14 +514,9 @@ async def test_an_unreadable_price_preserves_a_settled_not_token_priced_model(db
 
     record = await _record("vendor/router-model")
     assert record is not None
-    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
-    assert record.price is None
-    assert record.catalog_model == "vendor/router-model"
-    assert record.catalog_source == "orcarouter"
-    assert record.resolution_step == "exact"
-    assert record.retrieved_at == before.retrieved_at
-    assert record.attempt_count == 1
-    assert record.next_retry_at is not None
+    assert record == before
+    assert record.attempt_count == 0
+    assert record.next_retry_at is None
     assert len(report.preserved_unparseable) == 1
 
     cost, status = await calculated_cost_for_request(
@@ -525,8 +524,10 @@ async def test_an_unreadable_price_preserves_a_settled_not_token_priced_model(db
         model="vendor/router-model",
         usage=UsageTokens(input_tokens=10, output_tokens=5),
     )
+    await get_lookup_coordinator().drain()
     assert cost is None
     assert status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert loader_calls == 1
 
 
 @pytest.mark.asyncio
@@ -577,7 +578,16 @@ async def test_a_settled_unpriced_record_survives_a_serving_catalog_outage(db_se
 
     monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
     await _seed_not_token_priced("orcarouter/fusion")
-    _install_catalog("orcarouter", None)
+    before = await _record("orcarouter/fusion")
+    assert before is not None
+    loader_calls = 0
+
+    async def _loader(_provider: str) -> None:
+        nonlocal loader_calls
+        loader_calls += 1
+        return None
+
+    register_serving_context_loader("orcarouter", _loader)
 
     report = await run_maintenance_pass()
 
@@ -585,8 +595,19 @@ async def test_a_settled_unpriced_record_survives_a_serving_catalog_outage(db_se
     assert report.unresolved == []
     record = await _record("orcarouter/fusion")
     assert record is not None
-    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
-    assert record.next_retry_at is not None
+    assert record == before
+    assert record.attempt_count == 0
+    assert record.next_retry_at is None
+
+    cost, status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="orcarouter/fusion",
+        usage=UsageTokens(input_tokens=10, output_tokens=5),
+    )
+    await get_lookup_coordinator().drain()
+    assert cost is None
+    assert status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert loader_calls == 1
 
 
 @pytest.mark.asyncio
