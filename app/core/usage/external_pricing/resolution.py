@@ -347,16 +347,14 @@ def _resolve_against_catalogs(
         if entry is not None:
             return _entry_resolution(entry, catalog, step="exact")
 
-    for catalog in catalogs:
-        resolution = _unique_candidate(
-            model_key,
-            catalog,
-            catalog.normalized_candidates(model_key),
-            step="normalized",
-            excluded_model_ids=excluded_model_ids,
-        )
-        if resolution is not None:
-            return resolution
+    resolution = _unique_candidate(
+        model_key,
+        [(catalog, catalog.normalized_candidates(model_key)) for catalog in catalogs],
+        step="normalized",
+        excluded_model_ids=excluded_model_ids,
+    )
+    if resolution is not None:
+        return resolution
 
     # A variant id (``...:batch``) never falls back to its base entry: the base
     # rate is a different, wrong price rather than a missing one.
@@ -366,52 +364,55 @@ def _resolve_against_catalogs(
             detail=f"no catalog entry for variant {model_key!r}; base-model price would be a different rate",
         )
 
-    for catalog in catalogs:
-        resolution = _unique_candidate(
-            model_key,
-            catalog,
-            catalog.bare_candidates(model_key),
-            step="vendor-qualified",
-            excluded_model_ids=excluded_model_ids,
-        )
-        if resolution is not None:
-            return resolution
+    resolution = _unique_candidate(
+        model_key,
+        [(catalog, catalog.bare_candidates(model_key)) for catalog in catalogs],
+        step="vendor-qualified",
+        excluded_model_ids=excluded_model_ids,
+    )
+    if resolution is not None:
+        return resolution
 
     return Resolution(outcome=ResolutionOutcome.UNRESOLVED)
 
 
 def _unique_candidate(
     model_key: str,
-    catalog: Catalog,
-    candidates: Sequence[str],
+    candidate_groups: Sequence[tuple[Catalog, Sequence[str]]],
     *,
     step: str,
     excluded_model_ids: set[str] | None = None,
 ) -> Resolution | None:
-    """One resolution from ``candidates``, or an abstention, or ``None`` to continue.
+    """One resolution across all catalogs, or an abstention, or ``None`` to continue.
 
-    ``None`` means this catalog had nothing to say, so the caller should try the
-    next one. A returned ``AMBIGUOUS`` means this catalog had several equally
-    plausible answers, which no later step can improve on.
+    ``None`` means the catalogs had nothing to say. A returned ``AMBIGUOUS``
+    means the step found several distinct plausible identities, which no later
+    step can improve on.
     """
 
+    candidates = [
+        (catalog, candidate)
+        for catalog, catalog_candidates in candidate_groups
+        for candidate in catalog_candidates
+    ]
     if excluded_model_ids:
-        candidates = [candidate for candidate in candidates if candidate.lower() not in excluded_model_ids]
+        candidates = [item for item in candidates if item[1].lower() not in excluded_model_ids]
     if not candidates:
         return None
     # A base id and its own variants are not competing answers to an unsuffixed
     # query: the caller asked for the base rate, so prefer the unsuffixed entry.
-    unsuffixed = [candidate for candidate in candidates if not _has_variant_suffix(candidate)]
+    unsuffixed = [item for item in candidates if not _has_variant_suffix(item[1])]
     if not _has_variant_suffix(model_key) and unsuffixed:
         candidates = unsuffixed
-    if len(candidates) > 1:
+    model_ids = {candidate.lower() for _catalog, candidate in candidates}
+    if len(model_ids) > 1:
         return Resolution(
             outcome=ResolutionOutcome.AMBIGUOUS,
-            catalog_source=catalog.source,
             step=step,
-            detail="matches " + ", ".join(sorted(candidates)),
+            detail="matches " + ", ".join(sorted(model_ids)),
         )
-    entry = catalog.exact(candidates[0])
+    catalog, candidate = candidates[0]
+    entry = catalog.exact(candidate)
     if entry is None:
         return None
     return _entry_resolution(entry, catalog, step=step)

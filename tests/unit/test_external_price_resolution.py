@@ -398,6 +398,31 @@ def test_an_exact_reference_match_beats_a_fuzzy_serving_match() -> None:
     assert resolution.catalog_model == "claude-opus-4.5"
 
 
+def test_a_bare_name_that_maps_to_different_catalog_identities_abstains() -> None:
+    serving = _catalog("orcarouter", {"vendor-a/model-x": _price(1.0, 2.0)})
+    reference = _catalog("openrouter", {"vendor-b/model-x": _price(9.0, 18.0)})
+
+    resolution = resolve_model_price("model-x", catalogs=[serving, reference])
+
+    assert resolution.outcome is ResolutionOutcome.AMBIGUOUS
+    assert resolution.price is None
+    assert resolution.detail is not None
+    assert "vendor-a/model-x" in resolution.detail
+    assert "vendor-b/model-x" in resolution.detail
+
+
+def test_a_bare_name_with_the_same_identity_in_both_catalogs_prefers_serving() -> None:
+    serving = _catalog("orcarouter", {"vendor/model-x": _price(1.0, 2.0)})
+    reference = _catalog("openrouter", {"vendor/model-x": _price(9.0, 18.0)})
+
+    resolution = resolve_model_price("model-x", catalogs=[serving, reference])
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "vendor/model-x"
+    assert resolution.catalog_source == "orcarouter"
+    assert resolution.price == _price(1.0, 2.0)
+
+
 def test_configured_routing_prefix_is_stripped_before_catalog_lookup() -> None:
     """A CLIProxyAPI id resolves via its configured prefix, not by guesswork.
 

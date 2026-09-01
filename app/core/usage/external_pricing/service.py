@@ -398,7 +398,7 @@ def preservation_reason(
     if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
         return "catalog price could not be parsed authoritatively"
     owner = record.catalog_source if record is not None else None
-    if record is not None and record.is_priced:
+    if record is not None and record.is_settled:
         if resolution.outcome is not ResolutionOutcome.RESOLVED:
             return "stored price has no valid replacement"
         if owner is not None and resolution.catalog_source != owner:

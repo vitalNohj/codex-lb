@@ -611,6 +611,35 @@ async def test_a_settled_unpriced_record_survives_a_serving_catalog_outage(db_se
 
 
 @pytest.mark.asyncio
+async def test_a_settled_unpriced_record_survives_healthy_catalog_omission(db_setup, monkeypatch) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference():
+        return _catalog("openrouter", {"vendor/reference-other": ModelPrice(9.0, 9.0)}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+    await _seed_not_token_priced("orcarouter/fusion")
+    before = await _record("orcarouter/fusion")
+    assert before is not None
+    _install_catalog("orcarouter", {"vendor/serving-other": ModelPrice(1.0, 1.0)})
+
+    report = await run_maintenance_pass()
+
+    record = await _record("orcarouter/fusion")
+    assert record is not None
+    assert record == before
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.catalog_model == before.catalog_model
+    assert record.catalog_source == before.catalog_source
+    assert record.resolution_step == before.resolution_step
+    assert record.attempt_count == before.attempt_count == 0
+    assert record.next_retry_at is before.next_retry_at is None
+    assert report.unresolved == []
+    assert len(report.preserved_without_replacement) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_unsettled_record_is_not_resolved_by_reference_during_serving_outage(
     db_setup,
     monkeypatch,
