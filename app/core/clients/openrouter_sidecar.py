@@ -11,7 +11,7 @@ from typing import cast
 
 import aiohttp
 
-from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
+from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix, parse_sidecar_per_token_usd
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
 from app.core.usage.pricing import ModelPrice
@@ -95,9 +95,7 @@ class OpenRouterSidecarClient:
         except OpenRouterSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise OpenRouterSidecarUnavailableError(
-                _transport_message(exc, "fetch OpenRouter sidecar models")
-            ) from exc
+            raise OpenRouterSidecarUnavailableError(_transport_message(exc, "fetch OpenRouter sidecar models")) from exc
 
         if not is_json_mapping(data):
             raise OpenRouterSidecarError(502, "Invalid response format from OpenRouter models API", body=data)
@@ -187,38 +185,14 @@ class OpenRouterSidecarClient:
             raise OpenRouterSidecarUnavailableError(_transport_message(exc, "stream OpenRouter sidecar")) from exc
 
 
-_PER_TOKEN_TO_PER_1M = 1_000_000.0
-
-
-def _parse_per_token_usd(value: JsonValue) -> float | None:
-    """Parse an OpenRouter per-token USD price (decimal string) to per-1M tokens."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        per_token = float(value)
-    elif isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            per_token = float(stripped)
-        except ValueError:
-            return None
-    else:
-        return None
-    if per_token < 0:
-        return None
-    return per_token * _PER_TOKEN_TO_PER_1M
-
-
 def _parse_openrouter_pricing(pricing: JsonValue) -> ModelPrice | None:
     if not is_json_mapping(pricing):
         return None
-    input_per_1m = _parse_per_token_usd(pricing.get("prompt"))
-    output_per_1m = _parse_per_token_usd(pricing.get("completion"))
+    input_per_1m = parse_sidecar_per_token_usd(pricing.get("prompt"))
+    output_per_1m = parse_sidecar_per_token_usd(pricing.get("completion"))
     if input_per_1m is None or output_per_1m is None:
         return None
-    cached_input_per_1m = _parse_per_token_usd(pricing.get("input_cache_read"))
+    cached_input_per_1m = parse_sidecar_per_token_usd(pricing.get("input_cache_read"))
     return ModelPrice(
         input_per_1m=input_per_1m,
         output_per_1m=output_per_1m,

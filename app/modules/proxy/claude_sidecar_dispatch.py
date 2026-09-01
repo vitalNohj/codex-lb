@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -1360,25 +1361,24 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     if is_json_mapping(input_details):
         cached_tokens = _int_field(input_details, "cached_tokens") or cached_tokens
 
-    # OpenRouter reports the billed amount as ``usage.cost``; OrcaRouter uses
-    # ``usage.cost_usd`` (docs.orcarouter.ai/operations/per-request-cost) and
-    # returns it only when the request opted in via ``X-OrcaRouter-Include-Cost``.
-    # Reading ``cost`` first keeps OpenRouter behaviour byte-identical. This
-    # helper is shared, so the ``cost_usd`` fallback also reaches the OmniRoute
-    # dispatch path, which logs ``SidecarUsage.cost_usd`` and therefore now
-    # persists a ``usage.cost_usd`` it previously ignored. The CLIProxyAPI path
-    # parses the field but never forwards it as a billed amount: see
-    # ``_sidecar_request_cost`` for why an echoed figure is not a debit there.
-    cost_usd = _float_field(usage, "cost")
-    if cost_usd is None:
-        cost_usd = _float_field(usage, "cost_usd")
-
     return SidecarUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
-        cost_usd=cost_usd,
+        cost_usd=extract_billed_cost(payload),
     )
+
+
+def extract_billed_cost(payload: JsonValue) -> float | None:
+    if not is_json_mapping(payload):
+        return None
+    usage = payload.get("usage")
+    if not is_json_mapping(usage):
+        return None
+    cost_usd = _float_field(usage, "cost")
+    if cost_usd is None:
+        cost_usd = _float_field(usage, "cost_usd")
+    return cost_usd
 
 
 class _SseUsageDecoder:
@@ -1433,8 +1433,10 @@ def _int_field(payload: Mapping[str, JsonValue], key: str) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return value if value >= 0 else None
     if isinstance(value, float):
+        if not math.isfinite(value) or value < 0 or not value.is_integer():
+            return None
         return int(value)
     return None
 
@@ -1444,7 +1446,10 @@ def _float_field(payload: Mapping[str, JsonValue], key: str) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            return None
     return None
 
 

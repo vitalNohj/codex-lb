@@ -32,6 +32,7 @@ from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsage
 from app.modules.proxy.claude_sidecar_dispatch import (
     SidecarUsage,
     ensure_stream_usage_requested,
+    extract_billed_cost,
     extract_usage,
     reference_cost_from_sidecar_usage,
 )
@@ -239,10 +240,11 @@ async def proxy_chat_to_openrouter(
         )
 
     usage = extract_usage(response_body)
+    billed_cost_usd = extract_billed_cost(response_body)
     # One resolution for the whole request: the quota charge and the log row must
     # be the same number, and two separate reads could disagree if a concurrent
     # lookup landed between them.
-    cost = await _openrouter_request_cost(effective_model, usage)
+    cost = await _openrouter_request_cost(effective_model, usage, billed_cost_usd=billed_cost_usd)
     await _finalize_or_release_openrouter_reservation(
         reservation,
         api_key=api_key,
@@ -283,6 +285,7 @@ async def _openrouter_stream_iterator(
     requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
+    billed_cost_usd: float | None = None
     completed = False
     settled = False
     try:
@@ -296,6 +299,9 @@ async def _openrouter_stream_iterator(
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
+                    event_billed_cost = extract_billed_cost(event)
+                    if event_billed_cost is not None:
+                        billed_cost_usd = event_billed_cost
                 yield raw_chunk
             for event in decoder.flush():
                 if event == "[DONE]":
@@ -304,6 +310,9 @@ async def _openrouter_stream_iterator(
                 event_usage = extract_usage(event)
                 if event_usage is not None:
                     usage = event_usage
+                event_billed_cost = extract_billed_cost(event)
+                if event_billed_cost is not None:
+                    billed_cost_usd = event_billed_cost
     except OpenRouterSidecarUnavailableError:
         await _release_openrouter_reservation(reservation, api_key=api_key)
         await _log_openrouter_request(
@@ -363,7 +372,11 @@ async def _openrouter_stream_iterator(
     finally:
         if not settled:
             usage_to_settle = usage if completed else None
-            cost = await _openrouter_request_cost(model, usage_to_settle)
+            cost = await _openrouter_request_cost(
+                model,
+                usage_to_settle,
+                billed_cost_usd=billed_cost_usd if completed else None,
+            )
             await _finalize_or_release_openrouter_reservation(
                 reservation,
                 api_key=api_key,
@@ -436,14 +449,19 @@ def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
     return f"data: {data}\n\n".encode("utf-8")
 
 
-async def _openrouter_request_cost(model: str, usage: SidecarUsage | None) -> ExternalRequestCost:
+async def _openrouter_request_cost(
+    model: str,
+    usage: SidecarUsage | None,
+    *,
+    billed_cost_usd: float | None = None,
+) -> ExternalRequestCost:
     """Resolve this request's cost once, for both the quota charge and the log."""
 
     return await external_request_cost(
         provider=OPENROUTER_PRICING_PROVIDER,
         model=model,
         usage=usage_tokens_from_sidecar(usage),
-        billed_cost_usd=usage.cost_usd if usage else None,
+        billed_cost_usd=billed_cost_usd if billed_cost_usd is not None else usage.cost_usd if usage else None,
     )
 
 
@@ -522,19 +540,20 @@ async def _finalize_or_release_openrouter_reservation(
     try:
         async with get_background_session() as session:
             service = ApiKeysService(ApiKeysRepository(session))
-            if usage is None:
+            charge_microdollars = cost_microdollars(cost)
+            if usage is None and charge_microdollars == 0:
                 await service.release_usage_reservation(reservation.reservation_id)
                 return
             await service.finalize_usage_reservation(
                 reservation.reservation_id,
                 model=model,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cached_input_tokens=usage.cached_input_tokens,
+                input_tokens=usage.input_tokens if usage is not None else 0,
+                output_tokens=usage.output_tokens if usage is not None else 0,
+                cached_input_tokens=usage.cached_input_tokens if usage is not None else 0,
                 service_tier=None,
                 # Stated explicitly so settlement cannot fall through to the
                 # substring-glob table this integration no longer prices from.
-                cost_microdollars=cost_microdollars(cost),
+                cost_microdollars=charge_microdollars,
             )
     except Exception:
         logger.warning(

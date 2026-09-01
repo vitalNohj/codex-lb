@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
-from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage
+from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.openrouter_sidecar_dispatch import (
+    _finalize_or_release_openrouter_reservation,
     _log_openrouter_request,
+    _openrouter_request_cost,
     build_openrouter_chat_payload,
 )
 
@@ -53,9 +57,7 @@ def test_build_openrouter_chat_payload_injects_override_effort_when_absent() -> 
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_openrouter_chat_payload(
-        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
-    )
+    payload = build_openrouter_chat_payload(request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high"))
 
     assert payload.body["reasoning_effort"] == "high"
 
@@ -69,9 +71,7 @@ def test_build_openrouter_chat_payload_override_replaces_client_effort() -> None
         }
     )
 
-    payload = build_openrouter_chat_payload(
-        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
-    )
+    payload = build_openrouter_chat_payload(request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high"))
 
     assert payload.body["reasoning_effort"] == "high"
 
@@ -85,9 +85,7 @@ def test_build_openrouter_chat_payload_override_replaces_nested_reasoning() -> N
         }
     )
 
-    payload = build_openrouter_chat_payload(
-        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
-    )
+    payload = build_openrouter_chat_payload(request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high"))
 
     assert payload.body["reasoning_effort"] == "high"
     assert "reasoning" not in payload.body
@@ -127,6 +125,78 @@ async def test_log_openrouter_request_passes_authoritative_cost(monkeypatch: pyt
     assert calls[0]["request_id"] == "req-openrouter-cost"
     assert calls[0]["source"] == "openrouter_sidecar"
     assert calls[0]["cost_usd"] == 0.00123
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage_payload",
+    [
+        {"cost": 0.01},
+        {"prompt_tokens": 10, "cost": 0.01},
+        {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.01},
+    ],
+)
+async def test_billed_cost_without_complete_tokens_reaches_log_and_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    usage_payload: dict[str, float],
+) -> None:
+    finalized: list[dict[str, object]] = []
+    logged: list[dict[str, object]] = []
+
+    class _SessionContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class _ApiKeysService:
+        def __init__(self, repository: object) -> None:
+            self.repository = repository
+
+        async def finalize_usage_reservation(self, reservation_id: str, **kwargs: object) -> None:
+            finalized.append({"reservation_id": reservation_id, **kwargs})
+
+    class _Repository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def add_log(self, **kwargs: object) -> None:
+            logged.append(kwargs)
+
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.get_background_session", _SessionContext)
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.ApiKeysService", _ApiKeysService)
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.RequestLogsRepository", _Repository)
+    monkeypatch.setattr("app.modules.proxy.openrouter_sidecar_dispatch.get_request_id", lambda: "req-billed")
+
+    payload = {"usage": usage_payload}
+    usage = extract_usage(payload)
+    cost = await _openrouter_request_cost(
+        "vendor/model-x",
+        usage,
+        billed_cost_usd=extract_billed_cost(payload),
+    )
+    reservation = SimpleNamespace(reservation_id="reservation-1")
+    await _finalize_or_release_openrouter_reservation(
+        reservation,
+        api_key=None,
+        model="vendor/model-x",
+        usage=usage,
+        cost=cost,
+    )
+    await _log_openrouter_request(
+        api_key=None,
+        model="vendor/model-x",
+        started_at=0,
+        status="success",
+        usage=usage,
+        cost=cost,
+    )
+
+    assert cost.cost_source == "upstream_billed"
+    assert finalized[0]["cost_microdollars"] == 10_000
+    assert logged[0]["cost_usd"] == pytest.approx(0.01)
+    assert logged[0]["cost_source"] == "upstream_billed"
 
 
 @pytest.mark.asyncio
@@ -182,9 +252,7 @@ def test_build_openrouter_chat_payload_captures_requested_and_effective_with_ove
         }
     )
 
-    payload = build_openrouter_chat_payload(
-        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high")
-    )
+    payload = build_openrouter_chat_payload(request, "deepseek/deepseek-chat", _config(default_reasoning_effort="high"))
 
     assert payload.requested_reasoning_effort == "medium"
     assert payload.effective_reasoning_effort == "high"
@@ -210,9 +278,7 @@ def test_build_openrouter_chat_payload_requested_none_effective_override() -> No
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
-    payload = build_openrouter_chat_payload(
-        request, "deepseek/deepseek-chat", _config(default_reasoning_effort="low")
-    )
+    payload = build_openrouter_chat_payload(request, "deepseek/deepseek-chat", _config(default_reasoning_effort="low"))
 
     assert payload.requested_reasoning_effort is None
     assert payload.effective_reasoning_effort == "low"

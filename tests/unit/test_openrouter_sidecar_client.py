@@ -11,6 +11,8 @@ from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarError,
     OpenRouterSidecarUnavailableError,
 )
+from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models
+from app.core.usage.external_pricing.resolution import UnpricedReason
 from app.core.usage.pricing import ModelPrice
 from app.core.usage.runtime_pricing import get_runtime_pricing_registry
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, reference_cost_from_sidecar_usage
@@ -128,6 +130,7 @@ async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> N
             '{"id":"vendor/model-x","pricing":{"prompt":"0.0000008","completion":"0.000004",'
             '"input_cache_read":"0.0000002"}},'
             '{"id":"vendor/model-y","pricing":{"prompt":"bad","completion":"0.000004"}},'
+            f'{{"id":"vendor/model-overflow","pricing":{{"prompt":{10**400},"completion":"0.000004"}}}},'
             '{"id":"vendor/model-z"}'
             "]}",
         )
@@ -144,7 +147,16 @@ async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> N
     assert by_id["vendor/model-x"].pricing.cached_input_per_1m == pytest.approx(0.2)
     # Unparseable / missing pricing -> no runtime price, fetch still succeeds.
     assert by_id["vendor/model-y"].pricing is None
+    assert by_id["vendor/model-overflow"].pricing is None
     assert by_id["vendor/model-z"].pricing is None
+    overflow = by_id["vendor/model-overflow"]
+    catalog = catalog_from_sidecar_models(
+        "openrouter",
+        [(overflow.id, overflow.pricing, overflow.raw.get("pricing") if overflow.raw else None)],
+    )
+    entry = catalog.exact("vendor/model-overflow")
+    assert entry is not None
+    assert entry.unpriced_reason is UnpricedReason.UNPARSEABLE
 
     registry = get_runtime_pricing_registry()
     assert registry.runtime_pricing_for_model("vendor/model-x") is not None

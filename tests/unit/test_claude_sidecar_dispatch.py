@@ -14,6 +14,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     build_sidecar_chat_payload,
     claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
+    extract_billed_cost,
     extract_usage,
     reset_claude_sidecar_cooldown_gate,
     retry_claude_sidecar_cooldown,
@@ -893,6 +894,26 @@ def test_extract_usage_supports_chat_and_responses_usage_shapes() -> None:
     assert responses_usage.input_tokens == 11
     assert responses_usage.output_tokens == 6
     assert responses_usage.cached_input_tokens == 3
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, float("nan"), float("inf"), float("-inf")])
+def test_extract_usage_rejects_invalid_token_counts(value: float) -> None:
+    assert extract_usage({"usage": {"prompt_tokens": value, "completion_tokens": 2}}) is None
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"cost": 0.01},
+        {"prompt_tokens": 10, "cost": 0.01},
+        {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.01},
+    ],
+)
+def test_billed_cost_is_extracted_independently_from_token_usage(usage: dict[str, float]) -> None:
+    payload = {"usage": usage}
+
+    assert extract_billed_cost(payload) == pytest.approx(0.01)
+    assert (extract_usage(payload) is not None) is ("completion_tokens" in usage)
 
 
 def test_extract_usage_reads_openrouter_cost_field() -> None:
