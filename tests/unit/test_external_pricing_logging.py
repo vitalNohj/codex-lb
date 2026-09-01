@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.core.usage.external_pricing import service as external_pricing_service
+from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
 from app.core.usage.external_pricing.service import CalculatedCost
-from app.core.usage.external_pricing.store import PriceRecord
+from app.core.usage.external_pricing.store import LookupClaim, PriceRecord
 from app.core.usage.pricing import ModelPrice, UsageTokens
 from app.db.models import CostSource, ExternalPriceStatus, RequestLog
 from app.modules.proxy import external_pricing_logging
@@ -256,3 +257,115 @@ async def test_store_read_failure_suppresses_lookup_submission(monkeypatch: pyte
         assert status is ExternalPriceStatus.UNRESOLVED
 
     assert submissions == []
+
+
+@pytest.mark.asyncio
+async def test_claim_write_failure_cools_requests_and_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now()
+    original = PriceRecord(
+        provider="orcarouter",
+        incoming_model="vendor/model-x",
+        status=ExternalPriceStatus.RESOLVED,
+        catalog_model="vendor/model-x",
+        catalog_source="orcarouter",
+        price=ModelPrice(1.0, 2.0),
+        resolution_step="exact",
+        detail="last good",
+        retrieved_at=now - timedelta(hours=1),
+        updated_at=now - timedelta(hours=1),
+        attempt_count=3,
+        next_retry_at=now - timedelta(seconds=1),
+    )
+    monotonic_now = [100.0]
+    writes_available = [False]
+    claim_attempts = 0
+    active_claim: str | None = None
+    persisted: list[object] = []
+
+    class _SessionContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class _Store:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def get(self, provider: str, model: str) -> PriceRecord:
+            return original
+
+        async def claim_lookup(self, provider: str, model: str) -> LookupClaim | None:
+            nonlocal active_claim, claim_attempts
+            claim_attempts += 1
+            if not writes_available[0]:
+                raise RuntimeError("primary unavailable")
+            if active_claim is not None:
+                return None
+            active_claim = "claim-after-recovery"
+            return LookupClaim(token=active_claim, record=original)
+
+    async def _serving_context(provider: str) -> external_pricing_service.ServingContext:
+        return external_pricing_service.ServingContext(
+            catalog=Catalog.from_entries(
+                "orcarouter",
+                [CatalogEntry("vendor/model-x", ModelPrice(3.0, 4.0))],
+            ),
+            aliases={},
+            prefixes=(),
+        )
+
+    async def _no_reference() -> None:
+        return None
+
+    async def _persist(*args: object, **kwargs: object) -> None:
+        nonlocal active_claim
+        assert kwargs["claim_token"] == active_claim
+        persisted.append(args[2])
+        active_claim = None
+
+    coordinator = external_pricing_service._LookupCoordinator(
+        storage_failure_cooldown_seconds=5.0,
+        clock=lambda: monotonic_now[0],
+    )
+    monkeypatch.setattr(external_pricing_service, "_coordinator", coordinator)
+    monkeypatch.setattr(external_pricing_service, "get_background_session", _SessionContext)
+    monkeypatch.setattr(external_pricing_service, "ExternalModelPriceStore", _Store)
+    monkeypatch.setattr(external_pricing_service, "load_serving_context", _serving_context)
+    monkeypatch.setattr(external_pricing_service, "_load_reference_catalog", _no_reference)
+    monkeypatch.setattr(external_pricing_service, "_persist_resolution", _persist)
+
+    for _ in range(3):
+        calculated, status = await external_pricing_service.calculated_cost_for_request(
+            provider="orcarouter",
+            model="vendor/model-x",
+            usage=UsageTokens(input_tokens=10, output_tokens=5),
+        )
+        assert calculated is not None
+        assert calculated.cost_usd == pytest.approx(20 / 1_000_000)
+        assert status is ExternalPriceStatus.RESOLVED
+        await coordinator.drain()
+
+    assert claim_attempts == 1
+    assert original.catalog_source == "orcarouter"
+    assert original.resolution_step == "exact"
+    assert original.attempt_count == 3
+    assert original.next_retry_at == now - timedelta(seconds=1)
+    assert active_claim is None
+    assert persisted == []
+
+    writes_available[0] = True
+    monotonic_now[0] += 5.0
+    calculated, status = await external_pricing_service.calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/model-x",
+        usage=UsageTokens(input_tokens=10, output_tokens=5),
+    )
+    assert calculated is not None
+    assert status is ExternalPriceStatus.RESOLVED
+    await coordinator.drain()
+
+    assert claim_attempts == 2
+    assert len(persisted) == 1
+    assert active_claim is None

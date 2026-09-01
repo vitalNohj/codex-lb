@@ -68,6 +68,7 @@ _MAX_CONCURRENT_LOOKUPS = 4
 # collapse a burst of first sightings onto a single fetch, short enough that it is
 # not a cache of record: the persisted store is.
 _REFERENCE_CATALOG_MEMO_SECONDS = 60.0
+_STORAGE_FAILURE_COOLDOWN_SECONDS = 5.0
 
 # Supplies the serving integration's own catalog and routing configuration for a
 # background lookup. Returning ``None`` for the catalog means the integration
@@ -176,8 +177,9 @@ class CalculatedCost:
     catalog_source: str
 
 
-class _StoreReadFailure(Enum):
-    FAILED = "failed"
+class _StorageResult(Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
 
 
 class _LookupCoordinator:
@@ -189,13 +191,24 @@ class _LookupCoordinator:
     finishes. The store lease provides the equivalent guarantee across replicas.
     """
 
-    def __init__(self, *, max_concurrent: int = _MAX_CONCURRENT_LOOKUPS) -> None:
+    def __init__(
+        self,
+        *,
+        max_concurrent: int = _MAX_CONCURRENT_LOOKUPS,
+        storage_failure_cooldown_seconds: float = _STORAGE_FAILURE_COOLDOWN_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._in_flight: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._max_concurrent = max_concurrent
+        self._storage_failure_cooldown_seconds = storage_failure_cooldown_seconds
+        self._storage_unavailable_until = 0.0
+        self._clock = clock
 
-    async def submit(self, key: tuple[str, str], factory: Callable[[], Awaitable[None]]) -> None:
+    async def submit(self, key: tuple[str, str], factory: Callable[[], Awaitable[_StorageResult]]) -> None:
         async with self._lock:
+            if self._clock() < self._storage_unavailable_until:
+                return
             if key in self._in_flight:
                 return
             if len(self._in_flight) >= self._max_concurrent:
@@ -213,9 +226,10 @@ class _LookupCoordinator:
             task = asyncio.create_task(self._run(key, factory))
             self._in_flight[key] = task
 
-    async def _run(self, key: tuple[str, str], factory: Callable[[], Awaitable[None]]) -> None:
+    async def _run(self, key: tuple[str, str], factory: Callable[[], Awaitable[_StorageResult]]) -> None:
+        storage_result: _StorageResult | None = None
         try:
-            await factory()
+            storage_result = await factory()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -224,6 +238,8 @@ class _LookupCoordinator:
             logger.warning("external price lookup failed provider=%s model=%s", key[0], key[1], exc_info=True)
         finally:
             async with self._lock:
+                if storage_result is _StorageResult.UNAVAILABLE:
+                    self._storage_unavailable_until = self._clock() + self._storage_failure_cooldown_seconds
                 self._in_flight.pop(key, None)
 
     async def drain(self) -> None:
@@ -293,7 +309,7 @@ async def calculated_cost_for_request(
         return None, None
 
     record = await _read_record(provider_key, model_key)
-    if record is _StoreReadFailure.FAILED:
+    if record is _StorageResult.UNAVAILABLE:
         return None, ExternalPriceStatus.UNRESOLVED
 
     if record is None or record.retry_due():
@@ -337,7 +353,7 @@ async def calculated_cost_for_request(
     )
 
 
-async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None | _StoreReadFailure:
+async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None | _StorageResult:
     try:
         async with get_background_session() as session:
             return await ExternalModelPriceStore(session).get(provider_key, model_key)
@@ -346,7 +362,7 @@ async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None 
         # sighting. Requests remain available and unpriced without scheduling
         # remote work that cannot acquire or update its durable claim.
         logger.warning("external price store read failed provider=%s model=%s", provider_key, model_key, exc_info=True)
-        return _StoreReadFailure.FAILED
+        return _StorageResult.UNAVAILABLE
 
 
 def source_consultations(
@@ -411,13 +427,17 @@ def preservation_reason(
     return None
 
 
-async def _run_lookup(provider_key: str, model_key: str) -> None:
+async def _run_lookup(provider_key: str, model_key: str) -> _StorageResult:
     """One bounded lookup for a single id, persisting whatever it concludes."""
 
-    async with get_background_session() as session:
-        claim = await ExternalModelPriceStore(session).claim_lookup(provider_key, model_key)
+    try:
+        async with get_background_session() as session:
+            claim = await ExternalModelPriceStore(session).claim_lookup(provider_key, model_key)
+    except Exception:
+        logger.warning("external price store claim failed provider=%s model=%s", provider_key, model_key, exc_info=True)
+        return _StorageResult.UNAVAILABLE
     if claim is None:
-        return
+        return _StorageResult.AVAILABLE
     previous = claim.record
 
     try:
@@ -432,7 +452,7 @@ async def _run_lookup(provider_key: str, model_key: str) -> None:
             detail="catalog lookup timed out",
             claim_token=claim.token,
         )
-        return
+        return _StorageResult.AVAILABLE
 
     serving_catalog = serving.catalog if serving is not None else None
     catalogs = order_catalogs(serving_catalog, reference)
@@ -458,7 +478,7 @@ async def _run_lookup(provider_key: str, model_key: str) -> None:
             resolution=resolution,
             claim_token=claim.token,
         )
-        return
+        return _StorageResult.AVAILABLE
 
     await _persist_resolution(
         provider_key,
@@ -467,6 +487,7 @@ async def _run_lookup(provider_key: str, model_key: str) -> None:
         previous=previous,
         claim_token=claim.token,
     )
+    return _StorageResult.AVAILABLE
 
 
 async def _persist_resolution(
