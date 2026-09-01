@@ -155,11 +155,18 @@ It is deliberately not a poller. Prices change rarely, so an interval would spen
 every tick re-confirming the same numbers, and an unattended refresh that swaps a
 rate silently is harder to reason about than one whose output names every change.
 
-A stored price is sticky. Maintenance replaces it only with another valid parsed
-rate from the source that owns the record. An outage, missing entry, unreadable
-entry, ambiguous match, no-price sentinel, or durable-store failure leaves the
-rate and provenance unchanged. The system cannot reliably distinguish a provider
-removal from catalog drift or partial availability, so it does not infer one.
+A stored price is sticky. An outage, missing entry, unreadable or unparseable
+price, ambiguous match, fetch failure, or durable-store failure leaves its rate,
+ownership, and provenance untouched. The system cannot reliably distinguish a
+provider removal from catalog drift, partial availability, or an outage, so it
+never infers deliberate removal from absence.
+
+The exception is a recognized no-token-price value published for a listed model
+by the source that already owns the record. Because the source answered and made
+an explicit price statement, this is not removal inference: maintenance changes
+the record to not-token-priced, clears its rates, and settles it without retry
+state. It then renders `--` rather than `!!`. Otherwise, maintenance replaces a
+stored price only with another valid parsed price from its owning source.
 
 ## Operational notes
 

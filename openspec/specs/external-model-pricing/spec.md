@@ -187,7 +187,7 @@ The system MUST NOT infer model availability, addition, or removal from a model'
 
 ### Requirement: Refresh is an explicit maintenance command, never a schedule
 
-The system MUST NOT continuously poll or refresh prices. It MUST provide a separate explicit idempotent maintenance command that runs one pass across persisted mappings, fetches catalogs in bulk where possible, updates changed rates and provenance, preserves prior values on transient fetch or parse failure, and reports unresolved or ambiguous records. No schedule may be added.
+The system MUST NOT continuously poll or refresh prices. It MUST provide a separate explicit idempotent maintenance command that runs one pass across persisted mappings, fetches catalogs in bulk where possible, updates changed rates and provenance, preserves prior values on catalog absence, unreadable or unparseable pricing, fetch failure, or durable-store failure, and reports unresolved or ambiguous records. It MUST NOT infer deliberate provider removal from catalog absence. A refresh MUST replace a stored price only with another valid parsed price, except when the record's owning source answers, lists the model, and publishes a recognized no-token-price value; that authoritative same-owner statement MUST transition the record to not-token-priced, clear its rates, and settle it without retry state. No schedule may be added.
 
 #### Scenario: A pass over unchanged catalogs changes nothing
 
@@ -227,12 +227,22 @@ The system MUST NOT continuously poll or refresh prices. It MUST provide a separ
 - **WHEN** the maintenance command runs
 - **THEN** the new rate and provenance replace the prior values
 
+#### Scenario: An owning source authoritatively declares no token price
+
+- **GIVEN** a persisted priced record owned by a catalog source
+- **AND** that source answers, lists the model, and publishes a recognized no-token-price value
+- **WHEN** the maintenance command runs
+- **THEN** the record becomes not-token-priced
+- **AND** its input and output rates are cleared
+- **AND** its retry state is cleared
+- **AND** the request-log cost marker is `--` rather than `!!`
+
 #### Scenario: A failed refresh cannot weaken a stored price
 
 - **GIVEN** a persisted record with a known rate
-- **AND** a refresh encounters a catalog outage, missing entry, unreadable entry, or durable-store failure
+- **AND** a refresh encounters a catalog outage, missing entry, unreadable or unparseable entry, or durable-store failure
 - **WHEN** the maintenance command runs
-- **THEN** the record keeps its prior rate and provenance unchanged
+- **THEN** the record keeps its prior rate, ownership, and provenance unchanged
 
 ### Requirement: Request logs mark eligible models that stay unresolved
 

@@ -129,12 +129,19 @@ refreshed as usual.
 Run it after a provider announces a price change, or when you see `!!` on a model
 you expect to be priced.
 
-Two outcomes are worth knowing:
+Three rules are worth knowing:
 
-- A stored price is sticky. A refresh replaces it only with another valid parsed
-  rate from its trustworthy catalog source. Catalog outages, missing entries,
-  ambiguous matches, no-price values, parse failures, and database failures leave
-  the stored rate and provenance unchanged.
+- A stored price is sticky. A catalog outage, missing entry, ambiguous match,
+  unreadable or unparseable price, fetch failure, or database failure leaves its
+  rate, ownership, and provenance untouched. codex-lb never treats a missing
+  entry as a deliberate provider removal because it cannot distinguish removal
+  from an outage or catalog change.
+- There is one exception: when the source that owns the record answers, lists the
+  model, and publishes a recognized no-token-price value, that authoritative
+  statement changes the record to not-token-priced, clears its rates, and settles
+  it without retry state. The request log then shows `--`, not `!!`.
+- In every other case, a refresh replaces a stored price only with another valid
+  parsed rate from its trustworthy catalog source.
 - If a catalog still lists a model but publishes its price in a shape codex-lb
   cannot read, the last successfully read rate is kept. This is reported under
   "Preserved after an unreadable published price" rather than counted as
