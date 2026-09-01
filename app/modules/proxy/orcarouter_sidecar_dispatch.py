@@ -54,6 +54,7 @@ from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
 from app.modules.proxy.external_pricing_logging import (
+    BilledCostAccumulator,
     ExternalRequestCost,
     cost_microdollars,
     external_request_cost,
@@ -288,7 +289,7 @@ async def _orcarouter_stream_iterator(
     requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
-    billed_cost_usd: float | None = None
+    billed_cost = BilledCostAccumulator()
     completed = False
     error_code = "orcarouter_sidecar_stream_incomplete"
     error_message: str | None = None
@@ -303,9 +304,7 @@ async def _orcarouter_stream_iterator(
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
-                    event_billed_cost = extract_billed_cost(event)
-                    if event_billed_cost is not None:
-                        billed_cost_usd = event_billed_cost
+                    billed_cost.observe(extract_billed_cost(event))
                 yield raw_chunk
             for event in decoder.flush():
                 if event == "[DONE]":
@@ -314,9 +313,7 @@ async def _orcarouter_stream_iterator(
                 event_usage = extract_usage(event)
                 if event_usage is not None:
                     usage = event_usage
-                event_billed_cost = extract_billed_cost(event)
-                if event_billed_cost is not None:
-                    billed_cost_usd = event_billed_cost
+                billed_cost.observe(extract_billed_cost(event))
     except OrcaRouterSidecarUnavailableError:
         error_code = "orcarouter_sidecar_unavailable"
         error_message = "OrcaRouter sidecar unavailable"
@@ -351,7 +348,7 @@ async def _orcarouter_stream_iterator(
             provider=ORCAROUTER_PRICING_PROVIDER,
             model=model,
             usage=usage,
-            billed_cost_usd=billed_cost_usd,
+            billed_cost_usd=billed_cost.value,
             completed=completed,
         )
         await _finalize_or_release_orcarouter_reservation(

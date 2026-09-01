@@ -1432,17 +1432,17 @@ def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
     return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
 
 
+_MAX_PERSISTED_TOKEN_COUNT = (1 << 31) - 1
+
+
 def _int_field(payload: Mapping[str, JsonValue], key: str) -> int | None:
     value = payload.get(key)
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        try:
-            return value if value >= 0 and math.isfinite(float(value)) else None
-        except OverflowError:
-            return None
+        return value if 0 <= value <= _MAX_PERSISTED_TOKEN_COUNT else None
     if isinstance(value, float):
-        if not math.isfinite(value) or value < 0 or not value.is_integer():
+        if not math.isfinite(value) or value < 0 or value > _MAX_PERSISTED_TOKEN_COUNT or not value.is_integer():
             return None
         return int(value)
     return None

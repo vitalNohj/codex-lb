@@ -68,6 +68,15 @@ def _cost_is_representable(cost_usd: float) -> bool:
     return isfinite(cost_usd) and cost_usd >= 0 and isfinite(scaled_cost) and scaled_cost <= _MAX_COST_MICRODOLLARS
 
 
+@dataclass(slots=True)
+class BilledCostAccumulator:
+    value: float | None = None
+
+    def observe(self, reported_cost_usd: float | None) -> None:
+        if reported_cost_usd is not None and _cost_is_representable(reported_cost_usd):
+            self.value = reported_cost_usd
+
+
 async def external_request_cost(
     *,
     provider: str,

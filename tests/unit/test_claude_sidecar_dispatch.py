@@ -1003,6 +1003,7 @@ def test_extract_usage_prefers_openrouter_cost_over_cost_usd() -> None:
         ("completion_tokens", 1.5),
         ("prompt_tokens", float("nan")),
         ("completion_tokens", float("inf")),
+        ("prompt_tokens", 1 << 31),
         ("prompt_tokens", 10**400),
     ],
 )
@@ -1047,6 +1048,23 @@ def test_extract_usage_allows_absent_cached_tokens() -> None:
 
     assert usage is not None
     assert usage.cached_input_tokens == 0
+
+
+def test_extract_usage_accepts_persistable_token_boundary() -> None:
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": (1 << 31) - 1,
+                "completion_tokens": (1 << 31) - 1,
+                "prompt_tokens_details": {"cached_tokens": (1 << 31) - 1},
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == (1 << 31) - 1
+    assert usage.output_tokens == (1 << 31) - 1
+    assert usage.cached_input_tokens == (1 << 31) - 1
 
 
 @pytest.mark.asyncio

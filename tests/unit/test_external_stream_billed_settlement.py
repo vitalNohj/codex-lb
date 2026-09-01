@@ -60,11 +60,30 @@ class _StreamClient:
 )
 @pytest.mark.parametrize("mode", ["normal", "incomplete", "transport_error", "cancellation", "disconnect"])
 @pytest.mark.parametrize(
-    "usage_json",
+    ("event", "has_complete_usage"),
     [
-        '{"cost":0.01}',
-        '{"prompt_tokens":10,"cost":0.01}',
-        '{"prompt_tokens":0,"completion_tokens":0,"cost":0.01}',
+        (b'data: {"usage":{"cost":0.01}}\n\n', False),
+        (b'data: {"usage":{"prompt_tokens":10,"cost":0.01}}\n\n', False),
+        (
+            b'data: {"usage":{"prompt_tokens":0,"completion_tokens":0,"cost":0.01}}\n\n',
+            True,
+        ),
+        (
+            b'data: {"usage":{"prompt_tokens":2147483648,"completion_tokens":0,"cost":0.01}}\n\n',
+            False,
+        ),
+        (
+            b'data: {"usage":{"cost":0.01}}\n\ndata: {"usage":{"cost":-1}}\n\n',
+            False,
+        ),
+        (
+            b'data: {"usage":{"cost":0.01}}\n\ndata: {"usage":{"cost":NaN}}\n\n',
+            False,
+        ),
+        (
+            b'data: {"usage":{"cost":0.01}}\n\ndata: {"usage":{"cost":1e308}}\n\n',
+            False,
+        ),
     ],
 )
 async def test_reported_stream_charge_is_settled_once_for_every_termination(
@@ -74,7 +93,8 @@ async def test_reported_stream_charge_is_settled_once_for_every_termination(
     finalize_name: str,
     log_name: str,
     mode: str,
-    usage_json: str,
+    event: bytes,
+    has_complete_usage: bool,
 ) -> None:
     module: ModuleType = importlib.import_module(module_name)
     finalized: list[dict[str, object]] = []
@@ -96,7 +116,6 @@ async def test_reported_stream_charge_is_settled_once_for_every_termination(
     monkeypatch.setattr(module, finalize_name, _finalize)
     monkeypatch.setattr(module, log_name, _log)
 
-    event = f'data: {{"usage":{usage_json}}}\n\n'.encode()
     stream = getattr(module, iterator_name)(
         {},
         api_key=None,
@@ -129,7 +148,7 @@ async def test_reported_stream_charge_is_settled_once_for_every_termination(
     assert finalized_cost is logged_cost
     assert finalized_cost.cost_usd == pytest.approx(0.01)
     assert finalized_cost.cost_source == "upstream_billed"
-    if mode == "normal" and "completion_tokens" in usage_json:
+    if mode == "normal" and has_complete_usage:
         assert finalized[0]["usage"] is not None
         assert logged[0]["usage"] is not None
     else:
