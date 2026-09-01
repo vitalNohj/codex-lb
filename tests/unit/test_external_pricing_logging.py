@@ -21,7 +21,10 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("billed_cost", [-0.01, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "billed_cost",
+    [-0.01, float("nan"), float("inf"), 1e308, 10_000_000_000_000.0],
+)
 async def test_invalid_billed_cost_falls_back_to_catalog_price(monkeypatch, billed_cost: float) -> None:
     async def _calculated_cost(**_kwargs):
         return CalculatedCost(0.75, "vendor/model", "orcarouter"), ExternalPriceStatus.RESOLVED
@@ -41,7 +44,10 @@ async def test_invalid_billed_cost_falls_back_to_catalog_price(monkeypatch, bill
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("billed_cost", [-0.01, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "billed_cost",
+    [-0.01, float("nan"), float("inf"), 1e308, 10_000_000_000_000.0],
+)
 async def test_invalid_billed_cost_without_catalog_price_stays_unknown(monkeypatch, billed_cost: float) -> None:
     async def _no_calculated_cost(**_kwargs):
         return None, ExternalPriceStatus.UNRESOLVED
@@ -59,6 +65,26 @@ async def test_invalid_billed_cost_without_catalog_price_stays_unknown(monkeypat
     assert result.cost_source is None
     assert result.price_status == ExternalPriceStatus.UNRESOLVED.value
     assert cost_microdollars(result) == 0
+
+    entry = to_request_log_entry(
+        RequestLog(
+            request_id="req-invalid-billed-cost",
+            request_kind="normal",
+            model="vendor/unknown",
+            source="openrouter",
+            status="success",
+            error_code=None,
+            requested_at=datetime.now(timezone.utc),
+            input_tokens=1,
+            output_tokens=1,
+            cached_input_tokens=0,
+            cost_usd=result.cost_usd,
+            cost_source=result.cost_source,
+            price_status=result.price_status,
+        )
+    )
+    assert entry.cost_usd is None
+    assert entry.cost_breakdown.total_usd is None
 
 
 @pytest.mark.asyncio

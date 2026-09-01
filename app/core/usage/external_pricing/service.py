@@ -362,7 +362,18 @@ def preservation_reason(
     if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
         return "catalog price could not be parsed authoritatively"
     owner = record.catalog_source if record is not None else None
-    if owner is not None and not consultations.source_answered(owner, provider_key):
+    serving_price_improves_ownership = (
+        resolution.outcome is ResolutionOutcome.RESOLVED
+        and resolution.catalog_source == provider_key
+        and consultations.source_answered(provider_key, provider_key)
+    )
+    if (
+        record is not None
+        and record.is_settled
+        and owner is not None
+        and not consultations.source_answered(owner, provider_key)
+        and not serving_price_improves_ownership
+    ):
         return f"owning source {owner} did not provide an authoritative answer"
     if (
         owner is None

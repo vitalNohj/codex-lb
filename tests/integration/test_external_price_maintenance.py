@@ -357,6 +357,37 @@ async def test_an_unreachable_reference_preserves_a_record_its_serving_catalog_d
 
 
 @pytest.mark.asyncio
+async def test_a_serving_price_replaces_a_reference_rate_during_reference_outage(
+    db_setup,
+    monkeypatch,
+) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    async def _reference_times_out():
+        return None, "openrouter: failed to fetch openrouter catalog: timeout"
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference_times_out)
+    await _seed_resolved(
+        "vendor/newly-native",
+        ModelPrice(2.0, 4.0),
+        catalog_source="openrouter",
+    )
+    _install_catalog("orcarouter", {"vendor/newly-native": ModelPrice(1.0, 3.0)})
+
+    report = await run_maintenance_pass()
+
+    assert report.preserved_on_failure == 0
+    assert len(report.updated) == 1
+    record = await _record("vendor/newly-native")
+    assert record is not None and record.price is not None
+    assert record.catalog_source == "orcarouter"
+    assert record.price.input_per_1m == pytest.approx(1.0)
+    assert record.price.output_per_1m == pytest.approx(3.0)
+    assert record.next_retry_at is None
+
+
+@pytest.mark.asyncio
 async def test_a_reachable_reference_that_drops_a_record_still_marks_it_unresolved(
     db_setup,
     monkeypatch,

@@ -54,6 +54,16 @@ class ExternalRequestCost:
     price_status: str | None
 
 
+def _cost_is_representable(cost_usd: float) -> bool:
+    scaled_cost = cost_usd * 1_000_000
+    return (
+        isfinite(cost_usd)
+        and cost_usd >= 0
+        and isfinite(scaled_cost)
+        and scaled_cost <= _MAX_COST_MICRODOLLARS
+    )
+
+
 async def external_request_cost(
     *,
     provider: str,
@@ -88,14 +98,14 @@ async def external_request_cost(
 
     status_value = status.value if status is not None else None
 
-    if billed_cost_usd is not None and isfinite(billed_cost_usd) and billed_cost_usd >= 0:
+    if billed_cost_usd is not None and _cost_is_representable(billed_cost_usd):
         return ExternalRequestCost(
             cost_usd=billed_cost_usd,
             cost_source=CostSource.UPSTREAM_BILLED.value,
             price_status=status_value,
         )
 
-    if calculated is not None:
+    if calculated is not None and _cost_is_representable(calculated.cost_usd):
         return ExternalRequestCost(
             cost_usd=calculated.cost_usd,
             cost_source=CostSource.CATALOG_CALCULATED.value,
@@ -130,10 +140,9 @@ def cost_microdollars(cost: ExternalRequestCost | None) -> int:
 
     if cost is None or cost.cost_usd is None:
         return 0
-    scaled_cost = cost.cost_usd * 1_000_000
-    if not isfinite(scaled_cost) or scaled_cost < 0 or scaled_cost > _MAX_COST_MICRODOLLARS:
+    if not _cost_is_representable(cost.cost_usd):
         return 0
-    return int(scaled_cost)
+    return int(cost.cost_usd * 1_000_000)
 
 
 def usage_tokens_from_sidecar(usage: SidecarUsageLike | None) -> UsageTokens | None:
