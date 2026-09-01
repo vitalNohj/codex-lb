@@ -183,6 +183,35 @@ async def test_a_known_priced_id_costs_no_lookup_and_no_rewrite(db_setup) -> Non
 
 
 @pytest.mark.asyncio
+async def test_routed_spelling_is_preserved_without_changing_cache_identity(db_setup) -> None:
+    del db_setup
+    loader = await _install_serving_catalog("orcarouter", {"vendor/model-x": ModelPrice(2.0, 4.0)})
+
+    first_cost, first_status = await calculated_cost_for_request(
+        provider="OrcaRouter",
+        model="Vendor/Model-X",
+        usage=ONE_MILLION,
+    )
+    await get_lookup_coordinator().drain()
+    second_cost, second_status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/model-x",
+        usage=ONE_MILLION,
+    )
+    await get_lookup_coordinator().drain()
+
+    assert first_cost is None
+    assert first_status is ExternalPriceStatus.PENDING
+    assert second_cost is not None
+    assert second_status is ExternalPriceStatus.RESOLVED
+    assert loader.calls == 1
+    records = await _records()
+    assert len(records) == 1
+    assert records[0].incoming_model == "vendor/model-x"
+    assert records[0].raw_incoming_model == "Vendor/Model-X"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_first_sightings_collapse_into_one_lookup(db_setup) -> None:
     """A burst of traffic to a new model must produce one catalog fetch."""
 

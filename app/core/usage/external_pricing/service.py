@@ -322,7 +322,7 @@ async def calculated_cost_for_request(
         if schedule_lookup:
             await _coordinator.submit(
                 (provider_key, model_key),
-                lambda: _run_lookup(provider_key, model_key),
+                lambda: _run_lookup(provider_key, model_key, raw_incoming_model=model),
             )
         if record is None:
             # First sighting. No lookup has concluded anything yet, so this row
@@ -438,12 +438,17 @@ def preservation_reason(
     return None
 
 
-async def _run_lookup(provider_key: str, model_key: str) -> _StorageResult:
+async def _run_lookup(
+    provider_key: str,
+    model_key: str,
+    *,
+    raw_incoming_model: str,
+) -> _StorageResult:
     """One bounded lookup for a single id, persisting whatever it concludes."""
 
     try:
         async with get_background_session() as session:
-            claim = await ExternalModelPriceStore(session).claim_lookup(provider_key, model_key)
+            claim = await ExternalModelPriceStore(session).claim_lookup(provider_key, raw_incoming_model)
     except Exception:
         logger.warning("external price store claim failed provider=%s model=%s", provider_key, model_key, exc_info=True)
         return _StorageResult.UNAVAILABLE
