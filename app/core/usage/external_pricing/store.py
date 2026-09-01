@@ -40,7 +40,8 @@ _RETRY_BACKOFF: tuple[timedelta, ...] = (
     timedelta(hours=24),
 )
 
-_LOOKUP_LEASE = timedelta(minutes=2)
+LOOKUP_WORK_TIMEOUT_SECONDS = 90.0
+_LOOKUP_LEASE = timedelta(seconds=LOOKUP_WORK_TIMEOUT_SECONDS + 30.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,7 +290,7 @@ class ExternalModelPriceStore:
         expected_updated_at: datetime | None = None,
     ) -> bool:
         attempts = previous_attempts + 1
-        if record is not None and record.is_settled:
+        if record is not None and record.status is not ExternalPriceStatus.PENDING:
             price = record.price
             return await self._upsert(
                 provider=provider,
@@ -310,8 +311,6 @@ class ExternalModelPriceStore:
                 claim_token=claim_token,
                 expected_updated_at=expected_updated_at,
             )
-        # Nothing was ever parsed for this id, so there is no value to preserve.
-        # It stays unresolved with backoff rather than being settled as unpriced.
         return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,

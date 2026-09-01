@@ -332,7 +332,11 @@ async def test_an_unreachable_reference_preserves_a_record_its_serving_catalog_d
         return None, "openrouter: failed to fetch openrouter catalog: timeout"
 
     monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference_times_out)
-    await _seed_resolved("vendor/reference-priced", ModelPrice(2.0, 4.0))
+    await _seed_resolved(
+        "vendor/reference-priced",
+        ModelPrice(2.0, 4.0),
+        catalog_source="openrouter",
+    )
     # OrcaRouter is reachable and, as always, does not list the id.
     _install_catalog("orcarouter", {"vendor/orca-native": ModelPrice(1.0, 1.0)})
 
@@ -344,6 +348,7 @@ async def test_an_unreachable_reference_preserves_a_record_its_serving_catalog_d
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(2.0)
     assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.next_retry_at is not None
 
 
 @pytest.mark.asyncio
@@ -360,7 +365,11 @@ async def test_a_reachable_reference_that_drops_a_record_still_marks_it_unresolv
         return _catalog("openrouter", {"vendor/something-else": ModelPrice(9.0, 9.0)}), None
 
     monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
-    await _seed_resolved("vendor/reference-priced", ModelPrice(2.0, 4.0))
+    await _seed_resolved(
+        "vendor/reference-priced",
+        ModelPrice(2.0, 4.0),
+        catalog_source="openrouter",
+    )
     _install_catalog("orcarouter", {"vendor/orca-native": ModelPrice(1.0, 1.0)})
 
     report = await run_maintenance_pass()
@@ -521,7 +530,7 @@ async def test_a_settled_unpriced_record_survives_a_serving_catalog_outage(db_se
     record = await _record("orcarouter/fusion")
     assert record is not None
     assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
-    assert record.next_retry_at is None, "a settled answer must not gain retry state from an outage"
+    assert record.next_retry_at is not None
 
 
 @pytest.mark.asyncio
@@ -554,6 +563,8 @@ async def test_an_unsettled_record_is_not_resolved_by_reference_during_serving_o
     assert record is not None
     assert record.status is ExternalPriceStatus.UNRESOLVED
     assert record.price is None
+    assert record.attempt_count == 2
+    assert record.next_retry_at is not None
 
 
 @pytest.mark.asyncio

@@ -24,9 +24,12 @@ from app.core.usage.external_pricing.catalogs import (
 )
 from app.core.usage.external_pricing.resolution import ResolutionOutcome, resolve_model_price
 from app.core.usage.external_pricing.service import (
+    CatalogAvailability,
     ServingContext,
+    SourceConsultations,
     load_serving_context,
-    should_preserve_silent_serving_state,
+    preservation_reason,
+    preserve_record_for_retry,
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord
 from app.db.models import ExternalPriceStatus
@@ -143,25 +146,9 @@ async def run_maintenance_pass() -> MaintenanceReport:
     reference_unavailable = reference_error is not None
     for record in records:
         disabled = record.provider in disabled_providers
-        if disabled and reference is None:
-            # Nothing at all can be consulted for this record: its own integration
-            # is switched off and the pricing reference did not answer either.
-            report.skipped_disabled += 1
-            continue
         context = contexts.get(record.provider)
         serving_catalog = context.catalog if context is not None else None
-        # A switched-off integration did not answer, so its silence is no evidence
-        # against a settled record -- but the reference is still a reachable
-        # source, and refusing to apply what it says would leave the pass unable
-        # to refresh anything while an integration is temporarily off. The two are
-        # reported separately: an operator who turned an integration off must not
-        # read a failure count that describes a failure that never happened.
         serving_failed = record.provider in unavailable_providers
-        if serving_catalog is None and reference is None:
-            # Every source this record could have used is unavailable. Leaving the
-            # row exactly as it is preserves a rate that is probably still correct.
-            _count_preserved(report, disabled=disabled)
-            continue
         await _refresh_record(
             record,
             serving=serving_catalog,
@@ -203,7 +190,6 @@ async def _refresh_record(
     context: ServingContext | None,
     report: MaintenanceReport,
 ) -> None:
-    serving_unavailable = serving_disabled or serving_failed
     catalogs = [catalog for catalog in (serving, reference) if catalog is not None]
     resolution = resolve_model_price(
         record.incoming_model,
@@ -212,65 +198,49 @@ async def _refresh_record(
         prefixes=context.prefixes if context is not None else (),
     )
 
-    if should_preserve_silent_serving_state(
+    consultations = SourceConsultations(
+        serving=(
+            CatalogAvailability.DISABLED
+            if serving_disabled
+            else CatalogAvailability.UNAVAILABLE
+            if serving_failed
+            else CatalogAvailability.ANSWERED
+        ),
+        reference=(CatalogAvailability.UNAVAILABLE if reference_unavailable else CatalogAvailability.ANSWERED),
+    )
+    reason = preservation_reason(
         record,
         record.provider,
         resolution,
-        serving_unavailable=(serving_failed or (serving_disabled and record.catalog_source == record.provider)),
-    ):
-        # The serving catalog owns this record's rate and was not able to answer
-        # this pass, yet the pricing reference did and lists the same id. Adopting
-        # the reference's number would re-source the record to a rate the serving
-        # provider does not charge -- the two price 37 of 98 shared ids
-        # differently, by up to 2.8x -- and would settle it ``RESOLVED`` with no
-        # retry deadline, so the request path would never revisit it. A source
-        # that did not answer keeps ownership until it does.
-        _count_preserved(report, disabled=serving_disabled and not serving_failed)
-        return
-
-    if (
-        resolution.outcome is ResolutionOutcome.UNRESOLVED
-        and record.is_settled
-        and (serving_unavailable or reference_unavailable)
-    ):
-        # At least one source this record could have been resolved from could not
-        # be fetched, and the ones that answered did not recognise the id. That is
-        # a fetch gap, not a delisting, so the settled answer stays -- a priced
-        # record keeps its rate and a not-token-priced one keeps its settled
-        # state. Only when every source that could price this id answered is an
-        # absence authoritative, which includes a provider that publishes no
-        # catalog by design, since for it the reference is the whole answer.
-        _count_preserved(
-            report,
-            disabled=serving_disabled and not serving_failed and not reference_unavailable,
+        consultations=consultations,
+    )
+    if reason is not None:
+        applied = await preserve_record_for_retry(
+            record.provider,
+            record.incoming_model,
+            record=record,
+            detail=reason,
+            resolution=resolution,
+            expected_updated_at=record.updated_at,
         )
-        return
-
-    if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
-        # The source still lists the model and priced it in a shape this build
-        # could not read. Settling that as "not token priced" would clear a good
-        # rate, set no retry, and report the loss as "unchanged", so one upstream
-        # schema change would silently erase every rate in a single pass.
-        async with get_background_session() as session:
-            applied = await ExternalModelPriceStore(session).record_price_unparseable(
-                provider=record.provider,
-                incoming_model=record.incoming_model,
-                record=record,
-                catalog_model=resolution.catalog_model,
-                catalog_source=resolution.catalog_source,
-                detail=resolution.detail or "catalog price could not be parsed",
-                previous_attempts=record.attempt_count,
-                expected_updated_at=record.updated_at,
-            )
         if not applied:
             return
-        report.preserved_unparseable.append(
-            RecordChange(
-                provider=record.provider,
-                incoming_model=record.incoming_model,
-                description=resolution.detail or "catalog price could not be parsed",
+        if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
+            report.preserved_unparseable.append(
+                RecordChange(
+                    provider=record.provider,
+                    incoming_model=record.incoming_model,
+                    description=resolution.detail or "catalog price could not be parsed",
+                )
             )
-        )
+        else:
+            disabled_preservation = serving_disabled and not consultations.source_answered(
+                record.catalog_source or record.provider,
+                record.provider,
+            )
+            _count_preserved(report, disabled=disabled_preservation)
+            if serving_disabled and reference is None:
+                report.skipped_disabled += 1
         return
 
     async with get_background_session() as session:

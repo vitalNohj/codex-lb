@@ -221,6 +221,67 @@ async def test_concurrent_first_sightings_collapse_into_one_lookup(db_setup) -> 
 
 
 @pytest.mark.asyncio
+async def test_lookup_work_times_out_before_a_second_job_can_be_claimed(db_setup, monkeypatch) -> None:
+    del db_setup
+    monkeypatch.setattr(pricing_service, "LOOKUP_WORK_TIMEOUT_SECONDS", 0.01)
+
+    class _StalledLoader(_CountingLoader):
+        async def __call__(self, _provider: str) -> ServingContext | None:
+            self.calls += 1
+            await asyncio.Event().wait()
+            return self.context
+
+    loader = _StalledLoader(None)
+    register_serving_context_loader("orcarouter", loader)
+
+    await calculated_cost_for_request(provider="orcarouter", model="vendor/stalled", usage=ONE_MILLION)
+    await asyncio.wait_for(get_lookup_coordinator().drain(), timeout=1.0)
+
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.UNRESOLVED.value
+    assert record.next_retry_at is not None
+
+    await calculated_cost_for_request(provider="orcarouter", model="vendor/stalled", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+    assert loader.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_preserves_unsettled_ownership_and_provenance(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_retryable_failure(
+            provider="orcarouter",
+            incoming_model="vendor/unreadable",
+            record=None,
+            catalog_model="vendor/unreadable",
+            catalog_source="orcarouter",
+            detail="catalog price could not be parsed",
+        )
+        before = await store.get("orcarouter", "vendor/unreadable")
+        assert before is not None
+        applied = await store.record_retryable_failure(
+            provider="orcarouter",
+            incoming_model="vendor/unreadable",
+            record=before,
+            detail="serving source timed out",
+            previous_attempts=before.attempt_count,
+        )
+        after = await store.get("orcarouter", "vendor/unreadable")
+
+    assert applied is True
+    assert after is not None
+    assert after.status is before.status
+    assert after.catalog_model == before.catalog_model
+    assert after.catalog_source == before.catalog_source
+    assert after.resolution_step == before.resolution_step
+    assert after.retrieved_at == before.retrieved_at
+    assert after.attempt_count == before.attempt_count + 1
+    assert after.next_retry_at is not None and after.next_retry_at > before.next_retry_at
+
+
+@pytest.mark.asyncio
 async def test_an_unresolved_id_is_not_retried_until_its_backoff_expires(db_setup) -> None:
     """Traffic must not drive repeated lookup work for an unknown model."""
 
@@ -620,6 +681,52 @@ async def test_an_unreadable_reference_cannot_relabel_a_preserved_serving_rate(d
     assert record.output_per_1m == pytest.approx(4.0)
     assert record.catalog_model == "vendor/model-x"
     assert record.catalog_source == "orcarouter"
+
+
+@pytest.mark.asyncio
+async def test_a_reference_owned_rate_survives_a_reference_outage(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/reference-priced",
+            catalog_model="vendor/reference-priced",
+            catalog_source="openrouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+        )
+        record = await store.get("orcarouter", "vendor/reference-priced")
+        assert record is not None
+        await store.record_price_unparseable(
+            provider="orcarouter",
+            incoming_model="vendor/reference-priced",
+            record=record,
+            catalog_model="vendor/reference-priced",
+            catalog_source="openrouter",
+            detail="reference price temporarily unreadable",
+        )
+
+    async with SessionLocal() as session:
+        row = (await session.execute(select(ExternalModelPrice))).scalar_one()
+        row.next_retry_at = utcnow() - timedelta(seconds=1)
+        await session.commit()
+
+    await _install_serving_catalog("orcarouter", {"vendor/orca-native": ModelPrice(1.0, 1.0)})
+    await calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/reference-priced",
+        usage=ONE_MILLION,
+    )
+    await get_lookup_coordinator().drain()
+
+    record = (await _records())[0]
+    assert record.status == ExternalPriceStatus.RESOLVED.value
+    assert record.catalog_source == "openrouter"
+    assert record.input_per_1m == pytest.approx(2.0)
+    assert record.output_per_1m == pytest.approx(4.0)
+    assert record.attempt_count == 2
+    assert record.next_retry_at is not None and record.next_retry_at > utcnow()
 
 
 @pytest.mark.asyncio

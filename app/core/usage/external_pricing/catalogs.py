@@ -231,7 +231,8 @@ def _parse_per_token_usd(value: JsonValue) -> float | None:
     reading, per_token = _read_rate(value)
     if reading is not _RateReading.PARSED or per_token is None:
         return None
-    return per_token * _PER_TOKEN_TO_PER_1M
+    per_1m = per_token * _PER_TOKEN_TO_PER_1M
+    return per_1m if math.isfinite(per_1m) else None
 
 
 def catalog_from_sidecar_models(

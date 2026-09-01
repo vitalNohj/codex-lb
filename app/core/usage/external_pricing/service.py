@@ -25,10 +25,13 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
 
 from app.core.usage.external_pricing.catalogs import (
     Catalog,
     CatalogFetchError,
+    PROVIDER_OPENROUTER,
     fetch_openrouter_catalog,
     is_external_priced_provider,
     order_catalogs,
@@ -38,7 +41,12 @@ from app.core.usage.external_pricing.resolution import (
     ResolutionOutcome,
     resolve_model_price,
 )
-from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord, normalize_lookup_key
+from app.core.usage.external_pricing.store import (
+    LOOKUP_WORK_TIMEOUT_SECONDS,
+    ExternalModelPriceStore,
+    PriceRecord,
+    normalize_lookup_key,
+)
 from app.core.usage.pricing import UsageTokens, calculate_cost_from_usage
 from app.db.models import ExternalPriceStatus
 from app.db.session import get_background_session
@@ -108,6 +116,41 @@ class ServingContext:
         """Whether a catalog that should have been available was not."""
 
         return self.integration_enabled and self.publishes_price_catalog and self.catalog is None
+
+
+class CatalogAvailability(str, Enum):
+    ANSWERED = "answered"
+    UNAVAILABLE = "unavailable"
+    TIMED_OUT = "timed_out"
+    UNUSABLE = "unusable"
+    DISABLED = "disabled"
+
+    @property
+    def authoritative(self) -> bool:
+        return self is CatalogAvailability.ANSWERED
+
+
+@dataclass(frozen=True, slots=True)
+class SourceConsultations:
+    serving: CatalogAvailability
+    reference: CatalogAvailability
+
+    def source_answered(self, source: str, provider_key: str) -> bool:
+        states: list[CatalogAvailability] = []
+        if source == provider_key:
+            states.append(self.serving)
+        if source == PROVIDER_OPENROUTER:
+            states.append(self.reference)
+        return any(state.authoritative for state in states)
+
+    def with_unusable_resolution(self, resolution: Resolution, provider_key: str) -> "SourceConsultations":
+        if resolution.outcome is not ResolutionOutcome.PRICE_UNPARSEABLE:
+            return self
+        source = resolution.catalog_source
+        return SourceConsultations(
+            serving=(CatalogAvailability.UNUSABLE if source == provider_key else self.serving),
+            reference=(CatalogAvailability.UNUSABLE if source == PROVIDER_OPENROUTER else self.reference),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,31 +324,55 @@ async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None:
         return None
 
 
-def serving_source_did_not_answer(serving: ServingContext | None) -> bool:
-    """Whether the serving integration failed to supply a catalog it owes.
+def source_consultations(
+    serving: ServingContext | None,
+    *,
+    reference_available: bool,
+) -> SourceConsultations:
+    if serving is not None and not serving.integration_enabled:
+        serving_availability = CatalogAvailability.DISABLED
+    elif serving is None or serving.serving_catalog_missing:
+        serving_availability = CatalogAvailability.UNAVAILABLE
+    else:
+        serving_availability = CatalogAvailability.ANSWERED
+    return SourceConsultations(
+        serving=serving_availability,
+        reference=(CatalogAvailability.ANSWERED if reference_available else CatalogAvailability.UNAVAILABLE),
+    )
 
-    ``None`` means the loader raised -- a timeout, a settings-read failure, or no
-    registered loader -- and ``serving_catalog_missing`` means it was consulted and
-    produced nothing. Neither is an answer. An integration that publishes no rates
-    by design, or one the operator switched off, is excluded: the first has
-    nothing to say and the second was never asked.
-    """
 
-    return serving is None or serving.serving_catalog_missing
-
-
-def should_preserve_silent_serving_state(
+def preservation_reason(
     record: PriceRecord | None,
     provider_key: str,
     resolution: Resolution,
     *,
-    serving_unavailable: bool,
-) -> bool:
-    if not serving_unavailable or resolution.catalog_source == provider_key:
-        return False
-    if record is not None and record.is_settled and record.catalog_source == provider_key:
-        return True
-    return resolution.outcome in _SETTLING_OUTCOMES
+    consultations: SourceConsultations,
+) -> str | None:
+    consultations = consultations.with_unusable_resolution(resolution, provider_key)
+    if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
+        return "catalog price could not be parsed authoritatively"
+    owner = record.catalog_source if record is not None else None
+    if owner is not None and not consultations.source_answered(owner, provider_key):
+        return f"owning source {owner} did not provide an authoritative answer"
+    if (
+        owner is None
+        and record is not None
+        and record.is_settled
+        and resolution.outcome not in _SETTLING_OUTCOMES
+        and not (
+            consultations.source_answered(provider_key, provider_key)
+            and consultations.source_answered(PROVIDER_OPENROUTER, provider_key)
+        )
+    ):
+        return "an ownerless settled record cannot be weakened without complete source answers"
+    if (
+        resolution.outcome in _SETTLING_OUTCOMES
+        and resolution.catalog_source != provider_key
+        and owner != resolution.catalog_source
+        and not consultations.source_answered(provider_key, provider_key)
+    ):
+        return f"serving source {provider_key} did not provide an authoritative answer"
+    return None
 
 
 async def _run_lookup(provider_key: str, model_key: str) -> None:
@@ -317,23 +384,21 @@ async def _run_lookup(provider_key: str, model_key: str) -> None:
         return
     previous = claim.record
 
-    serving = await load_serving_context(provider_key)
-    reference = await _load_reference_catalog()
-
-    serving_catalog = serving.catalog if serving is not None else None
-    if serving_catalog is None and reference is None:
-        # Nothing could be consulted. Persisting an unresolved record here still
-        # matters: it is what bounds retries so traffic cannot keep re-dispatching
-        # this lookup while the catalogs are down.
-        await _persist_retryable_failure(
+    try:
+        async with asyncio.timeout(LOOKUP_WORK_TIMEOUT_SECONDS):
+            serving = await load_serving_context(provider_key)
+            reference = await _load_reference_catalog()
+    except TimeoutError:
+        await preserve_record_for_retry(
             provider_key,
             model_key,
-            detail="no catalog source was reachable",
-            previous=previous,
+            record=previous,
+            detail="catalog lookup timed out",
             claim_token=claim.token,
         )
         return
 
+    serving_catalog = serving.catalog if serving is not None else None
     catalogs = order_catalogs(serving_catalog, reference)
     resolution = resolve_model_price(
         model_key,
@@ -342,17 +407,19 @@ async def _run_lookup(provider_key: str, model_key: str) -> None:
         prefixes=serving.prefixes if serving is not None else (),
     )
 
-    if should_preserve_silent_serving_state(
+    reason = preservation_reason(
         previous,
         provider_key,
         resolution,
-        serving_unavailable=serving_source_did_not_answer(serving),
-    ):
-        await _persist_retryable_failure(
+        consultations=source_consultations(serving, reference_available=reference is not None),
+    )
+    if reason is not None:
+        await preserve_record_for_retry(
             provider_key,
             model_key,
-            detail="serving catalog unavailable; not settled from another source",
-            previous=previous,
+            record=previous,
+            detail=reason,
+            resolution=resolution,
             claim_token=claim.token,
         )
         return
@@ -390,21 +457,6 @@ async def _persist_resolution(
                 claim_token=claim_token,
             )
             return
-        if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
-            # The source listed the model and priced it in a shape this build
-            # cannot read. Preserve whatever was last parsed and retry later
-            # rather than settling a question the source did not answer.
-            await store.record_price_unparseable(
-                provider=provider_key,
-                incoming_model=model_key,
-                record=previous,
-                catalog_model=resolution.catalog_model,
-                catalog_source=resolution.catalog_source,
-                detail=resolution.detail or "catalog price could not be parsed",
-                previous_attempts=previous.attempt_count if previous is not None else 0,
-                claim_token=claim_token,
-            )
-            return
         if resolution.outcome is ResolutionOutcome.NOT_TOKEN_PRICED:
             assert resolution.catalog_model is not None
             assert resolution.catalog_source is not None
@@ -434,22 +486,35 @@ async def _persist_resolution(
         )
 
 
-async def _persist_retryable_failure(
+async def preserve_record_for_retry(
     provider_key: str,
     model_key: str,
     *,
+    record: PriceRecord | None,
     detail: str,
-    previous: PriceRecord | None,
-    claim_token: str,
-) -> None:
+    resolution: Resolution | None = None,
+    claim_token: str | None = None,
+    expected_updated_at: datetime | None = None,
+) -> bool:
     async with get_background_session() as session:
-        await ExternalModelPriceStore(session).record_retryable_failure(
+        return await ExternalModelPriceStore(session).record_retryable_failure(
             provider=provider_key,
             incoming_model=model_key,
-            record=previous,
+            record=record,
             detail=detail,
-            previous_attempts=previous.attempt_count if previous is not None else 0,
+            catalog_model=(
+                resolution.catalog_model
+                if resolution is not None and resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE
+                else None
+            ),
+            catalog_source=(
+                resolution.catalog_source
+                if resolution is not None and resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE
+                else None
+            ),
+            previous_attempts=record.attempt_count if record is not None else 0,
             claim_token=claim_token,
+            expected_updated_at=expected_updated_at,
         )
 
 
