@@ -94,11 +94,16 @@ def _install_priceless_provider(provider: str, *, prefixes: tuple[tuple[str, boo
     register_serving_context_loader(provider, _loader)
 
 
-def _install_disabled_provider(provider: str) -> None:
+def _install_disabled_provider(
+    provider: str,
+    *,
+    aliases: dict[str, str] | None = None,
+    prefixes: tuple[tuple[str, bool], ...] = (),
+) -> None:
     """An integration the operator switched off, not one that failed to answer."""
 
     async def _loader(_provider: str) -> ServingContext:
-        return ServingContext.disabled()
+        return ServingContext.disabled(aliases=aliases, prefixes=prefixes)
 
     register_serving_context_loader(provider, _loader)
 
@@ -719,6 +724,77 @@ async def test_a_disabled_integration_still_lets_the_reference_refresh_records_i
     record = await _record("vendor/model-x")
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_cliproxy_prefix_preserves_reference_owned_price(
+    db_setup,
+    monkeypatch,
+) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    price = ModelPrice(10.0, 50.0)
+    await _seed_resolved(
+        "cc/claude-fable-5",
+        price,
+        provider="cliproxy",
+        catalog_source="openrouter",
+    )
+    _install_disabled_provider("cliproxy", prefixes=(("cc/", True),))
+
+    async def _reference():
+        return _catalog("openrouter", {"anthropic/claude-fable-5": price}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.unresolved == []
+    assert report.unchanged == 1
+    record = await _record("cc/claude-fable-5", provider="cliproxy")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == price
+    assert record.catalog_source == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_integration_alias_refreshes_reference_owned_price(
+    db_setup,
+    monkeypatch,
+) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    await _seed_resolved(
+        "team-default",
+        ModelPrice(1.0, 2.0),
+        provider="cliproxy",
+        catalog_source="openrouter",
+    )
+    _install_disabled_provider(
+        "cliproxy",
+        aliases={"team-default": "anthropic/claude-fable-5"},
+    )
+
+    async def _reference():
+        return _catalog(
+            "openrouter",
+            {"anthropic/claude-fable-5": ModelPrice(10.0, 50.0)},
+        ), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert len(report.updated) == 1
+    record = await _record("team-default", provider="cliproxy")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.catalog_model == "anthropic/claude-fable-5"
+    assert record.price == ModelPrice(10.0, 50.0)
+    assert record.catalog_source == "openrouter"
 
 
 @pytest.mark.asyncio

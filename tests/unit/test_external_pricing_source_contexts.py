@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+import app.modules.proxy.external_pricing_sources as pricing_sources
 from app.modules.proxy.external_pricing_sources import (
     _load_cliproxy_context,
     _load_openrouter_context,
@@ -72,14 +73,24 @@ async def test_a_switched_off_integration_reports_itself_as_disabled(
     loader,
     module: str,
 ) -> None:
+    class _Prefix:
+        prefix = "routed/"
+        strip = True
+
     class _DisabledConfig:
         enabled = False
-        prefixes = ()
+        prefixes = (_Prefix(),)
+
+    async def _aliases():
+        return {"local-model": "vendor/canonical-model"}
 
     _patch_config(monkeypatch, module, provider, _DisabledConfig())
+    monkeypatch.setattr(pricing_sources, "load_model_aliases", _aliases)
 
     context = await loader(provider)
 
     assert context is not None
     assert context.integration_enabled is False
     assert context.serving_catalog_missing is False, "a disabled integration has not failed to answer"
+    assert context.aliases == {"local-model": "vendor/canonical-model"}
+    assert context.prefixes == (("routed/", True),)

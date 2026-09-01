@@ -95,7 +95,12 @@ class ServingContext:
     integration_enabled: bool = True
 
     @classmethod
-    def disabled(cls) -> "ServingContext":
+    def disabled(
+        cls,
+        *,
+        aliases: Mapping[str, str] | None = None,
+        prefixes: Sequence[tuple[str, bool]] = (),
+    ) -> "ServingContext":
         """The context of an integration the operator turned off.
 
         Distinct from a loader that raised: a switched-off integration has not
@@ -105,8 +110,8 @@ class ServingContext:
 
         return cls(
             catalog=None,
-            aliases={},
-            prefixes=(),
+            aliases={} if aliases is None else aliases,
+            prefixes=prefixes,
             publishes_price_catalog=False,
             integration_enabled=False,
         )
