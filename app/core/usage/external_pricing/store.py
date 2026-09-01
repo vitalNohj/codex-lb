@@ -51,6 +51,7 @@ class PriceRecord:
 
     provider: str
     incoming_model: str
+    raw_incoming_model: str
     status: ExternalPriceStatus
     catalog_model: str | None
     catalog_source: str | None
@@ -161,6 +162,7 @@ class ExternalModelPriceStore:
         values = {
             "provider": provider_key,
             "incoming_model": model_key,
+            "raw_incoming_model": incoming_model,
             "status": ExternalPriceStatus.PENDING.value,
             "catalog_model": None,
             "catalog_source": None,
@@ -411,6 +413,7 @@ class ExternalModelPriceStore:
         values = {
             "provider": provider_key,
             "incoming_model": model_key,
+            "raw_incoming_model": incoming_model,
             "status": status.value,
             "catalog_model": catalog_model,
             "catalog_source": catalog_source,
@@ -443,7 +446,13 @@ class ExternalModelPriceStore:
             statement = (
                 update(ExternalModelPrice)
                 .where(*conditions)
-                .values(**{key: value for key, value in values.items() if key not in ("provider", "incoming_model")})
+                .values(
+                    **{
+                        key: value
+                        for key, value in values.items()
+                        if key not in ("provider", "incoming_model", "raw_incoming_model")
+                    }
+                )
             )
             async with sqlite_writer_section():
                 result = await self._session.execute(statement)
@@ -469,7 +478,13 @@ class ExternalModelPriceStore:
             statement = (
                 update(ExternalModelPrice)
                 .where(*conditions)
-                .values(**{key: value for key, value in values.items() if key not in ("provider", "incoming_model")})
+                .values(
+                    **{
+                        key: value
+                        for key, value in values.items()
+                        if key not in ("provider", "incoming_model", "raw_incoming_model")
+                    }
+                )
             )
             async with sqlite_writer_section():
                 result = await self._session.execute(statement)
@@ -482,7 +497,11 @@ class ExternalModelPriceStore:
         # conflict target collapses them onto one row rather than raising.
         statement = statement.on_conflict_do_update(
             index_elements=[ExternalModelPrice.provider, ExternalModelPrice.incoming_model],
-            set_={key: value for key, value in values.items() if key not in ("provider", "incoming_model")},
+            set_={
+                key: value
+                for key, value in values.items()
+                if key not in ("provider", "incoming_model", "raw_incoming_model")
+            },
             where=(
                 and_(
                     ExternalModelPrice.input_per_1m.is_(None),
@@ -521,6 +540,7 @@ def _to_record(row: ExternalModelPrice) -> PriceRecord:
     return PriceRecord(
         provider=row.provider,
         incoming_model=row.incoming_model,
+        raw_incoming_model=row.raw_incoming_model,
         status=_parse_status(row.status),
         catalog_model=row.catalog_model,
         catalog_source=row.catalog_source,

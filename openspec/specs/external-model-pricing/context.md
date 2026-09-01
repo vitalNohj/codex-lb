@@ -43,9 +43,10 @@ calculated one so the two can never be confused again.
 | `app/modules/proxy/external_pricing_logging.py` | Cost fields for one request log row. |
 
 `external_model_prices` is the single owner of pricing records and resolution
-state. Each row is keyed on `(provider, incoming_model)` where `incoming_model`
-is the id exactly as the request carried it, prefix included, so the request
-path is one indexed read.
+state. Each row is keyed on a case-normalized `(provider, incoming_model)` cache
+identity so equivalent routed spellings share one indexed request-path read. The
+raw incoming model id is stored alongside that key, prefix and spelling intact,
+as routing provenance.
 
 ## Source precedence
 

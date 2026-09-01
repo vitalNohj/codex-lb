@@ -399,7 +399,14 @@ def preservation_reason(
         return "catalog price could not be parsed authoritatively"
     owner = record.catalog_source if record is not None else None
     if record is not None and record.is_settled:
-        if resolution.outcome is not ResolutionOutcome.RESOLVED:
+        authoritative_no_token_transition = (
+            record.is_priced
+            and owner is not None
+            and resolution.outcome is ResolutionOutcome.NOT_TOKEN_PRICED
+            and resolution.catalog_source == owner
+            and consultations.source_answered(owner, provider_key)
+        )
+        if resolution.outcome is not ResolutionOutcome.RESOLVED and not authoritative_no_token_transition:
             return "stored price has no valid replacement"
         if owner is not None and resolution.catalog_source != owner:
             return f"stored price remains owned by {owner}"

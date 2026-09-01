@@ -935,10 +935,10 @@ async def test_the_store_upsert_is_idempotent_for_the_same_key(db_setup) -> None
     del db_setup
     async with SessionLocal() as session:
         store = ExternalModelPriceStore(session)
-        for _ in range(3):
+        for incoming_model in ("Vendor/Model-X", "vendor/model-x"):
             await store.record_resolved(
                 provider="OrcaRouter",
-                incoming_model="Vendor/Model-X",
+                incoming_model=incoming_model,
                 catalog_model="vendor/model-x",
                 catalog_source="orcarouter",
                 price=ModelPrice(2.0, 4.0),
@@ -949,6 +949,7 @@ async def test_the_store_upsert_is_idempotent_for_the_same_key(db_setup) -> None
     assert len(records) == 1
     assert records[0].provider == "orcarouter"
     assert records[0].incoming_model == "vendor/model-x"
+    assert records[0].raw_incoming_model == "Vendor/Model-X"
 
 
 @pytest.mark.asyncio

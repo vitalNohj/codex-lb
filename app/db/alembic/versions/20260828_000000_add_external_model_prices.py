@@ -37,6 +37,13 @@ def _columns(connection: Connection, table_name: str) -> set[str]:
     return {str(column["name"]) for column in inspector.get_columns(table_name) if column.get("name") is not None}
 
 
+def _column_is_nullable(connection: Connection, table_name: str, column_name: str) -> bool:
+    return any(
+        column.get("name") == column_name and bool(column.get("nullable"))
+        for column in sa.inspect(connection).get_columns(table_name)
+    )
+
+
 def _has_table(connection: Connection, table_name: str) -> bool:
     return bool(sa.inspect(connection).has_table(table_name))
 
@@ -50,6 +57,7 @@ def upgrade() -> None:
             sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
             sa.Column("provider", sa.String(), nullable=False),
             sa.Column("incoming_model", sa.String(), nullable=False),
+            sa.Column("raw_incoming_model", sa.String(), nullable=False),
             sa.Column("status", sa.String(), nullable=False),
             sa.Column("catalog_model", sa.String(), nullable=True),
             sa.Column("catalog_source", sa.String(), nullable=True),
@@ -66,6 +74,22 @@ def upgrade() -> None:
             sa.UniqueConstraint("provider", "incoming_model", name="uq_external_model_prices_provider_model"),
         )
         op.create_index("idx_external_model_prices_retry", _PRICES_TABLE, ["status", "next_retry_at"])
+
+    price_columns = _columns(bind, _PRICES_TABLE)
+    if "raw_incoming_model" not in price_columns:
+        with op.batch_alter_table(_PRICES_TABLE) as batch_op:
+            batch_op.add_column(sa.Column("raw_incoming_model", sa.String(), nullable=True))
+    prices = sa.table(
+        _PRICES_TABLE,
+        sa.column("incoming_model", sa.String()),
+        sa.column("raw_incoming_model", sa.String()),
+    )
+    op.execute(
+        prices.update().where(prices.c.raw_incoming_model.is_(None)).values(raw_incoming_model=prices.c.incoming_model)
+    )
+    if _column_is_nullable(bind, _PRICES_TABLE, "raw_incoming_model"):
+        with op.batch_alter_table(_PRICES_TABLE) as batch_op:
+            batch_op.alter_column("raw_incoming_model", existing_type=sa.String(), nullable=False)
 
     log_columns = _columns(bind, _LOGS_TABLE)
     if log_columns:

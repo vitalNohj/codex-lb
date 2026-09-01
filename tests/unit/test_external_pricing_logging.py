@@ -123,6 +123,7 @@ async def test_invalid_calculated_total_stays_unknown_through_logging_and_quota(
     record = PriceRecord(
         provider="orcarouter",
         incoming_model="gpt-4o-lookalike",
+        raw_incoming_model="gpt-4o-lookalike",
         status=ExternalPriceStatus.RESOLVED,
         catalog_model="vendor/gpt-4o-lookalike",
         catalog_source="orcarouter",
@@ -284,6 +285,7 @@ async def test_claim_write_failure_cools_requests_and_recovers(monkeypatch: pyte
     original = PriceRecord(
         provider="orcarouter",
         incoming_model="vendor/model-x",
+        raw_incoming_model="vendor/model-x",
         status=ExternalPriceStatus.UNRESOLVED,
         catalog_model=None,
         catalog_source=None,

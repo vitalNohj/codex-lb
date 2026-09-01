@@ -374,10 +374,11 @@ class RequestLog(Base):
 class ExternalModelPrice(Base):
     """One durable resolution record for an external-integration model id.
 
-    The row is keyed on ``(provider, incoming_model)`` -- the id exactly as the
-    request carried it -- so the request path is a single primary-key read and
-    never re-derives a mapping it already made. Rates are whatever the
-    authoritative catalog published; no per-model price is declared in code.
+    The row is keyed on a normalized ``(provider, incoming_model)`` identity so
+    the request path is a single indexed read and never re-derives a mapping it
+    already made. The routed spelling is retained separately as provenance.
+    Rates are whatever the authoritative catalog published; no per-model price
+    is declared in code.
 
     ``status`` distinguishes a usable rate from the three unusable outcomes that
     must not be retried on every request: nothing matched, several catalog models
@@ -395,8 +396,9 @@ class ExternalModelPrice(Base):
     # Serving integration that received the request (``orcarouter``,
     # ``openrouter``, ``cliproxy``). Never a pricing-reference identity.
     provider: Mapped[str] = mapped_column(String, nullable=False)
-    # Lower-cased incoming model id, exactly as routed, prefix included.
+    # Normalized lookup identity, prefix included.
     incoming_model: Mapped[str] = mapped_column(String, nullable=False)
+    raw_incoming_model: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     # Catalog identity the incoming id was mapped to, when one was chosen.
     catalog_model: Mapped[str | None] = mapped_column(String, nullable=True)

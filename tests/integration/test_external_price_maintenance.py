@@ -476,7 +476,7 @@ async def test_an_unreadable_published_price_keeps_the_last_parsed_rate(db_setup
 
 
 @pytest.mark.asyncio
-async def test_a_stored_price_survives_a_catalog_no_price_entry(db_setup) -> None:
+async def test_a_same_owner_catalog_no_price_entry_replaces_a_stored_price(db_setup) -> None:
     del db_setup
     await _seed_resolved("vendor/router-model", ModelPrice(2.0, 4.0))
     _install_catalog("orcarouter", {"vendor/router-model": None})
@@ -485,10 +485,10 @@ async def test_a_stored_price_survives_a_catalog_no_price_entry(db_setup) -> Non
 
     record = await _record("vendor/router-model")
     assert record is not None
-    assert record.status is ExternalPriceStatus.RESOLVED
-    assert record.price == ModelPrice(2.0, 4.0)
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.price is None
     assert record.next_retry_at is None
-    assert len(report.preserved_without_replacement) == 1
+    assert len(report.became_not_token_priced) == 1
 
 
 @pytest.mark.asyncio
@@ -824,19 +824,19 @@ async def test_maintenance_refreshes_an_expired_lookup_claim(db_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_rate_that_becomes_unpriced_remains_sticky(db_setup) -> None:
+async def test_a_rate_that_becomes_authoritatively_unpriced_is_replaced(db_setup) -> None:
     del db_setup
     await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
     _install_catalog("orcarouter", {"vendor/model-x": None})
 
     report = await run_maintenance_pass()
 
-    assert report.became_not_token_priced == []
-    assert len(report.preserved_without_replacement) == 1
+    assert len(report.became_not_token_priced) == 1
+    assert report.preserved_without_replacement == []
     record = await _record("vendor/model-x")
     assert record is not None
-    assert record.status is ExternalPriceStatus.RESOLVED
-    assert record.price == ModelPrice(2.0, 4.0)
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.price is None
 
 
 @pytest.mark.asyncio

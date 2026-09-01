@@ -34,6 +34,7 @@ def _record(state: str, owner: str | None) -> PriceRecord:
     return PriceRecord(
         provider=_SERVING,
         incoming_model="vendor/model-x",
+        raw_incoming_model="vendor/model-x",
         status=statuses[state],
         catalog_model="vendor/model-x" if owner is not None else None,
         catalog_source=owner,
@@ -74,12 +75,6 @@ def _expected_preservation(
     if outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
         return True
 
-    if current_state == "resolved":
-        if outcome is not ResolutionOutcome.RESOLVED:
-            return True
-        if owner is not None and proposed_source != owner:
-            return True
-
     def answered(source: str) -> bool:
         if source == _SERVING:
             return serving.authoritative
@@ -89,6 +84,18 @@ def _expected_preservation(
 
     settled = current_state in {"resolved", "not_token_priced"}
     settling = outcome in {ResolutionOutcome.RESOLVED, ResolutionOutcome.NOT_TOKEN_PRICED}
+    authoritative_no_token_transition = (
+        current_state == "resolved"
+        and owner is not None
+        and outcome is ResolutionOutcome.NOT_TOKEN_PRICED
+        and proposed_source == owner
+        and answered(owner)
+    )
+    if settled:
+        if outcome is not ResolutionOutcome.RESOLVED and not authoritative_no_token_transition:
+            return True
+        if owner is not None and proposed_source != owner:
+            return True
     if settled and owner is not None and not answered(owner):
         return True
     if owner is None and settled and not settling and not (answered(_SERVING) and answered(_REFERENCE)):
