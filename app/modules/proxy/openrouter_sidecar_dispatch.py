@@ -55,6 +55,7 @@ from app.modules.proxy.external_pricing_logging import (
     ExternalRequestCost,
     cost_microdollars,
     external_request_cost,
+    external_stream_settlement,
     usage_tokens_from_sidecar,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
@@ -287,7 +288,8 @@ async def _openrouter_stream_iterator(
     usage: SidecarUsage | None = None
     billed_cost_usd: float | None = None
     completed = False
-    settled = False
+    error_code = "openrouter_sidecar_stream_incomplete"
+    error_message: str | None = None
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
@@ -314,18 +316,8 @@ async def _openrouter_stream_iterator(
                 if event_billed_cost is not None:
                     billed_cost_usd = event_billed_cost
     except OpenRouterSidecarUnavailableError:
-        await _release_openrouter_reservation(reservation, api_key=api_key)
-        await _log_openrouter_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="error",
-            error_code="openrouter_sidecar_unavailable",
-            error_message="OpenRouter sidecar unavailable",
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-        )
-        settled = True
+        error_code = "openrouter_sidecar_unavailable"
+        error_message = "OpenRouter sidecar unavailable"
         yield _error_sse(
             openai_error(
                 "openrouter_sidecar_unavailable",
@@ -335,18 +327,8 @@ async def _openrouter_stream_iterator(
         )
         yield b"data: [DONE]\n\n"
     except OpenRouterSidecarError as exc:
-        await _release_openrouter_reservation(reservation, api_key=api_key)
-        await _log_openrouter_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="error",
-            error_code="openrouter_sidecar_error",
-            error_message=exc.message,
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-        )
-        settled = True
+        error_code = "openrouter_sidecar_error"
+        error_message = exc.message
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=exc.message,
@@ -356,45 +338,36 @@ async def _openrouter_stream_iterator(
         yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
     except BaseException as exc:
-        await _release_openrouter_reservation(reservation, api_key=api_key)
+        error_code = "openrouter_sidecar_stream_interrupted"
+        error_message = str(exc) or exc.__class__.__name__
+        raise
+    finally:
+        settlement = await external_stream_settlement(
+            provider=OPENROUTER_PRICING_PROVIDER,
+            model=model,
+            usage=usage,
+            billed_cost_usd=billed_cost_usd,
+            completed=completed,
+        )
+        await _finalize_or_release_openrouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
         await _log_openrouter_request(
             api_key=api_key,
             model=model,
             started_at=started_at,
-            status="error",
-            error_code="openrouter_sidecar_stream_interrupted",
-            error_message=str(exc) or exc.__class__.__name__,
+            status="success" if completed else "error",
+            error_code=None if completed else error_code,
+            error_message=None if completed else error_message,
+            usage=settlement.usage,
             reasoning_effort=reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
+            cost=settlement.cost,
         )
-        settled = True
-        raise
-    finally:
-        if not settled:
-            usage_to_settle = usage if completed else None
-            cost = await _openrouter_request_cost(
-                model,
-                usage_to_settle,
-                billed_cost_usd=billed_cost_usd if completed else None,
-            )
-            await _finalize_or_release_openrouter_reservation(
-                reservation,
-                api_key=api_key,
-                model=model,
-                usage=usage_to_settle,
-                cost=cost,
-            )
-            await _log_openrouter_request(
-                api_key=api_key,
-                model=model,
-                started_at=started_at,
-                status="success" if completed else "error",
-                error_code=None if completed else "openrouter_sidecar_stream_incomplete",
-                usage=usage_to_settle,
-                reasoning_effort=reasoning_effort,
-                requested_reasoning_effort=requested_reasoning_effort,
-                cost=cost,
-            )
 
 
 class _SseUsageDecoder:

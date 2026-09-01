@@ -9,7 +9,9 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
+    _sidecar_request_cost,
     CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
+    SidecarUsage,
     _SseUsageDecoder,
     build_sidecar_chat_payload,
     claude_sidecar_request_log_error,
@@ -992,3 +994,76 @@ def test_extract_usage_prefers_openrouter_cost_over_cost_usd() -> None:
 
     assert usage is not None
     assert usage.cost_usd == 0.5
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("prompt_tokens", -1),
+        ("completion_tokens", 1.5),
+        ("prompt_tokens", float("nan")),
+        ("completion_tokens", float("inf")),
+        ("prompt_tokens", 10**400),
+    ],
+)
+def test_extract_usage_rejects_invalid_token_components(field: str, value: int | float) -> None:
+    raw_usage: dict[str, int | float] = {"prompt_tokens": 10, "completion_tokens": 5}
+    raw_usage[field] = value
+
+    assert extract_usage({"usage": raw_usage}) is None
+
+
+@pytest.mark.parametrize("details_key", ["prompt_tokens_details", "input_tokens_details"])
+@pytest.mark.parametrize("cached_tokens", [-1, 1.5, float("nan"), float("inf"), 10**400])
+def test_extract_usage_rejects_present_invalid_cached_tokens(
+    details_key: str,
+    cached_tokens: int | float,
+) -> None:
+    assert (
+        extract_usage(
+            {
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    details_key: {"cached_tokens": cached_tokens},
+                }
+            }
+        )
+        is None
+    )
+
+
+def test_extract_usage_allows_absent_cached_tokens() -> None:
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {},
+                "input_tokens_details": {},
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.cached_input_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_cliproxy_echoed_cost_is_not_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.usage.external_pricing.service import CalculatedCost
+    from app.db.models import ExternalPriceStatus
+    from app.modules.proxy import external_pricing_logging
+
+    async def _calculated_cost(**kwargs: object) -> tuple[CalculatedCost, ExternalPriceStatus]:
+        return CalculatedCost(0.25, "vendor/model", "openrouter"), ExternalPriceStatus.RESOLVED
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _calculated_cost)
+
+    result = await _sidecar_request_cost(
+        "cc/model",
+        SidecarUsage(input_tokens=10, output_tokens=5, cost_usd=99.0),
+    )
+
+    assert result.cost_usd == pytest.approx(0.25)
+    assert result.cost_source == "catalog_calculated"

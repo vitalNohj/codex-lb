@@ -1344,22 +1344,26 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     if not is_json_mapping(usage):
         return None
 
-    input_tokens = _int_field(usage, "prompt_tokens")
-    if input_tokens is None:
-        input_tokens = _int_field(usage, "input_tokens")
-    output_tokens = _int_field(usage, "completion_tokens")
-    if output_tokens is None:
-        output_tokens = _int_field(usage, "output_tokens")
-    if input_tokens is None or output_tokens is None:
+    input_present, input_tokens = _first_int_field(usage, "prompt_tokens", "input_tokens")
+    output_present, output_tokens = _first_int_field(usage, "completion_tokens", "output_tokens")
+    if not input_present or input_tokens is None or not output_present or output_tokens is None:
         return None
 
     cached_tokens = 0
     prompt_details = usage.get("prompt_tokens_details")
     if is_json_mapping(prompt_details):
-        cached_tokens = _int_field(prompt_details, "cached_tokens") or 0
+        cached_present, prompt_cached_tokens = _first_int_field(prompt_details, "cached_tokens")
+        if cached_present and prompt_cached_tokens is None:
+            return None
+        if prompt_cached_tokens is not None:
+            cached_tokens = prompt_cached_tokens
     input_details = usage.get("input_tokens_details")
     if is_json_mapping(input_details):
-        cached_tokens = _int_field(input_details, "cached_tokens") or cached_tokens
+        cached_present, input_cached_tokens = _first_int_field(input_details, "cached_tokens")
+        if cached_present and input_cached_tokens is None:
+            return None
+        if input_cached_tokens is not None:
+            cached_tokens = input_cached_tokens
 
     return SidecarUsage(
         input_tokens=input_tokens,
@@ -1433,12 +1437,22 @@ def _int_field(payload: Mapping[str, JsonValue], key: str) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if value >= 0 else None
+        try:
+            return value if value >= 0 and math.isfinite(float(value)) else None
+        except OverflowError:
+            return None
     if isinstance(value, float):
         if not math.isfinite(value) or value < 0 or not value.is_integer():
             return None
         return int(value)
     return None
+
+
+def _first_int_field(payload: Mapping[str, JsonValue], *keys: str) -> tuple[bool, int | None]:
+    for key in keys:
+        if key in payload:
+            return True, _int_field(payload, key)
+    return False, None
 
 
 def _float_field(payload: Mapping[str, JsonValue], key: str) -> float | None:

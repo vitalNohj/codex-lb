@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from math import isfinite
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 
 from app.core.usage.external_pricing import calculated_cost_for_request
 from app.core.usage.pricing import UsageTokens
@@ -54,14 +54,18 @@ class ExternalRequestCost:
     price_status: str | None
 
 
+_SidecarUsage = TypeVar("_SidecarUsage", bound=SidecarUsageLike)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalStreamSettlement(Generic[_SidecarUsage]):
+    usage: _SidecarUsage | None
+    cost: ExternalRequestCost
+
+
 def _cost_is_representable(cost_usd: float) -> bool:
     scaled_cost = cost_usd * 1_000_000
-    return (
-        isfinite(cost_usd)
-        and cost_usd >= 0
-        and isfinite(scaled_cost)
-        and scaled_cost <= _MAX_COST_MICRODOLLARS
-    )
+    return isfinite(cost_usd) and cost_usd >= 0 and isfinite(scaled_cost) and scaled_cost <= _MAX_COST_MICRODOLLARS
 
 
 async def external_request_cost(
@@ -113,6 +117,26 @@ async def external_request_cost(
         )
 
     return ExternalRequestCost(cost_usd=None, cost_source=None, price_status=status_value)
+
+
+async def external_stream_settlement(
+    *,
+    provider: str,
+    model: str,
+    usage: _SidecarUsage | None,
+    billed_cost_usd: float | None,
+    completed: bool,
+    service_tier: str | None = None,
+) -> ExternalStreamSettlement[_SidecarUsage]:
+    settled_usage = usage if completed else None
+    cost = await external_request_cost(
+        provider=provider,
+        model=model,
+        usage=usage_tokens_from_sidecar(settled_usage),
+        billed_cost_usd=billed_cost_usd,
+        service_tier=service_tier,
+    )
+    return ExternalStreamSettlement(usage=settled_usage, cost=cost)
 
 
 def cost_microdollars(cost: ExternalRequestCost | None) -> int:
