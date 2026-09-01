@@ -74,6 +74,27 @@ def test_calculate_reference_cost_none_without_usage() -> None:
     assert calculate_reference_cost("gpt-4o", None) is None
 
 
+@pytest.mark.parametrize(
+    "price, usage",
+    [
+        pytest.param(
+            ModelPrice(input_per_1m=1e308, output_per_1m=1e308),
+            UsageTokens(input_tokens=1_000_000, output_tokens=1_000_000),
+            id="overflowing-total",
+        ),
+        pytest.param(
+            ModelPrice(input_per_1m=1.0, output_per_1m=1.0),
+            UsageTokens(input_tokens=-1, output_tokens=2),
+            id="negative-input",
+        ),
+    ],
+)
+def test_invalid_runtime_reference_calculations_are_unknown(price: ModelPrice, usage: UsageTokens) -> None:
+    get_runtime_pricing_registry().update_models([("vendor/model-x", price)])
+
+    assert calculate_reference_cost("vendor/model-x", usage) is None
+
+
 def test_each_provider_resolves_its_own_price_for_a_shared_model_id() -> None:
     """Two providers listing the same id must not overwrite each other.
 

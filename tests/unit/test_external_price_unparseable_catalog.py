@@ -91,6 +91,7 @@ def test_a_catalog_declared_no_price_is_a_settled_not_token_priced_answer(pricin
         pytest.param({"prompt": "NaN", "completion": "0.000002"}, id="nan"),
         pytest.param({"prompt": "Infinity", "completion": "0.000002"}, id="infinity"),
         pytest.param({"prompt": "1e308", "completion": "0.000002"}, id="scaled-overflow"),
+        pytest.param({"prompt": 10**400, "completion": "0.000002"}, id="integer-overflow"),
         pytest.param("temporarily unavailable", id="invalid-scalar"),
         pytest.param(["temporarily unavailable"], id="invalid-list"),
     ],

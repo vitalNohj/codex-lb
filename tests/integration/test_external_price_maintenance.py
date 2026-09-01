@@ -7,8 +7,10 @@ changed, and it must never trade a known rate for nothing because a fetch failed
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.usage.external_pricing import service as pricing_service
 from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
@@ -22,6 +24,7 @@ from app.core.usage.external_pricing.service import (
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.pricing import ModelPrice, UsageTokens
+from app.core.utils.time import utcnow
 from app.db.models import ExternalModelPrice, ExternalPriceStatus
 from app.db.session import SessionLocal
 
@@ -722,6 +725,33 @@ async def test_maintenance_skips_an_active_lookup_until_a_later_pass(db_setup) -
 
     assert len(report.updated) == 1
     record = await _record("vendor/race")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(3.0, 6.0)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_refreshes_an_expired_lookup_claim(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        claim = await ExternalModelPriceStore(session).claim_lookup("orcarouter", "vendor/orphaned")
+        assert claim is not None
+        await session.execute(
+            update(ExternalModelPrice)
+            .where(
+                ExternalModelPrice.provider == "orcarouter",
+                ExternalModelPrice.incoming_model == "vendor/orphaned",
+            )
+            .values(next_retry_at=utcnow() - timedelta(seconds=1))
+        )
+        await session.commit()
+
+    _install_catalog("orcarouter", {"vendor/orphaned": ModelPrice(3.0, 6.0)})
+
+    report = await run_maintenance_pass()
+
+    assert len(report.newly_resolved) == 1
+    record = await _record("vendor/orphaned")
     assert record is not None
     assert record.status is ExternalPriceStatus.RESOLVED
     assert record.price == ModelPrice(3.0, 6.0)

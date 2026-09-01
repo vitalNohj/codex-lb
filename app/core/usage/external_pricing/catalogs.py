@@ -153,14 +153,17 @@ def _read_rate(value: JsonValue) -> tuple[_RateReading, float | None]:
     if isinstance(value, bool):
         return _RateReading.UNREADABLE, None
     if isinstance(value, (int, float)):
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError:
+            return _RateReading.UNREADABLE, None
     elif isinstance(value, str):
         stripped = value.strip()
         if not stripped:
             return _RateReading.DECLARED_NONE, None
         try:
             number = float(stripped)
-        except ValueError:
+        except (OverflowError, ValueError):
             return _RateReading.UNREADABLE, None
     else:
         return _RateReading.UNREADABLE, None

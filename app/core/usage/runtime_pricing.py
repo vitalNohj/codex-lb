@@ -205,8 +205,15 @@ def _normalize_key(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
+def _is_finite_nonnegative(value: float) -> bool:
+    try:
+        return isfinite(value) and value >= 0
+    except (OverflowError, TypeError):
+        return False
+
+
 def _is_usable_runtime_price(price: ModelPrice) -> bool:
-    return all(value is None or (isfinite(value) and value >= 0) for value in astuple(price))
+    return all(value is None or _is_finite_nonnegative(value) for value in astuple(price))
 
 
 _REGISTRY = RuntimePricingRegistry()
@@ -284,7 +291,12 @@ def calculate_reference_cost(
     """
     if usage is None:
         return None
+    if not all(_is_finite_nonnegative(value) for value in astuple(usage)):
+        return None
     price = get_reference_pricing_for_model(model, provider=provider)
     if price is None:
         return None
-    return calculate_cost_from_usage(usage, price, service_tier=service_tier)
+    cost = calculate_cost_from_usage(usage, price, service_tier=service_tier)
+    if cost is None or not _is_finite_nonnegative(cost):
+        return None
+    return cost
