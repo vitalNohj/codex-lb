@@ -145,7 +145,7 @@ A trailing `-YYYYMMDD` release stamp is the sole exception, because it names a r
 
 ### Requirement: Ambiguity abstains
 
-When more than one catalog model plausibly matches an incoming id, the system MUST abstain and record no price. An eligible but unresolved model MUST preserve the existing allow and quota behavior for that request.
+When more than one catalog model plausibly matches an incoming id, the system MUST abstain and record no price. An eligible but unresolved model MUST remain allowed and token-counted. Token-based quota enforcement MUST continue normally, while cost-based quota enforcement MUST accrue no cost for that request because no trustworthy amount exists.
 
 #### Scenario: Two vendors publishing one bare name abstains
 
@@ -160,7 +160,8 @@ When more than one catalog model plausibly matches an incoming id, the system MU
 - **GIVEN** an eligible model whose price is unresolved
 - **WHEN** a request uses that model
 - **THEN** the request is served and logged as before
-- **AND** allow and quota behavior is unchanged
+- **AND** allow-list and token-based quota behavior is unchanged
+- **AND** cost-based quota enforcement accrues no cost for the request
 
 ### Requirement: A model without published token rates is a settled outcome
 

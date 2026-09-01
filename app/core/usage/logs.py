@@ -4,7 +4,6 @@ from typing import Protocol
 
 from app.core.usage.external_pricing.providers import is_external_priced_log_source
 from app.core.usage.pricing import (
-    ModelPrice,
     UsageCostBreakdown,
     UsageTokens,
     calculate_cost_breakdown_from_usage,

@@ -83,10 +83,7 @@ class _FakeStreamContext:
         async def chunks():
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
-                yield (
-                    b'data: {"error":{"code":"context_length_exceeded",'
-                    b'"message":"Input token limit exceeded"}}\n\n'
-                )
+                yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
@@ -436,4 +433,3 @@ async def test_openrouter_sidecar_alias_is_discoverable_and_routes(async_client,
     assert response.status_code == 200
     assert fake_openrouter.chat_payloads
     assert fake_openrouter.chat_payloads[0]["model"] == "deepseek/deepseek-chat"
-

@@ -10,8 +10,8 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     _finalize_or_release_orcarouter_reservation,
-    _orcarouter_request_cost,
     _log_orcarouter_request,
+    _orcarouter_request_cost,
     build_orcarouter_chat_payload,
 )
 

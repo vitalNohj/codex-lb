@@ -9,9 +9,9 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
-    _sidecar_request_cost,
     CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
     SidecarUsage,
+    _sidecar_request_cost,
     _SseUsageDecoder,
     build_sidecar_chat_payload,
     claude_sidecar_request_log_error,

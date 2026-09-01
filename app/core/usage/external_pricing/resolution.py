@@ -391,9 +391,7 @@ def _unique_candidate(
     """
 
     candidates = [
-        (catalog, candidate)
-        for catalog, catalog_candidates in candidate_groups
-        for candidate in catalog_candidates
+        (catalog, candidate) for catalog, catalog_candidates in candidate_groups for candidate in catalog_candidates
     ]
     if excluded_model_ids:
         candidates = [item for item in candidates if item[1].lower() not in excluded_model_ids]
@@ -404,12 +402,21 @@ def _unique_candidate(
     unsuffixed = [item for item in candidates if not _has_variant_suffix(item[1])]
     if not _has_variant_suffix(model_key) and unsuffixed:
         candidates = unsuffixed
-    model_ids = {normalize_model_key(candidate) for _catalog, candidate in candidates}
-    if len(model_ids) > 1:
+    normalized_model_ids = {normalize_model_key(candidate) for _catalog, candidate in candidates}
+    # Punctuation folding establishes equivalence across sources, but two
+    # distinct canonical ids published by the *same* catalog are competing
+    # answers. Treating that in-source collision as one identity would make the
+    # insertion order silently choose a price.
+    has_catalog_collision = any(
+        len({candidate for candidate_catalog, candidate in candidates if candidate_catalog is catalog}) > 1
+        for catalog, _candidate in candidates
+    )
+    if len(normalized_model_ids) > 1 or has_catalog_collision:
+        canonical_model_ids = {candidate for _catalog, candidate in candidates}
         return Resolution(
             outcome=ResolutionOutcome.AMBIGUOUS,
             step=step,
-            detail="matches " + ", ".join(sorted(model_ids)),
+            detail="matches " + ", ".join(sorted(canonical_model_ids)),
         )
     catalog, candidate = candidates[0]
     entry = catalog.exact(candidate)

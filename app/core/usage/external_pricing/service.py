@@ -30,10 +30,10 @@ from datetime import datetime
 from enum import Enum
 
 from app.core.usage.external_pricing.catalogs import (
-    Catalog,
-    CatalogFetchError,
     OPENROUTER_REFERENCE_SOURCE,
     PROVIDER_OPENROUTER,
+    Catalog,
+    CatalogFetchError,
     fetch_openrouter_catalog,
     is_external_priced_provider,
     order_catalogs,

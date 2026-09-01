@@ -1,9 +1,11 @@
 # Model Pricing
 
 Requests routed through the OpenRouter, OrcaRouter, and CLIProxyAPI integrations
-get a cost in the request log by resolving the model against the provider's own
-published catalog. This page covers what the numbers mean and how to maintain
-them.
+get a cost in the request log by resolving the model against authoritative
+structured catalogs. OpenRouter and OrcaRouter publish their own rates;
+CLIProxyAPI publishes routing identities without rates, so its models resolve
+against the OpenRouter pricing reference. This page covers what the numbers mean
+and how to maintain them.
 
 Ollama and OmniRoute do not participate. Their request-log cost stays `--`:
 local inference has no published external rate, and OmniRoute's routing does not
@@ -24,8 +26,9 @@ tiered pricing, peak/off-peak multipliers, cache ratios, and minimum-quota
 rounding that cannot be reproduced from published rates, so a calculated figure
 never overwrites it.
 
-A calculated figure is recorded only when the upstream reported nothing. Hover
-the cost in the request log to see which kind you are looking at.
+A calculated figure is recorded only when the upstream reported nothing. It has
+a request-log tooltip identifying it as list price; an upstream-billed figure is
+shown without that caveat.
 
 Calculated costs are included in cost totals.
 
@@ -33,7 +36,7 @@ Calculated costs are included in cost totals.
 
 | Display | Meaning |
 |---|---|
-| A figure | A cost was recorded. Hover to see whether it is billed or list price. |
+| A figure | A cost was recorded. A catalog-calculated figure has a list-price tooltip; an upstream-billed figure does not. |
 | `!!` | A lookup ran for this model and found no published token price. Hover for the reason. |
 | `--` | No cost is expected yet: an excluded integration, no reported token usage, a model billed per request rather than per token, or the very first request for a model whose lookup had not finished. |
 
@@ -43,8 +46,10 @@ Calculated costs are included in cost totals.
 - **Ambiguous** - the name matches more than one catalog entry at different
   prices, so no price was recorded rather than guessing wrong.
 
-An unpriced model is still served and still counted normally. Allow lists and
-quotas are unaffected.
+An unpriced model is still served and its tokens are still counted. Allow lists
+are unaffected. Because there is no trustworthy cost to accrue, cost-based quota
+enforcement fails open for that request; token-based quota enforcement continues
+normally.
 
 ## How a price is found
 
