@@ -261,7 +261,16 @@ class ExternalModelPriceStore:
             retry_at=None,
             claim_token=claim_token,
             expected_updated_at=expected_updated_at,
-            preserve_existing_price=True,
+            # Deliberately NOT preserve_existing_price: this is the one path that
+            # may legitimately change a settled record, so the guard that keeps
+            # every other path from touching a stored price must not apply here.
+            # Reaching this method already requires an authoritative statement -
+            # ``_entry_resolution`` only yields NOT_TOKEN_PRICED for an entry the
+            # catalog listed and classified ``NO_TOKEN_RATE`` (a published
+            # negative sentinel, explicit null, or empty string). Absence from a
+            # catalog, an unreadable pricing shape, and every fetch or database
+            # failure route elsewhere and still leave the stored price intact, so
+            # no removal-detection heuristic is involved.
         )
 
     async def record_price_unparseable(
@@ -311,12 +320,18 @@ class ExternalModelPriceStore:
         attempts = previous_attempts + 1
         if record is not None and record.is_settled:
             return False
+        # An unsettled record still carries what the last lookup learned about the
+        # model's identity. A transient failure says nothing about that, so the
+        # record's own catalog identity survives; only a caller that actually
+        # identified the model supplies a replacement.
         return await self._upsert(
             provider=provider,
             incoming_model=incoming_model,
             status=ExternalPriceStatus.UNRESOLVED,
-            catalog_model=catalog_model,
-            catalog_source=catalog_source,
+            catalog_model=catalog_model if catalog_model is not None else (record.catalog_model if record else None),
+            catalog_source=(
+                catalog_source if catalog_source is not None else (record.catalog_source if record else None)
+            ),
             input_per_1m=None,
             output_per_1m=None,
             resolution_step=None,
@@ -326,6 +341,10 @@ class ExternalModelPriceStore:
             claim_token=claim_token,
             expected_updated_at=expected_updated_at,
             preserve_existing_price=True,
+            # ``retrieved_at`` records when this build last learned something
+            # about the model from a catalog. A failed attempt learned nothing,
+            # so restamping it would misreport how fresh the provenance is.
+            retrieved_at=record.retrieved_at if record is not None else None,
         )
 
     async def record_unresolved(

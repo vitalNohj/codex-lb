@@ -1016,22 +1016,33 @@ def test_extract_usage_rejects_invalid_token_components(field: str, value: int |
 
 @pytest.mark.parametrize("details_key", ["prompt_tokens_details", "input_tokens_details"])
 @pytest.mark.parametrize("cached_tokens", [-1, 1.5, float("nan"), float("inf"), 10**400])
-def test_extract_usage_rejects_present_invalid_cached_tokens(
+def test_extract_usage_drops_an_invalid_cached_token_field_without_losing_required_counts(
     details_key: str,
     cached_tokens: int | float,
 ) -> None:
-    assert (
-        extract_usage(
-            {
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    details_key: {"cached_tokens": cached_tokens},
-                }
+    """An unusable optional refinement must not void the required accounting.
+
+    This previously asserted the whole usage object was discarded. That rejected
+    the malformed field correctly but took the request's real input and output
+    tokens with it, so logging and quota settlement lost usage the upstream had
+    reported. The assertion below is stricter: the bad value is still refused,
+    and the counts that drive billing survive.
+    """
+
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                details_key: {"cached_tokens": cached_tokens},
             }
-        )
-        is None
+        }
     )
+
+    assert usage is not None
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+    assert usage.cached_input_tokens == 0
 
 
 def test_extract_usage_allows_absent_cached_tokens() -> None:

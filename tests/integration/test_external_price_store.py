@@ -1024,7 +1024,13 @@ async def test_recording_a_price_clears_prior_failure_state(db_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unpriced_writes_cannot_clear_a_stored_price(db_setup) -> None:
+async def test_absence_cannot_clear_a_stored_price(db_setup) -> None:
+    """A model merely missing from a catalog never clears a stored price.
+
+    Absence is indistinguishable from an outage or a catalog change, so it is
+    never evidence that a price stopped existing.
+    """
+
     del db_setup
     async with SessionLocal() as session:
         store = ExternalModelPriceStore(session)
@@ -1042,6 +1048,36 @@ async def test_unpriced_writes_cannot_clear_a_stored_price(db_setup) -> None:
             status=ExternalPriceStatus.UNRESOLVED,
             detail="no catalog entry",
         )
+        record = await store.get("orcarouter", "vendor/model-x")
+
+    assert unresolved_applied is False
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
+
+
+@pytest.mark.asyncio
+async def test_an_authoritative_no_token_price_statement_updates_a_priced_record(db_setup) -> None:
+    """The one transition that may change a settled record.
+
+    Reaching ``record_not_token_priced`` requires the catalog to have listed the
+    model and published a recognized no-token-price value, which is a statement
+    rather than an inference. Blocking it here made that authoritative transition
+    unexpressible: a model that genuinely stopped being token priced kept billing
+    at a rate its own catalog no longer published.
+    """
+
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+        )
         unpriced_applied = await store.record_not_token_priced(
             provider="orcarouter",
             incoming_model="vendor/model-x",
@@ -1052,11 +1088,11 @@ async def test_unpriced_writes_cannot_clear_a_stored_price(db_setup) -> None:
         )
         record = await store.get("orcarouter", "vendor/model-x")
 
-    assert unresolved_applied is False
-    assert unpriced_applied is False
+    assert unpriced_applied is True
     assert record is not None
-    assert record.status is ExternalPriceStatus.RESOLVED
-    assert record.price == ModelPrice(2.0, 4.0)
+    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.price is None
+    assert record.next_retry_at is None
 
 
 def test_retry_backoff_widens_then_caps() -> None:

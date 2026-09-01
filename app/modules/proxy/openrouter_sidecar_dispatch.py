@@ -214,6 +214,15 @@ async def proxy_chat_to_openrouter(
             headers=dict(rate_limit_headers),
         )
     except OpenRouterSidecarError as exc:
+        # A cursor-compat context-length response is turned into a synthetic
+        # SUCCESS for the client, so it must not fall through to the error
+        # settlement below: that would log it as an error and finalize a
+        # reservation the client was never charged for. Handled first, releasing
+        # the reservation, exactly as before billed spend was routed through the
+        # shared settlement boundary.
+        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
+            await _release_openrouter_reservation(reservation, api_key=api_key)
+            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         settlement = await external_response_settlement(
             provider=OPENROUTER_PRICING_PROVIDER,
             model=effective_model,
@@ -240,8 +249,6 @@ async def proxy_chat_to_openrouter(
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
             cost=settlement.cost,
         )
-        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
-            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=exc.message,

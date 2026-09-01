@@ -217,6 +217,14 @@ async def proxy_chat_to_orcarouter(
         )
     except OrcaRouterSidecarError as exc:
         sanitized_message = sanitize_orcarouter_message(exc.message, api_key=client.config.api_key)
+        # A cursor-compat context-length response is turned into a synthetic
+        # SUCCESS for the client, so it must not fall through to the error
+        # settlement below: that would log it as an error and finalize a
+        # reservation the client was never charged for. Mirrors the OpenRouter
+        # path.
+        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
+            await _release_orcarouter_reservation(reservation, api_key=api_key)
+            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         settlement = await external_response_settlement(
             provider=ORCAROUTER_PRICING_PROVIDER,
             model=effective_model,
@@ -243,8 +251,6 @@ async def proxy_chat_to_orcarouter(
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
             cost=settlement.cost,
         )
-        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
-            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=sanitized_message,

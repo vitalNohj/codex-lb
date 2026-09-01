@@ -1350,19 +1350,20 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     if not input_present or input_tokens is None or not output_present or output_tokens is None:
         return None
 
+    # ``cached_tokens`` is optional refinement of an input count we already have.
+    # An unusable value is dropped rather than voiding the whole object: input and
+    # output tokens are the required accounting that drives logging and quota
+    # settlement, and discarding them because an optional field was malformed
+    # loses real usage the upstream did report.
     cached_tokens = 0
     prompt_details = usage.get("prompt_tokens_details")
     if is_json_mapping(prompt_details):
-        cached_present, prompt_cached_tokens = _first_int_field(prompt_details, "cached_tokens")
-        if cached_present and prompt_cached_tokens is None:
-            return None
+        _, prompt_cached_tokens = _first_int_field(prompt_details, "cached_tokens")
         if prompt_cached_tokens is not None:
             cached_tokens = prompt_cached_tokens
     input_details = usage.get("input_tokens_details")
     if is_json_mapping(input_details):
-        cached_present, input_cached_tokens = _first_int_field(input_details, "cached_tokens")
-        if cached_present and input_cached_tokens is None:
-            return None
+        _, input_cached_tokens = _first_int_field(input_details, "cached_tokens")
         if input_cached_tokens is not None:
             cached_tokens = input_cached_tokens
 

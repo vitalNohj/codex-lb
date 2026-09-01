@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarConfig,
+    OpenRouterSidecarError,
     OpenRouterSidecarUnavailableError,
 )
 from app.core.config.settings import get_settings
@@ -372,6 +373,55 @@ async def test_openrouter_sidecar_cursor_stream_context_limit_returns_synthetic_
         "total_tokens": CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
     }
     assert body.rstrip().endswith(b"data: [DONE]")
+
+
+@pytest.mark.asyncio
+async def test_cursor_context_limit_error_is_logged_as_success_and_releases_its_reservation(
+    async_client,
+    openrouter_enabled,
+    fake_openrouter,
+):
+    """A synthetic success must not be recorded as an error.
+
+    The client receives HTTP 200 with synthetic usage, so logging it as an error
+    and finalizing its reservation would charge quota for a request that was
+    never billed and would report a failure the caller never saw.
+    """
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "openrouterSidecarEnabled": True,
+            "openrouterSidecarApiKey": "openrouter-key",
+            "openrouterSidecarModelPrefixes": ["deepseek/"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("cursor-context-limit-key")
+    fake_openrouter.chat_error = OpenRouterSidecarError(
+        400,
+        "This endpoint's maximum context length is 163840 tokens",
+        body={"error": {"code": "context_length_exceeded", "message": "maximum context length"}},
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}", "User-Agent": "Cursor/1.0"},
+        json={"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": "too much"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"]["prompt_tokens"] == CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
+
+    # The client saw a success, so nothing may record this as a failed request.
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "openrouter_sidecar"]
+    assert not [log for log in sidecar_logs if log.status == "error"]
+    assert not [log for log in sidecar_logs if log.error_code == "openrouter_sidecar_error"]
+    # Released, never finalized: the upstream refused the request, so there is no
+    # spend to settle and the reserved quota must go back.
+    assert await _reservation_statuses() == ["released"]
 
 
 @pytest.mark.asyncio
