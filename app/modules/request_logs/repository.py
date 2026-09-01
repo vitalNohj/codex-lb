@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log, declares_price_provenance
 from app.core.usage.types import (
     BucketConversationAggregate,
@@ -21,7 +22,15 @@ from app.core.usage.types import (
 )
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, CostSource, RequestKind, RequestLog
+from app.db.models import (
+    Account,
+    ApiKey,
+    ClaudeSidecarUsageEvent,
+    CostSource,
+    ExternalPriceStatus,
+    RequestKind,
+    RequestLog,
+)
 from app.db.session import sqlite_writer_section
 
 # CLIProxyAPI records its usage event within a couple of seconds of the
@@ -86,6 +95,12 @@ class PreviousResponseOwnerRecord:
 class RequestLogsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_external_price_statuses(
+        self,
+        keys: set[tuple[str, str]],
+    ) -> dict[tuple[str, str], ExternalPriceStatus]:
+        return await ExternalModelPriceStore(self._session).get_statuses(keys)
 
     @staticmethod
     def _exclude_warmup_clause() -> ColumnElement[bool]:

@@ -35,14 +35,16 @@ def to_request_log_entry(
     *,
     api_key_name: str | None = None,
     sidecar_account_label: str | None = None,
+    display_price_status: str | None = None,
 ) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
     cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
     reference_cost_usd = round(log.reference_cost_usd, 6) if log.reference_cost_usd is not None else None
+    price_status = display_price_status if display_price_status is not None else log.price_status
     savings_usd = _savings_usd(
         actual=cost_breakdown.total_usd,
         reference=reference_cost_usd,
-        cost_is_unknown=cost_breakdown.total_usd is None and log.price_status is not None,
+        cost_is_unknown=cost_breakdown.total_usd is None and price_status is not None,
     )
     return RequestLogEntry(
         requested_at=log.requested_at,
@@ -86,7 +88,7 @@ def to_request_log_entry(
         cached_input_tokens=cached_input_tokens_from_log(log_like),
         cost_usd=cost_breakdown.total_usd,
         cost_source=log.cost_source,
-        price_status=log.price_status,
+        price_status=price_status,
         cost_breakdown=RequestLogCostBreakdown(**cost_breakdown.__dict__),
         reference_cost_usd=reference_cost_usd,
         savings_usd=savings_usd,

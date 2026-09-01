@@ -13,11 +13,12 @@ cannot strand the model indefinitely.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, or_, select, update
+from sqlalchemy import Select, and_, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,6 +122,28 @@ class ExternalModelPriceStore:
         result = await self._session.execute(self._select_one(provider_key, model_key))
         row = result.scalar_one_or_none()
         return _to_record(row) if row is not None else None
+
+    async def get_statuses(
+        self,
+        keys: Collection[tuple[str, str]],
+    ) -> dict[tuple[str, str], ExternalPriceStatus]:
+        normalized_keys: set[tuple[str, str]] = set()
+        for provider, incoming_model in keys:
+            normalized = normalize_lookup_key(provider, incoming_model)
+            if all(normalized):
+                normalized_keys.add(normalized)
+        if not normalized_keys:
+            return {}
+        result = await self._session.execute(
+            select(
+                ExternalModelPrice.provider,
+                ExternalModelPrice.incoming_model,
+                ExternalModelPrice.status,
+            ).where(tuple_(ExternalModelPrice.provider, ExternalModelPrice.incoming_model).in_(normalized_keys))
+        )
+        return {
+            (provider, incoming_model): ExternalPriceStatus(status) for provider, incoming_model, status in result.all()
+        }
 
     async def list_all(self) -> list[PriceRecord]:
         result = await self._session.execute(

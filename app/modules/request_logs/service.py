@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.core.usage.external_pricing.providers import external_priced_provider_for_log_source
+from app.core.usage.external_pricing.store import normalize_lookup_key
 from app.modules.request_logs.mappers import (
     QUOTA_CODES,
     RATE_LIMIT_CODES,
@@ -105,11 +107,23 @@ class RequestLogsService:
         sidecar_account_label_by_request_id = await self._repo.get_claude_sidecar_account_labels_for_logs(
             claude_sidecar_logs
         )
+        price_key_by_log_id = {
+            log.id: normalize_lookup_key(provider, log.model)
+            for log in logs
+            if (provider := external_priced_provider_for_log_source(log.source)) is not None
+        }
+        current_price_status_by_key = await self._repo.get_external_price_statuses(set(price_key_by_log_id.values()))
         requests = [
             to_request_log_entry(
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
                 sidecar_account_label=sidecar_account_label_by_request_id.get(log.request_id),
+                display_price_status=(
+                    current_status.value
+                    if (key := price_key_by_log_id.get(log.id)) is not None
+                    and (current_status := current_price_status_by_key.get(key)) is not None
+                    else None
+                ),
             )
             for log in logs
         ]

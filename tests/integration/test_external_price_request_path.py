@@ -24,11 +24,13 @@ from app.core.usage.external_pricing.service import (
     register_serving_context_loader,
     reset_serving_context_loaders,
 )
+from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.pricing import ModelPrice
 from app.db.models import ApiKeyLimit, CostSource, ExternalPriceStatus, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.request_logs.repository import RequestLogsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -276,9 +278,7 @@ async def test_an_unresolvable_model_records_no_cost_instead_of_a_glob_derived_o
     for entry in entries:
         assert entry["costUsd"] is None, "the API must not price an unresolved model from the static table"
         assert entry["costBreakdown"]["totalUsd"] is None
-    statuses = {entry["priceStatus"] for entry in entries}
-    assert ExternalPriceStatus.UNRESOLVED.value in statuses, "the post-lookup row must earn the marker"
-    assert statuses <= {ExternalPriceStatus.PENDING.value, ExternalPriceStatus.UNRESOLVED.value}
+    assert {entry["priceStatus"] for entry in entries} == {ExternalPriceStatus.UNRESOLVED.value}
 
 
 @pytest.mark.asyncio
@@ -386,12 +386,92 @@ async def test_the_request_log_api_exposes_cost_provenance(
     assert entries
 
     calculated = [entry for entry in entries if entry["costSource"] == CostSource.CATALOG_CALCULATED.value]
-    pending = [entry for entry in entries if entry["priceStatus"] == ExternalPriceStatus.PENDING.value]
     assert calculated, f"expected a calculated row in {json.dumps(entries)[:400]}"
-    assert pending, "the first, pre-lookup request must be marked pending"
+    assert {entry["priceStatus"] for entry in entries} == {ExternalPriceStatus.RESOLVED.value}
     assert not [entry for entry in entries if entry["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value], (
         "a model that resolved must not leave an unresolved row behind"
     )
+
+
+@pytest.mark.asyncio
+async def test_request_log_display_uses_current_durable_price_status(async_client) -> None:
+    models = {
+        "unresolved": "vendor/display-unresolved",
+        "ambiguous": "vendor/display-ambiguous",
+        "resolved": "vendor/display-resolved",
+        "pending": "vendor/display-pending",
+        "missing_input": "vendor/display-missing-input",
+        "missing_output": "vendor/display-missing-output",
+        "not_token_priced": "vendor/display-router",
+        "billed": "vendor/display-billed",
+    }
+    async with SessionLocal() as session:
+        logs = RequestLogsRepository(session)
+        for label, model in models.items():
+            input_tokens = None if label == "missing_input" else 10
+            output_tokens = None if label == "missing_output" else 5
+            billed = label == "billed"
+            await logs.add_log(
+                account_id=None,
+                request_id=f"req-display-{label}",
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=1,
+                status="success",
+                error_code=None,
+                source="orcarouter_sidecar",
+                cost_usd=0.01 if billed else None,
+                cost_source=CostSource.UPSTREAM_BILLED.value if billed else None,
+                price_status=ExternalPriceStatus.PENDING.value,
+            )
+
+        store = ExternalModelPriceStore(session)
+        for label in ("unresolved", "missing_input", "missing_output", "billed"):
+            await store.record_unresolved(
+                provider="orcarouter",
+                incoming_model=models[label],
+                status=ExternalPriceStatus.UNRESOLVED,
+                detail="no catalog match",
+            )
+        await store.record_unresolved(
+            provider="orcarouter",
+            incoming_model=models["ambiguous"],
+            status=ExternalPriceStatus.AMBIGUOUS,
+            detail="multiple catalog matches",
+        )
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model=models["resolved"],
+            catalog_model=models["resolved"],
+            catalog_source="orcarouter",
+            price=ModelPrice(input_per_1m=2.0, output_per_1m=4.0),
+            resolution_step="exact",
+        )
+        await store.record_not_token_priced(
+            provider="orcarouter",
+            incoming_model=models["not_token_priced"],
+            catalog_model=models["not_token_priced"],
+            catalog_source="orcarouter",
+            resolution_step="exact",
+            detail="router model",
+        )
+
+    response = await async_client.get("/api/request-logs")
+    assert response.status_code == 200
+    entries = {entry["model"]: entry for entry in response.json()["requests"] if entry["model"] in models.values()}
+
+    assert entries[models["unresolved"]]["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value
+    assert entries[models["ambiguous"]]["priceStatus"] == ExternalPriceStatus.AMBIGUOUS.value
+    assert entries[models["resolved"]]["priceStatus"] == ExternalPriceStatus.RESOLVED.value
+    assert entries[models["pending"]]["priceStatus"] == ExternalPriceStatus.PENDING.value
+    assert entries[models["missing_input"]]["inputTokens"] is None
+    assert entries[models["missing_input"]]["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value
+    assert entries[models["missing_output"]]["outputTokens"] is None
+    assert entries[models["missing_output"]]["priceStatus"] == ExternalPriceStatus.UNRESOLVED.value
+    assert entries[models["not_token_priced"]]["priceStatus"] == ExternalPriceStatus.NOT_TOKEN_PRICED.value
+    assert entries[models["billed"]]["costUsd"] == pytest.approx(0.01)
+    assert entries[models["billed"]]["costSource"] == CostSource.UPSTREAM_BILLED.value
 
 
 @pytest.mark.asyncio
