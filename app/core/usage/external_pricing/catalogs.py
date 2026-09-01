@@ -31,7 +31,7 @@ import asyncio
 import json
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import cast
 
@@ -176,7 +176,7 @@ def _read_rate(value: JsonValue) -> tuple[_RateReading, float | None]:
     return _RateReading.PARSED, number
 
 
-def _read_rate_field(raw_pricing: dict[str, JsonValue], key: str) -> _RateReading:
+def _read_rate_field(raw_pricing: Mapping[str, JsonValue], key: str) -> _RateReading:
     if key not in raw_pricing:
         return _RateReading.MISSING
     return _read_rate(raw_pricing[key])[0]

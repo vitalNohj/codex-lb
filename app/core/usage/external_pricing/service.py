@@ -309,7 +309,7 @@ async def calculated_cost_for_request(
         return None, None
 
     record = await _read_record(provider_key, model_key)
-    if record is _StorageResult.UNAVAILABLE:
+    if isinstance(record, _StorageResult):
         return None, ExternalPriceStatus.PENDING
 
     retryable_status = record is not None and record.status in (

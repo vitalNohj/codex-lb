@@ -16,9 +16,10 @@ import logging
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, or_, select, tuple_, update
+from sqlalchemy import CursorResult, Select, and_, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -455,7 +456,7 @@ class ExternalModelPriceStore:
                 )
             )
             async with sqlite_writer_section():
-                result = await self._session.execute(statement)
+                result = cast(CursorResult[Any], await self._session.execute(statement))
                 await self._session.commit()
             return bool(result.rowcount)
         if expected_updated_at is not None:
@@ -487,7 +488,7 @@ class ExternalModelPriceStore:
                 )
             )
             async with sqlite_writer_section():
-                result = await self._session.execute(statement)
+                result = cast(CursorResult[Any], await self._session.execute(statement))
                 await self._session.commit()
             return bool(result.rowcount)
         dialect = self._session.bind.dialect.name if self._session.bind is not None else "sqlite"

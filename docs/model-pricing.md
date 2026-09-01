@@ -37,14 +37,17 @@ Calculated costs are included in cost totals.
 | Display | Meaning |
 |---|---|
 | A figure | A cost was recorded. A catalog-calculated figure has a list-price tooltip; an upstream-billed figure does not. |
-| `!!` | A lookup ran for this model and found no published token price. Hover for the reason. |
+| `!!` | A lookup completed without a usable token price, or failed. Hover for the reason. |
 | `--` | No cost is expected yet: an excluded integration, no reported token usage, a model billed per request rather than per token, or the very first request for a model whose lookup had not finished. |
 
-`!!` has two causes, both shown in the tooltip:
+`!!` has three causes, all shown in the tooltip:
 
 - **Not found** - no catalog lists a price for this model id yet.
 - **Ambiguous** - the name matches more than one catalog entry at different
   prices, so no price was recorded rather than guessing wrong.
+- **Lookup failure** - a catalog or pricing lookup failed or timed out. The
+  previous price is preserved when one exists; otherwise the lookup is retried
+  after its backoff window.
 
 An unpriced model is still served and its tokens are still counted. Allow lists
 are unaffected. Because there is no trustworthy cost to accrue, cost-based quota
@@ -82,14 +85,14 @@ competing candidates are saved so you can see them in the maintenance report.
 ## Lookup behavior
 
 The first request for a model id you have not routed before records no cost and
-schedules one background lookup. Requests never wait on it. From the second
-request onward the price comes from local storage with no network work.
+schedules one background lookup. Requests never wait on it. Once that lookup
+succeeds, later requests read the price from local storage with no network work.
 The lookup is claimed with a short durable lease, so separate replicas still run
 one job and a worker crash becomes retryable when the lease expires.
 
 That first row shows `--`, not `!!`. No lookup had concluded anything when it was
 written, so it is not evidence that the model has no price. `!!` appears only
-after a lookup has actually run and failed to find one.
+after a lookup has completed without a usable price or has failed.
 
 A model that could not be priced is retried on a widening schedule (5 minutes,
 30 minutes, 2 hours, 6 hours, then daily) rather than on every request, so an
