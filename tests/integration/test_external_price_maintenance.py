@@ -8,6 +8,7 @@ changed, and it must never trade a known rate for nothing because a fetch failed
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 from app.core.usage.external_pricing import service as pricing_service
 from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
@@ -21,7 +22,7 @@ from app.core.usage.external_pricing.service import (
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.pricing import ModelPrice, UsageTokens
-from app.db.models import ExternalPriceStatus
+from app.db.models import ExternalModelPrice, ExternalPriceStatus
 from app.db.session import SessionLocal
 
 pytestmark = pytest.mark.integration
@@ -678,6 +679,52 @@ async def test_a_stale_maintenance_write_cannot_clear_a_concurrent_resolution(db
     assert record is not None
     assert record.status is ExternalPriceStatus.RESOLVED
     assert record.price == ModelPrice(2.0, 4.0)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_skips_an_active_lookup_until_a_later_pass(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        claim = await ExternalModelPriceStore(session).claim_lookup("orcarouter", "vendor/race")
+    assert claim is not None
+
+    async def _failing_loader(_provider: str) -> ServingContext | None:
+        raise RuntimeError("serving catalog timed out")
+
+    register_serving_context_loader("orcarouter", _failing_loader)
+
+    await run_maintenance_pass()
+
+    async with SessionLocal() as session:
+        active = (
+            await session.execute(
+                select(ExternalModelPrice).where(
+                    ExternalModelPrice.provider == "orcarouter",
+                    ExternalModelPrice.incoming_model == "vendor/race",
+                )
+            )
+        ).scalar_one()
+        assert active.lookup_token == claim.token
+        applied = await ExternalModelPriceStore(session).record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/race",
+            catalog_model="vendor/race",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+            claim_token=claim.token,
+        )
+    assert applied is True
+
+    _install_catalog("orcarouter", {"vendor/race": ModelPrice(3.0, 6.0)})
+
+    report = await run_maintenance_pass()
+
+    assert len(report.updated) == 1
+    record = await _record("vendor/race")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(3.0, 6.0)
 
 
 @pytest.mark.asyncio

@@ -426,6 +426,7 @@ class ExternalModelPriceStore:
                     ExternalModelPrice.provider == provider_key,
                     ExternalModelPrice.incoming_model == model_key,
                     ExternalModelPrice.updated_at == expected_updated_at,
+                    ExternalModelPrice.lookup_token.is_(None),
                 )
                 .values(**{key: value for key, value in values.items() if key not in ("provider", "incoming_model")})
             )
