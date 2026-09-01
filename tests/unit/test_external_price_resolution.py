@@ -423,6 +423,18 @@ def test_a_bare_name_with_the_same_identity_in_both_catalogs_prefers_serving() -
     assert resolution.price == _price(1.0, 2.0)
 
 
+def test_punctuation_variants_across_catalogs_prefer_serving_identity() -> None:
+    serving = _catalog("orcarouter", {"vendor/model.x": _price(1.0, 2.0)})
+    reference = _catalog("openrouter", {"vendor/model-x": _price(9.0, 18.0)})
+
+    resolution = resolve_model_price("vendor/model_x", catalogs=[serving, reference])
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.catalog_model == "vendor/model.x"
+    assert resolution.catalog_source == "orcarouter"
+    assert resolution.price == _price(1.0, 2.0)
+
+
 def test_configured_routing_prefix_is_stripped_before_catalog_lookup() -> None:
     """A CLIProxyAPI id resolves via its configured prefix, not by guesswork.
 

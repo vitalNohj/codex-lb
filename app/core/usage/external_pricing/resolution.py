@@ -404,7 +404,7 @@ def _unique_candidate(
     unsuffixed = [item for item in candidates if not _has_variant_suffix(item[1])]
     if not _has_variant_suffix(model_key) and unsuffixed:
         candidates = unsuffixed
-    model_ids = {candidate.lower() for _catalog, candidate in candidates}
+    model_ids = {normalize_model_key(candidate) for _catalog, candidate in candidates}
     if len(model_ids) > 1:
         return Resolution(
             outcome=ResolutionOutcome.AMBIGUOUS,
