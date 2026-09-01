@@ -31,6 +31,8 @@ from app.db.models import CostSource, ExternalPriceStatus
 
 logger = logging.getLogger(__name__)
 
+_MAX_COST_MICRODOLLARS = (1 << 63) - 1
+
 
 class SidecarUsageLike(Protocol):
     """Token counts every participating sidecar's usage object exposes."""
@@ -128,7 +130,10 @@ def cost_microdollars(cost: ExternalRequestCost | None) -> int:
 
     if cost is None or cost.cost_usd is None:
         return 0
-    return int(cost.cost_usd * 1_000_000)
+    scaled_cost = cost.cost_usd * 1_000_000
+    if not isfinite(scaled_cost) or scaled_cost < 0 or scaled_cost > _MAX_COST_MICRODOLLARS:
+        return 0
+    return int(scaled_cost)
 
 
 def usage_tokens_from_sidecar(usage: SidecarUsageLike | None) -> UsageTokens | None:

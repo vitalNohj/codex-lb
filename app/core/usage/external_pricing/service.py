@@ -305,6 +305,10 @@ async def calculated_cost_for_request(
         # That is missing usage, not an unresolved price, so it renders as ``--``.
         return None, record.status
 
+    usage_components = (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens)
+    if any(not math.isfinite(component) or component < 0 for component in usage_components):
+        return None, record.status
+
     assert record.price is not None
     cost = calculate_cost_from_usage(usage, record.price, service_tier=service_tier)
     if cost is None or not math.isfinite(cost) or cost < 0:

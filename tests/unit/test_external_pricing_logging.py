@@ -10,7 +10,11 @@ from app.core.usage.external_pricing.store import PriceRecord
 from app.core.usage.pricing import ModelPrice, UsageTokens
 from app.db.models import CostSource, ExternalPriceStatus, RequestLog
 from app.modules.proxy import external_pricing_logging
-from app.modules.proxy.external_pricing_logging import cost_microdollars, external_request_cost
+from app.modules.proxy.external_pricing_logging import (
+    ExternalRequestCost,
+    cost_microdollars,
+    external_request_cost,
+)
 from app.modules.request_logs.mappers import to_request_log_entry
 
 pytestmark = pytest.mark.unit
@@ -65,7 +69,21 @@ async def test_invalid_billed_cost_without_catalog_price_stays_unknown(monkeypat
             ModelPrice(1e308, 1e308),
             UsageTokens(input_tokens=1_000_000, output_tokens=1_000_000),
         ),
-        (ModelPrice(1.0, 1.0), UsageTokens(input_tokens=0, output_tokens=-1)),
+        pytest.param(
+            ModelPrice(1.0, 1.0),
+            UsageTokens(input_tokens=-10, output_tokens=20),
+            id="negative-input-with-positive-total",
+        ),
+        pytest.param(
+            ModelPrice(1.0, 1.0),
+            UsageTokens(input_tokens=20, output_tokens=-10),
+            id="negative-output-with-positive-total",
+        ),
+        pytest.param(
+            ModelPrice(1.0, 1.0),
+            UsageTokens(input_tokens=20, output_tokens=0, cached_input_tokens=-10),
+            id="negative-cached-input-with-positive-total",
+        ),
     ],
 )
 async def test_invalid_calculated_total_stays_unknown_through_logging_and_quota(
@@ -128,3 +146,20 @@ async def test_invalid_calculated_total_stays_unknown_through_logging_and_quota(
     assert entry.cost_usd is None
     assert entry.cost_breakdown.total_usd is None
     assert entry.price_status == ExternalPriceStatus.RESOLVED.value
+
+
+@pytest.mark.parametrize(
+    "cost_usd",
+    [
+        pytest.param(1e308, id="scaled-non-finite"),
+        pytest.param(10_000_000_000_000.0, id="scaled-outside-signed-64-bit-range"),
+    ],
+)
+def test_unrepresentable_cost_accrues_no_quota(cost_usd: float) -> None:
+    cost = ExternalRequestCost(
+        cost_usd=cost_usd,
+        cost_source=CostSource.UPSTREAM_BILLED.value,
+        price_status=ExternalPriceStatus.RESOLVED.value,
+    )
+
+    assert cost_microdollars(cost) == 0
