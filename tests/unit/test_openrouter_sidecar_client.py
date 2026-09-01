@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -9,6 +11,9 @@ from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarError,
     OpenRouterSidecarUnavailableError,
 )
+from app.core.usage.pricing import ModelPrice
+from app.core.usage.runtime_pricing import get_runtime_pricing_registry
+from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, reference_cost_from_sidecar_usage
 
 pytestmark = pytest.mark.unit
 
@@ -115,8 +120,6 @@ async def test_list_models_sends_bearer_key_and_parses_models(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> None:
-    from app.core.usage.runtime_pricing import get_runtime_pricing_registry
-
     get_runtime_pricing_registry().clear()
     session = _FakeSession(
         get_response=_FakeResponse(
@@ -146,6 +149,38 @@ async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> N
     registry = get_runtime_pricing_registry()
     assert registry.runtime_pricing_for_model("vendor/model-x") is not None
     assert registry.runtime_pricing_for_model("vendor/model-y") is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_published_rates_preserve_finite_runtime_reference_cost(monkeypatch) -> None:
+    registry = get_runtime_pricing_registry()
+    registry.clear()
+    model_ids = ("vendor/nan", "vendor/infinity", "vendor/scaled-overflow")
+    registry.update_models(
+        [(model_id, ModelPrice(input_per_1m=1.0, output_per_1m=2.0)) for model_id in model_ids],
+        provider="openrouter",
+    )
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            '{"object":"list","data":['
+            '{"id":"vendor/nan","pricing":{"prompt":"NaN","completion":"0.000002"}},'
+            '{"id":"vendor/infinity","pricing":{"prompt":"0.000001","completion":"Infinity"}},'
+            '{"id":"vendor/scaled-overflow","pricing":{"prompt":"1e308","completion":"0.000002"}}'
+            "]}",
+        )
+    )
+    monkeypatch.setattr("app.core.clients.openrouter_sidecar.lease_http_session", lambda: _Lease(session))
+
+    await OpenRouterSidecarClient(_config(api_key="key")).list_models()
+
+    usage = SidecarUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    for model_id in model_ids:
+        price = registry.runtime_pricing_for_model(model_id, provider="openrouter")
+        assert price == ModelPrice(input_per_1m=1.0, output_per_1m=2.0)
+        reference_cost = reference_cost_from_sidecar_usage(model_id, usage, provider="openrouter")
+        assert reference_cost == pytest.approx(3.0)
+        assert math.isfinite(reference_cost)
 
 
 @pytest.mark.asyncio

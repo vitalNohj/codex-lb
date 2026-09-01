@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import astuple
+from math import isfinite
 
 from app.core.usage.external_pricing.providers import is_external_priced_provider
 from app.core.usage.pricing import (
@@ -99,7 +101,8 @@ class RuntimePricingRegistry:
             model_key = _normalize_key(model_id)
             if not model_key:
                 continue
-            listed[model_key] = price if price is not None else listed.get(model_key)
+            usable_price = price if price is not None and _is_usable_runtime_price(price) else None
+            listed[model_key] = usable_price if usable_price is not None else listed.get(model_key)
         priced = {model_id: price for model_id, price in listed.items() if price is not None}
         provider_key = _normalize_key(provider)
         if not provider_key:
@@ -200,6 +203,10 @@ class RuntimePricingRegistry:
 
 def _normalize_key(value: str | None) -> str:
     return (value or "").strip().lower()
+
+
+def _is_usable_runtime_price(price: ModelPrice) -> bool:
+    return all(value is None or (isfinite(value) and value >= 0) for value in astuple(price))
 
 
 _REGISTRY = RuntimePricingRegistry()
