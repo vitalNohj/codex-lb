@@ -10,6 +10,7 @@ from app.core.usage.external_pricing.store import PriceRecord
 from app.core.usage.pricing import ModelPrice, UsageTokens
 from app.db.models import CostSource, ExternalPriceStatus, RequestLog
 from app.modules.proxy import external_pricing_logging
+from app.modules.proxy.claude_sidecar_dispatch import extract_billed_cost
 from app.modules.proxy.external_pricing_logging import (
     ExternalRequestCost,
     cost_microdollars,
@@ -189,3 +190,40 @@ def test_unrepresentable_cost_accrues_no_quota(cost_usd: float) -> None:
     )
 
     assert cost_microdollars(cost) == 0
+
+
+@pytest.mark.asyncio
+async def test_valid_alternate_billed_field_drives_log_and_quota(monkeypatch) -> None:
+    async def _no_calculated_cost(**_kwargs):
+        return None, ExternalPriceStatus.UNRESOLVED
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _no_calculated_cost)
+    billed_cost = extract_billed_cost({"usage": {"cost": -1, "cost_usd": 0.01}})
+
+    result = await external_request_cost(
+        provider="openrouter",
+        model="vendor/model",
+        usage=None,
+        billed_cost_usd=billed_cost,
+    )
+    entry = to_request_log_entry(
+        RequestLog(
+            request_id="req-valid-alternate-billed-cost",
+            request_kind="normal",
+            model="vendor/model",
+            source="openrouter",
+            status="success",
+            error_code=None,
+            requested_at=datetime.now(timezone.utc),
+            input_tokens=None,
+            output_tokens=None,
+            cached_input_tokens=None,
+            cost_usd=result.cost_usd,
+            cost_source=result.cost_source,
+            price_status=result.price_status,
+        )
+    )
+
+    assert entry.cost_usd == pytest.approx(0.01)
+    assert entry.cost_source == CostSource.UPSTREAM_BILLED.value
+    assert cost_microdollars(result) == 10_000

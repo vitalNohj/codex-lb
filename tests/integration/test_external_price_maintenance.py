@@ -13,7 +13,11 @@ import pytest
 from sqlalchemy import select, update
 
 from app.core.usage.external_pricing import service as pricing_service
-from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
+from app.core.usage.external_pricing.catalogs import (
+    OPENROUTER_REFERENCE_SOURCE,
+    Catalog,
+    CatalogEntry,
+)
 from app.core.usage.external_pricing.maintenance import run_maintenance_pass
 from app.core.usage.external_pricing.resolution import UnpricedReason
 from app.core.usage.external_pricing.service import (
@@ -816,11 +820,15 @@ async def test_a_disabled_integration_still_lets_the_reference_refresh_records_i
     del db_setup
     import app.core.usage.external_pricing.maintenance as maintenance_module
 
-    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0), catalog_source="openrouter")
+    await _seed_resolved(
+        "vendor/model-x",
+        ModelPrice(2.0, 4.0),
+        catalog_source=OPENROUTER_REFERENCE_SOURCE,
+    )
     _install_disabled_provider("orcarouter")
 
     async def _reference():
-        return _catalog("openrouter", {"vendor/model-x": ModelPrice(3.0, 6.0)}), None
+        return _catalog(OPENROUTER_REFERENCE_SOURCE, {"vendor/model-x": ModelPrice(3.0, 6.0)}), None
 
     monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
 
@@ -832,6 +840,39 @@ async def test_a_disabled_integration_still_lets_the_reference_refresh_records_i
     record = await _record("vendor/model-x")
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_disabled_openrouter_serving_owner_is_not_weakened_by_healthy_reference(
+    db_setup,
+    monkeypatch,
+) -> None:
+    del db_setup
+    import app.core.usage.external_pricing.maintenance as maintenance_module
+
+    original_price = ModelPrice(2.0, 4.0)
+    await _seed_resolved(
+        "vendor/model-x",
+        original_price,
+        provider="openrouter",
+        catalog_source="openrouter",
+    )
+    _install_disabled_provider("openrouter")
+
+    async def _reference():
+        return _catalog(OPENROUTER_REFERENCE_SOURCE, {"vendor/model-x": None}), None
+
+    monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
+
+    report = await run_maintenance_pass()
+
+    assert report.became_not_token_priced == []
+    assert report.preserved_while_disabled == 1
+    record = await _record("vendor/model-x", provider="openrouter")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == original_price
+    assert record.catalog_source == "openrouter"
 
 
 @pytest.mark.asyncio

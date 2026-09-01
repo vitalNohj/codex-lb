@@ -52,6 +52,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
+from app.modules.proxy.external_pricing_logging import validated_billed_cost
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile_with_suffix_effort,
     canonical_sidecar_model,
@@ -1379,10 +1380,11 @@ def extract_billed_cost(payload: JsonValue) -> float | None:
     usage = payload.get("usage")
     if not is_json_mapping(usage):
         return None
-    cost_usd = _float_field(usage, "cost")
-    if cost_usd is None:
-        cost_usd = _float_field(usage, "cost_usd")
-    return cost_usd
+    for key in ("cost", "cost_usd"):
+        cost_usd = validated_billed_cost(_float_field(usage, key))
+        if cost_usd is not None:
+            return cost_usd
+    return None
 
 
 class _SseUsageDecoder:

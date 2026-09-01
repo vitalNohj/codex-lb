@@ -32,6 +32,7 @@ from enum import Enum
 from app.core.usage.external_pricing.catalogs import (
     Catalog,
     CatalogFetchError,
+    OPENROUTER_REFERENCE_SOURCE,
     PROVIDER_OPENROUTER,
     fetch_openrouter_catalog,
     is_external_priced_provider,
@@ -141,13 +142,16 @@ class SourceConsultations:
     serving: CatalogAvailability
     reference: CatalogAvailability
 
-    def source_answered(self, source: str, provider_key: str) -> bool:
-        states: list[CatalogAvailability] = []
+    def source_availability(self, source: str, provider_key: str) -> CatalogAvailability | None:
         if source == provider_key:
-            states.append(self.serving)
-        if source == PROVIDER_OPENROUTER:
-            states.append(self.reference)
-        return any(state.authoritative for state in states)
+            return self.serving
+        if source in (OPENROUTER_REFERENCE_SOURCE, PROVIDER_OPENROUTER):
+            return self.reference
+        return None
+
+    def source_answered(self, source: str, provider_key: str) -> bool:
+        availability = self.source_availability(source, provider_key)
+        return availability is not None and availability.authoritative
 
     def with_unusable_resolution(self, resolution: Resolution, provider_key: str) -> "SourceConsultations":
         if resolution.outcome is not ResolutionOutcome.PRICE_UNPARSEABLE:
@@ -155,7 +159,11 @@ class SourceConsultations:
         source = resolution.catalog_source
         return SourceConsultations(
             serving=(CatalogAvailability.UNUSABLE if source == provider_key else self.serving),
-            reference=(CatalogAvailability.UNUSABLE if source == PROVIDER_OPENROUTER else self.reference),
+            reference=(
+                CatalogAvailability.UNUSABLE
+                if source in (OPENROUTER_REFERENCE_SOURCE, PROVIDER_OPENROUTER) and source != provider_key
+                else self.reference
+            ),
         )
 
 
@@ -382,7 +390,7 @@ def preservation_reason(
         and resolution.outcome not in _SETTLING_OUTCOMES
         and not (
             consultations.source_answered(provider_key, provider_key)
-            and consultations.source_answered(PROVIDER_OPENROUTER, provider_key)
+            and consultations.source_answered(OPENROUTER_REFERENCE_SOURCE, provider_key)
         )
     ):
         return "an ownerless settled record cannot be weakened without complete source answers"

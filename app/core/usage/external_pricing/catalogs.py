@@ -57,6 +57,7 @@ __all__ = [
     "PROVIDER_CLIPROXY",
     "PROVIDER_OPENROUTER",
     "PROVIDER_ORCAROUTER",
+    "OPENROUTER_REFERENCE_SOURCE",
     "Catalog",
     "CatalogEntry",
     "CatalogFetchError",
@@ -70,6 +71,7 @@ __all__ = [
 
 # Broad pricing reference. Public, unauthenticated, and structured.
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_REFERENCE_SOURCE = "openrouter:reference"
 
 _PER_TOKEN_TO_PER_1M = 1_000_000.0
 _FETCH_TIMEOUT_SECONDS = 20.0
@@ -87,7 +89,7 @@ async def fetch_openrouter_catalog(*, url: str = OPENROUTER_CATALOG_URL) -> Cata
     """Fetch OpenRouter's structured catalog as the broad pricing reference."""
 
     payload = await _fetch_json(url, source="openrouter")
-    return parse_openai_style_catalog(payload, source=PROVIDER_OPENROUTER)
+    return parse_openai_style_catalog(payload, source=OPENROUTER_REFERENCE_SOURCE)
 
 
 def parse_openai_style_catalog(payload: JsonValue, *, source: str) -> Catalog:
