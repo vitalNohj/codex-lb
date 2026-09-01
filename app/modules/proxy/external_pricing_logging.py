@@ -58,7 +58,7 @@ _SidecarUsage = TypeVar("_SidecarUsage", bound=SidecarUsageLike)
 
 
 @dataclass(frozen=True, slots=True)
-class ExternalStreamSettlement(Generic[_SidecarUsage]):
+class ExternalResponseSettlement(Generic[_SidecarUsage]):
     usage: _SidecarUsage | None
     cost: ExternalRequestCost
 
@@ -136,7 +136,7 @@ async def external_request_cost(
     return ExternalRequestCost(cost_usd=None, cost_source=None, price_status=status_value)
 
 
-async def external_stream_settlement(
+async def external_response_settlement(
     *,
     provider: str,
     model: str,
@@ -144,7 +144,7 @@ async def external_stream_settlement(
     billed_cost_usd: float | None,
     completed: bool,
     service_tier: str | None = None,
-) -> ExternalStreamSettlement[_SidecarUsage]:
+) -> ExternalResponseSettlement[_SidecarUsage]:
     settled_usage = usage if completed else None
     cost = await external_request_cost(
         provider=provider,
@@ -153,7 +153,7 @@ async def external_stream_settlement(
         billed_cost_usd=billed_cost_usd,
         service_tier=service_tier,
     )
-    return ExternalStreamSettlement(usage=settled_usage, cost=cost)
+    return ExternalResponseSettlement(usage=settled_usage, cost=cost)
 
 
 def cost_microdollars(cost: ExternalRequestCost | None) -> int:

@@ -176,6 +176,10 @@ class CalculatedCost:
     catalog_source: str
 
 
+class _StoreReadFailure(Enum):
+    FAILED = "failed"
+
+
 class _LookupCoordinator:
     """Collapses concurrent lookups of the same key within this process.
 
@@ -289,6 +293,8 @@ async def calculated_cost_for_request(
         return None, None
 
     record = await _read_record(provider_key, model_key)
+    if record is _StoreReadFailure.FAILED:
+        return None, ExternalPriceStatus.UNRESOLVED
 
     if record is None or record.retry_due():
         # The request never waits on remote work; it reports what is known now.
@@ -331,15 +337,16 @@ async def calculated_cost_for_request(
     )
 
 
-async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None:
+async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None | _StoreReadFailure:
     try:
         async with get_background_session() as session:
             return await ExternalModelPriceStore(session).get(provider_key, model_key)
     except Exception:
-        # A store read failure must not fail the request or trigger a lookup
-        # storm; the row is simply unavailable for this request.
+        # A failed read is unknown durable state, not evidence of a first
+        # sighting. Requests remain available and unpriced without scheduling
+        # remote work that cannot acquire or update its durable claim.
         logger.warning("external price store read failed provider=%s model=%s", provider_key, model_key, exc_info=True)
-        return None
+        return _StoreReadFailure.FAILED
 
 
 def source_consultations(

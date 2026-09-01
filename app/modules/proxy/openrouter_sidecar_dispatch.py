@@ -56,7 +56,7 @@ from app.modules.proxy.external_pricing_logging import (
     ExternalRequestCost,
     cost_microdollars,
     external_request_cost,
-    external_stream_settlement,
+    external_response_settlement,
     usage_tokens_from_sidecar,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
@@ -214,10 +214,20 @@ async def proxy_chat_to_openrouter(
             headers=dict(rate_limit_headers),
         )
     except OpenRouterSidecarError as exc:
-        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
-            await _release_openrouter_reservation(reservation, api_key=api_key)
-            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
-        await _release_openrouter_reservation(reservation, api_key=api_key)
+        settlement = await external_response_settlement(
+            provider=OPENROUTER_PRICING_PROVIDER,
+            model=effective_model,
+            usage=extract_usage(exc.body),
+            billed_cost_usd=extract_billed_cost(exc.body),
+            completed=False,
+        )
+        await _finalize_or_release_openrouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=effective_model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
         await _log_openrouter_request(
             api_key=api_key,
             model=effective_model,
@@ -225,9 +235,13 @@ async def proxy_chat_to_openrouter(
             status="error",
             error_code="openrouter_sidecar_error",
             error_message=exc.message,
+            usage=settlement.usage,
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            cost=settlement.cost,
         )
+        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
+            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=exc.message,
@@ -326,6 +340,7 @@ async def _openrouter_stream_iterator(
     except OpenRouterSidecarError as exc:
         error_code = "openrouter_sidecar_error"
         error_message = exc.message
+        billed_cost.observe(extract_billed_cost(exc.body))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=exc.message,
@@ -339,7 +354,7 @@ async def _openrouter_stream_iterator(
         error_message = str(exc) or exc.__class__.__name__
         raise
     finally:
-        settlement = await external_stream_settlement(
+        settlement = await external_response_settlement(
             provider=OPENROUTER_PRICING_PROVIDER,
             model=model,
             usage=usage,

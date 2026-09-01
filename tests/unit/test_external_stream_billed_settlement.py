@@ -40,6 +40,15 @@ class _StreamClient:
             yield b"data: [DONE]\n\n"
 
 
+class _ErrorClient:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.config = SimpleNamespace(default_reasoning_effort=None, api_key="test-key")
+
+    async def chat_completion(self, payload: object) -> object:
+        raise self.error
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "module_name,iterator_name,finalize_name,log_name",
@@ -154,3 +163,82 @@ async def test_reported_stream_charge_is_settled_once_for_every_termination(
     else:
         assert finalized[0]["usage"] is None
         assert logged[0]["usage"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "module_name,proxy_name,error_name,finalize_name,log_name",
+    [
+        (
+            "app.modules.proxy.openrouter_sidecar_dispatch",
+            "proxy_chat_to_openrouter",
+            "OpenRouterSidecarError",
+            "_finalize_or_release_openrouter_reservation",
+            "_log_openrouter_request",
+        ),
+        (
+            "app.modules.proxy.orcarouter_sidecar_dispatch",
+            "proxy_chat_to_orcarouter",
+            "OrcaRouterSidecarError",
+            "_finalize_or_release_orcarouter_reservation",
+            "_log_orcarouter_request",
+        ),
+    ],
+)
+async def test_reported_error_charge_is_settled_once(
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    proxy_name: str,
+    error_name: str,
+    finalize_name: str,
+    log_name: str,
+) -> None:
+    module: ModuleType = importlib.import_module(module_name)
+    finalized: list[dict[str, object]] = []
+    logged: list[dict[str, object]] = []
+
+    async def _no_catalog_price(**kwargs: object) -> tuple[None, None]:
+        return None, None
+
+    async def _finalize(*args: object, **kwargs: object) -> None:
+        finalized.append(kwargs)
+
+    async def _log(**kwargs: object) -> None:
+        logged.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.modules.proxy.external_pricing_logging.calculated_cost_for_request",
+        _no_catalog_price,
+    )
+    monkeypatch.setattr(module, finalize_name, _finalize)
+    monkeypatch.setattr(module, log_name, _log)
+
+    error = getattr(module, error_name)(
+        429,
+        "provider rejected request",
+        body={"error": {"message": "provider rejected request"}, "usage": {"cost": 0.01}},
+    )
+    payload = module.ChatCompletionsRequest.model_validate(
+        {"model": "vendor/model-x", "messages": [{"role": "user", "content": "hi"}]}
+    )
+    response = await getattr(module, proxy_name)(
+        SimpleNamespace(),
+        payload,
+        effective_model="vendor/model-x",
+        api_key=None,
+        reservation=SimpleNamespace(reservation_id="reservation-1"),
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=1.0,
+        client=_ErrorClient(error),
+    )
+
+    assert response.status_code == 429
+    assert len(finalized) == 1
+    assert len(logged) == 1
+    finalized_cost = finalized[0]["cost"]
+    assert isinstance(finalized_cost, ExternalRequestCost)
+    assert finalized_cost is logged[0]["cost"]
+    assert finalized_cost.cost_usd == pytest.approx(0.01)
+    assert finalized_cost.cost_source == "upstream_billed"
+    assert finalized[0]["usage"] is None
+    assert logged[0]["usage"] is None

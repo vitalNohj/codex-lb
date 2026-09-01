@@ -227,3 +227,32 @@ async def test_valid_alternate_billed_field_drives_log_and_quota(monkeypatch) ->
     assert entry.cost_usd == pytest.approx(0.01)
     assert entry.cost_source == CostSource.UPSTREAM_BILLED.value
     assert cost_microdollars(result) == 10_000
+
+
+@pytest.mark.asyncio
+async def test_store_read_failure_suppresses_lookup_submission(monkeypatch: pytest.MonkeyPatch) -> None:
+    submissions: list[tuple[str, str]] = []
+
+    class _FailingSessionContext:
+        async def __aenter__(self) -> object:
+            raise RuntimeError("database unavailable")
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    async def _submit(key: tuple[str, str], factory: object) -> None:
+        submissions.append(key)
+
+    monkeypatch.setattr(external_pricing_service, "get_background_session", _FailingSessionContext)
+    monkeypatch.setattr(external_pricing_service.get_lookup_coordinator(), "submit", _submit)
+
+    for _ in range(3):
+        calculated, status = await external_pricing_service.calculated_cost_for_request(
+            provider="orcarouter",
+            model="vendor/model-x",
+            usage=UsageTokens(input_tokens=10, output_tokens=5),
+        )
+        assert calculated is None
+        assert status is ExternalPriceStatus.UNRESOLVED
+
+    assert submissions == []

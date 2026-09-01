@@ -58,7 +58,7 @@ from app.modules.proxy.external_pricing_logging import (
     ExternalRequestCost,
     cost_microdollars,
     external_request_cost,
-    external_stream_settlement,
+    external_response_settlement,
     usage_tokens_from_sidecar,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
@@ -216,23 +216,38 @@ async def proxy_chat_to_orcarouter(
             headers=dict(rate_limit_headers),
         )
     except OrcaRouterSidecarError as exc:
-        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
-            await _release_orcarouter_reservation(reservation, api_key=api_key)
-            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
-        await _release_orcarouter_reservation(reservation, api_key=api_key)
+        sanitized_message = sanitize_orcarouter_message(exc.message, api_key=client.config.api_key)
+        settlement = await external_response_settlement(
+            provider=ORCAROUTER_PRICING_PROVIDER,
+            model=effective_model,
+            usage=extract_usage(exc.body),
+            billed_cost_usd=extract_billed_cost(exc.body),
+            completed=False,
+        )
+        await _finalize_or_release_orcarouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=effective_model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
         await _log_orcarouter_request(
             api_key=api_key,
             model=effective_model,
             started_at=requested_at,
             status="error",
             error_code="orcarouter_sidecar_error",
-            error_message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
+            error_message=sanitized_message,
+            usage=settlement.usage,
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            cost=settlement.cost,
         )
+        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
+            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
-            message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
+            message=sanitized_message,
             error_code="orcarouter_sidecar_error",
             body=sanitize_orcarouter_error_body(exc.body, api_key=client.config.api_key),
             extra_headers=rate_limit_headers,
@@ -328,6 +343,7 @@ async def _orcarouter_stream_iterator(
     except OrcaRouterSidecarError as exc:
         error_code = "orcarouter_sidecar_error"
         error_message = sanitize_orcarouter_message(exc.message, api_key=client.config.api_key)
+        billed_cost.observe(extract_billed_cost(exc.body))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
@@ -344,7 +360,7 @@ async def _orcarouter_stream_iterator(
         )
         raise
     finally:
-        settlement = await external_stream_settlement(
+        settlement = await external_response_settlement(
             provider=ORCAROUTER_PRICING_PROVIDER,
             model=model,
             usage=usage,
