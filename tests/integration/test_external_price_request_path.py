@@ -174,8 +174,7 @@ async def test_the_first_request_records_no_cost_and_the_second_records_the_list
     """The lookup happens off the request path, so pricing starts on request two.
 
     Request one reports what is known (nothing) and schedules one lookup. It is
-    marked unresolved rather than silently blank, because this model is eligible
-    for a price and does not have one yet.
+    marked pending rather than unresolved because no lookup has completed yet.
     """
 
     fake_orcarouter.billed_cost_usd = None
@@ -359,7 +358,7 @@ async def test_a_resolver_failure_records_no_cost_rather_than_a_static_table_one
     assert log.status == "success", "a pricing failure must not fail the request"
     assert log.cost_usd is None
     assert log.cost_source is None
-    assert log.price_status == ExternalPriceStatus.UNRESOLVED.value
+    assert log.price_status == ExternalPriceStatus.PENDING.value
 
 
 @pytest.mark.asyncio
@@ -475,17 +474,12 @@ async def test_request_log_display_uses_current_durable_price_status(async_clien
 
 
 @pytest.mark.asyncio
-async def test_a_resolved_row_exposes_its_cost_breakdown_to_the_details_view(
+async def test_a_resolved_row_exposes_its_persisted_total_to_the_details_view(
     async_client,
     orcarouter_enabled,
     fake_orcarouter,
 ) -> None:
-    """Suppressing the glob total must not also remove the real component split.
-
-    The request-details dialog renders no Cost section at all when every component
-    is null, so a resolved OpenRouter/OrcaRouter/CLIProxyAPI row silently lost the
-    "$X = N Input + M Output" line it used to show.
-    """
+    """A resolved external row exposes its persisted total without inventing a split."""
 
     fake_orcarouter.billed_cost_usd = None
     _install_catalog({_MODEL: ModelPrice(input_per_1m=2.0, output_per_1m=4.0)})
@@ -506,8 +500,9 @@ async def test_a_resolved_row_exposes_its_cost_breakdown_to_the_details_view(
     ]
     assert priced, "expected the resolved row"
     breakdown = priced[0]["costBreakdown"]
-    assert breakdown["inputUsd"] == pytest.approx(_INPUT_TOKENS * 2.0 / 1e6)
-    assert breakdown["outputUsd"] == pytest.approx(_OUTPUT_TOKENS * 4.0 / 1e6)
+    assert breakdown["inputUsd"] is None
+    assert breakdown["cachedInputUsd"] is None
+    assert breakdown["outputUsd"] is None
     assert breakdown["totalUsd"] == pytest.approx(priced[0]["costUsd"])
 
 
@@ -632,9 +627,9 @@ async def test_reservation_settlement_resolves_no_price_of_its_own(
     resolutions: list[str] = []
     original = orcarouter_sidecar_dispatch._orcarouter_request_cost
 
-    async def _counting(model, usage):
+    async def _counting(model, usage, *, billed_cost_usd=None):
         resolutions.append(model)
-        return await original(model, usage)
+        return await original(model, usage, billed_cost_usd=billed_cost_usd)
 
     monkeypatch.setattr(orcarouter_sidecar_dispatch, "_orcarouter_request_cost", _counting)
 

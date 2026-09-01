@@ -211,21 +211,27 @@ The system MUST NOT continuously poll or refresh prices. It MUST provide a separ
 - **THEN** the record keeps the serving provider's rate and provenance
 - **AND** the pass reports it as preserved rather than updated
 
-#### Scenario: A reachable catalog that drops a model is authoritative
+#### Scenario: A stored price survives a missing catalog entry
 
 - **GIVEN** a persisted record with a known rate
 - **AND** its serving catalog is reachable and no longer lists the model
 - **WHEN** the maintenance command runs
-- **THEN** the record becomes unresolved
-- **AND** the report names it
+- **THEN** the record keeps its prior rate and provenance
+- **AND** the report identifies that no valid replacement was applied
 
-#### Scenario: An integration that publishes no rates is not a failed source
+#### Scenario: A refresh only applies a valid parsed replacement
 
-- **GIVEN** an integration that contributes no price catalog by design (CLIProxyAPI)
-- **AND** a persisted record for it whose id the reachable pricing reference no longer lists
+- **GIVEN** a persisted record with a known rate
+- **AND** a refresh returns a valid parsed rate from the record's trustworthy catalog source
 - **WHEN** the maintenance command runs
-- **THEN** the report names no unavailable catalog for that integration
-- **AND** the record becomes unresolved rather than being preserved as if a source had failed
+- **THEN** the new rate and provenance replace the prior values
+
+#### Scenario: A failed refresh cannot weaken a stored price
+
+- **GIVEN** a persisted record with a known rate
+- **AND** a refresh encounters a catalog outage, missing entry, unreadable entry, or durable-store failure
+- **WHEN** the maintenance command runs
+- **THEN** the record keeps its prior rate and provenance unchanged
 
 ### Requirement: Request logs mark eligible models that stay unresolved
 

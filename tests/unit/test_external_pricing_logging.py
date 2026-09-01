@@ -254,9 +254,28 @@ async def test_store_read_failure_suppresses_lookup_submission(monkeypatch: pyte
             usage=UsageTokens(input_tokens=10, output_tokens=5),
         )
         assert calculated is None
-        assert status is ExternalPriceStatus.UNRESOLVED
+        assert status is ExternalPriceStatus.PENDING
 
     assert submissions == []
+
+
+@pytest.mark.asyncio
+async def test_resolver_exception_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fail(**_kwargs: object) -> None:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _fail)
+
+    result = await external_request_cost(
+        provider="orcarouter",
+        model="vendor/model-x",
+        usage=UsageTokens(input_tokens=10, output_tokens=5),
+        billed_cost_usd=None,
+    )
+
+    assert result.cost_usd is None
+    assert result.cost_source is None
+    assert result.price_status == ExternalPriceStatus.PENDING.value
 
 
 @pytest.mark.asyncio
@@ -265,12 +284,12 @@ async def test_claim_write_failure_cools_requests_and_recovers(monkeypatch: pyte
     original = PriceRecord(
         provider="orcarouter",
         incoming_model="vendor/model-x",
-        status=ExternalPriceStatus.RESOLVED,
-        catalog_model="vendor/model-x",
-        catalog_source="orcarouter",
-        price=ModelPrice(1.0, 2.0),
-        resolution_step="exact",
-        detail="last good",
+        status=ExternalPriceStatus.UNRESOLVED,
+        catalog_model=None,
+        catalog_source=None,
+        price=None,
+        resolution_step=None,
+        detail="not found",
         retrieved_at=now - timedelta(hours=1),
         updated_at=now - timedelta(hours=1),
         attempt_count=3,
@@ -342,14 +361,11 @@ async def test_claim_write_failure_cools_requests_and_recovers(monkeypatch: pyte
             model="vendor/model-x",
             usage=UsageTokens(input_tokens=10, output_tokens=5),
         )
-        assert calculated is not None
-        assert calculated.cost_usd == pytest.approx(20 / 1_000_000)
-        assert status is ExternalPriceStatus.RESOLVED
+        assert calculated is None
+        assert status is ExternalPriceStatus.UNRESOLVED
         await coordinator.drain()
 
     assert claim_attempts == 1
-    assert original.catalog_source == "orcarouter"
-    assert original.resolution_step == "exact"
     assert original.attempt_count == 3
     assert original.next_retry_at == now - timedelta(seconds=1)
     assert active_claim is None
@@ -362,8 +378,8 @@ async def test_claim_write_failure_cools_requests_and_recovers(monkeypatch: pyte
         model="vendor/model-x",
         usage=UsageTokens(input_tokens=10, output_tokens=5),
     )
-    assert calculated is not None
-    assert status is ExternalPriceStatus.RESOLVED
+    assert calculated is None
+    assert status is ExternalPriceStatus.UNRESOLVED
     await coordinator.drain()
 
     assert claim_attempts == 2

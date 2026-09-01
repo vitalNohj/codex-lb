@@ -178,11 +178,8 @@ class ExternalModelPriceStore:
         insert = pg_insert if dialect == "postgresql" else sqlite_insert
         statement = insert(ExternalModelPrice).values(**values)
         due = or_(ExternalModelPrice.next_retry_at.is_(None), ExternalModelPrice.next_retry_at <= now)
-        retryable = or_(
-            ExternalModelPrice.status.not_in(
-                (ExternalPriceStatus.RESOLVED.value, ExternalPriceStatus.NOT_TOKEN_PRICED.value)
-            ),
-            ExternalModelPrice.next_retry_at.is_not(None),
+        retryable = ExternalModelPrice.status.not_in(
+            (ExternalPriceStatus.RESOLVED.value, ExternalPriceStatus.NOT_TOKEN_PRICED.value)
         )
         statement = statement.on_conflict_do_update(
             index_elements=[ExternalModelPrice.provider, ExternalModelPrice.incoming_model],
@@ -264,6 +261,7 @@ class ExternalModelPriceStore:
             retry_at=None,
             claim_token=claim_token,
             expected_updated_at=expected_updated_at,
+            preserve_existing_price=True,
         )
 
     async def record_price_unparseable(
@@ -281,10 +279,8 @@ class ExternalModelPriceStore:
     ) -> bool:
         """The source still lists the model but priced it unreadably.
 
-        Neither a resolution nor a delisting. Whatever rate was last parsed
-        successfully stays exactly as it is -- an upstream schema change must not
-        be able to erase a good rate -- and only the retry deadline advances, so
-        the next lookup re-reads the source instead of settling the question.
+        Neither a resolution nor evidence against a stored price. Whatever rate
+        was last parsed successfully stays exactly as it is.
         """
 
         return await self.record_retryable_failure(
@@ -313,6 +309,8 @@ class ExternalModelPriceStore:
         expected_updated_at: datetime | None = None,
     ) -> bool:
         attempts = previous_attempts + 1
+        if record is not None and record.is_priced:
+            return False
         if record is not None and record.status is not ExternalPriceStatus.PENDING:
             price = record.price
             return await self._upsert(
@@ -333,6 +331,7 @@ class ExternalModelPriceStore:
                 retrieved_at=record.retrieved_at,
                 claim_token=claim_token,
                 expected_updated_at=expected_updated_at,
+                preserve_existing_price=price is None,
             )
         return await self._upsert(
             provider=provider,
@@ -348,6 +347,7 @@ class ExternalModelPriceStore:
             retry_at=next_retry_at(attempts),
             claim_token=claim_token,
             expected_updated_at=expected_updated_at,
+            preserve_existing_price=True,
         )
 
     async def record_unresolved(
@@ -385,6 +385,7 @@ class ExternalModelPriceStore:
             retry_at=next_retry_at(attempts),
             claim_token=claim_token,
             expected_updated_at=expected_updated_at,
+            preserve_existing_price=True,
         )
 
     async def _upsert(
@@ -404,6 +405,7 @@ class ExternalModelPriceStore:
         retrieved_at: datetime | None = None,
         claim_token: str | None = None,
         expected_updated_at: datetime | None = None,
+        preserve_existing_price: bool = False,
     ) -> bool:
         provider_key, model_key = normalize_lookup_key(provider, incoming_model)
         if not provider_key or not model_key:
@@ -429,13 +431,21 @@ class ExternalModelPriceStore:
             "lookup_token": None,
         }
         if claim_token is not None:
+            conditions = [
+                ExternalModelPrice.provider == provider_key,
+                ExternalModelPrice.incoming_model == model_key,
+                ExternalModelPrice.lookup_token == claim_token,
+            ]
+            if preserve_existing_price:
+                conditions.extend(
+                    (
+                        ExternalModelPrice.input_per_1m.is_(None),
+                        ExternalModelPrice.output_per_1m.is_(None),
+                    )
+                )
             statement = (
                 update(ExternalModelPrice)
-                .where(
-                    ExternalModelPrice.provider == provider_key,
-                    ExternalModelPrice.incoming_model == model_key,
-                    ExternalModelPrice.lookup_token == claim_token,
-                )
+                .where(*conditions)
                 .values(**{key: value for key, value in values.items() if key not in ("provider", "incoming_model")})
             )
             async with sqlite_writer_section():
@@ -443,17 +453,25 @@ class ExternalModelPriceStore:
                 await self._session.commit()
             return bool(result.rowcount)
         if expected_updated_at is not None:
+            conditions = [
+                ExternalModelPrice.provider == provider_key,
+                ExternalModelPrice.incoming_model == model_key,
+                ExternalModelPrice.updated_at == expected_updated_at,
+                or_(
+                    ExternalModelPrice.lookup_token.is_(None),
+                    ExternalModelPrice.next_retry_at <= now,
+                ),
+            ]
+            if preserve_existing_price:
+                conditions.extend(
+                    (
+                        ExternalModelPrice.input_per_1m.is_(None),
+                        ExternalModelPrice.output_per_1m.is_(None),
+                    )
+                )
             statement = (
                 update(ExternalModelPrice)
-                .where(
-                    ExternalModelPrice.provider == provider_key,
-                    ExternalModelPrice.incoming_model == model_key,
-                    ExternalModelPrice.updated_at == expected_updated_at,
-                    or_(
-                        ExternalModelPrice.lookup_token.is_(None),
-                        ExternalModelPrice.next_retry_at <= now,
-                    ),
-                )
+                .where(*conditions)
                 .values(**{key: value for key, value in values.items() if key not in ("provider", "incoming_model")})
             )
             async with sqlite_writer_section():
@@ -468,15 +486,24 @@ class ExternalModelPriceStore:
         statement = statement.on_conflict_do_update(
             index_elements=[ExternalModelPrice.provider, ExternalModelPrice.incoming_model],
             set_={key: value for key, value in values.items() if key not in ("provider", "incoming_model")},
-        )
+            where=(
+                and_(
+                    ExternalModelPrice.input_per_1m.is_(None),
+                    ExternalModelPrice.output_per_1m.is_(None),
+                )
+                if preserve_existing_price
+                else None
+            ),
+        ).returning(ExternalModelPrice.provider)
         # Background lookups write while requests are writing their logs. On
         # file-backed SQLite that is the contention this section serializes; a
         # "database is locked" here would leave the record with no backoff row and
         # let the next request re-dispatch the same lookup.
         async with sqlite_writer_section():
-            await self._session.execute(statement)
+            result = await self._session.execute(statement)
+            applied = result.scalar_one_or_none() is not None
             await self._session.commit()
-        return True
+        return applied
 
     @staticmethod
     def _select_one(provider_key: str, model_key: str) -> Select[tuple[ExternalModelPrice]]:

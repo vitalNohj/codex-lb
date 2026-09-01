@@ -419,13 +419,7 @@ async def test_a_catalog_sentinel_price_settles_the_model_without_retry_state(db
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_upstream_price_widens_its_backoff_each_round(db_setup) -> None:
-    """Preserving a rate must still bound the work that re-reads the source.
-
-    A reset attempt count pins the deadline at the first backoff step, so an
-    upstream schema change that lasts a day re-fetches every five minutes forever.
-    """
-
+async def test_an_unreadable_upstream_price_cannot_reopen_a_stored_price(db_setup) -> None:
     del db_setup
     unreadable = Catalog.from_entries(
         "orcarouter",
@@ -443,22 +437,20 @@ async def test_an_unreadable_upstream_price_widens_its_backoff_each_round(db_set
             resolution_step="exact",
         )
 
-    deadlines = []
-    for expected_attempts in (1, 2, 3):
-        async with SessionLocal() as session:
-            record = (await session.execute(select(ExternalModelPrice))).scalar_one()
-            record.next_retry_at = utcnow() - timedelta(seconds=1)
-            await session.commit()
-        await calculated_cost_for_request(provider="orcarouter", model="vendor/model-x", usage=ONE_MILLION)
-        await get_lookup_coordinator().drain()
-        record = (await _records())[0]
-        assert record.attempt_count == expected_attempts
-        assert record.input_per_1m == pytest.approx(2.0), "the last parsed rate must survive"
-        assert record.next_retry_at is not None
-        deadlines.append(record.next_retry_at)
+    async with SessionLocal() as session:
+        record = (await session.execute(select(ExternalModelPrice))).scalar_one()
+        record.next_retry_at = utcnow() - timedelta(seconds=1)
+        await session.commit()
 
-    gaps = [later - earlier for earlier, later in zip(deadlines, deadlines[1:])]
-    assert all(gap > timedelta(0) for gap in gaps), "the retry schedule must widen, not repeat"
+    cost, status = await calculated_cost_for_request(provider="orcarouter", model="vendor/model-x", usage=ONE_MILLION)
+    await get_lookup_coordinator().drain()
+
+    record = (await _records())[0]
+    assert cost is not None
+    assert status is ExternalPriceStatus.RESOLVED
+    assert record.attempt_count == 0
+    assert record.input_per_1m == pytest.approx(2.0)
+    assert loader.calls == 0
 
 
 @pytest.mark.asyncio
@@ -574,7 +566,7 @@ async def test_every_catalog_source_failing_still_bounds_future_lookups(db_setup
 
 
 @pytest.mark.asyncio
-async def test_an_outage_preserves_the_last_good_rate_and_advances_backoff(db_setup) -> None:
+async def test_an_outage_cannot_reopen_a_stored_price(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:
         store = ExternalModelPriceStore(session)
@@ -618,9 +610,8 @@ async def test_an_outage_preserves_the_last_good_rate_and_advances_backoff(db_se
     assert record.catalog_source == "orcarouter"
     assert record.input_per_1m == pytest.approx(2.0)
     assert record.output_per_1m == pytest.approx(4.0)
-    assert record.attempt_count == 2
-    assert record.next_retry_at is not None and record.next_retry_at > utcnow()
-    assert loader.calls == 1
+    assert record.attempt_count == 0
+    assert loader.calls == 0
 
 
 @pytest.mark.asyncio
@@ -725,12 +716,11 @@ async def test_a_reference_owned_rate_survives_a_reference_outage(db_setup) -> N
     assert record.catalog_source == "openrouter"
     assert record.input_per_1m == pytest.approx(2.0)
     assert record.output_per_1m == pytest.approx(4.0)
-    assert record.attempt_count == 2
-    assert record.next_retry_at is not None and record.next_retry_at > utcnow()
+    assert record.attempt_count == 0
 
 
 @pytest.mark.asyncio
-async def test_an_ambiguous_reference_preserves_a_serving_rate_and_advances_backoff(db_setup, monkeypatch) -> None:
+async def test_an_ambiguous_reference_cannot_reopen_a_serving_rate(db_setup, monkeypatch) -> None:
     del db_setup
     async with SessionLocal() as session:
         store = ExternalModelPriceStore(session)
@@ -782,8 +772,7 @@ async def test_an_ambiguous_reference_preserves_a_serving_rate_and_advances_back
     assert record.catalog_source == "orcarouter"
     assert record.input_per_1m == pytest.approx(2.0)
     assert record.output_per_1m == pytest.approx(4.0)
-    assert record.attempt_count == 2
-    assert record.next_retry_at is not None and record.next_retry_at > utcnow()
+    assert record.attempt_count == 0
 
 
 @pytest.mark.asyncio
@@ -1032,6 +1021,42 @@ async def test_recording_a_price_clears_prior_failure_state(db_setup) -> None:
     assert record.attempt_count == 0
     assert record.next_retry_at is None
     assert record.retry_due() is False
+
+
+@pytest.mark.asyncio
+async def test_unpriced_writes_cannot_clear_a_stored_price(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_resolved(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            price=ModelPrice(2.0, 4.0),
+            resolution_step="exact",
+        )
+        unresolved_applied = await store.record_unresolved(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            status=ExternalPriceStatus.UNRESOLVED,
+            detail="no catalog entry",
+        )
+        unpriced_applied = await store.record_not_token_priced(
+            provider="orcarouter",
+            incoming_model="vendor/model-x",
+            catalog_model="vendor/model-x",
+            catalog_source="orcarouter",
+            resolution_step="exact",
+            detail="no token rate",
+        )
+        record = await store.get("orcarouter", "vendor/model-x")
+
+    assert unresolved_applied is False
+    assert unpriced_applied is False
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
 
 
 def test_retry_backoff_widens_then_caps() -> None:

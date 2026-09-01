@@ -74,6 +74,12 @@ def _expected_preservation(
     if outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
         return True
 
+    if current_state == "resolved":
+        if outcome is not ResolutionOutcome.RESOLVED:
+            return True
+        if owner is not None and proposed_source != owner:
+            return True
+
     def answered(source: str) -> bool:
         if source == _SERVING:
             return serving.authoritative
@@ -83,10 +89,7 @@ def _expected_preservation(
 
     settled = current_state in {"resolved", "not_token_priced"}
     settling = outcome in {ResolutionOutcome.RESOLVED, ResolutionOutcome.NOT_TOKEN_PRICED}
-    serving_price_improves_ownership = (
-        outcome is ResolutionOutcome.RESOLVED and proposed_source == _SERVING and answered(_SERVING)
-    )
-    if settled and owner is not None and not answered(owner) and not serving_price_improves_ownership:
+    if settled and owner is not None and not answered(owner):
         return True
     if owner is None and settled and not settling and not (answered(_SERVING) and answered(_REFERENCE)):
         return True

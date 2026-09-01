@@ -108,13 +108,8 @@ async def external_request_cost(
             schedule_lookup=schedule_lookup,
         )
     except Exception:
-        # Pricing is reporting, not routing. A failure here must cost the caller
-        # a cost figure, never the request. It is reported as unresolved rather
-        # than as "nothing to say": a participating provider that fell through
-        # unmarked would let the caller reach the substring-glob static table,
-        # which is the mispricing this resolver exists to remove.
         logger.warning("external price resolution failed provider=%s model=%s", provider, model, exc_info=True)
-        calculated, status = None, ExternalPriceStatus.UNRESOLVED
+        calculated, status = None, ExternalPriceStatus.PENDING
 
     status_value = status.value if status is not None else None
 

@@ -310,9 +310,14 @@ async def calculated_cost_for_request(
 
     record = await _read_record(provider_key, model_key)
     if record is _StorageResult.UNAVAILABLE:
-        return None, ExternalPriceStatus.UNRESOLVED
+        return None, ExternalPriceStatus.PENDING
 
-    if record is None or record.retry_due():
+    retryable_status = record is not None and record.status in (
+        ExternalPriceStatus.PENDING,
+        ExternalPriceStatus.UNRESOLVED,
+        ExternalPriceStatus.AMBIGUOUS,
+    )
+    if record is None or (retryable_status and record.retry_due()):
         # The request never waits on remote work; it reports what is known now.
         if schedule_lookup:
             await _coordinator.submit(
@@ -393,17 +398,16 @@ def preservation_reason(
     if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
         return "catalog price could not be parsed authoritatively"
     owner = record.catalog_source if record is not None else None
-    serving_price_improves_ownership = (
-        resolution.outcome is ResolutionOutcome.RESOLVED
-        and resolution.catalog_source == provider_key
-        and consultations.source_answered(provider_key, provider_key)
-    )
+    if record is not None and record.is_priced:
+        if resolution.outcome is not ResolutionOutcome.RESOLVED:
+            return "stored price has no valid replacement"
+        if owner is not None and resolution.catalog_source != owner:
+            return f"stored price remains owned by {owner}"
     if (
         record is not None
         and record.is_settled
         and owner is not None
         and not consultations.source_answered(owner, provider_key)
-        and not serving_price_improves_ownership
     ):
         return f"owning source {owner} did not provide an authoritative answer"
     if (

@@ -186,6 +186,26 @@ async def test_a_changed_catalog_rate_is_applied_and_reported(db_setup) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_database_failure_during_refresh_keeps_the_stored_price(db_setup, monkeypatch) -> None:
+    del db_setup
+    await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
+    _install_catalog("orcarouter", {"vendor/model-x": ModelPrice(3.5, 7.0)})
+
+    async def _fail_write(self: ExternalModelPriceStore, **_kwargs: object) -> bool:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(ExternalModelPriceStore, "record_resolved", _fail_write)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await run_maintenance_pass()
+
+    record = await _record("vendor/model-x")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
+
+
+@pytest.mark.asyncio
 async def test_a_previously_unresolved_id_that_now_matches_is_reported_as_newly_resolved(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:
@@ -225,13 +245,7 @@ async def test_an_unreachable_serving_catalog_preserves_the_known_rate(db_setup)
 
 
 @pytest.mark.asyncio
-async def test_a_model_dropped_from_a_reachable_catalog_becomes_unresolved(db_setup) -> None:
-    """A reachable catalog that no longer lists an id is authoritative.
-
-    Distinct from the unreachable case above: here the source answered and did not
-    include the model, so continuing to report its old rate would serve a price no
-    live listing backs.
-    """
+async def test_a_model_missing_from_a_reachable_catalog_keeps_its_price(db_setup) -> None:
 
     del db_setup
     await _seed_resolved("vendor/dropped", ModelPrice(2.0, 4.0))
@@ -239,17 +253,16 @@ async def test_a_model_dropped_from_a_reachable_catalog_becomes_unresolved(db_se
 
     report = await run_maintenance_pass()
 
-    assert len(report.unresolved) == 1
-    assert report.unresolved[0].incoming_model == "vendor/dropped"
+    assert report.unresolved == []
+    assert len(report.preserved_without_replacement) == 1
     record = await _record("vendor/dropped")
     assert record is not None
-    assert record.status is ExternalPriceStatus.UNRESOLVED
-    assert record.price is None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
 
 
 @pytest.mark.asyncio
-async def test_a_newly_ambiguous_id_is_reported_and_loses_its_price(db_setup) -> None:
-    """A second vendor publishing the same bare name makes the answer unsafe."""
+async def test_a_newly_ambiguous_id_keeps_its_stored_price(db_setup) -> None:
 
     del db_setup
     await _seed_resolved("qwen3.8-27b", ModelPrice(0.33, 2.4))
@@ -263,11 +276,12 @@ async def test_a_newly_ambiguous_id_is_reported_and_loses_its_price(db_setup) ->
 
     report = await run_maintenance_pass()
 
-    assert len(report.ambiguous) == 1
+    assert report.ambiguous == []
+    assert len(report.preserved_without_replacement) == 1
     record = await _record("qwen3.8-27b")
     assert record is not None
-    assert record.status is ExternalPriceStatus.AMBIGUOUS
-    assert record.price is None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(0.33, 2.4)
 
 
 @pytest.mark.asyncio
@@ -282,7 +296,12 @@ async def test_a_provider_that_publishes_no_rates_is_not_reported_as_a_failure(d
 
     monkeypatch.setattr(maintenance_module, "_fetch_reference", _reference)
     _install_priceless_provider("cliproxy", prefixes=(("cc/", True),))
-    await _seed_resolved("cc/claude-fable-5", ModelPrice(1.0, 2.0), provider="cliproxy")
+    await _seed_resolved(
+        "cc/claude-fable-5",
+        ModelPrice(1.0, 2.0),
+        provider="cliproxy",
+        catalog_source="openrouter",
+    )
 
     report = await run_maintenance_pass()
 
@@ -295,16 +314,10 @@ async def test_a_provider_that_publishes_no_rates_is_not_reported_as_a_failure(d
 
 
 @pytest.mark.asyncio
-async def test_a_priceless_providers_record_dropped_by_the_reference_becomes_unresolved(
+async def test_a_priceless_providers_record_missing_from_the_reference_keeps_its_price(
     db_setup,
     monkeypatch,
 ) -> None:
-    """The reference answered in full for a provider with no catalog of its own.
-
-    Treating that as "a source failed" would keep a stale rate forever behind a
-    failure that never happened.
-    """
-
     del db_setup
     import app.core.usage.external_pricing.maintenance as maintenance_module
 
@@ -318,12 +331,12 @@ async def test_a_priceless_providers_record_dropped_by_the_reference_becomes_unr
     report = await run_maintenance_pass()
 
     assert report.preserved_on_failure == 0
-    assert len(report.unresolved) == 1
-    assert report.unresolved[0].incoming_model == "cc/claude-delisted"
+    assert report.unresolved == []
+    assert len(report.preserved_without_replacement) == 1
     record = await _record("cc/claude-delisted", provider="cliproxy")
     assert record is not None
-    assert record.status is ExternalPriceStatus.UNRESOLVED
-    assert record.price is None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(1.0, 2.0)
 
 
 @pytest.mark.asyncio
@@ -361,11 +374,11 @@ async def test_an_unreachable_reference_preserves_a_record_its_serving_catalog_d
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(2.0)
     assert record.status is ExternalPriceStatus.RESOLVED
-    assert record.next_retry_at is not None
+    assert record.next_retry_at is None
 
 
 @pytest.mark.asyncio
-async def test_a_serving_price_replaces_a_reference_rate_during_reference_outage(
+async def test_a_reference_owned_price_is_not_re_sourced_during_reference_outage(
     db_setup,
     monkeypatch,
 ) -> None:
@@ -385,23 +398,21 @@ async def test_a_serving_price_replaces_a_reference_rate_during_reference_outage
 
     report = await run_maintenance_pass()
 
-    assert report.preserved_on_failure == 0
-    assert len(report.updated) == 1
+    assert report.preserved_on_failure == 1
+    assert report.updated == []
     record = await _record("vendor/newly-native")
     assert record is not None and record.price is not None
-    assert record.catalog_source == "orcarouter"
-    assert record.price.input_per_1m == pytest.approx(1.0)
-    assert record.price.output_per_1m == pytest.approx(3.0)
+    assert record.catalog_source == "openrouter"
+    assert record.price.input_per_1m == pytest.approx(2.0)
+    assert record.price.output_per_1m == pytest.approx(4.0)
     assert record.next_retry_at is None
 
 
 @pytest.mark.asyncio
-async def test_a_reachable_reference_that_drops_a_record_still_marks_it_unresolved(
+async def test_a_reachable_reference_that_drops_a_record_keeps_its_price(
     db_setup,
     monkeypatch,
 ) -> None:
-    """Preservation is scoped to failures; a source that answered is authoritative."""
-
     del db_setup
     import app.core.usage.external_pricing.maintenance as maintenance_module
 
@@ -419,11 +430,12 @@ async def test_a_reachable_reference_that_drops_a_record_still_marks_it_unresolv
     report = await run_maintenance_pass()
 
     assert report.preserved_on_failure == 0
-    assert len(report.unresolved) == 1
+    assert report.unresolved == []
+    assert len(report.preserved_without_replacement) == 1
     record = await _record("vendor/reference-priced")
     assert record is not None
-    assert record.status is ExternalPriceStatus.UNRESOLVED
-    assert record.price is None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
 
 
 @pytest.mark.asyncio
@@ -458,24 +470,24 @@ async def test_an_unreadable_published_price_keeps_the_last_parsed_rate(db_setup
     assert record.price.input_per_1m == pytest.approx(2.0)
     assert record.price.output_per_1m == pytest.approx(4.0)
     assert record.status is ExternalPriceStatus.RESOLVED
-    assert record.next_retry_at is not None, "the source must be re-read, not settled"
+    assert record.next_retry_at is None
     assert "Preserved after an unreadable published price" in report.render()
 
 
 @pytest.mark.asyncio
-async def test_a_genuinely_unpriced_model_is_still_settled_as_not_token_priced(db_setup) -> None:
-    """The distinction must not turn every unpriced listing into a retry loop."""
-
+async def test_a_stored_price_survives_a_catalog_no_price_entry(db_setup) -> None:
     del db_setup
     await _seed_resolved("vendor/router-model", ModelPrice(2.0, 4.0))
     _install_catalog("orcarouter", {"vendor/router-model": None})
 
-    await run_maintenance_pass()
+    report = await run_maintenance_pass()
 
     record = await _record("vendor/router-model")
     assert record is not None
-    assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
     assert record.next_retry_at is None
+    assert len(report.preserved_without_replacement) == 1
 
 
 @pytest.mark.asyncio
@@ -762,25 +774,19 @@ async def test_maintenance_refreshes_an_expired_lookup_claim(db_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_rate_that_becomes_unpriced_is_reported_rather_than_counted_unchanged(db_setup) -> None:
-    """Clearing a stored rate is a state change the operator must see."""
-
+async def test_a_rate_that_becomes_unpriced_remains_sticky(db_setup) -> None:
     del db_setup
     await _seed_resolved("vendor/model-x", ModelPrice(2.0, 4.0))
     _install_catalog("orcarouter", {"vendor/model-x": None})
 
-    first = await run_maintenance_pass()
+    report = await run_maintenance_pass()
 
-    assert len(first.became_not_token_priced) == 1
-    assert first.became_not_token_priced[0].incoming_model == "vendor/model-x"
-    assert first.unchanged == 0, "a dropped rate must never read as unchanged"
-    assert "Now listed without a per-token price" in first.render()
-
-    # Idempotence: the second pass confirms the same settled answer, which is
-    # genuinely unchanged.
-    second = await run_maintenance_pass()
-    assert second.became_not_token_priced == []
-    assert second.unchanged == 1
+    assert report.became_not_token_priced == []
+    assert len(report.preserved_without_replacement) == 1
+    record = await _record("vendor/model-x")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(2.0, 4.0)
 
 
 @pytest.mark.asyncio

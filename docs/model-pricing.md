@@ -110,6 +110,7 @@ External model price maintenance
 - Now listed without a per-token price: 0
 - Preserved after a source failure: 0
 - Preserved while an integration is disabled: 0
+- Preserved without a valid replacement: 0
 - Preserved after an unreadable published price: 0
 - Skipped, integration disabled: 0
 - Still unresolved: 1
@@ -125,28 +126,20 @@ you expect to be priced.
 
 Two outcomes are worth knowing:
 
-- If a catalog cannot be reached, records that depend on it keep their existing
-  rates. A network failure is never treated as a price change. This covers the
-  OpenRouter pricing reference too: a record that was resolved from it keeps its
-  rate when the reference is unreachable, even if the serving catalog answered.
-- If a catalog is reachable and no longer lists a model, that model becomes
-  unresolved. Continuing to report its old rate would show a price no live
-  listing supports.
+- A stored price is sticky. A refresh replaces it only with another valid parsed
+  rate from its trustworthy catalog source. Catalog outages, missing entries,
+  ambiguous matches, no-price values, parse failures, and database failures leave
+  the stored rate and provenance unchanged.
 - If a catalog still lists a model but publishes its price in a shape codex-lb
-  cannot read, the last successfully read rate is kept and the model is retried
-  later on a widening schedule. This is reported under "Preserved after an
-  unreadable published price" rather than counted as unchanged, so an upstream
-  schema change is visible instead of silently clearing rates. A catalog that
-  publishes a no-price value (`-1`, `null`, or an empty string) is not that case:
-  it is the catalog stating the model has no per-token rate, so the model settles
-  as `--` and is never retried.
+  cannot read, the last successfully read rate is kept. This is reported under
+  "Preserved after an unreadable published price" rather than counted as
+  unchanged, so an upstream schema change is visible instead of silently
+  clearing rates. For a model that has never had a price, a catalog no-price value
+  (`-1`, `null`, or an empty string) settles as `--` and is never retried.
 - If a catalog reachable in an earlier pass no longer answers, a record that was
   already settled keeps its answer, whether that answer was a rate or "not token
   priced". Both are answers a source produced, and an outage is not evidence
   against either.
-- If a rate is replaced by a listing with no per-token price, the change is
-  reported under "Now listed without a per-token price". Clearing a stored rate
-  is never counted as unchanged.
 - If an integration is switched off, it is listed under "Integrations disabled"
   and never reported as an unavailable catalog: it has not failed to answer. Its
   records are still judged against the OpenRouter pricing reference, which is a
@@ -160,8 +153,8 @@ Two outcomes are worth knowing:
 
 CLIProxyAPI publishes no rates of its own, by design. That is not a fetch
 failure: it is never reported as an unavailable catalog, and its records are
-judged against the OpenRouter pricing reference alone, so one that is genuinely
-no longer listed becomes unresolved instead of keeping a stale rate.
+initially resolved against the OpenRouter pricing reference. Once stored, its
+price remains until that reference supplies another valid parsed price.
 
 ## Notes
 

@@ -55,6 +55,7 @@ class MaintenanceReport:
     unchanged: int = 0
     preserved_on_failure: int = 0
     preserved_while_disabled: int = 0
+    preserved_without_replacement: list[RecordChange] = field(default_factory=list)
     preserved_unparseable: list[RecordChange] = field(default_factory=list)
     became_not_token_priced: list[RecordChange] = field(default_factory=list)
     unresolved: list[RecordChange] = field(default_factory=list)
@@ -73,6 +74,7 @@ class MaintenanceReport:
             f"- Now listed without a per-token price: {len(self.became_not_token_priced)}",
             f"- Preserved after a source failure: {self.preserved_on_failure}",
             f"- Preserved while an integration is disabled: {self.preserved_while_disabled}",
+            f"- Preserved without a valid replacement: {len(self.preserved_without_replacement)}",
             f"- Preserved after an unreadable published price: {len(self.preserved_unparseable)}",
             f"- Skipped, integration disabled: {self.skipped_disabled}",
             f"- Still unresolved: {len(self.unresolved)}",
@@ -82,6 +84,7 @@ class MaintenanceReport:
             ("Updated", self.updated),
             ("Newly resolved", self.newly_resolved),
             ("Now listed without a per-token price", self.became_not_token_priced),
+            ("Preserved without a valid replacement", self.preserved_without_replacement),
             ("Preserved after an unreadable published price", self.preserved_unparseable),
             ("Unresolved", self.unresolved),
             ("Ambiguous", self.ambiguous),
@@ -136,9 +139,7 @@ async def run_maintenance_pass() -> MaintenanceReport:
             report.disabled_integrations.append(provider)
             continue
         # An integration that publishes no price catalog by design contributes
-        # nothing here and has not failed. Reporting it as a failure would also
-        # make every one of its records look "preserved after a source failure",
-        # so a genuinely delisted model would keep a stale rate forever.
+        # nothing here and has not failed.
         if context is None or context.serving_catalog_missing:
             unavailable_providers.add(provider)
             report.catalog_failures.append(f"{provider}: serving catalog unavailable")
@@ -215,16 +216,19 @@ async def _refresh_record(
         consultations=consultations,
     )
     if reason is not None:
-        applied = await preserve_record_for_retry(
-            record.provider,
-            record.incoming_model,
-            record=record,
-            detail=reason,
-            resolution=resolution,
-            expected_updated_at=record.updated_at,
-        )
-        if not applied:
-            return
+        if record.is_priced:
+            applied = True
+        else:
+            applied = await preserve_record_for_retry(
+                record.provider,
+                record.incoming_model,
+                record=record,
+                detail=reason,
+                resolution=resolution,
+                expected_updated_at=record.updated_at,
+            )
+            if not applied:
+                return
         if resolution.outcome is ResolutionOutcome.PRICE_UNPARSEABLE:
             report.preserved_unparseable.append(
                 RecordChange(
@@ -234,13 +238,22 @@ async def _refresh_record(
                 )
             )
         else:
-            disabled_preservation = serving_disabled and not consultations.source_answered(
-                record.catalog_source or record.provider,
-                record.provider,
+            owner = record.catalog_source
+            source_unavailable = (owner is not None and not consultations.source_answered(owner, record.provider)) or (
+                owner is None and (serving_failed or reference_unavailable)
             )
-            _count_preserved(report, disabled=disabled_preservation)
-            if serving_disabled and reference is None:
-                report.skipped_disabled += 1
+            if source_unavailable:
+                _count_preserved(report, disabled=serving_disabled)
+                if serving_disabled and reference is None:
+                    report.skipped_disabled += 1
+            else:
+                report.preserved_without_replacement.append(
+                    RecordChange(
+                        provider=record.provider,
+                        incoming_model=record.incoming_model,
+                        description=reason,
+                    )
+                )
         return
 
     async with get_background_session() as session:
@@ -295,8 +308,6 @@ async def _refresh_record(
             if record.status is ExternalPriceStatus.NOT_TOKEN_PRICED:
                 report.unchanged += 1
             else:
-                # This clears the stored rates and drops the retry deadline. A
-                # dropped rate must never read as "unchanged".
                 report.became_not_token_priced.append(
                     RecordChange(
                         provider=record.provider,

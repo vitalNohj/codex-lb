@@ -145,6 +145,7 @@ External model price maintenance
 - Newly resolved: 1
 - Unchanged: 38
 - Preserved after a source failure: 0
+- Preserved without a valid replacement: 0
 - Still unresolved: 1
 - Ambiguous: 0
 ```
@@ -153,22 +154,20 @@ It is deliberately not a poller. Prices change rarely, so an interval would spen
 every tick re-confirming the same numbers, and an unattended refresh that swaps a
 rate silently is harder to reason about than one whose output names every change.
 
-Two failure modes are treated differently, and the distinction is the point:
-
-* **Source unreachable** - the record keeps its prior rate. A timeout is not a
-  delisting, and preserving a probably-correct rate beats replacing it with
-  nothing.
-* **Source reachable and no longer listing the model** - the record becomes
-  unresolved. The source answered; continuing to report the old rate would serve
-  a price no live listing backs.
+A stored price is sticky. Maintenance replaces it only with another valid parsed
+rate from the source that owns the record. An outage, missing entry, unreadable
+entry, ambiguous match, no-price sentinel, or durable-store failure leaves the
+rate and provenance unchanged. The system cannot reliably distinguish a provider
+removal from catalog drift or partial availability, so it does not infer one.
 
 ## Operational notes
 
 - **Cached input** is priced at the full input rate. No participating catalog
   publishes a cache-read rate for every model, and assuming a discount ratio
   would substitute an invented number for a published one.
-- **Failure is always toward no price.** A store read failure, a catalog outage,
-  or a resolver exception costs a cost figure, never the request.
+- **Infrastructure failure is pre-lookup state.** A store read failure, catalog
+  outage, or resolver exception costs a cost figure, never the request, and does
+  not mark the model unresolved.
 - **Free models** record a real `$0.00`: zero is a published price.
 - **Migrations are additive-nullable**, so rollback is a revert.
 
