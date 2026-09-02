@@ -21,9 +21,7 @@ def _clear_registry():
 
 
 def test_runtime_pricing_preferred_for_model_absent_from_static_table() -> None:
-    get_runtime_pricing_registry().update_models(
-        [("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))]
-    )
+    get_runtime_pricing_registry().update_models([("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))])
     price = get_reference_pricing_for_model("vendor/model-x")
     assert price is not None
     assert price.input_per_1m == pytest.approx(0.8)
@@ -38,9 +36,7 @@ def test_static_table_used_when_runtime_price_unavailable() -> None:
 
 
 def test_free_variant_resolves_to_paid_pricing() -> None:
-    get_runtime_pricing_registry().update_models(
-        [("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))]
-    )
+    get_runtime_pricing_registry().update_models([("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))])
     price = get_reference_pricing_for_model("vendor/model-x:free")
     assert price is not None
     assert price.input_per_1m == pytest.approx(0.8)
@@ -51,9 +47,7 @@ def test_free_model_without_paid_equivalent_returns_none() -> None:
 
 
 def test_calculate_reference_cost_for_free_model() -> None:
-    get_runtime_pricing_registry().update_models(
-        [("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))]
-    )
+    get_runtime_pricing_registry().update_models([("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))])
     cost = calculate_reference_cost(
         "vendor/model-x:free",
         UsageTokens(input_tokens=10_000, output_tokens=2_000, cached_input_tokens=0),
@@ -72,6 +66,27 @@ def test_calculate_reference_cost_none_when_unresolvable() -> None:
 
 def test_calculate_reference_cost_none_without_usage() -> None:
     assert calculate_reference_cost("gpt-4o", None) is None
+
+
+@pytest.mark.parametrize(
+    "price, usage",
+    [
+        pytest.param(
+            ModelPrice(input_per_1m=1e308, output_per_1m=1e308),
+            UsageTokens(input_tokens=1_000_000, output_tokens=1_000_000),
+            id="overflowing-total",
+        ),
+        pytest.param(
+            ModelPrice(input_per_1m=1.0, output_per_1m=1.0),
+            UsageTokens(input_tokens=-1, output_tokens=2),
+            id="negative-input",
+        ),
+    ],
+)
+def test_invalid_runtime_reference_calculations_are_unknown(price: ModelPrice, usage: UsageTokens) -> None:
+    get_runtime_pricing_registry().update_models([("vendor/model-x", price)])
+
+    assert calculate_reference_cost("vendor/model-x", usage) is None
 
 
 def test_each_provider_resolves_its_own_price_for_a_shared_model_id() -> None:

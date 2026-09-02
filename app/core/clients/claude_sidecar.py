@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -46,6 +47,30 @@ class SidecarModel:
     owned_by: str | None = None
     raw: Mapping[str, JsonValue] | None = None
     pricing: ModelPrice | None = None
+
+
+def parse_sidecar_per_token_usd(value: JsonValue) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            per_token = float(value)
+        except OverflowError:
+            return None
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            per_token = float(stripped)
+        except (OverflowError, ValueError):
+            return None
+    else:
+        return None
+    per_1m = per_token * 1_000_000.0
+    if per_token < 0 or not math.isfinite(per_1m):
+        return None
+    return per_1m
 
 
 class ClaudeSidecarError(Exception):
@@ -167,7 +192,7 @@ class ClaudeSidecarClient:
         return files
 
     async def get_routing_strategy(self) -> str:
-        url = f'{self.base_url}/v0/management/routing/strategy'
+        url = f"{self.base_url}/v0/management/routing/strategy"
         try:
             async with lease_http_session() as session:
                 async with session.get(url, headers=self._management_headers(), timeout=self._timeout()) as resp:
@@ -177,25 +202,23 @@ class ClaudeSidecarClient:
         except ClaudeSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise ClaudeSidecarUnavailableError(
-                _transport_message(exc, 'fetch CLIProxyAPI routing strategy')
-            ) from exc
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, "fetch CLIProxyAPI routing strategy")) from exc
 
         if not is_json_mapping(data):
-            raise ClaudeSidecarError(502, 'Invalid response format from CLIProxyAPI routing strategy API', body=data)
-        strategy = data.get('strategy')
+            raise ClaudeSidecarError(502, "Invalid response format from CLIProxyAPI routing strategy API", body=data)
+        strategy = data.get("strategy")
         if not isinstance(strategy, str) or not strategy:
             raise ClaudeSidecarError(502, "Missing 'strategy' key in CLIProxyAPI routing strategy response", body=data)
         return strategy
 
     async def set_routing_strategy(self, value: str) -> str:
-        url = f'{self.base_url}/v0/management/routing/strategy'
+        url = f"{self.base_url}/v0/management/routing/strategy"
         try:
             async with lease_http_session() as session:
                 async with session.put(
                     url,
                     headers=self._management_headers(),
-                    json={'value': value},
+                    json={"value": value},
                     timeout=self._timeout(),
                 ) as resp:
                     data = await _read_response_json(resp)
@@ -204,23 +227,21 @@ class ClaudeSidecarClient:
         except ClaudeSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise ClaudeSidecarUnavailableError(
-                _transport_message(exc, 'update CLIProxyAPI routing strategy')
-            ) from exc
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, "update CLIProxyAPI routing strategy")) from exc
 
         if not is_json_mapping(data):
-            raise ClaudeSidecarError(502, 'Invalid response format from CLIProxyAPI routing strategy API', body=data)
-        strategy = data.get('strategy')
+            raise ClaudeSidecarError(502, "Invalid response format from CLIProxyAPI routing strategy API", body=data)
+        strategy = data.get("strategy")
         return strategy if isinstance(strategy, str) and strategy else value
 
     async def patch_auth_file_priority(self, name: str, priority: int) -> None:
-        url = f'{self.base_url}/v0/management/auth-files/fields'
+        url = f"{self.base_url}/v0/management/auth-files/fields"
         try:
             async with lease_http_session() as session:
                 async with session.patch(
                     url,
                     headers=self._management_headers(),
-                    json={'name': name, 'priority': priority},
+                    json={"name": name, "priority": priority},
                     timeout=self._timeout(),
                 ) as resp:
                     data = await _read_response_json(resp)
@@ -230,17 +251,17 @@ class ClaudeSidecarClient:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise ClaudeSidecarUnavailableError(
-                _transport_message(exc, 'update CLIProxyAPI auth-file priority')
+                _transport_message(exc, "update CLIProxyAPI auth-file priority")
             ) from exc
 
     async def patch_auth_file_disabled(self, name: str, disabled: bool) -> None:
-        url = f'{self.base_url}/v0/management/auth-files/fields'
+        url = f"{self.base_url}/v0/management/auth-files/fields"
         try:
             async with lease_http_session() as session:
                 async with session.patch(
                     url,
                     headers=self._management_headers(),
-                    json={'name': name, 'disabled': disabled},
+                    json={"name": name, "disabled": disabled},
                     timeout=self._timeout(),
                 ) as resp:
                     data = await _read_response_json(resp)
@@ -250,7 +271,7 @@ class ClaudeSidecarClient:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise ClaudeSidecarUnavailableError(
-                _transport_message(exc, 'update CLIProxyAPI auth-file disabled state')
+                _transport_message(exc, "update CLIProxyAPI auth-file disabled state")
             ) from exc
 
     async def pop_usage_queue(self, count: int) -> list[Mapping[str, JsonValue]]:

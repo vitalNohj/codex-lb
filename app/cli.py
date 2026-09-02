@@ -55,6 +55,21 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Confirm that Codex/Codex CLI is closed and allow a non-interactive write.",
     )
 
+    model_prices = subparsers.add_parser(
+        "model-prices",
+        help="Inspect and refresh persisted external-integration model prices.",
+        formatter_class=_CliHelpFormatter,
+    )
+    model_prices_subparsers = model_prices.add_subparsers(dest="model_prices_command")
+    model_prices_subparsers.add_parser(
+        "refresh",
+        help=(
+            "Run one pass over persisted model prices: fetch catalogs in bulk, update changed "
+            "rates, and report unresolved or ambiguous records. Idempotent; not scheduled."
+        ),
+        formatter_class=_CliHelpFormatter,
+    )
+
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", default=os.getenv("PORT", "2455"))
     parser.add_argument("--ssl-certfile", default=os.getenv("SSL_CERTFILE"))
@@ -91,6 +106,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             _run_codex_sessions_retag(args)
             return
         raise SystemExit("codex-sessions requires a subcommand")
+
+    if args.command == "model-prices":
+        if args.model_prices_command == "refresh":
+            _run_model_prices_refresh()
+            return
+        raise SystemExit("model-prices requires a subcommand")
 
     if bool(args.ssl_certfile) ^ bool(args.ssl_keyfile):
         raise SystemExit("Both --ssl-certfile and --ssl-keyfile must be provided together.")
@@ -152,6 +173,51 @@ def _parse_server_ws_max_size(raw_ws_max_size: str) -> int:
     if ws_max_size <= 0:
         raise SystemExit(f"--ws-max-size/UVICORN_WS_MAX_SIZE must be positive, got {raw_ws_max_size!r}.")
     return ws_max_size
+
+
+def _run_model_prices_refresh() -> None:
+    """Run one maintenance pass and print its report.
+
+    Deliberately a command rather than a schedule. Prices change rarely, and an
+    operator-run pass whose output names every changed rate is easier to trust
+    than a poller that swaps numbers silently. Running it twice against an
+    unchanged catalog reports no changes.
+    """
+
+    import asyncio
+
+    import sqlalchemy.exc as sa_exc
+
+    from app.core.clients.http import close_http_client, init_http_client
+    from app.core.usage.external_pricing.maintenance import run_maintenance_pass
+    from app.db.session import init_background_db
+    from app.modules.proxy.external_pricing_sources import register_external_pricing_sources
+
+    async def _run() -> str:
+        init_background_db()
+        register_external_pricing_sources()
+        # Every catalog fetch leases the shared HTTP client, which only the API
+        # server's lifespan otherwise builds. Without it the pass either aborts
+        # on the pricing reference or silently reports every catalog unavailable
+        # and changes nothing.
+        await init_http_client()
+        try:
+            report = await run_maintenance_pass()
+            return report.render()
+        finally:
+            await close_http_client()
+
+    try:
+        print(asyncio.run(_run()))
+    except sa_exc.DatabaseError as exc:
+        # ``DatabaseError`` rather than ``OperationalError``: SQLite reports a
+        # missing table as operational, PostgreSQL reports the same condition as
+        # ``ProgrammingError`` (UndefinedTable). Both are exactly the case this
+        # message exists to explain, so both must reach it.
+        raise SystemExit(
+            "Failed to read persisted model prices. Run 'codex-lb-db upgrade' to apply pending "
+            f"migrations, then retry. Underlying error: {exc}"
+        ) from exc
 
 
 def _run_codex_sessions_retag(args: argparse.Namespace) -> None:

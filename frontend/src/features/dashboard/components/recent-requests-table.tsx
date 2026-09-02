@@ -40,6 +40,14 @@ import {
   formatTimeLong,
 } from "@/utils/formatters";
 
+// Statuses meaning "a lookup ran for this model and produced no published token
+// price". They are the only ones that earn a visible marker. Everything else
+// that lacks a cost lacks one for an ordinary reason and stays "--": no token
+// usage, an integration that is not externally priced, a model billed per
+// request, or "pending" - a first sighting whose lookup had not finished when
+// the row was written, which is not yet evidence that no price exists.
+const UNRESOLVED_PRICE_STATUSES = new Set(["unresolved", "ambiguous"]);
+
 const STATUS_CLASS_MAP: Record<string, string> = {
   ok: "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 hover:bg-emerald-500/20 dark:text-emerald-400",
   rate_limit: "bg-orange-500/15 text-orange-700 border-orange-500/20 hover:bg-orange-500/20 dark:text-orange-400",
@@ -151,6 +159,51 @@ export type RecentRequestsTableProps = {
   onOffsetChange: (offset: number) => void;
   onConversationClick?: (conversationId: string) => void;
 };
+
+function isUnresolvedExternalPrice(request: RequestLog): boolean {
+  return (
+    request.costUsd == null &&
+    request.inputTokens != null &&
+    request.outputTokens != null &&
+    UNRESOLVED_PRICE_STATUSES.has(request.priceStatus ?? "")
+  );
+}
+
+function RequestCost({ request }: { request: RequestLog }) {
+  const { t } = useTranslation();
+
+  if (isUnresolvedExternalPrice(request)) {
+    return (
+      <span
+        className="cursor-help text-amber-600 dark:text-amber-500"
+        title={t(
+          request.priceStatus === "ambiguous"
+            ? "dashboard.requests.cost.ambiguousTooltip"
+            : "dashboard.requests.cost.unresolvedTooltip",
+        )}
+      >
+        !!
+      </span>
+    );
+  }
+
+  if (request.costUsd == null) {
+    return <span>{formatCurrency(request.costUsd)}</span>;
+  }
+
+  // A calculated figure is a published list price, not the amount debited. The
+  // number is exact arithmetic, so it is shown plainly; only the tooltip carries
+  // the provenance, which is where the two can differ.
+  const isCalculated = request.costSource === "catalog_calculated";
+  return (
+    <span
+      className={isCalculated ? "cursor-help" : undefined}
+      title={isCalculated ? t("dashboard.requests.cost.calculatedTooltip") : undefined}
+    >
+      {formatCurrency(request.costUsd)}
+    </span>
+  );
+}
 
 function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<typeof useTranslation>["t"]): string | null {
   if (!request || request.status !== "ok") {
@@ -454,7 +507,7 @@ export function RecentRequestsTable({
                     </div>
                   </TableCell>
                   <TableCell className="text-right align-top pr-8 font-mono text-xs tabular-nums">
-                    {formatCurrency(request.costUsd)}
+                    <RequestCost request={request} />
                   </TableCell>
                   {viewMode === "simplified" ? (
                     <TableCell className="align-top">

@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
+from app.core.usage.external_pricing.store import ExternalModelPriceStore
+from app.core.usage.logs import RequestLogLike, calculated_cost_from_log, declares_price_provenance
 from app.core.usage.types import (
     BucketConversationAggregate,
     BucketModelAggregate,
@@ -21,7 +22,15 @@ from app.core.usage.types import (
 )
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, ApiKey, ClaudeSidecarUsageEvent, RequestKind, RequestLog
+from app.db.models import (
+    Account,
+    ApiKey,
+    ClaudeSidecarUsageEvent,
+    CostSource,
+    ExternalPriceStatus,
+    RequestKind,
+    RequestLog,
+)
 from app.db.session import sqlite_writer_section
 
 # CLIProxyAPI records its usage event within a couple of seconds of the
@@ -86,6 +95,12 @@ class PreviousResponseOwnerRecord:
 class RequestLogsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_external_price_statuses(
+        self,
+        keys: set[tuple[str, str]],
+    ) -> dict[tuple[str, str], ExternalPriceStatus]:
+        return await ExternalModelPriceStore(self._session).get_statuses(keys)
 
     @staticmethod
     def _exclude_warmup_clause() -> ColumnElement[bool]:
@@ -480,6 +495,8 @@ class RequestLogsRepository:
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
         cost_usd: float | None = None,
+        cost_source: str | None = None,
+        price_status: str | None = None,
         reference_cost_usd: float | None = None,
         archive_request_id: str | None = None,
     ) -> RequestLog:
@@ -548,15 +565,36 @@ class RequestLogsRepository:
                 upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
                 upstream_proxy_fallback_used=upstream_proxy_fallback_used,
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
+                price_status=price_status,
                 requested_at=requested_at or utcnow(),
             )
-            log.cost_usd = (
-                cost_usd
-                if cost_usd is not None
-                else 0.0
-                if model_source_id is not None
-                else calculated_cost_from_log(typing_cast(RequestLogLike, log))
-            )
+            # Callers that resolved a cost also state where it came from, and that
+            # answer is final: an external integration whose model stayed
+            # unresolved must record no cost rather than fall through to the
+            # static table, whose stem-matching aliases priced ids by substring
+            # and produced multiples of the real rate.
+            if cost_source is not None:
+                log.cost_usd = cost_usd
+                log.cost_source = cost_source
+            elif model_source_id is not None:
+                # A model source prices its own traffic from operator-configured
+                # rates, whether or not this particular row had usage to price.
+                # Reading the provenance off the caller rather than off whether a
+                # number happened to be present keeps one source from producing
+                # two different provenances.
+                log.cost_usd = cost_usd if cost_usd is not None else 0.0
+                log.cost_source = CostSource.OPERATOR_CONFIGURED.value
+            elif cost_usd is not None:
+                log.cost_usd = cost_usd
+                log.cost_source = CostSource.UPSTREAM_BILLED.value
+            elif price_status is not None:
+                # An eligible external model with no usable price. Leave the cost
+                # NULL so the UI can mark it rather than show an invented number.
+                log.cost_usd = None
+            else:
+                calculated = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                log.cost_usd = calculated
+                log.cost_source = CostSource.STATIC_TABLE.value if calculated is not None else None
             self._session.add(log)
             try:
                 await self._session.commit()
@@ -596,7 +634,13 @@ class RequestLogsRepository:
                     return 0
                 for log in logs:
                     log.model = model
-                    log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    log_like = typing_cast(RequestLogLike, log)
+                    if declares_price_provenance(log_like):
+                        # The row's cost already came from a resolved source, so a
+                        # relabelled model does not entitle us to overwrite it with
+                        # a static-table figure.
+                        continue
+                    log.cost_usd = calculated_cost_from_log(log_like)
                 await self._session.commit()
             except sa_exc.ResourceClosedError:
                 return 0

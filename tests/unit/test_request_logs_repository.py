@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import ResourceClosedError
 
-from app.db.models import ModelSource, RequestLog
+from app.db.models import CostSource, ExternalPriceStatus, ModelSource, RequestLog
 from app.db.session import SessionLocal
 from app.modules.request_logs.repository import RequestLogsRepository
 
@@ -307,6 +307,119 @@ async def test_add_log_does_not_recalculate_unpriced_model_source_cost(db_setup)
         persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
         assert persisted is not None
         assert persisted.cost_usd == 0.0
+        assert persisted.cost_source == CostSource.OPERATOR_CONFIGURED.value
+
+
+@pytest.mark.asyncio
+async def test_add_log_labels_model_source_costs_operator_configured_with_and_without_usage(db_setup) -> None:
+    """One source must not produce two provenances.
+
+    A model source prices its own traffic from operator-configured rates. Those
+    rates yield ``0.0`` when they are unset and usage exists, and ``None`` when
+    there is no usage at all; neither means "the upstream told us what it billed".
+    """
+
+    del db_setup
+    async with SessionLocal() as session:
+        session.add(
+            ModelSource(
+                id="source_provenance",
+                name="source provenance",
+                base_url="https://source-provenance.example.invalid/v1",
+            )
+        )
+        await session.commit()
+        repo = RequestLogsRepository(session)
+
+        with_usage = await repo.add_log(
+            account_id=None,
+            model_source_id="source_provenance",
+            request_id="req_source_provenance_usage",
+            model="gpt-5.2",
+            input_tokens=10_000,
+            output_tokens=5_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            cost_usd=0.0,
+        )
+        without_usage = await repo.add_log(
+            account_id=None,
+            model_source_id="source_provenance",
+            request_id="req_source_provenance_no_usage",
+            model="gpt-5.2",
+            input_tokens=None,
+            output_tokens=None,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            cost_usd=None,
+        )
+
+        for saved in (with_usage, without_usage):
+            persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+            assert persisted is not None
+            assert persisted.cost_usd == 0.0
+            assert persisted.cost_source == CostSource.OPERATOR_CONFIGURED.value
+
+
+@pytest.mark.asyncio
+async def test_add_log_keeps_an_unresolved_external_row_null_rather_than_glob_priced(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_unresolved_external",
+            model="orcarouter/gpt-4o-lookalike",
+            source="orcarouter_sidecar",
+            input_tokens=10_000,
+            output_tokens=5_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            cost_usd=None,
+            price_status=ExternalPriceStatus.UNRESOLVED.value,
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        assert persisted.cost_usd is None
+        assert persisted.cost_source is None
+
+
+@pytest.mark.asyncio
+async def test_update_model_for_request_does_not_reprice_a_resolved_external_row(db_setup) -> None:
+    """Relabelling a model must not overwrite a cost that came from a catalog."""
+
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_external_relabel",
+            model="orcarouter/some-model",
+            source="orcarouter_sidecar",
+            input_tokens=10_000,
+            output_tokens=5_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            cost_usd=0.0123,
+            cost_source=CostSource.CATALOG_CALCULATED.value,
+            price_status=ExternalPriceStatus.RESOLVED.value,
+        )
+
+        updated = await repo.update_model_for_request("req_external_relabel", "gpt-5.2")
+        assert updated == 1
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        assert persisted.model == "gpt-5.2"
+        assert persisted.cost_usd == pytest.approx(0.0123)
+        assert persisted.cost_source == CostSource.CATALOG_CALCULATED.value
 
 
 @pytest.mark.asyncio

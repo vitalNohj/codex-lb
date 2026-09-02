@@ -55,6 +55,14 @@ class RequestLogEntry(DashboardModel):
     reasoning_effort: str | None = None
     requested_reasoning_effort: str | None = None
     cost_usd: float | None = None
+    # Where ``cost_usd`` came from. ``upstream_billed`` is the amount the serving
+    # integration reported debiting; ``catalog_calculated`` is published token
+    # rates multiplied by recorded usage, which is a list price rather than the
+    # actual debit. NULL means unknown, not billed.
+    cost_source: str | None = None
+    # Outcome of external list-price resolution. NULL for integrations that do not
+    # participate at all, which the UI renders as ``--``.
+    price_status: str | None = None
     cost_breakdown: RequestLogCostBreakdown = Field(default_factory=RequestLogCostBreakdown)
     reference_cost_usd: float | None = None
     savings_usd: float | None = None

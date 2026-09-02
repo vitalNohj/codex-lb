@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarConfig,
+    OpenRouterSidecarError,
     OpenRouterSidecarUnavailableError,
 )
 from app.core.config.settings import get_settings
@@ -83,10 +84,7 @@ class _FakeStreamContext:
         async def chunks():
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
-                yield (
-                    b'data: {"error":{"code":"context_length_exceeded",'
-                    b'"message":"Input token limit exceeded"}}\n\n'
-                )
+                yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
@@ -167,7 +165,7 @@ async def _create_api_key(
 ):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits))
+        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or []))
 
 
 async def _reservation_statuses() -> list[str]:
@@ -378,6 +376,55 @@ async def test_openrouter_sidecar_cursor_stream_context_limit_returns_synthetic_
 
 
 @pytest.mark.asyncio
+async def test_cursor_context_limit_error_is_logged_as_success_and_releases_its_reservation(
+    async_client,
+    openrouter_enabled,
+    fake_openrouter,
+):
+    """A synthetic success must not be recorded as an error.
+
+    The client receives HTTP 200 with synthetic usage, so logging it as an error
+    and finalizing its reservation would charge quota for a request that was
+    never billed and would report a failure the caller never saw.
+    """
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "openrouterSidecarEnabled": True,
+            "openrouterSidecarApiKey": "openrouter-key",
+            "openrouterSidecarModelPrefixes": ["deepseek/"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("cursor-context-limit-key")
+    fake_openrouter.chat_error = OpenRouterSidecarError(
+        400,
+        "This endpoint's maximum context length is 163840 tokens",
+        body={"error": {"code": "context_length_exceeded", "message": "maximum context length"}},
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}", "User-Agent": "Cursor/1.0"},
+        json={"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": "too much"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"]["prompt_tokens"] == CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
+
+    # The client saw a success, so nothing may record this as a failed request.
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "openrouter_sidecar"]
+    assert not [log for log in sidecar_logs if log.status == "error"]
+    assert not [log for log in sidecar_logs if log.error_code == "openrouter_sidecar_error"]
+    # Released, never finalized: the upstream refused the request, so there is no
+    # spend to settle and the reserved quota must go back.
+    assert await _reservation_statuses() == ["released"]
+
+
+@pytest.mark.asyncio
 async def test_openrouter_sidecar_non_cursor_stream_does_not_apply_usage_fallback(
     async_client,
     openrouter_enabled,
@@ -436,4 +483,3 @@ async def test_openrouter_sidecar_alias_is_discoverable_and_routes(async_client,
     assert response.status_code == 200
     assert fake_openrouter.chat_payloads
     assert fake_openrouter.chat_payloads[0]["model"] == "deepseek/deepseek-chat"
-

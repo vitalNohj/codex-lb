@@ -10,10 +10,13 @@ from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
     CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
+    SidecarUsage,
+    _sidecar_request_cost,
     _SseUsageDecoder,
     build_sidecar_chat_payload,
     claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
+    extract_billed_cost,
     extract_usage,
     reset_claude_sidecar_cooldown_gate,
     retry_claude_sidecar_cooldown,
@@ -895,6 +898,26 @@ def test_extract_usage_supports_chat_and_responses_usage_shapes() -> None:
     assert responses_usage.cached_input_tokens == 3
 
 
+@pytest.mark.parametrize("value", [-1, 1.5, float("nan"), float("inf"), float("-inf")])
+def test_extract_usage_rejects_invalid_token_counts(value: float) -> None:
+    assert extract_usage({"usage": {"prompt_tokens": value, "completion_tokens": 2}}) is None
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"cost": 0.01},
+        {"prompt_tokens": 10, "cost": 0.01},
+        {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.01},
+    ],
+)
+def test_billed_cost_is_extracted_independently_from_token_usage(usage: dict[str, float]) -> None:
+    payload = {"usage": usage}
+
+    assert extract_billed_cost(payload) == pytest.approx(0.01)
+    assert (extract_usage(payload) is not None) is ("completion_tokens" in usage)
+
+
 def test_extract_usage_reads_openrouter_cost_field() -> None:
     usage_with_cost = extract_usage(
         {
@@ -971,3 +994,105 @@ def test_extract_usage_prefers_openrouter_cost_over_cost_usd() -> None:
 
     assert usage is not None
     assert usage.cost_usd == 0.5
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("prompt_tokens", -1),
+        ("completion_tokens", 1.5),
+        ("prompt_tokens", float("nan")),
+        ("completion_tokens", float("inf")),
+        ("prompt_tokens", 1 << 31),
+        ("prompt_tokens", 10**400),
+    ],
+)
+def test_extract_usage_rejects_invalid_token_components(field: str, value: int | float) -> None:
+    raw_usage: dict[str, int | float] = {"prompt_tokens": 10, "completion_tokens": 5}
+    raw_usage[field] = value
+
+    assert extract_usage({"usage": raw_usage}) is None
+
+
+@pytest.mark.parametrize("details_key", ["prompt_tokens_details", "input_tokens_details"])
+@pytest.mark.parametrize("cached_tokens", [-1, 1.5, float("nan"), float("inf"), 10**400])
+def test_extract_usage_drops_an_invalid_cached_token_field_without_losing_required_counts(
+    details_key: str,
+    cached_tokens: int | float,
+) -> None:
+    """An unusable optional refinement must not void the required accounting.
+
+    This previously asserted the whole usage object was discarded. That rejected
+    the malformed field correctly but took the request's real input and output
+    tokens with it, so logging and quota settlement lost usage the upstream had
+    reported. The assertion below is stricter: the bad value is still refused,
+    and the counts that drive billing survive.
+    """
+
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                details_key: {"cached_tokens": cached_tokens},
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+    assert usage.cached_input_tokens == 0
+
+
+def test_extract_usage_allows_absent_cached_tokens() -> None:
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {},
+                "input_tokens_details": {},
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.cached_input_tokens == 0
+
+
+def test_extract_usage_accepts_persistable_token_boundary() -> None:
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": (1 << 31) - 1,
+                "completion_tokens": (1 << 31) - 1,
+                "prompt_tokens_details": {"cached_tokens": (1 << 31) - 1},
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == (1 << 31) - 1
+    assert usage.output_tokens == (1 << 31) - 1
+    assert usage.cached_input_tokens == (1 << 31) - 1
+
+
+@pytest.mark.asyncio
+async def test_cliproxy_echoed_cost_is_not_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.usage.external_pricing.service import CalculatedCost
+    from app.db.models import ExternalPriceStatus
+    from app.modules.proxy import external_pricing_logging
+
+    async def _calculated_cost(**kwargs: object) -> tuple[CalculatedCost, ExternalPriceStatus]:
+        return CalculatedCost(0.25, "vendor/model", "openrouter"), ExternalPriceStatus.RESOLVED
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _calculated_cost)
+
+    result = await _sidecar_request_cost(
+        "cc/model",
+        SidecarUsage(input_tokens=10, output_tokens=5, cost_usd=99.0),
+    )
+
+    assert result.cost_usd == pytest.approx(0.25)
+    assert result.cost_source == "catalog_calculated"

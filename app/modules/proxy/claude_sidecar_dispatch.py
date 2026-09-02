@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -51,6 +52,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
+from app.modules.proxy.external_pricing_logging import validated_billed_cost
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile_with_suffix_effort,
     canonical_sidecar_model,
@@ -70,7 +72,16 @@ from app.modules.proxy.sidecar_tool_mapper import (
 from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
 from app.modules.request_logs.repository import RequestLogsRepository
 
+if TYPE_CHECKING:
+    from app.modules.proxy.external_pricing_logging import ExternalRequestCost
+
 logger = logging.getLogger(__name__)
+
+# External pricing key space for the CLIProxyAPI integration. Its ids are
+# prefixed handles for other vendors' models (``cc/claude-fable-5``), so they are
+# resolved through the configured prefixes and aliases rather than by trimming
+# the prefix and hoping the remainder names a catalog model.
+CLIPROXY_PRICING_PROVIDER = "cliproxy"
 
 CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE = "claude_sidecar_cooldown"
 _CLAUDE_SIDECAR_COOLDOWN_MARKERS = ("auth_unavailable", "no auth available")
@@ -1091,11 +1102,16 @@ async def proxy_chat_to_sidecar(
         )
 
     usage = extract_usage(response_body)
+    # One resolution for the whole request: the quota charge and the log row must
+    # be the same number, and two separate reads could disagree if a concurrent
+    # lookup landed between them.
+    cost = await _sidecar_request_cost(effective_model, usage)
     await _finalize_or_release_sidecar_reservation(
         reservation,
         api_key=api_key,
         model=effective_model,
         usage=usage,
+        cost=cost,
     )
     await _log_sidecar_request(
         api_key=api_key,
@@ -1105,6 +1121,7 @@ async def proxy_chat_to_sidecar(
         usage=usage,
         reasoning_effort=sidecar_payload.effective_reasoning_effort,
         requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        cost=cost,
     )
     if deepseek_scope is not None:
         deepseek_capture_non_streaming(deepseek_scope, response_body)
@@ -1274,11 +1291,13 @@ async def _sidecar_stream_iterator(
             deepseek_recorder.commit()
         if not settled:
             usage_to_settle = usage if completed else None
+            cost = await _sidecar_request_cost(model, usage_to_settle)
             await _finalize_or_release_sidecar_reservation(
                 reservation,
                 api_key=api_key,
                 model=model,
                 usage=usage_to_settle,
+                cost=cost,
             )
             await _log_sidecar_request(
                 api_key=api_key,
@@ -1289,6 +1308,7 @@ async def _sidecar_stream_iterator(
                 usage=usage_to_settle,
                 reasoning_effort=reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
+                cost=cost,
             )
 
 
@@ -1325,42 +1345,47 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
     if not is_json_mapping(usage):
         return None
 
-    input_tokens = _int_field(usage, "prompt_tokens")
-    if input_tokens is None:
-        input_tokens = _int_field(usage, "input_tokens")
-    output_tokens = _int_field(usage, "completion_tokens")
-    if output_tokens is None:
-        output_tokens = _int_field(usage, "output_tokens")
-    if input_tokens is None or output_tokens is None:
+    input_present, input_tokens = _first_int_field(usage, "prompt_tokens", "input_tokens")
+    output_present, output_tokens = _first_int_field(usage, "completion_tokens", "output_tokens")
+    if not input_present or input_tokens is None or not output_present or output_tokens is None:
         return None
 
+    # ``cached_tokens`` is optional refinement of an input count we already have.
+    # An unusable value is dropped rather than voiding the whole object: input and
+    # output tokens are the required accounting that drives logging and quota
+    # settlement, and discarding them because an optional field was malformed
+    # loses real usage the upstream did report.
     cached_tokens = 0
     prompt_details = usage.get("prompt_tokens_details")
     if is_json_mapping(prompt_details):
-        cached_tokens = _int_field(prompt_details, "cached_tokens") or 0
+        _, prompt_cached_tokens = _first_int_field(prompt_details, "cached_tokens")
+        if prompt_cached_tokens is not None:
+            cached_tokens = prompt_cached_tokens
     input_details = usage.get("input_tokens_details")
     if is_json_mapping(input_details):
-        cached_tokens = _int_field(input_details, "cached_tokens") or cached_tokens
-
-    # OpenRouter reports the billed amount as ``usage.cost``; OrcaRouter uses
-    # ``usage.cost_usd`` (docs.orcarouter.ai/operations/per-request-cost) and
-    # returns it only when the request opted in via ``X-OrcaRouter-Include-Cost``.
-    # Reading ``cost`` first keeps OpenRouter behaviour byte-identical. This
-    # helper is shared, so the ``cost_usd`` fallback also reaches the OmniRoute
-    # dispatch path, which logs ``SidecarUsage.cost_usd`` and therefore now
-    # persists a ``usage.cost_usd`` it previously ignored. The Claude path
-    # parses the field but never forwards it to ``add_log``, so its request-log
-    # cost stays pricing-table derived.
-    cost_usd = _float_field(usage, "cost")
-    if cost_usd is None:
-        cost_usd = _float_field(usage, "cost_usd")
+        _, input_cached_tokens = _first_int_field(input_details, "cached_tokens")
+        if input_cached_tokens is not None:
+            cached_tokens = input_cached_tokens
 
     return SidecarUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
-        cost_usd=cost_usd,
+        cost_usd=extract_billed_cost(payload),
     )
+
+
+def extract_billed_cost(payload: JsonValue) -> float | None:
+    if not is_json_mapping(payload):
+        return None
+    usage = payload.get("usage")
+    if not is_json_mapping(usage):
+        return None
+    for key in ("cost", "cost_usd"):
+        cost_usd = validated_billed_cost(_float_field(usage, key))
+        if cost_usd is not None:
+            return cost_usd
+    return None
 
 
 class _SseUsageDecoder:
@@ -1410,15 +1435,27 @@ def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
     return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
 
 
+_MAX_PERSISTED_TOKEN_COUNT = (1 << 31) - 1
+
+
 def _int_field(payload: Mapping[str, JsonValue], key: str) -> int | None:
     value = payload.get(key)
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return value if 0 <= value <= _MAX_PERSISTED_TOKEN_COUNT else None
     if isinstance(value, float):
+        if not math.isfinite(value) or value < 0 or value > _MAX_PERSISTED_TOKEN_COUNT or not value.is_integer():
+            return None
         return int(value)
     return None
+
+
+def _first_int_field(payload: Mapping[str, JsonValue], *keys: str) -> tuple[bool, int | None]:
+    for key in keys:
+        if key in payload:
+            return True, _int_field(payload, key)
+    return False, None
 
 
 def _float_field(payload: Mapping[str, JsonValue], key: str) -> float | None:
@@ -1426,7 +1463,10 @@ def _float_field(payload: Mapping[str, JsonValue], key: str) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            return None
     return None
 
 
@@ -1437,6 +1477,34 @@ def _is_sidecar_context_length_error(exc: ClaudeSidecarError) -> bool:
 def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
     data = json.dumps(error, ensure_ascii=True, separators=(",", ":"))
     return f"data: {data}\n\n".encode("utf-8")
+
+
+async def _sidecar_request_cost(model: str, usage: SidecarUsage | None) -> "ExternalRequestCost":
+    """Resolve this request's cost once, for both the quota charge and the log.
+
+    CLIProxyAPI debits nothing of its own: it proxies other vendors and can echo
+    their ``usage.cost``/``usage.cost_usd`` back verbatim. Forwarding that as
+    ``billed_cost_usd`` would record another party's debit as this request's
+    authoritative actual spend, which the mapper and the savings arithmetic then
+    treat as final. The cost here is therefore always a catalog-calculated list
+    price, marked as such. Its per-account token attribution is collected
+    separately and is untouched.
+
+    Imported lazily for the same reason the rest of this file does it: the pricing
+    module reaches back into this one for routing identity.
+    """
+
+    from app.modules.proxy.external_pricing_logging import (
+        external_request_cost,
+        usage_tokens_from_sidecar,
+    )
+
+    return await external_request_cost(
+        provider=CLIPROXY_PRICING_PROVIDER,
+        model=model,
+        usage=usage_tokens_from_sidecar(usage),
+        billed_cost_usd=None,
+    )
 
 
 async def _log_sidecar_request(
@@ -1451,8 +1519,11 @@ async def _log_sidecar_request(
     usage: SidecarUsage | None = None,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
+    cost: "ExternalRequestCost | None" = None,
 ) -> None:
     try:
+        if cost is None:
+            cost = await _sidecar_request_cost(model, usage)
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -1473,6 +1544,9 @@ async def _log_sidecar_request(
                 api_key_id=api_key.id if api_key else None,
                 source="claude_sidecar",
                 failure_phase="sidecar" if status != "success" else None,
+                cost_usd=cost.cost_usd,
+                cost_source=cost.cost_source,
+                price_status=cost.price_status,
             )
     except Exception:
         logger.warning(
@@ -1489,7 +1563,17 @@ async def _finalize_or_release_sidecar_reservation(
     api_key: ApiKeyData | None,
     model: str,
     usage: SidecarUsage | None,
+    cost: "ExternalRequestCost | None" = None,
 ) -> None:
+    """Settle or release one reservation using the caller's resolved cost.
+
+    ``cost`` is whatever the caller already resolved for this request, so the
+    quota charge and the log row are the same answer. Settlement resolves nothing
+    itself: doing so would read the store a second time inside an open background
+    session, and a concurrent lookup landing between the two reads would make the
+    two disagree. No cost means nothing is charged.
+    """
+
     if reservation is None:
         return
     try:
@@ -1498,6 +1582,10 @@ async def _finalize_or_release_sidecar_reservation(
             if usage is None:
                 await service.release_usage_reservation(reservation.reservation_id)
                 return
+            # Imported here for the same reason the logging path does: the
+            # pricing module reaches back into this one for routing identity.
+            from app.modules.proxy.external_pricing_logging import cost_microdollars
+
             await service.finalize_usage_reservation(
                 reservation.reservation_id,
                 model=model,
@@ -1505,6 +1593,9 @@ async def _finalize_or_release_sidecar_reservation(
                 output_tokens=usage.output_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 service_tier=None,
+                # Stated explicitly so settlement cannot fall through to the
+                # substring-glob table this integration no longer prices from.
+                cost_microdollars=cost_microdollars(cost),
             )
     except Exception:
         logger.warning(

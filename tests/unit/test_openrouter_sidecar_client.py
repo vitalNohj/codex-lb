@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -9,6 +11,11 @@ from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarError,
     OpenRouterSidecarUnavailableError,
 )
+from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models
+from app.core.usage.external_pricing.resolution import UnpricedReason
+from app.core.usage.pricing import ModelPrice
+from app.core.usage.runtime_pricing import get_runtime_pricing_registry
+from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, reference_cost_from_sidecar_usage
 
 pytestmark = pytest.mark.unit
 
@@ -115,8 +122,6 @@ async def test_list_models_sends_bearer_key_and_parses_models(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> None:
-    from app.core.usage.runtime_pricing import get_runtime_pricing_registry
-
     get_runtime_pricing_registry().clear()
     session = _FakeSession(
         get_response=_FakeResponse(
@@ -125,6 +130,7 @@ async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> N
             '{"id":"vendor/model-x","pricing":{"prompt":"0.0000008","completion":"0.000004",'
             '"input_cache_read":"0.0000002"}},'
             '{"id":"vendor/model-y","pricing":{"prompt":"bad","completion":"0.000004"}},'
+            f'{{"id":"vendor/model-overflow","pricing":{{"prompt":{10**400},"completion":"0.000004"}}}},'
             '{"id":"vendor/model-z"}'
             "]}",
         )
@@ -141,11 +147,52 @@ async def test_list_models_parses_pricing_and_updates_registry(monkeypatch) -> N
     assert by_id["vendor/model-x"].pricing.cached_input_per_1m == pytest.approx(0.2)
     # Unparseable / missing pricing -> no runtime price, fetch still succeeds.
     assert by_id["vendor/model-y"].pricing is None
+    assert by_id["vendor/model-overflow"].pricing is None
     assert by_id["vendor/model-z"].pricing is None
+    overflow = by_id["vendor/model-overflow"]
+    catalog = catalog_from_sidecar_models(
+        "openrouter",
+        [(overflow.id, overflow.pricing, overflow.raw.get("pricing") if overflow.raw else None)],
+    )
+    entry = catalog.exact("vendor/model-overflow")
+    assert entry is not None
+    assert entry.unpriced_reason is UnpricedReason.UNPARSEABLE
 
     registry = get_runtime_pricing_registry()
     assert registry.runtime_pricing_for_model("vendor/model-x") is not None
     assert registry.runtime_pricing_for_model("vendor/model-y") is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_published_rates_preserve_finite_runtime_reference_cost(monkeypatch) -> None:
+    registry = get_runtime_pricing_registry()
+    registry.clear()
+    model_ids = ("vendor/nan", "vendor/infinity", "vendor/scaled-overflow")
+    registry.update_models(
+        [(model_id, ModelPrice(input_per_1m=1.0, output_per_1m=2.0)) for model_id in model_ids],
+        provider="openrouter",
+    )
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            '{"object":"list","data":['
+            '{"id":"vendor/nan","pricing":{"prompt":"NaN","completion":"0.000002"}},'
+            '{"id":"vendor/infinity","pricing":{"prompt":"0.000001","completion":"Infinity"}},'
+            '{"id":"vendor/scaled-overflow","pricing":{"prompt":"1e308","completion":"0.000002"}}'
+            "]}",
+        )
+    )
+    monkeypatch.setattr("app.core.clients.openrouter_sidecar.lease_http_session", lambda: _Lease(session))
+
+    await OpenRouterSidecarClient(_config(api_key="key")).list_models()
+
+    usage = SidecarUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    for model_id in model_ids:
+        price = registry.runtime_pricing_for_model(model_id, provider="openrouter")
+        assert price == ModelPrice(input_per_1m=1.0, output_per_1m=2.0)
+        reference_cost = reference_cost_from_sidecar_usage(model_id, usage, provider="openrouter")
+        assert reference_cost == pytest.approx(3.0)
+        assert math.isfinite(reference_cost)
 
 
 @pytest.mark.asyncio

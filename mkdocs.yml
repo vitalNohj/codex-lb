@@ -61,6 +61,7 @@ nav:
   - Authentication: authentication.md
   - API Keys: api-keys.md
   - Routing: routing.md
+  - Model Pricing: model-pricing.md
   - Database: database.md
   - Deployment:
       - Docker: deployment/docker.md

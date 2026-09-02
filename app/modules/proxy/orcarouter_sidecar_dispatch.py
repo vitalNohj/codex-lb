@@ -34,6 +34,7 @@ from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsage
 from app.modules.proxy.claude_sidecar_dispatch import (
     SidecarUsage,
     ensure_stream_usage_requested,
+    extract_billed_cost,
     extract_usage,
     reference_cost_from_sidecar_usage,
 )
@@ -51,6 +52,14 @@ from app.modules.proxy.deepseek_v4_compat import (
 )
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
+)
+from app.modules.proxy.external_pricing_logging import (
+    BilledCostAccumulator,
+    ExternalRequestCost,
+    cost_microdollars,
+    external_request_cost,
+    external_response_settlement,
+    usage_tokens_from_sidecar,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
@@ -207,23 +216,44 @@ async def proxy_chat_to_orcarouter(
             headers=dict(rate_limit_headers),
         )
     except OrcaRouterSidecarError as exc:
+        sanitized_message = sanitize_orcarouter_message(exc.message, api_key=client.config.api_key)
+        # A cursor-compat context-length response is turned into a synthetic
+        # SUCCESS for the client, so it must not fall through to the error
+        # settlement below: that would log it as an error and finalize a
+        # reservation the client was never charged for. Mirrors the OpenRouter
+        # path.
         if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
             await _release_orcarouter_reservation(reservation, api_key=api_key)
             return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
-        await _release_orcarouter_reservation(reservation, api_key=api_key)
+        settlement = await external_response_settlement(
+            provider=ORCAROUTER_PRICING_PROVIDER,
+            model=effective_model,
+            usage=extract_usage(exc.body),
+            billed_cost_usd=extract_billed_cost(exc.body),
+            completed=False,
+        )
+        await _finalize_or_release_orcarouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=effective_model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
         await _log_orcarouter_request(
             api_key=api_key,
             model=effective_model,
             started_at=requested_at,
             status="error",
             error_code="orcarouter_sidecar_error",
-            error_message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
+            error_message=sanitized_message,
+            usage=settlement.usage,
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
             requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            cost=settlement.cost,
         )
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
-            message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
+            message=sanitized_message,
             error_code="orcarouter_sidecar_error",
             body=sanitize_orcarouter_error_body(exc.body, api_key=client.config.api_key),
             extra_headers=rate_limit_headers,
@@ -235,11 +265,17 @@ async def proxy_chat_to_orcarouter(
         )
 
     usage = extract_usage(response_body)
+    billed_cost_usd = extract_billed_cost(response_body)
+    # One resolution for the whole request: the quota charge and the log row must
+    # be the same number, and two separate reads could disagree if a concurrent
+    # lookup landed between them.
+    cost = await _orcarouter_request_cost(effective_model, usage, billed_cost_usd=billed_cost_usd)
     await _finalize_or_release_orcarouter_reservation(
         reservation,
         api_key=api_key,
         model=effective_model,
         usage=usage,
+        cost=cost,
     )
     await _log_orcarouter_request(
         api_key=api_key,
@@ -249,6 +285,7 @@ async def proxy_chat_to_orcarouter(
         usage=usage,
         reasoning_effort=sidecar_payload.effective_reasoning_effort,
         requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        cost=cost,
     )
     if deepseek_scope is not None:
         deepseek_capture_non_streaming(deepseek_scope, response_body)
@@ -273,8 +310,10 @@ async def _orcarouter_stream_iterator(
     requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
+    billed_cost = BilledCostAccumulator()
     completed = False
-    settled = False
+    error_code = "orcarouter_sidecar_stream_incomplete"
+    error_message: str | None = None
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
@@ -286,6 +325,7 @@ async def _orcarouter_stream_iterator(
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
+                    billed_cost.observe(extract_billed_cost(event))
                 yield raw_chunk
             for event in decoder.flush():
                 if event == "[DONE]":
@@ -294,19 +334,10 @@ async def _orcarouter_stream_iterator(
                 event_usage = extract_usage(event)
                 if event_usage is not None:
                     usage = event_usage
+                billed_cost.observe(extract_billed_cost(event))
     except OrcaRouterSidecarUnavailableError:
-        await _release_orcarouter_reservation(reservation, api_key=api_key)
-        await _log_orcarouter_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="error",
-            error_code="orcarouter_sidecar_unavailable",
-            error_message="OrcaRouter sidecar unavailable",
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-        )
-        settled = True
+        error_code = "orcarouter_sidecar_unavailable"
+        error_message = "OrcaRouter sidecar unavailable"
         yield _error_sse(
             openai_error(
                 "orcarouter_sidecar_unavailable",
@@ -316,18 +347,9 @@ async def _orcarouter_stream_iterator(
         )
         yield b"data: [DONE]\n\n"
     except OrcaRouterSidecarError as exc:
-        await _release_orcarouter_reservation(reservation, api_key=api_key)
-        await _log_orcarouter_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="error",
-            error_code="orcarouter_sidecar_error",
-            error_message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-        )
-        settled = True
+        error_code = "orcarouter_sidecar_error"
+        error_message = sanitize_orcarouter_message(exc.message, api_key=client.config.api_key)
+        billed_cost.observe(extract_billed_cost(exc.body))
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
             message=sanitize_orcarouter_message(exc.message, api_key=client.config.api_key),
@@ -337,41 +359,39 @@ async def _orcarouter_stream_iterator(
         yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
     except BaseException as exc:
-        await _release_orcarouter_reservation(reservation, api_key=api_key)
+        error_code = "orcarouter_sidecar_stream_interrupted"
+        error_message = sanitize_orcarouter_message(
+            str(exc) or exc.__class__.__name__,
+            api_key=client.config.api_key,
+        )
+        raise
+    finally:
+        settlement = await external_response_settlement(
+            provider=ORCAROUTER_PRICING_PROVIDER,
+            model=model,
+            usage=usage,
+            billed_cost_usd=billed_cost.value,
+            completed=completed,
+        )
+        await _finalize_or_release_orcarouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
         await _log_orcarouter_request(
             api_key=api_key,
             model=model,
             started_at=started_at,
-            status="error",
-            error_code="orcarouter_sidecar_stream_interrupted",
-            error_message=sanitize_orcarouter_message(
-                str(exc) or exc.__class__.__name__,
-                api_key=client.config.api_key,
-            ),
+            status="success" if completed else "error",
+            error_code=None if completed else error_code,
+            error_message=None if completed else error_message,
+            usage=settlement.usage,
             reasoning_effort=reasoning_effort,
             requested_reasoning_effort=requested_reasoning_effort,
+            cost=settlement.cost,
         )
-        settled = True
-        raise
-    finally:
-        if not settled:
-            usage_to_settle = usage if completed else None
-            await _finalize_or_release_orcarouter_reservation(
-                reservation,
-                api_key=api_key,
-                model=model,
-                usage=usage_to_settle,
-            )
-            await _log_orcarouter_request(
-                api_key=api_key,
-                model=model,
-                started_at=started_at,
-                status="success" if completed else "error",
-                error_code=None if completed else "orcarouter_sidecar_stream_incomplete",
-                usage=usage_to_settle,
-                reasoning_effort=reasoning_effort,
-                requested_reasoning_effort=requested_reasoning_effort,
-            )
 
 
 class _SseUsageDecoder:
@@ -426,6 +446,22 @@ def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
     return f"data: {data}\n\n".encode("utf-8")
 
 
+async def _orcarouter_request_cost(
+    model: str,
+    usage: SidecarUsage | None,
+    *,
+    billed_cost_usd: float | None = None,
+) -> ExternalRequestCost:
+    """Resolve this request's cost once, for both the quota charge and the log."""
+
+    return await external_request_cost(
+        provider=ORCAROUTER_PRICING_PROVIDER,
+        model=model,
+        usage=usage_tokens_from_sidecar(usage),
+        billed_cost_usd=billed_cost_usd if billed_cost_usd is not None else usage.cost_usd if usage else None,
+    )
+
+
 async def _log_orcarouter_request(
     *,
     api_key: ApiKeyData | None,
@@ -437,8 +473,15 @@ async def _log_orcarouter_request(
     usage: SidecarUsage | None = None,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
+    cost: ExternalRequestCost | None = None,
 ) -> None:
     try:
+        # Resolved from persisted state before the write: an already-priced id
+        # costs one indexed read and never touches the network here. A caller that
+        # also settled a reservation for this request passes the answer it used,
+        # so the quota and the log row cannot disagree.
+        if cost is None:
+            cost = await _orcarouter_request_cost(model, usage)
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -458,7 +501,9 @@ async def _log_orcarouter_request(
                 api_key_id=api_key.id if api_key else None,
                 source=ORCAROUTER_SIDECAR_SOURCE,
                 failure_phase="sidecar" if status != "success" else None,
-                cost_usd=usage.cost_usd if usage else None,
+                cost_usd=cost.cost_usd,
+                cost_source=cost.cost_source,
+                price_status=cost.price_status,
                 reference_cost_usd=reference_cost_from_sidecar_usage(
                     model,
                     usage,
@@ -480,22 +525,36 @@ async def _finalize_or_release_orcarouter_reservation(
     api_key: ApiKeyData | None,
     model: str,
     usage: SidecarUsage | None,
+    cost: ExternalRequestCost | None = None,
 ) -> None:
+    """Settle or release one reservation using the caller's resolved cost.
+
+    ``cost`` is whatever the caller already resolved for this request, so the
+    quota charge and the log row are the same answer. Settlement resolves nothing
+    itself: doing so would read the store a second time inside an open background
+    session, and a concurrent lookup landing between the two reads would make the
+    two disagree. No cost means nothing is charged.
+    """
+
     if reservation is None:
         return
     try:
         async with get_background_session() as session:
             service = ApiKeysService(ApiKeysRepository(session))
-            if usage is None:
+            charge_microdollars = cost_microdollars(cost)
+            if usage is None and charge_microdollars == 0:
                 await service.release_usage_reservation(reservation.reservation_id)
                 return
             await service.finalize_usage_reservation(
                 reservation.reservation_id,
                 model=model,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cached_input_tokens=usage.cached_input_tokens,
+                input_tokens=usage.input_tokens if usage is not None else 0,
+                output_tokens=usage.output_tokens if usage is not None else 0,
+                cached_input_tokens=usage.cached_input_tokens if usage is not None else 0,
                 service_tier=None,
+                # Stated explicitly so settlement cannot fall through to the
+                # substring-glob table this integration no longer prices from.
+                cost_microdollars=charge_microdollars,
             )
     except Exception:
         logger.warning(

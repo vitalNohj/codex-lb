@@ -31,7 +31,10 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import astuple
+from math import isfinite
 
+from app.core.usage.external_pricing.providers import is_external_priced_provider
 from app.core.usage.pricing import (
     DEFAULT_PRICING_MODELS,
     ModelPrice,
@@ -98,7 +101,8 @@ class RuntimePricingRegistry:
             model_key = _normalize_key(model_id)
             if not model_key:
                 continue
-            listed[model_key] = price if price is not None else listed.get(model_key)
+            usable_price = price if price is not None and _is_usable_runtime_price(price) else None
+            listed[model_key] = usable_price if usable_price is not None else listed.get(model_key)
         priced = {model_id: price for model_id, price in listed.items() if price is not None}
         provider_key = _normalize_key(provider)
         if not provider_key:
@@ -201,6 +205,17 @@ def _normalize_key(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
+def _is_finite_nonnegative(value: float) -> bool:
+    try:
+        return isfinite(value) and value >= 0
+    except (OverflowError, TypeError):
+        return False
+
+
+def _is_usable_runtime_price(price: ModelPrice) -> bool:
+    return all(value is None or _is_finite_nonnegative(value) for value in astuple(price))
+
+
 _REGISTRY = RuntimePricingRegistry()
 
 
@@ -213,10 +228,20 @@ def _reference_pricing_direct(model: str, provider: str | None = None) -> ModelP
 
     The serving provider's own runtime price wins over another provider's
     listing of the same id, which in turn wins over the static built-in table.
+
+    The static table is skipped entirely for a provider that participates in
+    external price resolution. Its aliases match by substring, so it answers for
+    ids it has never heard of: ``orcarouter/gpt-4o-lookalike`` resolves to
+    ``gpt-4o``'s rate. Because an unresolved row for these providers records no
+    ``cost_usd``, that borrowed rate would become the entire savings figure on
+    the provider card -- money reported as saved on a request whose real cost is
+    unknown. Ollama and OmniRoute do not participate and keep the table.
     """
     runtime = _REGISTRY.runtime_pricing_for_model(model, provider=provider)
     if runtime is not None:
         return runtime
+    if is_external_priced_provider(provider):
+        return None
     resolved = get_pricing_for_model(model, DEFAULT_PRICING_MODELS, None)
     if resolved is None:
         return None
@@ -266,7 +291,12 @@ def calculate_reference_cost(
     """
     if usage is None:
         return None
+    if not all(_is_finite_nonnegative(value) for value in astuple(usage)):
+        return None
     price = get_reference_pricing_for_model(model, provider=provider)
     if price is None:
         return None
-    return calculate_cost_from_usage(usage, price, service_tier=service_tier)
+    cost = calculate_cost_from_usage(usage, price, service_tier=service_tier)
+    if cost is None or not _is_finite_nonnegative(cost):
+        return None
+    return cost

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
-from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage
+from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
+    _finalize_or_release_orcarouter_reservation,
     _log_orcarouter_request,
+    _orcarouter_request_cost,
     build_orcarouter_chat_payload,
 )
 
@@ -121,6 +125,69 @@ async def test_log_orcarouter_request_passes_authoritative_cost(monkeypatch: pyt
     assert calls[0]["request_id"] == "req-orcarouter-cost"
     assert calls[0]["source"] == "orcarouter_sidecar"
     assert calls[0]["cost_usd"] == 0.00123
+
+
+@pytest.mark.asyncio
+async def test_partial_usage_keeps_orcarouter_billed_cost_on_log_and_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finalized: list[dict[str, object]] = []
+    logged: list[dict[str, object]] = []
+
+    class _SessionContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class _ApiKeysService:
+        def __init__(self, repository: object) -> None:
+            self.repository = repository
+
+        async def finalize_usage_reservation(self, reservation_id: str, **kwargs: object) -> None:
+            finalized.append({"reservation_id": reservation_id, **kwargs})
+
+    class _Repository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def add_log(self, **kwargs: object) -> None:
+            logged.append(kwargs)
+
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.get_background_session", _SessionContext)
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.ApiKeysService", _ApiKeysService)
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.RequestLogsRepository", _Repository)
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.get_request_id", lambda: "req-billed")
+
+    payload = {"usage": {"prompt_tokens": 10, "cost_usd": 0.0125}}
+    usage = extract_usage(payload)
+    cost = await _orcarouter_request_cost(
+        "vendor/model-x",
+        usage,
+        billed_cost_usd=extract_billed_cost(payload),
+    )
+    await _finalize_or_release_orcarouter_reservation(
+        SimpleNamespace(reservation_id="reservation-1"),
+        api_key=None,
+        model="vendor/model-x",
+        usage=usage,
+        cost=cost,
+    )
+    await _log_orcarouter_request(
+        api_key=None,
+        model="vendor/model-x",
+        started_at=0,
+        status="success",
+        usage=usage,
+        cost=cost,
+    )
+
+    assert cost.cost_usd == pytest.approx(0.0125)
+    assert cost.cost_source == "upstream_billed"
+    assert finalized[0]["cost_microdollars"] == 12_500
+    assert logged[0]["cost_usd"] == pytest.approx(0.0125)
+    assert logged[0]["cost_source"] == "upstream_billed"
 
 
 @pytest.mark.asyncio
