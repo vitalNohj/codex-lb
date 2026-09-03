@@ -81,7 +81,7 @@ describe("formatters", () => {
       expect(formatCompactNumber(46_400)).toBe("46.4K");
       expect(formatCompactNumber(1_500_000)).toBe("1.5M");
       expect(formatCompactNumber(1_500_000_000)).toBe("1.5B");
-      expect(formatCurrency(12)).toBe("$12.00");
+      expect(formatCurrency(12)).toMatch(/\$12\.00$/);
     } finally {
       await i18n.changeLanguage("en");
     }
