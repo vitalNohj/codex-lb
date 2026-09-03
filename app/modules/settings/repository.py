@@ -206,14 +206,18 @@ class SettingsRepository:
     async def get_fresh(self) -> DashboardSettings:
         """Return settings reloaded from a new read snapshot.
 
-        SQLite pins a snapshot at the first SELECT. ROLLBACK ends that
-        snapshot without flushing pending writes (COMMIT would make them
-        durable). The following ``get_or_create`` starts a new transaction
-        that sees concurrent ``update_operational`` commits, and a later
-        Core UPDATE on this session does not hit SQLITE_BUSY_SNAPSHOT.
+        The caller MUST have no pending ORM writes. COMMIT on a clean
+        session only ends the SQLite read snapshot so concurrent poller
+        commits are visible and a later Core UPDATE does not hit
+        SQLITE_BUSY_SNAPSHOT. Nested sessions are avoided: in-memory
+        SQLite StaticPool would share the caller's connection.
         """
-        await self._session.rollback()
-        return await self.get_or_create()
+        if self._session.dirty or self._session.new or self._session.deleted:
+            raise RuntimeError("get_fresh requires a clean session")
+        await self._session.commit()
+        row = await self.get_or_create()
+        await self._session.refresh(row)
+        return row
 
     async def update_operational(
         self,

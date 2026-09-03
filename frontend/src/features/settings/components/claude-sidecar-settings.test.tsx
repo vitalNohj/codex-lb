@@ -189,6 +189,26 @@ describe("ClaudeSidecarSettings", () => {
     );
   });
 
+  it("clears the collection origin version after a failed persist", async () => {
+    const user = userEvent.setup();
+    const onSave = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("save failed"))
+      .mockResolvedValueOnce({ version: 8 });
+    renderWithQueryClient(
+      <ClaudeSidecarSettings settings={{ ...BASE_SETTINGS, version: 7 }} busy={false} onSave={onSave} />,
+    );
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "haiku");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    expect(onSave.mock.calls.at(-1)?.[0]).not.toHaveProperty("expectedVersion");
+  });
+
   it("does not persist while a timeout is invalid", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
