@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -210,34 +210,25 @@ class SettingsRepository:
         so concurrent poller commits are visible, and a later Core UPDATE
         on this session does not hit SQLITE_BUSY_SNAPSHOT.
 
-        Sessions with pending ORM writes skip COMMIT. The committed row is
-        loaded on a dedicated session and expunged so the caller's
-        transaction stays in place. Pause/resume is ORM-clean and takes
-        the COMMIT path; this branch exists so a dirty caller cannot 500.
+        Sessions with pending ORM writes skip COMMIT and skip nested
+        sessions. StaticPool in-memory SQLite would share the caller's
+        connection and ROLLBACK on close; a second file-SQLite connection
+        can deadlock on the writer lock. Return the identity-map row.
+        Pause/resume is ORM-clean and takes the COMMIT path.
 
         Core UPDATE via session.execute() is invisible to dirty/new/deleted.
         Callers MUST NOT leave uncommitted Core UPDATEs when calling
         get_fresh. update_operational already COMMITs.
         """
         if self._session.dirty or self._session.new or self._session.deleted:
-            return await self._read_committed_detached()
+            existing = await self._session.get(DashboardSettings, _SETTINGS_ID)
+            if existing is None:
+                raise RuntimeError("get_fresh cannot create settings while the session is dirty")
+            return existing
         await self._session.commit()
         row = await self.get_or_create()
         await self._session.refresh(row)
         return row
-
-    async def _read_committed_detached(self) -> DashboardSettings:
-        factory = async_sessionmaker(
-            self._session.bind,
-            expire_on_commit=False,
-            class_=AsyncSession,
-        )
-        async with factory() as session:
-            existing = await session.get(DashboardSettings, _SETTINGS_ID)
-            if existing is None:
-                existing = await SettingsRepository(session).get_or_create()
-            session.expunge(existing)
-            return existing
 
     async def update_operational(
         self,

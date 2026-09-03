@@ -18,4 +18,4 @@
 - [x] 3.3 Hook test: first PUT 409 `settings_conflict`, retry with fresh version succeeds and does not toast the conflict.
 - [x] 3.4 Cold cache fetches before PUT; collection-valued 409s refetch and surface the conflict without retry.
 - [x] 3.5 Pause snapshot re-reads quota JSON before write; collection patches carry render `expectedVersion` and refuse restamp when stale; `weeklyPaceWorkingDays` is treated as a collection.
-- [x] 3.6 `get_fresh` commits a clean session then refreshes; dirty ORM reads via a dedicated session; sidecar origin version advances on save and stays pinned on failure; collection pre-flight skips only non-overlapping own writes.
+- [x] 3.6 `get_fresh` commits a clean session then refreshes; dirty ORM returns the identity-map row (no nested session); sidecar origin version advances on save and stays pinned on failure; collection pre-flight skips only non-overlapping own writes.

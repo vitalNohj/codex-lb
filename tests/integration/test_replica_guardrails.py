@@ -429,6 +429,7 @@ async def test_get_fresh_does_not_commit_caller_session_writes(db_setup):
         original = row_a.sticky_threads_enabled
         row_a.sticky_threads_enabled = not original
         await repo_a.get_fresh()
+        assert row_a.sticky_threads_enabled != original
         other = await SettingsRepository(session_b).get_or_create()
         assert other.sticky_threads_enabled == original
         await session_a.rollback()
