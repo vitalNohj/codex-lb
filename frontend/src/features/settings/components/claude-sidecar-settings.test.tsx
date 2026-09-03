@@ -189,7 +189,7 @@ describe("ClaudeSidecarSettings", () => {
     );
   });
 
-  it("clears the collection origin version after a failed persist", async () => {
+  it("keeps the collection origin version after a failed persist", async () => {
     const user = userEvent.setup();
     const onSave = vi
       .fn()
@@ -205,8 +205,9 @@ describe("ClaudeSidecarSettings", () => {
 
     await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "haiku");
     await user.click(screen.getByRole("button", { name: "Add prefix" }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
-    expect(onSave.mock.calls.at(-1)?.[0]).not.toHaveProperty("expectedVersion");
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ expectedVersion: 7 })),
+    );
   });
 
   it("does not persist while a timeout is invalid", async () => {

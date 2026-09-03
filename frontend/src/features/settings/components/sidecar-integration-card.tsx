@@ -446,7 +446,6 @@ function SidecarIntegrationCardProvider({
       }
       await onTestConnection().catch(() => null);
     } catch (error) {
-      localCollectionsVersion.current = undefined;
       setSaveError(
         backendConflictMessage(error, meta.conflictName) ??
           (error instanceof Error ? error.message : "Failed to save settings"),

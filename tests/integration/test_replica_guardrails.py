@@ -423,13 +423,14 @@ async def test_get_fresh_sees_operational_write_from_other_session(db_setup):
 
 @pytest.mark.asyncio
 async def test_get_fresh_does_not_commit_caller_session_writes(db_setup):
-    async with SessionLocal() as session_a:
+    async with SessionLocal() as session_a, SessionLocal() as session_b:
         repo_a = SettingsRepository(session_a)
         row_a = await repo_a.get_or_create()
         original = row_a.sticky_threads_enabled
         row_a.sticky_threads_enabled = not original
-        with pytest.raises(RuntimeError, match="clean session"):
-            await repo_a.get_fresh()
+        await repo_a.get_fresh()
+        other = await SettingsRepository(session_b).get_or_create()
+        assert other.sticky_threads_enabled == original
         await session_a.rollback()
         reloaded = await SettingsRepository(session_a).get_or_create()
         assert reloaded.sticky_threads_enabled == original
