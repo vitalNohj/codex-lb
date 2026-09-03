@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from app.core import usage as usage_core
 from app.core.balancer import (
+    ERROR_BACKOFF_THRESHOLD,
     HEALTH_TIER_DRAINING,
     HEALTH_TIER_HEALTHY,
     HEALTH_TIER_PROBING,
@@ -22,6 +23,7 @@ from app.core.balancer import (
     ROUTING_POLICY_PRESERVE,
     TRAFFIC_CLASS_FOREGROUND,
     TRAFFIC_CLASS_OPPORTUNISTIC,
+    USAGE_LIMIT_REACHED,
     AccountState,
     ResetPreferenceWindow,
     RoutingCostsByAccount,
@@ -47,6 +49,9 @@ from app.core.metrics.prometheus import (
     account_lease_acquired_total,
     account_lease_released_total,
     account_lease_stale_reclaimed_total,
+    api_key_fair_share_rejections_total,
+    stream_pool_capacity,
+    stream_pool_inflight,
 )
 from app.core.openai.model_registry import canonical_service_tier_value, get_model_registry
 from app.core.plan_types import account_plan_matches_allowed, normalize_account_plan_type
@@ -113,6 +118,12 @@ from app.modules.proxy.cap_partitioning import (
     get_cap_partition,
     partition_cap,
 )
+from app.modules.proxy.fair_share import (
+    ApiKeyFairShareDenialError,
+    FairShareDecision,
+    effective_stream_pool_capacity,
+    evaluate_stream_fair_share,
+)
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
 from app.modules.quota_planner.logic import PlannerSettings
 from app.modules.usage.additional_quota_keys import (
@@ -124,7 +135,7 @@ from app.modules.usage.mappers import usage_history_to_window_row
 
 if TYPE_CHECKING:
     from app.modules.accounts.repository import AccountsRepository
-    from app.modules.proxy.sticky_repository import StickySessionsRepository
+    from app.modules.proxy.sticky_repository import StickyOwnerLookup, StickySessionsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +194,7 @@ class AccountSelection:
     account: Account | None
     error_message: str | None
     error_code: str | None = None
+    resets_at: int | None = None
     lease: AccountLease | None = None
     catalog_omission_quota_admission: CatalogOmissionQuotaAdmission | None = None
 
@@ -216,6 +228,11 @@ class _SelectionInputs(SelectionInputsProtocol):
     # exclusion, runtime-health, budget, and account-cap filters. Keep that
     # stronger candidate pool alongside the effective routing pool.
     continuity_owner_candidates: list[Account] | None = None
+    # Sticky-row mutation is authorized by account assignment and security
+    # policy, before model/service-tier eligibility. Keep this separate from
+    # continuity ambiguity: a model-ineligible account can still own the raw
+    # row that this authenticated request is allowed to retire.
+    sticky_mutation_authority_account_ids: frozenset[str] | None = None
     quota_planner_settings: PlannerSettings = PlannerSettings()
     runtime_accounts: list[Account] | None = None
     error_message: str | None = None
@@ -231,6 +248,12 @@ class _SelectionInputs(SelectionInputsProtocol):
         if self.continuity_owner_candidates is None:
             return self.accounts
         return self.continuity_owner_candidates
+
+    @property
+    def effective_sticky_mutation_authority_account_ids(self) -> frozenset[str]:
+        if self.sticky_mutation_authority_account_ids is None:
+            return frozenset(account.id for account in self.effective_continuity_owner_candidates)
+        return self.sticky_mutation_authority_account_ids
 
 
 def _required_continuity_owner_failure(
@@ -278,7 +301,19 @@ class LoadBalancer:
         kind: AccountLeaseKind,
         estimated_tokens: float = 0.0,
         concurrency_caps: AccountConcurrencyCaps | None = None,
+        api_key_id: str | None = None,
+        api_key_stream_fair_share_threshold_pct: int = 0,
     ) -> AccountLease | None:
+        """Acquire a lease pinned to one account, or None on a cap denial.
+
+        Keyed stream acquires join the same per-key accounting and
+        congestion-gated fair-share admission as selection. A direct acquire
+        is pinned to one account (e.g. a warm HTTP bridge session reacquiring
+        its slot between turns), so the key's usable pool -- and therefore the
+        fair-share candidate set -- is exactly that account. Fair-share
+        denials raise ``ApiKeyFairShareDenialError`` so callers can
+        distinguish them from the plain cap denial ``None``.
+        """
         caps = concurrency_caps or effective_account_concurrency_caps()
         async with self._runtime_lock:
             self._reclaim_stale_account_leases_locked()
@@ -293,10 +328,21 @@ class LoadBalancer:
                 if cap > 0 and runtime.inflight_streams >= cap:
                     _record_account_cap_rejection("stream")
                     return None
+                denial = self._api_key_stream_fair_share_denial_locked(
+                    api_key_id=api_key_id,
+                    lease_kind=kind,
+                    candidate_account_ids=(account_id,),
+                    caps=caps,
+                    stream_reserve_slots=0,
+                    threshold_pct=api_key_stream_fair_share_threshold_pct,
+                )
+                if denial is not None:
+                    raise ApiKeyFairShareDenialError(denial)
             return self._acquire_account_lease_locked(
                 account_id,
                 kind=kind,
                 estimated_tokens=estimated_tokens,
+                api_key_id=api_key_id,
             )
 
     async def account_pressure_snapshot(self, account_id: str) -> tuple[int, int, float]:
@@ -313,6 +359,7 @@ class LoadBalancer:
         kind: AccountLeaseKind,
         estimated_tokens: float,
         record_selection: bool = True,
+        api_key_id: str | None = None,
     ) -> AccountLease:
         runtime = self._runtime.setdefault(account_id, RuntimeState())
         lease = AccountLease(
@@ -321,6 +368,7 @@ class LoadBalancer:
             kind=kind,
             acquired_at=time.monotonic(),
             estimated_tokens=max(0.0, estimated_tokens),
+            api_key_id=api_key_id,
         )
         if runtime.leases is None:
             runtime.leases = {}
@@ -329,6 +377,10 @@ class LoadBalancer:
             runtime.inflight_response_creates += 1
         else:
             runtime.inflight_streams += 1
+            if api_key_id is not None:
+                if runtime.stream_key_inflight is None:
+                    runtime.stream_key_inflight = {}
+                runtime.stream_key_inflight[api_key_id] = runtime.stream_key_inflight.get(api_key_id, 0) + 1
         runtime.leased_tokens += lease.estimated_tokens
         if record_selection:
             runtime.last_selected_at = time.time()
@@ -353,7 +405,73 @@ class LoadBalancer:
         effective_cap = max(1, cap - max(0, stream_reserve_slots))
         return cap <= 0 or runtime.inflight_streams < effective_cap
 
-    def _release_account_lease_locked(self, lease: AccountLease, *, reason: str) -> bool:
+    def _api_key_stream_fair_share_denial_locked(
+        self,
+        *,
+        api_key_id: str | None,
+        lease_kind: AccountLeaseKind | None,
+        candidate_account_ids: Collection[str],
+        caps: AccountConcurrencyCaps,
+        stream_reserve_slots: int,
+        threshold_pct: int,
+        redact_sensitive_details: bool = False,
+    ) -> FairShareDecision | None:
+        """Return the denial decision, or None when admitted or inactive.
+
+        Must be called under ``_runtime_lock``: it reads the same runtime
+        lease counters the admission path mutates.
+        """
+        if lease_kind != "stream" or api_key_id is None or threshold_pct <= 0:
+            return None
+        pool_capacity = effective_stream_pool_capacity(
+            candidate_account_count=len(candidate_account_ids),
+            stream_limit=caps.stream_limit,
+            stream_reserve_slots=stream_reserve_slots,
+        )
+        if pool_capacity <= 0:
+            return None
+        pool_inflight = 0
+        requester_inflight = 0
+        other_active_keys: set[str] = set()
+        for account_id in candidate_account_ids:
+            runtime = self._runtime.get(account_id)
+            if runtime is None:
+                continue
+            pool_inflight += runtime.inflight_streams
+            if runtime.stream_key_inflight:
+                requester_inflight += runtime.stream_key_inflight.get(api_key_id, 0)
+                other_active_keys.update(runtime.stream_key_inflight)
+        other_active_keys.discard(api_key_id)
+        decision = evaluate_stream_fair_share(
+            pool_capacity=pool_capacity,
+            pool_inflight=pool_inflight,
+            requester_inflight=requester_inflight,
+            other_active_key_count=len(other_active_keys),
+            threshold_pct=threshold_pct,
+        )
+        _record_stream_pool_gauges(decision.pool_capacity, decision.pool_inflight)
+        if decision.admitted:
+            return None
+        _record_api_key_fair_share_rejection()
+        logger.warning(
+            "API key stream fair share denial api_key_id=%s key_inflight=%s fair_share=%s "
+            "pool_inflight=%s pool_capacity=%s active_keys=%s",
+            "<redacted>" if redact_sensitive_details else api_key_id,
+            decision.requester_inflight,
+            decision.fair_share,
+            decision.pool_inflight,
+            decision.pool_capacity,
+            decision.active_key_count,
+        )
+        return decision
+
+    def _release_account_lease_locked(
+        self,
+        lease: AccountLease,
+        *,
+        reason: str,
+        redact_sensitive_details: bool = False,
+    ) -> bool:
         runtime = self._runtime.get(lease.account_id)
         if runtime is None or runtime.leases is None:
             return False
@@ -364,6 +482,12 @@ class LoadBalancer:
             runtime.inflight_response_creates = max(0, runtime.inflight_response_creates - 1)
         else:
             runtime.inflight_streams = max(0, runtime.inflight_streams - 1)
+            if current.api_key_id is not None and runtime.stream_key_inflight is not None:
+                remaining = runtime.stream_key_inflight.get(current.api_key_id, 0) - 1
+                if remaining > 0:
+                    runtime.stream_key_inflight[current.api_key_id] = remaining
+                else:
+                    runtime.stream_key_inflight.pop(current.api_key_id, None)
         runtime.leased_tokens = max(0.0, runtime.leased_tokens - current.estimated_tokens)
         runtime.version += 1
         _record_account_lease_released(current.kind, reason)
@@ -372,13 +496,17 @@ class LoadBalancer:
             _record_account_lease_stale_reclaimed(current.kind)
             logger.warning(
                 "Reclaimed stale account lease account_id=%s kind=%s age_seconds=%.3f",
-                current.account_id,
+                "<redacted>" if redact_sensitive_details else current.account_id,
                 current.kind,
                 time.monotonic() - current.acquired_at,
             )
         return True
 
-    def _reclaim_stale_account_leases_locked(self) -> None:
+    def _reclaim_stale_account_leases_locked(
+        self,
+        *,
+        redact_sensitive_details: bool = False,
+    ) -> None:
         settings = get_settings()
         now = time.monotonic()
         for runtime in self._runtime.values():
@@ -390,7 +518,11 @@ class LoadBalancer:
                 if now - lease.acquired_at >= _account_lease_stale_ttl_seconds(lease.kind, settings)
             ]
             for lease in stale:
-                self._release_account_lease_locked(lease, reason="stale")
+                self._release_account_lease_locked(
+                    lease,
+                    reason="stale",
+                    redact_sensitive_details=redact_sensitive_details,
+                )
 
     async def select_account(
         self,
@@ -400,7 +532,11 @@ class LoadBalancer:
         reallocate_sticky: bool = False,
         sticky_source: _CodexSessionSource | None = None,
         legacy_sticky_key: str | None = None,
+        legacy_continuity_source: _CodexSessionSource | None = None,
+        sticky_seed_key: str | None = None,
+        sticky_seed_kind: StickySessionKind | None = None,
         spill_bare_session_on_account_cap: bool = False,
+        abandon_unavailable_legacy_owner: bool = False,
         require_unambiguous_account: bool = False,
         sticky_max_age_seconds: int | None = None,
         prefer_earlier_reset_accounts: bool = False,
@@ -425,6 +561,10 @@ class LoadBalancer:
         stream_reserve_slots: int = 0,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
         concurrency_caps: AccountConcurrencyCaps | None = None,
+        redact_sensitive_details: bool = False,
+        allow_usage_exhaustion_error: bool = True,
+        api_key_id: str | None = None,
+        api_key_stream_fair_share_threshold_pct: int = 0,
     ) -> AccountSelection:
         if (required_account_is_ownership_constraint or required_continuity_owner) and required_account_id is None:
             raise ValueError("required account ownership flags require required_account_id")
@@ -445,6 +585,20 @@ class LoadBalancer:
                 # Ownership scope and routing availability are separate. Even
                 # an already-empty routing pool must have its owner candidates
                 # security-filtered before conversation ambiguity is decided.
+                security_scope_accounts = (
+                    selection_inputs.runtime_accounts
+                    if selection_inputs.runtime_accounts is not None
+                    else [
+                        *selection_inputs.effective_continuity_owner_candidates,
+                        *selection_inputs.accounts,
+                    ]
+                )
+                security_authorized_account_ids = frozenset(
+                    account.id for account in security_scope_accounts if bool(account.security_work_authorized)
+                )
+                authorized_mutation_account_ids = (
+                    selection_inputs.effective_sticky_mutation_authority_account_ids & security_authorized_account_ids
+                )
                 authorized_owner_candidates = [
                     account
                     for account in selection_inputs.effective_continuity_owner_candidates
@@ -460,6 +614,7 @@ class LoadBalancer:
                         latest_secondary={},
                         latest_monthly=selection_inputs.latest_monthly,
                         continuity_owner_candidates=authorized_owner_candidates,
+                        sticky_mutation_authority_account_ids=authorized_mutation_account_ids,
                         quota_planner_settings=selection_inputs.quota_planner_settings,
                         runtime_accounts=selection_inputs.runtime_accounts,
                         error_message="No accounts marked as authorized for security work",
@@ -471,6 +626,7 @@ class LoadBalancer:
                     latest_secondary=selection_inputs.latest_secondary,
                     latest_monthly=selection_inputs.latest_monthly,
                     continuity_owner_candidates=authorized_owner_candidates,
+                    sticky_mutation_authority_account_ids=authorized_mutation_account_ids,
                     quota_planner_settings=selection_inputs.quota_planner_settings,
                     runtime_accounts=selection_inputs.runtime_accounts,
                     error_message=selection_inputs.error_message,
@@ -492,6 +648,9 @@ class LoadBalancer:
                         latest_secondary={},
                         latest_monthly=selection_inputs.latest_monthly,
                         continuity_owner_candidates=selection_inputs.effective_continuity_owner_candidates,
+                        sticky_mutation_authority_account_ids=(
+                            selection_inputs.effective_sticky_mutation_authority_account_ids
+                        ),
                         quota_planner_settings=selection_inputs.quota_planner_settings,
                         runtime_accounts=selection_inputs.runtime_accounts,
                         error_message="No accounts marked as authorized for security work",
@@ -503,6 +662,9 @@ class LoadBalancer:
                     latest_secondary=selection_inputs.latest_secondary,
                     latest_monthly=selection_inputs.latest_monthly,
                     continuity_owner_candidates=selection_inputs.effective_continuity_owner_candidates,
+                    sticky_mutation_authority_account_ids=(
+                        selection_inputs.effective_sticky_mutation_authority_account_ids
+                    ),
                     quota_planner_settings=selection_inputs.quota_planner_settings,
                     runtime_accounts=selection_inputs.runtime_accounts,
                     error_message=selection_inputs.error_message,
@@ -559,25 +721,80 @@ class LoadBalancer:
         error_message: str | None = None
         selected_lease: AccountLease | None = None
         selection_error_code: str | None = None
+        selection_resets_at: int | None = None
         legacy_existing_account_id: str | None = None
-        if sticky_source == "session_header" and legacy_sticky_key is not None:
+        legacy_abandoned_account_id: str | None = None
+        sticky_seed_account_id: str | None = None
+        initial_sticky_owner_lookup: StickyOwnerLookup | None = None
+        needs_owner_lookups = (
+            legacy_sticky_key is not None
+            or (sticky_seed_key is not None and sticky_seed_kind is not None)
+            or (sticky_key is not None and sticky_kind is not None)
+        )
+        if needs_owner_lookups:
+            # One shared session serves the legacy/seed/first-sticky owner
+            # lookups. The SELECTs stay separate on purpose so the per-source
+            # predicate semantics of get_account_id_and_abandonment (tombstone
+            # visibility, max_age handling) are untouched; the saving is the
+            # 2-3 extra pool checkouts + session create/teardown lifecycles
+            # per request. Each later source still starts a fresh read
+            # transaction (release_read_snapshot): on SQLite/WAL the shared
+            # session would otherwise pin one snapshot at the first SELECT
+            # and hide a hard sticky or seed owner committed concurrently
+            # between the reads, letting selection overwrite that mapping.
             async with self._repo_factory() as repos:
-                legacy_existing_account_id = await repos.sticky_sessions.get_account_id(
-                    legacy_sticky_key,
-                    kind=StickySessionKind.CODEX_SESSION,
-                    max_age_seconds=sticky_max_age_seconds,
-                )
-            if required_account_id is not None and (
-                legacy_existing_account_id is not None and legacy_existing_account_id != required_account_id
-            ):
-                # The required owner came from a file/response/bridge index,
-                # while the raw row may be legacy turn-state ownership. Neither
-                # source can be discarded or rewritten to resolve a conflict.
-                return AccountSelection(
-                    account=None,
-                    error_message="Account-owned continuity sources conflict; retry the logical turn",
-                    error_code="continuity_owner_conflict",
-                )
+                owner_snapshot_pinned = False
+                if legacy_sticky_key is not None:
+                    legacy_owner_lookup = await repos.sticky_sessions.get_account_id_and_abandonment(
+                        legacy_sticky_key,
+                        kind=StickySessionKind.CODEX_SESSION,
+                        # Raw rows may be historical turn-state ownership. The
+                        # bounded thread TTL must never age out that hard evidence.
+                        max_age_seconds=None,
+                        # Process-session raw text is session_header even when
+                        # request locality is thread_header. Thread-only raw keys
+                        # keep thread_header so a session_header tombstone cannot
+                        # hide a distinct thread owner.
+                        continuity_source=legacy_continuity_source or "session_header",
+                    )
+                    legacy_existing_account_id = legacy_owner_lookup.account_id
+                    abandoned_account_id = legacy_owner_lookup.abandoned_account_id
+                    if legacy_owner_lookup.continuity_abandoned is True and isinstance(abandoned_account_id, str):
+                        legacy_abandoned_account_id = abandoned_account_id
+                    if required_account_id is not None and (
+                        legacy_existing_account_id is not None and legacy_existing_account_id != required_account_id
+                    ):
+                        # The required owner came from a file/response/bridge index,
+                        # while the raw row may be legacy turn-state ownership. Neither
+                        # source can be discarded or rewritten to resolve a conflict.
+                        return AccountSelection(
+                            account=None,
+                            error_message="Account-owned continuity sources conflict; retry the logical turn",
+                            error_code="continuity_owner_conflict",
+                        )
+                    owner_snapshot_pinned = True
+                if sticky_seed_key is not None and sticky_seed_kind is not None:
+                    if owner_snapshot_pinned:
+                        await repos.sticky_sessions.release_read_snapshot()
+                    sticky_seed_account_id = await repos.sticky_sessions.get_account_id(
+                        sticky_seed_key,
+                        kind=sticky_seed_kind,
+                    )
+                    owner_snapshot_pinned = True
+                if sticky_key is not None and sticky_kind is not None:
+                    if owner_snapshot_pinned:
+                        await repos.sticky_sessions.release_read_snapshot()
+                    # First-iteration owner read for run_sticky_selection_path,
+                    # hoisted here so it shares this session. The selection
+                    # loop consumes it exactly once; every retry (including
+                    # post-reset attempts) still re-reads fresh ownership
+                    # evidence through its own repo bundle.
+                    initial_sticky_owner_lookup = await repos.sticky_sessions.get_account_id_and_abandonment(
+                        sticky_key,
+                        kind=sticky_kind,
+                        max_age_seconds=sticky_max_age_seconds,
+                        continuity_source=sticky_source,
+                    )
         # Resolve uniqueness from the model/API-key/security-scoped pool before
         # runtime health, budget, or cap filtering. Transient pressure cannot
         # prove that another candidate does not own an upstream conversation.
@@ -619,9 +836,13 @@ class LoadBalancer:
                     stream_reserve_slots=stream_reserve_slots,
                     traffic_class=traffic_class,
                     concurrency_caps=caps,
+                    redact_sensitive_details=redact_sensitive_details,
+                    api_key_id=api_key_id,
+                    api_key_stream_fair_share_threshold_pct=api_key_stream_fair_share_threshold_pct,
                     selection_inputs=selection_inputs,
                     reload_inputs=load_selection_inputs,
                     record_account_cap_rejection=_record_account_cap_rejection,
+                    allow_usage_exhaustion_error=allow_usage_exhaustion_error,
                 ),
             )
             selection_inputs = unbound_outcome.selection_inputs
@@ -629,12 +850,34 @@ class LoadBalancer:
             selected_lease = unbound_outcome.selected_lease
             error_message = unbound_outcome.error_message
             selection_error_code = unbound_outcome.error_code
+            selection_resets_at = unbound_outcome.resets_at
             if unbound_outcome.disposition == "direct_error":
                 return AccountSelection(
                     account=None,
                     error_message=error_message,
                     error_code=selection_error_code,
                 )
+            if (
+                selected_snapshot is not None
+                and selected_lease is not None
+                and sticky_seed_key is not None
+                and sticky_seed_kind is not None
+                and sticky_seed_account_id is None
+            ):
+                # Required-owner selection bypasses the thread row, but a
+                # first-ever process preference still has to land so later
+                # unpinned siblings inherit that exact owner.
+                try:
+                    async with self._repo_factory() as repos:
+                        await repos.sticky_sessions.insert_if_absent(
+                            sticky_seed_key,
+                            selected_snapshot.id,
+                            sticky_seed_kind,
+                        )
+                except BaseException:
+                    await self.release_account_lease(selected_lease)
+                    selected_lease = None
+                    raise
         else:
             sticky_outcome = await run_sticky_selection_path(
                 self,
@@ -645,7 +888,12 @@ class LoadBalancer:
                     sticky_source=sticky_source,
                     legacy_sticky_key=legacy_sticky_key,
                     legacy_existing_account_id=legacy_existing_account_id,
+                    legacy_abandoned_account_id=legacy_abandoned_account_id,
+                    sticky_seed_key=sticky_seed_key,
+                    sticky_seed_kind=sticky_seed_kind,
+                    sticky_seed_account_id=sticky_seed_account_id,
                     spill_bare_session_on_account_cap=spill_bare_session_on_account_cap,
+                    abandon_unavailable_legacy_owner=abandon_unavailable_legacy_owner,
                     require_unambiguous_account=require_unambiguous_account,
                     sticky_max_age_seconds=sticky_max_age_seconds,
                     prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
@@ -662,9 +910,14 @@ class LoadBalancer:
                     stream_reserve_slots=stream_reserve_slots,
                     traffic_class=traffic_class,
                     concurrency_caps=caps,
+                    redact_sensitive_details=redact_sensitive_details,
+                    api_key_id=api_key_id,
+                    api_key_stream_fair_share_threshold_pct=api_key_stream_fair_share_threshold_pct,
                     selection_inputs=selection_inputs,
                     reload_inputs=load_selection_inputs,
                     record_account_cap_rejection=_record_account_cap_rejection,
+                    allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                    initial_sticky_owner_lookup=initial_sticky_owner_lookup,
                 ),
             )
             selection_inputs = sticky_outcome.selection_inputs
@@ -672,6 +925,7 @@ class LoadBalancer:
             selected_lease = sticky_outcome.selected_lease
             error_message = sticky_outcome.error_message
             selection_error_code = sticky_outcome.error_code
+            selection_resets_at = sticky_outcome.resets_at
             if sticky_outcome.disposition == "direct_error":
                 return AccountSelection(
                     account=None,
@@ -718,12 +972,17 @@ class LoadBalancer:
                 and (selection_inputs.accounts or selection_inputs.error_code is not None)
             ):
                 set_normal()
-            return AccountSelection(account=None, error_message=error_message, error_code=selection_error_code)
+            return AccountSelection(
+                account=None,
+                error_message=error_message,
+                error_code=selection_error_code,
+                resets_at=selection_resets_at,
+            )
         if not circuit_breaker_open:
             set_normal()
         logger.info(
             "Selected account_id=%s strategy=%s sticky=%s model=%s",
-            selected_snapshot.id,
+            "<redacted>" if redact_sensitive_details else selected_snapshot.id,
             routing_strategy,
             bool(sticky_key),
             model,
@@ -898,6 +1157,7 @@ class LoadBalancer:
             if account_ids is not None:
                 allowed_account_ids = set(account_ids)
                 scoped_accounts = [account for account in scoped_accounts if account.id in allowed_account_ids]
+            sticky_mutation_authority_account_ids = frozenset(account.id for account in scoped_accounts)
             accounts = _selectable_accounts(scoped_accounts)
             pre_model_filter_accounts = accounts
             model_catalog_omitted_account_ids: frozenset[str] = frozenset()
@@ -939,6 +1199,7 @@ class LoadBalancer:
                         continuity_owner_candidates=[
                             _clone_account(account) for account in continuity_owner_candidates
                         ],
+                        sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                         quota_planner_settings=quota_planner_settings,
                         runtime_accounts=[_clone_account(account) for account in all_accounts],
                     )
@@ -953,6 +1214,7 @@ class LoadBalancer:
                         latest_secondary={},
                         latest_monthly={},
                         continuity_owner_candidates=[],
+                        sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                         quota_planner_settings=quota_planner_settings,
                         runtime_accounts=[_clone_account(account) for account in all_accounts],
                     )
@@ -969,6 +1231,7 @@ class LoadBalancer:
                         continuity_owner_candidates=[
                             _clone_account(account) for account in continuity_owner_candidates
                         ],
+                        sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                         quota_planner_settings=quota_planner_settings,
                         runtime_accounts=[_clone_account(account) for account in all_accounts],
                     )
@@ -982,6 +1245,7 @@ class LoadBalancer:
                     latest_secondary={},
                     latest_monthly={},
                     continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
+                    sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                     quota_planner_settings=quota_planner_settings,
                     runtime_accounts=[_clone_account(account) for account in all_accounts],
                     error_message=(
@@ -1015,6 +1279,7 @@ class LoadBalancer:
                         continuity_owner_candidates=[
                             _clone_account(account) for account in continuity_owner_candidates
                         ],
+                        sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                         quota_planner_settings=quota_planner_settings,
                         runtime_accounts=[_clone_account(account) for account in all_accounts],
                         error_message=additional_filter.error_message,
@@ -1031,6 +1296,7 @@ class LoadBalancer:
                     latest_secondary={},
                     latest_monthly={},
                     continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
+                    sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                     quota_planner_settings=quota_planner_settings,
                     runtime_accounts=[_clone_account(account) for account in all_accounts],
                 )
@@ -1091,6 +1357,7 @@ class LoadBalancer:
                     account_id: _clone_standard_usage_history(entry) for account_id, entry in latest_monthly.items()
                 },
                 continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
+                sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                 quota_planner_settings=quota_planner_settings,
                 runtime_accounts=[_clone_account(account) for account in all_accounts],
                 ignore_standard_quota_account_ids=ignore_standard_quota_account_ids,
@@ -1171,8 +1438,16 @@ class LoadBalancer:
             deterministic_probe=True,
             traffic_class=TRAFFIC_CLASS_OPPORTUNISTIC,
             ignore_standard_quota=False,
+            usage_exhaustion_states=states,
         )
         if result.account is None:
+            if result.error_code == USAGE_LIMIT_REACHED:
+                return AccountSelection(
+                    account=None,
+                    error_message=result.error_message,
+                    error_code=result.error_code,
+                    resets_at=result.resets_at,
+                )
             return AccountSelection(
                 account=None,
                 error_message=result.error_message,
@@ -1321,8 +1596,11 @@ class LoadBalancer:
         selection_inputs: SelectionInputsProtocol,
         *,
         required_account_id: str | None,
+        redact_sensitive_details: bool,
     ) -> tuple[list[AccountState], dict[str, Account]]:
-        self._reclaim_stale_account_leases_locked()
+        self._reclaim_stale_account_leases_locked(
+            redact_sensitive_details=redact_sensitive_details,
+        )
         self._prune_runtime(selection_inputs.runtime_accounts or selection_inputs.accounts)
         states, account_map = _build_states(
             accounts=selection_inputs.accounts,
@@ -1387,9 +1665,13 @@ class LoadBalancer:
         sticky_repo: StickySessionsRepository | None,
         routing_costs_by_account_id: RoutingCostsByAccount | None = None,
         sticky_existing_account_id: str | None | object = _STICKY_EXISTING_UNSET,
+        initial_preferred_account_id: str | None = None,
         preserve_existing_mapping_on_fallback: bool = False,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
         ignore_standard_quota: bool = False,
+        allow_usage_exhaustion_error: bool = True,
+        usage_exhaustion_states: Iterable[AccountState] | None = None,
+        sticky_refresh_skip_deadline: datetime | None = None,
     ) -> _StickySelectionOutcome:
         return await _run_select_with_stickiness(
             states=states,
@@ -1408,9 +1690,13 @@ class LoadBalancer:
             sticky_repo=sticky_repo,
             routing_costs_by_account_id=routing_costs_by_account_id,
             sticky_existing_account_id=sticky_existing_account_id,
+            initial_preferred_account_id=initial_preferred_account_id,
             preserve_existing_mapping_on_fallback=preserve_existing_mapping_on_fallback,
             traffic_class=traffic_class,
             ignore_standard_quota=ignore_standard_quota,
+            allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+            usage_exhaustion_states=usage_exhaustion_states,
+            sticky_refresh_skip_deadline=sticky_refresh_skip_deadline,
         )
 
     _persist_sticky_mutation = staticmethod(_persist_sticky_mutation)
@@ -1490,7 +1776,17 @@ class LoadBalancer:
     async def record_error(self, account: Account) -> None:
         await self.record_errors(account, 1)
 
-    async def record_errors(self, account: Account, count: int) -> None:
+    async def record_error_backoff(self, account: Account) -> None:
+        """Record one error and immediately enter the bounded transient backoff."""
+        await self.record_errors(account, 1, minimum_error_count=ERROR_BACKOFF_THRESHOLD)
+
+    async def record_errors(
+        self,
+        account: Account,
+        count: int,
+        *,
+        minimum_error_count: int = 0,
+    ) -> None:
         """Record *count* transient errors in a single lock acquisition."""
         if count < 1:
             return
@@ -1498,7 +1794,7 @@ class LoadBalancer:
         async with lock:
             account_snapshot = _clone_account(account)
             state = self._state_for(account)
-            state.error_count += count
+            state.error_count = max(state.error_count + count, minimum_error_count)
             state.last_error_at = time.time()
             self._sync_runtime_state(account, state)
             runtime = self._runtime.get(account.id)
@@ -1887,6 +2183,18 @@ def _record_account_cap_rejection(kind: AccountLeaseKind | None) -> None:
         account_cap_rejections_total.labels(kind=kind).inc()
 
 
+def _record_stream_pool_gauges(pool_capacity: int, pool_inflight: int) -> None:
+    if PROMETHEUS_AVAILABLE and stream_pool_capacity is not None:
+        stream_pool_capacity.set(pool_capacity)
+    if PROMETHEUS_AVAILABLE and stream_pool_inflight is not None:
+        stream_pool_inflight.set(pool_inflight)
+
+
+def _record_api_key_fair_share_rejection() -> None:
+    if PROMETHEUS_AVAILABLE and api_key_fair_share_rejections_total is not None:
+        api_key_fair_share_rejections_total.inc()
+
+
 def _normalize_account_routing_policy(value: str | None) -> str:
     if value in _ACCOUNT_ROUTING_POLICIES:
         return value
@@ -2247,6 +2555,7 @@ def _state_from_account(
     pressure_pct = inflight_pressure_pct + leased_token_pressure_pct
     effective_used_percent = None if used_percent is None else min(100.0, used_percent + pressure_pct)
     effective_secondary_used_percent = None if secondary_used is None else min(100.0, secondary_used + pressure_pct)
+    usage_exhaustion_evidence_status = status in (AccountStatus.QUOTA_EXCEEDED, AccountStatus.RATE_LIMITED)
 
     return AccountState(
         account_id=account.id,
@@ -2266,6 +2575,8 @@ def _state_from_account(
         plan_type=account.plan_type,
         capacity_credits=capacity_credits,
         health_tier=new_tier,
+        priority_used_percent=used_percent if usage_exhaustion_evidence_status else None,
+        priority_secondary_used_percent=secondary_used if usage_exhaustion_evidence_status else None,
         inflight_response_creates=runtime.inflight_response_creates,
         inflight_streams=runtime.inflight_streams,
         leased_tokens=runtime.leased_tokens,
@@ -2752,6 +3063,11 @@ def _clone_selection_inputs(selection_inputs: SelectionInputs) -> SelectionInput
             None
             if selection_inputs.continuity_owner_candidates is None
             else [_clone_account(account) for account in selection_inputs.continuity_owner_candidates]
+        ),
+        sticky_mutation_authority_account_ids=(
+            None
+            if selection_inputs.sticky_mutation_authority_account_ids is None
+            else frozenset(selection_inputs.sticky_mutation_authority_account_ids)
         ),
         quota_planner_settings=selection_inputs.quota_planner_settings,
         runtime_accounts=(

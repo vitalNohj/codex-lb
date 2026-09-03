@@ -46,6 +46,7 @@ async def test_migrated_null_account_caps_inherit_environment(monkeypatch: pytes
                 "proxy_account_response_create_limit": 24,
                 "proxy_account_stream_limit": 32,
                 "proxy_account_stream_recovery_reserve": 4,
+                "proxy_api_key_fair_share_congestion_threshold_pct": 0,
                 "request_log_retention_days": 0,
                 "usage_history_retention_days": 0,
             },
@@ -57,6 +58,49 @@ async def test_migrated_null_account_caps_inherit_environment(monkeypatch: pytes
     assert settings.proxy_account_response_create_limit == 24
     assert settings.proxy_account_stream_limit == 32
     assert settings.proxy_account_stream_recovery_reserve == 4
+
+
+@pytest.mark.asyncio
+async def test_migrated_null_api_key_fair_share_threshold_inherits_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = DashboardSettings()
+    row.proxy_api_key_fair_share_congestion_threshold_pct = None
+
+    class _Repository:
+        async def get_or_create(self) -> DashboardSettings:
+            return row
+
+    monkeypatch.setattr(
+        settings_service_module,
+        "get_settings",
+        lambda: type(
+            "_StartupSettings",
+            (),
+            {
+                "proxy_account_response_create_limit": 24,
+                "proxy_account_stream_limit": 32,
+                "proxy_account_stream_recovery_reserve": 4,
+                "proxy_api_key_fair_share_congestion_threshold_pct": 55,
+                "request_log_retention_days": 0,
+                "usage_history_retention_days": 0,
+            },
+        )(),
+    )
+    service = SettingsService(cast(SettingsRepository, _Repository()))
+
+    # NULL migrated rows inherit the environment default.
+    settings = await service.get_settings()
+    assert settings.proxy_api_key_fair_share_congestion_threshold_pct == 55
+
+    # A non-NULL dashboard value wins, including 0 (explicitly disabled).
+    row.proxy_api_key_fair_share_congestion_threshold_pct = 80
+    settings = await service.get_settings()
+    assert settings.proxy_api_key_fair_share_congestion_threshold_pct == 80
+
+    row.proxy_api_key_fair_share_congestion_threshold_pct = 0
+    settings = await service.get_settings()
+    assert settings.proxy_api_key_fair_share_congestion_threshold_pct == 0
 
 
 @pytest.mark.asyncio
@@ -79,6 +123,7 @@ async def test_null_retention_inherits_environment_and_dashboard_value_wins(
                 "proxy_account_response_create_limit": 24,
                 "proxy_account_stream_limit": 32,
                 "proxy_account_stream_recovery_reserve": 4,
+                "proxy_api_key_fair_share_congestion_threshold_pct": 0,
                 "request_log_retention_days": 90,
                 "usage_history_retention_days": 45,
             },
@@ -185,6 +230,7 @@ def _settings_update(
         proxy_account_response_create_limit=4,
         proxy_account_stream_limit=8,
         proxy_account_stream_recovery_reserve=1,
+        proxy_api_key_fair_share_congestion_threshold_pct=0,
         upstream_proxy_routing_enabled=False,
         upstream_proxy_default_pool_id=None,
         prefer_earlier_reset_accounts=True,
@@ -327,7 +373,7 @@ def test_dashboard_error_supports_sidecar_conflict_details() -> None:
 def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
     payload = _settings_update(
         openrouter_models=["DeepSeek/Chat"],
-        omniroute_models=["deepseek/chat"],
+        ollama_models=["deepseek/chat"],
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
@@ -335,6 +381,7 @@ def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
 
     assert exc_info.value.conflict.kind == "full_model"
     assert exc_info.value.conflict.owner == "OpenRouter"
+    assert exc_info.value.conflict.challenger == "Ollama"
 
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
@@ -354,7 +401,7 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
     payload = _settings_update(
-        omniroute_models=["gpt-oss:120b-cloud"],
+        openrouter_models=["gpt-oss:120b-cloud"],
         ollama_models=["GPT-OSS:120B-CLOUD"],
     )
 
@@ -362,13 +409,13 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
         _validate_unique_sidecar_routes(payload)
 
     assert exc_info.value.conflict.kind == "full_model"
-    assert exc_info.value.conflict.owner == "OmniRoute"
+    assert exc_info.value.conflict.owner == "OpenRouter"
     assert exc_info.value.conflict.challenger == "Ollama"
 
 
 def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None:
     payload = _settings_update(
-        omniroute_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
+        openrouter_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
         orcarouter_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
     )
 
@@ -377,7 +424,7 @@ def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "orcarouter/"
-    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "OmniRoute"}
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "OpenRouter"}
 
 
 def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import timedelta
 
 import pytest
@@ -131,6 +132,77 @@ async def test_accounts_upsert_reauthorized_heals_deactivated_identity_even_when
         result = await session.execute(select(Account).where(Account.email == "reauth@example.com"))
         rows = list(result.scalars().all())
         assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_replace_reauthorized_discards_pending_downgrade_evidence(db_setup):
+    """In-place reauthentication must reset pending plan-downgrade evidence.
+
+    Regression for the replaced-credential half of #1456's review: account ids
+    are deterministic, so reauthenticating a row in place reuses the id with new
+    token material — and without the replacement-time discard, the new
+    credential's very first `free` payload would count as the second observation
+    and land a downgrade on a single sample.
+    """
+    from app.modules.usage.plan_downgrade_observations import PlanDowngradeObservationStore
+
+    store = PlanDowngradeObservationStore()
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        await repo.upsert(_make_account("acc_reauth_evidence", "reauth-evidence@example.com"))
+
+        assert (
+            await store.observe(
+                "acc_reauth_evidence",
+                credential_fingerprint="fp-previous-credential",
+                observed_plan_type="free",
+            )
+            == 1
+        )
+
+        incoming = _make_account("acc_reauth_evidence", "reauth-evidence@example.com")
+        replaced = await repo.replace_reauthorized("acc_reauth_evidence", incoming)
+        assert replaced is not None
+
+    assert await store.get("acc_reauth_evidence") is None, (
+        "fresh credential material must discard evidence gathered under the previous credential"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_account_slot_discards_pending_downgrade_evidence_on_reimport(db_setup):
+    """Re-importing an account in place must reset pending downgrade evidence.
+
+    The delete-then-re-import flow is covered by ``ondelete="CASCADE"``; this
+    pins the other replacement shape, where the import lands on the existing row
+    through ``upsert_account_slot`` without any deletion.
+    """
+    from app.modules.usage.plan_downgrade_observations import PlanDowngradeObservationStore
+
+    store = PlanDowngradeObservationStore()
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        original = _make_account("acc_reimport_evidence", "reimport-evidence@example.com")
+        original.chatgpt_account_id = "upstream_reimport"
+        await repo.upsert_account_slot(original)
+
+        assert (
+            await store.observe(
+                "acc_reimport_evidence",
+                credential_fingerprint="fp-previous-credential",
+                observed_plan_type="free",
+            )
+            == 1
+        )
+
+        reimported = _make_account("acc_reimport_evidence", "reimport-evidence@example.com")
+        reimported.chatgpt_account_id = "upstream_reimport"
+        saved = await repo.upsert_account_slot(reimported)
+        assert saved.id == "acc_reimport_evidence"
+
+    assert await store.get("acc_reimport_evidence") is None, (
+        "an in-place re-import must discard evidence gathered under the previous credential"
+    )
 
 
 @pytest.mark.asyncio
@@ -453,6 +525,13 @@ def _add_durable_bridge_session(session: AsyncSession, *, account_id: str, sessi
         latest_response_id=response_id,
         latest_input_item_count=3,
         latest_input_full_fingerprint="a" * 64,
+        latest_pending_tool_calls_json=json.dumps(
+            {
+                "response_id": response_id,
+                "calls": {"call_stale": "function_call"},
+            },
+            separators=(",", ":"),
+        ),
         last_seen_at=utcnow(),
     )
     session.add(record)
@@ -512,6 +591,7 @@ def _assert_bridge_session_closed_without_continuity(record: HttpBridgeSessionRe
     assert record.latest_response_id is None
     assert record.latest_input_item_count is None
     assert record.latest_input_full_fingerprint is None
+    assert record.latest_pending_tool_calls_json is None
 
 
 @pytest.mark.asyncio
@@ -1158,6 +1238,40 @@ async def test_accounts_upsert_merge_by_chatgpt_identity_skips_without_upstream_
         # No upstream id means identity-merge has nothing to key on, so
         # the standard side-by-side path runs and creates `__copy2`.
         assert saved.id.startswith("acc_no_id__copy")
+
+
+@pytest.mark.asyncio
+async def test_identity_reconciliation_does_not_select_identityless_local_row_as_duplicate(db_setup):
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        canonical = _make_account_with_chatgpt_id(
+            "acc_identity_canonical",
+            "identity-invariant@example.com",
+            "chatgpt_identity_invariant",
+        )
+        identityless = _make_account("acc_identityless_local", "identity-invariant@example.com")
+        await repo.upsert(canonical, merge_by_email=False)
+        await repo.upsert(identityless, merge_by_email=False)
+
+        saved = await repo.upsert(
+            _make_account_with_chatgpt_id(
+                "acc_identity_reauth",
+                "identity-invariant@example.com",
+                "chatgpt_identity_invariant",
+            ),
+            merge_by_email=False,
+            merge_by_chatgpt_identity=True,
+        )
+
+        assert saved.id == canonical.id
+        remaining = {
+            account.id: account.chatgpt_account_id
+            for account in (await session.execute(select(Account).order_by(Account.id))).scalars().all()
+        }
+        assert remaining == {
+            canonical.id: "chatgpt_identity_invariant",
+            identityless.id: None,
+        }
 
 
 @pytest.mark.asyncio

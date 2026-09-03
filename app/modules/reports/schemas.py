@@ -10,11 +10,13 @@ class DailyReportRow(DashboardModel):
     requests: int
     input_tokens: int
     output_tokens: int
+    reasoning_tokens: int | None
     cached_input_tokens: int
     cost_usd: float
     active_accounts: int
     conversations: int = 0
     error_count: int = 0
+    cancelled_count: int = 0
     median_ttft_ms: float = 0.0
     median_tps: float = 0.0
     median_queue_ms: float = 0.0
@@ -45,9 +47,12 @@ class ReportSummary(DashboardModel):
     total_cost_usd: float
     total_input_tokens: int
     total_output_tokens: int
+    total_reasoning_tokens: int
+    reasoning_usage_known_requests: int
     total_cached_tokens: int
     total_requests: int
     total_errors: int
+    total_cancelled: int = 0
     active_accounts: int
     total_conversations: int = 0
     avg_cost_per_day: float = 0.0

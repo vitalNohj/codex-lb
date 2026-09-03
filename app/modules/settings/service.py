@@ -34,6 +34,7 @@ class DashboardSettingsData:
     proxy_account_response_create_limit: int
     proxy_account_stream_limit: int
     proxy_account_stream_recovery_reserve: int
+    proxy_api_key_fair_share_congestion_threshold_pct: int
     upstream_proxy_routing_enabled: bool
     upstream_proxy_default_pool_id: str | None
     prefer_earlier_reset_accounts: bool
@@ -162,6 +163,7 @@ class DashboardSettingsUpdateData:
     proxy_account_response_create_limit: int | None
     proxy_account_stream_limit: int | None
     proxy_account_stream_recovery_reserve: int | None
+    proxy_api_key_fair_share_congestion_threshold_pct: int | None
     upstream_proxy_routing_enabled: bool
     upstream_proxy_default_pool_id: str | None
     prefer_earlier_reset_accounts: bool
@@ -372,6 +374,9 @@ class SettingsService:
             proxy_account_response_create_limit=payload.proxy_account_response_create_limit,
             proxy_account_stream_limit=payload.proxy_account_stream_limit,
             proxy_account_stream_recovery_reserve=payload.proxy_account_stream_recovery_reserve,
+            proxy_api_key_fair_share_congestion_threshold_pct=(
+                payload.proxy_api_key_fair_share_congestion_threshold_pct
+            ),
             upstream_proxy_routing_enabled=payload.upstream_proxy_routing_enabled,
             upstream_proxy_default_pool_id=payload.upstream_proxy_default_pool_id,
             prefer_earlier_reset_accounts=payload.prefer_earlier_reset_accounts,
@@ -510,6 +515,9 @@ class SettingsService:
             proxy_account_stream_limit=_effective_stream_limit(row.proxy_account_stream_limit),
             proxy_account_stream_recovery_reserve=_effective_stream_recovery_reserve(
                 row.proxy_account_stream_recovery_reserve
+            ),
+            proxy_api_key_fair_share_congestion_threshold_pct=_effective_api_key_fair_share_threshold_pct(
+                row.proxy_api_key_fair_share_congestion_threshold_pct
             ),
             upstream_proxy_routing_enabled=row.upstream_proxy_routing_enabled,
             upstream_proxy_default_pool_id=row.upstream_proxy_default_pool_id,
@@ -663,6 +671,10 @@ def _effective_stream_limit(value: int | None) -> int:
 
 def _effective_stream_recovery_reserve(value: int | None) -> int:
     return get_settings().proxy_account_stream_recovery_reserve if value is None else value
+
+
+def _effective_api_key_fair_share_threshold_pct(value: int | None) -> int:
+    return get_settings().proxy_api_key_fair_share_congestion_threshold_pct if value is None else value
 
 
 def _effective_request_log_retention(value: int | None) -> int:

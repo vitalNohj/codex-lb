@@ -42,6 +42,9 @@ class SettingsRepository:
             proxy_account_response_create_limit=get_settings().proxy_account_response_create_limit,
             proxy_account_stream_limit=get_settings().proxy_account_stream_limit,
             proxy_account_stream_recovery_reserve=get_settings().proxy_account_stream_recovery_reserve,
+            proxy_api_key_fair_share_congestion_threshold_pct=(
+                get_settings().proxy_api_key_fair_share_congestion_threshold_pct
+            ),
             upstream_proxy_routing_enabled=False,
             upstream_proxy_default_pool_id=None,
             prefer_earlier_reset_accounts=True,
@@ -209,6 +212,7 @@ class SettingsRepository:
         proxy_account_response_create_limit: int | None = None,
         proxy_account_stream_limit: int | None = None,
         proxy_account_stream_recovery_reserve: int | None = None,
+        proxy_api_key_fair_share_congestion_threshold_pct: int | None = None,
         upstream_proxy_routing_enabled: bool | None = None,
         upstream_proxy_default_pool_id: str | None | object = _UNSET,
         prefer_earlier_reset_accounts: bool | None = None,
@@ -353,6 +357,10 @@ class SettingsRepository:
             settings.proxy_account_stream_limit = proxy_account_stream_limit
         if proxy_account_stream_recovery_reserve is not None:
             settings.proxy_account_stream_recovery_reserve = proxy_account_stream_recovery_reserve
+        if proxy_api_key_fair_share_congestion_threshold_pct is not None:
+            settings.proxy_api_key_fair_share_congestion_threshold_pct = (
+                proxy_api_key_fair_share_congestion_threshold_pct
+            )
         if upstream_proxy_routing_enabled is not None:
             settings.upstream_proxy_routing_enabled = upstream_proxy_routing_enabled
         if upstream_proxy_default_pool_id is not _UNSET:

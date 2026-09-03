@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 156 settings. Every setting is an environment
+codex-lb currently exposes 160 settings. Every setting is an environment
 variable with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process). All defaults work with zero configuration —
 start from [Configuration](../configuration.md) for the handful that matter,
@@ -32,11 +32,11 @@ the host side of the compose `ports` mapping instead.
 | Environment variable | Type | Default |
 | --- | --- | --- |
 | `CODEX_LB_DATABASE_ALEMBIC_AUTO_REMAP_ENABLED` | `bool` | `True` |
-| `CODEX_LB_DATABASE_MAX_OVERFLOW` | `int` | `10` |
+| `CODEX_LB_DATABASE_MAX_OVERFLOW` | `int` | `15` |
 | `CODEX_LB_DATABASE_MIGRATE_ON_STARTUP` | `bool` | `True` |
 | `CODEX_LB_DATABASE_MIGRATION_LOCK_TIMEOUT_SECONDS` | `float` | `300.0` |
 | `CODEX_LB_DATABASE_MIGRATIONS_FAIL_FAST` | `bool` | `True` |
-| `CODEX_LB_DATABASE_POOL_SIZE` | `int` | `15` |
+| `CODEX_LB_DATABASE_POOL_SIZE` | `int` | `25` |
 | `CODEX_LB_DATABASE_SQLITE_PRE_MIGRATE_BACKUP_ENABLED` | `bool` | `True` |
 | `CODEX_LB_DATABASE_SQLITE_PRE_MIGRATE_BACKUP_MAX_FILES` | `int` | `5` |
 | `CODEX_LB_DATABASE_SQLITE_STARTUP_CHECK_MODE` | `'quick' \| 'full' \| 'off'` | `'quick'` |
@@ -82,6 +82,9 @@ the host side of the compose `ports` mapping instead.
 | Environment variable | Type | Default |
 | --- | --- | --- |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_ADVERTISE_BASE_URL` | `str \| None` | `None` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_AMBIGUOUS_CONTINUATION_RECOVERY_MODE` | `'fail_closed' \| 'client_full_history_once' \| 'server_anchored_replay_once' \| 'server_indefinite_recovery'` | `'fail_closed'` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_ANCHOR_POISON_FAILURE_THRESHOLD` | `int` | `7` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_CLEAN_CLOSE_RETRY_JITTER_MAX_SECONDS` | `float` | `2.0` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_CODEX_IDLE_TTL_SECONDS` | `float` | `900.0` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_CODEX_PREWARM_ENABLED` | `bool` | `False` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_ENABLED` | `bool` | `True` |
@@ -90,6 +93,13 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_INSTANCE_ID` | `str` | process hostname |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_INSTANCE_RING` | `list[str]` | `[]` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_MAX_SESSIONS` | `int` | `256` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_BATCH_SIZE` | `int` | `32` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_FLUSH_INTERVAL_SECONDS` | `float` | `0.1` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_MAX_BYTES` | `int` | `2097152` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_MAX_PENDING_BYTES` | `int` | `33554432` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_MAX_PENDING_EVENTS` | `int` | `2048` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_LEDGER_ENABLED` | `bool` | `True` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_SPOOL_RETENTION_SECONDS` | `float` | `604800` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_QUEUE_LIMIT` | `int` | `8` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_REQUEST_BUDGET_SECONDS` | `float` | `7200.0` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_STUCK_GATE_RETIRE_AFTER_SECONDS` | `float` | `300.0` |
@@ -107,6 +117,7 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_PROXY_ACCOUNT_STREAM_LIMIT` | `int` | `8` |
 | `CODEX_LB_PROXY_ACCOUNT_STREAM_RECOVERY_RESERVE` | `int` | `1` |
 | `CODEX_LB_PROXY_ADMISSION_WAIT_TIMEOUT_SECONDS` | `float` | `10.0` |
+| `CODEX_LB_PROXY_API_KEY_FAIR_SHARE_CONGESTION_THRESHOLD_PCT` | `int` | `0` |
 | `CODEX_LB_PROXY_COMPACT_RESPONSE_CREATE_LIMIT` | `int` | `64` |
 | `CODEX_LB_PROXY_DOWNSTREAM_WEBSOCKET_IDLE_TIMEOUT_SECONDS` | `float` | `120.0` |
 | `CODEX_LB_PROXY_REFRESH_FAILURE_COOLDOWN_SECONDS` | `float` | `5.0` |
@@ -127,7 +138,7 @@ the host side of the compose `ports` mapping instead.
 
 | Environment variable | Type | Default |
 | --- | --- | --- |
-| `CODEX_LB_AUTH_GUARDIAN_ENABLED` | `bool` | `False` |
+| `CODEX_LB_AUTH_GUARDIAN_ENABLED` | `bool` | `True` |
 | `CODEX_LB_TOKEN_REFRESH_CLAIM_TTL_SECONDS` | `float` | `30.0` |
 | `CODEX_LB_TOKEN_REFRESH_INTERVAL_DAYS` | `int` | `8` |
 | `CODEX_LB_TOKEN_REFRESH_TIMEOUT_SECONDS` | `float` | `8.0` |
@@ -137,6 +148,7 @@ the host side of the compose `ports` mapping instead.
 | Environment variable | Type | Default |
 | --- | --- | --- |
 | `CODEX_LB_LIVE_USAGE_INGESTION_ENABLED` | `bool` | `True` |
+| `CODEX_LB_RATE_LIMIT_RESET_CREDITS_REFRESH_ENABLED` | `bool` | `True` |
 | `CODEX_LB_RATE_LIMIT_RESET_CREDITS_REFRESH_INTERVAL_SECONDS` | `int` | `60` |
 | `CODEX_LB_REQUEST_LOG_RETENTION_DAYS` | `int` | `0` |
 | `CODEX_LB_USAGE_FETCH_MAX_RETRIES` | `int` | `2` |
@@ -280,6 +292,10 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES` | `list[str]` | `['orcarouter/']` |
 | `CODEX_LB_ORCAROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
 | `CODEX_LB_ORCAROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
+| `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
+| `CODEX_LB_TELEMETRY_ENABLED` | `bool \| None` | `None` |
+| `CODEX_LB_TELEMETRY_ENDPOINT` | `str` | `'https://telemetry.tokmaxxing.com'` |
+| `CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` | `bool` | `False` |
 | `CODEX_LB_WARMUP_MODEL` | `str` | `'gpt-5.4-mini'` |
 
 ## Removed / deprecated
@@ -348,4 +364,4 @@ issue [#1340](https://github.com/Soju06/codex-lb/issues/1340)):
 
 ---
 
-*Specs: [user-documentation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/user-documentation) · [deployment-installation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/deployment-installation)*
+*Specs: [user-documentation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/user-documentation) · [responses-api-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/responses-api-compat) · [rate-limit-reset-credits](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/rate-limit-reset-credits) · [deployment-installation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/deployment-installation) · [proxy-runtime-observability](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/proxy-runtime-observability)*

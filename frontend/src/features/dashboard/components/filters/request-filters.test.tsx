@@ -36,11 +36,18 @@ const BASE_PROPS: RequestFiltersProps = {
   onReset: vi.fn(),
 };
 
-function renderFilters(overrides: Partial<FilterState> = {}) {
+function renderFilters(
+  overrides: Partial<FilterState> = {},
+  statusOptions: RequestFiltersProps["statusOptions"] = EMPTY_OPTIONS,
+) {
   const filters = { ...BASE_FILTERS, ...overrides };
   const props: RequestFiltersProps = {
     ...BASE_PROPS,
     filters,
+    accountOptions: EMPTY_OPTIONS,
+    apiKeyOptions: EMPTY_OPTIONS,
+    modelOptions: EMPTY_OPTIONS,
+    statusOptions,
     onSearchChange: vi.fn(),
     onTimeframeChange: vi.fn(),
     onAccountChange: vi.fn(),
@@ -93,6 +100,22 @@ describe("RequestFilters", () => {
 });
 
 describe("RequestFilters conversation badge", () => {
+  it("renders cancelled as a selectable status option", async () => {
+    const user = userEvent.setup();
+    const props = renderFilters({}, [{ value: "cancelled", label: "Cancelled" }]);
+
+    await user.click(screen.getByRole("button", { name: "Statuses" }));
+    const [option] = await screen.findAllByRole("menuitemcheckbox");
+    expect(option).toBeDefined();
+    if (!option) {
+      throw new Error("Expected the cancelled status option");
+    }
+
+    await user.click(option);
+
+    expect(props.onStatusChange).toHaveBeenCalledWith(["cancelled"]);
+  });
+
   it("renders no badge when conversationId is null", () => {
     renderFilters();
     expect(screen.queryByText(/conv/i)).not.toBeInTheDocument();

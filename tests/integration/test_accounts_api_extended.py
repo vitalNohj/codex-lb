@@ -10,9 +10,10 @@ from sqlalchemy import select, update
 from app.core.auth import fallback_account_id, generate_unique_account_id
 from app.core.crypto import TokenEncryptor
 from app.core.usage.refresh_scheduler import reconcile_recoverable_account_statuses
-from app.core.utils.time import utcnow
+from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountStatus, RequestLog
 from app.db.session import SessionLocal
+from app.modules.accounts.deletion import run_account_deletion_pass
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.proxy.account_cache import clear_account_routing_unavailable, is_account_routing_unavailable
 from app.modules.request_logs.repository import RequestLogsRepository
@@ -592,7 +593,17 @@ async def test_delete_account_removes_from_list(async_client):
 
 
 @pytest.mark.asyncio
-async def test_delete_account_soft_deletes_request_logs(async_client, db_setup):
+async def test_delete_account_soft_deletes_request_logs(async_client, db_setup, monkeypatch):
+    # The suite's inline leader election would let the API's worker wake race
+    # the explicit pass below; keep the drain under test control. The
+    # scheduler's own startup/interval tick is neutralized for the same
+    # reason.
+    monkeypatch.setattr("app.modules.accounts.service.request_account_deletion_run", lambda: None)
+
+    async def _no_tick(self) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.accounts.deletion.AccountDeletionScheduler._run_once", _no_tick)
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -612,6 +623,10 @@ async def test_delete_account_soft_deletes_request_logs(async_client, db_setup):
     delete = await async_client.delete("/api/accounts/acc_delete_logs")
     assert delete.status_code == 200
 
+    # The API only marks the account; the background worker drains the rows.
+    outcomes = await run_account_deletion_pass()
+    assert outcomes["acc_delete_logs"] == "finalized"
+
     async with SessionLocal() as session:
         row = (
             await session.execute(select(RequestLog).where(RequestLog.request_id == "req_delete_logs_1"))
@@ -629,7 +644,17 @@ async def test_delete_account_soft_deletes_request_logs(async_client, db_setup):
 
 
 @pytest.mark.asyncio
-async def test_delete_account_with_delete_history_hard_deletes_request_logs(async_client, db_setup):
+async def test_delete_account_with_delete_history_hard_deletes_request_logs(async_client, db_setup, monkeypatch):
+    # The suite's inline leader election would let the API's worker wake race
+    # the explicit pass below; keep the drain under test control. The
+    # scheduler's own startup/interval tick is neutralized for the same
+    # reason.
+    monkeypatch.setattr("app.modules.accounts.service.request_account_deletion_run", lambda: None)
+
+    async def _no_tick(self) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.accounts.deletion.AccountDeletionScheduler._run_once", _no_tick)
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -649,6 +674,10 @@ async def test_delete_account_with_delete_history_hard_deletes_request_logs(asyn
     delete = await async_client.delete("/api/accounts/acc_hard_delete?delete_history=true")
     assert delete.status_code == 200
     assert delete.json()["status"] == "deleted"
+
+    # The API only marks the account; the background worker drains the rows.
+    outcomes = await run_account_deletion_pass()
+    assert outcomes["acc_hard_delete"] == "finalized"
 
     async with SessionLocal() as session:
         result = await session.execute(select(RequestLog).where(RequestLog.request_id == "req_hard_delete_1"))
@@ -1215,7 +1244,7 @@ async def test_accounts_list_ignores_hidden_zero_capacity_primary_without_weekly
 
 @pytest.mark.asyncio
 async def test_accounts_list_recovers_zero_capacity_rate_limited_status(async_client, db_setup):
-    expired_reset = int((utcnow() - timedelta(minutes=5)).timestamp())
+    expired_reset = naive_utc_to_epoch(utcnow() - timedelta(minutes=5))
     account = _make_account("acc_free_recovered_primary", "free-recovered@example.com", plan_type="free")
     account.status = AccountStatus.RATE_LIMITED
     account.reset_at = expired_reset
@@ -1550,8 +1579,8 @@ async def test_accounts_list_prefers_newer_weekly_primary_over_stale_secondary(a
 
 @pytest.mark.asyncio
 async def test_accounts_list_recovers_quota_exceeded_status_from_secondary_usage(async_client, db_setup):
-    expired_reset = int((utcnow() - timedelta(minutes=5)).timestamp())
-    blocked_at = int((utcnow() - timedelta(hours=2)).timestamp())
+    expired_reset = naive_utc_to_epoch(utcnow() - timedelta(minutes=5))
+    blocked_at = naive_utc_to_epoch(utcnow() - timedelta(hours=2))
     account = _make_account("acc_quota_recovered_secondary", "quota-recovered@example.com")
     account.status = AccountStatus.QUOTA_EXCEEDED
     account.reset_at = expired_reset
@@ -1566,7 +1595,7 @@ async def test_accounts_list_recovers_quota_exceeded_status_from_secondary_usage
             "acc_quota_recovered_secondary",
             42.0,
             window="secondary",
-            reset_at=int((utcnow() + timedelta(days=1)).timestamp()),
+            reset_at=naive_utc_to_epoch(utcnow() + timedelta(days=1)),
             window_minutes=10080,
         )
 

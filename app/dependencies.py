@@ -38,6 +38,7 @@ from app.modules.ollama_sidecar.service import OllamaSidecarService
 from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
 from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
 from app.modules.orcarouter_sidecar.service import OrcaRouterSidecarService
+from app.modules.proxy.capability_lineage_repository import CapabilityLineageRepository
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.proxy.service import ProxyService
 from app.modules.proxy.sticky_repository import StickySessionsRepository
@@ -265,6 +266,7 @@ async def _proxy_repo_context() -> AsyncIterator[ProxyRepositories]:
             api_keys=ApiKeysRepository(session),
             additional_usage=AdditionalUsageRepository(session),
             quota_planner=QuotaPlannerRepository(session),
+            capability_lineage=CapabilityLineageRepository(session),
         )
 
 

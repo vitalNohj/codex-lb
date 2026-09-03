@@ -10,6 +10,81 @@ fixed, and how removed settings are retired.
 See `openspec/specs/deployment-installation/spec.md` for normative
 requirements.
 
+## Timeout Invariant Linter Scope
+
+The timeout invariant linter is a startup `Settings` guardrail. Strict mode is
+an opt-in startup or CI failure path for violating startup configuration, not a
+general runtime timeout validator.
+
+Validated inputs:
+
+- The `Settings` object materialized at startup.
+- Explicitly imported code constants used by the two constant-backed rules:
+  model-registry refresh cadence and durable HTTP bridge retry-circuit TTL.
+
+Known non-goals and follow-ups:
+
+- Per-request `ContextVar` overrides are not revalidated. Current anchors:
+  `app/core/clients/proxy.py:3450-3467`,
+  `app/modules/proxy/_service/streaming/helpers.py:861-868`,
+  `app/modules/proxy/_service/compact.py:727-738`,
+  `app/modules/proxy/_service/transcribe.py:230-232`,
+  `app/core/clients/files.py:77-90`, and
+  `app/modules/proxy/service.py:1464-1478`.
+- Runtime clamps and derived effective values are not fully modeled. Current
+  anchors: `app/core/clients/proxy.py:1049-1088`,
+  `app/core/auth/refresh.py:391-395`, and
+  `app/modules/proxy/load_balancer.py:1846-1856`.
+- Runtime DB, API-key, and model-source settings can affect timeout-bearing
+  paths without startup revalidation. Current anchors:
+  `app/core/config/settings_cache.py:22-36`,
+  `app/modules/settings/api.py:547-710`,
+  `app/modules/proxy/_service/streaming/retry.py:153-165`, and
+  `app/modules/model_sources/forwarding.py:112-221`.
+
+Example: `python -m app.core.timeout_invariants --strict` validates the
+startup `Settings` view and exits nonzero when any enforced rule fails.
+Running the same command without `--strict` reports violations but exits zero,
+matching the default startup behavior.
+
+`CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` is intentionally a setting
+rather than a hard default because existing deployments may carry legacy timeout
+values that deserve CRITICAL diagnostics first, not surprise startup refusal.
+The default remains non-strict; operators and CI opt into fail-fast behavior.
+
+## Helm termination-grace upgrade contract
+
+The graceful-shutdown chart adds a render-time guard:
+`terminationGracePeriodSeconds` must be at least
+`config.shutdownDrainTimeoutSeconds + 32`. Existing values files, explicit
+`--set` arguments, or values retained by `helm upgrade --reuse-values` below
+that bound make `helm template`, `helm install`, and `helm upgrade` fail before
+resources are applied. A failed upgrade leaves the existing release in place.
+
+With the default 30-second drain timeout, the arithmetic minimum is 62 seconds
+and the chart default is 65 seconds. An explicit retained value of 60 seconds,
+the previous chart default, is therefore invalid. Before installing or
+upgrading, raise every retained low value explicitly to at least the computed
+minimum; setting 65 preserves the chart's default helper-launch headroom when
+the drain timeout remains 30 seconds. Production overrides should retain
+additional headroom for preStop helper launch.
+
+For example, this retained value fails rendering:
+
+```yaml
+config:
+  shutdownDrainTimeoutSeconds: 30
+terminationGracePeriodSeconds: 60
+```
+
+When `--reuse-values` is used, removing
+`terminationGracePeriodSeconds` from a new values file or omitting its `--set`
+argument does not clear the stored 60-second value. That upgrade must set the
+key explicitly to at least 62 seconds; setting it to 65 preserves the chart's
+three seconds of helper-launch headroom. To adopt the 65-second chart default
+without storing an override, use an intentional non-reuse or `--reset-values`
+upgrade with `terminationGracePeriodSeconds` absent.
+
 ## Raw socket peer preservation and proxy projection
 
 codex-lb captures the incoming ASGI client before delegating once to Uvicorn's
@@ -148,9 +223,12 @@ Phase 3 (10 removed):
   timeout fixed 30.0 s and recycle window fixed 1800 s
   (`_POSTGRES_POOL_*` constants in `app/db/session.py`).
   `CODEX_LB_DATABASE_POOL_SIZE` / `CODEX_LB_DATABASE_MAX_OVERFLOW` stay:
-  PostgreSQL HA operators must budget
-  `(pool_size + max_overflow) x replicas <= max_connections`, and the
-  Helm chart pins both.
+  PostgreSQL HA operators must budget both independently pooled engines in
+  every supported one-worker replica:
+  `(pool_size + max_overflow) x 2 x replicas`, while reserving server
+  connections for PostgreSQL internals, migrations, and operations. The owned
+  CLI launcher pins one worker; custom multi-worker launchers are unsupported.
+  The Helm chart pins both pool inputs.
 - Soft-drain/probe thresholds (6): drain at 85%/90%, error window 60 s /
   count 2, probe quiet 60 s, success streak 3. They encode the
   deterministic-failover design and interlock — raising one without the

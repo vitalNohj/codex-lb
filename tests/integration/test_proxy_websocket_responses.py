@@ -1,30 +1,122 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
+import threading
+import time
+import tomllib
 from collections import deque
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from httpx import Headers
+from sqlalchemy import select
+from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
+from websockets.asyncio.client import connect as websocket_connect
 
 import app.modules.proxy.api as proxy_api_module
 import app.modules.proxy.service as proxy_module
+from app.core import shutdown as shutdown_state
 from app.core.auth.refresh import RefreshError
+from app.core.clients.proxy_websocket import (
+    UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE,
+    WebsocketsUpstreamWebSocket,
+)
+from app.core.config.settings_cache import get_settings_cache
 from app.core.utils.request_id import get_request_id
+from app.db.models import Account, AccountStatus, ApiKeyUsageReservation, RequestLog
+from app.db.session import SessionLocal
+from app.modules.api_keys.repository import ApiKeysRepository
+from app.modules.api_keys.service import (
+    ApiKeyCreateData,
+    ApiKeyData,
+    ApiKeysService,
+    ApiKeyUsageReservationData,
+    LimitRuleInput,
+)
 from app.modules.proxy._service.websocket import mixin as websocket_mixin_module
 from app.modules.proxy.affinity import _codex_session_selection_key
+from app.modules.proxy.capability_routing import (
+    REQUIRED_CAPABILITY_HEADER,
+    _capability_lineage_unavailable_error,
+)
 
 pytestmark = pytest.mark.integration
 
+_REAL_WRITE_REQUEST_LOG = proxy_module.ProxyService._write_request_log
+_CODEX_CLIENT_CONFIG = Path(__file__).resolve().parents[2] / "docs/examples/codex/config.toml"
+_CODEX_DAYBREAK_PROFILE = Path(__file__).resolve().parents[2] / "docs/examples/codex/daybreak-blue.config.toml"
 
-def _assert_codex_previous_response_stale_error(error: dict[str, object]) -> None:
-    assert error["code"] == proxy_module.PREVIOUS_RESPONSE_STALE_CODE
-    assert error["message"] == proxy_module.PREVIOUS_RESPONSE_STALE_MESSAGE
+
+@pytest.mark.asyncio
+async def test_real_websockets_keepalive_expiry_preserves_liveness_classification() -> None:
+    async def accept_without_answering_frames(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            request = await reader.readuntil(b"\r\n\r\n")
+            websocket_key = next(
+                line.split(b":", 1)[1].strip()
+                for line in request.split(b"\r\n")
+                if line.lower().startswith(b"sec-websocket-key:")
+            )
+            accept = base64.b64encode(hashlib.sha1(websocket_key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+            writer.write(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n"
+            )
+            await writer.drain()
+            # Read and discard every frame. In particular, never answer pings,
+            # so the production client watchdog must terminate the connection.
+            while await reader.read(65536):
+                pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
+
+    server = await asyncio.start_server(accept_without_answering_frames, "127.0.0.1", 0)
+    async with server:
+        assert server.sockets
+        port = server.sockets[0].getsockname()[1]
+        async with websocket_connect(
+            f"ws://127.0.0.1:{port}",
+            ping_interval=0.05,
+            ping_timeout=0.05,
+            close_timeout=0.05,
+            proxy=None,
+        ) as connection:
+            upstream = WebsocketsUpstreamWebSocket(connection)
+            message = await asyncio.wait_for(upstream.receive(), timeout=1.0)
+
+    # This assertion pins the actual close code/reason emitted by the installed
+    # websockets watchdog to the adapter's stable, account-neutral classifier.
+    assert message.kind == "error"
+    assert message.error_code == UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE
+
+
+def _assert_previous_response_not_found_error(error: dict[str, object]) -> None:
+    assert error["code"] == proxy_module.PREVIOUS_RESPONSE_NOT_FOUND_CODE
+    assert error["message"] == proxy_module.PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE
+    # The sanitized error must never carry the raw upstream "param" field
+    # (upstream sends "param": "previous_response_id"); its absence is what
+    # distinguishes the sanitized canonical code from a raw envelope leak.
+    assert error.get("param") is None
 
 
 def _without_installation_metadata(value: Any) -> Any:
@@ -87,6 +179,7 @@ class _FakeUpstreamWebSocket:
         self.archived_receive_request_ids: list[str | None] = []
         self.archived_receive_texts: list[str] = []
         self.closed = False
+        self.closed_event = threading.Event()
         self._messages: asyncio.Queue[_FakeUpstreamMessage] = asyncio.Queue()
         for message in messages:
             self._messages.put_nowait(message)
@@ -110,6 +203,7 @@ class _FakeUpstreamWebSocket:
 
     async def close(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
 
 class _SequencedUpstreamWebSocket(_FakeUpstreamWebSocket):
@@ -163,11 +257,924 @@ def _websocket_settings(**overrides):
         "proxy_token_refresh_limit": 32,
         "proxy_upstream_websocket_connect_limit": 64,
         "proxy_account_stream_recovery_reserve": 1,
+        "proxy_api_key_fair_share_congestion_threshold_pct": 0,
         "proxy_response_create_limit": 64,
         "proxy_compact_response_create_limit": 16,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_responses_websocket_route_drain_preserves_terminal_ownership_and_rejects_late_admission(
+    app_instance,
+    monkeypatch,
+):
+    terminal_release = threading.Event()
+    terminal_waiting = threading.Event()
+    settlement_started = threading.Event()
+    settlement_release = threading.Event()
+    cleanup_timer = threading.Timer(
+        5.0,
+        lambda: (terminal_release.set(), settlement_release.set()),
+    )
+    cleanup_timer.daemon = True
+
+    class _ControlledUpstreamWebSocket:
+        def __init__(self) -> None:
+            self.request_sent = asyncio.Event()
+            self.receive_count = 0
+            self.sent_text: list[str] = []
+            self.closed = False
+
+        async def send_text(self, text: str) -> None:
+            self.sent_text.append(text)
+            self.request_sent.set()
+
+        async def send_bytes(self, _data: bytes) -> None:
+            return None
+
+        async def receive(self) -> _FakeUpstreamMessage:
+            await self.request_sent.wait()
+            self.receive_count += 1
+            if self.receive_count == 1:
+                return _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.created",
+                            "response": {
+                                "id": "resp_route_drain",
+                                "status": "in_progress",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                )
+            if self.receive_count == 2:
+                terminal_waiting.set()
+                await asyncio.to_thread(terminal_release.wait)
+                return _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_route_drain",
+                                "status": "completed",
+                                "usage": {
+                                    "input_tokens": 3,
+                                    "output_tokens": 2,
+                                    "total_tokens": 5,
+                                },
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                )
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    upstream = _ControlledUpstreamWebSocket()
+    api_key: ApiKeyData | None = None
+    reservation: ApiKeyUsageReservationData | None = None
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings(
+                proxy_downstream_websocket_idle_timeout_seconds=0.2,
+            )
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(
+        _authorization: str | None,
+        *,
+        request: object | None = None,
+    ):
+        del request
+        assert api_key is not None
+        return api_key
+
+    async def fake_connect_proxy_websocket(self, headers, **kwargs):
+        del self, headers, kwargs
+        return SimpleNamespace(id="acct_route_drain"), upstream
+
+    async def fake_refresh_api_key(self, current_api_key):
+        del self
+        assert api_key is not None
+        assert current_api_key is api_key
+        return api_key
+
+    async def fake_reserve_api_key(self, current_api_key, **kwargs):
+        del self, kwargs
+        assert api_key is not None
+        assert reservation is not None
+        assert current_api_key is api_key
+        return reservation
+
+    original_finalize_usage_reservation = ApiKeysService.finalize_usage_reservation
+
+    async def gated_finalize_usage_reservation(
+        self: ApiKeysService,
+        reservation_id: str,
+        *,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int = 0,
+        service_tier: str | None = None,
+        cost_microdollars: int | None = None,
+    ) -> None:
+        settlement_started.set()
+        await asyncio.to_thread(settlement_release.wait)
+        await original_finalize_usage_reservation(
+            self,
+            reservation_id,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            service_tier=service_tier,
+            cost_microdollars=cost_microdollars,
+        )
+
+    async def prepare_persistence_rows() -> tuple[ApiKeyData, ApiKeyUsageReservationData]:
+        async with SessionLocal() as session:
+            session.add(
+                Account(
+                    id="acct_route_drain",
+                    chatgpt_account_id="acct_route_drain",
+                    email="route-drain@example.com",
+                    plan_type="plus",
+                    access_token_encrypted=b"access",
+                    refresh_token_encrypted=b"refresh",
+                    id_token_encrypted=b"id",
+                    last_refresh=proxy_module.utcnow(),
+                    status=AccountStatus.ACTIVE,
+                )
+            )
+            await session.commit()
+
+        async with SessionLocal() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            created_key = await service.create_key(
+                ApiKeyCreateData(
+                    name="route drain",
+                    allowed_models=None,
+                    # Limit-free keys skip the reservation ledger entirely, and
+                    # this test asserts drain-time settlement ownership of a
+                    # real reservation, so give the key an applicable limit.
+                    limits=[
+                        LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000),
+                    ],
+                )
+            )
+            usage_reservation = await service.enforce_limits_for_request(
+                created_key.id,
+                request_model="gpt-5.6-sol",
+            )
+            assert usage_reservation is not None
+        return created_key, usage_reservation
+
+    async def read_persisted_results(
+        reservation_id: str,
+    ) -> tuple[RequestLog | None, ApiKeyUsageReservation | None]:
+        async with SessionLocal() as session:
+            request_log = await session.scalar(select(RequestLog).where(RequestLog.request_id == "resp_route_drain"))
+            reservation_row = await session.get(ApiKeyUsageReservation, reservation_id)
+            return request_log, reservation_row
+
+    async def fake_record_success(_self, _account):
+        return None
+
+    def no_api_key_heartbeat(self, request_state, **kwargs):
+        del self, request_state, kwargs
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module,
+        "get_settings",
+        lambda: _websocket_settings(
+            proxy_downstream_websocket_idle_timeout_seconds=0.2,
+        ),
+    )
+    monkeypatch.setattr(proxy_module, "_DOWNSTREAM_WEBSOCKET_RECEIVE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+    monkeypatch.setattr(proxy_module.ProxyService, "_refresh_websocket_api_key_policy", fake_refresh_api_key)
+    monkeypatch.setattr(proxy_module.ProxyService, "_reserve_websocket_api_key_usage", fake_reserve_api_key)
+    monkeypatch.setattr(ApiKeysService, "finalize_usage_reservation", gated_finalize_usage_reservation)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", _REAL_WRITE_REQUEST_LOG)
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_start_request_state_api_key_reservation_heartbeat",
+        no_api_key_heartbeat,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_cancel_request_state_api_key_reservation_heartbeat",
+        no_api_key_heartbeat,
+    )
+    monkeypatch.setattr(proxy_module.LoadBalancer, "record_success", fake_record_success)
+
+    cleanup_timer.start()
+    shutdown_state.reset()
+    try:
+        with TestClient(app_instance) as client:
+            assert client.portal is not None
+            api_key, reservation = client.portal.call(prepare_persistence_rows)
+            with client.websocket_connect("/backend-api/codex/responses") as websocket:
+                assert shutdown_state.get_in_flight() == 1
+                websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "response.create",
+                            "model": "gpt-5.6-sol",
+                            "input": "finish during drain",
+                            "stream": True,
+                        }
+                    )
+                )
+                created = json.loads(websocket.receive_text())
+                assert created["type"] == "response.created"
+                assert terminal_waiting.wait(timeout=1)
+
+                shutdown_state.set_draining(True)
+                assert shutdown_state.get_in_flight() == 1
+                terminal_release.set()
+                assert settlement_started.wait(timeout=1)
+
+                with pytest.raises(WebSocketDisconnect) as late_disconnect:
+                    with client.websocket_connect("/backend-api/codex/responses"):
+                        pytest.fail("late websocket admission unexpectedly succeeded")
+                assert late_disconnect.value.code == 1013
+                assert shutdown_state.get_in_flight() == 1
+
+                settlement_release.set()
+                completed = json.loads(websocket.receive_text())
+                assert completed["type"] == "response.completed"
+
+                with pytest.raises(WebSocketDisconnect) as drained_disconnect:
+                    websocket.receive_text()
+                assert drained_disconnect.value.code == 1012
+        assert shutdown_state.get_in_flight() == 0
+        assert reservation is not None
+        persisted_log, persisted_reservation = asyncio.run(read_persisted_results(reservation.reservation_id))
+    finally:
+        terminal_release.set()
+        settlement_release.set()
+        cleanup_timer.cancel()
+        shutdown_state.reset()
+
+    assert upstream.closed is True
+    assert api_key is not None
+    assert persisted_reservation is not None
+    assert persisted_reservation.api_key_id == api_key.id
+    assert persisted_reservation.status == "finalized"
+    assert persisted_reservation.input_tokens == 3
+    assert persisted_reservation.output_tokens == 2
+    assert persisted_log is not None
+    assert persisted_log.account_id == "acct_route_drain"
+    assert persisted_log.api_key_id == api_key.id
+    assert persisted_log.status == "success"
+    assert persisted_log.transport == "websocket"
+    assert persisted_log.input_tokens == 3
+    assert persisted_log.output_tokens == 2
+
+
+def test_responses_websocket_route_drain_interrupts_blocked_idle_receive(
+    app_instance,
+    monkeypatch,
+):
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings(
+                proxy_downstream_websocket_idle_timeout_seconds=0.05,
+            )
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(
+        _authorization: str | None,
+        *,
+        request: object | None = None,
+    ):
+        del request
+        return None
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module,
+        "get_settings",
+        lambda: _websocket_settings(
+            proxy_downstream_websocket_idle_timeout_seconds=0.05,
+        ),
+    )
+    monkeypatch.setattr(proxy_module, "_DOWNSTREAM_WEBSOCKET_RECEIVE_POLL_SECONDS", 0.01)
+
+    shutdown_state.reset()
+    try:
+        with TestClient(app_instance) as client:
+            with client.websocket_connect("/backend-api/codex/responses") as websocket:
+                assert shutdown_state.get_in_flight() == 1
+                shutdown_state.set_draining(True)
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+                assert disconnect.value.code == 1012
+        assert shutdown_state.get_in_flight() == 0
+    finally:
+        shutdown_state.reset()
+
+
+def _capability_test_api_key(key_id: str) -> ApiKeyData:
+    return ApiKeyData(
+        id=key_id,
+        name="Capability routing test",
+        key_prefix="sk-capability",
+        allowed_models=None,
+        enforced_model=None,
+        enforced_reasoning_effort=None,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        last_used_at=None,
+    )
+
+
+def test_responses_websocket_route_rejects_disallowed_reasoning_before_upstream(app_instance, monkeypatch):
+    async def create_key():
+        async with SessionLocal() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            created = await service.create_key(
+                ApiKeyCreateData(
+                    name="websocket-reasoning-policy",
+                    allowed_models=None,
+                    allowed_reasoning_efforts=["low"],
+                )
+            )
+            return created.key, await service.get_key_by_id(created.id)
+
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        key, api_key = client.portal.call(create_key)
+
+        async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+            del request
+            return api_key
+
+        monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": f"Bearer {key}"},
+        ) as websocket:
+            websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "response.create",
+                        "model": "model-alpha",
+                        "input": "hi",
+                        "reasoning": {"effort": "max"},
+                    }
+                )
+            )
+            event = json.loads(websocket.receive_text())
+
+    assert event["type"] == "error"
+    assert event["status"] == 403
+    assert event["error"]["code"] == "reasoning_effort_not_allowed"
+
+
+def _websocket_response_batch(
+    response_id: str,
+    *,
+    completed: bool = True,
+) -> list[_FakeUpstreamMessage]:
+    messages = [
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "response.created",
+                    "response": {"id": response_id, "status": "in_progress"},
+                },
+                separators=(",", ":"),
+            ),
+        )
+    ]
+    if completed:
+        messages.append(
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {"id": response_id, "status": "completed"},
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+    return messages
+
+
+def _websocket_response_create(text: str) -> dict[str, object]:
+    return {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "input": text,
+        "stream": True,
+    }
+
+
+def _codex_profile_provider(profile_name: str | None) -> tuple[str, str, dict[str, Any]]:
+    base_config = tomllib.loads(_CODEX_CLIENT_CONFIG.read_text(encoding="utf-8"))
+    profile_config = (
+        tomllib.loads(_CODEX_DAYBREAK_PROFILE.read_text(encoding="utf-8")) if profile_name is not None else {}
+    )
+    provider_id = profile_config.get("model_provider", base_config["model_provider"])
+    model = profile_config.get("model", base_config["model"])
+    provider = base_config["model_providers"][provider_id]
+    return provider_id, model, provider
+
+
+async def _create_profile_authorization(name: str) -> str:
+    settings = await get_settings_cache().get()
+    assert settings.api_key_auth_enabled is False
+    async with SessionLocal() as session:
+        created_key = await ApiKeysService(ApiKeysRepository(session)).create_key(
+            ApiKeyCreateData(
+                name=name,
+                allowed_models=None,
+            )
+        )
+    return f"Bearer {created_key.key}"
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "expected_provider_id", "expected_security_requirement"),
+    [
+        (None, "codex-lb", False),
+        ("daybreak-blue", "codex-lb-daybreak-blue", True),
+    ],
+    ids=["ordinary", "daybreak-blue"],
+)
+@pytest.mark.parametrize(
+    "path",
+    [
+        "ws://localhost/backend-api/codex/responses",
+        "ws://localhost/backend-api/codex/v1/responses",
+    ],
+    ids=["native", "native-v1-alias"],
+)
+def test_codex_provider_profiles_route_before_first_account_attempt(
+    app_instance,
+    monkeypatch,
+    path,
+    profile_name,
+    expected_provider_id,
+    expected_security_requirement,
+):
+    provider_id, model, provider = _codex_profile_provider(profile_name)
+    provider_headers = cast(dict[str, str], provider.get("http_headers", {}))
+    normalized_provider_headers = {name.lower(): value for name, value in provider_headers.items()}
+
+    assert provider_id == expected_provider_id
+    assert model == "gpt-5.6-sol"
+    assert provider["name"] == "openai"
+    assert provider["base_url"].endswith("/backend-api/codex")
+    assert provider["wire_api"] == "responses"
+    assert provider["supports_websockets"] is True
+    assert provider["requires_openai_auth"] is True
+    if expected_security_requirement:
+        assert provider["env_key"] == "CODEX_LB_API_KEY"
+        assert normalized_provider_headers == {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+    else:
+        assert "env_key" not in provider
+        assert REQUIRED_CAPABILITY_HEADER not in normalized_provider_headers
+
+    upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch(f"resp_profile_{profile_name or 'ordinary'}")],
+    )
+    selection_requirements: list[bool] = []
+    opened_account_ids: list[str] = []
+    forwarded_capability_headers: list[bool] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def prepare_profile_authorization() -> str | None:
+        if not expected_security_requirement:
+            return None
+        return await _create_profile_authorization("Inert Daybreak profile")
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        if expected_security_requirement:
+            assert current_api_key is not None
+            assert current_api_key.name == "Inert Daybreak profile"
+        else:
+            assert current_api_key is None
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        if expected_security_requirement:
+            assert current_api_key is not None
+            assert current_api_key.name == "Inert Daybreak profile"
+        else:
+            assert current_api_key is None
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        account_kind = "cyber" if require_security_work_authorized else "ordinary"
+        return SimpleNamespace(
+            id=f"acct_profile_{account_kind}",
+            security_work_authorized=require_security_work_authorized,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        opened_account_ids.append(account.id)
+        forwarded_capability_headers.append(any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers))
+        return account, upstream
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    response_create = _websocket_response_create("inert profile routing check")
+    response_create["model"] = model
+
+    with TestClient(app_instance, client=("127.0.0.1", 50000)) as client:
+        assert client.portal is not None
+        websocket_headers = dict(provider_headers)
+        authorization = client.portal.call(prepare_profile_authorization)
+        if authorization is not None:
+            websocket_headers["Authorization"] = authorization
+        with client.websocket_connect(
+            path,
+            headers=websocket_headers,
+        ) as websocket:
+            websocket.send_text(json.dumps(response_create))
+            created = json.loads(websocket.receive_text())
+            completed = json.loads(websocket.receive_text())
+
+    assert created["response"]["id"] == f"resp_profile_{profile_name or 'ordinary'}"
+    assert completed["type"] == "response.completed"
+    assert selection_requirements == [expected_security_requirement]
+    expected_account_kind = "cyber" if expected_security_requirement else "ordinary"
+    assert opened_account_ids == [f"acct_profile_{expected_account_kind}"]
+    assert forwarded_capability_headers == [False]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/backend-api/codex/responses",
+            {"model": "gpt-5.6-sol", "input": "inert fallback check", "stream": True},
+        ),
+        (
+            "/backend-api/codex/v1/responses",
+            {"model": "gpt-5.6-sol", "input": "inert fallback check", "stream": True},
+        ),
+        (
+            "/v1/responses",
+            {"model": "gpt-5.6-sol", "input": "inert fallback check", "stream": True},
+        ),
+        (
+            "/backend-api/codex/responses/compact",
+            {"model": "gpt-5.6-sol", "instructions": "", "input": "inert fallback check"},
+        ),
+        (
+            "/v1/responses/compact",
+            {"model": "gpt-5.6-sol", "instructions": "", "input": "inert fallback check"},
+        ),
+    ],
+    ids=["backend", "backend-v1-alias", "v1", "backend-compact", "v1-compact"],
+)
+def test_daybreak_profile_http_fallback_fails_closed_before_routing(
+    app_instance,
+    monkeypatch,
+    path,
+    payload,
+):
+    _provider_id, _model, provider = _codex_profile_provider("daybreak-blue")
+    provider_headers = cast(dict[str, str], provider["http_headers"])
+
+    async def fail_before_routing(*_args, **_kwargs):
+        pytest.fail("capability-bearing HTTP fallback must fail before routing")
+
+    monkeypatch.setattr(proxy_api_module, "_select_responses_model_source", fail_before_routing)
+    monkeypatch.setattr(proxy_api_module, "_stream_responses", fail_before_routing)
+    monkeypatch.setattr(proxy_api_module, "_compact_responses", fail_before_routing)
+
+    with TestClient(
+        app_instance,
+        base_url="http://lb.example",
+        client=("203.0.113.10", 50000),
+    ) as client:
+        assert client.portal is not None
+        authorization = client.portal.call(_create_profile_authorization, "Inert Daybreak HTTP fallback")
+        response = client.post(
+            path,
+            json=payload,
+            headers={"Authorization": authorization, **provider_headers},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {
+            "code": "required_capability_transport_unsupported",
+            "message": "Required capability routing is only supported over the Responses WebSocket transport.",
+            "type": "invalid_request_error",
+        }
+    }
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer invalid-profile-key"], ids=["missing", "invalid"])
+def test_daybreak_profile_http_fallback_requires_valid_api_key_before_transport_denial(
+    app_instance,
+    monkeypatch,
+    authorization,
+):
+    _provider_id, _model, provider = _codex_profile_provider("daybreak-blue")
+    provider_headers = cast(dict[str, str], provider["http_headers"])
+
+    async def fail_before_routing(*_args, **_kwargs):
+        pytest.fail("unauthenticated capability-bearing HTTP fallback must not route")
+
+    monkeypatch.setattr(proxy_api_module, "_select_responses_model_source", fail_before_routing)
+    monkeypatch.setattr(proxy_api_module, "_stream_responses", fail_before_routing)
+    headers = dict(provider_headers)
+    if authorization is not None:
+        headers["Authorization"] = authorization
+
+    with TestClient(
+        app_instance,
+        base_url="http://lb.example",
+        client=("203.0.113.10", 50000),
+    ) as client:
+        response = client.post(
+            "/backend-api/codex/responses",
+            json={"model": "gpt-5.6-sol", "input": "inert fallback auth check", "stream": True},
+            headers=headers,
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_api_key"
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer invalid-profile-key"], ids=["missing", "invalid"])
+def test_daybreak_profile_websocket_requires_valid_api_key_before_selection(
+    app_instance,
+    monkeypatch,
+    authorization,
+):
+    _provider_id, _model, provider = _codex_profile_provider("daybreak-blue")
+    provider_headers = cast(dict[str, str], provider["http_headers"])
+
+    async def fail_before_selection(*_args, **_kwargs):
+        pytest.fail("unauthenticated Daybreak WebSocket must not select an account")
+
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fail_before_selection,
+    )
+    headers = dict(provider_headers)
+    if authorization is not None:
+        headers["Authorization"] = authorization
+
+    with TestClient(app_instance, client=("127.0.0.1", 50000)) as client:
+        with pytest.raises(WebSocketDenialResponse) as denial:
+            with client.websocket_connect(
+                "ws://localhost/backend-api/codex/responses",
+                headers=headers,
+            ):
+                pytest.fail("unauthenticated Daybreak WebSocket must not connect")
+
+    assert denial.value.status_code == 401
+    assert denial.value.json()["error"]["code"] == "invalid_api_key"
+
+
+def test_ordinary_profile_http_path_remains_unauthenticated_and_unconstrained(
+    app_instance,
+    monkeypatch,
+):
+    _provider_id, _model, provider = _codex_profile_provider(None)
+    provider_headers = cast(dict[str, str], provider.get("http_headers", {}))
+    normalized_headers = {name.lower(): value for name, value in provider_headers.items()}
+    assert REQUIRED_CAPABILITY_HEADER not in normalized_headers
+
+    async def no_source(*_args, **_kwargs):
+        return None
+
+    async def ordinary_stream(_request, _payload, _context, api_key, **_kwargs):
+        assert api_key is None
+        return JSONResponse({"ordinary": True})
+
+    monkeypatch.setattr(proxy_api_module, "_select_responses_model_source", no_source)
+    monkeypatch.setattr(proxy_api_module, "_stream_responses", ordinary_stream)
+
+    with TestClient(
+        app_instance,
+        base_url="http://localhost",
+        client=("127.0.0.1", 50000),
+    ) as client:
+        response = client.post(
+            "/backend-api/codex/responses",
+            json={"model": "gpt-5.6-sol", "input": "ordinary path check", "stream": True},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ordinary": True}
+
+
+def test_backend_responses_websocket_fails_over_confirmed_proxy_connect_before_dispatch(
+    app_instance,
+    monkeypatch,
+):
+    upstream = _FakeUpstreamWebSocket(
+        [
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.created",
+                        "response": {"id": "resp_ws_proxy_failover", "status": "in_progress"},
+                    },
+                    separators=(",", ":"),
+                ),
+            ),
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_ws_proxy_failover",
+                            "status": "completed",
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            ),
+        ]
+    )
+    accounts = [SimpleNamespace(id="acct_ws_proxy_a"), SimpleNamespace(id="acct_ws_proxy_b")]
+    selection_exclusions: list[set[str]] = []
+    connect_accounts: list[str] = []
+    backed_off_accounts: list[str] = []
+    settlement_order: list[str] = []
+    settlement_wait_flags: list[bool] = []
+    handle_connect_error = AsyncMock()
+    reservation = proxy_module.ApiKeyUsageReservationData(
+        reservation_id="resv_ws_proxy_failover",
+        key_id="key_ws_proxy_failover",
+        model="gpt-5.4",
+    )
+    proxy_connect_error = proxy_module.ProxyResponseError(
+        502,
+        proxy_module.openai_error("upstream_unavailable", "sanitized websocket proxy failure"),
+        failure_phase="connect",
+        retryable_same_contract=True,
+        failure_detail="proxy_connect_pre_dispatch",
+        failure_exception_type="ClientProxyConnectionError",
+    )
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_select_websocket_connect_account(self, deadline, **kwargs):
+        del self, deadline
+        excluded = set(cast(set[str], kwargs["exclude_account_ids"]))
+        selection_exclusions.append(excluded)
+        return accounts[1] if accounts[0].id in excluded else accounts[0]
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **kwargs):
+        del self, headers, kwargs
+        connect_accounts.append(account.id)
+        if account.id == accounts[0].id:
+            raise proxy_connect_error
+        return account, upstream
+
+    async def fake_record_error_backoff(self, account):
+        del self
+        assert settlement_order == ["settle"]
+        settlement_order.append("backoff")
+        backed_off_accounts.append(account.id)
+
+    async def fake_reserve_websocket_api_key_usage(self, *_args, **_kwargs):
+        del self
+        return reservation
+
+    async def fake_settle_stream_api_key_usage(self, *_args, **kwargs):
+        del self
+        settlement_wait_flags.append(bool(kwargs.get("wait_for_settlement")))
+        settlement_order.append("settle")
+        return True
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+    monkeypatch.setattr(proxy_module.ProxyService, "_handle_websocket_connect_error", handle_connect_error)
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        fake_reserve_websocket_api_key_usage,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_settle_stream_api_key_usage",
+        fake_settle_stream_api_key_usage,
+    )
+    monkeypatch.setattr(proxy_module.LoadBalancer, "record_error_backoff", fake_record_error_backoff)
+
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "retry safely"}]}],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            first_event = json.loads(websocket.receive_text())
+            second_event = json.loads(websocket.receive_text())
+
+    assert first_event["type"] == "response.created"
+    assert second_event["type"] == "response.completed"
+    assert connect_accounts == [accounts[0].id, accounts[1].id]
+    assert selection_exclusions == [set(), {accounts[0].id}]
+    assert backed_off_accounts == [accounts[0].id]
+    assert settlement_order == ["settle", "backoff"]
+    assert settlement_wait_flags == [True]
+    # The confirmed dead route skips the generic single-error health write.
+    handle_connect_error.assert_not_awaited()
 
 
 def test_backend_responses_websocket_session_ended_auth_failure_fails_over_before_visible_output(
@@ -1633,6 +2640,108 @@ def test_backend_responses_websocket_forwards_client_tools_byte_identical(app_in
     assert expected_tools_bytes in frame
 
 
+def test_backend_responses_websocket_strips_replayed_tool_call_namespaces(app_instance, monkeypatch):
+    upstream_messages = [
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "response.created",
+                    "response": {
+                        "id": "resp_ws_replayed_namespaced_call",
+                        "object": "response",
+                        "status": "in_progress",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        ),
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_ws_replayed_namespaced_call",
+                        "object": "response",
+                        "status": "completed",
+                        "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        ),
+    ]
+    fake_upstream = _FakeUpstreamWebSocket(upstream_messages)
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del authorization, request
+        return None
+
+    async def fake_connect_proxy_websocket(self, headers, **kwargs):
+        del self, headers, kwargs
+        return SimpleNamespace(id="acct_ws_namespaced_call", codex_installation_id=None), fake_upstream
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "instructions": "continue",
+        "input": [
+            {
+                "type": "function_call",
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "arguments": '{"message":"same task"}',
+                "call_id": "call_123",
+            },
+            {
+                "type": "custom_tool_call",
+                "namespace": "exec",
+                "name": "exec",
+                "input": "git status --short",
+                "call_id": "call_456",
+            },
+        ],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            assert json.loads(websocket.receive_text())["type"] == "response.created"
+            assert json.loads(websocket.receive_text())["type"] == "response.completed"
+
+    assert len(fake_upstream.sent_text) == 1
+    upstream_frame = json.loads(fake_upstream.sent_text[0])
+    assert upstream_frame["type"] == "response.create"
+    assert upstream_frame["input"] == [
+        {
+            "type": "function_call",
+            "name": "spawn_agent",
+            "arguments": '{"message":"same task"}',
+            "call_id": "call_123",
+        },
+        {
+            "type": "custom_tool_call",
+            "name": "exec",
+            "input": "git status --short",
+            "call_id": "call_456",
+        },
+    ]
+
+
 def test_backend_responses_websocket_lite_marker_requires_previous_response_linkage(app_instance, monkeypatch):
     def _response_batch(response_id: str) -> list[_FakeUpstreamMessage]:
         return [
@@ -2879,6 +3988,146 @@ def test_backend_responses_websocket_echoed_generated_turn_state_reuses_continui
     ]
 
 
+def test_backend_responses_websocket_goal_restart_retires_reused_socket_and_keeps_full_resend(
+    app_instance,
+    monkeypatch,
+):
+    def upstream_messages(response_id: str) -> list[_FakeUpstreamMessage]:
+        return [
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {"type": "response.created", "response": {"id": response_id, "status": "in_progress"}},
+                    separators=(",", ":"),
+                ),
+            ),
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": response_id,
+                            "status": "completed",
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            ),
+        ]
+
+    owner_upstream = _FakeUpstreamWebSocket(upstream_messages("resp_goal_owner"))
+    replacement_upstream = _FakeUpstreamWebSocket(upstream_messages("resp_goal_replacement"))
+    upstreams = deque([owner_upstream, replacement_upstream])
+    selections: list[dict[str, object]] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer external-token"
+        return None
+
+    async def fake_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        del (
+            self,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset,
+            prefer_earlier_reset_window,
+            routing_strategy,
+            model,
+            api_key,
+            client_send_lock,
+            websocket,
+        )
+        selections.append(
+            {
+                "headers": dict(headers),
+                "sticky_key": sticky_key,
+                "sticky_kind": sticky_kind,
+                "abandon_unavailable_legacy_owner": (request_state.affinity_policy.abandon_unavailable_legacy_owner),
+            }
+        )
+        account_id = "acct_goal_owner" if len(selections) == 1 else "acct_goal_replacement"
+        return SimpleNamespace(id=account_id), upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+
+    first_input = {"role": "user", "content": [{"type": "input_text", "text": "first"}]}
+    continued_input = {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "continue the goal"}],
+    }
+    retained_output = {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": "first answer"}],
+    }
+    first_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "Work on the task.",
+        "input": [first_input],
+        "stream": True,
+    }
+    restart_payload = {
+        **first_payload,
+        "instructions": ('<codex_internal_context source="goal">\nContinue working toward the active thread goal.'),
+        "input": [first_input, retained_output, continued_input],
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": "Bearer external-token", "session_id": "goal-restart-direct"},
+        ) as websocket:
+            websocket.send_text(json.dumps(first_payload))
+            assert json.loads(websocket.receive_text())["type"] == "response.created"
+            assert json.loads(websocket.receive_text())["type"] == "response.completed"
+
+            websocket.send_text(json.dumps(restart_payload))
+            assert json.loads(websocket.receive_text())["type"] == "response.created"
+            assert json.loads(websocket.receive_text())["type"] == "response.completed"
+
+    assert len(selections) == 2
+    assert selections[0]["abandon_unavailable_legacy_owner"] is False
+    assert selections[1]["abandon_unavailable_legacy_owner"] is True
+    assert "x-codex-turn-state" not in cast(dict[str, str], selections[1]["headers"])
+    assert owner_upstream.closed is True
+    assert len(owner_upstream.sent_text) == 1
+    assert len(replacement_upstream.sent_text) == 1
+    replacement_payload = json.loads(replacement_upstream.sent_text[0])
+    assert "previous_response_id" not in replacement_payload
+    assert replacement_payload["input"] == [first_input, retained_output, continued_input]
+
+
 def test_backend_responses_websocket_reconnect_keeps_session_affinity_with_fresh_generated_turn_states(
     app_instance,
     monkeypatch,
@@ -3160,6 +4409,8 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
         ],
     )
     connect_calls: list[dict[str, object]] = []
+    dispatch_owner_snapshots: list[tuple[str | None, str | None]] = []
+    original_bind_dispatch_owner = websocket_mixin_module._bind_websocket_request_dispatch_owner
 
     class _FakeSettingsCache:
         async def get(self):
@@ -3200,7 +4451,18 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
                 "model": model,
             }
         )
-        return SimpleNamespace(id=f"acct_ws_proxy_{len(connect_calls)}"), first_upstream
+        return SimpleNamespace(id="acct_ws_proxy_owner"), first_upstream
+
+    def capture_dispatch_owner(*args, **kwargs):
+        bound = original_bind_dispatch_owner(*args, **kwargs)
+        request_state = args[0] if args else kwargs["request_state"]
+        dispatch_owner_snapshots.append(
+            (
+                request_state.preferred_account_id,
+                request_state.replay_required_account_id,
+            )
+        )
+        return bound
 
     async def fake_write_request_log(self, **kwargs):
         del self, kwargs
@@ -3210,6 +4472,11 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
     monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
     monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
     monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+    monkeypatch.setattr(
+        websocket_mixin_module,
+        "_bind_websocket_request_dispatch_owner",
+        capture_dispatch_owner,
+    )
 
     first_request = {
         "type": "response.create",
@@ -3222,6 +4489,7 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
         "type": "response.create",
         "model": "gpt-5.5",
         "input": "second",
+        "account_bound_probe": "owner-bound",
         "promptCacheKey": "thread_b",
         "stream": True,
     }
@@ -3240,6 +4508,10 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
     assert connect_calls[0]["sticky_key"] == "thread_a"
     assert connect_calls[0]["sticky_kind"] == proxy_module.StickySessionKind.PROMPT_CACHE
     assert connect_calls[0]["model"] == "gpt-5.4"
+    assert dispatch_owner_snapshots == [
+        (None, None),
+        ("acct_ws_proxy_owner", "acct_ws_proxy_owner"),
+    ]
     _assert_upstream_payloads(
         first_upstream.sent_text,
         [
@@ -3256,6 +4528,7 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
                 "model": "gpt-5.5",
                 "instructions": "",
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "second"}]}],
+                "account_bound_probe": "owner-bound",
                 "store": False,
                 "include": [],
                 "prompt_cache_key": "thread_b",
@@ -4759,9 +6032,7 @@ def test_responses_websocket_replays_client_full_resend_previous_response_miss_w
                             "status": 400,
                             "error": {
                                 "type": "invalid_request_error",
-                                "code": "previous_response_not_found",
-                                "message": "Previous response with id 'resp_ws_prev_anchor' not found.",
-                                "param": "previous_response_id",
+                                "message": "Invalid `previous_response_id`.",
                             },
                         },
                         separators=(",", ":"),
@@ -4943,9 +6214,7 @@ def test_v1_responses_websocket_masks_invalid_request_previous_response_not_foun
                             "status": 400,
                             "error": {
                                 "type": "invalid_request_error",
-                                "code": "invalid_request_error",
-                                "message": ("Previous response with id 'resp_ws_prev_anchor' not found."),
-                                "param": "previous_response_id",
+                                "message": "Invalid `previous_response_id`.",
                             },
                         },
                         separators=(",", ":"),
@@ -5193,12 +6462,29 @@ def test_backend_responses_websocket_connect_failure_masks_previous_response_not
 
     assert event["type"] == "error"
     assert event["status"] == 502
-    _assert_codex_previous_response_stale_error(event["error"])
+    _assert_previous_response_not_found_error(event["error"])
 
 
+@pytest.mark.parametrize(
+    "upstream_error",
+    [
+        {
+            "type": "invalid_request_error",
+            "code": "previous_response_not_found",
+            "message": "Previous response with id 'resp_ws_prev_anchor' not found.",
+            "param": "previous_response_id",
+        },
+        {
+            "type": "invalid_request_error",
+            "message": "Invalid `previous_response_id`.",
+        },
+    ],
+    ids=["canonical-not-found", "parameterless-invalid-id"],
+)
 def test_backend_responses_websocket_masks_short_previous_response_not_found_without_retry(
     app_instance,
     monkeypatch,
+    upstream_error,
 ):
     first_upstream = _SequencedUpstreamWebSocket(
         [],
@@ -5232,12 +6518,7 @@ def test_backend_responses_websocket_masks_short_previous_response_not_found_wit
                         {
                             "type": "error",
                             "status": 400,
-                            "error": {
-                                "type": "invalid_request_error",
-                                "code": "previous_response_not_found",
-                                "message": "Previous response with id 'resp_ws_prev_anchor' not found.",
-                                "param": "previous_response_id",
-                            },
+                            "error": upstream_error,
                         },
                         separators=(",", ":"),
                     ),
@@ -5373,8 +6654,7 @@ def test_backend_responses_websocket_masks_short_previous_response_not_found_wit
             failed_2 = json.loads(websocket.receive_text())
 
     assert failed_2["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_2["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_2)
+    _assert_previous_response_not_found_error(failed_2["response"]["error"])
     assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
     assert connect_count == 1
     assert captured_preferred_accounts == [None]
@@ -5530,18 +6810,35 @@ def test_backend_responses_websocket_masks_anonymous_previous_response_not_found
             failed_event = json.loads(websocket.receive_text())
             completed_event = json.loads(websocket.receive_text())
 
+            # Deliver the client disconnect explicitly and wait for the
+            # session teardown to retire the upstream socket before leaving
+            # the context. Relying on ``WebSocketTestSession.__exit__`` is
+            # racy: it cancels the application's cancel scope right after
+            # queueing the disconnect, so the session cleanup can be
+            # cancelled between the reader-task shutdown and
+            # ``upstream.close()``, leaving ``fake_upstream.closed`` unset.
+            # Real servers deliver client disconnects without cancelling the
+            # handler mid-cleanup.
+            websocket.close(1000)
+            deadline = time.monotonic() + 5.0
+            while not fake_upstream.closed and time.monotonic() < deadline:
+                time.sleep(0.01)
+
     assert created_event["type"] == "response.created"
     assert created_event["response"]["id"] == "resp_ws_inflight"
     assert failed_event["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_event["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_event)
+    _assert_previous_response_not_found_error(failed_event["response"]["error"])
+    assert "resp_ws_prev_anchor" not in json.dumps(failed_event)
     assert completed_event["type"] == "response.completed"
     assert completed_event["response"]["id"] == "resp_ws_inflight"
     assert any(
-        call["status"] == "error" and call["error_code"] == proxy_module.PREVIOUS_RESPONSE_STALE_CODE
+        call["status"] == "error" and call["error_code"] == proxy_module.PREVIOUS_RESPONSE_NOT_FOUND_CODE
         for call in log_calls
     )
     assert any(call["status"] == "success" and call["request_id"] == "resp_ws_inflight" for call in log_calls)
+    # TestClient runs the ASGI task in a worker thread. Wait for its owned
+    # cancellation cleanup instead of racing that thread on the plain flag.
+    assert fake_upstream.closed_event.wait(timeout=1.0)
     assert fake_upstream.closed is True
 
 
@@ -5653,9 +6950,8 @@ def test_backend_responses_websocket_masks_top_level_previous_response_not_found
             failed_event = json.loads(websocket.receive_text())
 
     assert failed_event["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_event["response"]["error"])
+    _assert_previous_response_not_found_error(failed_event["response"]["error"])
     serialized = json.dumps(failed_event)
-    assert "previous_response_not_found" not in serialized
     assert "resp_chatgpt_prev_anchor" not in serialized
 
 
@@ -5750,9 +7046,8 @@ def test_backend_responses_websocket_masks_pretty_previous_response_not_found_fr
             failed_event = json.loads(websocket.receive_text())
 
     assert failed_event["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_event["response"]["error"])
+    _assert_previous_response_not_found_error(failed_event["response"]["error"])
     serialized = json.dumps(failed_event)
-    assert "previous_response_not_found" not in serialized
     assert "resp_chatgpt_pretty_prev_anchor" not in serialized
 
 
@@ -5923,13 +7218,12 @@ def test_backend_responses_websocket_masks_previous_response_not_found_when_mess
             failed_2 = json.loads(websocket.receive_text())
 
     assert failed_2["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_2["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_2)
+    _assert_previous_response_not_found_error(failed_2["response"]["error"])
     assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
     assert connect_count == 1
 
 
-def test_backend_responses_websocket_never_exposes_raw_previous_response_not_found_to_client(
+def test_backend_responses_websocket_never_exposes_raw_previous_response_id_to_client(
     app_instance,
     monkeypatch,
 ):
@@ -6046,8 +7340,7 @@ def test_backend_responses_websocket_never_exposes_raw_previous_response_not_fou
 
     serialized_event = json.dumps(event)
     assert event["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(event["response"]["error"])
-    assert "previous_response_not_found" not in serialized_event
+    _assert_previous_response_not_found_error(event["response"]["error"])
     assert "resp_live_anchor" not in serialized_event
     assert connect_count == 1
 
@@ -6258,8 +7551,8 @@ def test_backend_responses_websocket_keeps_session_alive_after_foreign_previous_
     assert created_2["response"]["id"] == "resp_ws_followup_created"
     assert failed_2["type"] == "response.failed"
     assert failed_2["response"]["id"] == "resp_ws_followup_created"
-    _assert_codex_previous_response_stale_error(failed_2["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_2)
+    _assert_previous_response_not_found_error(failed_2["response"]["error"])
+    assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
     assert created_3["type"] == "response.created"
     assert completed_3["type"] == "response.completed"
     assert created_3["response"]["id"] == "resp_ws_after_error"
@@ -6508,8 +7801,8 @@ def test_backend_responses_websocket_keeps_session_alive_after_anonymous_prev_nf
     assert created_3["response"]["id"] == "resp_ws_followup_created"
     assert failed_3["type"] == "response.failed"
     assert failed_3["response"]["id"] == "resp_ws_followup_created"
-    _assert_codex_previous_response_stale_error(failed_3["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_3)
+    _assert_previous_response_not_found_error(failed_3["response"]["error"])
+    assert "resp_ws_prev_anchor" not in json.dumps(failed_3)
     assert completed_2["type"] == "response.completed"
     assert completed_2["response"]["id"] == "resp_ws_inflight"
     assert created_4["type"] == "response.created"
@@ -6769,8 +8062,8 @@ def test_backend_responses_websocket_matches_previous_response_error_to_anchor_w
     assert created_4["response"]["id"] == "resp_ws_followup_b"
     assert failed_3["type"] == "response.failed"
     assert failed_3["response"]["id"] == "resp_ws_followup_a"
-    _assert_codex_previous_response_stale_error(failed_3["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_3)
+    _assert_previous_response_not_found_error(failed_3["response"]["error"])
+    assert "resp_ws_prev_anchor_a" not in json.dumps(failed_3)
     assert completed_4["type"] == "response.completed"
     assert completed_4["response"]["id"] == "resp_ws_followup_b"
     assert created_5["response"]["id"] == "resp_ws_after_error"
@@ -7177,10 +8470,10 @@ def test_backend_responses_websocket_masks_anonymous_previous_response_not_found
     assert failed_3["type"] == "response.failed"
     assert failed_2["response"]["id"] == "resp_ws_followup_same_anchor_a"
     assert failed_3["response"]["id"] == "resp_ws_followup_same_anchor_b"
-    _assert_codex_previous_response_stale_error(failed_2["response"]["error"])
-    _assert_codex_previous_response_stale_error(failed_3["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_2)
-    assert "previous_response_not_found" not in json.dumps(failed_3)
+    _assert_previous_response_not_found_error(failed_2["response"]["error"])
+    _assert_previous_response_not_found_error(failed_3["response"]["error"])
+    assert "resp_ws_prev_anchor_shared" not in json.dumps(failed_2)
+    assert "resp_ws_prev_anchor_shared" not in json.dumps(failed_3)
     assert created_4["response"]["id"] == "resp_ws_after_same_anchor_error"
     assert completed_4["response"]["id"] == "resp_ws_after_same_anchor_error"
     assert connect_count == 2
@@ -7614,7 +8907,6 @@ def test_backend_responses_websocket_rejects_oversized_response_create_before_up
     assert duplicate_event["status"] == 400
     assert len(list(tmp_path.glob("*.response-create.json.gz"))) == 1
     assert len(list(tmp_path.glob("*.meta.json"))) == 1
-
     meta_files[0].unlink()
     with TestClient(app_instance) as client:
         orphan_retry_event = send_oversized_request()
@@ -7625,6 +8917,88 @@ def test_backend_responses_websocket_rejects_oversized_response_create_before_up
         if (tmp_path / f"{dump_path.name[: -len('.response-create.json.gz')]}.meta.json").exists()
     ]
     assert complete_pairs
+
+
+def test_backend_responses_websocket_rejects_non_terminal_compaction_trigger_before_upstream(
+    app_instance,
+    monkeypatch,
+):
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fail_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        del (
+            self,
+            headers,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset,
+            prefer_earlier_reset_window,
+            routing_strategy,
+            model,
+            request_state,
+            api_key,
+            client_send_lock,
+            websocket,
+        )
+        raise AssertionError("malformed compaction trigger must fail before upstream websocket connect")
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fail_connect_proxy_websocket)
+
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            {"type": "compaction_trigger"},
+            {"role": "developer", "content": [{"type": "input_text", "text": "still trailing"}]},
+        ],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            error_event = json.loads(websocket.receive_text())
+
+    assert error_event["type"] == "error"
+    assert error_event["status"] == 400
+    assert error_event["error"]["code"] == "invalid_request_error"
+    assert error_event["error"]["type"] == "invalid_request_error"
+    assert error_event["error"]["param"] == "input"
+    assert (
+        "compaction_trigger must appear exactly once as the final top-level input item"
+        in error_event["error"]["message"]
+    )
 
 
 def test_backend_responses_websocket_slims_historical_inline_artifacts_and_succeeds(
@@ -8032,7 +9406,10 @@ def test_backend_responses_websocket_does_not_expire_downstream_while_request_pe
 
     runtime_settings = _websocket_settings(
         proxy_downstream_websocket_idle_timeout_seconds=0.1,
-        stream_idle_timeout_seconds=0.2,
+        # Keep the upstream stream budget above both delayed messages. The
+        # assertion targets the downstream idle guard, not an upstream idle
+        # timeout; a slower CI runner must not turn the fixture into a race.
+        stream_idle_timeout_seconds=0.5,
     )
 
     async def allow_firewall(_websocket):
@@ -9002,7 +10379,9 @@ def test_backend_responses_websocket_emits_no_accounts_error(app_instance, monke
     assert event["error"]["code"] == "no_accounts"
 
 
-def test_backend_responses_websocket_matches_terminal_events_by_response_id(app_instance, monkeypatch):
+def test_backend_responses_websocket_attributes_generated_turns_on_prewarm_connection_as_normal(
+    app_instance, monkeypatch
+):
     fake_upstream = _SequencedUpstreamWebSocket(
         [],
         deferred_message_batches=[
@@ -9126,8 +10505,15 @@ def test_backend_responses_websocket_matches_terminal_events_by_response_id(app_
         "stream": True,
     }
 
+    headers = {
+        "x-codex-turn-metadata": json.dumps(
+            {"request_kind": "prewarm", "turn_id": "turn_connection_prewarm"},
+            separators=(",", ":"),
+        )
+    }
+
     with TestClient(app_instance) as client:
-        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+        with client.websocket_connect("/backend-api/codex/responses", headers=headers) as websocket:
             websocket.send_text(json.dumps(first_request))
             websocket.send_text(json.dumps(second_request))
             events = [json.loads(websocket.receive_text()) for _ in range(4)]
@@ -9142,9 +10528,13 @@ def test_backend_responses_websocket_matches_terminal_events_by_response_id(app_
     assert log_calls[0]["request_id"] == "resp_ws_b"
     assert log_calls[0]["model"] == "gpt-5.2"
     assert log_calls[0]["input_tokens"] == 7
+    assert log_calls[0]["request_kind"] == "normal"
+    assert log_calls[0]["connection_request_kind"] == "prewarm"
     assert log_calls[1]["request_id"] == "resp_ws_a"
     assert log_calls[1]["model"] == "gpt-5.1"
     assert log_calls[1]["input_tokens"] == 3
+    assert log_calls[1]["request_kind"] == "normal"
+    assert log_calls[1]["connection_request_kind"] == "prewarm"
 
 
 def test_backend_responses_websocket_emits_response_failed_before_close_on_upstream_eof(app_instance, monkeypatch):
@@ -9496,6 +10886,7 @@ def test_backend_responses_websocket_recovers_created_only_sequenced_prewarm(
     assert json.loads(replay_upstream.sent_text[0])["generate"] is False
     assert len(log_calls) == 1
     assert log_calls[0]["request_kind"] == "prewarm"
+    assert log_calls[0]["connection_request_kind"] == "prewarm"
 
     if expect_recovery:
         assert terminal_event is not None
@@ -9648,7 +11039,11 @@ def test_backend_responses_websocket_connect_failure_logs_client_supplied_stale_
     with TestClient(app_instance) as client:
         with client.websocket_connect(
             "/backend-api/codex/responses",
-            headers={"Authorization": "Bearer external-token", "session_id": "sid-client-stale"},
+            headers={
+                "Authorization": "Bearer external-token",
+                "session_id": "sid-client-stale",
+                "x-codex-turn-metadata": json.dumps({"request_kind": "prewarm"}, separators=(",", ":")),
+            },
         ) as websocket:
             websocket.send_text(
                 json.dumps(
@@ -9666,9 +11061,11 @@ def test_backend_responses_websocket_connect_failure_logs_client_supplied_stale_
 
     assert event["type"] == "error"
     assert event["status"] == 502
-    _assert_codex_previous_response_stale_error(event["error"])
+    _assert_previous_response_not_found_error(event["error"])
     error_logs = [call for call in log_calls if call.get("status") == "error"]
     assert len(error_logs) == 1
+    assert error_logs[0]["request_kind"] == "normal"
+    assert error_logs[0]["connection_request_kind"] == "prewarm"
     failure_detail = error_logs[0]["failure_detail"]
     assert isinstance(failure_detail, str)
     assert failure_detail.startswith("previous_response_not_found ")
@@ -9845,7 +11242,7 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
     assert first_created["type"] == "response.created"
     assert first_completed["type"] == "response.completed"
     assert failed_event["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_event["response"]["error"])
+    _assert_previous_response_not_found_error(failed_event["response"]["error"])
     assert connect_count == 1
     first_payload = json.loads(upstream_socket.sent_text[0])
     second_payload = json.loads(upstream_socket.sent_text[1])
@@ -10067,10 +11464,10 @@ def test_backend_responses_websocket_grouped_anonymous_stale_anchor_persists_dia
     assert created_3["response"]["id"] == "resp_ws_grouped_followup_b"
     assert failed_2["type"] == "response.failed"
     assert failed_3["type"] == "response.failed"
-    _assert_codex_previous_response_stale_error(failed_2["response"]["error"])
-    _assert_codex_previous_response_stale_error(failed_3["response"]["error"])
-    assert "previous_response_not_found" not in json.dumps(failed_2)
-    assert "previous_response_not_found" not in json.dumps(failed_3)
+    _assert_previous_response_not_found_error(failed_2["response"]["error"])
+    _assert_previous_response_not_found_error(failed_3["response"]["error"])
+    assert "resp_ws_grouped_anchor" not in json.dumps(failed_2)
+    assert "resp_ws_grouped_anchor" not in json.dumps(failed_3)
 
     error_logs = [call for call in log_calls if call.get("status") == "error"]
     assert len(error_logs) == 2
@@ -10099,3 +11496,1550 @@ def test_backend_responses_websocket_grouped_anonymous_stale_anchor_persists_dia
         assert "surface=websocket_stream" in message
         assert "previous_response_source=client_supplied" in message or "diagnostics=" in message
         assert "resp_ws_grouped_anchor" not in message
+
+
+@pytest.mark.parametrize("capability_carrier", ["handshake", "response_create"])
+def test_backend_responses_websocket_trusted_capability_routes_before_first_account_attempt(
+    app_instance,
+    monkeypatch,
+    capability_carrier,
+):
+    api_key = _capability_test_api_key("key_ws_capability_upfront")
+    cyber_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_upfront")],
+    )
+    selection_requirements: list[bool] = []
+    opened_account_ids: list[str] = []
+    forwarded_capability_headers: list[bool] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-upfront"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        account_kind = "cyber" if require_security_work_authorized else "ordinary"
+        return SimpleNamespace(
+            id=f"acct_ws_capability_{account_kind}",
+            security_work_authorized=require_security_work_authorized,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        opened_account_ids.append(account.id)
+        forwarded_capability_headers.append(any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers))
+        return account, cyber_upstream
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_api_module, "validate_required_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    websocket_headers = {
+        "Authorization": "Bearer capability-upfront",
+    }
+    response_create = _websocket_response_create("security task")
+    if capability_carrier == "handshake":
+        websocket_headers.update(
+            {
+                "x-codex-window-id": "task-ws-capability-upfront:1",
+                REQUIRED_CAPABILITY_HEADER: "trusted_cyber",
+            }
+        )
+    else:
+        response_create["client_metadata"] = {
+            "x-codex-window-id": "task-ws-capability-upfront:1",
+            REQUIRED_CAPABILITY_HEADER: "trusted_cyber",
+        }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers=websocket_headers,
+        ) as websocket:
+            websocket.send_text(json.dumps(response_create))
+            created = json.loads(websocket.receive_text())
+            completed = json.loads(websocket.receive_text())
+
+    assert created["response"]["id"] == "resp_ws_capability_upfront"
+    assert completed["type"] == "response.completed"
+    assert selection_requirements == [True]
+    assert opened_account_ids == ["acct_ws_capability_cyber"]
+    assert forwarded_capability_headers == [False]
+    forwarded_payload = json.loads(cyber_upstream.sent_text[0])
+    assert REQUIRED_CAPABILITY_HEADER not in {key.lower() for key in forwarded_payload.get("client_metadata", {})}
+
+
+@pytest.mark.parametrize(
+    "echo_turn_state",
+    [False, True],
+    ids=["same-session-no-echo", "echoed-turn-state"],
+)
+def test_backend_responses_websocket_trusted_capability_survives_session_reconnect_before_selection(
+    app_instance,
+    monkeypatch,
+    echo_turn_state,
+):
+    api_key = _capability_test_api_key(
+        f"key_ws_capability_session_reconnect_{'echo' if echo_turn_state else 'no_echo'}"
+    )
+    upstreams = deque(
+        [
+            _SequencedUpstreamWebSocket(
+                [],
+                deferred_message_batches=[_websocket_response_batch("resp_ws_capability_session_first")],
+            ),
+            _SequencedUpstreamWebSocket(
+                [],
+                deferred_message_batches=[_websocket_response_batch("resp_ws_capability_session_reconnect")],
+            ),
+        ]
+    )
+    selection_requirements: list[bool] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-session-reconnect"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        return SimpleNamespace(
+            id=f"acct_ws_capability_session_{len(selection_requirements)}",
+            security_work_authorized=require_security_work_authorized,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        return account, upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    session_headers = {
+        "Authorization": "Bearer capability-session-reconnect",
+        "session_id": "session-capability-reconnect",
+    }
+    marker_request = _websocket_response_create("establish session capability")
+    marker_request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers=session_headers,
+        ) as marker_websocket:
+            accepted_headers = {
+                key.decode(): value.decode()
+                for key, value in cast(list[tuple[bytes, bytes]], marker_websocket.extra_headers)
+            }
+            first_turn_state = accepted_headers["x-codex-turn-state"]
+            marker_websocket.send_text(json.dumps(marker_request))
+            first_created = json.loads(marker_websocket.receive_text())
+            first_completed = json.loads(marker_websocket.receive_text())
+
+        reconnect_headers = dict(session_headers)
+        if echo_turn_state:
+            reconnect_headers["x-codex-turn-state"] = first_turn_state
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers=reconnect_headers,
+        ) as reconnect_websocket:
+            accepted_headers = {
+                key.decode(): value.decode()
+                for key, value in cast(list[tuple[bytes, bytes]], reconnect_websocket.extra_headers)
+            }
+            reconnect_turn_state = accepted_headers["x-codex-turn-state"]
+            reconnect_websocket.send_text(json.dumps(_websocket_response_create("continue session capability")))
+            reconnect_created = json.loads(reconnect_websocket.receive_text())
+            reconnect_completed = json.loads(reconnect_websocket.receive_text())
+
+    assert first_created["response"]["id"] == "resp_ws_capability_session_first"
+    assert first_completed["type"] == "response.completed"
+    assert reconnect_created["response"]["id"] == "resp_ws_capability_session_reconnect"
+    assert reconnect_completed["type"] == "response.completed"
+    assert selection_requirements == [True, True]
+    assert (reconnect_turn_state == first_turn_state) is echo_turn_state
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["/backend-api/codex/responses", "/v1/responses"],
+    ids=["backend-responses", "v1-responses"],
+)
+def test_backend_responses_websocket_trusted_capability_survives_response_only_reconnect(
+    app_instance,
+    monkeypatch,
+    endpoint,
+):
+    api_key = _capability_test_api_key("key_ws_capability_response_reconnect")
+    upstreams = deque(
+        [
+            _SequencedUpstreamWebSocket(
+                [],
+                deferred_message_batches=[_websocket_response_batch("resp_ws_capability_response_first")],
+            ),
+            _SequencedUpstreamWebSocket(
+                [],
+                deferred_message_batches=[_websocket_response_batch("resp_ws_capability_response_reconnect")],
+            ),
+        ]
+    )
+    selection_requirements: list[bool] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-response-reconnect"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        return SimpleNamespace(
+            id="acct_ws_capability_response",
+            security_work_authorized=require_security_work_authorized,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        return account, upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    marker_request = _websocket_response_create("establish response lineage")
+    marker_request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            endpoint,
+            headers={"Authorization": "Bearer capability-response-reconnect"},
+        ) as marker_websocket:
+            marker_websocket.send_text(json.dumps(marker_request))
+            first_created = json.loads(marker_websocket.receive_text())
+            first_completed = json.loads(marker_websocket.receive_text())
+
+        reconnect_request = _websocket_response_create("continue from response only")
+        reconnect_request["previous_response_id"] = first_created["response"]["id"]
+        with client.websocket_connect(
+            endpoint,
+            headers={"Authorization": "Bearer capability-response-reconnect"},
+        ) as reconnect_websocket:
+            reconnect_websocket.send_text(json.dumps(reconnect_request))
+            reconnect_created = json.loads(reconnect_websocket.receive_text())
+            reconnect_completed = json.loads(reconnect_websocket.receive_text())
+
+    assert first_created["response"]["id"] == "resp_ws_capability_response_first"
+    assert first_completed["type"] == "response.completed"
+    assert reconnect_created["response"]["id"] == "resp_ws_capability_response_reconnect"
+    assert reconnect_completed["type"] == "response.completed"
+    assert selection_requirements == [True, True]
+
+
+def test_backend_responses_websocket_capability_response_lineage_write_failure_fails_before_created_is_visible(
+    app_instance,
+    monkeypatch,
+):
+    api_key = _capability_test_api_key("key_ws_capability_response_write_failure")
+    upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_must_not_leak")],
+    )
+    selection_requirements: list[bool] = []
+    health_penalties: list[str] = []
+    original_route = proxy_module.CapabilityRouter.route
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-response-write-failure"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fail_response_lineage_write(self, intent, *, api_key_id, aliases):
+        if any(alias.kind == "previous_response" for alias in aliases):
+            raise _capability_lineage_unavailable_error()
+        return await original_route(
+            self,
+            intent,
+            api_key_id=api_key_id,
+            aliases=aliases,
+        )
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        return SimpleNamespace(
+            id="acct_ws_capability_response_write_failure",
+            security_work_authorized=True,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        return account, upstream
+
+    async def reject_account_health_penalty(self, account, error, error_code, **_kwargs):
+        del self, account, error, _kwargs
+        health_penalties.append(error_code)
+        raise AssertionError("capability lineage persistence must not penalize the upstream account")
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.CapabilityRouter, "route", fail_response_lineage_write)
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_handle_stream_error",
+        reject_account_health_penalty,
+    )
+
+    marker_request = _websocket_response_create("establish response lineage")
+    marker_request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": "Bearer capability-response-write-failure"},
+        ) as websocket:
+            websocket.send_text(json.dumps(marker_request))
+            terminal = json.loads(websocket.receive_text())
+
+    assert terminal["type"] == "response.failed"
+    assert terminal["response"]["error"]["code"] == "capability_lineage_unavailable"
+    assert "resp_ws_capability_must_not_leak" not in json.dumps(terminal)
+    assert selection_requirements == [True]
+    assert health_penalties == []
+    assert upstream.closed is True
+
+
+def test_backend_responses_websocket_trusted_capability_empty_pool_fails_closed_before_upstream(
+    app_instance,
+    monkeypatch,
+):
+    api_key = _capability_test_api_key("key_ws_capability_empty_pool")
+    selection_requirements: list[bool] = []
+    upstream_opened = False
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-empty-pool"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def empty_capability_pool(self, deadline, **kwargs):
+        del self, deadline
+        selection_requirements.append(bool(kwargs["require_security_work_authorized"]))
+        return proxy_module.AccountSelection(
+            account=None,
+            error_message="No available accounts. Service is operating in degraded mode",
+            error_code=None,
+        )
+
+    async def reject_upstream_open(*_args, **_kwargs):
+        nonlocal upstream_opened
+        upstream_opened = True
+        raise AssertionError("empty trusted-cyber pool must fail before upstream open")
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_account_with_budget_compatible",
+        empty_capability_pool,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        reject_upstream_open,
+    )
+
+    response_create = _websocket_response_create("security task")
+    response_create["client_metadata"] = {
+        "x-codex-window-id": "task-ws-capability-empty-pool:1",
+        REQUIRED_CAPABILITY_HEADER: "trusted_cyber",
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": "Bearer capability-empty-pool"},
+        ) as websocket:
+            websocket.send_text(json.dumps(response_create))
+            warning = json.loads(websocket.receive_text())
+            terminal = json.loads(websocket.receive_text())
+
+    assert warning["type"] == "codex_lb.warning"
+    assert warning["warning"]["code"] == "no_security_work_authorized_accounts"
+    assert warning["warning"]["action"] == "fail_closed_capability_routing"
+    assert "did not fall back to an ordinary account" in warning["warning"]["message"]
+    assert terminal["type"] == "error"
+    assert terminal["status"] == 503
+    assert terminal["error"]["code"] == "no_security_work_authorized_accounts"
+    assert terminal["error"]["message"] == warning["warning"]["message"]
+    assert selection_requirements == [True]
+    assert upstream_opened is False
+
+
+def test_backend_responses_websocket_durable_capability_model_rejection_keeps_typed_empty_pool(
+    app_instance,
+    monkeypatch,
+):
+    api_key = _capability_test_api_key("key_ws_capability_model_rejection")
+    model_rejecting_account = proxy_module.Account(
+        id="acct_ws_capability_model_rejection",
+        chatgpt_account_id="acct_ws_capability_model_rejection",
+        email="capability-model-rejection@example.com",
+        plan_type="plus",
+        access_token_encrypted=b"access",
+        refresh_token_encrypted=b"refresh",
+        id_token_encrypted=b"id",
+        last_refresh=proxy_module.utcnow(),
+        status=proxy_module.AccountStatus.ACTIVE,
+        security_work_authorized=True,
+    )
+    model_rejection_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            [
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "invalid_request_error",
+                                "message": (
+                                    "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."
+                                ),
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                )
+            ]
+        ],
+    )
+    selection_requirements: list[bool] = []
+    selection_exclusions: list[set[str]] = []
+    opened_account_ids: list[str] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-model-rejection"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def select_capability_pool(self, deadline, **kwargs):
+        del self, deadline
+        selection_requirements.append(bool(kwargs["require_security_work_authorized"]))
+        selection_exclusions.append(set(kwargs["exclude_account_ids"]))
+        if len(selection_requirements) == 1:
+            return proxy_module.AccountSelection(
+                account=model_rejecting_account,
+                error_message=None,
+            )
+        return proxy_module.AccountSelection(
+            account=None,
+            error_message="No accounts marked as authorized for security work",
+            error_code="no_security_work_authorized_accounts",
+        )
+
+    async def open_model_rejecting_upstream(self, account, headers, **_kwargs):
+        del self, headers, _kwargs
+        opened_account_ids.append(account.id)
+        return account, model_rejection_upstream
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_account_with_budget_compatible",
+        select_capability_pool,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        open_model_rejecting_upstream,
+    )
+
+    request = _websocket_response_create("security task on a model-capable account")
+    request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": "Bearer capability-model-rejection"},
+        ) as websocket:
+            websocket.send_text(json.dumps(request))
+            warning = json.loads(websocket.receive_text())
+            terminal = json.loads(websocket.receive_text())
+
+    assert warning["warning"]["code"] == "no_security_work_authorized_accounts"
+    assert warning["warning"]["action"] == "fail_closed_capability_routing"
+    assert "did not fall back to an ordinary account" in warning["warning"]["message"]
+    assert terminal["type"] == "error"
+    assert terminal["status"] == 503
+    assert terminal["error"]["code"] == "no_security_work_authorized_accounts"
+    assert selection_requirements == [True, True]
+    assert selection_exclusions == [set(), {"acct_ws_capability_model_rejection"}]
+    assert opened_account_ids == ["acct_ws_capability_model_rejection"]
+    assert len(model_rejection_upstream.sent_text) == 1
+
+
+@pytest.mark.parametrize("websocket_path", ["/backend-api/codex/responses", "/v1/responses"])
+@pytest.mark.parametrize(
+    "invalid_carrier_kind",
+    ["header_and_metadata", "raw_headers", "raw_metadata_containers", "raw_metadata_keys", "top_level"],
+)
+def test_direct_responses_websocket_ambiguous_or_misplaced_capability_carriers_fail_before_selection(
+    app_instance,
+    monkeypatch,
+    invalid_carrier_kind,
+    websocket_path,
+):
+    api_key = _capability_test_api_key("key_ws_capability_duplicate")
+    selection_attempted = False
+    upstream_opened = False
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-duplicate"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def reject_selection(*_args, **_kwargs):
+        nonlocal selection_attempted
+        selection_attempted = True
+        raise AssertionError("ambiguous capability carriers must fail before account selection")
+
+    async def reject_upstream_open(*_args, **_kwargs):
+        nonlocal upstream_opened
+        upstream_opened = True
+        raise AssertionError("ambiguous capability carriers must fail before upstream open")
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_api_module, "validate_required_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        reject_selection,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        reject_upstream_open,
+    )
+
+    response_create = _websocket_response_create("security task")
+    websocket_headers: dict[str, str] | Headers
+    request_text = json.dumps(response_create, separators=(",", ":"))
+    if invalid_carrier_kind == "header_and_metadata":
+        response_create["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+        request_text = json.dumps(response_create, separators=(",", ":"))
+        websocket_headers = {
+            "Authorization": "Bearer capability-duplicate",
+            REQUIRED_CAPABILITY_HEADER: "trusted_cyber",
+        }
+    elif invalid_carrier_kind == "raw_headers":
+        websocket_headers = Headers(
+            [
+                ("Authorization", "Bearer capability-duplicate"),
+                (REQUIRED_CAPABILITY_HEADER, "trusted_cyber"),
+                (REQUIRED_CAPABILITY_HEADER, "trusted_cyber"),
+            ]
+        )
+    else:
+        websocket_headers = {"Authorization": "Bearer capability-duplicate"}
+        marker_json = json.dumps(
+            {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"},
+            separators=(",", ":"),
+        )
+        if invalid_carrier_kind == "raw_metadata_containers":
+            request_text = request_text[:-1] + ',"client_metadata":' + marker_json + ',"client_metadata":{}}'
+        elif invalid_carrier_kind == "raw_metadata_keys":
+            capability_key = json.dumps(REQUIRED_CAPABILITY_HEADER)
+            lowercase_key = json.dumps(REQUIRED_CAPABILITY_HEADER.lower())
+            metadata_json = "{" + capability_key + ':"trusted_cyber",' + lowercase_key + ':"trusted_cyber"}'
+            request_text = request_text[:-1] + ',"client_metadata":' + metadata_json + "}"
+        else:
+            response_create[REQUIRED_CAPABILITY_HEADER] = "trusted_cyber"
+            request_text = json.dumps(response_create, separators=(",", ":"))
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            websocket_path,
+            headers=websocket_headers,
+        ) as websocket:
+            websocket.send_text(request_text)
+            error = json.loads(websocket.receive_text())
+
+    assert error["type"] == "error"
+    assert error["status"] == 400
+    assert error["error"]["code"] == "unsupported_required_capability"
+    assert selection_attempted is False
+    assert upstream_opened is False
+
+
+@pytest.mark.parametrize("websocket_path", ["/backend-api/codex/responses", "/v1/responses"])
+@pytest.mark.parametrize(
+    ("frame_kind", "expected_error_code"),
+    [
+        ("valid_wrong_frame", "unsupported_required_capability"),
+        ("malformed_wrong_frame", "invalid_request_error"),
+        ("binary_response_create", "invalid_request_error"),
+    ],
+)
+def test_direct_responses_websocket_rejects_capability_carrier_on_unsupported_frame(
+    app_instance,
+    monkeypatch,
+    websocket_path,
+    frame_kind,
+    expected_error_code,
+):
+    api_key = _capability_test_api_key("key_ws_capability_wrong_frame")
+    upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_wrong_frame")],
+    )
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-wrong-frame"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def select_ordinary_account(self, deadline, *, require_security_work_authorized, **_kwargs):
+        del self, deadline, _kwargs
+        assert require_security_work_authorized is False
+        return SimpleNamespace(
+            id="acct_ws_capability_wrong_frame",
+            security_work_authorized=False,
+        )
+
+    async def open_upstream(self, account, headers, **_kwargs):
+        del self, headers, _kwargs
+        return account, upstream
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        select_ordinary_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        open_upstream,
+    )
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            websocket_path,
+            headers={"Authorization": "Bearer capability-wrong-frame"},
+        ) as websocket:
+            websocket.send_text(json.dumps(_websocket_response_create("open ordinary socket")))
+            created = json.loads(websocket.receive_text())
+            completed = json.loads(websocket.receive_text())
+
+            if frame_kind == "valid_wrong_frame":
+                wrong_frame_text = json.dumps(
+                    {
+                        "type": "session.update",
+                        "client_metadata": {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"},
+                    }
+                )
+                websocket.send_text(wrong_frame_text)
+            elif frame_kind == "malformed_wrong_frame":
+                wrong_frame_text = (
+                    '{"type":"session.update","client_metadata":{'
+                    + json.dumps(REQUIRED_CAPABILITY_HEADER)
+                    + ':"trusted_cyber"},}'
+                )
+                websocket.send_text(wrong_frame_text)
+            else:
+                binary_request = _websocket_response_create("must not bypass capability routing")
+                binary_request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+                websocket.send_bytes(json.dumps(binary_request).encode())
+            error = json.loads(websocket.receive_text())
+
+    assert created["response"]["id"] == "resp_ws_capability_wrong_frame"
+    assert completed["type"] == "response.completed"
+    assert error["type"] == "error"
+    assert error["status"] == 400
+    assert error["error"]["code"] == expected_error_code
+    assert len(upstream.sent_text) == 1
+
+
+def test_backend_responses_websocket_trusted_capability_inheritance_retires_idle_ordinary_socket(
+    app_instance,
+    monkeypatch,
+):
+    api_key = _capability_test_api_key("key_ws_capability_inheritance")
+
+    class _TurnStateUpstreamWebSocket(_SequencedUpstreamWebSocket):
+        def response_header(self, name: str) -> str | None:
+            return "ordinary-account-turn-state" if name.lower() == "x-codex-turn-state" else None
+
+    ordinary_upstream = _TurnStateUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _websocket_response_batch("resp_ws_capability_ordinary"),
+            _websocket_response_batch("resp_ws_capability_leaked_ordinary"),
+        ],
+    )
+    marker_cyber_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_marker")],
+    )
+    inherited_cyber_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_inherited")],
+    )
+    ordinary_upstreams = deque([ordinary_upstream])
+    cyber_upstreams = deque([marker_cyber_upstream, inherited_cyber_upstream])
+    selection_requirements: list[bool] = []
+    opened_account_ids: list[str] = []
+    opened_headers: list[dict[str, str]] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-inheritance"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def resolve_marker_owner(self, payload, _headers):
+        del self
+        return "acct_ws_capability_cyber_1" if getattr(payload, "input", None) == "establish requirement" else None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        account_kind = "cyber" if require_security_work_authorized else "ordinary"
+        account_index = selection_requirements.count(require_security_work_authorized)
+        return SimpleNamespace(
+            id=f"acct_ws_capability_{account_kind}_{account_index}",
+            # An ordinary selection may happen to land on a capable account.
+            # Socket reuse must follow the selection contract, not this flag.
+            security_work_authorized=True,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        opened_account_ids.append(account.id)
+        opened_headers.append(dict(headers))
+        upstreams = cyber_upstreams if "_cyber_" in account.id else ordinary_upstreams
+        return account, upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_resolve_file_account_for_responses",
+        resolve_marker_owner,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer capability-inheritance",
+                "x-codex-window-id": "task-ws-capability-inheritance:1",
+            },
+        ) as ordinary_websocket:
+            ordinary_websocket.send_text(json.dumps(_websocket_response_create("ordinary first frame")))
+            ordinary_created = json.loads(ordinary_websocket.receive_text())
+            ordinary_completed = json.loads(ordinary_websocket.receive_text())
+
+            marker_request = _websocket_response_create("establish requirement")
+            marker_request["client_metadata"] = {
+                "x-codex-window-id": "task-ws-capability-inheritance:2",
+                REQUIRED_CAPABILITY_HEADER: "trusted_cyber",
+            }
+            ordinary_websocket.send_text(json.dumps(marker_request))
+            marker_created = json.loads(ordinary_websocket.receive_text())
+            marker_completed = json.loads(ordinary_websocket.receive_text())
+
+            assert ordinary_upstream.closed is True
+            assert len(ordinary_upstream.sent_text) == 1
+            assert not any(name.lower() == "x-codex-turn-state" for name in opened_headers[1])
+
+            with client.websocket_connect(
+                "/backend-api/codex/responses",
+                headers={
+                    "Authorization": "Bearer capability-inheritance",
+                    "x-codex-window-id": "task-ws-capability-inheritance:3",
+                },
+            ) as inherited_websocket:
+                inherited_websocket.send_text(json.dumps(_websocket_response_create("inherited requirement")))
+                inherited_created = json.loads(inherited_websocket.receive_text())
+                inherited_completed = json.loads(inherited_websocket.receive_text())
+
+    assert ordinary_created["response"]["id"] == "resp_ws_capability_ordinary"
+    assert ordinary_completed["type"] == "response.completed"
+    assert marker_created["response"]["id"] == "resp_ws_capability_marker"
+    assert marker_completed["type"] == "response.completed"
+    assert inherited_created["response"]["id"] == "resp_ws_capability_inherited"
+    assert inherited_completed["type"] == "response.completed"
+    assert selection_requirements == [False, True, True]
+    assert opened_account_ids == [
+        "acct_ws_capability_ordinary_1",
+        "acct_ws_capability_cyber_1",
+        "acct_ws_capability_cyber_2",
+    ]
+    assert len(inherited_cyber_upstream.sent_text) == 1
+
+
+def test_backend_responses_websocket_revalidates_required_socket_after_grant_revocation(
+    app_instance,
+    monkeypatch,
+):
+    api_key = _capability_test_api_key("key_ws_capability_revoked_socket")
+    revoked_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _websocket_response_batch("resp_ws_capability_before_revocation"),
+            _websocket_response_batch("resp_ws_capability_revoked_leak"),
+        ],
+    )
+    replacement_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_after_revocation")],
+    )
+    upstreams = deque([revoked_upstream, replacement_upstream])
+    selection_requirements: list[bool] = []
+    revalidation_requirements: list[bool] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-revoked-socket"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        return SimpleNamespace(
+            id=f"acct_ws_capability_revocation_{len(selection_requirements)}",
+            security_work_authorized=True,
+        )
+
+    async def revoked_preferred_account(self, deadline, **kwargs):
+        del self, deadline
+        revalidation_requirements.append(bool(kwargs["require_security_work_authorized"]))
+        assert kwargs["api_key"] == api_key
+        assert kwargs["model"] == "gpt-5.4"
+        assert kwargs["service_tier"] is None
+        assert kwargs["preferred_account_id"] == "acct_ws_capability_revocation_1"
+        assert kwargs["fallback_on_preferred_account_unavailable"] is False
+        return proxy_module.AccountSelection(
+            account=None,
+            error_message="Preferred account capability grant was revoked",
+            error_code="no_security_work_authorized_accounts",
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        return account, upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_account_with_budget_compatible",
+        revoked_preferred_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer capability-revoked-socket",
+                "x-codex-window-id": "task-ws-capability-revoked:1",
+            },
+        ) as websocket:
+            marker_request = _websocket_response_create("establish required socket")
+            marker_request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+            websocket.send_text(json.dumps(marker_request))
+            first_created = json.loads(websocket.receive_text())
+            first_completed = json.loads(websocket.receive_text())
+
+            websocket.send_text(json.dumps(_websocket_response_create("continue after grant revocation")))
+            second_created = json.loads(websocket.receive_text())
+            second_completed = json.loads(websocket.receive_text())
+
+    assert first_created["response"]["id"] == "resp_ws_capability_before_revocation"
+    assert first_completed["type"] == "response.completed"
+    assert second_created["response"]["id"] == "resp_ws_capability_after_revocation"
+    assert second_completed["type"] == "response.completed"
+    assert revalidation_requirements == [True]
+    assert selection_requirements == [True, True]
+    assert revoked_upstream.closed is True
+    assert len(revoked_upstream.sent_text) == 1
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_error_code"),
+    [
+        ("typed", "capability_lineage_unavailable"),
+        ("unexpected", "capability_routing_unavailable"),
+    ],
+)
+def test_backend_responses_websocket_capability_revalidation_error_releases_frame_reservation(
+    app_instance,
+    monkeypatch,
+    failure_kind,
+    expected_error_code,
+):
+    api_key = _capability_test_api_key("key_ws_capability_revalidation_error")
+    upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _websocket_response_batch("resp_ws_capability_before_revalidation_error"),
+            _websocket_response_batch("resp_ws_capability_revalidation_error_leak"),
+        ],
+    )
+    selection_requirements: list[bool] = []
+    released_request_ids: list[str] = []
+    original_release = proxy_module.ProxyService._release_websocket_request_state_reservation
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-revalidation-error"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        return SimpleNamespace(
+            id="acct_ws_capability_revalidation_error",
+            security_work_authorized=True,
+        )
+
+    async def fail_capability_revalidation(self, deadline, **kwargs):
+        del self, deadline
+        assert kwargs["api_key"] == api_key
+        assert kwargs["require_security_work_authorized"] is True
+        assert kwargs["preferred_account_id"] == "acct_ws_capability_revalidation_error"
+        if failure_kind == "typed":
+            raise _capability_lineage_unavailable_error()
+        raise RuntimeError("capability selector boundary failed")
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        return account, upstream
+
+    async def track_reservation_release(self, request_state):
+        released_request_ids.append(request_state.request_id)
+        await original_release(self, request_state)
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_account_with_budget_compatible",
+        fail_capability_revalidation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_release_websocket_request_state_reservation",
+        track_reservation_release,
+    )
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer capability-revalidation-error",
+                "x-codex-window-id": "task-ws-capability-revalidation-error:1",
+            },
+        ) as websocket:
+            marker_request = _websocket_response_create("establish required socket")
+            marker_request["client_metadata"] = {REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}
+            websocket.send_text(json.dumps(marker_request))
+            first_created = json.loads(websocket.receive_text())
+            first_completed = json.loads(websocket.receive_text())
+            releases_after_first_turn = len(released_request_ids)
+
+            websocket.send_text(json.dumps(_websocket_response_create("trigger typed revalidation failure")))
+            terminal = json.loads(websocket.receive_text())
+
+    assert first_created["response"]["id"] == "resp_ws_capability_before_revalidation_error"
+    assert first_completed["type"] == "response.completed"
+    assert terminal["type"] == "response.failed"
+    assert terminal["response"]["error"]["code"] == expected_error_code
+    assert len(released_request_ids) == releases_after_first_turn + 1
+    assert selection_requirements == [True]
+    assert len(upstream.sent_text) == 1
+
+
+def test_backend_responses_websocket_trusted_capability_pending_conflict_keeps_ordinary_socket(
+    app_instance,
+    monkeypatch,
+):
+    api_key = _capability_test_api_key("key_ws_capability_pending_conflict")
+    ordinary_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _websocket_response_batch("resp_ws_capability_pending", completed=False),
+            _websocket_response_batch("resp_ws_capability_conflict_leak", completed=False),
+        ],
+    )
+    reopened_ordinary_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_conflict_reopened")],
+    )
+    marker_cyber_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_conflict_marker")],
+    )
+    unexpected_cyber_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_websocket_response_batch("resp_ws_capability_conflict_reconnected")],
+    )
+    ordinary_upstreams = deque([ordinary_upstream, reopened_ordinary_upstream])
+    cyber_upstreams = deque([marker_cyber_upstream, unexpected_cyber_upstream])
+    selection_requirements: list[bool] = []
+    opened_account_ids: list[str] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        del request
+        assert authorization == "Bearer capability-pending-conflict"
+        return api_key
+
+    async def keep_authenticated_api_key_policy(self, current_api_key):
+        del self
+        assert current_api_key == api_key
+        return current_api_key
+
+    async def bypass_api_key_usage_reservation(self, current_api_key, **_kwargs):
+        del self, _kwargs
+        assert current_api_key == api_key
+        return None
+
+    async def fake_select_websocket_connect_account(
+        self,
+        deadline,
+        *,
+        request_state,
+        require_security_work_authorized,
+        **_kwargs,
+    ):
+        del self, deadline, request_state, _kwargs
+        selection_requirements.append(require_security_work_authorized)
+        account_kind = "cyber" if require_security_work_authorized else "ordinary"
+        account_index = selection_requirements.count(require_security_work_authorized)
+        return SimpleNamespace(
+            id=f"acct_ws_capability_conflict_{account_kind}_{account_index}",
+            # This socket was selected under the ordinary contract even though
+            # the selected account itself currently has the capability grant.
+            security_work_authorized=True,
+        )
+
+    async def fake_try_open_websocket_connect_attempt(self, account, headers, **_kwargs):
+        del self, _kwargs
+        assert not any(name.lower() == REQUIRED_CAPABILITY_HEADER for name in headers)
+        opened_account_ids.append(account.id)
+        upstreams = cyber_upstreams if "_cyber_" in account.id else ordinary_upstreams
+        return account, upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_api_module, "validate_required_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_refresh_websocket_api_key_policy",
+        keep_authenticated_api_key_policy,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_reserve_websocket_api_key_usage",
+        bypass_api_key_usage_reservation,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_select_websocket_connect_account",
+        fake_select_websocket_connect_account,
+    )
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_try_open_websocket_connect_attempt",
+        fake_try_open_websocket_connect_attempt,
+    )
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer capability-pending-conflict",
+                "x-codex-window-id": "task-ws-capability-pending-conflict:1",
+            },
+        ) as ordinary_websocket:
+            ordinary_websocket.send_text(json.dumps(_websocket_response_create("long ordinary response")))
+            pending_created = json.loads(ordinary_websocket.receive_text())
+
+            with client.websocket_connect(
+                "/backend-api/codex/responses",
+                headers={
+                    "Authorization": "Bearer capability-pending-conflict",
+                    "x-codex-window-id": "task-ws-capability-pending-conflict:2",
+                    REQUIRED_CAPABILITY_HEADER: "trusted_cyber",
+                },
+            ) as marker_websocket:
+                marker_websocket.send_text(json.dumps(_websocket_response_create("establish requirement")))
+                marker_created = json.loads(marker_websocket.receive_text())
+                marker_completed = json.loads(marker_websocket.receive_text())
+
+            ordinary_websocket.send_text(json.dumps(_websocket_response_create("must not cross accounts")))
+            conflict = json.loads(ordinary_websocket.receive_text())
+
+            assert conflict["type"] == "response.failed"
+            assert conflict["response"]["error"]["code"] == "continuity_owner_conflict"
+            assert ordinary_upstream.closed is False
+            assert len(ordinary_upstream.sent_text) == 1
+            assert selection_requirements == [False, True]
+
+    assert pending_created["response"]["id"] == "resp_ws_capability_pending"
+    assert marker_created["response"]["id"] == "resp_ws_capability_conflict_marker"
+    assert marker_completed["type"] == "response.completed"
+    assert opened_account_ids == [
+        "acct_ws_capability_conflict_ordinary_1",
+        "acct_ws_capability_conflict_cyber_1",
+    ]

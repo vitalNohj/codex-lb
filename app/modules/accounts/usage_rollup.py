@@ -18,13 +18,34 @@ logger = logging.getLogger(__name__)
 
 # Rows younger than the lag stay on the live side of the fold boundary.
 # The lag MUST exceed the maximum possible distance between a log row's
-# requested_at and its actual insertion time: requested_at is the request
-# START, but the row is written at stream END, so a long-running stream
-# inserts a row dated its full duration in the past — if that lands below an
-# already-advanced watermark it is neither folded nor in the live tail and
-# vanishes from totals. 24h dwarfs any survivable stream duration and the
-# post-stream duplicate/model/cost rewrite paths (which settle in seconds).
-FOLD_LAG = timedelta(hours=24)
+# requested_at and the moment its insert becomes visible: a row landing below
+# an already-advanced watermark is neither folded nor in the live tail and
+# vanishes from totals. Every insert path stamps requested_at inside
+# ``RequestLogsRepository.add_log`` at write time (``requested_at or
+# utcnow()``; no live caller passes an explicit value — the parameter exists
+# for tests), so the distance is only clock skew between replicas plus the
+# single-row insert transaction's commit latency, NOT the request duration:
+# a stream-end log write is dated at the write, not at the request start.
+# Measured over one full production history (6.0M rows) the worst insert
+# landed 7.9s below the requested_at frontier (p99.9 = 30ms). Post-insert
+# mutators need no allowance here either: ``update_model_for_request``
+# skips rows at/below the watermarks, and consolidation/deletion reassign
+# logs under the fold-state lock while mirroring the folded sums.
+#
+# 2h keeps a ~900x margin over the observed worst case (covering scheduler
+# stalls, NTP drift, paused VMs) while bounding the raw tail every account
+# and API-key summary read must dedupe and re-aggregate; the previous 24h
+# lag — sized for a stream-start dating scheme this codebase never actually
+# had — left an always-rescanned tail of ~660k rows (11% of the table) on
+# the reference deployment and degraded the listing aggregate to a full
+# seq-scan hash join (measured 60s cold / 2.1s warm vs 63ms at 2h).
+#
+# This lag is a shared visibility contract: the hourly/conversation fold
+# targets and the retention min-gate (``now - 2 * FOLD_LAG`` freshness,
+# ``watermark - FOLD_LAG`` prune floor) derive from the same constant.
+# A fold pass after an upgrade from the 24h lag absorbs the watermark jump
+# as one ordinary backfill slice (FOLD_SLICE bounds it).
+FOLD_LAG = timedelta(hours=2)
 # Historical backfill folds at most this much history per transaction.
 FOLD_SLICE = timedelta(days=7)
 
@@ -298,7 +319,15 @@ def _insert_fn(session: AsyncSession):
 
 
 def _state_bootstrap_stmt(session: AsyncSession):
-    stmt = _insert_fn(session)(AccountUsageRollupState).values(id=_STATE_ROW_ID, folded_through=_EPOCH)
+    # `upgrade_repair_from` is explicitly NULL: a state row bootstrapped by
+    # THIS (post-cancelled_count) code is never legacy-suspect. Old code's
+    # bootstrap omits the column and gets the epoch server default, which is
+    # exactly what marks its post-migration backfill for repair (#1552).
+    stmt = _insert_fn(session)(AccountUsageRollupState).values(
+        id=_STATE_ROW_ID,
+        folded_through=_EPOCH,
+        upgrade_repair_from=None,
+    )
     return stmt.on_conflict_do_nothing(index_elements=[AccountUsageRollupState.id])
 
 

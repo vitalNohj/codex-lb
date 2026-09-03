@@ -642,7 +642,7 @@ describe("RecentRequestsTable", () => {
 
   it("renders empty state", () => {
     render(<RecentRequestsTable {...PAGINATION_PROPS} total={0} accounts={[]} requests={[]} />);
-    expect(screen.getByText("No request logs match the current filters.")).toBeInTheDocument();
+    expect(screen.getByText("No requests yet")).toBeInTheDocument();
   });
 
   it("shows warmup marker only for warmup rows", () => {
