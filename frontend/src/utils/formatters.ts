@@ -46,8 +46,8 @@ function getNumberFormatter(): Intl.NumberFormat {
 }
 
 function getCompactFormatter(): Intl.NumberFormat {
-  const locale = getIntlLocale();
-  return getCachedFormatter(compactFormatters, locale, () => new Intl.NumberFormat(locale, {
+  // Compact units stay en-US (10.2K / 1.5M) across dashboard locales.
+  return getCachedFormatter(compactFormatters, "en-US", () => new Intl.NumberFormat("en-US", {
     notation: "compact",
     maximumFractionDigits: 2,
   }));

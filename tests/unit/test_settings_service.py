@@ -373,7 +373,7 @@ def test_dashboard_error_supports_sidecar_conflict_details() -> None:
 def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
     payload = _settings_update(
         openrouter_models=["DeepSeek/Chat"],
-        omniroute_models=["deepseek/chat"],
+        ollama_models=["deepseek/chat"],
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
@@ -381,6 +381,7 @@ def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
 
     assert exc_info.value.conflict.kind == "full_model"
     assert exc_info.value.conflict.owner == "OpenRouter"
+    assert exc_info.value.conflict.challenger == "Ollama"
 
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
@@ -400,7 +401,7 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
     payload = _settings_update(
-        omniroute_models=["gpt-oss:120b-cloud"],
+        openrouter_models=["gpt-oss:120b-cloud"],
         ollama_models=["GPT-OSS:120B-CLOUD"],
     )
 
@@ -408,13 +409,13 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
         _validate_unique_sidecar_routes(payload)
 
     assert exc_info.value.conflict.kind == "full_model"
-    assert exc_info.value.conflict.owner == "OmniRoute"
+    assert exc_info.value.conflict.owner == "OpenRouter"
     assert exc_info.value.conflict.challenger == "Ollama"
 
 
 def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None:
     payload = _settings_update(
-        omniroute_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
+        openrouter_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
         orcarouter_prefixes=[SidecarPrefix(prefix="orcarouter/", strip=False)],
     )
 
@@ -423,7 +424,7 @@ def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "orcarouter/"
-    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "OmniRoute"}
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "OpenRouter"}
 
 
 def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence() -> None:

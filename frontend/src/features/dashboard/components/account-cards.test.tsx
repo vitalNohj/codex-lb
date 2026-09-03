@@ -21,9 +21,8 @@ describe("AccountCards", () => {
       />,
     );
 
-    expect(screen.getByTestId("dashboard-account-cards")).toHaveStyle({
-      maxHeight: "calc(2 * 16rem + 1rem)",
-    });
+    // jsdom 30 simplifies calc(2 * 16rem + 1rem) during serialization.
+    expect(screen.getByTestId("dashboard-account-cards").style.maxHeight).toBe("calc(33rem)");
   });
 
   it("keeps the scrollbar hidden on the dashboard account grid", () => {
