@@ -111,6 +111,78 @@ describe("useSettings", () => {
       toastSuccess.mockRestore();
     }
   });
+
+  it("fetches settings before PUT when the query cache is cold", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({ version: 3, stickyThreadsEnabled: false });
+    const cold = createDashboardSettings({ version: 9, stickyThreadsEnabled: false });
+    const saved = createDashboardSettings({ version: 10, stickyThreadsEnabled: true });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const updateSpy = vi.spyOn(settingsApi, "updateSettings").mockResolvedValue(saved);
+    const getSpy = vi.spyOn(settingsApi, "getSettings");
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      queryClient.removeQueries({ queryKey: ["settings", "detail"] });
+      getSpy.mockResolvedValue(cold);
+
+      await result.current.updateSettingsMutation.mutateAsync({ stickyThreadsEnabled: true });
+
+      expect(updateSpy).toHaveBeenCalledWith({
+        stickyThreadsEnabled: true,
+        expectedVersion: 9,
+      });
+    } finally {
+      updateSpy.mockRestore();
+      getSpy.mockRestore();
+    }
+  });
+
+  it("does not retry collection patches after settings_conflict", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({ version: 3 });
+    const afterConflict = createDashboardSettings({ version: 4, modelAliases: { other: "gpt-5.4" } });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const conflict = new ApiError({
+      message: "Settings were modified by another writer; reload and retry",
+      status: 409,
+      code: "settings_conflict",
+    });
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const toastSuccess = vi.spyOn(toast, "success").mockImplementation(() => "");
+    const updateSpy = vi.spyOn(settingsApi, "updateSettings").mockRejectedValueOnce(conflict);
+    const getSpy = vi.spyOn(settingsApi, "getSettings");
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      getSpy.mockResolvedValueOnce(afterConflict);
+
+      await expect(
+        result.current.updateSettingsMutation.mutateAsync({
+          modelAliases: { north: "gpt-5.4" },
+        }),
+      ).rejects.toMatchObject({ code: "settings_conflict" });
+
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(toastError).toHaveBeenCalled();
+      expect(toastSuccess).not.toHaveBeenCalled();
+    } finally {
+      updateSpy.mockRestore();
+      getSpy.mockRestore();
+      toastError.mockRestore();
+      toastSuccess.mockRestore();
+    }
+  });
 });
 
 describe("useTelemetryConsent", () => {

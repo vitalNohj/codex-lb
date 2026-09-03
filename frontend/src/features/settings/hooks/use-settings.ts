@@ -64,6 +64,28 @@ function isSettingsConflict(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "settings_conflict";
 }
 
+const SETTINGS_COLLECTION_FIELDS = [
+  "additionalQuotaRoutingPolicies",
+  "modelAliases",
+  "customAliasCatalog",
+  "claudeSidecarModelPrefixes",
+  "claudeSidecarFullModels",
+  "claudeSidecarAuthPlans",
+  "openrouterSidecarModelPrefixes",
+  "openrouterSidecarFullModels",
+  "orcarouterSidecarModelPrefixes",
+  "orcarouterSidecarFullModels",
+  "omnirouteSidecarModelPrefixes",
+  "omnirouteSidecarFullModels",
+  "omnirouteSidecarSelectedModels",
+  "ollamaSidecarModelPrefixes",
+  "ollamaSidecarFullModels",
+] as const satisfies ReadonlyArray<keyof SettingsUpdateRequest>;
+
+function patchContainsCollection(fields: Partial<SettingsUpdateRequest>): boolean {
+  return SETTINGS_COLLECTION_FIELDS.some((field) => fields[field] !== undefined);
+}
+
 async function persistSettingsPatch(
   queryClient: ReturnType<typeof useQueryClient>,
   patch: Partial<SettingsUpdateRequest>,
@@ -74,15 +96,22 @@ async function persistSettingsPatch(
     updateSettings(
       expectedVersion === undefined ? fields : { ...fields, expectedVersion },
     );
-  const cached = queryClient.getQueryData<DashboardSettings>(SETTINGS_DETAIL_QUERY_KEY);
+  let cached = queryClient.getQueryData<DashboardSettings>(SETTINGS_DETAIL_QUERY_KEY);
+  if (cached === undefined) {
+    cached = await getSettings();
+    queryClient.setQueryData(SETTINGS_DETAIL_QUERY_KEY, cached);
+  }
   try {
-    return await send(cached?.version);
+    return await send(cached.version);
   } catch (error) {
     if (!isSettingsConflict(error)) {
       throw error;
     }
     const fresh = await getSettings();
     queryClient.setQueryData(SETTINGS_DETAIL_QUERY_KEY, fresh);
+    if (patchContainsCollection(fields)) {
+      throw error;
+    }
     return await send(fresh.version);
   }
 }

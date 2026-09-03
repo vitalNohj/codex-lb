@@ -6,7 +6,7 @@ Stop the Settings page 409 `settings_conflict` toast on single-operator edits wi
 
 Operational columns (sidecar `last_health_*`, `last_checked_at`, `last_model_count`, Claude `quota_state_json` / `quota_checked_at`) live on `dashboard_settings` because quota cards and test-connection already read them there. Moving them to another table is a larger schema change than this bug needs. A Core `UPDATE` that does not touch `version` is enough: SQLAlchemy `version_id_col` only fires on ORM flushes.
 
-Dashboard saves used `buildSettingsUpdateRequest(settings, patch)`, which copies every operator field from the render-time GET and stamps that GET's `expectedVersion`. After any versioned write, the next save 409s until refetch. Sending the patch alone lets the API fill unspecified fields from the row it just read. Retrying the same patch after a 409 composes with a concurrent operator write to a different field; retrying a full stale snapshot would revert it.
+Dashboard saves used `buildSettingsUpdateRequest(settings, patch)`, which copies every operator field from the render-time GET and stamps that GET's `expectedVersion`. After any versioned write, the next save 409s until refetch. Sending the patch alone lets the API fill unspecified fields from the row it just read. Retrying a scalar patch after a 409 composes with a concurrent operator write to a different field. Collection patches are whole-map snapshots from the stale render, so a 409 retry would revert the winner; those surface the conflict after refetch instead. A cold query cache must GET before PUT so `expectedVersion` is never dropped.
 
 ## Constraints
 

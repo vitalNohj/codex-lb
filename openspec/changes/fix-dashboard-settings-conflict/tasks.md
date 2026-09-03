@@ -16,3 +16,4 @@
 - [x] 3.1 Settings mutation accepts a patch, stamps `expectedVersion` from the latest GET, serializes overlapping saves, awaits cache invalidation, retries once on `settings_conflict`.
 - [x] 3.2 Settings and Accounts call sites pass patches instead of full-row snapshots.
 - [x] 3.3 Hook test: first PUT 409 `settings_conflict`, retry with fresh version succeeds and does not toast the conflict.
+- [x] 3.4 Cold cache fetches before PUT; collection-valued 409s refetch and surface the conflict without retry.

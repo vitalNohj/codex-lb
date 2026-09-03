@@ -7,7 +7,7 @@ The Settings page 409s `settings_conflict` ("Settings were modified since this f
 ## What Changes
 
 - Persist health, quota-snapshot, and sidecar test-result columns without incrementing `dashboard_settings.version`.
-- Dashboard settings saves send only the changed fields plus the latest `expectedVersion`, serialize overlapping saves, refetch after a successful write, and retry once on `settings_conflict` by reapplying the same patch to a fresh GET.
+- Dashboard settings saves send only the changed fields plus the latest `expectedVersion`, serialize overlapping saves, refetch after a successful write, and retry scalar patches once on `settings_conflict`. Collection patches refetch and surface the conflict instead of replaying a stale map. A cold cache fetches before PUT so `expectedVersion` is never dropped.
 
 ## Capabilities
 
