@@ -10,7 +10,6 @@ import { useAccounts } from "@/features/accounts/hooks/use-accounts";
 import { FirewallSection } from "@/features/firewall/components/firewall-section";
 import { ModelSourcesSettings } from "@/features/model-sources/components/model-sources-settings";
 import { QuotaPlannerSection } from "@/features/quota-planner/components/quota-planner-section";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { shouldExpandAdvancedSettings } from "@/features/settings/advanced-settings-deeplink";
 import { AdvancedSettingsGroup } from "@/features/settings/components/advanced-settings-group";
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
@@ -77,9 +76,8 @@ export function SettingsPage() {
     getErrorMessageOrNull(addPoolMemberMutation.error) ||
     getErrorMessageOrNull(testEndpointMutation.error);
 
-  const handleSave = async (payload: SettingsUpdateRequest) => {
-    await updateSettingsMutation.mutateAsync(payload);
-  };
+  const handleSave = (patch: Partial<SettingsUpdateRequest>) =>
+    updateSettingsMutation.mutateAsync(patch);
 
   return (
     <div className="animate-fade-in-up space-y-6">
@@ -143,10 +141,10 @@ export function SettingsPage() {
               hideUpstreamQuotaFromApiKeys={settings.hideUpstreamQuotaFromApiKeys}
               disabled={controlsDisabled}
               onApiKeyAuthEnabledChange={(enabled) =>
-                void handleSave(buildSettingsUpdateRequest(settings, { apiKeyAuthEnabled: enabled }))
+                void handleSave({ apiKeyAuthEnabled: enabled })
               }
               onHideUpstreamQuotaFromApiKeysChange={(enabled) =>
-                void handleSave(buildSettingsUpdateRequest(settings, { hideUpstreamQuotaFromApiKeys: enabled }))
+                void handleSave({ hideUpstreamQuotaFromApiKeys: enabled })
               }
             />
 

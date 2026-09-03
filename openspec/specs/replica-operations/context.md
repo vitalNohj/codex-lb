@@ -68,15 +68,16 @@ bridge forwards are already failing.
 
 ## Settings optimistic locking
 
-`PUT /api/settings` is a full-row read-modify-write over ~40 fields. Before versioning, two
+`PUT /api/settings` is a read-modify-write over the operator settings columns. Before versioning, two
 concurrent saves (two dashboard tabs, or two replicas' dashboards) silently lost the first
 writer's fields — including security toggles — with the audit log recording only the winner's
-diff. `dashboard_settings.version` now rides every ORM update (`WHERE id = 1 AND version = :old`),
+diff. `dashboard_settings.version` now rides every operator ORM update (`WHERE id = 1 AND version = :old`),
 so the loser gets `409 settings_conflict` and nothing is partially applied. Clients may send
 `expectedVersion` (from a previous GET/PUT response) to also detect staleness that predates the
-request; the dashboard frontend does not send it yet (follow-up), so server-side race protection
-is what is guaranteed today. Internal single-field writers (password, TOTP, guest password)
-retry once on conflict because their mutations are idempotent absolute writes.
+request; the dashboard sends it on each save. Sidecar health, quota snapshots, and test-connection
+results share this row but MUST NOT increment `version`, or an open Settings form 409s after the
+next poll. Internal single-field writers (password, TOTP, guest password) retry once on conflict
+because their mutations are idempotent absolute writes.
 
 ## Metrics semantics
 

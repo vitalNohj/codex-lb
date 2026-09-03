@@ -73,7 +73,7 @@ class ClaudeSidecarService:
         static_status, static_message = _classify_static_status(settings)
         if static_status != "healthy":
             checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            await self._settings_repository.update(
+            await self._settings_repository.update_operational(
                 claude_sidecar_last_health_status=static_status,
                 claude_sidecar_last_health_message=static_message,
                 claude_sidecar_last_checked_at=checked_at,
@@ -277,17 +277,22 @@ class ClaudeSidecarService:
             status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
             message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
             return ClaudeSidecarRoutingResponse(status=status, message=message)
-        await self._patch_snapshot_disabled(settings.claude_sidecar_quota_state_json, name, paused)
+        await self._patch_snapshot_disabled(name, paused)
         return await self.get_routing()
 
-    async def _patch_snapshot_disabled(self, snapshot_json: str | None, name: str, paused: bool) -> None:
+    async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.
 
         The dashboard reads ``disabled`` from the polled snapshot (refreshed on
         an interval), not from live auth files, so without this patch the
         dashboard card would not reflect the change until the next poll.
+
+        Re-read immediately before writing: the quota poller Core-UPDATEs the
+        same JSON without ``version_id_col``, so a snapshot loaded at request
+        start can be stale after the pause HTTP call.
         """
-        snapshot = snapshot_from_json(snapshot_json)
+        current = await self._settings_repository.get_fresh()
+        snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
         updated = [
@@ -297,7 +302,7 @@ class ClaudeSidecarService:
         if updated == list(snapshot.accounts):
             return
         patched = replace(snapshot, accounts=tuple(updated))
-        await self._settings_repository.update(
+        await self._settings_repository.update_operational(
             claude_sidecar_quota_state_json=snapshot_to_json(patched),
         )
         await get_settings_cache().invalidate()
@@ -318,7 +323,7 @@ class ClaudeSidecarService:
         checked_at: datetime,
         models: list[ClaudeSidecarModelSummary],
     ) -> ClaudeSidecarTestResponse:
-        settings = await self._settings_repository.update(
+        settings = await self._settings_repository.update_operational(
             claude_sidecar_last_health_status=status,
             claude_sidecar_last_health_message=message,
             claude_sidecar_last_checked_at=checked_at,

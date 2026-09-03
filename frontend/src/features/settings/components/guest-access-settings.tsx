@@ -9,14 +9,13 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { removeGuestPassword, setGuestPassword } from "@/features/auth/api";
 import { getFirstZodIssueMessage } from "@/features/auth/schemas";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { getErrorMessage } from "@/utils/errors";
 
 export type GuestAccessSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
   onRefresh: () => Promise<unknown>;
 };
 
@@ -45,8 +44,7 @@ export function GuestAccessSettings({
   const [error, setError] = useState<string | null>(null);
   const disabled = busy || passwordBusy;
 
-  const save = (patch: Partial<SettingsUpdateRequest>) =>
-    void onSave(buildSettingsUpdateRequest(settings, patch));
+  const save = (patch: Partial<SettingsUpdateRequest>) => void onSave(patch);
 
   const handleSetPassword = async () => {
     setError(null);

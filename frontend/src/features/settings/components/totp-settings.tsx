@@ -26,7 +26,6 @@ import {
   startTotpSetup,
 } from "@/features/auth/api";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { getErrorMessage } from "@/utils/errors";
 
@@ -42,7 +41,7 @@ type TotpDialog = "setup" | "disable" | null;
 export type TotpSettingsProps = {
   settings: DashboardSettings;
   disabled?: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
 };
 
 export function TotpSettings({ settings, disabled = false, onSave }: TotpSettingsProps) {
@@ -174,7 +173,7 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
             checked={settings.totpRequiredOnLogin}
             disabled={lock}
             onCheckedChange={(checked) =>
-              void onSave(buildSettingsUpdateRequest(settings, { totpRequiredOnLogin: checked }))
+              void onSave({ totpRequiredOnLogin: checked })
             }
           />
         </div>

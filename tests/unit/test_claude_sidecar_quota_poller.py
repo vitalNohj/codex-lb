@@ -57,6 +57,9 @@ class _FakeRepo:
     async def update(self, **kwargs: Any) -> None:
         self.last_kwargs.update(kwargs)
 
+    async def update_operational(self, **kwargs: Any) -> None:
+        self.last_kwargs.update(kwargs)
+
 
 @dataclass
 class _SessionCtx:

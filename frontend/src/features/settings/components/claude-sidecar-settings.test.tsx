@@ -148,7 +148,9 @@ describe("ClaudeSidecarSettings", () => {
   it("persists a new prefix immediately", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithQueryClient(
+      <ClaudeSidecarSettings settings={{ ...BASE_SETTINGS, version: 7 }} busy={false} onSave={onSave} />,
+    );
 
     await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
     await user.click(screen.getByRole("button", { name: "Add prefix" }));
@@ -160,8 +162,51 @@ describe("ClaudeSidecarSettings", () => {
             { prefix: "claude", strip: false },
             { prefix: "anthropic", strip: false },
           ],
+          expectedVersion: 7,
         }),
       ),
+    );
+  });
+
+  it("advances the collection origin version from the saved row", async () => {
+    const user = userEvent.setup();
+    const onSave = vi
+      .fn()
+      .mockResolvedValueOnce({ version: 8 })
+      .mockResolvedValueOnce({ version: 9 });
+    renderWithQueryClient(
+      <ClaudeSidecarSettings settings={{ ...BASE_SETTINGS, version: 7 }} busy={false} onSave={onSave} />,
+    );
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "haiku");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ expectedVersion: 8 })),
+    );
+  });
+
+  it("keeps the collection origin version after a failed persist", async () => {
+    const user = userEvent.setup();
+    const onSave = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("save failed"))
+      .mockResolvedValueOnce({ version: 8 });
+    renderWithQueryClient(
+      <ClaudeSidecarSettings settings={{ ...BASE_SETTINGS, version: 7 }} busy={false} onSave={onSave} />,
+    );
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "haiku");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ expectedVersion: 7 })),
     );
   });
 

@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { SessionSettings } from "@/features/settings/components/session-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
 const baseSettings = createDashboardSettings({
@@ -27,7 +26,6 @@ const baseSettings = createDashboardSettings({
   apiKeyAuthEnabled: true,
   guestAccessEnabled: false,
 });
-const baseUpdatePayload = buildSettingsUpdateRequest(baseSettings, {});
 
 describe("SessionSettings", () => {
   it("shows the current dashboard session lifetime in hours", () => {
@@ -47,7 +45,6 @@ describe("SessionSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save lifetime" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...baseUpdatePayload,
       dashboardSessionTtlSeconds: 86400,
     });
   });
@@ -98,7 +95,6 @@ describe("SessionSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save lifetime" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...baseUpdatePayload,
       dashboardSessionTtlSeconds: 31536000,
     });
   });

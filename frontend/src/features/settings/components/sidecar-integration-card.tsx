@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import {
   REASONING_EFFORT_OPTIONS,
   REASONING_EFFORT_UNSET,
@@ -129,7 +128,7 @@ type SidecarIntegrationCardProviderProps = {
     rows: DiscoveredModelSummary[];
     isLoading: boolean;
   };
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   onTestConnection: () => Promise<unknown>;
   buildPatch: (state: {
     baseUrl: string;
@@ -373,6 +372,7 @@ function SidecarIntegrationCardProvider({
   const [requestTimeout, setRequestTimeout] = useState(String(initial.requestTimeout));
   const [cacheTtl, setCacheTtl] = useState(String(initial.cacheTtl));
   const [pollInterval, setPollInterval] = useState(String(initial.pollInterval ?? 0));
+  const localCollectionsVersion = useRef(settings.version);
   const [manualPrefix, setManualPrefix] = useState("");
   const [manualFullModel, setManualFullModel] = useState("");
   const [defaultReasoningEffort, setDefaultReasoningEffortState] = useState<
@@ -425,22 +425,25 @@ function SidecarIntegrationCardProvider({
     setSaveError(null);
     setSavePending(true);
     try {
-      await onSave(
-        buildSettingsUpdateRequest(
-          settings,
-          buildPatch({
-            baseUrl: baseUrl.trim(),
-            apiKey: (overrides.apiKey ?? "").trim(),
-            managementKey: (overrides.managementKey ?? "").trim(),
-            prefixes: nextPrefixes,
-            fullModels: nextFullModels,
-            connectTimeout: parsedConnectTimeout,
-            requestTimeout: parsedRequestTimeout,
-            cacheTtl: parsedCacheTtl,
-            pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
-          }),
-        ),
-      );
+      const saved = await onSave({
+        ...buildPatch({
+          baseUrl: baseUrl.trim(),
+          apiKey: (overrides.apiKey ?? "").trim(),
+          managementKey: (overrides.managementKey ?? "").trim(),
+          prefixes: nextPrefixes,
+          fullModels: nextFullModels,
+          connectTimeout: parsedConnectTimeout,
+          requestTimeout: parsedRequestTimeout,
+          cacheTtl: parsedCacheTtl,
+          pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
+        }),
+        ...(localCollectionsVersion.current === undefined
+          ? {}
+          : { expectedVersion: localCollectionsVersion.current }),
+      });
+      if (saved && typeof saved.version === "number") {
+        localCollectionsVersion.current = saved.version;
+      }
       await onTestConnection().catch(() => null);
     } catch (error) {
       setSaveError(
@@ -454,12 +457,12 @@ function SidecarIntegrationCardProvider({
 
   const setEnabled = (nextEnabled: boolean) => {
     setEnabledState(nextEnabled);
-    void onSave(buildSettingsUpdateRequest(settings, buildEnablePatch(nextEnabled)));
+    void onSave(buildEnablePatch(nextEnabled));
   };
 
   const setDefaultReasoningEffort = (effort: SidecarReasoningEffort | null) => {
     setDefaultReasoningEffortState(effort);
-    void onSave(buildSettingsUpdateRequest(settings, buildEffortPatch(effort)));
+    void onSave(buildEffortPatch(effort));
   };
 
   const addPrefix = () => {

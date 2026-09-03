@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ImportSettings } from "@/features/settings/components/import-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
 describe("ImportSettings", () => {
@@ -59,9 +58,7 @@ describe("ImportSettings", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
     const payload = onSave.mock.calls[0][0];
 
-    expect(payload.importWithoutOverwrite).toBe(true);
-
-    expect(payload).toStrictEqual(buildSettingsUpdateRequest(settings, { importWithoutOverwrite: true }));
+    expect(payload).toStrictEqual({ importWithoutOverwrite: true });
   });
 
   it("disables the switch when busy is true", () => {

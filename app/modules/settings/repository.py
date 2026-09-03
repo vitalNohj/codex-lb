@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from datetime import datetime
 
+from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -201,6 +202,102 @@ class SettingsRepository:
             return existing
         await self._session.refresh(row)
         return row
+
+    async def get_fresh(self) -> DashboardSettings:
+        """Return settings reloaded from a new read snapshot.
+
+        ORM-clean sessions COMMIT first. That ends the SQLite read snapshot
+        so concurrent poller commits are visible, and a later Core UPDATE
+        on this session does not hit SQLITE_BUSY_SNAPSHOT.
+
+        Sessions with pending ORM writes skip COMMIT and skip nested
+        sessions. StaticPool in-memory SQLite would share the caller's
+        connection and ROLLBACK on close; a second file-SQLite connection
+        can deadlock on the writer lock. Return the identity-map row.
+        Pause/resume is ORM-clean and takes the COMMIT path.
+
+        Core UPDATE via session.execute() is invisible to dirty/new/deleted.
+        Callers MUST NOT leave uncommitted Core UPDATEs when calling
+        get_fresh. update_operational already COMMITs.
+        """
+        if self._session.dirty or self._session.new or self._session.deleted:
+            existing = await self._session.get(DashboardSettings, _SETTINGS_ID)
+            if existing is None:
+                raise RuntimeError("get_fresh cannot create settings while the session is dirty")
+            return existing
+        await self._session.commit()
+        row = await self.get_or_create()
+        await self._session.refresh(row)
+        return row
+
+    async def update_operational(
+        self,
+        *,
+        claude_sidecar_last_health_status: str | None | object = _UNSET,
+        claude_sidecar_last_health_message: str | None | object = _UNSET,
+        claude_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        claude_sidecar_last_model_count: int | None | object = _UNSET,
+        claude_sidecar_quota_state_json: str | None | object = _UNSET,
+        claude_sidecar_quota_checked_at: datetime | None | object = _UNSET,
+        openrouter_sidecar_last_health_status: str | None | object = _UNSET,
+        openrouter_sidecar_last_health_message: str | None | object = _UNSET,
+        openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        openrouter_sidecar_last_model_count: int | None | object = _UNSET,
+        orcarouter_sidecar_last_health_status: str | None | object = _UNSET,
+        orcarouter_sidecar_last_health_message: str | None | object = _UNSET,
+        orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        orcarouter_sidecar_last_model_count: int | None | object = _UNSET,
+        omniroute_sidecar_last_health_status: str | None | object = _UNSET,
+        omniroute_sidecar_last_health_message: str | None | object = _UNSET,
+        omniroute_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        omniroute_sidecar_last_model_count: int | None | object = _UNSET,
+        ollama_sidecar_last_health_status: str | None | object = _UNSET,
+        ollama_sidecar_last_health_message: str | None | object = _UNSET,
+        ollama_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        ollama_sidecar_last_model_count: int | None | object = _UNSET,
+    ) -> DashboardSettings:
+        """Persist sidecar health/quota columns without bumping ``version``.
+
+        Quota polling and test-connection results share ``dashboard_settings``
+        with operator saves. Routing those writes through ``version_id_col``
+        makes an open Settings form's ``expectedVersion`` stale on the next
+        poll. A Core UPDATE leaves the optimistic lock for operator PUTs.
+        """
+        candidates = {
+            "claude_sidecar_last_health_status": claude_sidecar_last_health_status,
+            "claude_sidecar_last_health_message": claude_sidecar_last_health_message,
+            "claude_sidecar_last_checked_at": claude_sidecar_last_checked_at,
+            "claude_sidecar_last_model_count": claude_sidecar_last_model_count,
+            "claude_sidecar_quota_state_json": claude_sidecar_quota_state_json,
+            "claude_sidecar_quota_checked_at": claude_sidecar_quota_checked_at,
+            "openrouter_sidecar_last_health_status": openrouter_sidecar_last_health_status,
+            "openrouter_sidecar_last_health_message": openrouter_sidecar_last_health_message,
+            "openrouter_sidecar_last_checked_at": openrouter_sidecar_last_checked_at,
+            "openrouter_sidecar_last_model_count": openrouter_sidecar_last_model_count,
+            "orcarouter_sidecar_last_health_status": orcarouter_sidecar_last_health_status,
+            "orcarouter_sidecar_last_health_message": orcarouter_sidecar_last_health_message,
+            "orcarouter_sidecar_last_checked_at": orcarouter_sidecar_last_checked_at,
+            "orcarouter_sidecar_last_model_count": orcarouter_sidecar_last_model_count,
+            "omniroute_sidecar_last_health_status": omniroute_sidecar_last_health_status,
+            "omniroute_sidecar_last_health_message": omniroute_sidecar_last_health_message,
+            "omniroute_sidecar_last_checked_at": omniroute_sidecar_last_checked_at,
+            "omniroute_sidecar_last_model_count": omniroute_sidecar_last_model_count,
+            "ollama_sidecar_last_health_status": ollama_sidecar_last_health_status,
+            "ollama_sidecar_last_health_message": ollama_sidecar_last_health_message,
+            "ollama_sidecar_last_checked_at": ollama_sidecar_last_checked_at,
+            "ollama_sidecar_last_model_count": ollama_sidecar_last_model_count,
+        }
+        values = {column: value for column, value in candidates.items() if value is not _UNSET}
+        settings = await self.get_or_create()
+        if not values:
+            return settings
+        values["updated_at"] = func.now()
+        await self._session.execute(
+            update(DashboardSettings).where(DashboardSettings.id == _SETTINGS_ID).values(**values)
+        )
+        await self._session.commit()
+        await self._session.refresh(settings)
+        return settings
 
     async def update(
         self,

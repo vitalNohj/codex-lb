@@ -5,7 +5,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import {
   REASONING_EFFORT_OPTIONS,
   REASONING_EFFORT_UNSET,
@@ -59,9 +58,7 @@ export function SidecarEffortSelect({
     const effort: SidecarReasoningEffort | null =
       value === REASONING_EFFORT_UNSET ? null : (value as SidecarReasoningEffort);
     const patch = { [field]: effort } as Partial<SettingsUpdateRequest>;
-    void updateSettingsMutation.mutateAsync(
-      buildSettingsUpdateRequest(settings, patch),
-    );
+    void updateSettingsMutation.mutateAsync(patch);
   };
   if (compact) {
     return (

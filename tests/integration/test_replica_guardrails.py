@@ -372,3 +372,81 @@ async def test_settings_repository_conflict_maps_to_dashboard_settings_conflict(
         row_a.sticky_threads_enabled = False
         with pytest.raises(DashboardSettingsConflictError):
             await repo_a.commit_refresh(row_a)
+
+
+@pytest.mark.asyncio
+async def test_operational_settings_write_does_not_increment_version(db_setup):
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        row = await repo.get_or_create()
+        version = row.version
+        updated = await repo.update_operational(
+            claude_sidecar_last_health_status="healthy",
+            claude_sidecar_last_health_message="ok",
+        )
+        assert updated.version == version
+        assert updated.claude_sidecar_last_health_status == "healthy"
+        assert updated.claude_sidecar_last_health_message == "ok"
+
+
+@pytest.mark.asyncio
+async def test_settings_put_accepts_expected_version_after_operational_write(async_client):
+    response = await async_client.get("/api/settings")
+    current_version = response.json()["version"]
+
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update_operational(claude_sidecar_last_health_message="poll")
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"expectedVersion": current_version, "stickyThreadsEnabled": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["stickyThreadsEnabled"] is False
+    assert response.json()["version"] == current_version + 1
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_sees_operational_write_from_other_session(db_setup):
+    async with SessionLocal() as session_a, SessionLocal() as session_b:
+        repo_a = SettingsRepository(session_a)
+        repo_b = SettingsRepository(session_b)
+        row_a = await repo_a.get_or_create()
+        stale_json = row_a.claude_sidecar_quota_state_json
+        poller_json = '{"accounts":[{"name":"acct","disabled":false}]}'
+        await repo_b.update_operational(claude_sidecar_quota_state_json=poller_json)
+        fresh = await repo_a.get_fresh()
+        assert fresh.claude_sidecar_quota_state_json == poller_json
+        assert fresh.claude_sidecar_quota_state_json != stale_json
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_does_not_commit_caller_session_writes(db_setup):
+    async with SessionLocal() as session_a, SessionLocal() as session_b:
+        repo_a = SettingsRepository(session_a)
+        row_a = await repo_a.get_or_create()
+        original = row_a.sticky_threads_enabled
+        row_a.sticky_threads_enabled = not original
+        await repo_a.get_fresh()
+        assert row_a.sticky_threads_enabled != original
+        other = await SettingsRepository(session_b).get_or_create()
+        assert other.sticky_threads_enabled == original
+        await session_a.rollback()
+        reloaded = await SettingsRepository(session_a).get_or_create()
+        assert reloaded.sticky_threads_enabled == original
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_then_operational_write_on_same_session(db_setup):
+    async with SessionLocal() as session_a, SessionLocal() as session_b:
+        repo_a = SettingsRepository(session_a)
+        repo_b = SettingsRepository(session_b)
+        await repo_a.get_or_create()
+        await repo_b.update_operational(claude_sidecar_quota_state_json='{"accounts":[]}')
+        fresh = await repo_a.get_fresh()
+        assert fresh.claude_sidecar_quota_state_json == '{"accounts":[]}'
+        updated = await repo_a.update_operational(
+            claude_sidecar_quota_state_json='{"accounts":[{"name":"acct","disabled":true}]}',
+        )
+        assert updated.claude_sidecar_quota_state_json == '{"accounts":[{"name":"acct","disabled":true}]}'

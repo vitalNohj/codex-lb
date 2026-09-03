@@ -36,13 +36,7 @@ describe("GuestAccessSettings", () => {
 
     await user.click(screen.getByRole("switch"));
 
-    expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({
-        stickyThreadsEnabled: settings.stickyThreadsEnabled,
-        preferEarlierResetAccounts: settings.preferEarlierResetAccounts,
-        guestAccessEnabled: true,
-      }),
-    );
+    expect(onSave).toHaveBeenCalledWith({ guestAccessEnabled: true });
   });
 
   it("sets an optional guest password and refreshes settings", async () => {

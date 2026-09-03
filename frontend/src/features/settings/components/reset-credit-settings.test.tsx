@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ResetCreditSettings } from "@/features/settings/components/reset-credit-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
@@ -64,7 +63,7 @@ describe("ResetCreditSettings", () => {
     await user.click(screen.getByRole("switch", { name }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave).toHaveBeenCalledWith(buildSettingsUpdateRequest(settings, patch));
+    expect(onSave).toHaveBeenCalledWith(patch);
   });
 
   it("disables reset-credit switches while settings are busy", () => {

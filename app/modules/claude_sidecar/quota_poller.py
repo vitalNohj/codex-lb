@@ -111,7 +111,7 @@ class ClaudeSidecarQuotaPoller:
         try:
             async with get_background_session() as session:
                 repo = SettingsRepository(session)
-                await repo.update(
+                await repo.update_operational(
                     claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
                     claude_sidecar_quota_checked_at=snapshot.checked_at,
                 )

@@ -4,13 +4,12 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type DataRetentionSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
 };
 
 const MAX_RETENTION_DAYS = 3650;
@@ -74,7 +73,7 @@ export function DataRetentionSettings({ settings, busy, onSave }: DataRetentionS
     if (usageHistoryChanged && parsedUsageHistory.valid) {
       patch.usageHistoryRetentionOverrideDays = parsedUsageHistory.value;
     }
-    void onSave(buildSettingsUpdateRequest(settings, patch));
+    void onSave(patch);
   };
 
   const showRequestLogInheritedHint = requestLogDays.trim() === "";
