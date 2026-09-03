@@ -28,3 +28,17 @@ Settings mutations MUST send only the fields the operator changed, plus `expecte
 - **GIVEN** two settings controls saved in sequence before the page is reloaded
 - **WHEN** both mutations complete
 - **THEN** both field values remain as the operator set them
+
+#### Scenario: Sidecar config persist does not stamp render expectedVersion
+
+- **GIVEN** an External Integrations card whose prefixes and full models live in local component state
+- **WHEN** the operator adds a prefix after a scalar toggle has already advanced `settings.version`
+- **THEN** the persist call MUST omit `expectedVersion`
+- **AND** the save MUST use the latest cached row version rather than fail the collection pre-flight guard
+
+#### Scenario: Queued collection patch after this client's save is not a foreign conflict
+
+- **GIVEN** a collection patch whose render `expectedVersion` is older than the cache because this client just saved
+- **WHEN** the queued mutation runs
+- **THEN** the client MUST send the patch against the cache version this client wrote
+- **AND** MUST NOT throw `settings_conflict` before the PUT

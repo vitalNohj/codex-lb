@@ -405,3 +405,17 @@ async def test_settings_put_accepts_expected_version_after_operational_write(asy
     assert response.status_code == 200
     assert response.json()["stickyThreadsEnabled"] is False
     assert response.json()["version"] == current_version + 1
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_sees_operational_write_from_other_session(db_setup):
+    async with SessionLocal() as session_a, SessionLocal() as session_b:
+        repo_a = SettingsRepository(session_a)
+        repo_b = SettingsRepository(session_b)
+        row_a = await repo_a.get_or_create()
+        stale_json = row_a.claude_sidecar_quota_state_json
+        poller_json = '{"accounts":[{"name":"acct","disabled":false}]}'
+        await repo_b.update_operational(claude_sidecar_quota_state_json=poller_json)
+        fresh = await repo_a.get_fresh()
+        assert fresh.claude_sidecar_quota_state_json == poller_json
+        assert fresh.claude_sidecar_quota_state_json != stale_json

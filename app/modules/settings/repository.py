@@ -209,8 +209,13 @@ class SettingsRepository:
         ``get_or_create`` can return a session-cached instance. Pause/resume
         patches the quota snapshot after an HTTP round-trip, during which the
         poller may have written the same column through ``update_operational``.
+
+        SQLite pins a read snapshot at the first SELECT of a transaction, so
+        ``refresh`` alone cannot see the poller's commit. COMMIT ends that
+        snapshot (same pattern as sticky ``release_read_snapshot``).
         """
         row = await self.get_or_create()
+        await self._session.commit()
         await self._session.refresh(row)
         return row
 

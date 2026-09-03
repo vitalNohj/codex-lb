@@ -254,6 +254,46 @@ describe("useSettings", () => {
       toastError.mockRestore();
     }
   });
+
+  it("sends a queued collection patch after this client's own save", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({ version: 3, stickyThreadsEnabled: false });
+    const afterOwnSave = createDashboardSettings({ version: 4, stickyThreadsEnabled: true });
+    const afterCollection = createDashboardSettings({
+      version: 5,
+      stickyThreadsEnabled: true,
+      modelAliases: { north: "gpt-5.4" },
+    });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const updateSpy = vi
+      .spyOn(settingsApi, "updateSettings")
+      .mockResolvedValueOnce(afterOwnSave)
+      .mockResolvedValueOnce(afterCollection);
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      await result.current.updateSettingsMutation.mutateAsync({ stickyThreadsEnabled: true });
+      queryClient.setQueryData(["settings", "detail"], afterOwnSave);
+
+      await result.current.updateSettingsMutation.mutateAsync({
+        modelAliases: { north: "gpt-5.4" },
+        expectedVersion: 3,
+      });
+
+      expect(updateSpy).toHaveBeenCalledTimes(2);
+      expect(updateSpy).toHaveBeenNthCalledWith(2, {
+        modelAliases: { north: "gpt-5.4" },
+        expectedVersion: 4,
+      });
+    } finally {
+      updateSpy.mockRestore();
+    }
+  });
 });
 
 describe("useTelemetryConsent", () => {

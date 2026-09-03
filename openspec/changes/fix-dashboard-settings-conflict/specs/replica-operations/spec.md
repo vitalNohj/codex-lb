@@ -43,3 +43,10 @@ The dashboard settings row SHALL carry a monotonically increasing `version` incr
 - **WHEN** a sidecar quota snapshot, health check, or test-connection result is persisted
 - **THEN** `dashboard_settings.version` is unchanged
 - **AND** a later `PUT /api/settings` carrying that `expectedVersion` is accepted
+
+#### Scenario: Pause snapshot re-read sees a concurrent poller write
+
+- **GIVEN** a pause request whose session already read `dashboard_settings`
+- **WHEN** the quota poller commits a new `claude_sidecar_quota_state_json` on another connection before the pause patches `disabled`
+- **THEN** the pause path MUST end its read snapshot and reload the row
+- **AND** the subsequent operational write MUST merge `disabled` into that latest snapshot rather than the pre-poller JSON

@@ -18,3 +18,4 @@
 - [x] 3.3 Hook test: first PUT 409 `settings_conflict`, retry with fresh version succeeds and does not toast the conflict.
 - [x] 3.4 Cold cache fetches before PUT; collection-valued 409s refetch and surface the conflict without retry.
 - [x] 3.5 Pause snapshot re-reads quota JSON before write; collection patches carry render `expectedVersion` and refuse restamp when stale; `weeklyPaceWorkingDays` is treated as a collection.
+- [x] 3.6 `get_fresh` commits before refresh; sidecar `persistConfig` omits render `expectedVersion`; collection pre-flight skips when the cache version is this client's last write.

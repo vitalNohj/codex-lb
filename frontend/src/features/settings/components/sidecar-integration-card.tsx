@@ -424,8 +424,8 @@ function SidecarIntegrationCardProvider({
     setSaveError(null);
     setSavePending(true);
     try {
-      await onSave({
-        ...buildPatch({
+      await onSave(
+        buildPatch({
           baseUrl: baseUrl.trim(),
           apiKey: (overrides.apiKey ?? "").trim(),
           managementKey: (overrides.managementKey ?? "").trim(),
@@ -436,8 +436,7 @@ function SidecarIntegrationCardProvider({
           cacheTtl: parsedCacheTtl,
           pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
         }),
-        expectedVersion: settings.version,
-      });
+      );
       await onTestConnection().catch(() => null);
     } catch (error) {
       setSaveError(

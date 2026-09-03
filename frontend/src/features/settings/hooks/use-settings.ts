@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -50,6 +50,7 @@ const SETTINGS_DETAIL_QUERY_KEY = ["settings", "detail"] as const;
 const SETTINGS_UPSTREAM_PROXY_QUERY_KEY = ["settings", "upstream-proxy"] as const;
 
 let settingsSaveChain: Promise<unknown> = Promise.resolve();
+const lastVersionWrittenByClient = new WeakMap<QueryClient, number>();
 
 function enqueueSettingsSave<T>(work: () => Promise<T>): Promise<T> {
   const run = settingsSaveChain.then(work, work);
@@ -87,6 +88,13 @@ function patchContainsCollection(fields: Partial<SettingsUpdateRequest>): boolea
   return SETTINGS_COLLECTION_FIELDS.some((field) => fields[field] !== undefined);
 }
 
+function rememberWrittenVersion(queryClient: QueryClient, saved: DashboardSettings): DashboardSettings {
+  if (saved.version !== undefined) {
+    lastVersionWrittenByClient.set(queryClient, saved.version);
+  }
+  return saved;
+}
+
 async function persistSettingsPatch(
   queryClient: ReturnType<typeof useQueryClient>,
   patch: Partial<SettingsUpdateRequest>,
@@ -103,11 +111,13 @@ async function persistSettingsPatch(
     cached = await getSettings();
     queryClient.setQueryData(SETTINGS_DETAIL_QUERY_KEY, cached);
   }
+  const lastWritten = lastVersionWrittenByClient.get(queryClient);
   if (
     patchContainsCollection(fields) &&
     snapshotVersion !== undefined &&
     cached.version !== undefined &&
-    snapshotVersion !== cached.version
+    snapshotVersion !== cached.version &&
+    cached.version !== lastWritten
   ) {
     throw new ApiError({
       message: "Settings were modified since this form was loaded; reload and retry",
@@ -116,7 +126,7 @@ async function persistSettingsPatch(
     });
   }
   try {
-    return await send(cached.version);
+    return rememberWrittenVersion(queryClient, await send(cached.version));
   } catch (error) {
     if (!isSettingsConflict(error)) {
       throw error;
@@ -126,7 +136,7 @@ async function persistSettingsPatch(
     if (patchContainsCollection(fields)) {
       throw error;
     }
-    return await send(fresh.version);
+    return rememberWrittenVersion(queryClient, await send(fresh.version));
   }
 }
 

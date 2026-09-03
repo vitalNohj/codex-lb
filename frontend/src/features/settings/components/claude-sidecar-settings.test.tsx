@@ -163,6 +163,7 @@ describe("ClaudeSidecarSettings", () => {
         }),
       ),
     );
+    expect(onSave.mock.calls.at(-1)?.[0]).not.toHaveProperty("expectedVersion");
   });
 
   it("does not persist while a timeout is invalid", async () => {
