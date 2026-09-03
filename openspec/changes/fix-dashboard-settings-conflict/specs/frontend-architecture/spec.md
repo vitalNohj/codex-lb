@@ -35,6 +35,7 @@ Settings mutations MUST send only the fields the operator changed, plus `expecte
 - **WHEN** the operator adds a prefix
 - **THEN** the persist call MUST send `expectedVersion` equal to the version those local collections were built from
 - **AND** MUST NOT restamp from a later `settings.version` that a scalar toggle advanced
+- **AND** after a successful save the origin version MUST advance to the returned row version
 
 #### Scenario: Queued collection patch after this client's save is not a foreign conflict
 

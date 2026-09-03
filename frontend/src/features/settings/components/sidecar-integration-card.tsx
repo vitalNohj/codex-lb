@@ -128,7 +128,7 @@ type SidecarIntegrationCardProviderProps = {
     rows: DiscoveredModelSummary[];
     isLoading: boolean;
   };
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   onTestConnection: () => Promise<unknown>;
   buildPatch: (state: {
     baseUrl: string;
@@ -425,7 +425,7 @@ function SidecarIntegrationCardProvider({
     setSaveError(null);
     setSavePending(true);
     try {
-      const saved = (await onSave({
+      const saved = await onSave({
         ...buildPatch({
           baseUrl: baseUrl.trim(),
           apiKey: (overrides.apiKey ?? "").trim(),
@@ -440,8 +440,8 @@ function SidecarIntegrationCardProvider({
         ...(localCollectionsVersion.current === undefined
           ? {}
           : { expectedVersion: localCollectionsVersion.current }),
-      })) as unknown as { version?: number } | undefined;
-      if (typeof saved?.version === "number") {
+      });
+      if (saved && typeof saved.version === "number") {
         localCollectionsVersion.current = saved.version;
       }
       await onTestConnection().catch(() => null);

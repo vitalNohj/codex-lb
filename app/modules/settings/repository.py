@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -204,28 +204,16 @@ class SettingsRepository:
         return row
 
     async def get_fresh(self) -> DashboardSettings:
-        """Return the settings row reloaded from a new transaction.
+        """Return settings reloaded from a new read snapshot.
 
-        ``get_or_create`` can return a session-cached instance. Pause/resume
-        patches the quota snapshot after an HTTP round-trip, during which the
-        poller may have written the same column through ``update_operational``.
-
-        SQLite pins a read snapshot at the first SELECT of a transaction, so
-        ``refresh`` on this session cannot see the poller's commit. A dedicated
-        session starts a new snapshot without COMMITting the caller's pending
-        writes.
+        SQLite pins a snapshot at the first SELECT. ROLLBACK ends that
+        snapshot without flushing pending writes (COMMIT would make them
+        durable). The following ``get_or_create`` starts a new transaction
+        that sees concurrent ``update_operational`` commits, and a later
+        Core UPDATE on this session does not hit SQLITE_BUSY_SNAPSHOT.
         """
-        factory = async_sessionmaker(
-            self._session.bind,
-            expire_on_commit=False,
-            class_=AsyncSession,
-        )
-        async with factory() as session:
-            existing = await session.get(DashboardSettings, _SETTINGS_ID)
-            if existing is None:
-                return await self.get_or_create()
-            session.expunge(existing)
-            return existing
+        await self._session.rollback()
+        return await self.get_or_create()
 
     async def update_operational(
         self,

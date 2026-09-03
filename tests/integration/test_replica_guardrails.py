@@ -435,3 +435,18 @@ async def test_get_fresh_does_not_commit_caller_session_writes(db_setup):
         await session_a.rollback()
         reloaded = await SettingsRepository(session_a).get_or_create()
         assert reloaded.sticky_threads_enabled == original
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_then_operational_write_on_same_session(db_setup):
+    async with SessionLocal() as session_a, SessionLocal() as session_b:
+        repo_a = SettingsRepository(session_a)
+        repo_b = SettingsRepository(session_b)
+        await repo_a.get_or_create()
+        await repo_b.update_operational(claude_sidecar_quota_state_json='{"accounts":[]}')
+        fresh = await repo_a.get_fresh()
+        assert fresh.claude_sidecar_quota_state_json == '{"accounts":[]}'
+        updated = await repo_a.update_operational(
+            claude_sidecar_quota_state_json='{"accounts":[{"name":"acct","disabled":true}]}',
+        )
+        assert updated.claude_sidecar_quota_state_json == '{"accounts":[{"name":"acct","disabled":true}]}'

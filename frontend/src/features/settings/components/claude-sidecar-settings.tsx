@@ -11,7 +11,7 @@ import type {
 export type ClaudeSidecarSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   bare?: boolean;
 };
 

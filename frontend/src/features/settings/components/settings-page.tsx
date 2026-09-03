@@ -76,9 +76,8 @@ export function SettingsPage() {
     getErrorMessageOrNull(addPoolMemberMutation.error) ||
     getErrorMessageOrNull(testEndpointMutation.error);
 
-  const handleSave = async (patch: Partial<SettingsUpdateRequest>) => {
-    await updateSettingsMutation.mutateAsync(patch);
-  };
+  const handleSave = (patch: Partial<SettingsUpdateRequest>) =>
+    updateSettingsMutation.mutateAsync(patch);
 
   return (
     <div className="animate-fade-in-up space-y-6">

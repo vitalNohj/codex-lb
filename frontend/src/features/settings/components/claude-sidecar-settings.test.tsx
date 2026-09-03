@@ -168,6 +168,27 @@ describe("ClaudeSidecarSettings", () => {
     );
   });
 
+  it("advances the collection origin version from the saved row", async () => {
+    const user = userEvent.setup();
+    const onSave = vi
+      .fn()
+      .mockResolvedValueOnce({ version: 8 })
+      .mockResolvedValueOnce({ version: 9 });
+    renderWithQueryClient(
+      <ClaudeSidecarSettings settings={{ ...BASE_SETTINGS, version: 7 }} busy={false} onSave={onSave} />,
+    );
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+
+    await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "haiku");
+    await user.click(screen.getByRole("button", { name: "Add prefix" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ expectedVersion: 8 })),
+    );
+  });
+
   it("does not persist while a timeout is invalid", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);

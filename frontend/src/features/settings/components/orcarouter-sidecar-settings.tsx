@@ -7,7 +7,7 @@ import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settin
 export type OrcaRouterSidecarSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   bare?: boolean;
 };
 
