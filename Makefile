@@ -12,13 +12,41 @@ POSTGRES_PYTEST_TARGETS := \
 	tests/integration/test_repositories.py::test_accounts_upsert_with_merge_enabled_serializes_concurrent_same_email \
 	tests/integration/test_sticky_sessions_api.py::test_durable_bridge_owned_alias_registration_is_epoch_fenced \
 	tests/integration/test_proxy_api_extended.py::test_proxy_stream_usage_limit_returns_http_error \
+	tests/integration/test_api_keys_api.py::test_rate_limit_header_failure_releases_reservation_once \
 	tests/integration/test_codex_usage_api.py::test_codex_usage_aggregates_windows \
 	tests/integration/test_proxy_compact.py::test_proxy_compact_headers_include_monthly_only_credits \
 	tests/integration/test_repositories.py::test_accounts_upsert_with_merge_disabled_uses_identity_lock_on_postgresql \
 	tests/integration/test_db_session_timezone.py \
+	tests/integration/test_db_commit_durability.py \
 	tests/test_request_logs_options_api.py \
 	tests/integration/test_account_usage_rollup.py \
-	tests/integration/test_data_retention.py
+	tests/integration/test_account_deletion_background.py \
+	tests/integration/test_request_usage_time_rollup.py \
+	tests/integration/test_request_usage_rollup_parity.py \
+	tests/integration/test_migrations.py::test_request_usage_time_rollups_migration_upgrade_and_downgrade \
+	tests/integration/test_migrations.py::test_conversation_presence_rollup_migration_upgrade_and_downgrade \
+	tests/integration/test_data_retention.py \
+	tests/integration/test_plan_downgrade_observation_store.py \
+	tests/integration/test_accounts_api_probe.py::test_force_probe_confirms_paid_to_free_plan_downgrade \
+	tests/integration/test_accounts_api_probe.py::test_force_probe_keeps_paid_plan_for_unrecognized_payload_plan \
+	tests/integration/test_accounts_api_probe.py::test_pending_downgrade_evidence_is_persisted_for_all_replicas \
+	tests/integration/test_accounts_api_probe.py::test_reimport_clears_pending_downgrade_evidence \
+	tests/integration/test_repositories.py::test_replace_reauthorized_discards_pending_downgrade_evidence \
+	tests/integration/test_repositories.py::test_upsert_account_slot_discards_pending_downgrade_evidence_on_reimport \
+	tests/integration/test_migrations.py::test_account_plan_downgrade_observations_migration_upgrade_and_downgrade \
+	tests/integration/test_migrations.py::test_account_pending_deletion_migration_upgrade_and_downgrade \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_primary_query_plan_is_index_only_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_cutoff_query_plan_is_index_only_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_secondary_query_plan_is_index_only_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_covered_read_matches_non_covered_read_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_per_account_row_cap_keeps_newest_rows \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_row_cap_respects_per_account_cutoffs_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_row_cap_exempts_uncapped_recent_floor_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_capped_query_plan_is_index_only_postgresql \
+	tests/integration/test_usage_repository.py::test_bulk_history_since_capped_floor_query_plan_is_index_only_postgresql \
+	tests/integration/test_migrations.py::test_usage_history_bulk_covering_indexes_migration_upgrade_and_downgrade \
+	tests/integration/test_migrations.py::test_usage_history_covering_index_migration_repairs_invalid_leftover_postgresql \
+	tests/integration/test_migrations.py::test_usage_history_autovacuum_tuning_migration_sets_and_resets_reloptions_postgresql
 SHELL := /bin/bash
 
 .PHONY: help
@@ -69,7 +97,7 @@ lint: architecture-check
 	uv run ruff format --check .
 
 architecture-check:
-	python scripts/check_proxy_architecture.py
+	uv run python scripts/check_proxy_architecture.py
 
 typecheck:
 	uv sync --dev --frozen
@@ -93,9 +121,9 @@ test-integration-core: frontend-build
 # guards that the shards always partition the full selection exactly.
 test-integration-core-shard: frontend-build
 	uv sync --dev --frozen
-	python .github/scripts/pytest_shards.py --shard-count $(INTEGRATION_CORE_SHARD_COUNT) --verify
+	uv run python .github/scripts/pytest_shards.py --shard-count $(INTEGRATION_CORE_SHARD_COUNT) --verify
 	PYTHONFAULTHANDLER=1 uv run pytest $(PYTEST_ARGS) \
-	  $$(python .github/scripts/pytest_shards.py --shard-count $(INTEGRATION_CORE_SHARD_COUNT) --shard $(SHARD))
+	  $$(uv run python .github/scripts/pytest_shards.py --shard-count $(INTEGRATION_CORE_SHARD_COUNT) --shard $(SHARD))
 
 test-integration-core-1:
 	$(MAKE) test-integration-core-shard SHARD=1
@@ -142,7 +170,7 @@ package: frontend-build
 	uv run python -c "import app; import app.main; print('import ok')"
 	rm -rf build dist *.egg-info
 	uvx --from build==1.3.0 python -m build
-	python scripts/verify-wheel-assets.py
+	uv run python scripts/verify-wheel-assets.py
 
 .PHONY: docker
 docker:

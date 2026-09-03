@@ -1,12 +1,16 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Navigate, Outlet, Route, Routes } from "react-router-dom";
 
 import { AppHeader } from "@/components/layout/app-header";
-import { StatusBar } from "@/components/layout/status-bar";
+import {
+  STATUS_BAR_DEFAULT_HEIGHT_PX,
+  StatusBar,
+} from "@/components/layout/status-bar";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthGate } from "@/features/auth/components/auth-gate";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
+import { TelemetryConsentDialog } from "@/features/settings/components/telemetry-consent-dialog";
 import { useTimeFormatStore } from "@/hooks/use-time-format";
 
 // Route-level code splitting: only the visited page's chunk loads, instead
@@ -36,9 +40,14 @@ function AppLayout() {
   const startAdminLogin = useAuthStore((state) => state.startAdminLogin);
   const timeFormat = useTimeFormatStore((state) => state.timeFormat);
   const isGuest = role === "guest";
+  const [statusBarHeight, setStatusBarHeight] = useState(STATUS_BAR_DEFAULT_HEIGHT_PX);
 
   return (
-    <div className="flex min-h-screen flex-col bg-background pb-10" data-time-format={timeFormat}>
+    <div
+      className="flex min-h-screen flex-col bg-background"
+      data-time-format={timeFormat}
+      style={{ paddingBottom: statusBarHeight }}
+    >
       <AppHeader
         onLogout={() => {
           void logout();
@@ -52,7 +61,8 @@ function AppLayout() {
           <Outlet />
         </Suspense>
       </main>
-      <StatusBar />
+      <StatusBar onHeightChange={setStatusBarHeight} />
+      <TelemetryConsentDialog />
     </div>
   );
 }
@@ -71,7 +81,7 @@ export default function App() {
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/apis" element={<ApisPage />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/firewall" element={<Navigate to="/settings" replace />} />
+            <Route path="/firewall" element={<Navigate to="/settings?advanced=1#firewall" replace />} />
           </Route>
         </Routes>
       </AuthGate>

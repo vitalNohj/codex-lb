@@ -362,12 +362,15 @@ def test_calculate_cost_from_usage_flex_service_tier():
         ("gpt-5.6-sol", None, 30.55),
         ("gpt-5.6-sol", "flex", 15.275),
         ("gpt-5.6-sol", "priority", 61.1),
+        ("gpt-5.6-sol", "fast", 61.1),
         ("gpt-5.6-terra", None, 12.22),
         ("gpt-5.6-terra", "flex", 6.11),
         ("gpt-5.6-terra", "priority", 24.44),
+        ("gpt-5.6-terra", "fast", 24.44),
         ("gpt-5.6-luna", None, 1.222),
         ("gpt-5.6-luna", "flex", 0.611),
         ("gpt-5.6-luna", "priority", 2.444),
+        ("gpt-5.6-luna", "fast", 2.444),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_service_tiers(

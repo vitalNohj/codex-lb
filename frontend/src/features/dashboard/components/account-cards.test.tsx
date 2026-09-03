@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { AccountCards } from "@/features/dashboard/components/account-cards";
@@ -220,5 +221,13 @@ describe("AccountCards", () => {
     expect(screen.getByText("one@example.com")).toBeInTheDocument();
     expect(screen.queryByText("CLI Proxy API")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
+  it("links the empty-account state to the Accounts page", () => {
+    render(
+      <MemoryRouter>
+        <AccountCards accounts={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "Add accounts" })).toHaveAttribute("href", "/accounts");
   });
 });

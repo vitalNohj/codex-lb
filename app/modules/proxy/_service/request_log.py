@@ -22,11 +22,15 @@ _PERSISTENCE_TASK_NAME_PREFIXES = (
     "proxy-request-log-",
     "proxy-stream-api-key-settle-",
     "proxy-release_stream_api_key_reservation",
+    "proxy-websocket-terminal-",
+    "proxy-websocket-transport-end-",
+    "proxy-websocket-finalization-",
+    "http-bridge-recovery-settlement-",
 )
 
 
-def _is_persistence_task(task: asyncio.Task[None]) -> bool:
-    return task.get_name().startswith(_PERSISTENCE_TASK_NAME_PREFIXES)
+def _is_persistence_task(task: asyncio.Task[None], prefixes: tuple[str, ...] | None = None) -> bool:
+    return task.get_name().startswith(prefixes or _PERSISTENCE_TASK_NAME_PREFIXES)
 
 
 _REQUEST_TRANSPORT_HTTP = "http"
@@ -180,6 +184,7 @@ class _RequestLogMixin:
         upstream_error_code: str | None = None,
         bridge_stage: str | None = None,
         request_kind: str = "normal",
+        connection_request_kind: str | None = None,
         upstream_proxy_route_mode: str | None = None,
         upstream_proxy_pool_id: str | None = None,
         upstream_proxy_endpoint_id: str | None = None,
@@ -229,6 +234,7 @@ class _RequestLogMixin:
                 upstream_error_code=upstream_error_code,
                 bridge_stage=bridge_stage,
                 request_kind=request_kind,
+                connection_request_kind=connection_request_kind,
                 upstream_proxy_route_mode=upstream_proxy_route_mode,
                 upstream_proxy_pool_id=upstream_proxy_pool_id,
                 upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
@@ -291,7 +297,11 @@ class _RequestLogMixin:
             model=model,
         )
 
-    async def drain_persistence_tasks(self, timeout_seconds: float) -> bool:
+    async def drain_persistence_tasks(
+        self,
+        timeout_seconds: float,
+        task_name_prefixes: tuple[str, ...] | None = None,
+    ) -> bool:
         """Await detached request-log and settlement tasks, e.g. at shutdown.
 
         Persistence runs detached from the response path, so a graceful
@@ -309,14 +319,14 @@ class _RequestLogMixin:
             pending = {
                 task
                 for task in (proxy._request_log_tasks | proxy._background_cleanup_tasks)
-                if not task.done() and _is_persistence_task(task)
+                if not task.done() and _is_persistence_task(task, task_name_prefixes)
             }
             if not pending:
                 # One scheduling tick so just-finished tasks' done callbacks
                 # (which may enqueue follow-up tasks) run before we re-check.
                 await asyncio.sleep(0)
                 if not any(
-                    _is_persistence_task(task)
+                    _is_persistence_task(task, task_name_prefixes)
                     for task in (proxy._request_log_tasks | proxy._background_cleanup_tasks)
                     if not task.done()
                 ):
@@ -403,6 +413,7 @@ class _RequestLogMixin:
         upstream_error_code: str | None = None,
         bridge_stage: str | None = None,
         request_kind: str = "normal",
+        connection_request_kind: str | None = None,
         upstream_proxy_route_mode: str | None = None,
         upstream_proxy_pool_id: str | None = None,
         upstream_proxy_endpoint_id: str | None = None,
@@ -434,6 +445,7 @@ class _RequestLogMixin:
                     requested_service_tier=requested_service_tier,
                     actual_service_tier=actual_service_tier,
                     request_kind=request_kind,
+                    connection_request_kind=connection_request_kind,
                     latency_ms=latency_ms,
                     latency_first_token_ms=latency_first_token_ms,
                     latency_queue_ms=latency_queue_ms,

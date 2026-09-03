@@ -47,6 +47,21 @@ def _helm_template(*args: str) -> str:
     return completed.stdout
 
 
+def _helm_template_failure(*args: str) -> subprocess.CalledProcessError:
+    if shutil.which("helm") is None:
+        pytest.skip("helm is required for chart rendering tests")
+    _ensure_chart_dependencies()
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        subprocess.run(
+            ["helm", "template", "codex-lb", str(_CHART_DIR), *args],
+            cwd=_REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    return exc_info.value
+
+
 def _helm_documents(rendered: str) -> list[dict]:
     return [document for document in yaml.safe_load_all(rendered) if document]
 
@@ -390,10 +405,43 @@ def test_deployment_prestop_starts_and_polls_local_drain() -> None:
     )
 
     assert "http://127.0.0.1:3456" in rendered
-    assert "/internal/drain/start" in rendered
-    assert "/internal/drain/status" in rendered
-    assert "deadline = time.monotonic() + 15" in rendered
-    assert "break" not in rendered
+    assert "-m" in rendered
+    assert "app.core.prestop" in rendered
+    assert "--routing-dwell-seconds" in rendered
+    assert '"15"' in rendered
+    assert "--drain-timeout-seconds" in rendered
+    assert '"30"' in rendered
+
+
+def test_deployment_rejects_routing_dwell_larger_than_drain_timeout() -> None:
+    failure = _helm_template_failure(
+        "--show-only",
+        "templates/deployment.yaml",
+        "--set",
+        "preStopSleepSeconds=31",
+        "--set",
+        "config.shutdownDrainTimeoutSeconds=30",
+        "--set",
+        "terminationGracePeriodSeconds=61",
+    )
+
+    assert "shutdownDrainTimeoutSeconds must be greater than or equal to preStopSleepSeconds" in failure.stderr
+
+
+def test_deployment_rejects_missing_post_drain_cleanup_buffer() -> None:
+    failure = _helm_template_failure(
+        "--show-only",
+        "templates/deployment.yaml",
+        "--set",
+        "preStopSleepSeconds=15",
+        "--set",
+        "config.shutdownDrainTimeoutSeconds=30",
+        "--set",
+        "terminationGracePeriodSeconds=44",
+    )
+
+    assert "terminationGracePeriodSeconds must cover preStop start fallback" in failure.stderr
+    assert "config.shutdownDrainTimeoutSeconds + 32" in failure.stderr
 
 
 def test_deployment_uses_service_port_for_container_and_probes() -> None:
@@ -537,6 +585,103 @@ def test_gateway_api_renders_ordered_path_matches_and_filters() -> None:
         }
     ]
     assert rules[1]["backendRefs"] == [{"name": "codex-lb", "port": 2455}]
+
+
+def test_gateway_api_can_create_application_specific_gateway() -> None:
+    rendered = _helm_template(
+        "--show-only",
+        "templates/gateway.yaml",
+        "--set",
+        "gatewayApi.enabled=true",
+        "--set",
+        "gatewayApi.gateway.create=true",
+        "--set",
+        "gatewayApi.gateway.gatewayClassName=envoy",
+    )
+
+    (gateway,) = _helm_documents(rendered)
+    assert gateway["apiVersion"] == "gateway.networking.k8s.io/v1"
+    assert gateway["kind"] == "Gateway"
+    assert gateway["metadata"]["name"] == "codex-lb"
+    assert gateway["spec"]["gatewayClassName"] == "envoy"
+    assert gateway["spec"]["listeners"] == [{"name": "http", "port": 80, "protocol": "HTTP"}]
+
+
+def test_gateway_api_httproute_attaches_to_chart_managed_gateway() -> None:
+    rendered = _helm_template(
+        "--show-only",
+        "templates/httproute.yaml",
+        "--set",
+        "gatewayApi.enabled=true",
+        "--set",
+        "gatewayApi.gateway.create=true",
+        "--set",
+        "gatewayApi.gateway.gatewayClassName=envoy",
+        "--set-string",
+        "gatewayApi.parentRefs[0].name=shared-gateway",
+        "--set-string",
+        "gatewayApi.parentRefs[0].namespace=gateway-system",
+    )
+
+    (route,) = _helm_documents(rendered)
+    assert route["spec"]["parentRefs"] == [{"name": "codex-lb"}]
+
+
+def test_gateway_api_gateway_supports_custom_listeners() -> None:
+    rendered = _helm_template(
+        "--show-only",
+        "templates/gateway.yaml",
+        "--set",
+        "gatewayApi.enabled=true",
+        "--set",
+        "gatewayApi.gateway.create=true",
+        "--set",
+        "gatewayApi.gateway.gatewayClassName=envoy",
+        "--set-string",
+        "gatewayApi.gateway.listeners[0].name=https",
+        "--set",
+        "gatewayApi.gateway.listeners[0].port=443",
+        "--set-string",
+        "gatewayApi.gateway.listeners[0].protocol=HTTPS",
+        "--set-string",
+        "gatewayApi.gateway.listeners[0].tls.mode=Terminate",
+        "--set-string",
+        "gatewayApi.gateway.listeners[0].tls.certificateRefs[0].name=codex-lb-tls",
+    )
+
+    (gateway,) = _helm_documents(rendered)
+    assert gateway["spec"]["listeners"] == [
+        {
+            "name": "https",
+            "port": 443,
+            "protocol": "HTTPS",
+            "tls": {"mode": "Terminate", "certificateRefs": [{"name": "codex-lb-tls"}]},
+        }
+    ]
+
+
+def test_gateway_api_gateway_requires_gateway_class_name() -> None:
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        _helm_template(
+            "--set",
+            "gatewayApi.enabled=true",
+            "--set",
+            "gatewayApi.gateway.create=true",
+        )
+
+    assert "gatewayApi.gateway.gatewayClassName" in excinfo.value.stderr
+
+
+def test_gateway_api_does_not_render_gateway_by_default() -> None:
+    rendered = _helm_template(
+        "--set",
+        "gatewayApi.enabled=true",
+    )
+
+    documents = _helm_documents(rendered)
+    assert all(document.get("kind") != "Gateway" for document in documents)
+    (route,) = [document for document in documents if document.get("kind") == "HTTPRoute"]
+    assert route["spec"]["parentRefs"] == [{"name": "gateway", "namespace": "gateway-system"}]
 
 
 def test_bundled_kind_smoke_preserves_primary_ingress_paths() -> None:

@@ -8,6 +8,7 @@ directly for determinism (no sleeps).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -160,6 +161,60 @@ async def test_remote_pause_stops_stale_bridge_session_reuse(db_setup, poller_sl
 
     await local_poller._poll_once()
     assert _http_bridge_session_account_active(stale_session) is False
+
+
+@pytest.mark.asyncio
+async def test_failed_prime_recovery_stops_stale_bridge_session_reuse(db_setup, poller_slot, monkeypatch) -> None:
+    """A failed startup version read must not let the first recovered poll
+    acknowledge a later peer pause without refreshing the warmed routing state."""
+    account_id = "acct-bus-prime-recovery"
+    await _insert_account(account_id)
+
+    # A namespace row already exists before this replica starts, but its
+    # baseline read fails transiently.
+    remote_poller = CacheInvalidationPoller(SessionLocal)
+    assert await remote_poller.bump(NAMESPACE_ACCOUNT_ROUTING) is True
+    flaky_versions = _FlakySessionFactory(failures=1)
+    local_poller = CacheInvalidationPoller(flaky_versions)
+    routing_cache = RoutingAvailabilityCache(SessionLocal)
+    monkeypatch.setattr("app.modules.proxy.account_cache._routing_availability_cache", routing_cache)
+    set_cache_invalidation_poller(local_poller)
+
+    callback_calls = 0
+
+    async def refresh_routing_snapshot() -> None:
+        nonlocal callback_calls
+        callback_calls += 1
+        await routing_cache.refresh_from_db()
+
+    local_poller.on_invalidation(NAMESPACE_ACCOUNT_ROUTING, refresh_routing_snapshot)
+
+    with pytest.raises(RuntimeError, match="baseline version read did not complete"):
+        await local_poller.prime()
+
+    # Startup continues and warms an ACTIVE snapshot after the failed prime.
+    await routing_cache.refresh_from_db()
+    stale_session = _fake_bridge_session(_make_account(account_id, AccountStatus.ACTIVE))
+    assert _http_bridge_session_account_active(stale_session) is True
+
+    # A peer pauses the account and advances the version before this replica's
+    # first successful background read.
+    await _set_account_status(account_id, AccountStatus.PAUSED)
+    assert await remote_poller.bump(NAMESPACE_ACCOUNT_ROUTING) is True
+
+    parked = asyncio.Event()
+
+    async def park_background_loop() -> None:
+        await parked.wait()
+
+    monkeypatch.setattr(local_poller, "_run", park_background_loop)
+    await local_poller.start()
+    try:
+        await local_poller._poll_once()
+        assert callback_calls == 1
+        assert _http_bridge_session_account_active(stale_session) is False
+    finally:
+        await local_poller.stop()
 
 
 @pytest.mark.asyncio
@@ -329,6 +384,66 @@ def test_namespace_log_labels_cover_all_namespaces() -> None:
             NAMESPACE_UPSTREAM_ROUTE,
         )
     }
+
+
+@pytest.mark.asyncio
+async def test_pending_bump_survives_a_cancelled_flush(db_setup, monkeypatch) -> None:
+    """The marker is cleared before the write is awaited, so a cancelled write
+    must restore it — otherwise the namespace is neither written nor pending
+    and no later cycle can retry it. (At process stop no cycle remains either
+    way; shutdown delivery is explicitly out of scope, and the restore there
+    only keeps the pending set honest.)"""
+    namespace = "test_flush_cancelled"
+    started = asyncio.Event()
+
+    async def never_finishes(ns: str) -> bool:
+        started.set()
+        await asyncio.Event().wait()
+        return True
+
+    poller = CacheInvalidationPoller(SessionLocal)
+    monkeypatch.setattr(poller, "bump", never_finishes)
+    poller.request_bump(namespace)
+
+    flush_task = asyncio.create_task(poller._flush_pending_bumps())
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    assert namespace not in poller._pending_bumps, "marker is cleared before the write, by design"
+
+    flush_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await flush_task
+
+    assert namespace in poller._pending_bumps
+    assert await _namespace_version(namespace) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_bump_survives_a_raising_flush_and_does_not_starve_others(db_setup, monkeypatch) -> None:
+    """A raise is abnormal (bump() reports failure by returning False), so it
+    must not abort the flush: the loop is sorted, and a persistently raising
+    namespace sorting first would otherwise starve every namespace after it
+    on every cycle. The raiser stays pending; the rest still land."""
+    raising_namespace = "test_flush_raised_a"
+    healthy_namespace = "test_flush_raised_b"
+    real_bump = CacheInvalidationPoller.bump
+
+    poller = CacheInvalidationPoller(SessionLocal)
+
+    async def raising_for_one(ns: str) -> bool:
+        if ns == raising_namespace:
+            raise RuntimeError("driver exploded")
+        return await real_bump(poller, ns)
+
+    monkeypatch.setattr(poller, "bump", raising_for_one)
+    poller.request_bump(raising_namespace)
+    poller.request_bump(healthy_namespace)
+
+    await poller._flush_pending_bumps()
+
+    assert raising_namespace in poller._pending_bumps
+    assert await _namespace_version(raising_namespace) is None
+    assert healthy_namespace not in poller._pending_bumps
+    assert await _namespace_version(healthy_namespace) == 1
 
 
 @pytest.mark.asyncio
@@ -609,6 +724,29 @@ async def test_initialize_failure_leaves_poller_uninitialized(db_setup) -> None:
 
 
 @pytest.mark.asyncio
+async def test_prime_retry_after_failure_remains_baseline_only(db_setup) -> None:
+    """Retrying prime before background start records a baseline without
+    callbacks; conservative recovery begins only when background polling starts."""
+    remote_poller = CacheInvalidationPoller(SessionLocal)
+    assert await remote_poller.bump(NAMESPACE_ACCOUNT_ROUTING) is True
+    expected_version = await _namespace_version(NAMESPACE_ACCOUNT_ROUTING)
+    assert expected_version is not None
+
+    calls: list[str] = []
+    poller = CacheInvalidationPoller(_FlakySessionFactory(failures=1))
+    poller.on_invalidation(NAMESPACE_ACCOUNT_ROUTING, lambda: calls.append("routing"))
+
+    with pytest.raises(RuntimeError, match="baseline version read did not complete"):
+        await poller.prime()
+    await poller.prime()
+
+    assert calls == []
+    assert await remote_poller.bump(NAMESPACE_ACCOUNT_ROUTING) is True
+    await poller._poll_once()
+    assert calls == ["routing"]
+
+
+@pytest.mark.asyncio
 async def test_bump_local_suppresses_source_callback_but_peer_still_fires(db_setup) -> None:
     """A replica that has already invalidated locally uses ``bump_local`` so its
     OWN poller does not re-fire the (whole-store) callback for the bump it just
@@ -715,3 +853,41 @@ async def test_inflight_poll_does_not_clobber_concurrent_local_bump(db_setup) ->
     await source._poll_once()
     assert source_calls == []
     assert source._known_versions.get(NAMESPACE_RESET_CREDITS) == 2
+
+
+@pytest.mark.asyncio
+async def test_aborted_bump_is_retried_by_the_running_poller(db_setup, monkeypatch) -> None:
+    """End-to-end: the point of restoring the marker is that the background
+    poller actually retries. Without the restore the first raise loses the
+    namespace and no later cycle ever writes its version."""
+    namespace = "test_abort_retried_by_poller"
+    attempts = 0
+    real_bump = CacheInvalidationPoller.bump
+
+    poller = CacheInvalidationPoller(SessionLocal, poll_interval_seconds=0.01)
+
+    retry_settled = asyncio.Event()
+
+    async def failing_then_real(ns: str) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("driver exploded")
+        result = await real_bump(poller, ns)
+        # Signal only after bump() fully returns: the committed row can become
+        # visible while the shielded session cleanup is still running, and
+        # stopping the poller at that instant would cancel the retry mid-flight.
+        retry_settled.set()
+        return result
+
+    monkeypatch.setattr(poller, "bump", failing_then_real)
+    poller.request_bump(namespace)
+    await poller.start()
+    try:
+        await asyncio.wait_for(retry_settled.wait(), timeout=5.0)
+    finally:
+        await poller.stop()
+
+    assert attempts >= 2, "the poller must retry the aborted namespace"
+    assert await _namespace_version(namespace) == 1
+    assert namespace not in poller._pending_bumps

@@ -21,6 +21,8 @@ import {
   OrcaRouterSidecarStatusResponseSchema,
   OrcaRouterSidecarTestResponseSchema,
   SettingsUpdateRequestSchema,
+  TelemetryConsentSchema,
+  TelemetryConsentUpdateRequestSchema,
   UpstreamProxyAdminSchema,
   UpstreamProxyEndpointCreateRequestSchema,
   UpstreamProxyEndpointSchema,
@@ -38,6 +40,7 @@ const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
 const ORCAROUTER_SIDECAR_PATH = "/api/orcarouter-sidecar";
 const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
 const OLLAMA_SIDECAR_PATH = "/api/ollama-sidecar";
+const TELEMETRY_PATH = `${SETTINGS_PATH}/telemetry`;
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -46,6 +49,18 @@ export function getSettings() {
 export function updateSettings(payload: unknown) {
   const validated = SettingsUpdateRequestSchema.parse(payload);
   return put(SETTINGS_PATH, DashboardSettingsSchema, {
+    body: validated,
+  });
+}
+
+export function getTelemetryConsent(options: { includePreview?: boolean } = {}) {
+  const path = options.includePreview ? `${TELEMETRY_PATH}?include_preview=true` : TELEMETRY_PATH;
+  return get(path, TelemetryConsentSchema);
+}
+
+export function updateTelemetryConsent(payload: unknown) {
+  const validated = TelemetryConsentUpdateRequestSchema.parse(payload);
+  return put(TELEMETRY_PATH, TelemetryConsentSchema, {
     body: validated,
   });
 }

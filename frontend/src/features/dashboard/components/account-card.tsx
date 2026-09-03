@@ -3,10 +3,16 @@ import { useTranslation } from "react-i18next";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
+import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import { StatusBadge } from "@/components/status-badge";
+import {
+  accountSubscriptionCredits,
+  formatCreditValue,
+  formatPurchasedCredits,
+} from "@/features/dashboard/account-credit-display";
 import { cn } from "@/lib/utils";
 import type { AccountSummary } from "@/features/dashboard/schemas";
 import type { SidecarAuthAccount } from "@/features/accounts/schemas";
@@ -92,6 +98,7 @@ export function AccountCard({ account, showAccountId = false, readOnly = false, 
 function NativeAccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
   const { t } = useTranslation();
   const blurred = usePrivacyStore((s) => s.blurred);
+  const dateDisplayFormat = useDateDisplayFormatStore((s) => s.dateDisplayFormat);
   const status = normalizeStatus(account.status);
   const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
   const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
@@ -101,16 +108,8 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
     account.windowMinutesMonthly != null &&
     account.windowMinutesPrimary == null &&
     account.windowMinutesSecondary == null;
-  const displayCredits = account.creditsBalance ?? (
-    monthlyOnly
-      ? account.remainingCreditsMonthly
-      : weeklyOnly
-        ? account.remainingCreditsSecondary
-        : (account.remainingCreditsSecondary ?? account.remainingCreditsPrimary)
-  );
-  const creditsLabel = account.creditsUnlimited ? t("common.states.unlimited") : (
-    displayCredits === null || displayCredits === undefined ? "-" : displayCredits.toFixed(2)
-  );
+  const subscriptionCreditsLabel = formatCreditValue(accountSubscriptionCredits(account));
+  const purchasedCreditsLabel = formatPurchasedCredits(account, t("common.states.unlimited"));
 
   const primaryReset = formatQuotaResetLabel(account.resetAtPrimary ?? null);
   const secondaryReset = formatQuotaResetLabel(account.resetAtSecondary ?? null);
@@ -129,7 +128,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
     ? t("dashboard.accounts.disableWarmupFor", { account: title })
     : t("dashboard.accounts.enableWarmupFor", { account: title });
   const warmupDetail = account.limitWarmup
-    ? `${formatSlug(account.limitWarmup.status)} | ${formatWarmupWindow(account.limitWarmup.window)} | ${formatSlug(account.limitWarmup.model)} | ${formatDateTimeInline(account.limitWarmup.completedAt ?? account.limitWarmup.attemptedAt)}`
+    ? `${formatSlug(account.limitWarmup.status)} | ${formatWarmupWindow(account.limitWarmup.window)} | ${formatSlug(account.limitWarmup.model)} | ${formatDateTimeInline(account.limitWarmup.completedAt ?? account.limitWarmup.attemptedAt, dateDisplayFormat)}`
     : t("accounts.listItem.noAttempts");
   const availableResetCredits = account.availableResetCredits ?? 0;
   const hasResetCredits = availableResetCredits > 0;
@@ -210,11 +209,19 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
         </Button>
       </div>
 
-      <div className="mt-3 text-xs text-muted-foreground">
-        {t("components.donut.credits")}:{" "}
-        <span className="font-medium tabular-nums text-foreground">
-          {creditsLabel}
-        </span>
+      <div className="mt-3 grid gap-1 text-xs text-muted-foreground">
+        <p>
+          {t("dashboard.accounts.subscriptionCredits")}:{" "}
+          <span className="font-medium tabular-nums text-foreground">
+            {subscriptionCreditsLabel}
+          </span>
+        </p>
+        <p>
+          {t("dashboard.accounts.purchasedCredits")}:{" "}
+          <span className="font-medium tabular-nums text-foreground">
+            {purchasedCreditsLabel}
+          </span>
+        </p>
       </div>
 
       {/* Actions */}

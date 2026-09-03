@@ -89,25 +89,37 @@ for dashboard API updates.
 
 ### Requirement: Request-log pruning never deletes unfolded rows
 
-Request-log pruning MUST run only while the fold is current (watermark within two fold lags of now) and MUST delete only rows with `requested_at` older than the retention cutoff AND at least one fold lag below the watermark, so concurrent summary readers holding a slightly older watermark can never lose rows from a just-folded window. When no rollup watermark exists, or the fold is catching up (initial backfill, stalled scheduler), request-log pruning MUST be skipped.
+Request-log pruning MUST gate on every usage-rollup watermark — the lifetime `folded_through`, the time-axis `hourly_folded_through`, and the conversation satellite's `conversation_folded_through` — combined as their minimum. Pruning MUST run only while the combined fold is current (the minimum watermark within two fold lags of now) and MUST delete only rows with `requested_at` older than the retention cutoff AND at least one fold lag below the minimum watermark, so concurrent summary readers holding a slightly older watermark can never lose rows from a just-folded window and no rollup is ever robbed of raw it has not folded. When no rollup watermark exists, or any fold is catching up (initial backfill, stalled scheduler), request-log pruning MUST be skipped.
 
 #### Scenario: Unfolded rows survive pruning
 
-- **GIVEN** a request-log row older than the retention cutoff whose `requested_at` is above the fold watermark
+- **GIVEN** a request-log row older than the retention cutoff whose `requested_at` is above any fold watermark
 - **WHEN** the retention job runs
 - **THEN** the row MUST NOT be deleted
 
 #### Scenario: Stalled fold suspends pruning
 
-- **GIVEN** a fold watermark older than two fold lags
+- **GIVEN** any fold watermark older than two fold lags
 - **WHEN** the retention job runs with request-log retention enabled
 - **THEN** no `request_logs` rows are deleted
+
+#### Scenario: Conversation backfill suspends pruning
+
+- **GIVEN** a deployment upgraded with existing history, where the lifetime and hourly watermarks are current but `conversation_folded_through` is still at or near the epoch
+- **WHEN** the retention job runs with request-log retention enabled
+- **THEN** no `request_logs` rows are deleted until the conversation backfill watermark becomes current
 
 #### Scenario: Lifetime totals are unchanged by pruning
 
 - **GIVEN** folded request-log rows older than the retention cutoff
 - **WHEN** the retention job deletes them and account usage summaries are read afterwards
 - **THEN** per-account lifetime totals MUST equal their pre-pruning values
+
+#### Scenario: Conversation statistics are unchanged by pruning
+
+- **GIVEN** request-log rows folded into the conversation presence satellite and older than the retention cutoff
+- **WHEN** the retention job deletes them
+- **THEN** the switched distinct-conversation reads over the pruned period MUST equal their pre-pruning values
 
 #### Scenario: Pruning is skipped before the first fold
 
@@ -159,4 +171,33 @@ retention MUST NOT run a pass.
 - **GIVEN** dashboard and env retention both resolve to 0
 - **WHEN** the scheduler ticks
 - **THEN** no retention pass runs
+
+### Requirement: Disabled request-log pruning is explained and presets are non-destructive
+
+When the effective request-log retention value is `0`, the Settings data retention card SHALL show neutral informational text that request-log pruning is disabled, logs are retained indefinitely, and storage will grow over time, and SHALL offer 30-day and 90-day request-log retention presets. The informational text MUST NOT characterize disabled pruning as unsafe or direct the operator to change it. Activating a preset MUST update only the local request-log retention form value and MUST NOT persist any setting until the operator activates the existing explicit save action. Rendering the information and presets MUST NOT change the stored override or any other retention policy.
+
+#### Scenario: Effective disabled state shows information and presets
+
+- **GIVEN** effective request-log retention is `0`
+- **WHEN** an operator views the data retention card
+- **THEN** the card explains neutrally that request-log pruning is disabled and
+  logs are retained indefinitely
+- **AND** the text notes that storage will grow over time without directing the
+  operator to change the policy
+- **AND** the card offers 30-day and 90-day request-log retention presets
+- **AND** no settings update is submitted
+
+#### Scenario: Preset selection requires explicit save
+
+- **GIVEN** effective request-log retention is `0`
+- **WHEN** an operator activates the 30-day or 90-day preset
+- **THEN** the request-log retention form value changes to the selected number
+- **AND** no settings update is submitted until the operator activates save
+- **AND** usage-history retention remains unchanged
+
+#### Scenario: Enabled effective policy does not show disabled-state information
+
+- **GIVEN** effective request-log retention is greater than `0`
+- **WHEN** an operator views the data retention card
+- **THEN** the disabled-state information and presets are not shown
 
