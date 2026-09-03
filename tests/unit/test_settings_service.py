@@ -230,6 +230,7 @@ def _settings_update(
         proxy_account_response_create_limit=4,
         proxy_account_stream_limit=8,
         proxy_account_stream_recovery_reserve=1,
+        proxy_api_key_fair_share_congestion_threshold_pct=0,
         upstream_proxy_routing_enabled=False,
         upstream_proxy_default_pool_id=None,
         prefer_earlier_reset_accounts=True,

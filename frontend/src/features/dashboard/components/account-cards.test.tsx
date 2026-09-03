@@ -221,6 +221,8 @@ describe("AccountCards", () => {
     expect(screen.getByText("one@example.com")).toBeInTheDocument();
     expect(screen.queryByText("CLI Proxy API")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
+  });
+
   it("links the empty-account state to the Accounts page", () => {
     render(
       <MemoryRouter>

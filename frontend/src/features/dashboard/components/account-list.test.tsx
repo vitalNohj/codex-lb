@@ -325,6 +325,8 @@ describe("AccountList", () => {
     expect(screen.getByText("two@example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume two@example.com" })).toBeInTheDocument();
+  });
+
   it("sorts subscription credits independently of purchased credits", async () => {
     const user = userEvent.setup();
     render(
@@ -438,6 +440,8 @@ describe("AccountList", () => {
     expect(screen.getAllByTestId("account-list-row")).toHaveLength(1);
     expect(screen.queryByText("orca-auth@example.com")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause orca-auth@example.com" })).not.toBeInTheDocument();
+  });
+
   it("links the empty-account state to the Accounts page", () => {
     render(
       <MemoryRouter>
