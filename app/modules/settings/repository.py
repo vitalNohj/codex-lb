@@ -203,6 +203,17 @@ class SettingsRepository:
         await self._session.refresh(row)
         return row
 
+    async def get_fresh(self) -> DashboardSettings:
+        """Return the settings row reloaded from the database.
+
+        ``get_or_create`` can return a session-cached instance. Pause/resume
+        patches the quota snapshot after an HTTP round-trip, during which the
+        poller may have written the same column through ``update_operational``.
+        """
+        row = await self.get_or_create()
+        await self._session.refresh(row)
+        return row
+
     async def update_operational(
         self,
         *,

@@ -183,6 +183,77 @@ describe("useSettings", () => {
       toastSuccess.mockRestore();
     }
   });
+
+  it("does not retry weeklyPaceWorkingDays after settings_conflict", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({ version: 3 });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const conflict = new ApiError({
+      message: "Settings were modified by another writer; reload and retry",
+      status: 409,
+      code: "settings_conflict",
+    });
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const updateSpy = vi.spyOn(settingsApi, "updateSettings").mockRejectedValueOnce(conflict);
+    const getSpy = vi.spyOn(settingsApi, "getSettings");
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      getSpy.mockResolvedValueOnce(createDashboardSettings({ version: 4 }));
+
+      await expect(
+        result.current.updateSettingsMutation.mutateAsync({
+          weeklyPaceWorkingDays: "0,1,2,3,4",
+        }),
+      ).rejects.toMatchObject({ code: "settings_conflict" });
+
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(toastError).toHaveBeenCalled();
+    } finally {
+      updateSpy.mockRestore();
+      getSpy.mockRestore();
+      toastError.mockRestore();
+    }
+  });
+
+  it("rejects a collection patch built against a stale expectedVersion", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({ version: 3, stickyThreadsEnabled: false });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const updateSpy = vi.spyOn(settingsApi, "updateSettings");
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      queryClient.setQueryData(["settings", "detail"], {
+        ...result.current.settingsQuery.data!,
+        version: 4,
+      });
+
+      await expect(
+        result.current.updateSettingsMutation.mutateAsync({
+          modelAliases: { north: "gpt-5.4" },
+          expectedVersion: 3,
+        }),
+      ).rejects.toMatchObject({ code: "settings_conflict" });
+
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalled();
+    } finally {
+      updateSpy.mockRestore();
+      toastError.mockRestore();
+    }
+  });
 });
 
 describe("useTelemetryConsent", () => {

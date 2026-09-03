@@ -123,7 +123,10 @@ export function ClaudeSidecarQuotaEstimation() {
           plan.secondaryTokenBudget > 0,
       );
     await updateSettingsMutation
-      .mutateAsync({ claudeSidecarAuthPlans: plans })
+      .mutateAsync({
+        claudeSidecarAuthPlans: plans,
+        expectedVersion: settings.version,
+      })
       .catch(() => null);
   };
 

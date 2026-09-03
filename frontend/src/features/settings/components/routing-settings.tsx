@@ -170,7 +170,10 @@ export function RoutingSettings({
     createRoutingSettingsDraft,
   );
 
-  const save = (patch: Partial<SettingsUpdateRequest>) => void onSave(patch);
+  const save = (patch: Partial<SettingsUpdateRequest>) =>
+    void onSave(
+      settings.version === undefined ? patch : { ...patch, expectedVersion: settings.version },
+    );
   const saveAdditionalQuotaPolicy = (
     quotaKey: string,
     policy: AdditionalQuotaRoutingPolicy,

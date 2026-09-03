@@ -80,6 +80,7 @@ const SETTINGS_COLLECTION_FIELDS = [
   "omnirouteSidecarSelectedModels",
   "ollamaSidecarModelPrefixes",
   "ollamaSidecarFullModels",
+  "weeklyPaceWorkingDays",
 ] as const satisfies ReadonlyArray<keyof SettingsUpdateRequest>;
 
 function patchContainsCollection(fields: Partial<SettingsUpdateRequest>): boolean {
@@ -90,6 +91,7 @@ async function persistSettingsPatch(
   queryClient: ReturnType<typeof useQueryClient>,
   patch: Partial<SettingsUpdateRequest>,
 ): Promise<DashboardSettings> {
+  const snapshotVersion = patch.expectedVersion;
   const fields = { ...patch };
   delete fields.expectedVersion;
   const send = (expectedVersion: number | undefined) =>
@@ -100,6 +102,18 @@ async function persistSettingsPatch(
   if (cached === undefined) {
     cached = await getSettings();
     queryClient.setQueryData(SETTINGS_DETAIL_QUERY_KEY, cached);
+  }
+  if (
+    patchContainsCollection(fields) &&
+    snapshotVersion !== undefined &&
+    cached.version !== undefined &&
+    snapshotVersion !== cached.version
+  ) {
+    throw new ApiError({
+      message: "Settings were modified since this form was loaded; reload and retry",
+      status: 409,
+      code: "settings_conflict",
+    });
   }
   try {
     return await send(cached.version);
