@@ -35,6 +35,17 @@ describe("AppHeader", () => {
     expect(screen.queryByText(/omniroute/i)).toBeNull();
   });
 
+  it("brands the header as the VitalNohj fork and links the title to the fork repo", () => {
+    renderHeader();
+
+    expect(screen.getByText("Codex LB++")).toBeInTheDocument();
+    expect(screen.getByText("fork by VitalNohj")).toBeInTheDocument();
+    const forkLink = screen.getByRole("link", { name: /Codex LB\+\+.*fork by VitalNohj/i });
+    expect(forkLink).toHaveAttribute("href", "https://github.com/vitalNohj/codex-lb");
+    expect(forkLink).toHaveAttribute("target", "_blank");
+    expect(forkLink).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
   it("shows the summed Accounts reset-credit badge capped at 99+", async () => {
     server.use(
       http.get("/api/accounts", () =>

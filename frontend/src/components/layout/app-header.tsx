@@ -29,6 +29,7 @@ const CORE_NAV_ITEMS = [
 ] as const;
 
 const OMNIROUTE_PATH = "/omni";
+const FORK_REPOSITORY_URL = "https://github.com/vitalNohj/codex-lb";
 
 const ADVANCED_NAV_ITEMS = [
   { to: "/automations", labelKey: "nav.automations" },
@@ -93,17 +94,26 @@ export function AppHeader({
     >
       <div className="mx-auto flex w-full max-w-[1500px] items-center justify-between gap-4">
         {/* Brand */}
-        <Link
-          to="/dashboard"
-          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <Link
+            to="/dashboard"
+            aria-label="Codex LB++ home"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
             <CodexLogo size={20} className="text-primary" />
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold tracking-tight">Codex LB</p>
-          </div>
-        </Link>
+          </Link>
+          <a
+            href={FORK_REPOSITORY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="min-w-0 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <p className="truncate text-sm font-semibold tracking-tight">Codex LB++</p>
+            <p className="truncate text-[11px] leading-tight text-muted-foreground">
+              fork by VitalNohj
+            </p>
+          </a>
+        </div>
 
         {/* Desktop nav pills */}
         <nav className="hidden items-center rounded-lg border border-border/50 bg-muted/40 p-0.5 sm:flex">
@@ -217,7 +227,17 @@ export function AppHeader({
                   <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
                     <CodexLogo size={16} className="text-primary" />
                   </div>
-                  <span className="text-sm font-semibold">Codex LB</span>
+                  <a
+                    href={FORK_REPOSITORY_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-w-0 no-underline transition-colors hover:opacity-80"
+                  >
+                    <span className="block text-sm font-semibold">Codex LB++</span>
+                    <span className="block text-[11px] font-normal leading-tight text-muted-foreground">
+                      fork by VitalNohj
+                    </span>
+                  </a>
                 </SheetTitle>
               </SheetHeader>
               <nav className="flex flex-col gap-0.5 px-4 pt-2">
