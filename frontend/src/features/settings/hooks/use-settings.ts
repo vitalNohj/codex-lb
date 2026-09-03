@@ -50,7 +50,6 @@ const SETTINGS_DETAIL_QUERY_KEY = ["settings", "detail"] as const;
 const SETTINGS_UPSTREAM_PROXY_QUERY_KEY = ["settings", "upstream-proxy"] as const;
 
 let settingsSaveChain: Promise<unknown> = Promise.resolve();
-const lastVersionWrittenByClient = new WeakMap<QueryClient, number>();
 
 function enqueueSettingsSave<T>(work: () => Promise<T>): Promise<T> {
   const run = settingsSaveChain.then(work, work);
@@ -84,13 +83,27 @@ const SETTINGS_COLLECTION_FIELDS = [
   "weeklyPaceWorkingDays",
 ] as const satisfies ReadonlyArray<keyof SettingsUpdateRequest>;
 
+type LastSettingsWrite = {
+  version: number;
+  collectionFields: Set<(typeof SETTINGS_COLLECTION_FIELDS)[number]>;
+};
+
+const lastWriteByClient = new WeakMap<QueryClient, LastSettingsWrite>();
+
 function patchContainsCollection(fields: Partial<SettingsUpdateRequest>): boolean {
   return SETTINGS_COLLECTION_FIELDS.some((field) => fields[field] !== undefined);
 }
 
-function rememberWrittenVersion(queryClient: QueryClient, saved: DashboardSettings): DashboardSettings {
+function rememberWrittenVersion(
+  queryClient: QueryClient,
+  saved: DashboardSettings,
+  fields: Partial<SettingsUpdateRequest>,
+): DashboardSettings {
   if (saved.version !== undefined) {
-    lastVersionWrittenByClient.set(queryClient, saved.version);
+    lastWriteByClient.set(queryClient, {
+      version: saved.version,
+      collectionFields: new Set(SETTINGS_COLLECTION_FIELDS.filter((field) => fields[field] !== undefined)),
+    });
   }
   return saved;
 }
@@ -111,13 +124,18 @@ async function persistSettingsPatch(
     cached = await getSettings();
     queryClient.setQueryData(SETTINGS_DETAIL_QUERY_KEY, cached);
   }
-  const lastWritten = lastVersionWrittenByClient.get(queryClient);
+  const lastWrite = lastWriteByClient.get(queryClient);
+  const overlapsOwnWrite =
+    lastWrite !== undefined &&
+    SETTINGS_COLLECTION_FIELDS.some(
+      (field) => fields[field] !== undefined && lastWrite.collectionFields.has(field),
+    );
   if (
     patchContainsCollection(fields) &&
     snapshotVersion !== undefined &&
     cached.version !== undefined &&
     snapshotVersion !== cached.version &&
-    cached.version !== lastWritten
+    (cached.version !== lastWrite?.version || overlapsOwnWrite)
   ) {
     throw new ApiError({
       message: "Settings were modified since this form was loaded; reload and retry",
@@ -126,7 +144,7 @@ async function persistSettingsPatch(
     });
   }
   try {
-    return rememberWrittenVersion(queryClient, await send(cached.version));
+    return rememberWrittenVersion(queryClient, await send(cached.version), fields);
   } catch (error) {
     if (!isSettingsConflict(error)) {
       throw error;
@@ -136,7 +154,7 @@ async function persistSettingsPatch(
     if (patchContainsCollection(fields)) {
       throw error;
     }
-    return rememberWrittenVersion(queryClient, await send(fresh.version));
+    return rememberWrittenVersion(queryClient, await send(fresh.version), fields);
   }
 }
 

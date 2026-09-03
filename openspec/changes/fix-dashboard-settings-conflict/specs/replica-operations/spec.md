@@ -48,5 +48,6 @@ The dashboard settings row SHALL carry a monotonically increasing `version` incr
 
 - **GIVEN** a pause request whose session already read `dashboard_settings`
 - **WHEN** the quota poller commits a new `claude_sidecar_quota_state_json` on another connection before the pause patches `disabled`
-- **THEN** the pause path MUST end its read snapshot and reload the row
+- **THEN** the pause path MUST reload the row on a dedicated session so SQLite sees the poller's commit
+- **AND** that reload MUST NOT commit pending writes on the pause request's session
 - **AND** the subsequent operational write MUST merge `disabled` into that latest snapshot rather than the pre-poller JSON

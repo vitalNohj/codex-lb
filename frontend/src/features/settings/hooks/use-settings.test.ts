@@ -294,6 +294,42 @@ describe("useSettings", () => {
       updateSpy.mockRestore();
     }
   });
+
+  it("rejects a queued overlapping collection patch after this client's collection save", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({ version: 3, modelAliases: { north: "gpt-5.4" } });
+    const afterFirst = createDashboardSettings({ version: 4, modelAliases: { north: "gpt-5.4" } });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const updateSpy = vi.spyOn(settingsApi, "updateSettings").mockResolvedValueOnce(afterFirst);
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      await result.current.updateSettingsMutation.mutateAsync({
+        modelAliases: { north: "gpt-5.4" },
+        expectedVersion: 3,
+      });
+      queryClient.setQueryData(["settings", "detail"], afterFirst);
+
+      await expect(
+        result.current.updateSettingsMutation.mutateAsync({
+          modelAliases: { south: "gpt-5.4" },
+          expectedVersion: 3,
+        }),
+      ).rejects.toMatchObject({ code: "settings_conflict" });
+
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(toastError).toHaveBeenCalled();
+    } finally {
+      updateSpy.mockRestore();
+      toastError.mockRestore();
+    }
+  });
 });
 
 describe("useTelemetryConsent", () => {

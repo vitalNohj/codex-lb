@@ -372,6 +372,7 @@ function SidecarIntegrationCardProvider({
   const [requestTimeout, setRequestTimeout] = useState(String(initial.requestTimeout));
   const [cacheTtl, setCacheTtl] = useState(String(initial.cacheTtl));
   const [pollInterval, setPollInterval] = useState(String(initial.pollInterval ?? 0));
+  const localCollectionsVersion = useRef(settings.version);
   const [manualPrefix, setManualPrefix] = useState("");
   const [manualFullModel, setManualFullModel] = useState("");
   const [defaultReasoningEffort, setDefaultReasoningEffortState] = useState<
@@ -424,8 +425,8 @@ function SidecarIntegrationCardProvider({
     setSaveError(null);
     setSavePending(true);
     try {
-      await onSave(
-        buildPatch({
+      const saved = (await onSave({
+        ...buildPatch({
           baseUrl: baseUrl.trim(),
           apiKey: (overrides.apiKey ?? "").trim(),
           managementKey: (overrides.managementKey ?? "").trim(),
@@ -436,7 +437,13 @@ function SidecarIntegrationCardProvider({
           cacheTtl: parsedCacheTtl,
           pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
         }),
-      );
+        ...(localCollectionsVersion.current === undefined
+          ? {}
+          : { expectedVersion: localCollectionsVersion.current }),
+      })) as unknown as { version?: number } | undefined;
+      if (typeof saved?.version === "number") {
+        localCollectionsVersion.current = saved.version;
+      }
       await onTestConnection().catch(() => null);
     } catch (error) {
       setSaveError(

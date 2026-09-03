@@ -148,7 +148,9 @@ describe("ClaudeSidecarSettings", () => {
   it("persists a new prefix immediately", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(<ClaudeSidecarSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithQueryClient(
+      <ClaudeSidecarSettings settings={{ ...BASE_SETTINGS, version: 7 }} busy={false} onSave={onSave} />,
+    );
 
     await user.type(screen.getByLabelText("New prefix for CLIProxyAPI Integration"), "anthropic");
     await user.click(screen.getByRole("button", { name: "Add prefix" }));
@@ -160,10 +162,10 @@ describe("ClaudeSidecarSettings", () => {
             { prefix: "claude", strip: false },
             { prefix: "anthropic", strip: false },
           ],
+          expectedVersion: 7,
         }),
       ),
     );
-    expect(onSave.mock.calls.at(-1)?.[0]).not.toHaveProperty("expectedVersion");
   });
 
   it("does not persist while a timeout is invalid", async () => {

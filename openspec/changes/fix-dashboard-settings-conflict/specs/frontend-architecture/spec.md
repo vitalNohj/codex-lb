@@ -29,16 +29,23 @@ Settings mutations MUST send only the fields the operator changed, plus `expecte
 - **WHEN** both mutations complete
 - **THEN** both field values remain as the operator set them
 
-#### Scenario: Sidecar config persist does not stamp render expectedVersion
+#### Scenario: Sidecar config persist stamps the local collection origin version
 
-- **GIVEN** an External Integrations card whose prefixes and full models live in local component state
-- **WHEN** the operator adds a prefix after a scalar toggle has already advanced `settings.version`
-- **THEN** the persist call MUST omit `expectedVersion`
-- **AND** the save MUST use the latest cached row version rather than fail the collection pre-flight guard
+- **GIVEN** an External Integrations card whose prefixes and full models live in local component state seeded at mount
+- **WHEN** the operator adds a prefix
+- **THEN** the persist call MUST send `expectedVersion` equal to the version those local collections were built from
+- **AND** MUST NOT restamp from a later `settings.version` that a scalar toggle advanced
 
 #### Scenario: Queued collection patch after this client's save is not a foreign conflict
 
-- **GIVEN** a collection patch whose render `expectedVersion` is older than the cache because this client just saved
+- **GIVEN** a collection patch whose render `expectedVersion` is older than the cache because this client just saved a non-overlapping field
 - **WHEN** the queued mutation runs
 - **THEN** the client MUST send the patch against the cache version this client wrote
 - **AND** MUST NOT throw `settings_conflict` before the PUT
+
+#### Scenario: Overlapping collection patch after this client's collection save is a conflict
+
+- **GIVEN** a collection patch whose render `expectedVersion` is older than the cache because this client just saved the same collection field
+- **WHEN** the queued mutation runs
+- **THEN** the client MUST throw `settings_conflict` before the PUT
+- **AND** MUST NOT replay the stale whole-map snapshot
