@@ -54,6 +54,7 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["proxyAccountResponseCreateLimit"] == 4
     assert payload["proxyAccountStreamLimit"] == 8
     assert payload["proxyAccountStreamRecoveryReserve"] == 1
+    assert payload["proxyApiKeyFairShareCongestionThresholdPct"] == 0
     assert payload["upstreamProxyRoutingEnabled"] is False
     assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is True
@@ -99,6 +100,7 @@ async def test_settings_api_get_and_update(async_client):
             "proxyAccountResponseCreateLimit": 12,
             "proxyAccountStreamLimit": 24,
             "proxyAccountStreamRecoveryReserve": 3,
+            "proxyApiKeyFairShareCongestionThresholdPct": 80,
             "upstreamProxyRoutingEnabled": True,
             "upstreamProxyDefaultPoolId": None,
             "preferEarlierResetAccounts": False,
@@ -143,6 +145,7 @@ async def test_settings_api_get_and_update(async_client):
     assert updated["proxyAccountResponseCreateLimit"] == 12
     assert updated["proxyAccountStreamLimit"] == 24
     assert updated["proxyAccountStreamRecoveryReserve"] == 3
+    assert updated["proxyApiKeyFairShareCongestionThresholdPct"] == 80
     assert updated["upstreamProxyRoutingEnabled"] is True
     assert updated["upstreamProxyDefaultPoolId"] is None
     assert updated["preferEarlierResetAccounts"] is False
@@ -188,6 +191,7 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["proxyAccountResponseCreateLimit"] == 12
     assert payload["proxyAccountStreamLimit"] == 24
     assert payload["proxyAccountStreamRecoveryReserve"] == 3
+    assert payload["proxyApiKeyFairShareCongestionThresholdPct"] == 80
     assert payload["upstreamProxyRoutingEnabled"] is True
     assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is False
@@ -444,6 +448,23 @@ async def test_settings_full_put_rejects_out_of_range_sticky_threshold(async_cli
     response = await async_client.put("/api/settings", json=payload)
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_settings_api_rejects_out_of_range_api_key_fair_share_threshold(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={"proxyApiKeyFairShareCongestionThresholdPct": 101},
+    )
+
+    assert response.status_code == 422
+
+    negative = await async_client.put(
+        "/api/settings",
+        json={"proxyApiKeyFairShareCongestionThresholdPct": -1},
+    )
+
+    assert negative.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -1207,3 +1228,46 @@ async def test_retention_override_tri_state_echo_capture_and_clear(async_client,
         settings = await session.get(DashboardSettings, 1)
         assert settings is not None
         assert settings.request_log_retention_days is None
+
+
+@pytest.mark.asyncio
+async def test_auto_redeem_opt_in_rejected_while_reset_credit_polling_disabled(async_client, monkeypatch):
+    from types import SimpleNamespace
+
+    disabled = SimpleNamespace(rate_limit_reset_credits_refresh_enabled=False)
+    monkeypatch.setattr("app.modules.settings.api.get_app_settings", lambda: disabled)
+
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["autoRedeemResetCreditsBeforeExpiry"] is False
+    payload["autoRedeemResetCreditsBeforeExpiry"] = True
+
+    response = await async_client.put("/api/settings", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "reset_credit_polling_disabled"
+
+
+@pytest.mark.asyncio
+async def test_full_put_with_persisted_auto_redeem_allowed_while_polling_disabled(async_client, monkeypatch):
+    from types import SimpleNamespace
+
+    async with SessionLocal() as session:
+        await session.execute(
+            text("UPDATE dashboard_settings SET auto_redeem_reset_credits_before_expiry = 1 WHERE id = 1")
+        )
+        await session.commit()
+
+    disabled = SimpleNamespace(rate_limit_reset_credits_refresh_enabled=False)
+    monkeypatch.setattr("app.modules.settings.api.get_app_settings", lambda: disabled)
+
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["autoRedeemResetCreditsBeforeExpiry"] is True
+
+    response = await async_client.put("/api/settings", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["autoRedeemResetCreditsBeforeExpiry"] is True

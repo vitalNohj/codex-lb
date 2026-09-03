@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.codex_sessions_retag import RetagResult, default_codex_home, retag_codex_sessions
 
@@ -100,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     ws_max_size = _parse_server_ws_max_size(args.ws_max_size)
     os.environ["PORT"] = str(port)
 
-    _load_uvicorn().run(
+    _run_server(
         "app.main:app",
         host=args.host,
         port=port,
@@ -117,6 +117,56 @@ def _load_uvicorn():
     import uvicorn
 
     return uvicorn
+
+
+def _load_graceful_drain_server():
+    from app.core.server import GracefulDrainServer
+
+    return GracefulDrainServer
+
+
+def _load_http_protocol_class() -> Any:
+    from app.core.http_protocol import load_http_protocol_class
+
+    return load_http_protocol_class()
+
+
+def _load_shutdown_drain_timeout_seconds() -> int:
+    from app.core.config.settings import get_settings
+
+    return get_settings().shutdown_drain_timeout_seconds
+
+
+def _run_server(app: str, **kwargs: Any) -> None:
+    uvicorn = _load_uvicorn()
+    drain_timeout_seconds = _load_shutdown_drain_timeout_seconds()
+    config = uvicorn.Config(
+        app,
+        # One process per instance is the binding topology contract. Passing
+        # this explicitly prevents Uvicorn from treating ambient
+        # WEB_CONCURRENCY as an unsupported multiprocess launch.
+        workers=1,
+        # Serve valid HTTP/1.1 requests that opportunistically offer an h2c
+        # upgrade (JetBrains/Ktor clients) instead of rejecting them; the
+        # stock httptools protocol drops the body or answers 400. See
+        # app/core/http_protocol.py and issue #1757.
+        http=_load_http_protocol_class(),
+        timeout_graceful_shutdown=drain_timeout_seconds,
+        **kwargs,
+    )
+    try:
+        config.load_app()
+        server = _load_graceful_drain_server()(
+            config,
+            drain_timeout_seconds=drain_timeout_seconds,
+        )
+        server.run()
+    except KeyboardInterrupt:
+        return
+    if not server.started:
+        from uvicorn.main import STARTUP_FAILURE
+
+        raise SystemExit(STARTUP_FAILURE)
 
 
 def _build_log_config() -> "LogConfig":

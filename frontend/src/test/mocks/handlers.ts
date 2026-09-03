@@ -9,18 +9,23 @@ import {
 import {
   type AccountSummary,
   type ApiKey,
+  type ConversationDetails,
+  type ConversationEntry,
   createAccountSummary,
   createAccountTrends,
   createApiKey,
   createApiKeyCreateResponse,
   createApiKeyTrends,
   createApiKeyUsage7Day,
+  createConversationDetails,
+  createConversationsResponse,
   createDashboardAuthSession,
   createDashboardOverview,
   createDashboardProjections,
   createDashboardSettings,
   createDefaultAccounts,
   createDefaultApiKeys,
+  createDefaultConversations,
   createDefaultModelSources,
   createDefaultRequestLogs,
   createModelSource,
@@ -32,6 +37,8 @@ import {
   createQuotaPlannerSettings,
   createQuotaPlannerWarmupActionResponse,
   createRequestLogFilterOptions,
+  createTelemetryConsent,
+  createTelemetrySnapshotEnvelope,
   createUpstreamProxyAdmin,
   createRequestLogsResponse,
   type DashboardAuthSession,
@@ -41,11 +48,12 @@ import {
   type QuotaPlannerForecast,
   type QuotaPlannerSettings,
   type RequestLogEntry,
+  type TelemetryConsent,
   type UpstreamProxyAdmin,
 } from "@/test/mocks/factories";
 
 const MODEL_OPTION_DELIMITER = ":::";
-const STATUS_ORDER = ["ok", "rate_limit", "quota", "error"] as const;
+const STATUS_ORDER = ["ok", "cancelled", "rate_limit", "quota", "error"] as const;
 
 // ── Zod schemas for mock request bodies ──
 
@@ -88,6 +96,10 @@ const ApiKeyUpdatePayloadSchema = z.looseObject({
 
 const AccountAliasPayloadSchema = z.object({
   alias: z.string().max(255).nullable(),
+});
+
+const TelemetryConsentPayloadSchema = z.object({
+  enabled: z.boolean(),
 });
 
 const AccountRoutingPolicyPayloadSchema = z.object({
@@ -150,6 +162,7 @@ const ModelSourceCreatePayloadSchema = z.looseObject({
   supportsChatCompletions: z.boolean().optional(),
   supportsResponses: z.boolean().optional(),
   supportsAudioTranscriptions: z.boolean().optional(),
+  supportsEmbeddings: z.boolean().optional(),
   models: z
     .array(
       z.looseObject({
@@ -167,6 +180,7 @@ const ModelSourceCreatePayloadSchema = z.looseObject({
 
 const ModelSourceUpdatePayloadSchema = z.looseObject({
   isEnabled: z.boolean().optional(),
+  supportsEmbeddings: z.boolean().optional(),
 });
 
 const QuotaPlannerSettingsPayloadSchema = z.looseObject({
@@ -239,8 +253,11 @@ async function parseJsonBody<T>(
 type MockState = {
   accounts: AccountSummary[];
   requestLogs: RequestLogEntry[];
+  conversations: ConversationEntry[];
+  conversationDetails: ConversationDetails[];
   authSession: DashboardAuthSession;
   settings: DashboardSettings;
+  telemetryConsent: TelemetryConsent;
   quotaPlannerSettings: QuotaPlannerSettings;
   quotaPlannerDecisions: QuotaPlannerDecision[];
   upstreamProxyAdmin: UpstreamProxyAdmin;
@@ -322,8 +339,18 @@ function createInitialState(): MockState {
   return {
     accounts: createDefaultAccounts(),
     requestLogs: createDefaultRequestLogs(),
+    conversations: createDefaultConversations(),
+    conversationDetails: [
+      createConversationDetails({ conversationId: "conv_abc" }),
+      createConversationDetails({
+        conversationId: "conv_def",
+        accountCount: 1,
+        dominantUseragentGroup: "codex",
+      }),
+    ],
     authSession: createDashboardAuthSession(),
     settings: createDashboardSettings(),
+    telemetryConsent: createTelemetryConsent(),
     quotaPlannerSettings: createQuotaPlannerSettings(),
     quotaPlannerDecisions: [createQuotaPlannerDecision()],
     upstreamProxyAdmin: createUpstreamProxyAdmin(),
@@ -715,6 +742,10 @@ export const handlers = [
     return HttpResponse.json({ status: "ok" });
   }),
 
+  http.get("/health/ready", () => {
+    return HttpResponse.json({ status: "ok" });
+  }),
+
   http.get("/api/runtime/version", () => {
     return HttpResponse.json({
       currentVersion: "1.19.0",
@@ -766,6 +797,49 @@ export const handlers = [
     return HttpResponse.json(
       requestLogOptionsFromEntries(filtered, apiKeyFiltered),
     );
+  }),
+
+  http.get("/api/conversations", ({ request }) => {
+    const url = new URL(request.url);
+    const search = (url.searchParams.get("search") || "").trim().toLowerCase();
+    const filtered = state.conversations.filter((entry) => {
+      if (search.length === 0) {
+        return true;
+      }
+      return entry.conversationId.toLowerCase().includes(search);
+    });
+    const total = filtered.length;
+    const limitRaw = Number(url.searchParams.get("limit") ?? 50);
+    const offsetRaw = Number(url.searchParams.get("offset") ?? 0);
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 50;
+    const offset =
+      Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+    const conversations = filtered.slice(offset, offset + limit);
+    return HttpResponse.json(
+      createConversationsResponse(conversations, total, offset + limit < total),
+    );
+  }),
+
+  http.get("/api/conversations/:conversationId", ({ params }) => {
+    const rawId = decodeURIComponent(String(params.conversationId));
+    const trimmed = rawId.trim();
+    if (!trimmed) {
+      return HttpResponse.json(
+        { error: { code: "not_found", message: "Conversation not found" } },
+        { status: 404 },
+      );
+    }
+    const details = state.conversationDetails.find(
+      (item) => item.conversationId === trimmed,
+    );
+    if (!details) {
+      return HttpResponse.json(
+        { error: { code: "not_found", message: "Conversation not found" } },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json(details);
   }),
 
   http.get("/api/accounts", () => {
@@ -1135,7 +1209,31 @@ export const handlers = [
     return HttpResponse.json(state.settings);
   }),
 
+  http.get("/api/settings/telemetry", ({ request }) => {
+    // include_preview=true is the on-demand path: the envelope is attached
+    // regardless of consent state.
+    if (new URL(request.url).searchParams.get("include_preview") === "true") {
+      return HttpResponse.json({
+        ...state.telemetryConsent,
+        preview: createTelemetrySnapshotEnvelope(),
+      });
+    }
+    return HttpResponse.json(state.telemetryConsent);
+  }),
 
+  http.put("/api/settings/telemetry", async ({ request }) => {
+    const payload = await parseJsonBody(request, TelemetryConsentPayloadSchema);
+    if (!payload) {
+      return HttpResponse.json(state.telemetryConsent);
+    }
+    state.telemetryConsent = createTelemetryConsent({
+      state: payload.enabled ? "enabled" : "disabled",
+      source: "persisted",
+      active: payload.enabled,
+      preview: null,
+    });
+    return HttpResponse.json(state.telemetryConsent);
+  }),
 
   http.get("/api/settings/upstream-proxy", () => {
     return HttpResponse.json(state.upstreamProxyAdmin);
@@ -2025,6 +2123,7 @@ export const handlers = [
       supportsChatCompletions: payload?.supportsChatCompletions ?? true,
       supportsResponses: payload?.supportsResponses ?? false,
       supportsAudioTranscriptions: payload?.supportsAudioTranscriptions ?? false,
+      supportsEmbeddings: payload?.supportsEmbeddings ?? false,
       models: (payload?.models ?? [{ model: `model-${sequence}` }]).map(
         (model, index) => ({
           id: index + 1,
@@ -2064,6 +2163,9 @@ export const handlers = [
     const updated = createModelSource({
       ...existing,
       ...(payload?.isEnabled !== undefined ? { isEnabled: payload.isEnabled } : {}),
+      ...(payload?.supportsEmbeddings !== undefined
+        ? { supportsEmbeddings: payload.supportsEmbeddings }
+        : {}),
       updatedAt: new Date().toISOString(),
     });
     state.modelSources = state.modelSources.map((source) =>

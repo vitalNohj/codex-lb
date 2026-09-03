@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RESET_ERROR_LABEL } from "@/utils/constants";
+import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { useTimeFormatStore } from "@/hooks/use-time-format";
+import i18n from "@/i18n";
 import {
   formatChartDateTime,
+  formatConversationDuration,
   formatDateTimeInline,
   formatAccessTokenLabel,
   formatCachedTokensMeta,
@@ -38,6 +41,7 @@ describe("formatters", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    useDateDisplayFormatStore.setState({ dateDisplayFormat: "default" });
     useTimeFormatStore.setState({ timeFormat: "12h" });
   });
 
@@ -65,6 +69,19 @@ describe("formatters", () => {
     expect(formatCompactNumber(1_500_000_000)).toBe("1.5B");
     expect(formatCurrency(12)).toMatch(/^\$/);
     expect(formatNumber("abc")).toBe("--");
+  });
+
+  it("keeps compact K/M/B units stable across locales", async () => {
+    await i18n.changeLanguage("zh-CN");
+    try {
+      expect(formatCompactNumber(10_200)).toBe("10.2K");
+      expect(formatCompactNumber(46_400)).toBe("46.4K");
+      expect(formatCompactNumber(1_500_000)).toBe("1.5M");
+      expect(formatCompactNumber(1_500_000_000)).toBe("1.5B");
+      expect(formatCurrency(12)).toBe("$12.00");
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("formats percent and rate values", () => {
@@ -106,6 +123,19 @@ describe("formatters", () => {
     expect(formatted.date).not.toBe("--");
   });
 
+  it("formats conversation durations as two units", () => {
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z")).toBe("0s");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z")).toBe("1s");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:30.000Z")).toBe("30s");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-01T00:04:03.000Z")).toBe("4m 3s");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-01T02:15:00.000Z")).toBe("2h 15m");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-01T23:59:00.000Z")).toBe("23h 59m");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z")).toBe("1d 0h");
+    expect(formatConversationDuration("2026-01-01T00:00:00.000Z", "2026-01-03T03:42:00.000Z")).toBe("2d 3h");
+    expect(formatConversationDuration("2026-01-01T02:00:00.000Z", "2026-01-01T01:00:00.000Z")).toBe("0s");
+    expect(formatConversationDuration("bad-date", "2026-01-01T01:00:00.000Z")).toBe("—");
+  });
+
   it("respects the configured 12h or 24h time format", () => {
     const iso = "2026-01-01T00:00:00.000Z";
 
@@ -118,6 +148,18 @@ describe("formatters", () => {
     expect(twentyFourHour).not.toMatch(/AM|PM/);
     expect(formatDateTimeInline(iso)).toContain(twentyFourHour);
     expect(formatChartDateTime(iso)).not.toMatch(/AM|PM/);
+  });
+
+  it("keeps semantic date/time fields stable and orders ISO display date-first", () => {
+    const iso = "2026-08-09T14:30:45.000Z";
+    const local = new Date(iso);
+    const expectedDate = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`;
+    const expectedTime = `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:${String(local.getSeconds()).padStart(2, "0")}`;
+
+    useDateDisplayFormatStore.setState({ dateDisplayFormat: "iso8601" });
+
+    expect(formatTimeLong(iso)).toEqual({ time: expectedTime, date: expectedDate });
+    expect(formatDateTimeInline(iso)).toBe(`${expectedDate} ${expectedTime}`);
   });
 
   it("formats local timestamps as yyyy-mm-dd hh:mm:ss", () => {

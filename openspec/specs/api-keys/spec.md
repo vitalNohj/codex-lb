@@ -272,7 +272,13 @@ The system SHALL keep the existing lazy on-read reset strategy for API key usage
 
 ### Requirement: RequestLog API key reference
 
-The system SHALL record the `api_key_id` in the `request_logs` table for proxy requests authenticated with an API key. The field MUST be NULL when API key auth is disabled or the request is unauthenticated.
+The system SHALL record the `api_key_id` in the `request_logs` table for proxy
+requests authenticated with an API key. The field MUST be NULL when API key
+auth is disabled or the request is unauthenticated. This applies to error rows
+as well as successes: when a shared upstream session (e.g. an HTTP-bridge
+session multiplexing requests from multiple API keys) fails its pending
+requests, each request's log row MUST be attributed to that request's own
+authenticated key.
 
 #### Scenario: Authenticated request logged
 
@@ -283,6 +289,16 @@ The system SHALL record the `api_key_id` in the `request_logs` table for proxy r
 
 - **WHEN** API key auth is disabled and a proxy request completes
 - **THEN** the `request_logs` entry has `api_key_id = NULL`
+
+#### Scenario: Bridge failure fan-out preserves per-request key attribution
+
+- **GIVEN** an HTTP-bridge session holds a pending request authenticated with
+  API key `key-123`
+- **WHEN** the session fails its pending requests (upstream close, send
+  failure, request timeout, or local terminal error)
+- **THEN** the request's `request_logs` error entry has
+  `api_key_id = "key-123"` even though the session-level failure path has no
+  single key of its own
 
 ### Requirement: Frontend API Key management
 
@@ -520,6 +536,11 @@ Usage reservation의 최종 정산(finalize 또는 release)은 요청 단위에�
 
 Reservation 생성 후 upstream API 호출에 진입하지 않고 종료되는 모든 경로에서 reservation이 release되어야 한다. `reserved` 상태로 남는 reservation이 존재하면 안 된다. 시스템은 이 동작을 SHALL 보장해야 한다.
 
+After admission commits an owned reservation, rate-limit response-header
+calculation before upstream work remains part of the early-exit cleanup window.
+If that calculation fails, the system MUST attempt to release the owned
+reservation exactly once before propagating the original header failure.
+
 #### Scenario: no_accounts 즉시 종료 시 release
 
 - **WHEN** reservation 생성 후 `_stream_with_retry()`가 사용 가능한 계정 없음(`no_accounts`)으로 즉시 종료되면
@@ -535,6 +556,17 @@ Reservation 생성 후 upstream API 호출에 진입하지 않고 종료되는 �
 
 - **WHEN** API key auth가 비활성이거나 reservation이 생성되지 않은 상태에서 요청이 종료되면
 - **THEN** 정산 로직이 안전하게 스킵되어야 하며 에러가 발생하지 않아야 한다 (SHALL)
+
+#### Scenario: Rate-limit header preparation fails after admission
+
+- **GIVEN** a limited API key has committed an owned reservation for a
+  streaming Responses, collected Responses, compact Responses, or audio
+  transcription request
+- **WHEN** rate-limit response-header calculation fails before upstream work
+  begins
+- **THEN** the reservation is released exactly once
+- **AND** its reserved quota is restored
+- **AND** the header failure propagates without starting upstream work
 
 ### Requirement: Compact 경로 예외 무관 reservation cleanup
 
@@ -1108,7 +1140,27 @@ API-key limit and usage-reporting paths used by subscription-backed requests.
 
 ### Requirement: Stream reservation settlement is detached from the response path
 
-Settling a stream API-key reservation MUST NOT block the response/stream close, with one deliberate exception: when a keyed websocket stream terminates with an account-health error, the finalizer MUST wait for the settlement to commit before the load-balancer health write (the settlement-ordering invariant), so that error path intentionally blocks on settlement. In all other cases the settlement MUST run as a tracked background task; when it fails or is cancelled, the reservation MUST still be released by the tracking fallback, and the request's finalization path MUST NOT double-release a transferred settlement. Reservations MUST continue to count toward key limits until finalized or released, so deferred settlement can never admit usage a synchronous settlement would have rejected.
+Settling a stream API-key reservation MUST NOT block the response/stream close,
+with one deliberate exception: when a keyed websocket stream terminates with an
+account-health error, the finalizer MUST wait for the settlement to commit
+before the load-balancer health write (the settlement-ordering invariant), so
+that error path intentionally blocks on settlement. If the primary settlement
+fails, the finalizer MUST wait for fallback release to commit before recording
+account health. If neither operation confirms settlement, the account-health
+write MUST remain unapplied. Tracked persistence ownership MUST remain
+registered through an ordering-sensitive fallback release, including
+cancellation before the primary coroutine starts or during that release, so
+graceful shutdown drains both phases. When the existing stream-retry path
+deliberately defers an
+account-health penalty until the same ordering-sensitive settlement, it MUST
+likewise apply neither that penalty nor an immediately following terminal health
+write unless settlement is confirmed, and it MUST NOT start a second settlement
+for the transferred reservation. In all other cases the settlement MUST run as
+a tracked background task; when it fails or is cancelled, the reservation MUST
+still be released by the tracking fallback, and the request's finalization path
+MUST NOT double-release a transferred settlement. Reservations MUST continue to
+count toward key limits until finalized or released, so deferred settlement can
+never admit usage a synchronous settlement would have rejected.
 
 #### Scenario: Response close precedes settlement completion
 
@@ -1129,10 +1181,33 @@ Settling a stream API-key reservation MUST NOT block the response/stream close, 
 - **WHEN** the finalizer settles the reservation
 - **THEN** it waits for the settlement to commit before recording the account-health error
 
+#### Scenario: Websocket health waits for fallback settlement
+
+- **GIVEN** a keyed websocket stream that terminates with an account-health error
+- **AND** its primary settlement fails
+- **WHEN** fallback release remains in progress
+- **THEN** the finalizer does not record the account-health error
+- **AND** it records the error only after fallback release commits
+
+#### Scenario: Unconfirmed websocket settlement leaves health unapplied
+
+- **GIVEN** a keyed websocket stream that terminates with an account-health error
+- **WHEN** both primary settlement and fallback release fail
+- **THEN** the finalizer does not record the account-health error
+- **AND** the upstream connection is still scheduled for reconnect and retirement
+
+#### Scenario: Unconfirmed retry settlement drops deferred health
+
+- **GIVEN** a keyed stream retry has deferred an account-health penalty until replacement selection
+- **WHEN** neither primary settlement nor fallback release confirms settlement
+- **THEN** the deferred penalty and any immediately following terminal health write remain unapplied
+- **AND** the retry path does not start a second settlement for the transferred reservation
+
 #### Scenario: Shutdown drains pending settlements
 
 - **WHEN** the service shuts down gracefully with settlements in flight
 - **THEN** shutdown waits for them up to the configured drain timeout
+- **AND** a pending ordering-sensitive fallback release remains part of that drain despite cancellation before primary startup or during fallback
 
 ### Requirement: Untrusted forwarded headers do not grant unauthenticated proxy locality
 
@@ -1163,3 +1238,184 @@ When API-key authentication and proxy-header trust are disabled, a loopback sock
 - **AND** a loopback request contains an empty `X-Forwarded-For` field followed by a non-empty `X-Forwarded-For` field
 - **AND** the raw socket peer is outside `proxy_unauthenticated_client_cidrs`
 - **THEN** the protected proxy request is rejected with HTTP 401
+
+### Requirement: GPT-5.6 usage cost pricing matches the current published rates
+
+When computing API-key usage, request-log, reservation, or aggregate cost for the canonical GPT-5.6 models, the system MUST use these USD-per-1M-token rates
+for input, cached input, and output:
+
+| Model | Standard | Fast/priority | Flex | Standard long context |
+| --- | --- | --- | --- | --- |
+| `gpt-5.6-sol` | `5 / 0.50 / 30` | `10 / 1 / 60` | `2.5 / 0.25 / 15` | `10 / 1 / 45` |
+| `gpt-5.6-terra` | `2 / 0.20 / 12` | `4 / 0.40 / 24` | `1 / 0.10 / 6` | `4 / 0.40 / 18` |
+| `gpt-5.6-luna` | `0.20 / 0.02 / 1.20` | `0.40 / 0.04 / 2.40` | `0.10 / 0.01 / 0.60` | `0.40 / 0.04 / 1.80` |
+
+The existing `priority` and `fast` service-tier aliases MUST use the
+Fast/priority rates. Standard long-context rates MUST apply only when input
+tokens exceed 272,000. Flex long-context pricing MUST continue to use the
+existing Flex short-context rates and multipliers. Model aliases with a
+version or snapshot suffix MUST resolve to the corresponding canonical table
+entry.
+
+Batch rates and cache-write rates MUST NOT be introduced into this contract
+without corresponding proxy request and usage fields.
+
+#### Scenario: Terra standard usage uses the current rate
+
+- **WHEN** a standard-tier `gpt-5.6-terra` request has 200,000 input tokens and 1,000,000 output tokens
+- **THEN** the token cost is `$12.40`
+
+#### Scenario: Luna Fast and Flex usage use their tier rates
+
+- **WHEN** a `gpt-5.6-luna` request has 200,000 input tokens, 100,000 cached input tokens, and 1,000,000 output tokens
+- **AND** the request uses `priority` or `fast`
+- **THEN** the token cost is `$2.444`
+- **WHEN** the same usage uses `flex`
+- **THEN** the token cost is `$0.611`
+
+#### Scenario: Terra standard long-context usage uses the current long-context rate
+
+- **WHEN** a standard-tier `gpt-5.6-terra` request has 300,000 input tokens, 50,000 cached input tokens, and 100,000 output tokens
+- **THEN** the token cost is `$2.82`
+
+#### Scenario: Versioned aliases use canonical GPT-5.6 pricing
+
+- **WHEN** the requested model is `gpt-5.6-luna-2026-07-13`
+- **THEN** cost accounting resolves it to the `gpt-5.6-luna` price entry
+
+### Requirement: API key last-used tracking is write-behind and coalesced
+
+The system SHALL track `api_keys.last_used_at` through a process-local write-behind coalescer instead of writing the column inside each reservation-settlement transaction. Settlement paths MUST record the key's used-at timestamp in memory (keyed by API key id, keeping the per-key maximum), and a replica-local periodic flusher (constant 30-second interval, not leader-gated) MUST fold all pending touches into the database in a single transaction per flush. Every flushed write MUST apply monotonic greatest-wins semantics — the stored `last_used_at` is only advanced, never regressed, even when multiple replicas flush out of order (`GREATEST(coalesce(last_used_at, epoch), :new)` semantics; the dialect-portable guarded UPDATE `WHERE last_used_at IS NULL OR last_used_at < :new` is an acceptable implementation on both PostgreSQL and SQLite). Graceful shutdown MUST flush every recorded touch: the flusher's stop sequence MUST switch the coalescer to shutdown write-through mode before performing the final flush, so a touch recorded after (or concurrently with) the final flush — for example by a settlement task that outlived the shutdown drain of persistence tasks — is flushed immediately by the recording path itself instead of being parked in a pending map that no longer has a flusher. Shutdown-path flushes (the final flush and write-through flushes after it) MUST retry transient failures a bounded number of times (3 attempts with a short constant backoff); if every attempt fails, the pending touches (API key ids and their timestamps) MUST be logged at WARNING so operators can reconstruct the lost values, and the failure MUST NOT propagate to the caller. On process crash, losing at most one flush interval (~30 seconds) of `last_used_at` freshness is accepted: the column's only consumer is the dashboard API response field (`lastUsedAt`), which no routing, ordering, or enforcement logic reads, so observed staleness of up to the flush interval is a display-only effect. A failed periodic flush MUST retain the pending touches for a later flush rather than dropping them.
+
+#### Scenario: Many settlements within one interval flush as one write per key
+
+- **GIVEN** an API key that settles many requests within one flush interval
+- **WHEN** the periodic flush runs
+- **THEN** the key receives exactly one `last_used_at` write carrying the latest recorded used-at timestamp
+- **AND** none of the individual settlement transactions wrote `last_used_at`
+
+#### Scenario: Flush never moves last_used_at backwards
+
+- **GIVEN** a stored `last_used_at` newer than a pending recorded timestamp (for example another replica already flushed a later touch)
+- **WHEN** the flush applies the pending timestamp
+- **THEN** the stored `last_used_at` keeps the newer value
+
+#### Scenario: Graceful shutdown flushes pending touches
+
+- **GIVEN** recorded touches that have not yet been flushed
+- **WHEN** the application shuts down gracefully
+- **THEN** the pending touches are flushed to the database before the process exits
+
+#### Scenario: Failed flush retains pending touches
+
+- **GIVEN** a flush attempt that fails (for example a transient database error)
+- **WHEN** the next flush tick runs
+- **THEN** the previously pending touches are flushed, merged with any touches recorded in between (per-key maximum wins)
+
+#### Scenario: Shutdown final flush retries a transient failure
+
+- **GIVEN** pending touches and a database that fails the first final-flush attempt with a transient error
+- **WHEN** the application shuts down gracefully
+- **THEN** the final flush is retried after a short backoff and the touches are persisted before the process exits
+
+#### Scenario: Shutdown final flush exhausts its retries
+
+- **GIVEN** pending touches and a database that fails every final-flush attempt
+- **WHEN** the bounded retries are exhausted
+- **THEN** a WARNING is logged containing the pending API key ids and their timestamps
+- **AND** shutdown proceeds without raising
+
+#### Scenario: Touch recorded after the shutdown flush writes through
+
+- **GIVEN** a settlement task that outlived the shutdown drain of persistence tasks
+- **WHEN** it records a touch after the flusher has stopped and performed its final flush
+- **THEN** the touch is flushed to the database immediately by the recording path rather than being lost at process exit
+
+### Requirement: GPT-5.6 personality pricing is recognized
+
+The system MUST recognize `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when computing request costs. The bare `gpt-5.6` alias MUST resolve to Sol, and suffixed aliases for each personality model MUST resolve to the matching canonical pricing entry. Standard, Flex, Priority, and requests with more than 272K input tokens MUST use the published rates applicable to the model and tier.
+
+#### Scenario: Canonical GPT-5.6 models use personality-specific pricing
+
+- **WHEN** a standard-tier request completes for `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`
+- **THEN** the system computes cost using that model's standard input, cached-input, and output rates
+
+#### Scenario: Bare GPT-5.6 alias resolves to Sol pricing
+
+- **WHEN** a request completes for `gpt-5.6`
+- **THEN** the system resolves it to the canonical Sol pricing entry
+- **AND** the system does not use the generic `gpt-5` pricing entry
+
+#### Scenario: Suffixed GPT-5.6 model resolves to its personality price
+
+- **WHEN** a request completes for a suffixed GPT-5.6 personality model ID
+- **THEN** the system resolves it to the matching canonical Sol, Terra, or Luna pricing entry
+- **AND** the system does not use the generic `gpt-5` pricing entry
+
+#### Scenario: GPT-5.6 service tiers use published tier rates
+
+- **WHEN** a GPT-5.6 request completes with `service_tier: "flex"` or `service_tier: "priority"`
+- **THEN** the system computes cost using the published rates for that model and service tier
+
+#### Scenario: GPT-5.6 long-context request uses published uplift
+
+- **WHEN** a standard-tier or Flex GPT-5.6 request completes with more than 272K input tokens
+- **THEN** the system computes cost using the published long-context input, cached-input, and output rates for that model and tier
+
+### Requirement: API-key limit rule identities are unique
+
+The system SHALL reject an API-key create or update payload when it contains
+more than one limit rule with the same `(limit_type, limit_window,
+model_filter)` identity. Rejection MUST use the typed API-key validation error
+and MUST occur before a create request persists an API key or limit row.
+The validation message MUST identify the duplicate rule identity.
+
+#### Scenario: Duplicate rules are rejected during creation
+
+- **WHEN** an administrator submits `POST /api/api-keys` with two limit rules
+  sharing the same type, window, and model filter
+- **THEN** the API returns `400` with `invalid_api_key_payload`
+- **AND** no API key or limit row is persisted
+
+### Requirement: Stale usage-reservation reclamation enforces a hard age ceiling
+
+Stale usage-reservation reclamation MUST reclaim `reserved` reservations whose
+age exceeds a hard ceiling on creation time regardless of how recently their
+`updated_at` was refreshed. This is the backstop for orphaned reservation
+heartbeats: a leaked heartbeat task keeps touching `updated_at`, which would
+otherwise exempt its reservation from the heartbeat-based staleness cutoff
+forever. The ceiling MUST be far larger than any legitimate request lifetime
+so it can never reclaim an in-flight reservation, and reclamation past the
+ceiling MUST restore the reserved quota the same way heartbeat-based
+reclamation does.
+
+#### Scenario: Orphaned heartbeat cannot exempt a reservation forever
+
+- **GIVEN** a `reserved` usage reservation created before the hard age ceiling
+- **AND** a leaked heartbeat keeps refreshing its `updated_at`
+- **WHEN** stale usage-reservation reclamation runs
+- **THEN** the reservation is released and its reserved quota is restored
+
+#### Scenario: Fresh reservations are untouched by the ceiling
+
+- **GIVEN** a `reserved` usage reservation created within the hard age ceiling
+- **AND** its `updated_at` is current
+- **WHEN** stale usage-reservation reclamation runs
+- **THEN** the reservation stays `reserved`
+
+### Requirement: API keys can enforce the Ultrafast service tier
+
+The dashboard API key CRUD surface MUST accept and persist `ultrafast` as a canonical enforced service tier. The service MUST return the same canonical value and MUST NOT normalize it to `priority`.
+
+#### Scenario: Create an API key with Ultrafast enforcement
+
+- **WHEN** a dashboard client creates an API key with `enforcedServiceTier: "ultrafast"`
+- **THEN** the request is accepted
+- **AND** the persisted and returned enforced service tier is `ultrafast`
+
+#### Scenario: Enforce Ultrafast on an advertising model
+
+- **GIVEN** an account model advertises the `ultrafast` service tier
+- **WHEN** a request uses an API key whose enforced service tier is `ultrafast`
+- **THEN** the upstream request carries `service_tier: "ultrafast"`
+

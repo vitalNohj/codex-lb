@@ -89,8 +89,10 @@ class CacheInvalidationPoller:
 
         On success ``_poll_initialized`` is set to ``True``. If the read fails the
         method raises with state unchanged (baseline empty, ``_poll_initialized``
-        still ``False``), so the caller can degrade to the first-poll-baselines
-        behavior.
+        still ``False``), so the caller can retry before background polling. If
+        the caller continues, ``start()`` arms conservative callback delivery for
+        the first successfully observed versions instead of accepting them as a
+        callback-less baseline.
         """
         session = self._session_factory()
         try:
@@ -118,7 +120,10 @@ class CacheInvalidationPoller:
 
         Mirrors ``initialize``'s error contract: if the baseline read fails the
         poller stays uninitialized (``_poll_initialized`` still ``False``) and
-        this method raises so the caller can retry or explicitly degrade.
+        this method raises so the caller can retry before background polling.
+        Starting without a successful retry makes the first recovered poll
+        reconcile positive versions through their callbacks before acknowledging
+        them.
         ``_poll_once`` swallows the read error, so a silent success here would
         let the first *background* poll absorb a peer bump as the initial
         baseline, voiding the delivery guarantee priming exists to provide.
@@ -129,6 +134,13 @@ class CacheInvalidationPoller:
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
+        # Callback-less baseline acquisition is safe only before process-local
+        # state can be served. Once background polling starts, a missing baseline
+        # means the observed versions are uncertain: treat each positive first
+        # observation as a change and reconcile it through the normal callback /
+        # acknowledgement path. A successful prime already set this flag after
+        # recording exact versions, so normal startup remains unchanged.
+        self._poll_initialized = True
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
 
@@ -272,8 +284,29 @@ class CacheInvalidationPoller:
             # later bump instead of being coalesced into the version already
             # being written.
             self._pending_bumps.discard(namespace)
-            if not await self.bump(namespace):
+            try:
+                if not await self.bump(namespace):
+                    self._pending_bumps.add(namespace)
+            except asyncio.CancelledError:
+                # The marker is cleared before the write, so an aborted write
+                # would otherwise leave the namespace neither written nor
+                # pending, breaking the required retry. Restored even when the
+                # abort is ambiguous — a redundant bump only re-runs peers'
+                # idempotent callbacks.
                 self._pending_bumps.add(namespace)
+                raise
+            except Exception:
+                # ``bump()`` reports normal failure by returning False, so a
+                # raise is abnormal — but re-raising would abort the flush and,
+                # since the loop is sorted, a persistently raising namespace
+                # would starve every namespace sorting after it on every cycle.
+                # Restore it and keep flushing the rest.
+                self._pending_bumps.add(namespace)
+                logger.warning(
+                    "cache_invalidation flush bump raised for namespace %s; kept pending",
+                    _NAMESPACE_LOG_LABELS.get(namespace, "unknown"),
+                    exc_info=True,
+                )
 
     async def _poll_once(self) -> bool:
         """Flush pending bumps and reconcile observed versions once.

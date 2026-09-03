@@ -274,6 +274,72 @@ async def test_dashboard_overview_counts_distinct_nonblank_conversations_in_time
 
 
 @pytest.mark.asyncio
+async def test_conversation_list_agrees_with_dashboard_activity_window(
+    async_client,
+    db_setup,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = utcnow().replace(microsecond=0)
+    monkeypatch.setattr("app.modules.dashboard.service.utcnow", lambda: now)
+    since = now - timedelta(days=1)
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        await accounts_repo.upsert(_make_account("acc_conversation_window", "conversation-window@example.com"))
+        session.add_all(
+            [
+                RequestLog(
+                    account_id="acc_conversation_window",
+                    request_id="conversation-window-old",
+                    requested_at=now - timedelta(days=2),
+                    model="gpt-5.1",
+                    status="success",
+                    conversation_id="conv-a",
+                ),
+                RequestLog(
+                    account_id="acc_conversation_window",
+                    request_id="conversation-window-active",
+                    requested_at=now - timedelta(hours=1),
+                    model="gpt-5.1",
+                    status="success",
+                    conversation_id="conv-a",
+                ),
+                RequestLog(
+                    account_id="acc_conversation_window",
+                    request_id="conversation-window-outside",
+                    requested_at=now - timedelta(days=2),
+                    model="gpt-5.1",
+                    status="success",
+                    conversation_id="conv-b",
+                ),
+                RequestLog(
+                    account_id="acc_conversation_window",
+                    request_id="conversation-window-deleted",
+                    requested_at=now - timedelta(hours=2),
+                    model="gpt-5.1",
+                    status="success",
+                    conversation_id="conv-deleted",
+                    deleted_at=now - timedelta(hours=1),
+                ),
+            ]
+        )
+        await session.commit()
+
+    conversations_response = await async_client.get("/api/conversations", params={"since": since.isoformat()})
+    dashboard_response = await async_client.get("/api/dashboard/overview?timeframe=1d")
+
+    assert conversations_response.status_code == 200
+    assert dashboard_response.status_code == 200
+    conversations = conversations_response.json()
+    dashboard = dashboard_response.json()
+    assert [row["conversationId"] for row in conversations["conversations"]] == ["conv-a"]
+    assert conversations["total"] == 1
+    assert dashboard["summary"]["metrics"]["conversations"] == 1
+    assert dashboard["summary"]["metrics"]["conversationRequests"] == 1
+    assert sum(point["v"] for point in dashboard["trends"]["conversations"]) == 1.0
+
+
+@pytest.mark.asyncio
 async def test_dashboard_overview_metrics_keep_soft_deleted_request_logs(async_client, db_setup):
     now = utcnow().replace(microsecond=0)
 
@@ -959,6 +1025,78 @@ async def test_dashboard_overview_respects_selected_timeframe(
     else:
         assert payload["summary"]["metrics"]["errorCount"] == 1
         assert payload["summary"]["metrics"]["topError"] == "rate_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_overview_error_rate_excludes_cancelled_requests(async_client, db_setup):
+    """Regression for #1552: cancelled/client_disconnected terminals are
+    normal agent lifecycle — they must not inflate the overview error rate
+    or top error, and they surface as a distinct cancelled count."""
+    now = utcnow().replace(microsecond=0)
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        usage_repo = UsageRepository(session)
+        logs_repo = RequestLogsRepository(session)
+
+        await accounts_repo.upsert(_make_account("acc_cancelled", "cancelled@example.com"))
+        await usage_repo.add_entry(
+            "acc_cancelled",
+            20.0,
+            window="primary",
+            recorded_at=now - timedelta(minutes=5),
+        )
+        await usage_repo.add_entry(
+            "acc_cancelled",
+            40.0,
+            window="secondary",
+            recorded_at=now - timedelta(minutes=2),
+        )
+        await logs_repo.add_log(
+            account_id="acc_cancelled",
+            request_id="req_cx_success",
+            model="gpt-5.1",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=50,
+            status="success",
+            error_code=None,
+            requested_at=now - timedelta(minutes=10),
+        )
+        # Cancelled rows dominate the window (multi-agent disconnect churn).
+        for index in range(2):
+            await logs_repo.add_log(
+                account_id="acc_cancelled",
+                request_id=f"req_cx_cancelled_{index}",
+                model="gpt-5.1",
+                input_tokens=10,
+                output_tokens=0,
+                latency_ms=20,
+                status="cancelled",
+                error_code="client_disconnected",
+                requested_at=now - timedelta(minutes=20 + index),
+            )
+        await logs_repo.add_log(
+            account_id="acc_cancelled",
+            request_id="req_cx_error",
+            model="gpt-5.1",
+            input_tokens=10,
+            output_tokens=0,
+            latency_ms=20,
+            status="error",
+            error_code="upstream_500",
+            requested_at=now - timedelta(minutes=30),
+        )
+
+    response = await async_client.get("/api/dashboard/overview")
+    assert response.status_code == 200
+    metrics = response.json()["summary"]["metrics"]
+
+    assert metrics["requests"] == 4
+    assert metrics["errorCount"] == 1
+    assert metrics["errorRate"] == pytest.approx(0.25)
+    assert metrics["cancelledCount"] == 2
+    assert metrics["topError"] == "upstream_500"
 
 
 @pytest.mark.asyncio

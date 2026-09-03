@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast as typing_cast
 
 from app.core.usage.logs import (
+    CANCELLED_STATUS,
     RequestLogLike,
     cached_input_tokens_from_log,
     cost_breakdown_from_log,
@@ -19,6 +20,8 @@ QUOTA_CODES = {"insufficient_quota", "usage_not_included", "quota_exceeded"}
 def normalize_log_status(status: str, error_code: str | None) -> str:
     if status == "success":
         return "ok"
+    if status == CANCELLED_STATUS:
+        return "cancelled"
     if error_code in RATE_LIMIT_CODES:
         return "rate_limit"
     if error_code in QUOTA_CODES:
@@ -30,28 +33,39 @@ def log_status(log: RequestLog) -> str:
     return normalize_log_status(log.status, log.error_code)
 
 
-def to_request_log_entry(log: RequestLog, *, api_key_name: str | None = None) -> RequestLogEntry:
+def to_request_log_entry(
+    log: RequestLog,
+    *,
+    api_key_name: str | None = None,
+    include_sensitive_metadata: bool,
+) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
     cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
     return RequestLogEntry(
         requested_at=log.requested_at,
-        conversation_id=log.conversation_id,
+        conversation_id=log.conversation_id if include_sensitive_metadata else None,
         account_id=log.account_id,
         plan_type=log.plan_type,
         api_key_id=log.api_key_id,
         api_key_name=api_key_name,
         request_id=log.request_id,
-        archive_request_id=log.archive_request_id,
+        archive_request_id=log.archive_request_id if include_sensitive_metadata else None,
         request_kind=log.request_kind,
+        connection_request_kind=log.connection_request_kind,
         model=log.model,
         source=log.source,
         model_source_id=log.model_source_id,
         model_source_kind=log.model_source_kind,
-        useragent=log.useragent,
+        useragent=log.useragent if include_sensitive_metadata else None,
         useragent_group=log.useragent_group,
-        client_ip=log.client_ip,
+        client_ip=log.client_ip if include_sensitive_metadata else None,
         transport=log.transport,
         upstream_transport=log.upstream_transport,
+        upstream_proxy_route_mode=log.upstream_proxy_route_mode,
+        upstream_proxy_pool_id=log.upstream_proxy_pool_id,
+        upstream_proxy_endpoint_id=log.upstream_proxy_endpoint_id,
+        upstream_proxy_fallback_used=log.upstream_proxy_fallback_used,
+        upstream_proxy_fail_closed_reason=log.upstream_proxy_fail_closed_reason,
         service_tier=log.service_tier,
         requested_service_tier=log.requested_service_tier,
         actual_service_tier=log.actual_service_tier,

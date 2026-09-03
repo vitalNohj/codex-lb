@@ -92,6 +92,7 @@ type RoutingSettingsDraft = {
   proxyAccountResponseCreateLimit: string;
   proxyAccountStreamLimit: string;
   proxyAccountStreamRecoveryReserve: string;
+  proxyApiKeyFairShareCongestionThresholdPct: string;
   relativeAvailabilityPower: string;
   relativeAvailabilityTopK: string;
   stickyPrimaryThreshold: string;
@@ -112,6 +113,7 @@ function createRoutingSettingsDraft(settings: DashboardSettings): RoutingSetting
     proxyAccountResponseCreateLimit: String(settings.proxyAccountResponseCreateLimit),
     proxyAccountStreamLimit: String(settings.proxyAccountStreamLimit),
     proxyAccountStreamRecoveryReserve: String(settings.proxyAccountStreamRecoveryReserve),
+    proxyApiKeyFairShareCongestionThresholdPct: String(settings.proxyApiKeyFairShareCongestionThresholdPct),
     relativeAvailabilityPower: String(settings.relativeAvailabilityPower),
     relativeAvailabilityTopK: String(settings.relativeAvailabilityTopK),
     stickyPrimaryThreshold: String(settings.stickyReallocationPrimaryBudgetThresholdPct ?? 95),
@@ -140,6 +142,14 @@ function parseNonnegativeInteger(value: string): number | null {
   }
   const parsed = Number(normalized);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function thresholdHintValues(value: number): { used: string; remaining: string } {
+  // Derive the remaining percent from the rounded used percent so the two
+  // displayed values always sum to exactly 100.
+  const used = Number(value.toFixed(1));
+  const remaining = Number((100 - used).toFixed(1));
+  return { used: String(used), remaining: String(remaining) };
 }
 
 export function RoutingSettings({
@@ -188,17 +198,24 @@ export function RoutingSettings({
   const parsedProxyAccountStreamRecoveryReserve = parseNonnegativeInteger(
     draft.proxyAccountStreamRecoveryReserve,
   );
+  const parsedProxyApiKeyFairShareCongestionThresholdPct = parseNonnegativeInteger(
+    draft.proxyApiKeyFairShareCongestionThresholdPct,
+  );
   const accountCapacityLimitsValid =
     parsedProxyAccountResponseCreateLimit !== null &&
     parsedProxyAccountStreamLimit !== null &&
     parsedProxyAccountStreamRecoveryReserve !== null &&
+    parsedProxyApiKeyFairShareCongestionThresholdPct !== null &&
+    parsedProxyApiKeyFairShareCongestionThresholdPct <= 100 &&
     (parsedProxyAccountStreamLimit === 0 ||
       parsedProxyAccountStreamRecoveryReserve <= parsedProxyAccountStreamLimit);
   const accountCapacityLimitsChanged =
     accountCapacityLimitsValid &&
     (parsedProxyAccountResponseCreateLimit !== settings.proxyAccountResponseCreateLimit ||
       parsedProxyAccountStreamLimit !== settings.proxyAccountStreamLimit ||
-      parsedProxyAccountStreamRecoveryReserve !== settings.proxyAccountStreamRecoveryReserve);
+      parsedProxyAccountStreamRecoveryReserve !== settings.proxyAccountStreamRecoveryReserve ||
+      parsedProxyApiKeyFairShareCongestionThresholdPct !==
+        settings.proxyApiKeyFairShareCongestionThresholdPct);
   const warmupModelChanged = draft.warmupModel.trim() !== settings.warmupModel;
   const warmupModelValid = draft.warmupModel.trim().length > 0 && draft.warmupModel.trim().length <= WARMUP_MODEL_MAX_LENGTH;
   const parsedLimitWarmupCooldown = Number(draft.limitWarmupCooldown);
@@ -744,6 +761,28 @@ export function RoutingSettings({
                   {t("settings.routing.accountCapacity.streamRecoveryReserveDescription")}
                 </span>
               </label>
+              <label className="block space-y-1">
+                <span className="block text-[11px] font-medium text-muted-foreground">
+                  {t("settings.routing.accountCapacity.fairShareThresholdLabel")}
+                </span>
+                <Input
+                  aria-label={t("settings.routing.accountCapacity.fairShareThresholdLabel")}
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  inputMode="numeric"
+                  value={draft.proxyApiKeyFairShareCongestionThresholdPct}
+                  disabled={busy}
+                  onChange={(event) =>
+                    updateDraft({ proxyApiKeyFairShareCongestionThresholdPct: event.target.value })
+                  }
+                  className="h-8 text-xs"
+                />
+                <span className="block text-[11px] text-muted-foreground">
+                  {t("settings.routing.accountCapacity.fairShareThresholdDescription")}
+                </span>
+              </label>
             </div>
             <Button
               type="button"
@@ -756,6 +795,8 @@ export function RoutingSettings({
                   proxyAccountResponseCreateLimit: parsedProxyAccountResponseCreateLimit!,
                   proxyAccountStreamLimit: parsedProxyAccountStreamLimit!,
                   proxyAccountStreamRecoveryReserve: parsedProxyAccountStreamRecoveryReserve!,
+                  proxyApiKeyFairShareCongestionThresholdPct:
+                    parsedProxyApiKeyFairShareCongestionThresholdPct!,
                 })
               }
             >
@@ -763,23 +804,41 @@ export function RoutingSettings({
             </Button>
           </div>
 
-          <div className="flex items-center justify-between p-3">
-            <div>
-              <p className="text-sm font-medium">{t("settings.routing.stickyThreads.label")}</p>
-              <p className="text-xs text-muted-foreground">{t("settings.routing.stickyThreads.description")}</p>
+          <div className="space-y-2 p-3">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">{t("settings.routing.stickyThreads.label")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.routing.stickyThreads.description")}</p>
+              </div>
+              <Switch
+                aria-label={t("settings.routing.stickyThreads.ariaLabel")}
+                checked={settings.stickyThreadsEnabled}
+                disabled={busy}
+                onCheckedChange={(checked) => save({ stickyThreadsEnabled: checked })}
+              />
             </div>
-            <Switch
-              aria-label={t("settings.routing.stickyThreads.ariaLabel")}
-              checked={settings.stickyThreadsEnabled}
-              disabled={busy}
-              onCheckedChange={(checked) => save({ stickyThreadsEnabled: checked })}
-            />
+            <p className="text-xs text-muted-foreground">
+              {t("settings.routing.stickyThreads.hardAffinityNote")}
+            </p>
+          </div>
+
+          <div className="space-y-1 p-3">
+            <p className="text-sm font-medium">{t("settings.routing.quotaWindows.title")}</p>
+            <p className="text-xs text-muted-foreground">{t("settings.routing.quotaWindows.explainer")}</p>
           </div>
 
           <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm font-medium">{t("settings.routing.stickyThresholds.primaryLabel")}</p>
               <p className="text-xs text-muted-foreground">{t("settings.routing.stickyThresholds.primaryDescription")}</p>
+              {stickyPrimaryThresholdValid ? (
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "settings.routing.stickyThresholds.usedRemainingHint",
+                    thresholdHintValues(parsedStickyPrimaryThreshold),
+                  )}
+                </p>
+              ) : null}
             </div>
             <div className="flex items-center gap-2">
               <Input
@@ -822,6 +881,14 @@ export function RoutingSettings({
             <div>
               <p className="text-sm font-medium">{t("settings.routing.stickyThresholds.secondaryLabel")}</p>
               <p className="text-xs text-muted-foreground">{t("settings.routing.stickyThresholds.secondaryDescription")}</p>
+              {stickySecondaryThresholdValid ? (
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "settings.routing.stickyThresholds.usedRemainingHint",
+                    thresholdHintValues(parsedStickySecondaryThreshold),
+                  )}
+                </p>
+              ) : null}
             </div>
             <div className="flex items-center gap-2">
               <Input

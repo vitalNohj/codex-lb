@@ -360,6 +360,224 @@ async def test_latest_by_account_primary_query_plan_uses_normalized_window_index
     assert "Seq Scan" not in plan_json
 
 
+# Snapshots per (account, window shape). Sized so the covering indexes win
+# the cost comparison decisively: with only a handful of rows the covering
+# index and its non-covering key twin cost within noise of each other on a
+# fresh PostgreSQL and the EXPLAIN assertions below flake (observed on
+# PostgreSQL 16). Hundreds of rows per account separate the index-only path
+# by a wide margin while keeping the seed fast (single bulk INSERT).
+_BULK_PLAN_FIXTURE_SNAPSHOTS_PER_WINDOW = 150
+
+
+async def _seed_bulk_history_plan_fixture(session: AsyncSession) -> None:
+    from app.db.models import UsageHistory
+
+    now = utcnow()
+    accounts_repo = AccountsRepository(session)
+    await accounts_repo.upsert(_make_account("acc1"))
+    await accounts_repo.upsert(_make_account("acc2"))
+
+    def _entry(account_id: str, used_percent: float, window: str | None, recorded_at, window_minutes: int):
+        return UsageHistory(
+            account_id=account_id,
+            used_percent=used_percent,
+            window=window,
+            recorded_at=recorded_at,
+            window_minutes=window_minutes,
+        )
+
+    entries: list[UsageHistory] = []
+    for offset in range(_BULK_PLAN_FIXTURE_SNAPSHOTS_PER_WINDOW):
+        # 90-second steps keep every row inside the 5-hour query window.
+        recorded_at = now - timedelta(seconds=90 * offset)
+        entries.append(_entry("acc1", 10.0 + offset, None, recorded_at, 300))
+        entries.append(_entry("acc1", 20.0 + offset, "primary", recorded_at, 300))
+        entries.append(_entry("acc1", 30.0 + offset, "secondary", recorded_at, 10080))
+        entries.append(_entry("acc2", 40.0 + offset, "primary", recorded_at, 300))
+        entries.append(_entry("acc2", 50.0 + offset, "secondary", recorded_at, 10080))
+    session.add_all(entries)
+    await session.commit()
+
+    await _vacuum_analyze_usage_history(session)
+
+
+async def _vacuum_analyze_usage_history(session: AsyncSession) -> None:
+    """Populate the visibility map so covering-index EXPLAIN tests are deterministic.
+
+    A freshly seeded table has an empty visibility map, so the planner costs
+    every Index Only Scan with full heap recheck fetches and can prefer a
+    plain Index Scan on a cheaper non-covering key index (observed on a clean
+    PostgreSQL 18: idx_usage_window_account_time at cost 8.18 beats the
+    covering index at 8.5) — disabling seq/bitmap scans does not force the
+    index-only path when that cheaper non-covering index exists. VACUUM marks
+    the pages all-visible (and ANALYZE refreshes stats), which is the steady
+    production state the covering indexes target.
+    """
+    # Close the seeding transaction first: an open snapshot can keep VACUUM
+    # from marking the freshly inserted pages all-visible.
+    await session.commit()
+    autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+    async with autocommit_engine.connect() as conn:
+        await conn.execute(text("VACUUM (ANALYZE) usage_history"))
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_primary_query_plan_is_index_only_postgresql(db_setup):
+    """The bulk projections fetch must be servable without heap fetches.
+
+    Sequential and bitmap scans are disabled so the planner has to surface
+    its index path for the bulk shape; with the covering payload in place
+    and the visibility map populated (the seed fixture runs VACUUM ANALYZE)
+    that path must be an Index Only Scan (a bare index scan would prove the
+    payload is missing).
+    """
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only query plan test")
+
+        await _seed_bulk_history_plan_fixture(session)
+
+        await session.execute(text("SET enable_seqscan = off"))
+        await session.execute(text("SET enable_bitmapscan = off"))
+        plan = (
+            await session.execute(
+                text(
+                    """
+                    EXPLAIN (FORMAT JSON)
+                    SELECT id, account_id, used_percent, recorded_at, reset_at, window_minutes
+                    FROM usage_history
+                    WHERE account_id IN ('acc1', 'acc2')
+                      AND recorded_at >= now() - interval '5 hours'
+                      AND coalesce("window", 'primary') = 'primary'
+                    ORDER BY account_id, recorded_at ASC
+                    """
+                )
+            )
+        ).scalar_one()
+
+    plan_json = json.dumps(plan)
+    assert "Index Only Scan" in plan_json
+    assert (
+        "idx_usage_window_account_time_covering" in plan_json
+        or "idx_usage_window_raw_account_time_covering" in plan_json
+    )
+    assert "Seq Scan" not in plan_json
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_cutoff_query_plan_is_index_only_postgresql(db_setup):
+    """The per-account-cutoff OR shape has an index-only path available.
+
+    With bitmap scans enabled the planner may still prefer a BitmapOr over
+    the covering index arms (bitmap heap scans cannot be index-only); this
+    pins that the covering payload at least makes the heap-free plan
+    available for the production shape.
+    """
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only query plan test")
+
+        await _seed_bulk_history_plan_fixture(session)
+
+        await session.execute(text("SET enable_seqscan = off"))
+        await session.execute(text("SET enable_bitmapscan = off"))
+        plan = (
+            await session.execute(
+                text(
+                    """
+                    EXPLAIN (FORMAT JSON)
+                    SELECT id, account_id, used_percent, recorded_at, reset_at, window_minutes
+                    FROM usage_history
+                    WHERE ((account_id = 'acc1' AND recorded_at >= now() - interval '5 hours')
+                        OR (account_id = 'acc2' AND recorded_at >= now() - interval '7 days'))
+                      AND coalesce("window", 'primary') = 'primary'
+                    ORDER BY account_id, recorded_at ASC
+                    """
+                )
+            )
+        ).scalar_one()
+
+    plan_json = json.dumps(plan)
+    assert "Index Only Scan" in plan_json
+    assert (
+        "idx_usage_window_account_time_covering" in plan_json
+        or "idx_usage_window_raw_account_time_covering" in plan_json
+    )
+    assert "Seq Scan" not in plan_json
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_secondary_query_plan_is_index_only_postgresql(db_setup):
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only query plan test")
+
+        await _seed_bulk_history_plan_fixture(session)
+
+        await session.execute(text("SET enable_seqscan = off"))
+        await session.execute(text("SET enable_bitmapscan = off"))
+        plan = (
+            await session.execute(
+                text(
+                    """
+                    EXPLAIN (FORMAT JSON)
+                    SELECT id, account_id, used_percent, recorded_at, reset_at, window_minutes
+                    FROM usage_history
+                    WHERE account_id IN ('acc1', 'acc2')
+                      AND recorded_at >= now() - interval '7 days'
+                      AND "window" = 'secondary'
+                    ORDER BY account_id, recorded_at ASC
+                    """
+                )
+            )
+        ).scalar_one()
+
+    plan_json = json.dumps(plan)
+    assert "Index Only Scan" in plan_json
+    assert "idx_usage_window_raw_account_time_covering" in plan_json
+    assert "Seq Scan" not in plan_json
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_covered_read_matches_non_covered_read_postgresql(db_setup):
+    """The covering index changes the plan, never the rows.
+
+    Pins the spec's row-equality clause by running the production
+    ``bulk_history_since`` read once with the index-only path available and
+    once with index-only scans disabled (the pre-covering heap-fetch plan),
+    then asserting identical results.
+    """
+    since = utcnow() - timedelta(hours=5)
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only covered-read equality test")
+
+        await _seed_bulk_history_plan_fixture(session)
+
+        await session.execute(text("SET enable_seqscan = off"))
+        await session.execute(text("SET enable_bitmapscan = off"))
+        covered = await UsageRepository(session).bulk_history_since(["acc1", "acc2"], "primary", since)
+
+    async with SessionLocal() as session:
+        await session.execute(text("SET enable_indexonlyscan = off"))
+        non_covered = await UsageRepository(session).bulk_history_since(["acc1", "acc2"], "primary", since)
+
+    # The query orders by (account_id, recorded_at) only, so rows tied on
+    # recorded_at (NULL-window and 'primary' snapshots share timestamps) come
+    # back in plan-dependent order; compare with a deterministic tie-break.
+    def _sorted_rows(grouped):
+        return {
+            account_id: sorted(snapshots, key=lambda snapshot: (snapshot.recorded_at, snapshot.id))
+            for account_id, snapshots in grouped.items()
+        }
+
+    assert _sorted_rows(covered) == _sorted_rows(non_covered)
+    assert set(covered) == {"acc1", "acc2"}
+    # NULL-window + 'primary' snapshots for acc1, 'primary' only for acc2.
+    assert len(covered["acc1"]) == 2 * _BULK_PLAN_FIXTURE_SNAPSHOTS_PER_WINDOW
+    assert len(covered["acc2"]) == _BULK_PLAN_FIXTURE_SNAPSHOTS_PER_WINDOW
+
+
 def test_bulk_history_since_sqlite_cache_reuses_superset_and_picks_up_appends(tmp_path):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
@@ -1034,3 +1252,503 @@ async def test_trends_by_bucket_sqlite_avoids_window_function_for_latest_metadat
     ]
     assert len(trend_queries) == 1
     assert "row_number()" not in trend_queries[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_per_account_cutoffs_parity(db_setup):
+    """Per-account cutoffs bound the PostgreSQL fetch without changing what
+    callers keep after their own trimming; SQLite keeps the shared floor."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc-short"))
+        await accounts_repo.upsert(_make_account("acc-wide"))
+
+        # acc-short: rows inside and outside its 5h cutoff.
+        await repo.add_entry("acc-short", 10.0, window="primary", recorded_at=now - timedelta(hours=20))
+        await repo.add_entry("acc-short", 20.0, window="primary", recorded_at=now - timedelta(hours=1))
+        # acc-wide: an old row that only its wide cutoff keeps.
+        await repo.add_entry("acc-wide", 30.0, window="primary", recorded_at=now - timedelta(hours=20))
+        await repo.add_entry("acc-wide", 40.0, window="primary", recorded_at=now - timedelta(hours=1))
+
+        shared_floor = now - timedelta(days=7)
+        cutoffs = {
+            "acc-short": now - timedelta(hours=5),
+            "acc-wide": now - timedelta(days=7),
+        }
+        bounded = await repo.bulk_history_since(
+            ["acc-short", "acc-wide"],
+            "primary",
+            shared_floor,
+            cutoffs=cutoffs,
+        )
+        unbounded = await repo.bulk_history_since(["acc-short", "acc-wide"], "primary", shared_floor)
+
+    dialect = "postgresql" if str(engine.url).startswith("postgresql") else "sqlite"
+    if dialect == "postgresql":
+        assert [snapshot.used_percent for snapshot in bounded["acc-short"]] == [20.0]
+    else:
+        # SQLite keeps the shared floor; callers trim per account.
+        assert [snapshot.used_percent for snapshot in bounded["acc-short"]] == [10.0, 20.0]
+    assert [snapshot.used_percent for snapshot in bounded["acc-wide"]] == [30.0, 40.0]
+
+    # Parity with the shared-floor fetch after per-account trimming.
+    trimmed = [snapshot for snapshot in unbounded["acc-short"] if snapshot.recorded_at >= cutoffs["acc-short"]]
+    assert [snapshot.used_percent for snapshot in trimmed] == [20.0]
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_per_account_row_cap_keeps_newest_rows(db_setup):
+    """The PostgreSQL row cap keeps each account's newest in-cutoff rows in
+    oldest-first order; under-cap accounts are unaffected and SQLite ignores
+    the cap entirely (snapshot-cache path, like ``cutoffs``)."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc-dense"))
+        await accounts_repo.upsert(_make_account("acc-sparse"))
+
+        for offset in range(8):
+            await repo.add_entry(
+                "acc-dense",
+                10.0 + offset,
+                window="secondary",
+                recorded_at=now - timedelta(minutes=8 - offset),
+            )
+        await repo.add_entry("acc-sparse", 90.0, window="secondary", recorded_at=now - timedelta(hours=2))
+        await repo.add_entry("acc-sparse", 95.0, window="secondary", recorded_at=now - timedelta(hours=1))
+
+        since = now - timedelta(days=7)
+        capped = await repo.bulk_history_since(
+            ["acc-dense", "acc-sparse"],
+            "secondary",
+            since,
+            per_account_row_cap=3,
+        )
+        uncapped = await repo.bulk_history_since(["acc-dense", "acc-sparse"], "secondary", since)
+
+    dialect = "postgresql" if str(engine.url).startswith("postgresql") else "sqlite"
+    if dialect == "postgresql":
+        # Newest three rows, still oldest-first.
+        assert [snapshot.used_percent for snapshot in capped["acc-dense"]] == [15.0, 16.0, 17.0]
+        assert capped["acc-dense"] == uncapped["acc-dense"][-3:]
+    else:
+        # SQLite serves the shared-floor snapshot cache; the cap is ignored.
+        assert [snapshot.used_percent for snapshot in capped["acc-dense"]] == [
+            snapshot.used_percent for snapshot in uncapped["acc-dense"]
+        ]
+    # Under-cap accounts return their full in-cutoff slice on every backend.
+    assert [snapshot.used_percent for snapshot in capped["acc-sparse"]] == [90.0, 95.0]
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_row_cap_respects_per_account_cutoffs_postgresql(db_setup):
+    """The cap composes with per-account cutoffs: the cutoff bounds the
+    lookback first, then the cap keeps the newest rows inside it."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only row-cap test")
+
+        accounts_repo = AccountsRepository(session)
+        repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc-short"))
+        await accounts_repo.upsert(_make_account("acc-wide"))
+
+        await repo.add_entry("acc-short", 10.0, window="primary", recorded_at=now - timedelta(hours=20))
+        await repo.add_entry("acc-short", 20.0, window="primary", recorded_at=now - timedelta(hours=1))
+        for offset in range(4):
+            await repo.add_entry(
+                "acc-wide",
+                30.0 + offset,
+                window="primary",
+                recorded_at=now - timedelta(hours=20 - offset),
+            )
+
+        grouped = await repo.bulk_history_since(
+            ["acc-short", "acc-wide"],
+            "primary",
+            now - timedelta(days=7),
+            cutoffs={
+                "acc-short": now - timedelta(hours=5),
+                "acc-wide": now - timedelta(days=7),
+            },
+            per_account_row_cap=3,
+        )
+
+    # acc-short's 20h-old row falls outside its cutoff even though the cap
+    # alone would have kept it.
+    assert [snapshot.used_percent for snapshot in grouped["acc-short"]] == [20.0]
+    # acc-wide keeps only the newest three of its four in-cutoff rows.
+    assert [snapshot.used_percent for snapshot in grouped["acc-wide"]] == [31.0, 32.0, 33.0]
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_row_cap_exempts_uncapped_recent_floor_postgresql(db_setup):
+    """Rows at or after ``uncapped_recent_floor`` bypass the row cap.
+
+    Live ingestion writes per proxied request whenever the usage fingerprint
+    moves, so a burst can put more rows inside the pace-smoothing window than
+    any fixed cap; the smoothing mean weighs those samples equally, so they
+    must all come back. The cap still bounds the older remainder.
+    """
+    now = utcnow()
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only row-cap test")
+
+        accounts_repo = AccountsRepository(session)
+        repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc-burst"))
+
+        # Six rows inside the floor window (a burst denser than the cap) and
+        # four older rows between the cutoff and the floor.
+        for offset in range(6):
+            await repo.add_entry(
+                "acc-burst",
+                50.0 + offset,
+                window="secondary",
+                recorded_at=now - timedelta(minutes=30 - offset),
+            )
+        for offset in range(4):
+            await repo.add_entry(
+                "acc-burst",
+                10.0 + offset,
+                window="secondary",
+                recorded_at=now - timedelta(hours=10 - offset),
+            )
+
+        grouped = await repo.bulk_history_since(
+            ["acc-burst"],
+            "secondary",
+            now - timedelta(days=7),
+            per_account_row_cap=3,
+            uncapped_recent_floor=now - timedelta(minutes=60),
+        )
+
+    # All six in-floor rows survive despite cap=3; the older tail keeps only
+    # its newest three rows; the slice stays oldest-first.
+    assert [snapshot.used_percent for snapshot in grouped["acc-burst"]] == [
+        11.0,
+        12.0,
+        13.0,
+        50.0,
+        51.0,
+        52.0,
+        53.0,
+        54.0,
+        55.0,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_capped_query_plan_is_index_only_postgresql(db_setup):
+    """The capped lateral probes must stay heap-free on the covering indexes.
+
+    Each per-account probe descends the covering index backward and stops at
+    the cap or cutoff; a plain Index Scan here would mean the probe shape
+    lost the covering payload and fetches the heap per row.
+    """
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only query plan test")
+
+        await _seed_bulk_history_plan_fixture(session)
+
+        await session.execute(text("SET enable_seqscan = off"))
+        await session.execute(text("SET enable_bitmapscan = off"))
+        plan = (
+            await session.execute(
+                text(
+                    """
+                    EXPLAIN (FORMAT JSON)
+                    SELECT recent.*
+                    FROM (VALUES ('acc1', now() - interval '5 hours'),
+                                 ('acc2', now() - interval '7 days'))
+                         AS account_cutoffs (account_id, cutoff)
+                    JOIN LATERAL (
+                        SELECT id, account_id, used_percent, recorded_at, reset_at, window_minutes
+                        FROM usage_history
+                        WHERE account_id = account_cutoffs.account_id
+                          AND recorded_at >= account_cutoffs.cutoff
+                          AND "window" = 'secondary'
+                        ORDER BY recorded_at DESC, id DESC
+                        LIMIT 100
+                    ) AS recent ON true
+                    """
+                )
+            )
+        ).scalar_one()
+
+    plan_json = json.dumps(plan)
+    assert "Index Only Scan" in plan_json
+    assert "idx_usage_window_raw_account_time_covering" in plan_json
+    assert "Seq Scan on usage_history" not in plan_json
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_capped_floor_query_plan_is_index_only_postgresql(db_setup):
+    """The floor-exempt probe shape (uncapped recent branch UNION ALL capped
+    older branch) must keep both branches heap-free on the covering index."""
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only query plan test")
+
+        await _seed_bulk_history_plan_fixture(session)
+
+        await session.execute(text("SET enable_seqscan = off"))
+        await session.execute(text("SET enable_bitmapscan = off"))
+        plan = (
+            await session.execute(
+                text(
+                    """
+                    EXPLAIN (FORMAT JSON)
+                    SELECT recent.*
+                    FROM (VALUES ('acc1', now() - interval '7 days', now() - interval '4 hours'),
+                                 ('acc2', now() - interval '7 days', now() - interval '4 hours'))
+                         AS account_cutoffs (account_id, cutoff, uncapped_floor)
+                    JOIN LATERAL (
+                        (SELECT id, account_id, used_percent, recorded_at, reset_at, window_minutes
+                         FROM usage_history
+                         WHERE account_id = account_cutoffs.account_id
+                           AND recorded_at >= account_cutoffs.uncapped_floor
+                           AND "window" = 'secondary')
+                        UNION ALL
+                        (SELECT id, account_id, used_percent, recorded_at, reset_at, window_minutes
+                         FROM usage_history
+                         WHERE account_id = account_cutoffs.account_id
+                           AND recorded_at >= account_cutoffs.cutoff
+                           AND recorded_at < account_cutoffs.uncapped_floor
+                           AND "window" = 'secondary'
+                         ORDER BY recorded_at DESC, id DESC
+                         LIMIT 100)
+                    ) AS recent ON true
+                    """
+                )
+            )
+        ).scalar_one()
+
+    plan_json = json.dumps(plan)
+    assert "Index Only Scan" in plan_json
+    assert "idx_usage_window_raw_account_time_covering" in plan_json
+    assert "Seq Scan on usage_history" not in plan_json
+    assert "Index Scan using" not in plan_json
+
+
+def _legacy_additional_entry(
+    account_id: str,
+    *,
+    quota_key: str,
+    limit_name: str,
+    metered_feature: str,
+    used_percent: float,
+    recorded_at: datetime,
+    window: str = "primary",
+):
+    from app.db.models import AdditionalUsageHistory
+
+    return AdditionalUsageHistory(
+        account_id=account_id,
+        quota_key=quota_key,
+        limit_name=limit_name,
+        metered_feature=metered_feature,
+        window=window,
+        used_percent=used_percent,
+        recorded_at=recorded_at,
+    )
+
+
+@pytest.mark.asyncio
+async def test_additional_latest_by_account_merges_alias_rows(db_setup):
+    """Alias-era rows (legacy quota_key, registry-known aliases) merge with
+    canonical rows under the newest-first ordering on every backend."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        repo = AdditionalUsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc1"))
+        await accounts_repo.upsert(_make_account("acc2"))
+        await accounts_repo.upsert(_make_account("acc3"))
+
+        # acc1: the limit_name-alias row is newer than the canonical row.
+        await repo.add_entry(
+            "acc1",
+            limit_name="GPT-5.3-Codex-Spark",
+            metered_feature="codex_bengalfox",
+            quota_key="codex_spark",
+            window="primary",
+            used_percent=10.0,
+            recorded_at=now - timedelta(hours=1),
+        )
+        session.add(
+            _legacy_additional_entry(
+                "acc1",
+                quota_key="legacy_spark_key",
+                limit_name="codex_other",
+                metered_feature="legacy_feature",
+                used_percent=55.0,
+                recorded_at=now,
+            )
+        )
+        # acc2: the canonical row is newer than the metered_feature-alias row.
+        session.add(
+            _legacy_additional_entry(
+                "acc2",
+                quota_key="legacy_spark_key",
+                limit_name="unrelated_limit",
+                metered_feature="codex_bengalfox",
+                used_percent=70.0,
+                recorded_at=now - timedelta(hours=2),
+            )
+        )
+        await session.commit()
+        await repo.add_entry(
+            "acc2",
+            limit_name="GPT-5.3-Codex-Spark",
+            metered_feature="codex_bengalfox",
+            quota_key="codex_spark",
+            window="primary",
+            used_percent=30.0,
+            recorded_at=now,
+        )
+        # acc3: alias-only history.
+        session.add(
+            _legacy_additional_entry(
+                "acc3",
+                quota_key="legacy_spark_key",
+                limit_name="codex_other",
+                metered_feature="legacy_feature",
+                used_percent=90.0,
+                recorded_at=now - timedelta(minutes=30),
+            )
+        )
+        await session.commit()
+
+        latest = await repo.latest_by_account("codex_spark", "primary")
+        assert set(latest.keys()) == {"acc1", "acc2", "acc3"}
+        assert latest["acc1"].used_percent == 55.0
+        assert latest["acc2"].used_percent == 30.0
+        assert latest["acc3"].used_percent == 90.0
+
+        scoped = await repo.latest_by_account("codex_spark", "primary", account_ids=["acc1"])
+        assert set(scoped.keys()) == {"acc1"}
+        assert scoped["acc1"].used_percent == 55.0
+
+        recent = await repo.latest_by_account(
+            "codex_spark",
+            "primary",
+            since=now - timedelta(minutes=45),
+        )
+        assert set(recent.keys()) == {"acc1", "acc2", "acc3"}
+        older_only = await repo.latest_by_account(
+            "codex_spark",
+            "primary",
+            account_ids=["acc2"],
+            since=now - timedelta(hours=3),
+        )
+        assert older_only["acc2"].used_percent == 30.0
+
+
+@pytest.mark.asyncio
+async def test_additional_latest_by_account_postgres_uses_top1_probes(db_setup):
+    now = utcnow()
+    statements: list[str] = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only SQL shape test")
+
+        accounts_repo = AccountsRepository(session)
+        repo = AdditionalUsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc1"))
+        await accounts_repo.upsert(_make_account("acc2"))
+        await repo.add_entry(
+            "acc1",
+            limit_name="GPT-5.3-Codex-Spark",
+            metered_feature="codex_bengalfox",
+            quota_key="codex_spark",
+            window="primary",
+            used_percent=20.0,
+            recorded_at=now,
+        )
+        await repo.add_entry(
+            "acc2",
+            limit_name="GPT-5.3-Codex-Spark",
+            metered_feature="codex_bengalfox",
+            quota_key="codex_spark",
+            window="primary",
+            used_percent=40.0,
+            recorded_at=now,
+        )
+
+        event.listen(engine.sync_engine, "before_cursor_execute", capture_statement)
+        try:
+            latest = await repo.latest_by_account("codex_spark", "primary")
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", capture_statement)
+
+    assert latest["acc1"].used_percent == 20.0
+    assert latest["acc2"].used_percent == 40.0
+    emitted_sql = "\n".join(statements).lower()
+    assert "distinct on" not in emitted_sql
+    assert "row_number" not in emitted_sql
+    assert "lateral" in emitted_sql
+
+
+@pytest.mark.asyncio
+async def test_list_quota_keys_postgres_loose_scan_matches_distinct(db_setup):
+    now = utcnow()
+    statements: list[str] = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "postgresql":
+            pytest.skip("PostgreSQL-only loose scan test")
+
+        accounts_repo = AccountsRepository(session)
+        repo = AdditionalUsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc1"))
+        await accounts_repo.upsert(_make_account("acc2"))
+        for offset_minutes in range(5):
+            await repo.add_entry(
+                "acc1",
+                limit_name="GPT-5.3-Codex-Spark",
+                metered_feature="codex_bengalfox",
+                quota_key="codex_spark",
+                window="primary",
+                used_percent=10.0 + offset_minutes,
+                recorded_at=now - timedelta(minutes=offset_minutes),
+            )
+        session.add(
+            _legacy_additional_entry(
+                "acc2",
+                quota_key="legacy_other_key",
+                limit_name="legacy_other_key",
+                metered_feature="legacy_other_feature",
+                used_percent=5.0,
+                recorded_at=now,
+            )
+        )
+        await session.commit()
+
+        event.listen(engine.sync_engine, "before_cursor_execute", capture_statement)
+        try:
+            all_keys = await repo.list_quota_keys()
+            scoped_keys = await repo.list_quota_keys(account_ids=["acc1"])
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", capture_statement)
+
+        since_keys = await repo.list_quota_keys(since=now - timedelta(minutes=1))
+
+    assert all_keys == sorted({"codex_spark", "legacy_other_key"})
+    assert scoped_keys == ["codex_spark"]
+    assert "codex_spark" in since_keys
+    emitted_sql = "\n".join(statements).lower()
+    assert "distinct" not in emitted_sql

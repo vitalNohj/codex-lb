@@ -23,6 +23,7 @@ from app.core.balancer import (
     TrafficClass,
     select_account,
 )
+from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.proxy._load_balancer.types import (
@@ -33,8 +34,13 @@ from app.modules.proxy._load_balancer.types import (
     ProbeReservation,
 )
 from app.modules.proxy.affinity import _CodexSessionSource
+from app.modules.proxy.fair_share import (
+    API_KEY_STREAM_FAIR_SHARE_ERROR_CODE,
+    FairShareDecision,
+    fair_share_denial_message,
+)
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
-from app.modules.proxy.sticky_repository import StickySessionsRepository
+from app.modules.proxy.sticky_repository import StickyOwnerLookup, StickySessionsRepository
 from app.modules.quota_planner.logic import PlannerSettings, build_routing_costs
 
 # Preserve the established observability surface while implementation moves to
@@ -72,6 +78,9 @@ class SelectionInputsProtocol(Protocol):
     @property
     def effective_continuity_owner_candidates(self) -> list[Account]: ...
 
+    @property
+    def effective_sticky_mutation_authority_account_ids(self) -> frozenset[str]: ...
+
 
 SelectionInputsT = TypeVar("SelectionInputsT", bound=SelectionInputsProtocol)
 
@@ -85,6 +94,7 @@ class StickySelectionOwner(Protocol):
         selection_inputs: SelectionInputsProtocol,
         *,
         required_account_id: str | None,
+        redact_sensitive_details: bool,
     ) -> tuple[list[AccountState], dict[str, Account]]: ...
 
     def _sync_runtime_state(
@@ -112,7 +122,20 @@ class StickySelectionOwner(Protocol):
         kind: AccountLeaseKind,
         estimated_tokens: float,
         record_selection: bool = True,
+        api_key_id: str | None = None,
     ) -> AccountLease: ...
+
+    def _api_key_stream_fair_share_denial_locked(
+        self,
+        *,
+        api_key_id: str | None,
+        lease_kind: AccountLeaseKind | None,
+        candidate_account_ids: Collection[str],
+        caps: AccountConcurrencyCaps,
+        stream_reserve_slots: int,
+        threshold_pct: int,
+        redact_sensitive_details: bool = False,
+    ) -> FairShareDecision | None: ...
 
     def _reserve_due_probe_locked(
         self,
@@ -166,9 +189,13 @@ class StickySelectionOwner(Protocol):
         sticky_repo: StickySessionsRepository | None,
         routing_costs_by_account_id: RoutingCostsByAccount | None,
         sticky_existing_account_id: str | None | object,
+        initial_preferred_account_id: str | None,
         preserve_existing_mapping_on_fallback: bool,
         traffic_class: TrafficClass,
         ignore_standard_quota: bool,
+        allow_usage_exhaustion_error: bool = True,
+        usage_exhaustion_states: Iterable[AccountState] | None = None,
+        sticky_refresh_skip_deadline: datetime | None = None,
     ) -> _StickySelectionOutcome: ...
 
     async def release_account_lease(self, lease: AccountLease | None) -> None: ...
@@ -182,7 +209,12 @@ class StickySelectionRequest(Generic[SelectionInputsT]):
     sticky_source: _CodexSessionSource | None
     legacy_sticky_key: str | None
     legacy_existing_account_id: str | None
+    legacy_abandoned_account_id: str | None
+    sticky_seed_key: str | None
+    sticky_seed_kind: StickySessionKind | None
+    sticky_seed_account_id: str | None
     spill_bare_session_on_account_cap: bool
+    abandon_unavailable_legacy_owner: bool
     require_unambiguous_account: bool
     sticky_max_age_seconds: int | None
     prefer_earlier_reset_accounts: bool
@@ -199,9 +231,17 @@ class StickySelectionRequest(Generic[SelectionInputsT]):
     stream_reserve_slots: int
     traffic_class: TrafficClass
     concurrency_caps: AccountConcurrencyCaps
+    redact_sensitive_details: bool
     selection_inputs: SelectionInputsT
     reload_inputs: Callable[[], Awaitable[SelectionInputsT]]
     record_account_cap_rejection: AccountCapRejectionCallback
+    allow_usage_exhaustion_error: bool = True
+    api_key_id: str | None = None
+    api_key_stream_fair_share_threshold_pct: int = 0
+    # First-iteration owner read performed by the caller inside its shared
+    # owner-lookup session (see load_balancer.select_account). Consumed exactly
+    # once; retries re-read fresh ownership evidence through a repo bundle.
+    initial_sticky_owner_lookup: StickyOwnerLookup | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +249,12 @@ class _StickyMutation:
     # ``None`` is an intentional delete; absence of a mutation means preserve
     # the current mapping until final admission succeeds.
     account_id: str | None
+    # Set only when this mutation is a pure same-owner freshness rewrite of a
+    # row this request's lookup observed inside the repository's refresh-skip
+    # window. The persist site revalidates the deadline against the clock at
+    # write time and may then omit the statement entirely; a mutation that
+    # rebinds, deletes, or must initialize a seed mapping never carries it.
+    refresh_skip_deadline: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +270,7 @@ class StickySelectionOutcome(Generic[SelectionInputsT]):
     selected_lease: AccountLease | None
     error_message: str | None
     error_code: str | None
+    resets_at: int | None = None
     disposition: StickySelectionDisposition = "shared_result"
 
 
@@ -239,7 +286,12 @@ async def run_sticky_selection_path(
     sticky_source = request.sticky_source
     legacy_sticky_key = request.legacy_sticky_key
     legacy_existing_account_id = request.legacy_existing_account_id
+    legacy_abandoned_account_id = request.legacy_abandoned_account_id
+    sticky_seed_key = request.sticky_seed_key
+    sticky_seed_kind = request.sticky_seed_kind
+    sticky_seed_account_id = request.sticky_seed_account_id
     spill_bare_session_on_account_cap = request.spill_bare_session_on_account_cap
+    abandon_unavailable_legacy_owner = request.abandon_unavailable_legacy_owner
     require_unambiguous_account = request.require_unambiguous_account
     sticky_max_age_seconds = request.sticky_max_age_seconds
     prefer_earlier_reset_accounts = request.prefer_earlier_reset_accounts
@@ -256,13 +308,18 @@ async def run_sticky_selection_path(
     stream_reserve_slots = request.stream_reserve_slots
     traffic_class = request.traffic_class
     caps = request.concurrency_caps
+    redact_sensitive_details = request.redact_sensitive_details
     load_selection_inputs = request.reload_inputs
     _record_account_cap_rejection = request.record_account_cap_rejection
+    allow_usage_exhaustion_error = request.allow_usage_exhaustion_error
+    api_key_id = request.api_key_id
+    fair_share_threshold_pct = request.api_key_stream_fair_share_threshold_pct
 
     selected_snapshot: Account | None = None
     selected_lease: AccountLease | None = None
     error_message: str | None = None
     selection_error_code: str | None = None
+    selection_resets_at: int | None = None
 
     def _direct_error(
         *,
@@ -281,31 +338,99 @@ async def run_sticky_selection_path(
         )
 
     sticky_existing_account_id: str | None | object = _STICKY_EXISTING_UNSET
+    sticky_continuity_abandoned = False
+    sticky_refresh_skip_deadline: datetime | None = None
+    # A thread row whose process seed exists but is still unowned must keep
+    # its retention write: that write doubles as the seed-initialization
+    # carrier (see the ``initialize_seed_key`` argument at the persist site
+    # below), and suppressing it would let sibling threads select divergent
+    # owners until the skip window closes. Thread-only affinity without a
+    # seed key has nothing to initialize and stays skippable.
+    seed_initialization_pending = (
+        sticky_source == "thread_header" and sticky_seed_key is not None and sticky_seed_account_id is None
+    )
+    # A source-qualified marker can be observed before this call or after a
+    # retirement CAS miss. In both cases its retained owner is authoritative
+    # exclusion evidence even though it is no longer affinity ownership for
+    # the matching session-header source.
+    retired_legacy_owner_account_ids = (
+        {legacy_abandoned_account_id} if legacy_abandoned_account_id is not None else set()
+    )
     attempt = 0
     suppress_recovery_probe_candidates = False
+    pending_initial_owner_lookup = request.initial_sticky_owner_lookup
     while True:
         attempt += 1
         sticky_existing_is_legacy = isinstance(legacy_existing_account_id, str)
         if sticky_kind is not None:
             async with owner._runtime_lock:
                 pass
-            async with owner._repo_factory() as repos:
-                sticky_existing_account_id = await repos.sticky_sessions.get_account_id(
-                    sticky_key,
-                    kind=sticky_kind,
-                    max_age_seconds=sticky_max_age_seconds,
-                )
-            if sticky_kind == StickySessionKind.CODEX_SESSION and sticky_existing_is_legacy:
+            if pending_initial_owner_lookup is not None:
+                # The caller already read this iteration's owner inside its
+                # shared owner-lookup session. Consume it exactly once so
+                # every retry (including post-reset attempts that wrap
+                # ``attempt`` back to 1) still re-reads fresh evidence.
+                sticky_owner_lookup = pending_initial_owner_lookup
+                pending_initial_owner_lookup = None
+            else:
+                async with owner._repo_factory() as repos:
+                    sticky_owner_lookup = await repos.sticky_sessions.get_account_id_and_abandonment(
+                        sticky_key,
+                        kind=sticky_kind,
+                        max_age_seconds=sticky_max_age_seconds,
+                        continuity_source=sticky_source,
+                    )
+            sticky_existing_account_id = sticky_owner_lookup.account_id
+            # `is True` (not a truthy check): an un-configured test double
+            # for sticky_sessions may return an object whose attribute
+            # access auto-vivifies to a mock rather than a real bool, and
+            # that must fail safe as "not abandoned", the same as it
+            # always has, rather than silently bypassing the ambiguous
+            # owner check below.
+            sticky_continuity_abandoned = sticky_owner_lookup.continuity_abandoned is True
+            # ``isinstance`` for the same test-double reason as above. The
+            # deadline is only ever an optimization hint: None always
+            # falls back to today's write-on-every-request refresh
+            # behavior, and seed-needing requests never skip.
+            observed_refresh_skip_deadline = sticky_owner_lookup.refresh_skip_deadline
+            sticky_refresh_skip_deadline = (
+                observed_refresh_skip_deadline
+                if isinstance(observed_refresh_skip_deadline, datetime) and not seed_initialization_pending
+                else None
+            )
+            sticky_abandoned_account_id = sticky_owner_lookup.abandoned_account_id
+            if sticky_owner_lookup.continuity_abandoned is True and isinstance(
+                sticky_abandoned_account_id,
+                str,
+            ):
+                retired_legacy_owner_account_ids.add(sticky_abandoned_account_id)
+            if sticky_existing_is_legacy:
                 # Mixed-version replicas can create both rows on
                 # different accounts. The raw row was loaded before
                 # branch selection and always wins as possible hard
                 # turn-state ownership.
                 sticky_existing_account_id = legacy_existing_account_id
+                sticky_continuity_abandoned = False
+                # The freshness observation belongs to the namespaced row,
+                # not the raw legacy owner that now shadows it.
+                sticky_refresh_skip_deadline = None
         async with owner._runtime_lock:
             states, account_map = owner._prepare_sticky_selection_states(
                 selection_inputs,
                 required_account_id=required_account_id,
+                redact_sensitive_details=redact_sensitive_details,
             )
+            if retired_legacy_owner_account_ids:
+                # Retirement is authoritative even when this selector loaded a
+                # pre-retirement account snapshot (or another replica still has
+                # one cached). Never let that stale snapshot immediately repin
+                # the account this request just proved durably unavailable.
+                states = [state for state in states if state.account_id not in retired_legacy_owner_account_ids]
+                account_map = {
+                    account_id: account
+                    for account_id, account in account_map.items()
+                    if account_id not in retired_legacy_owner_account_ids
+                }
             effective_routing_costs = (
                 routing_costs_by_account_id
                 if routing_costs_by_account_id is not None
@@ -326,10 +451,8 @@ async def run_sticky_selection_path(
                 and not sticky_existing_is_legacy
             )
             cap_spillover_allowed = spill_bare_session_on_account_cap and lease_kind is not None and bare_session_key
-            hard_sticky = (
-                sticky_kind == StickySessionKind.CODEX_SESSION
-                and isinstance(sticky_existing_account_id, str)
-                and not bare_session_key
+            hard_sticky = isinstance(sticky_existing_account_id, str) and (
+                sticky_existing_is_legacy or (sticky_kind == StickySessionKind.CODEX_SESSION and not bare_session_key)
             )
             if hard_sticky and required_account_id is not None and sticky_existing_account_id != required_account_id:
                 return _direct_error(
@@ -339,9 +462,19 @@ async def run_sticky_selection_path(
                 )
             # A resolved hard row proves ownership. Without one, use the
             # same pre-health/pre-cap pool as the no-sticky path above.
+            #
+            # A tombstoned row (sticky_continuity_abandoned — see
+            # purge_stale_hard_codex_session_mappings) is exempted from this
+            # fail-closed check even though it's just as pool-ambiguous as a
+            # never-seen key: unlike a never-seen key, we know this session's
+            # owner was durably unavailable and continuity was deliberately
+            # abandoned, so picking a fresh owner here is what lets the
+            # request recover instead of failing closed forever with no path
+            # back to a resolved hard row.
             if (
                 require_unambiguous_account
                 and not hard_sticky
+                and not sticky_continuity_abandoned
                 and len(selection_inputs.effective_continuity_owner_candidates) != 1
             ):
                 return _direct_error(
@@ -349,6 +482,18 @@ async def run_sticky_selection_path(
                     error_message=_AMBIGUOUS_CONVERSATION_OWNER_MESSAGE,
                     error_code=_AMBIGUOUS_CONVERSATION_OWNER_CODE,
                 )
+            # Fair share is measured against the full candidate pool, before
+            # hard-sticky narrows selection to the owner account.
+            fair_share_candidate_ids = [state.account_id for state in states]
+            fair_share_denial = owner._api_key_stream_fair_share_denial_locked(
+                api_key_id=api_key_id,
+                lease_kind=lease_kind,
+                candidate_account_ids=fair_share_candidate_ids,
+                caps=caps,
+                stream_reserve_slots=stream_reserve_slots,
+                threshold_pct=fair_share_threshold_pct,
+                redact_sensitive_details=redact_sensitive_details,
+            )
             if hard_sticky:
                 # A resolved hard Codex mapping is an ownership
                 # constraint, not a preference. Scope, exclusions,
@@ -398,12 +543,81 @@ async def run_sticky_selection_path(
                     traffic_class=traffic_class,
                 )
             probe_reservation: ProbeReservation | None = None
+        # Raw sticky rows are global, while account-assigned API keys and
+        # other authenticated policies narrow a request's mutation authority.
+        # Keep this check on the pre-health continuity pool: quota exhaustion
+        # may authorize retirement, but being outside policy scope never does.
+        legacy_owner_in_effective_policy_scope = (
+            isinstance(sticky_existing_account_id, str)
+            and sticky_existing_account_id in selection_inputs.effective_sticky_mutation_authority_account_ids
+        )
+        if (
+            abandon_unavailable_legacy_owner
+            and hard_sticky
+            and sticky_existing_is_legacy
+            and sticky_source in {"session_header", "thread_header"}
+            and legacy_sticky_key is not None
+            and isinstance(sticky_existing_account_id, str)
+            and legacy_owner_in_effective_policy_scope
+        ):
+            async with owner._repo_factory() as repos:
+                owner_retired = await repos.sticky_sessions.abandon_legacy_session_header_owner_if_unavailable(
+                    legacy_sticky_key,
+                    kind=StickySessionKind.CODEX_SESSION,
+                    expected_account_id=sticky_existing_account_id,
+                )
+                authoritative_legacy_owner = None
+                if not owner_retired:
+                    authoritative_legacy_owner = await repos.sticky_sessions.get_account_id_and_abandonment(
+                        legacy_sticky_key,
+                        kind=StickySessionKind.CODEX_SESSION,
+                        continuity_source="session_header",
+                    )
+            # One guarded write is authoritative for this selection. Repeating
+            # it in capacity-wait retries would add write pressure and could
+            # reinterpret a later status transition as restart authorization.
+            abandon_unavailable_legacy_owner = False
+            if owner_retired:
+                # The raw compatibility row is now a tombstone. Drop only the
+                # selection loop's cached legacy owner and run the normal path
+                # again so namespaced affinity, leases, and admission checks
+                # are established through the existing selection path.
+                logger.info(
+                    "Legacy Codex session-header owner abandoned for self-contained goal restart account_id=%s",
+                    "<redacted>" if redact_sensitive_details else sticky_existing_account_id,
+                )
+                retired_legacy_owner_account_ids.add(sticky_existing_account_id)
+                legacy_existing_account_id = None
+                continue
+            # A failed compare-and-set means the cached owner is no longer
+            # authoritative: it may have recovered, another request may have
+            # rebound the raw row, or another worker may already have
+            # tombstoned it. Re-read under a fresh transaction and restart the
+            # loop so each outcome is handled by normal selection. Retaining
+            # the stale owner here would defeat the CAS and can fail a restart
+            # even though a concurrent operation already established a valid
+            # replacement.
+            assert authoritative_legacy_owner is not None
+            legacy_existing_account_id = authoritative_legacy_owner.account_id
+            if authoritative_legacy_owner.continuity_abandoned is True:
+                abandoned_account_id = authoritative_legacy_owner.abandoned_account_id
+                if isinstance(abandoned_account_id, str):
+                    retired_legacy_owner_account_ids.add(abandoned_account_id)
+            continue
         sticky_outcome = _StickySelectionOutcome(selection=SelectionResult(None, None))
-        if hard_sticky and not selection_states:
+        if fair_share_denial is not None:
+            # Denial parks in the transport capacity-wait loop like a cap
+            # denial. Sticky DB work, mapping mutation, and probe
+            # reservation are all skipped so mappings are preserved.
+            selection_error_code = API_KEY_STREAM_FAIR_SHARE_ERROR_CODE
+            result = SelectionResult(None, fair_share_denial_message(fair_share_denial))
+        elif hard_sticky and not selection_states:
             selection_error_code = "hard_affinity_saturated"
+            selection_resets_at = None
             result = SelectionResult(None, "Hard affinity owner account is unavailable")
         elif not selection_states and states:
             selection_error_code = _account_cap_error_code(lease_kind)
+            selection_resets_at = None
             result = SelectionResult(None, _account_cap_error_message(lease_kind, caps))
             logger.warning(
                 "Account cap exhausted during sticky selection lease_kind=%s reason=%s candidates=%s",
@@ -428,17 +642,22 @@ async def run_sticky_selection_path(
                 traffic_class=traffic_class,
                 ignore_standard_quota=False,
                 routing_costs_by_account_id=effective_routing_costs,
+                allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                usage_exhaustion_states=states,
             )
             if result.account is None:
                 selection_error_code = "hard_affinity_saturated"
+                selection_resets_at = None
                 result = SelectionResult(
                     None,
                     result.error_message or "Hard affinity owner account is unavailable",
                 )
             else:
                 selection_error_code = None
+                selection_resets_at = None
         else:
             selection_error_code = None
+            selection_resets_at = None
             try:
                 async with owner._repo_factory() as repos:
                     sticky_outcome = await owner._select_with_stickiness(
@@ -457,12 +676,35 @@ async def run_sticky_selection_path(
                         relative_availability_top_k=relative_availability_top_k,
                         sticky_repo=repos.sticky_sessions,
                         sticky_existing_account_id=sticky_existing_account_id,
+                        initial_preferred_account_id=(
+                            sticky_seed_account_id
+                            if not isinstance(sticky_existing_account_id, str) and not sticky_continuity_abandoned
+                            else None
+                        ),
                         preserve_existing_mapping_on_fallback=preserve_existing_mapping,
                         traffic_class=traffic_class,
                         ignore_standard_quota=False,
                         routing_costs_by_account_id=effective_routing_costs,
+                        allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                        usage_exhaustion_states=states,
+                        sticky_refresh_skip_deadline=sticky_refresh_skip_deadline,
                     )
                     result = sticky_outcome.selection
+                    if (
+                        result.account is None
+                        and result.error_code is None
+                        and lease_kind is not None
+                        and len(selection_states) < len(states)
+                        and any(
+                            state.status == AccountStatus.ACTIVE for state in states if state not in selection_states
+                        )
+                    ):
+                        selection_error_code = _account_cap_error_code(lease_kind)
+                        result = SelectionResult(
+                            None,
+                            _account_cap_error_message(lease_kind, caps),
+                            error_code=selection_error_code,
+                        )
             except BaseException:
                 async with owner._runtime_lock:
                     owner._release_due_probe_reservation_locked(probe_reservation)
@@ -521,6 +763,8 @@ async def run_sticky_selection_path(
                     probe_reservation_invalidated = True
             if result.account is None:
                 error_message = result.error_message
+                selection_error_code = result.error_code or selection_error_code
+                selection_resets_at = result.resets_at or selection_resets_at
             elif probe_reservation_invalidated:
                 selected = None
             else:
@@ -548,6 +792,26 @@ async def run_sticky_selection_path(
                 ):
                     selection_error_code = _account_cap_error_code(lease_kind)
                     error_message = _account_cap_error_message(lease_kind, caps)
+                elif (
+                    lease_kind is not None
+                    and (
+                        fair_share_recheck := owner._api_key_stream_fair_share_denial_locked(
+                            api_key_id=api_key_id,
+                            lease_kind=lease_kind,
+                            candidate_account_ids=fair_share_candidate_ids,
+                            caps=caps,
+                            stream_reserve_slots=stream_reserve_slots,
+                            threshold_pct=fair_share_threshold_pct,
+                            redact_sensitive_details=redact_sensitive_details,
+                        )
+                    )
+                    is not None
+                ):
+                    # Sticky DB work runs between the filter-phase gate and
+                    # this commit section; concurrent selections for one key
+                    # could otherwise overshoot the share.
+                    selection_error_code = API_KEY_STREAM_FAIR_SHARE_ERROR_CODE
+                    error_message = fair_share_denial_message(fair_share_recheck)
                 else:
                     selection_admitted = True
                     if lease_kind is not None:
@@ -558,6 +822,7 @@ async def run_sticky_selection_path(
                             # Keep the reservation token intact until
                             # persistence commits the recovery admission.
                             record_selection=not selected_reserved_probe,
+                            api_key_id=api_key_id,
                         )
 
             if not probe_reservation_invalidated:
@@ -689,20 +954,35 @@ async def run_sticky_selection_path(
             assert sticky_kind is not None
             sticky_mutation = sticky_outcome.mutation
             assert sticky_mutation is not None
-            try:
-                async with owner._repo_factory() as repos:
-                    await _persist_sticky_mutation(
-                        sticky_repo=repos.sticky_sessions,
-                        sticky_key=sticky_key,
-                        sticky_kind=sticky_kind,
-                        mutation=sticky_mutation,
-                    )
-            except BaseException:
-                await owner.release_account_lease(selected_lease)
-                selected_lease = None
-                async with owner._runtime_lock:
-                    owner._release_due_probe_reservation_locked(probe_reservation)
-                raise
+            # A pure same-owner freshness rewrite may be omitted here exactly
+            # as on the non-probe path below (the row already holds this
+            # owner, so the rollback restores become no-ops and are skipped
+            # symmetrically). The probe path deliberately never initializes a
+            # seed, so only the deadline gates the skip.
+            probe_refresh_write_skipped = _sticky_refresh_write_skippable(
+                sticky_mutation,
+                initialize_seed_key=None,
+            )
+            if not probe_refresh_write_skipped:
+                try:
+                    async with owner._repo_factory() as repos:
+                        # A recovery-probe reservation is still reversible until
+                        # the runtime CAS below succeeds. Persist its thread row so
+                        # existing rollback machinery can restore it, but do not
+                        # publish an immutable process seed that cannot be safely
+                        # deleted after a concurrent sibling observes it.
+                        await _persist_sticky_mutation(
+                            sticky_repo=repos.sticky_sessions,
+                            sticky_key=sticky_key,
+                            sticky_kind=sticky_kind,
+                            mutation=sticky_mutation,
+                        )
+                except BaseException:
+                    await owner.release_account_lease(selected_lease)
+                    selected_lease = None
+                    async with owner._runtime_lock:
+                        owner._release_due_probe_reservation_locked(probe_reservation)
+                    raise
             try:
                 async with owner._runtime_lock:
                     assert probe_reservation is not None
@@ -720,14 +1000,15 @@ async def run_sticky_selection_path(
                 selected_lease = None
                 async with owner._runtime_lock:
                     owner._release_due_probe_reservation_locked(probe_reservation)
-                async with owner._repo_factory() as repos:
-                    await _restore_sticky_mutation(
-                        sticky_repo=repos.sticky_sessions,
-                        sticky_key=sticky_key,
-                        sticky_kind=sticky_kind,
-                        expected_account_id=sticky_mutation.account_id,
-                        sticky_existing_account_id=sticky_existing_account_id,
-                    )
+                if not probe_refresh_write_skipped:
+                    async with owner._repo_factory() as repos:
+                        await _restore_sticky_mutation(
+                            sticky_repo=repos.sticky_sessions,
+                            sticky_key=sticky_key,
+                            sticky_kind=sticky_kind,
+                            expected_account_id=sticky_mutation.account_id,
+                            sticky_existing_account_id=sticky_existing_account_id,
+                        )
                 raise
             if not reservation_committed:
                 # Runtime health changed while account-state persistence
@@ -737,14 +1018,15 @@ async def run_sticky_selection_path(
                 # runtime snapshot.
                 await owner.release_account_lease(selected_lease)
                 selected_lease = None
-                async with owner._repo_factory() as repos:
-                    await _restore_sticky_mutation(
-                        sticky_repo=repos.sticky_sessions,
-                        sticky_key=sticky_key,
-                        sticky_kind=sticky_kind,
-                        expected_account_id=sticky_mutation.account_id,
-                        sticky_existing_account_id=sticky_existing_account_id,
-                    )
+                if not probe_refresh_write_skipped:
+                    async with owner._repo_factory() as repos:
+                        await _restore_sticky_mutation(
+                            sticky_repo=repos.sticky_sessions,
+                            sticky_key=sticky_key,
+                            sticky_kind=sticky_kind,
+                            expected_account_id=sticky_mutation.account_id,
+                            sticky_existing_account_id=sticky_existing_account_id,
+                        )
                 selected_snapshot = None
                 error_message = None
                 selected_states = []
@@ -829,21 +1111,27 @@ async def run_sticky_selection_path(
             assert sticky_kind is not None
             sticky_mutation = sticky_outcome.mutation
             assert sticky_mutation is not None
-            try:
-                async with owner._repo_factory() as repos:
-                    await _persist_sticky_mutation(
-                        sticky_repo=repos.sticky_sessions,
-                        sticky_key=sticky_key,
-                        sticky_kind=sticky_kind,
-                        mutation=sticky_mutation,
-                    )
-            except BaseException:
-                # Runtime admission may already be committed. Preserve
-                # its selection timestamp, but never leak the local
-                # concurrency lease when sticky persistence fails.
-                await owner.release_account_lease(selected_lease)
-                selected_lease = None
-                raise
+            initialize_seed_key = (
+                sticky_seed_key if sticky_source == "thread_header" and sticky_seed_account_id is None else None
+            )
+            if not _sticky_refresh_write_skippable(sticky_mutation, initialize_seed_key=initialize_seed_key):
+                try:
+                    async with owner._repo_factory() as repos:
+                        await _persist_sticky_mutation(
+                            sticky_repo=repos.sticky_sessions,
+                            sticky_key=sticky_key,
+                            sticky_kind=sticky_kind,
+                            mutation=sticky_mutation,
+                            initialize_seed_key=initialize_seed_key,
+                            initialize_seed_kind=sticky_seed_kind,
+                        )
+                except BaseException:
+                    # Runtime admission may already be committed. Preserve
+                    # its selection timestamp, but never leak the local
+                    # concurrency lease when sticky persistence fails.
+                    await owner.release_account_lease(selected_lease)
+                    selected_lease = None
+                    raise
         break
 
     return StickySelectionOutcome(
@@ -852,6 +1140,7 @@ async def run_sticky_selection_path(
         selected_lease=selected_lease,
         error_message=error_message,
         error_code=selection_error_code,
+        resets_at=selection_resets_at,
     )
 
 
@@ -873,9 +1162,13 @@ async def _select_with_stickiness(
     sticky_repo: StickySessionsRepository | None,
     routing_costs_by_account_id: RoutingCostsByAccount | None = None,
     sticky_existing_account_id: str | None | object = _STICKY_EXISTING_UNSET,
+    initial_preferred_account_id: str | None = None,
     preserve_existing_mapping_on_fallback: bool = False,
     traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
     ignore_standard_quota: bool = False,
+    allow_usage_exhaustion_error: bool = True,
+    usage_exhaustion_states: Iterable[AccountState] | None = None,
+    sticky_refresh_skip_deadline: datetime | None = None,
 ) -> _StickySelectionOutcome:
     if not sticky_key or not sticky_repo:
         return _StickySelectionOutcome(
@@ -890,6 +1183,8 @@ async def _select_with_stickiness(
                 traffic_class=traffic_class,
                 ignore_standard_quota=ignore_standard_quota,
                 routing_costs_by_account_id=routing_costs_by_account_id,
+                allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                usage_exhaustion_states=usage_exhaustion_states,
             )
         )
     if sticky_kind is None:
@@ -901,10 +1196,14 @@ async def _select_with_stickiness(
         selection: SelectionResult,
         *,
         persist_account_id: str | None = None,
+        refresh_skip_deadline: datetime | None = None,
     ) -> _StickySelectionOutcome:
         mutation = pending_mutation
         if persist_account_id is not None:
-            mutation = _StickyMutation(account_id=persist_account_id)
+            mutation = _StickyMutation(
+                account_id=persist_account_id,
+                refresh_skip_deadline=refresh_skip_deadline,
+            )
         return _StickySelectionOutcome(selection=selection, mutation=mutation)
 
     if sticky_existing_account_id is _STICKY_EXISTING_UNSET:
@@ -913,6 +1212,10 @@ async def _select_with_stickiness(
             kind=sticky_kind,
             max_age_seconds=sticky_max_age_seconds,
         )
+        # The skip deadline is only valid for the lookup that produced the
+        # caller's ``sticky_existing_account_id``; this fresh lookup did not
+        # observe row freshness, so fall back to write-through refresh.
+        sticky_refresh_skip_deadline = None
     else:
         existing = sticky_existing_account_id if isinstance(sticky_existing_account_id, str) else None
     # When the pinned account is temporarily unavailable (rate-limited,
@@ -924,9 +1227,47 @@ async def _select_with_stickiness(
     persist_fallback = not preserve_existing_mapping_on_fallback
     apply_sticky_secondary_budget_threshold = False
 
+    if not existing and initial_preferred_account_id is not None:
+        initial_preferred = next(
+            (state for state in states if state.account_id == initial_preferred_account_id),
+            None,
+        )
+        if initial_preferred is not None:
+            initial_result = select_account(
+                [initial_preferred],
+                prefer_earlier_reset=prefer_earlier_reset_accounts,
+                prefer_earlier_reset_window=prefer_earlier_reset_window,
+                routing_strategy=routing_strategy,
+                allow_backoff_fallback=False,
+                relative_availability_power=relative_availability_power,
+                relative_availability_top_k=relative_availability_top_k,
+                traffic_class=traffic_class,
+                ignore_standard_quota=ignore_standard_quota,
+                routing_costs=routing_costs_by_account_id,
+            )
+            if initial_result.account is not None:
+                # Persist only the new thread row. The process mapping supplied
+                # the preference but is deliberately outside this mutation.
+                return finish_selection(
+                    initial_result,
+                    persist_account_id=initial_preferred.account_id,
+                )
+
     if existing:
         pinned = next((state for state in states if state.account_id == existing), None)
         if pinned is not None:
+            # Retaining the pinned owner persists only to advance
+            # ``updated_at`` on TTL-based kinds. When this request's lookup
+            # already observed the row inside the repository's refresh-skip
+            # window, the persist site may skip that write after revalidating
+            # the observed deadline against the clock: concurrent requests on
+            # a hot session otherwise serialize on the same row's upsert
+            # lock. Rebinds and deletes never carry the deadline and always
+            # write immediately.
+            pinned_refresh_account_id = pinned.account_id if sticky_max_age_seconds is not None else None
+            pinned_refresh_skip_deadline = (
+                sticky_refresh_skip_deadline if pinned_refresh_account_id is not None else None
+            )
             # Proactively rebind session affinity for any sticky kind
             # once the pinned account is already above the configured
             # budget threshold. That preserves continuity below the
@@ -988,7 +1329,8 @@ async def _select_with_stickiness(
                 if pinned_result.account is not None:
                     return finish_selection(
                         pinned_result,
-                        persist_account_id=pinned.account_id if sticky_max_age_seconds is not None else None,
+                        persist_account_id=pinned_refresh_account_id,
+                        refresh_skip_deadline=pinned_refresh_skip_deadline,
                     )
             else:
                 # Reallocate only when a burn-first target exists and can
@@ -1015,6 +1357,8 @@ async def _select_with_stickiness(
                         traffic_class=traffic_class,
                         ignore_standard_quota=ignore_standard_quota,
                         routing_costs_by_account_id=routing_costs_by_account_id,
+                        allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                        usage_exhaustion_states=usage_exhaustion_states,
                     )
                     pool_also_exhausted = pool_best.account is not None and (
                         pool_best.account.account_id == pinned.account_id
@@ -1040,7 +1384,8 @@ async def _select_with_stickiness(
                         if pinned_result.account is not None:
                             return finish_selection(
                                 pinned_result,
-                                persist_account_id=(pinned.account_id if sticky_max_age_seconds is not None else None),
+                                persist_account_id=pinned_refresh_account_id,
+                                refresh_skip_deadline=pinned_refresh_skip_deadline,
                             )
                 reallocate_sticky = True
             # Grace period: if the pinned account is rate-limited with a
@@ -1067,7 +1412,8 @@ async def _select_with_stickiness(
                 if grace_result.account is not None:
                     return finish_selection(
                         grace_result,
-                        persist_account_id=pinned.account_id if sticky_max_age_seconds is not None else None,
+                        persist_account_id=pinned_refresh_account_id,
+                        refresh_skip_deadline=pinned_refresh_skip_deadline,
                     )
             if reallocate_sticky:
                 pending_mutation = _StickyMutation(account_id=None)
@@ -1101,6 +1447,8 @@ async def _select_with_stickiness(
         traffic_class=traffic_class,
         ignore_standard_quota=ignore_standard_quota,
         routing_costs_by_account_id=routing_costs_by_account_id,
+        allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+        usage_exhaustion_states=usage_exhaustion_states,
     )
     if persist_fallback and chosen.account is not None and chosen.account.account_id in account_map:
         return finish_selection(chosen, persist_account_id=chosen.account.account_id)
@@ -1117,15 +1465,57 @@ async def _select_with_stickiness(
     return finish_selection(chosen)
 
 
+def _sticky_refresh_write_skippable(
+    mutation: _StickyMutation,
+    *,
+    initialize_seed_key: str | None,
+) -> bool:
+    """Whether this mutation's write may be omitted at persist time.
+
+    True only for a pure same-owner freshness rewrite whose observed skip
+    deadline still holds now, at the moment the statement would otherwise be
+    issued — admission and account-state persistence sit between selection
+    and this point, so the deadline computed at lookup time must be
+    revalidated to keep the mapping's effective expiry within the documented
+    skip-window bound. Deletes and seed-initializing writes are never
+    skippable.
+    """
+    if mutation.account_id is None or initialize_seed_key is not None:
+        return False
+    deadline = mutation.refresh_skip_deadline
+    return isinstance(deadline, datetime) and utcnow() <= deadline
+
+
 async def _persist_sticky_mutation(
     *,
     sticky_repo: StickySessionsRepository,
     sticky_key: str,
     sticky_kind: StickySessionKind,
     mutation: _StickyMutation,
+    initialize_seed_key: str | None = None,
+    initialize_seed_kind: StickySessionKind | None = None,
 ) -> None:
     if mutation.account_id is None:
         await sticky_repo.delete(sticky_key, kind=sticky_kind)
+        return
+    if initialize_seed_key is not None:
+        if initialize_seed_kind is None:
+            raise ValueError("initialize_seed_kind is required when initialize_seed_key is provided")
+        # Current Codex sends thread-id on the first root request, so a fresh
+        # process has no older bare-session request available to create its
+        # default. Initialize it exactly once from the first admitted thread.
+        # insert-if-absent is essential: failover or a later child may move its
+        # own bounded row but can never rewrite the process/sibling default.
+        # The repository operation is intentionally atomic; splitting it into
+        # the public insert/upsert methods would commit a process default even
+        # when persistence of the initiating thread fails.
+        await sticky_repo.upsert_with_seed_if_absent(
+            sticky_key,
+            mutation.account_id,
+            kind=sticky_kind,
+            seed_key=initialize_seed_key,
+            seed_kind=initialize_seed_kind,
+        )
         return
     await sticky_repo.upsert(sticky_key, mutation.account_id, kind=sticky_kind)
 
@@ -1304,6 +1694,8 @@ def _select_account_preferring_budget_safe(
     traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
     ignore_standard_quota: bool = False,
     routing_costs_by_account_id: RoutingCostsByAccount | None = None,
+    allow_usage_exhaustion_error: bool = True,
+    usage_exhaustion_states: Iterable[AccountState] | None = None,
 ) -> SelectionResult:
     state_list = list(states)
     if routing_strategy not in ("sequential_drain", "reset_drain", "single_account"):
@@ -1322,6 +1714,7 @@ def _select_account_preferring_budget_safe(
             traffic_class=traffic_class,
             ignore_standard_quota=ignore_standard_quota,
             routing_costs=routing_costs_by_account_id,
+            allow_usage_exhaustion_error=False,
         )
         if recovery_probe.account is not None:
             return recovery_probe
@@ -1354,6 +1747,8 @@ def _select_account_preferring_budget_safe(
             traffic_class=traffic_class,
             ignore_standard_quota=ignore_standard_quota,
             routing_costs=routing_costs_by_account_id,
+            allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+            usage_exhaustion_states=usage_exhaustion_states,
         )
 
     best_health_states = _best_health_tier_states(state_list)
@@ -1371,6 +1766,8 @@ def _select_account_preferring_budget_safe(
             traffic_class=traffic_class,
             ignore_standard_quota=ignore_standard_quota,
             routing_costs=routing_costs_by_account_id,
+            allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+            usage_exhaustion_states=usage_exhaustion_states,
         )
         if burn_first.account is not None:
             return burn_first
@@ -1394,6 +1791,8 @@ def _select_account_preferring_budget_safe(
             traffic_class=traffic_class,
             ignore_standard_quota=ignore_standard_quota,
             routing_costs=routing_costs_by_account_id,
+            allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+            usage_exhaustion_states=usage_exhaustion_states,
         )
         if preferred.account is not None:
             return preferred
@@ -1411,6 +1810,8 @@ def _select_account_preferring_budget_safe(
             traffic_class=traffic_class,
             ignore_standard_quota=ignore_standard_quota,
             routing_costs=routing_costs_by_account_id,
+            allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+            usage_exhaustion_states=usage_exhaustion_states,
         )
     return select_account(
         state_list,
@@ -1424,6 +1825,8 @@ def _select_account_preferring_budget_safe(
         traffic_class=traffic_class,
         ignore_standard_quota=ignore_standard_quota,
         routing_costs=routing_costs_by_account_id,
+        allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+        usage_exhaustion_states=usage_exhaustion_states,
     )
 
 

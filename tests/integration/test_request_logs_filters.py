@@ -47,6 +47,81 @@ def _cost(
     )
 
 
+async def _seed_cancelled_and_error_logs() -> None:
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+        await accounts_repo.upsert(_make_account("acc_cancelled_filter", "cancelled-filter@example.com"))
+
+        await logs_repo.add_log(
+            account_id="acc_cancelled_filter",
+            request_id="req_cancelled_filter",
+            model="gpt-5.1",
+            input_tokens=1,
+            output_tokens=0,
+            latency_ms=10,
+            status="cancelled",
+            error_code="client_disconnected",
+            requested_at=now - timedelta(minutes=1),
+        )
+        await logs_repo.add_log(
+            account_id="acc_cancelled_filter",
+            request_id="req_cancelled_error_control",
+            model="gpt-5.1",
+            input_tokens=1,
+            output_tokens=0,
+            latency_ms=10,
+            status="error",
+            error_code="upstream_error",
+            error_message="upstream failure",
+            requested_at=now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_logs_unfiltered_includes_cancelled(async_client, db_setup):
+    await _seed_cancelled_and_error_logs()
+
+    response = await async_client.get("/api/request-logs?limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert {request["requestId"]: request["status"] for request in payload["requests"]} == {
+        "req_cancelled_error_control": "error",
+        "req_cancelled_filter": "cancelled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_request_logs_status_cancelled_filters_cancelled(async_client, db_setup):
+    await _seed_cancelled_and_error_logs()
+
+    response = await async_client.get("/api/request-logs?status=cancelled&limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [(request["requestId"], request["status"]) for request in payload["requests"]] == [
+        ("req_cancelled_filter", "cancelled")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_request_logs_status_error_excludes_cancelled(async_client, db_setup):
+    await _seed_cancelled_and_error_logs()
+
+    response = await async_client.get("/api/request-logs?status=error&limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [(request["requestId"], request["status"]) for request in payload["requests"]] == [
+        ("req_cancelled_error_control", "error")
+    ]
+
+
 @pytest.mark.asyncio
 async def test_request_logs_status_ok_filters_success(async_client, db_setup):
     now = utcnow()
@@ -471,6 +546,33 @@ async def test_request_logs_search_matches_email_and_error(async_client, db_setu
     assert response.status_code == 200
     payload = response.json()["requests"]
     assert [entry["requestId"] for entry in payload] == ["req_search_client_ip"]
+
+
+@pytest.mark.asyncio
+async def test_request_logs_search_preserves_wildcard_behavior(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        for request_id in ("req_wildcard_a", "req_wildcard_b"):
+            await logs_repo.add_log(
+                account_id=None,
+                request_id=request_id,
+                model="gpt-5.1",
+                input_tokens=1,
+                output_tokens=1,
+                latency_ms=10,
+                status="success",
+                error_code=None,
+                requested_at=now,
+            )
+
+    response = await async_client.get("/api/request-logs?search=%25&limit=50")
+
+    assert response.status_code == 200
+    assert {entry["requestId"] for entry in response.json()["requests"]} == {
+        "req_wildcard_a",
+        "req_wildcard_b",
+    }
 
 
 @pytest.mark.asyncio

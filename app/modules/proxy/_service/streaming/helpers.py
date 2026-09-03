@@ -12,6 +12,7 @@ from app.core.balancer.types import ClassifiedFailure, UpstreamError
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
 from app.core.clients.http import lease_http_session as lease_http_session  # noqa: F401
+from app.core.clients.proxy import CodexControlRequestPrivacyPolicy as CodexControlRequestPrivacyPolicy
 from app.core.clients.proxy import CodexControlResponse as CodexControlResponse
 from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     ImageFetchSession,
@@ -33,13 +34,13 @@ from app.core.clients.proxy import codex_control_request as core_codex_control_r
 from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401
 from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401
 from app.core.clients.proxy_websocket import (
-    UpstreamResponsesWebSocket,
+    UpstreamWebSocket,
 )
 from app.core.errors import (
-    PREVIOUS_RESPONSE_STALE_CODE as PREVIOUS_RESPONSE_STALE_CODE,
+    PREVIOUS_RESPONSE_NOT_FOUND_CODE as PREVIOUS_RESPONSE_NOT_FOUND_CODE,
 )
 from app.core.errors import (
-    PREVIOUS_RESPONSE_STALE_MESSAGE as PREVIOUS_RESPONSE_STALE_MESSAGE,
+    PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE as PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
 )
 from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
@@ -466,10 +467,39 @@ def _classify_upstream_close(
     close_code: int | None,
     *,
     response_events_seen: int,
-) -> Literal["transient", "rejected"]:
+) -> Literal["clean", "transient"]:
     if close_code == 1000 and response_events_seen == 0:
-        return "rejected"
+        # A clean websocket close before response.created does not prove that
+        # the request was invalid.  The upstream can close a socket during a
+        # handoff, so the caller may safely recreate the socket and replay the
+        # still-unstarted request once.
+        return "clean"
     return "transient"
+
+
+def _is_account_neutral_transport_drop(
+    close_code: int | None,
+    *,
+    response_events_seen: int,
+) -> bool:
+    """Return whether an upstream websocket ending is account-neutral evidence.
+
+    An abrupt transport drop that carries no close frame and arrived before
+    any application-layer response event is the weakest possible evidence of
+    account ill-health: the account never spoke at the application layer for
+    this request. Charging the account lets a few infrastructure resets push
+    it into error backoff and 502 continuity-bound follow-ups while healthy
+    pool siblings idle (issue #1754). Any close frame — even a non-clean one —
+    is upstream-authored evidence and keeps the existing penalty semantics, as
+    does a drop after response events started streaming.
+
+    Close code 1006 (abnormal closure) is reserved by RFC 6455 and can never
+    appear in an actual close frame: adapters synthesize it locally when the
+    socket dies without one (aiohttp stores 1006 on ``close_code`` for an
+    abnormal CLOSED), so it counts as frame-less here.
+    """
+
+    return close_code in (None, 1006) and response_events_seen == 0
 
 
 def _should_infer_upstream_status_from_proxy_error(exc: ProxyResponseError, upstream_error_code: str | None) -> bool:
@@ -617,6 +647,36 @@ def _mark_downstream_stream_cancelled(
     )
 
 
+def _rewrite_malformed_stream_error_event(
+    *,
+    enforce_openai_sdk_contract: bool,
+    event: OpenAIEvent | None,
+    event_type: str | None,
+    event_payload: dict[str, JsonValue] | None,
+    response_id: str,
+) -> tuple[str, OpenAIEvent | None, dict[str, JsonValue] | None, str | None] | None:
+    """Rewrite a schema-less upstream ``error`` frame under the SDK contract.
+
+    A malformed frame like ``{"type":"error","message":"..."}`` classifies as
+    ``error`` but carries no error envelope (``event`` is None or has no
+    ``error``), so it must become a terminal ``response.failed`` instead of
+    leaking the raw frame with a success settlement. Returns None when the
+    frame is not a malformed error (well-formed errors keep their
+    envelope-driven handling).
+    """
+    if not enforce_openai_sdk_contract or event_type != "error":
+        return None
+    if (event is not None and event.error is not None) or not isinstance(event_payload, dict):
+        return None
+    message_value = event_payload.get("message")
+    message = message_value.strip() if isinstance(message_value, str) and message_value.strip() else "Upstream error"
+    return _build_rewritten_stream_response_failed_event(
+        response_id=response_id,
+        error_code="upstream_error",
+        error_message=message,
+    )
+
+
 def _build_rewritten_stream_response_failed_event(
     *,
     response_id: str,
@@ -717,10 +777,10 @@ def _call_stream_with_supported_optional_kwargs(
 
 
 def _stream_request_budget_seconds(settings: object, *, request_transport: str) -> float:
-    if request_transport == _REQUEST_TRANSPORT_HTTP:
-        budget = getattr(settings, "http_responses_stream_request_budget_seconds", None)
-        if budget is not None:
-            return float(budget)
+    del request_transport
+    budget = getattr(settings, "http_responses_stream_request_budget_seconds", None)
+    if budget is not None:
+        return float(budget)
     return float(getattr(settings, "proxy_request_budget_seconds"))
 
 
@@ -781,12 +841,40 @@ async def _select_account_with_budget_for_stream(proxy: Any, deadline: float, **
     return await selector(deadline, **kwargs)
 
 
+def _is_account_neutral_request_rejection(
+    *,
+    code: str,
+    http_status: int | None,
+    message: str | None,
+) -> bool:
+    """Return whether upstream rejected the request payload, not the account.
+
+    A payload-shape rejection reproduces identically on every account, so it
+    must never mutate one account's health: otherwise a single client looping
+    on a self-inconsistent conversation drives its serving accounts into
+    ``error_count`` backoff and starves unrelated tenants.
+
+    Keep this set narrow. Not every upstream ``invalid_request_error`` is
+    account neutral -- the model-entitlement rejection matched by
+    ``_is_account_model_unsupported_error`` is genuinely account scoped -- so
+    membership is decided by the specific classified message, never by the
+    ``invalid_request_error`` code alone.
+    """
+    if code != "invalid_request_error":
+        return False
+    if http_status is not None and http_status != 400:
+        return False
+    return bool(_facade()._is_missing_tool_output_message(message))
+
+
 async def _handle_stream_error(
     proxy: Any,
     account: Account,
     error: UpstreamError,
     code: str,
     http_status: int | None = None,
+    *,
+    privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
 ) -> ClassifiedFailure:
     classified = classify_upstream_failure(
         error_code=code,
@@ -795,6 +883,18 @@ async def _handle_stream_error(
         phase="first_event",
     )
     if _facade()._is_account_neutral_error_code(code):
+        return classified
+    if _is_account_neutral_request_rejection(
+        code=code,
+        http_status=http_status,
+        message=error.get("message"),
+    ):
+        _facade().logger.info(
+            "Skipped account error penalty for account-neutral request rejection account_id=%s request_id=%s code=%s",
+            "<redacted>" if privacy_policy.redacts_sensitive_details else account.id,
+            get_request_id(),
+            code,
+        )
         return classified
     if classified["failure_class"] == "rate_limit":
         await proxy._load_balancer.mark_rate_limit(account, error)
@@ -806,7 +906,7 @@ async def _handle_stream_error(
         await proxy._load_balancer.record_error(account)
         _facade().logger.info(
             "Recorded transient account error account_id=%s request_id=%s code=%s",
-            account.id,
+            "<redacted>" if privacy_policy.redacts_sensitive_details else account.id,
             get_request_id(),
             code,
         )
@@ -827,7 +927,7 @@ def _should_retry_stream_error(code: str) -> bool:
     return code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES
 
 
-def _upstream_turn_state_from_socket(upstream: UpstreamResponsesWebSocket | None) -> str | None:
+def _upstream_turn_state_from_socket(upstream: UpstreamWebSocket | None) -> str | None:
     if upstream is None:
         return None
     getter = getattr(upstream, "response_header", None)
