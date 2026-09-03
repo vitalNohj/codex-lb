@@ -2,19 +2,17 @@ import { Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Switch } from "@/components/ui/switch";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type ImportSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
 };
 
 export function ImportSettings({ settings, busy, onSave }: ImportSettingsProps) {
   const { t } = useTranslation();
-  const save = (patch: Partial<SettingsUpdateRequest>) =>
-    void onSave(buildSettingsUpdateRequest(settings, patch));
+  const save = (patch: Partial<SettingsUpdateRequest>) => void onSave(patch);
 
   return (
     <section className="rounded-xl border bg-card p-5">

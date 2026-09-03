@@ -35,38 +35,83 @@ import {
   updateSettings,
   updateTelemetryConsent,
 } from "@/features/settings/api";
-import type { ClaudeSidecarRoutingStrategy, SettingsUpdateRequest } from "@/features/settings/schemas";
 import type {
   AccountProxyBindingRequest,
+  ClaudeSidecarRoutingStrategy,
+  DashboardSettings,
+  SettingsUpdateRequest,
   TelemetryConsentUpdateRequest,
   UpstreamProxyEndpointCreateRequest,
   UpstreamProxyPoolCreateRequest,
   UpstreamProxyPoolMemberRequest,
 } from "@/features/settings/schemas";
 
+const SETTINGS_DETAIL_QUERY_KEY = ["settings", "detail"] as const;
+const SETTINGS_UPSTREAM_PROXY_QUERY_KEY = ["settings", "upstream-proxy"] as const;
+
+let settingsSaveChain: Promise<unknown> = Promise.resolve();
+
+function enqueueSettingsSave<T>(work: () => Promise<T>): Promise<T> {
+  const run = settingsSaveChain.then(work, work);
+  settingsSaveChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function isSettingsConflict(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "settings_conflict";
+}
+
+async function persistSettingsPatch(
+  queryClient: ReturnType<typeof useQueryClient>,
+  patch: Partial<SettingsUpdateRequest>,
+): Promise<DashboardSettings> {
+  const fields = { ...patch };
+  delete fields.expectedVersion;
+  const send = (expectedVersion: number | undefined) =>
+    updateSettings(
+      expectedVersion === undefined ? fields : { ...fields, expectedVersion },
+    );
+  const cached = queryClient.getQueryData<DashboardSettings>(SETTINGS_DETAIL_QUERY_KEY);
+  try {
+    return await send(cached?.version);
+  } catch (error) {
+    if (!isSettingsConflict(error)) {
+      throw error;
+    }
+    const fresh = await getSettings();
+    queryClient.setQueryData(SETTINGS_DETAIL_QUERY_KEY, fresh);
+    return await send(fresh.version);
+  }
+}
+
 export function useSettings() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const { data, error, isFetching, isLoading, isPending, isSuccess, refetch } = useQuery({
-    queryKey: ["settings", "detail"],
+    queryKey: SETTINGS_DETAIL_QUERY_KEY,
     queryFn: getSettings,
   });
   const settingsQuery = { data, error, isFetching, isLoading, isPending, isSuccess, refetch };
 
   const updateSettingsMutation = useMutation({
-    mutationFn: (payload: SettingsUpdateRequest) => updateSettings(payload),
+    mutationFn: (patch: Partial<SettingsUpdateRequest>) =>
+      enqueueSettingsSave(async () => {
+        const saved = await persistSettingsPatch(queryClient, patch);
+        await queryClient.invalidateQueries({ queryKey: SETTINGS_DETAIL_QUERY_KEY });
+        await queryClient.invalidateQueries({ queryKey: SETTINGS_UPSTREAM_PROXY_QUERY_KEY });
+        return saved;
+      }),
     onSuccess: () => {
       toast.success(t("settings.toasts.saved"));
-      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
-      void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });
     },
     onError: (error: Error) => {
       toast.error(error.message || t("settings.toasts.saveFailed"));
-      if (error instanceof ApiError && error.code === "settings_conflict") {
-        // Another writer committed since this form was loaded; refetch so the
-        // next save carries the fresh expectedVersion.
-        void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+      if (isSettingsConflict(error)) {
+        void queryClient.invalidateQueries({ queryKey: SETTINGS_DETAIL_QUERY_KEY });
       }
     },
   });

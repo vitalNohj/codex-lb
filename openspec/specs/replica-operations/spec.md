@@ -84,7 +84,7 @@ At startup, after schema readiness, each replica SHALL compute a fingerprint of 
 
 ### Requirement: Dashboard settings updates are optimistically locked
 
-The dashboard settings row SHALL carry a monotonically increasing `version` incremented on every persisted ORM update, and full-row updates SHALL apply only when the version still matches the value read by the writer. The version check SHALL run for every accepted `PUT /api/settings`, including a save whose payload changes no field, so a stale writer cannot bypass the conflict guard by submitting an unchanged form. `GET`/`PUT /api/settings` responses SHALL expose `version`; the `PUT` payload MAY include `expectedVersion`, and a stale `expectedVersion` SHALL yield 409 before any write. Internal single-field writers (dashboard auth credential and TOTP mutations) SHALL retry on a version conflict rather than fail.
+The dashboard settings row SHALL carry a monotonically increasing `version` incremented on every persisted operator settings write, and those writes SHALL apply only when the version still matches the value read by the writer. The version check SHALL run for every accepted `PUT /api/settings`, including a save whose payload changes no field, so a stale writer cannot bypass the conflict guard by submitting an unchanged form. `GET`/`PUT /api/settings` responses SHALL expose `version`; the `PUT` payload MAY include `expectedVersion`, and a stale `expectedVersion` SHALL yield 409 before any write. Internal single-field writers (dashboard auth credential and TOTP mutations) SHALL retry on a version conflict rather than fail. Health-check, quota-snapshot, and sidecar test-result persistence SHALL NOT increment `version`.
 
 #### Scenario: Concurrent settings writers race
 
@@ -118,6 +118,13 @@ The dashboard settings row SHALL carry a monotonically increasing `version` incr
 - **GIVEN** a dashboard-auth credential mutation whose session read the settings row before a concurrent settings update committed
 - **WHEN** the credential mutation commits and hits a version conflict
 - **THEN** it re-reads the fresh row, re-applies the mutation, and succeeds without surfacing an error
+
+#### Scenario: Sidecar health write does not stale an open settings form
+
+- **GIVEN** a dashboard settings form that loaded `expectedVersion` equal to the current row version
+- **WHEN** a sidecar quota snapshot, health check, or test-connection result is persisted
+- **THEN** `dashboard_settings.version` is unchanged
+- **AND** a later `PUT /api/settings` carrying that `expectedVersion` is accepted
 
 ### Requirement: Metrics endpoint semantics are multi-process aware
 

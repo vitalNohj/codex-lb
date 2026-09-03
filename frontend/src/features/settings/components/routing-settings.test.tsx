@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { RoutingSettings } from "@/features/settings/components/routing-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings } from "@/features/settings/schemas";
 import { createAccountSummary, createDashboardSettings } from "@/test/mocks/factories";
 
@@ -38,7 +37,6 @@ const BASE_SETTINGS: DashboardSettings = {
   preferEarlierResetAccounts: true,
   totpConfigured: false,
 };
-const BASE_UPDATE_PAYLOAD = buildSettingsUpdateRequest(BASE_SETTINGS, {});
 
 describe("RoutingSettings", () => {
   it("saves per-account capacity limits including zero for unlimited", async () => {
@@ -57,7 +55,6 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save capacity limits" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       proxyAccountResponseCreateLimit: 0,
       proxyAccountStreamLimit: 12,
       proxyAccountStreamRecoveryReserve: 2,
@@ -108,10 +105,7 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save TTL" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      stickyThreadsEnabled: false,
       openaiCacheAffinityMaxAgeSeconds: 180,
-      guestAccessEnabled: false,
     });
 
     rerender(
@@ -126,10 +120,7 @@ describe("RoutingSettings", () => {
     await user.type(screen.getByRole("spinbutton", { name: "Prompt-cache affinity TTL" }), "240{Enter}");
 
     expect(onSave).toHaveBeenLastCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      stickyThreadsEnabled: false,
       openaiCacheAffinityMaxAgeSeconds: 240,
-      guestAccessEnabled: false,
     });
   });
 
@@ -149,10 +140,7 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("switch", { name: "Enable sticky threads" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       stickyThreadsEnabled: true,
-      openaiCacheAffinityMaxAgeSeconds: 300,
-      guestAccessEnabled: false,
     });
   });
 
@@ -164,7 +152,6 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("switch", { name: "Prohibit Fast Mode" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       prohibitFastMode: true,
     });
   });
@@ -184,8 +171,6 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save power" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      routingStrategy: "relative_availability",
       relativeAvailabilityPower: 1.5,
     });
 
@@ -287,8 +272,6 @@ describe("RoutingSettings", () => {
     await user.click(saveTopK);
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      routingStrategy: "relative_availability",
       relativeAvailabilityTopK: 6,
     });
   });
@@ -337,8 +320,6 @@ describe("RoutingSettings", () => {
     await user.click(await screen.findByRole("option", { name: /two@example.com/i }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      routingStrategy: "single_account",
       singleAccountId: "acc-two",
     });
   });
@@ -402,7 +383,6 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("button", { name: /Single account/i }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       routingStrategy: "single_account",
       singleAccountId: "acc-one",
     });
@@ -437,7 +417,6 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("checkbox", { name: "Use Sat in weekly pace" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       weeklyPaceWorkingDays: "0,1,2,3,4,6",
     });
   });
@@ -469,7 +448,6 @@ describe("RoutingSettings", () => {
     await user.click(await screen.findByRole("option", { name: "2h" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       weeklyPaceSmoothingMinutes: 120,
     });
   });
@@ -508,9 +486,11 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save warm-up settings" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      limitWarmupEnabled: true,
+      limitWarmupModel: "auto",
+      limitWarmupPrompt: "Say OK.",
       limitWarmupExhaustedThresholdPercent: 98.5,
+      limitWarmupIdleThresholdPercent: 1,
+      limitWarmupCooldownSeconds: 3600,
     });
   });
 
@@ -548,10 +528,11 @@ describe("RoutingSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save warm-up settings" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
-      limitWarmupEnabled: true,
-      limitWarmupStaggeredIdleEnabled: true,
+      limitWarmupModel: "auto",
+      limitWarmupPrompt: "Say OK.",
+      limitWarmupExhaustedThresholdPercent: 99,
       limitWarmupIdleThresholdPercent: 2.5,
+      limitWarmupCooldownSeconds: 3600,
     });
   });
 
@@ -572,7 +553,6 @@ describe("RoutingSettings", () => {
     await user.click(await screen.findByText("5h quota"));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       preferEarlierResetWindow: "primary",
     });
   });
@@ -586,7 +566,6 @@ describe("RoutingSettings", () => {
     await user.click(await screen.findByRole("option", { name: "Prefer persistent sessions" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       httpDownstreamTransportPolicy: "always_websocket",
     });
   });
@@ -682,12 +661,9 @@ describe("RoutingSettings", () => {
 
     await user.click(screen.getByRole("switch", { name: "Enable staggered idle warm-up" }));
 
-    expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(
-        { ...BASE_SETTINGS, limitWarmupEnabled: true },
-        { limitWarmupEnabled: true, limitWarmupStaggeredIdleEnabled: true },
-      ),
-    );
+    expect(onSave).toHaveBeenCalledWith({
+      limitWarmupStaggeredIdleEnabled: true,
+    });
   });
 
   it("saves custom alias catalog context length overrides", async () => {

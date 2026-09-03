@@ -372,3 +372,36 @@ async def test_settings_repository_conflict_maps_to_dashboard_settings_conflict(
         row_a.sticky_threads_enabled = False
         with pytest.raises(DashboardSettingsConflictError):
             await repo_a.commit_refresh(row_a)
+
+
+@pytest.mark.asyncio
+async def test_operational_settings_write_does_not_increment_version(db_setup):
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        row = await repo.get_or_create()
+        version = row.version
+        updated = await repo.update_operational(
+            claude_sidecar_last_health_status="healthy",
+            claude_sidecar_last_health_message="ok",
+        )
+        assert updated.version == version
+        assert updated.claude_sidecar_last_health_status == "healthy"
+        assert updated.claude_sidecar_last_health_message == "ok"
+
+
+@pytest.mark.asyncio
+async def test_settings_put_accepts_expected_version_after_operational_write(async_client):
+    response = await async_client.get("/api/settings")
+    current_version = response.json()["version"]
+
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update_operational(claude_sidecar_last_health_message="poll")
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"expectedVersion": current_version, "stickyThreadsEnabled": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["stickyThreadsEnabled"] is False
+    assert response.json()["version"] == current_version + 1

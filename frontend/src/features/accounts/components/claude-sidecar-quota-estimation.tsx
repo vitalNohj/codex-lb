@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { useClaudeSidecarQuota, useSettings } from "@/features/settings/hooks/use-settings";
 import type { ClaudeSidecarAuthPlan, ClaudeSidecarPlanType } from "@/features/settings/schemas";
 
@@ -124,7 +123,7 @@ export function ClaudeSidecarQuotaEstimation() {
           plan.secondaryTokenBudget > 0,
       );
     await updateSettingsMutation
-      .mutateAsync(buildSettingsUpdateRequest(settings, { claudeSidecarAuthPlans: plans }))
+      .mutateAsync({ claudeSidecarAuthPlans: plans })
       .catch(() => null);
   };
 

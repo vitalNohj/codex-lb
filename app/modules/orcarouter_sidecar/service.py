@@ -42,7 +42,7 @@ class OrcaRouterSidecarService:
         static_status, static_message = _classify_static_status(settings)
         if static_status != "healthy":
             checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            await self._settings_repository.update(
+            await self._settings_repository.update_operational(
                 orcarouter_sidecar_last_health_status=static_status,
                 orcarouter_sidecar_last_health_message=static_message,
                 orcarouter_sidecar_last_checked_at=checked_at,
@@ -107,7 +107,7 @@ class OrcaRouterSidecarService:
         checked_at: datetime,
         models: list[OrcaRouterSidecarModelSummary],
     ) -> OrcaRouterSidecarTestResponse:
-        settings = await self._settings_repository.update(
+        settings = await self._settings_repository.update_operational(
             orcarouter_sidecar_last_health_status=status,
             orcarouter_sidecar_last_health_message=message,
             orcarouter_sidecar_last_checked_at=checked_at,

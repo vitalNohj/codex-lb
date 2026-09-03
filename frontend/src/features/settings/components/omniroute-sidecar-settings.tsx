@@ -7,7 +7,7 @@ import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settin
 export type OmniRouteSidecarSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
   bare?: boolean;
 };
 

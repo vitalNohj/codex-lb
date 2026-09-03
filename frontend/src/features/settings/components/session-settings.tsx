@@ -4,13 +4,12 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type SessionSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
 };
 
 const MIN_TTL_SECONDS = 3600;
@@ -38,7 +37,7 @@ export function SessionSettings({ settings, busy, onSave }: SessionSettingsProps
   const showInvalidInputWarning = trimmed !== "" && !valid;
 
   const save = () =>
-    void onSave(buildSettingsUpdateRequest(settings, { dashboardSessionTtlSeconds: parsedSeconds }));
+    void onSave({ dashboardSessionTtlSeconds: parsedSeconds });
 
   return (
     <section className="rounded-xl border bg-card p-5">

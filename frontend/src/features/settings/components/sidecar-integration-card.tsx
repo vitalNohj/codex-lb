@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import {
   REASONING_EFFORT_OPTIONS,
   REASONING_EFFORT_UNSET,
@@ -129,7 +128,7 @@ type SidecarIntegrationCardProviderProps = {
     rows: DiscoveredModelSummary[];
     isLoading: boolean;
   };
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
   onTestConnection: () => Promise<unknown>;
   buildPatch: (state: {
     baseUrl: string;
@@ -426,20 +425,17 @@ function SidecarIntegrationCardProvider({
     setSavePending(true);
     try {
       await onSave(
-        buildSettingsUpdateRequest(
-          settings,
-          buildPatch({
-            baseUrl: baseUrl.trim(),
-            apiKey: (overrides.apiKey ?? "").trim(),
-            managementKey: (overrides.managementKey ?? "").trim(),
-            prefixes: nextPrefixes,
-            fullModels: nextFullModels,
-            connectTimeout: parsedConnectTimeout,
-            requestTimeout: parsedRequestTimeout,
-            cacheTtl: parsedCacheTtl,
-            pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
-          }),
-        ),
+        buildPatch({
+          baseUrl: baseUrl.trim(),
+          apiKey: (overrides.apiKey ?? "").trim(),
+          managementKey: (overrides.managementKey ?? "").trim(),
+          prefixes: nextPrefixes,
+          fullModels: nextFullModels,
+          connectTimeout: parsedConnectTimeout,
+          requestTimeout: parsedRequestTimeout,
+          cacheTtl: parsedCacheTtl,
+          pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
+        }),
       );
       await onTestConnection().catch(() => null);
     } catch (error) {
@@ -454,12 +450,12 @@ function SidecarIntegrationCardProvider({
 
   const setEnabled = (nextEnabled: boolean) => {
     setEnabledState(nextEnabled);
-    void onSave(buildSettingsUpdateRequest(settings, buildEnablePatch(nextEnabled)));
+    void onSave(buildEnablePatch(nextEnabled));
   };
 
   const setDefaultReasoningEffort = (effort: SidecarReasoningEffort | null) => {
     setDefaultReasoningEffortState(effort);
-    void onSave(buildSettingsUpdateRequest(settings, buildEffortPatch(effort)));
+    void onSave(buildEffortPatch(effort));
   };
 
   const addPrefix = () => {

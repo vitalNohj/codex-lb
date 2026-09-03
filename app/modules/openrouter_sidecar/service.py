@@ -41,7 +41,7 @@ class OpenRouterSidecarService:
         static_status, static_message = _classify_static_status(settings)
         if static_status != "healthy":
             checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            await self._settings_repository.update(
+            await self._settings_repository.update_operational(
                 openrouter_sidecar_last_health_status=static_status,
                 openrouter_sidecar_last_health_message=static_message,
                 openrouter_sidecar_last_checked_at=checked_at,
@@ -101,7 +101,7 @@ class OpenRouterSidecarService:
         checked_at: datetime,
         models: list[OpenRouterSidecarModelSummary],
     ) -> OpenRouterSidecarTestResponse:
-        settings = await self._settings_repository.update(
+        settings = await self._settings_repository.update_operational(
             openrouter_sidecar_last_health_status=status,
             openrouter_sidecar_last_health_message=message,
             openrouter_sidecar_last_checked_at=checked_at,

@@ -10,7 +10,6 @@ import {
 } from "@/features/auth/api";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { TotpSettings } from "@/features/settings/components/totp-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
 vi.mock("@/features/auth/api", () => ({
@@ -151,9 +150,7 @@ describe("TotpSettings", () => {
     renderWithClient(<TotpSettings settings={baseSettings} onSave={onSave} />);
 
     await user.click(screen.getByRole("switch"));
-    expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(baseSettings, { totpRequiredOnLogin: true }),
-    );
+    expect(onSave).toHaveBeenCalledWith({ totpRequiredOnLogin: true });
   });
 
   it("supports disable flow via dialog", async () => {

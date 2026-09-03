@@ -16,7 +16,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import { ModelAliasRow } from "@/features/settings/components/model-alias-row";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type {
   AdditionalQuotaRoutingPolicy,
   DashboardSettings,
@@ -76,7 +75,7 @@ export type RoutingSettingsProps = {
   accounts?: AccountSummary[];
   accountsLoading?: boolean;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
 };
 
 const EMPTY_ACCOUNTS: AccountSummary[] = [];
@@ -171,8 +170,7 @@ export function RoutingSettings({
     createRoutingSettingsDraft,
   );
 
-  const save = (patch: Partial<SettingsUpdateRequest>) =>
-    void onSave(buildSettingsUpdateRequest(settings, patch));
+  const save = (patch: Partial<SettingsUpdateRequest>) => void onSave(patch);
   const saveAdditionalQuotaPolicy = (
     quotaKey: string,
     policy: AdditionalQuotaRoutingPolicy,

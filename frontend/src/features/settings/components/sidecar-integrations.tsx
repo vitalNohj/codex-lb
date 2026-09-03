@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 export type SidecarIntegrationsCardProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
 };
 
 type IntegrationTab = {

@@ -3,11 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { DataRetentionSettings } from "@/features/settings/components/data-retention-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
 const baseSettings = createDashboardSettings();
-const baseUpdatePayload = buildSettingsUpdateRequest(baseSettings, {});
 
 describe("DataRetentionSettings", () => {
   it("explains disabled request-log pruning neutrally without changing policy", () => {
@@ -143,7 +141,6 @@ describe("DataRetentionSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save retention" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...baseUpdatePayload,
       requestLogRetentionOverrideDays: 30,
     });
     expect(onSave.mock.calls[0][0]).not.toHaveProperty("usageHistoryRetentionOverrideDays");

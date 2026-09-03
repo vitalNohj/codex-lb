@@ -42,7 +42,7 @@ class OllamaSidecarService:
         static_status, static_message = _classify_static_status(settings)
         if static_status != "healthy":
             checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            await self._settings_repository.update(
+            await self._settings_repository.update_operational(
                 ollama_sidecar_last_health_status=static_status,
                 ollama_sidecar_last_health_message=static_message,
                 ollama_sidecar_last_checked_at=checked_at,
@@ -102,7 +102,7 @@ class OllamaSidecarService:
         checked_at: datetime,
         models: list[OllamaSidecarModelSummary],
     ) -> OllamaSidecarTestResponse:
-        settings = await self._settings_repository.update(
+        settings = await self._settings_repository.update_operational(
             ollama_sidecar_last_health_status=status,
             ollama_sidecar_last_health_message=message,
             ollama_sidecar_last_checked_at=checked_at,

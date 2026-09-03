@@ -22,7 +22,7 @@ const NO_POOL_VALUE = "__none__";
 export type UpstreamProxySettingsProps = {
   admin: UpstreamProxyAdmin;
   busy: boolean;
-  onSaveSettings: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSaveSettings: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
   onCreateEndpoint: (payload: UpstreamProxyEndpointCreateRequest) => Promise<unknown>;
   onTestEndpoint: (endpointId: string) => Promise<UpstreamProxyEndpointTestResponse>;
   onCreatePool: (payload: UpstreamProxyPoolCreateRequest) => Promise<unknown>;
