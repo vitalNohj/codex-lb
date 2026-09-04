@@ -7,7 +7,7 @@ import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settin
 export type ImportSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 export function ImportSettings({ settings, busy, onSave }: ImportSettingsProps) {

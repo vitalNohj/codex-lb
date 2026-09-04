@@ -75,7 +75,7 @@ export type RoutingSettingsProps = {
   accounts?: AccountSummary[];
   accountsLoading?: boolean;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 const EMPTY_ACCOUNTS: AccountSummary[] = [];

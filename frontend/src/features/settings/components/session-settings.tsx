@@ -9,7 +9,7 @@ import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settin
 export type SessionSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 const MIN_TTL_SECONDS = 3600;

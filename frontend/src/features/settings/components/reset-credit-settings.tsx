@@ -7,7 +7,7 @@ import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settin
 export type ResetCreditSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 export function ResetCreditSettings({ settings, busy, onSave }: ResetCreditSettingsProps) {

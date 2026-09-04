@@ -41,7 +41,7 @@ type TotpDialog = "setup" | "disable" | null;
 export type TotpSettingsProps = {
   settings: DashboardSettings;
   disabled?: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 export function TotpSettings({ settings, disabled = false, onSave }: TotpSettingsProps) {
