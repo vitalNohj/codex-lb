@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { ProxyEndpointCreateDialog } from "@/features/settings/components/proxy-endpoint-create-dialog";
 import { ProxyPoolCreateDialog } from "@/features/settings/components/proxy-pool-create-dialog";
 import { ProxyPoolMemberDialog } from "@/features/settings/components/proxy-pool-member-dialog";
-import type { SettingsUpdateRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
+import type { DashboardSettings, SettingsUpdateRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
 import type {
   UpstreamProxyEndpointCreateRequest,
   UpstreamProxyEndpointTestResponse,
@@ -22,7 +22,7 @@ const NO_POOL_VALUE = "__none__";
 export type UpstreamProxySettingsProps = {
   admin: UpstreamProxyAdmin;
   busy: boolean;
-  onSaveSettings: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSaveSettings: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   onCreateEndpoint: (payload: UpstreamProxyEndpointCreateRequest) => Promise<unknown>;
   onTestEndpoint: (endpointId: string) => Promise<UpstreamProxyEndpointTestResponse>;
   onCreatePool: (payload: UpstreamProxyPoolCreateRequest) => Promise<unknown>;

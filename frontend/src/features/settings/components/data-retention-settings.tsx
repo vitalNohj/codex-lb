@@ -9,7 +9,7 @@ import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settin
 export type DataRetentionSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 const MAX_RETENTION_DAYS = 3650;

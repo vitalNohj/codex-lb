@@ -15,7 +15,7 @@ import { getErrorMessage } from "@/utils/errors";
 export type GuestAccessSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   onRefresh: () => Promise<unknown>;
 };
 
