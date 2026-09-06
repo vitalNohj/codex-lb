@@ -429,6 +429,14 @@ export function useClaudeSidecarAccountExcludedModels() {
   return useMutation({
     mutationFn: ({ name, excludedModels }: { name: string; excludedModels: string[] }) =>
       setClaudeSidecarAccountExcludedModels(name, excludedModels),
+    onSuccess: (response) => {
+      // The endpoint answers 200 with a non-healthy status when CLIProxyAPI
+      // rejected or never saw the change; without this the toggle would just
+      // revert on the next refetch with no explanation.
+      if (response.status !== "healthy") {
+        toast.error(response.message || "Failed to update CLIProxyAPI excluded models");
+      }
+    },
     onError: (error: Error) => {
       toast.error(error.message || "Failed to update CLIProxyAPI excluded models");
     },

@@ -6,7 +6,12 @@ import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 
 import * as settingsApi from "@/features/settings/api";
-import { useSettings, useTelemetryConsent, useTelemetryPreview } from "@/features/settings/hooks/use-settings";
+import {
+  useClaudeSidecarAccountExcludedModels,
+  useSettings,
+  useTelemetryConsent,
+  useTelemetryPreview,
+} from "@/features/settings/hooks/use-settings";
 import { ApiError } from "@/lib/api-client";
 import { createDashboardSettings } from "@/test/mocks/factories";
 import { server } from "@/test/mocks/server";
@@ -327,6 +332,62 @@ describe("useSettings", () => {
       expect(toastError).toHaveBeenCalled();
     } finally {
       updateSpy.mockRestore();
+      toastError.mockRestore();
+    }
+  });
+});
+
+describe("useClaudeSidecarAccountExcludedModels", () => {
+  it("toasts when the endpoint answers 200 with a non-healthy status", async () => {
+    const queryClient = createTestQueryClient();
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    server.use(
+      http.put("*/api/claude-sidecar/routing/excluded-models", () =>
+        HttpResponse.json({
+          status: "not_configured",
+          message: "Claude sidecar management key is not configured",
+          strategy: null,
+          accounts: [],
+        }),
+      ),
+    );
+
+    try {
+      const { result } = renderHook(() => useClaudeSidecarAccountExcludedModels(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await result.current.mutateAsync({
+        name: "claude-a@example.com.json",
+        excludedModels: ["claude-fable-*"],
+      });
+
+      await waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith(
+          "Claude sidecar management key is not configured",
+        ),
+      );
+    } finally {
+      toastError.mockRestore();
+    }
+  });
+
+  it("does not toast on a healthy response", async () => {
+    const queryClient = createTestQueryClient();
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+    try {
+      const { result } = renderHook(() => useClaudeSidecarAccountExcludedModels(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await result.current.mutateAsync({
+        name: "claude-a@example.com.json",
+        excludedModels: ["claude-fable-*"],
+      });
+
+      expect(toastError).not.toHaveBeenCalled();
+    } finally {
       toastError.mockRestore();
     }
   });

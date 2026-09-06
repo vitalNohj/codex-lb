@@ -55,6 +55,7 @@ class ClaudeSidecarRoutingAccount(DashboardModel):
     priority: int = 0
     paused: bool = False
     excluded_models: list[str] = Field(default_factory=list)
+    excluded_models_available: bool = True
 
 
 class ClaudeSidecarRoutingResponse(DashboardModel):

@@ -88,6 +88,7 @@ class SidecarAuthAccount(DashboardModel):
     status: str | None = None
     paused: bool = False
     excluded_models: list[str] = Field(default_factory=list)
+    excluded_models_available: bool = True
     quota_exceeded: bool = False
     next_recover_at: datetime | None = None
     models_exceeded: list[str] = Field(default_factory=list)

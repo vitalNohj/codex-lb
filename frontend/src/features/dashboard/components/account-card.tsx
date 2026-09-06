@@ -426,6 +426,7 @@ export function ClaudeAuthCard({
             name={auth.name}
             emailLabel={title}
             excludedModels={auth.excludedModels}
+            available={auth.excludedModelsAvailable}
             disabled={excludedModelsMutation.isPending}
             onChange={(next) =>
               excludedModelsMutation.mutate({ name: auth.name, excludedModels: next })

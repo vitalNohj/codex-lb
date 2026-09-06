@@ -180,6 +180,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                     name={auth.name}
                     emailLabel={auth.email ?? auth.name}
                     excludedModels={auth.excludedModels}
+                    available={auth.excludedModelsAvailable}
                     disabled={busy || excludedModelsMutation.isPending}
                     onChange={(next) =>
                       excludedModelsMutation.mutate({ name: auth.name, excludedModels: next })

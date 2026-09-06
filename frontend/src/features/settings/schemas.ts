@@ -625,6 +625,7 @@ export const ClaudeSidecarRoutingAccountSchema = z.object({
   priority: z.number().int().default(0),
   paused: z.boolean().default(false),
   excludedModels: z.array(z.string()).default([]),
+  excludedModelsAvailable: z.boolean().default(true),
 });
 export const ClaudeSidecarRoutingResponseSchema = z.object({
   status: ClaudeSidecarRoutingStatusSchema,

@@ -98,32 +98,36 @@ class TestExcludedModelsFromAuthFile:
         path = _write_auth_file(tmp_path, "claude-b.json", {"excluded-models": ["alpha-*"]})
         assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == ["alpha-*"]
 
-    def test_missing_file_returns_empty_list(self, tmp_path: Path) -> None:
+    def test_readable_file_without_the_key_returns_an_empty_list(self, tmp_path: Path) -> None:
+        path = _write_auth_file(tmp_path, "claude-none.json", {"email": "a@example.com"})
+        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == []
+
+    def test_missing_file_is_unreadable(self, tmp_path: Path) -> None:
         missing = tmp_path / "nope.json"
-        assert excluded_models_from_auth_file(str(missing), auth_dir=tmp_path) == []
+        assert excluded_models_from_auth_file(str(missing), auth_dir=tmp_path) is None
 
-    def test_empty_path_returns_empty_list(self, tmp_path: Path) -> None:
-        assert excluded_models_from_auth_file(None, auth_dir=tmp_path) == []
-        assert excluded_models_from_auth_file("", auth_dir=tmp_path) == []
-        assert excluded_models_from_auth_file("   ", auth_dir=tmp_path) == []
+    def test_empty_path_is_unreadable(self, tmp_path: Path) -> None:
+        assert excluded_models_from_auth_file(None, auth_dir=tmp_path) is None
+        assert excluded_models_from_auth_file("", auth_dir=tmp_path) is None
+        assert excluded_models_from_auth_file("   ", auth_dir=tmp_path) is None
 
-    def test_path_escaping_the_auth_dir_returns_empty_list(self, tmp_path: Path) -> None:
+    def test_path_escaping_the_auth_dir_is_unreadable(self, tmp_path: Path) -> None:
         auth_dir = tmp_path / "auth"
         auth_dir.mkdir()
         outside = _write_auth_file(tmp_path, "outside.json", {"excluded_models": ["alpha-*"]})
-        assert excluded_models_from_auth_file(str(outside), auth_dir=auth_dir) == []
+        assert excluded_models_from_auth_file(str(outside), auth_dir=auth_dir) is None
         traversal = auth_dir / ".." / "outside.json"
-        assert excluded_models_from_auth_file(str(traversal), auth_dir=auth_dir) == []
+        assert excluded_models_from_auth_file(str(traversal), auth_dir=auth_dir) is None
 
-    def test_malformed_json_returns_empty_list(self, tmp_path: Path) -> None:
+    def test_malformed_json_is_unreadable(self, tmp_path: Path) -> None:
         path = tmp_path / "broken.json"
         path.write_text("{not json", encoding="utf-8")
-        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == []
+        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) is None
 
-    def test_non_object_json_returns_empty_list(self, tmp_path: Path) -> None:
+    def test_non_object_json_is_unreadable(self, tmp_path: Path) -> None:
         path = tmp_path / "list.json"
         path.write_text("[1, 2, 3]", encoding="utf-8")
-        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == []
+        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) is None
 
     def test_file_contents_are_normalized(self, tmp_path: Path) -> None:
         path = _write_auth_file(
@@ -153,5 +157,9 @@ class TestExcludedModelsForEntry:
         )
         assert excluded_models_for_entry({"path": str(path)}, auth_dir=tmp_path) == ["from-file-*"]
 
-    def test_no_field_and_no_path_returns_empty_list(self, tmp_path: Path) -> None:
-        assert excluded_models_for_entry({"name": "claude-g.json"}, auth_dir=tmp_path) == []
+    def test_no_field_and_no_path_is_unreadable(self, tmp_path: Path) -> None:
+        assert excluded_models_for_entry({"name": "claude-g.json"}, auth_dir=tmp_path) is None
+
+    def test_unreadable_file_is_unreadable(self, tmp_path: Path) -> None:
+        entry = {"path": str(tmp_path / "missing.json")}
+        assert excluded_models_for_entry(entry, auth_dir=tmp_path) is None

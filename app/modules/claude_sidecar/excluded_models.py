@@ -9,6 +9,12 @@ CLIProxyAPI 7.2.135 accepts the field on ``PATCH /v0/management/auth-files/field
 but omits it from the auth-files listing, so the read path falls back to opening
 the auth file named by the listing entry's ``path`` and copying only that one
 key. Nothing else from that file - tokens above all - is returned or logged.
+
+When that fallback read cannot happen (no path, a path outside the auth
+directory, a missing or unparsable file) the read functions return ``None``
+rather than an empty list: an unreadable list is not an empty one, and callers
+must surface it as an error instead of offering an empty list an operator could
+save back and thereby wipe exclusions set by hand.
 """
 
 from __future__ import annotations
@@ -77,38 +83,43 @@ def excluded_models_from_mapping(entry: Mapping[str, object]) -> list[str]:
     return []
 
 
-def excluded_models_from_auth_file(path: str | None, auth_dir: Path | None = None) -> list[str]:
+def excluded_models_from_auth_file(path: str | None, auth_dir: Path | None = None) -> list[str] | None:
     """Return the normalized exclusion list stored in an auth file on disk.
 
-    Returns an empty list when the path is absent, resolves outside the
-    CLIProxyAPI auth directory, is missing, or does not parse as a JSON object.
-    Only the exclusion key is read out of the file; no other key is returned or
-    logged.
+    Returns ``None`` when the list cannot be read: the path is absent, resolves
+    outside the CLIProxyAPI auth directory, is missing, or does not parse as a
+    JSON object. A file that parses but carries no exclusion key is readable and
+    returns an empty list. Only the exclusion key is read out of the file; no
+    other key is returned or logged.
     """
     if not isinstance(path, str) or not path.strip():
-        return []
+        return None
     root = (auth_dir or default_auth_dir()).expanduser()
     try:
         resolved = Path(path).expanduser().resolve()
         root_resolved = root.resolve()
     except OSError:
         logger.warning("could not resolve CLIProxyAPI auth-file path")
-        return []
+        return None
     if not resolved.is_relative_to(root_resolved):
         logger.warning("refusing to read CLIProxyAPI auth-file outside the auth directory")
-        return []
+        return None
     try:
         parsed = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
         logger.warning("could not read CLIProxyAPI auth-file excluded models")
-        return []
+        return None
     if not isinstance(parsed, Mapping):
-        return []
+        return None
     return excluded_models_from_mapping(parsed)
 
 
-def excluded_models_for_entry(entry: Mapping[str, object], auth_dir: Path | None = None) -> list[str]:
-    """Return an auth entry's exclusion list, reading its file only when needed."""
+def excluded_models_for_entry(entry: Mapping[str, object], auth_dir: Path | None = None) -> list[str] | None:
+    """Return an auth entry's exclusion list, or ``None`` when it cannot be read.
+
+    Reads the listing entry's own field when CLIProxyAPI carries it, otherwise
+    falls back to the auth file on disk.
+    """
     if _SNAKE_KEY in entry or _KEBAB_KEY in entry:
         return excluded_models_from_mapping(entry)
     path = entry.get("path")

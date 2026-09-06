@@ -156,7 +156,8 @@ async def _classify_poll_result(
             accounts=(),
         )
 
-    accounts = await _attach_oauth_usage(client, parse_auth_files(raw_files), previous_snapshot)
+    parsed = await asyncio.to_thread(parse_auth_files, raw_files)
+    accounts = await _attach_oauth_usage(client, parsed, previous_snapshot)
     return SidecarQuotaSnapshot(
         checked_at=now,
         status="healthy",

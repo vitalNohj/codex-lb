@@ -2,7 +2,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
+import {
+  ExcludedModelsEditor,
+  MAX_PATTERN_LENGTH,
+  MAX_PATTERNS,
+} from "@/features/settings/components/excluded-models-editor";
 
 function renderEditor(excludedModels: string[], onChange = vi.fn()) {
   render(
@@ -146,6 +150,105 @@ describe("ExcludedModelsEditor", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(onChange).toHaveBeenCalledWith(["claude-fable-5"]);
+  });
+
+  it("treats a narrower pattern in a family's namespace as a custom pattern", async () => {
+    const user = userEvent.setup();
+    const onChange = renderEditor(["claude-fable-5"]);
+
+    expect(screen.getByRole("switch", { name: "Exclude Fable on a@example.com" })).not.toBeChecked();
+    await user.click(
+      screen.getByRole("button", { name: "Remove claude-fable-5 from a@example.com" }),
+    );
+
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  it("broadens a narrower pattern to the family pattern when the switch is turned on", async () => {
+    const user = userEvent.setup();
+    const onChange = renderEditor(["claude-haiku-4-5"]);
+
+    await user.click(screen.getByRole("switch", { name: "Exclude Haiku on a@example.com" }));
+
+    expect(onChange).toHaveBeenCalledWith(["claude-haiku-4-5", "claude-haiku-*"]);
+  });
+
+  it("refuses a pattern containing a comma", async () => {
+    const user = userEvent.setup();
+    const onChange = renderEditor([]);
+
+    await user.type(
+      screen.getByLabelText("Add excluded model pattern for a@example.com"),
+      "claude-a-*,claude-b-*{Enter}",
+    );
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("a comma is not allowed");
+  });
+
+  it("refuses an overlong pattern", async () => {
+    const user = userEvent.setup();
+    const onChange = renderEditor([]);
+
+    await user.type(
+      screen.getByLabelText("Add excluded model pattern for a@example.com"),
+      `${"x".repeat(MAX_PATTERN_LENGTH + 1)}{Enter}`,
+    );
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      `Keep the pattern under ${MAX_PATTERN_LENGTH} characters`,
+    );
+  });
+
+  it("refuses to add beyond the maximum number of patterns", async () => {
+    const user = userEvent.setup();
+    const onChange = renderEditor(
+      Array.from({ length: MAX_PATTERNS }, (_, index) => `claude-full-${index}`),
+    );
+
+    await user.type(
+      screen.getByLabelText("Add excluded model pattern for a@example.com"),
+      "claude-one-too-many{Enter}",
+    );
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(`At most ${MAX_PATTERNS} patterns`);
+  });
+
+  it("locks every control and explains when the stored list could not be read", () => {
+    render(
+      <ExcludedModelsEditor
+        name="claude-a@example.com.json"
+        emailLabel="a@example.com"
+        excludedModels={[]}
+        available={false}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not read this account's excluded models",
+    );
+    expect(screen.getByRole("switch", { name: "Exclude Fable on a@example.com" })).toBeDisabled();
+    expect(screen.getByLabelText("Add excluded model pattern for a@example.com")).toBeDisabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Add excluded model pattern to claude-a@example.com.json",
+      }),
+    ).toBeDisabled();
+  });
+
+  it("stays editable when the list is readable but empty", () => {
+    renderEditor([]);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Exclude Fable on a@example.com" }),
+    ).not.toBeDisabled();
+    expect(
+      screen.getByLabelText("Add excluded model pattern for a@example.com"),
+    ).not.toBeDisabled();
   });
 
   it("disables every control when disabled", () => {

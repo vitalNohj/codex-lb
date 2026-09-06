@@ -20,36 +20,43 @@ export type ExcludedModelFamily = {
   matches: (pattern: string) => boolean;
 };
 
+/**
+ * Match only the exact patterns a family owns.
+ *
+ * Family ownership is deliberately exact rather than a substring test: a
+ * narrower operator-typed pattern such as `claude-fable-5` must stay a
+ * removable custom chip instead of being swallowed by - and deletable through -
+ * the family switch.
+ */
+function exactMatcher(...patterns: readonly string[]): (pattern: string) => boolean {
+  const owned = new Set(patterns.map((entry) => entry.toLowerCase()));
+  return (pattern) => owned.has(pattern.trim().toLowerCase());
+}
+
 export const EXCLUDED_MODEL_FAMILIES: readonly ExcludedModelFamily[] = [
   {
     id: "fable",
     label: "Fable",
     pattern: "claude-fable-*",
-    matches: (pattern) => pattern.toLowerCase().includes("fable"),
+    matches: exactMatcher("claude-fable-*", "claude-fable"),
   },
   {
     id: "opus-5",
     label: "Opus 5",
     pattern: "claude-opus-5*",
-    matches: (pattern) => {
-      const lower = pattern.toLowerCase();
-      return lower === "claude-opus-5*" || lower === "claude-opus-5";
-    },
+    matches: exactMatcher("claude-opus-5*", "claude-opus-5"),
   },
   {
     id: "sonnet-5",
     label: "Sonnet 5",
     pattern: "claude-sonnet-5*",
-    matches: (pattern) => {
-      const lower = pattern.toLowerCase();
-      return lower === "claude-sonnet-5*" || lower === "claude-sonnet-5";
-    },
+    matches: exactMatcher("claude-sonnet-5*", "claude-sonnet-5"),
   },
   {
     id: "haiku",
     label: "Haiku",
     pattern: "claude-haiku-*",
-    matches: (pattern) => pattern.toLowerCase().includes("haiku"),
+    matches: exactMatcher("claude-haiku-*", "claude-haiku"),
   },
 ] as const;
 

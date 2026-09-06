@@ -12,6 +12,11 @@ import {
   toggleFamily,
 } from "@/features/settings/lib/excluded-model-families";
 
+/** Mirrors `MAX_PATTERN_LENGTH` in app/modules/claude_sidecar/excluded_models.py. */
+export const MAX_PATTERN_LENGTH = 128;
+/** Mirrors `MAX_PATTERNS` in app/modules/claude_sidecar/excluded_models.py. */
+export const MAX_PATTERNS = 32;
+
 export type ExcludedModelsEditorProps = {
   /** CLIProxyAPI auth-file name this list belongs to. */
   name: string;
@@ -19,6 +24,12 @@ export type ExcludedModelsEditorProps = {
   emailLabel: string;
   excludedModels: string[];
   disabled?: boolean;
+  /**
+   * False when codex-lb could not read this account's stored exclusion list.
+   * The list shown would not be the real one, so saving it back would wipe
+   * exclusions set by hand: render the failure and lock every control instead.
+   */
+  available?: boolean;
   onChange: (next: string[]) => void;
 };
 
@@ -34,16 +45,29 @@ export function ExcludedModelsEditor({
   emailLabel,
   excludedModels,
   disabled = false,
+  available = true,
   onChange,
 }: ExcludedModelsEditorProps) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
   const inputId = useId();
   const custom = customPatterns(excludedModels);
+  const locked = disabled || !available;
 
   const addDraft = () => {
     const pattern = draft.trim();
     if (!pattern) return;
+    // The backend silently drops a pattern containing a comma or longer than
+    // MAX_PATTERN_LENGTH, and rejects a list beyond MAX_PATTERNS, so refuse
+    // them here rather than let a pattern vanish after a successful save.
+    if (pattern.includes(",")) {
+      setHint("One pattern at a time; a comma is not allowed");
+      return;
+    }
+    if (pattern.length > MAX_PATTERN_LENGTH) {
+      setHint(`Keep the pattern under ${MAX_PATTERN_LENGTH} characters`);
+      return;
+    }
     // CLIProxyAPI matches wire model ids; a cc/-prefixed alias would never
     // match, so the exclusion would silently do nothing.
     if (pattern.toLowerCase().startsWith("cc/")) {
@@ -53,6 +77,10 @@ export function ExcludedModelsEditor({
     const exists = excludedModels.some(
       (entry) => entry.toLowerCase() === pattern.toLowerCase(),
     );
+    if (!exists && excludedModels.length >= MAX_PATTERNS) {
+      setHint(`At most ${MAX_PATTERNS} patterns; remove one first`);
+      return;
+    }
     setHint(null);
     setDraft("");
     if (exists) return;
@@ -67,6 +95,12 @@ export function ExcludedModelsEditor({
           CLIProxyAPI will not route these models to this account.
         </p>
       </div>
+      {available ? null : (
+        <p role="alert" className="text-[11px] text-destructive">
+          Could not read this account&apos;s excluded models. Editing is disabled so a
+          save cannot overwrite them.
+        </p>
+      )}
       <div className="flex flex-wrap gap-x-4 gap-y-1.5">
         {EXCLUDED_MODEL_FAMILIES.map((family) => {
           const excluded = isFamilyExcluded(family.id, excludedModels);
@@ -80,7 +114,7 @@ export function ExcludedModelsEditor({
                 id={`${inputId}-${family.id}`}
                 size="sm"
                 checked={excluded}
-                disabled={disabled}
+                disabled={locked}
                 aria-label={`Exclude ${family.label} on ${emailLabel}`}
                 onCheckedChange={(next) =>
                   onChange(toggleFamily(family.id, excludedModels, next))
@@ -101,7 +135,7 @@ export function ExcludedModelsEditor({
                 size="sm"
                 variant="ghost"
                 className="-mr-1.5 h-4 w-4 p-0"
-                disabled={disabled}
+                disabled={locked}
                 aria-label={`Remove ${pattern} from ${emailLabel}`}
                 onClick={() => onChange(excludedModels.filter((entry) => entry !== pattern))}
               >
@@ -115,7 +149,7 @@ export function ExcludedModelsEditor({
         <Input
           id={inputId}
           value={draft}
-          disabled={disabled}
+          disabled={locked}
           aria-label={`Add excluded model pattern for ${emailLabel}`}
           placeholder="claude-fable-*"
           className="h-8 flex-1 font-mono text-xs"
@@ -135,7 +169,7 @@ export function ExcludedModelsEditor({
           size="sm"
           variant="outline"
           className="h-8 text-xs"
-          disabled={disabled}
+          disabled={locked}
           aria-label={`Add excluded model pattern to ${name}`}
           onClick={addDraft}
         >

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -224,7 +225,7 @@ class ClaudeSidecarService:
         return ClaudeSidecarRoutingResponse(
             status="healthy",
             strategy=_WIRE_TO_STRATEGY.get(wire_strategy),
-            accounts=_routing_accounts(auth_files),
+            accounts=await asyncio.to_thread(_routing_accounts, auth_files),
         )
 
     async def set_routing_strategy(
@@ -349,7 +350,9 @@ class ClaudeSidecarService:
             return
         patterns = tuple(excluded_models)
         updated = [
-            replace(auth, excluded_models=patterns) if auth.name == name else auth
+            replace(auth, excluded_models=patterns, excluded_models_available=True)
+            if auth.name == name
+            else auth
             for auth in snapshot.accounts
         ]
         if updated == list(snapshot.accounts):
@@ -415,6 +418,7 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
             continue
         auth_index = entry.get("auth_index")
         email = entry.get("email")
+        excluded = excluded_models_for_entry(entry)
         accounts.append(
             ClaudeSidecarRoutingAccount(
                 name=name,
@@ -422,7 +426,8 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
                 email=email if isinstance(email, str) else None,
                 priority=_priority_value(entry.get("priority")),
                 paused=bool(entry.get("disabled")),
-                excluded_models=excluded_models_for_entry(entry),
+                excluded_models=excluded if excluded is not None else [],
+                excluded_models_available=excluded is not None,
             )
         )
     return accounts
@@ -480,6 +485,7 @@ def _to_auth_account(
         status=auth.status,
         paused=auth.disabled,
         excluded_models=list(auth.excluded_models),
+        excluded_models_available=auth.excluded_models_available,
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

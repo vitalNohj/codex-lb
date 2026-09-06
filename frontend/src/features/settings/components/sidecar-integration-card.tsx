@@ -1172,6 +1172,7 @@ function Routing({
               name={account.name}
               emailLabel={account.email || account.name}
               excludedModels={account.excludedModels}
+              available={account.excludedModelsAvailable}
               disabled={busy || isLoading}
               onChange={(next) => onExcludedModelsChange(account.name, next)}
             />

@@ -125,6 +125,27 @@ def test_parse_auth_files_reads_excluded_models_from_entry():
     )
 
     assert accounts[0].excluded_models == ("claude-demo-*",)
+    assert accounts[0].excluded_models_available is True
+
+
+def test_parse_auth_files_marks_unreadable_excluded_models_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        lambda: tmp_path,
+    )
+
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "path": str(tmp_path / "missing.json"),
+            }
+        ]
+    )
+
+    assert accounts[0].excluded_models == ()
+    assert accounts[0].excluded_models_available is False
 
 
 def test_parse_auth_files_reads_excluded_models_from_auth_file(tmp_path, monkeypatch):
@@ -186,6 +207,39 @@ def test_snapshot_round_trips_excluded_models():
 
     assert decoded is not None
     assert decoded.accounts[0].excluded_models == ("claude-demo-*",)
+    assert decoded.accounts[0].excluded_models_available is True
+
+
+def test_snapshot_round_trips_unavailable_excluded_models():
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 6, 10, 22, 30, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a.json",
+                auth_index="0",
+                email="a@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                excluded_models=(),
+                excluded_models_available=False,
+            ),
+        ),
+    )
+
+    decoded = snapshot_from_json(snapshot_to_json(snapshot))
+
+    assert decoded is not None
+    assert decoded.accounts[0].excluded_models_available is False
 
 
 def test_snapshot_without_excluded_models_key_decodes_to_empty_tuple():
