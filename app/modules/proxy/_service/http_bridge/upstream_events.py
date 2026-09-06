@@ -107,6 +107,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _service_get_settings,
     _service_tier_from_event_payload,
     _service_time,
+    _stream_terminal_captured_error,
     _upstream_websocket_disconnect_message,
     _websocket_auth_request_can_switch_account,
     _websocket_downstream_response_id,
@@ -323,6 +324,28 @@ async def _update_http_bridge_operation_state(
             state,
             exc_info=True,
         )
+
+
+def _apply_http_bridge_terminal_error_status(
+    request_state: _WebSocketRequestState,
+    *,
+    reason: str | None = None,
+) -> None:
+    """Set the downstream HTTP status for a terminal HTTP-bridge failure.
+
+    When the failing path already captured a specific upstream error, that
+    error's own status wins and the emitted event carries the same code, so the
+    two agree: an upstream ``usage_limit_reached`` reaches the client as a 429
+    rather than a 502 the client would treat as a retryable transport fault.
+
+    Only a failure that captured nothing specific - a genuine transport drop -
+    falls back to 502, and that fallback overwrites any status left behind by
+    an earlier attempt so it cannot contradict the emitted ``stream_incomplete``.
+    """
+    surfaces_captured_error = _stream_terminal_captured_error(request_state, reason=reason) is not None
+    if surfaces_captured_error and request_state.error_http_status_override is not None:
+        return
+    request_state.error_http_status_override = 502
 
 
 def _http_bridge_operation_state_for_event(event_type: str | None) -> str | None:
@@ -2023,7 +2046,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             )
             grouped_terminal_events = []
             for grouped_request_state in grouped_previous_response_request_states:
-                grouped_request_state.error_http_status_override = 502
+                _apply_http_bridge_terminal_error_status(grouped_request_state, reason=grouped_error_reason)
                 (
                     _grouped_downstream_text,
                     grouped_event_block,
@@ -2339,7 +2362,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 ):
                     _clear_websocket_request_error_overrides(status_request_state)
                 else:
-                    status_request_state.error_http_status_override = 502
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -2413,7 +2436,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         if _http_bridge_request_counts_against_queue(status_request_state):
                             session.queued_request_count = max(0, session.queued_request_count - 1)
                 if retry_after_wait or not status_request_state.propagate_http_errors:
-                    status_request_state.error_http_status_override = 502
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -2468,7 +2491,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         if status_request_state in session.pending_requests:
                             session.pending_requests.remove(status_request_state)
                             session.queued_request_count = max(0, session.queued_request_count - 1)
-                    status_request_state.error_http_status_override = 502
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -2477,6 +2500,8 @@ class _HTTPBridgeUpstreamEventsMixin:
                         event_type,
                     ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
                 else:
+                    # The rewritten event hardcodes ``upstream_unavailable``,
+                    # so the status is not derived from a captured error.
                     status_request_state.error_http_status_override = 502
                     session.upstream_control.reconnect_requested = True
                     session.upstream_control.retire_after_drain = True
@@ -2575,7 +2600,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                     if status_request_state in session.pending_requests:
                         session.pending_requests.remove(status_request_state)
                         session.queued_request_count = max(0, session.queued_request_count - 1)
-                status_request_state.error_http_status_override = 502
+                _apply_http_bridge_terminal_error_status(status_request_state)
                 (
                     _downstream_text,
                     event_block,

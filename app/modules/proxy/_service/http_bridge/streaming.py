@@ -596,11 +596,52 @@ def _http_bridge_unanchored_fork_can_spill_on_cap(
     )
 
 
+_CAPACITY_RECOVERY_EXCEEDS_BUDGET_CODE = "capacity_recovery_exceeds_request_budget"
+
+
+def _http_bridge_capacity_wait_exceeds_budget_error(
+    exc: ProxyResponseError,
+    *,
+    recovery_hint_seconds: float,
+) -> ProxyResponseError:
+    """Build the fail-fast error for a recovery hint the request cannot outlast.
+
+    Answers with 429 plus ``Retry-After`` set to the full recovery hint, which
+    is the retry signal the client needs and which arrives immediately instead
+    of after the connection has been held for the rest of the request budget
+    only to fail anyway. The error code carries ``rate_limit_error``, so the
+    body maps to the same 429 the status line reports, and the upstream message
+    is preserved so the real condition still reaches the client.
+    """
+    _code, message = _proxy_error_code_message(exc)
+    return ProxyResponseError(
+        429,
+        openai_error(
+            _CAPACITY_RECOVERY_EXCEEDS_BUDGET_CODE,
+            message or "No account capacity is available; retry later.",
+            error_type="rate_limit_error",
+        ),
+        retry_after_seconds=max(1, math.ceil(recovery_hint_seconds)),
+        upstream_status_code=exc.upstream_status_code,
+        upstream_error_code=exc.upstream_error_code,
+    )
+
+
 def _http_bridge_capacity_wait_plan(
     exc: ProxyResponseError,
     *,
     request_deadline: float,
 ) -> tuple[float, float, str | None] | None:
+    """Plan the recovery sleep for a capacity error, or decline to sleep.
+
+    Returns ``None`` when the error is not a recoverable capacity condition or
+    no budget is left, in which case the caller re-raises the original error.
+
+    Raises a 429 ``ProxyResponseError`` carrying ``Retry-After`` when the
+    account recovery hint outlasts the remaining request budget: sleeping then
+    only holds the downstream connection open for the rest of the budget before
+    failing, so the client is told to retry later instead.
+    """
     account_capacity_wait_seconds = _http_bridge_account_capacity_wait_seconds(exc)
     if account_capacity_wait_seconds is None:
         return None
@@ -608,6 +649,14 @@ def _http_bridge_capacity_wait_plan(
     if remaining_budget_seconds <= 0:
         return None
     code, message = _proxy_error_code_message(exc)
+    if code != "response_create_gate_timeout" and account_capacity_wait_seconds > remaining_budget_seconds:
+        # Per-session gate contention is excluded: its wait is a short retry
+        # interval, not an account recovery window, and the in-flight turn can
+        # release the gate at any moment within the remaining budget.
+        raise _http_bridge_capacity_wait_exceeds_budget_error(
+            exc,
+            recovery_hint_seconds=account_capacity_wait_seconds,
+        ) from exc
     bounded_wait_seconds = min(account_capacity_wait_seconds, remaining_budget_seconds)
     if code == "response_create_gate_timeout":
         # Reserve the tail of the request budget for one final gate

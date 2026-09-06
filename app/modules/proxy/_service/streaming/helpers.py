@@ -682,11 +682,12 @@ def _build_rewritten_stream_response_failed_event(
     response_id: str,
     error_code: str,
     error_message: str,
+    error_type: str = "server_error",
 ) -> tuple[str, OpenAIEvent | None, dict[str, JsonValue] | None, str | None]:
     rewritten_event_payload = response_failed_event(
         error_code,
         error_message,
-        error_type="server_error",
+        error_type=error_type,
         response_id=response_id,
     )
     rewritten_event_block = format_sse_event(rewritten_event_payload)
@@ -696,19 +697,67 @@ def _build_rewritten_stream_response_failed_event(
     return rewritten_event_block, rewritten_event, rewritten_payload, rewritten_event_type
 
 
+def _stream_terminal_captured_error(
+    request_state: _WebSocketRequestState,
+    *,
+    reason: str | None = None,
+) -> tuple[str, str, str] | None:
+    """Return the captured ``(code, message, type)`` the terminal event must use.
+
+    Returns ``None`` when the event falls back to the generic continuity code.
+
+    A specific ``reason`` (``previous_response_not_found``,
+    ``missing_tool_output``) names a continuity failure the caller diagnosed
+    itself. Those reasons are deliberately masked classifiers, so a captured
+    upstream code must not replace them. Otherwise the captured error wins
+    whenever the failing path recorded one.
+
+    Callers that force a downstream HTTP status alongside the event use this to
+    keep the status and the emitted code in agreement.
+    """
+    if reason not in (None, "stream_incomplete"):
+        return None
+    error_code = request_state.error_code_override
+    if error_code is None:
+        return None
+    return (
+        error_code,
+        request_state.error_message_override or "Upstream error",
+        request_state.error_type_override or "server_error",
+    )
+
+
 def _build_stream_incomplete_terminal_event_for_request(
     request_state: _WebSocketRequestState,
     *,
-    reason: str = "stream_incomplete",
+    reason: str | None = None,
 ) -> tuple[str, str, OpenAIEvent | None, dict[str, JsonValue] | None, str | None]:
-    error_code, error_message = _websocket_continuity_error_fields(
-        reason=reason,
-        expose_stale_previous_response_classifier=request_state.expose_stale_previous_response_classifier,
-    )
+    """Build the terminal ``response.failed`` event for a failed request.
+
+    Unless ``reason`` masks it (see
+    ``_stream_terminal_event_uses_captured_error``), the honest terminal error
+    is whatever the failing path already captured on the request state via
+    ``error_code_override`` and its siblings - an upstream
+    ``usage_limit_reached``, for example. Discarding those overrides in favour
+    of a hardcoded ``stream_incomplete`` launders a 429 into a 502 downstream,
+    so mirror ``_http_bridge_normalize_terminal_error_event``'s override
+    handling and only fall back to the generic continuity code when nothing
+    specific was captured.
+    """
+    captured_error = _stream_terminal_captured_error(request_state, reason=reason)
+    if captured_error is not None:
+        error_code, error_message, error_type = captured_error
+    else:
+        error_type = "server_error"
+        error_code, error_message = _websocket_continuity_error_fields(
+            reason=reason or "stream_incomplete",
+            expose_stale_previous_response_classifier=request_state.expose_stale_previous_response_classifier,
+        )
     event_block, event, payload, event_type = _build_rewritten_stream_response_failed_event(
         response_id=_websocket_downstream_response_id(request_state),
         error_code=error_code,
         error_message=error_message,
+        error_type=error_type,
     )
     downstream_text = json.dumps(
         cast(
@@ -716,7 +765,7 @@ def _build_stream_incomplete_terminal_event_for_request(
             response_failed_event(
                 error_code,
                 error_message,
-                error_type="server_error",
+                error_type=error_type,
                 response_id=_websocket_downstream_response_id(request_state),
             ),
         ),

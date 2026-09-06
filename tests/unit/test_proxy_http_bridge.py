@@ -37,9 +37,11 @@ from app.core.clients.proxy_websocket import (
 )
 from app.core.config.settings import Settings
 from app.core.errors import openai_error
+from app.core.openai.models import OpenAIError
 from app.core.utils.request_id import get_request_id, reset_request_scope_id, set_request_scope_id
 from app.db.models import AccountStatus, Base, HttpBridgeSessionState
 from app.modules.proxy import affinity as proxy_affinity
+from app.modules.proxy import api as proxy_api
 from app.modules.proxy import http_bridge_forwarding as http_bridge_forwarding_module
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._service import support as proxy_support_module
@@ -3864,9 +3866,14 @@ async def test_http_bridge_submit_leaves_soft_capacity_for_session_reroute(monke
 
 
 @pytest.mark.asyncio
-async def test_http_bridge_submit_capacity_wait_uses_original_request_deadline(
+async def test_http_bridge_submit_capacity_wait_fails_fast_when_recovery_outlasts_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A 30s recovery hint with 1s of budget left must not park the client.
+
+    Sleeping here would hold the downstream connection for the rest of the
+    budget and then fail anyway, so the client is told to retry instead.
+    """
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     session = _make_bridge_session(key_value="sid-submit-original-deadline")
     request_state = proxy_service._WebSocketRequestState(
@@ -3918,9 +3925,75 @@ async def test_http_bridge_submit_capacity_wait_uses_original_request_deadline(
         ):
             pass
 
-    assert exc_info.value is capacity_error
-    assert waited == [1.0]
+    assert exc_info.value is not capacity_error
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.retry_after_seconds == 30
+    assert exc_info.value.payload["error"]["type"] == "rate_limit_error"
+    assert exc_info.value.payload["error"]["message"] == "Account response-create concurrency limit reached"
+    assert waited == []
     assert submit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_submit_capacity_wait_sleeps_within_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovery hint that fits the remaining budget still waits in place."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session(key_value="sid-submit-within-budget")
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-submit-within-budget",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=99.5,
+        transport="http",
+        event_queue=asyncio.Queue(),
+    )
+    capacity_error = ProxyResponseError(
+        429,
+        openai_error(
+            "account_response_create_cap",
+            "Account response-create concurrency limit reached",
+            error_type="rate_limit_error",
+        ),
+    )
+    submit = AsyncMock(side_effect=capacity_error)
+    clock = [100.0]
+    waited: list[float] = []
+
+    async def fake_capacity_wait(**kwargs: object):
+        waited.append(cast(float, kwargs["sleep_seconds"]))
+        clock[0] += waited[-1]
+        if False:
+            yield ""
+
+    monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
+    monkeypatch.setattr(http_bridge_streaming_module, "_http_bridge_account_capacity_wait_seconds", lambda _exc: 5.0)
+    monkeypatch.setattr(http_bridge_streaming_module, "_iter_account_capacity_wait_sse", fake_capacity_wait)
+    monkeypatch.setattr(
+        http_bridge_streaming_module,
+        "_service_time",
+        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        async for _ in service._stream_http_bridge_session_events(
+            session,
+            request_state=request_state,
+            text_data='{"type":"response.create"}',
+            queue_limit=4,
+            propagate_http_errors=True,
+            downstream_turn_state=None,
+            request_deadline=110.0,
+        ):
+            pass
+
+    assert exc_info.value is capacity_error
+    # Two 5s waits consume the 10s budget, then the deadline stops the retries.
+    assert waited == [5.0, 5.0]
+    assert submit.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -7926,9 +7999,10 @@ async def test_stream_via_http_bridge_keeps_sse_alive_while_session_creation_wai
 
 
 @pytest.mark.asyncio
-async def test_stream_via_http_bridge_stops_session_creation_retry_after_budget_wait(
+async def test_stream_via_http_bridge_fails_fast_when_session_creation_recovery_outlasts_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A 120s recovery hint against a 1s budget answers 429 without sleeping."""
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     settings = SimpleNamespace(
         sticky_threads_enabled=False,
@@ -8000,7 +8074,7 @@ async def test_stream_via_http_bridge_stops_session_creation_retry_after_budget_
     )
     chunks: list[str] = []
 
-    with pytest.raises(ProxyResponseError):
+    with pytest.raises(ProxyResponseError) as exc_info:
         async for chunk in service._stream_via_http_bridge(
             payload,
             headers={"session_id": "sid-capacity-create-budget"},
@@ -8017,11 +8091,11 @@ async def test_stream_via_http_bridge_stops_session_creation_retry_after_budget_
         ):
             chunks.append(chunk)
 
-    keepalive = proxy_service.parse_sse_data_json(chunks[0])
-
-    assert keepalive is not None
-    assert keepalive["type"] == "codex.keepalive"
-    assert keepalive["status"] == "waiting_for_account_capacity"
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.retry_after_seconds == 120
+    assert exc_info.value.payload["error"]["type"] == "rate_limit_error"
+    assert chunks == []
+    assert now == 100.0
     assert get_or_create.await_count == 1
 
 
@@ -20712,6 +20786,116 @@ async def test_process_http_bridge_upstream_text_masks_failed_replay_usage_limit
     assert request_state.error_http_status_override == 502
     assert session.pending_requests == deque()
     assert session.queued_request_count == 0
+
+
+@pytest.mark.asyncio
+async def test_process_http_bridge_upstream_text_surfaces_exhausted_retry_usage_limit_as_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exhausted retry must surface the quota error it captured, not a 502.
+
+    The real ``_retry_http_bridge_precreated_request`` records the terminal
+    upstream error on the request state before returning False. Rewriting that
+    to ``stream_incomplete`` sends the codex CLI a 502 it treats as a transport
+    fault and retries five times, hiding the quota condition behind its "high
+    demand" message.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-precreated-retry-exhausted",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        request_text='{"type":"response.create","model":"gpt-5.6-sol","input":"hello"}',
+        transport="http",
+        skip_request_log=True,
+    )
+    session = proxy_service._HTTPBridgeSession(
+        key=proxy_service._HTTPBridgeSessionKey("turn_state_header", "http_turn_exhausted", None),
+        headers={"x-codex-turn-state": "http_turn_exhausted"},
+        affinity=proxy_service._AffinityPolicy(
+            key="http_turn_exhausted",
+            kind=proxy_service.StickySessionKind.CODEX_SESSION,
+        ),
+        request_model="gpt-5.6-sol",
+        account=cast(Any, SimpleNamespace(id="acc-exhausted", status=AccountStatus.ACTIVE)),
+        upstream=cast(UpstreamWebSocket, SimpleNamespace(close=AsyncMock())),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque([request_state]),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=1,
+        last_used_at=1.0,
+        idle_ttl_seconds=120.0,
+    )
+
+    async def exhausted_retry(target_session: proxy_service._HTTPBridgeSession) -> bool:
+        del target_session
+        # Mirrors _http_bridge_precreated_retry_failure_error unpacking the
+        # terminal ProxyResponseError onto the request state.
+        (
+            request_state.error_http_status_override,
+            request_state.error_code_override,
+            request_state.error_message_override,
+            request_state.error_type_override,
+            request_state.error_param_override,
+        ) = http_bridge_helpers_module._http_bridge_precreated_retry_failure_error(
+            ProxyResponseError(
+                429,
+                openai_error(
+                    "usage_limit_reached",
+                    "Rate limit exceeded. Try again in 300s",
+                    error_type="usage_limit_reached",
+                ),
+            )
+        )
+        return False
+
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", exhausted_retry)
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "error",
+                "status": 429,
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Rate limit exceeded. Try again in 300s",
+                },
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    event_block = await event_queue.get()
+    assert event_block is not None
+    payload = proxy_service.parse_sse_data_json(event_block)
+    assert isinstance(payload, dict)
+    response = payload.get("response")
+    assert isinstance(response, dict)
+    error = response.get("error")
+    assert isinstance(error, dict)
+
+    error_code = error["code"]
+    error_type = error["type"]
+    assert isinstance(error_code, str)
+    assert isinstance(error_type, str)
+
+    assert payload["type"] == "response.failed"
+    assert error_code == "usage_limit_reached"
+    assert error_code != "stream_incomplete"
+    assert error["message"] == "Rate limit exceeded. Try again in 300s"
+    assert request_state.error_http_status_override == 429
+    # The downstream status and the emitted code must agree.
+    assert proxy_api._status_for_error(OpenAIError(code=error_code, type=error_type)) == 429
 
 
 @pytest.mark.asyncio
