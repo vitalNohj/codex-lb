@@ -476,6 +476,7 @@ describe("ClaudeSidecarSettings", () => {
           priority: 0,
           paused: false,
           excludedModels: stored,
+          excludedModelsState: "available",
         },
       ],
     });

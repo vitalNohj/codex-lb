@@ -162,7 +162,7 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         status=_dashboard_auth_status(auth),
         paused=auth.disabled,
         excluded_models=list(auth.excluded_models),
-        excluded_models_available=auth.excluded_models_available,
+        excluded_models_state="available" if auth.excluded_models_available else "unreadable",
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],
@@ -213,8 +213,11 @@ def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAcc
         email=estimate.email,
         provider="claude",
         status=None,
+        # A usage-estimate row has no auth-file name to address, so exclusions
+        # cannot be edited here. That is not a failed read and must not claim
+        # to be one.
         excluded_models=[],
-        excluded_models_available=False,
+        excluded_models_state="unsupported",
         quota_exceeded=False,
         plan_type=estimate.plan_type,
         usage_source=estimate.usage_source,

@@ -57,7 +57,7 @@ class SidecarAuthQuota:
     oauth_usage: SidecarOAuthUsage | None = None
     provider: str | None = None
     excluded_models: tuple[str, ...] = ()
-    excluded_models_available: bool = True
+    excluded_models_available: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,8 +355,12 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     failed=_int(entry.get("failed")) or 0,
                     last_refresh=_parse_datetime(entry.get("last_refresh")),
                     oauth_usage=_oauth_usage_from_json(entry.get("oauth_usage")),
+                    # An unread list is not an empty one: snapshots persisted
+                    # before this key existed must decode as unreadable so the
+                    # editor stays locked instead of offering an empty list a
+                    # save would write over the real exclusions.
                     excluded_models=tuple(normalize_excluded_models(entry.get("excluded_models"))),
-                    excluded_models_available=bool(entry.get("excluded_models_available", True)),
+                    excluded_models_available=bool(entry.get("excluded_models_available", False)),
                 )
             )
     message_field = parsed.get("message")

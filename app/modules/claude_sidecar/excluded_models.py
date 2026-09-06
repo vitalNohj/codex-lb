@@ -15,6 +15,12 @@ directory, a missing or unparsable file) the read functions return ``None``
 rather than an empty list: an unreadable list is not an empty one, and callers
 must surface it as an error instead of offering an empty list an operator could
 save back and thereby wipe exclusions set by hand.
+
+The same ``None`` applies when the stored value is not a list of strings, or
+when it would not survive ``normalize_excluded_models`` unchanged. Every write
+replaces the whole list, so handing out a normalized copy of a list that
+normalization shortened or filtered would silently delete the dropped patterns
+from disk on the next save.
 """
 
 from __future__ import annotations
@@ -23,8 +29,16 @@ import json
 import logging
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Literal
 
 logger = logging.getLogger(__name__)
+
+#: How a surface must present an account's exclusion list.
+#:
+#: ``available``   read verbatim from CLIProxyAPI, safe to edit and save back;
+#: ``unreadable``  the read failed, so editing is locked and the failure shown;
+#: ``unsupported`` the row has no CLIProxyAPI auth file to edit at all.
+ExcludedModelsState = Literal["available", "unreadable", "unsupported"]
 
 MAX_PATTERN_LENGTH = 128
 MAX_PATTERNS = 32
@@ -74,12 +88,33 @@ def normalize_excluded_models(raw: object) -> list[str]:
     return normalized
 
 
-def excluded_models_from_mapping(entry: Mapping[str, object]) -> list[str]:
-    """Return the normalized exclusion list carried by an auth-file mapping."""
+def _stored_excluded_models(raw: object) -> list[str] | None:
+    """Return a stored list only when it is exactly what a save would write back.
+
+    A value that is not a list of strings, or that ``normalize_excluded_models``
+    would change, reads as unreadable: offering the normalized copy would let a
+    whole-list save drop the entries normalization removed.
+    """
+    if not isinstance(raw, list) or any(not isinstance(entry, str) for entry in raw):
+        return None
+    normalized = normalize_excluded_models(raw)
+    if normalized != raw:
+        logger.warning("CLIProxyAPI excluded models are not stored in a normalized form")
+        return None
+    return normalized
+
+
+def excluded_models_from_mapping(entry: Mapping[str, object]) -> list[str] | None:
+    """Return the exclusion list carried by an auth-file mapping.
+
+    A mapping without the key carries no exclusions and reads as an empty list.
+    A key whose value is not a verbatim, already-normalized list of strings is
+    unreadable and returns ``None``.
+    """
     if _SNAKE_KEY in entry:
-        return normalize_excluded_models(entry[_SNAKE_KEY])
+        return _stored_excluded_models(entry[_SNAKE_KEY])
     if _KEBAB_KEY in entry:
-        return normalize_excluded_models(entry[_KEBAB_KEY])
+        return _stored_excluded_models(entry[_KEBAB_KEY])
     return []
 
 
@@ -87,10 +122,11 @@ def excluded_models_from_auth_file(path: str | None, auth_dir: Path | None = Non
     """Return the normalized exclusion list stored in an auth file on disk.
 
     Returns ``None`` when the list cannot be read: the path is absent, resolves
-    outside the CLIProxyAPI auth directory, is missing, or does not parse as a
-    JSON object. A file that parses but carries no exclusion key is readable and
-    returns an empty list. Only the exclusion key is read out of the file; no
-    other key is returned or logged.
+    outside the CLIProxyAPI auth directory, is missing, does not parse as a JSON
+    object, or carries an exclusion value that is not already normalized. A file
+    that parses but carries no exclusion key is readable and returns an empty
+    list. Only the exclusion key is read out of the file; no other key is
+    returned or logged.
     """
     if not isinstance(path, str) or not path.strip():
         return None

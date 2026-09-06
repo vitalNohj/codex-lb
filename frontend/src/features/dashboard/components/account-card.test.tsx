@@ -195,6 +195,7 @@ describe("AccountCard", () => {
       quotaExceeded: false,
       modelsExceeded: [],
       excludedModels: [],
+      excludedModelsState: "available",
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",
@@ -236,6 +237,7 @@ describe("AccountCard", () => {
       provider: "claude",
       paused: false,
       excludedModels: ["claude-fable-*", "claude-opus-4-*"],
+      excludedModelsState: "available",
       quotaExceeded: false,
       modelsExceeded: [],
       success: 0,
@@ -270,6 +272,7 @@ describe("AccountCard", () => {
       provider: "claude",
       paused: false,
       excludedModels: [],
+      excludedModelsState: "available",
       quotaExceeded: false,
       modelsExceeded: [],
       success: 0,
@@ -285,6 +288,48 @@ describe("AccountCard", () => {
     expect(
       screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
     ).toBeInTheDocument();
+  });
+
+  it("does not claim a read failure for an estimate-only auth row", async () => {
+    const user = userEvent.setup();
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-one@example.com",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      provider: "claude",
+      paused: false,
+      excludedModels: [],
+      excludedModelsState: "unsupported" as const,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+    await user.click(
+      screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
+    );
+
+    expect(screen.queryByText(/Could not read/)).toBeNull();
+    expect(
+      screen.getByText("Excluded models are not available for this row."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Exclude Fable on claude-one@example.com" }),
+    ).toBeDisabled();
   });
 
   it("opens the excluded-models editor from the card", async () => {
@@ -306,6 +351,7 @@ describe("AccountCard", () => {
       provider: "claude",
       paused: false,
       excludedModels: [],
+      excludedModelsState: "available",
       quotaExceeded: false,
       modelsExceeded: [],
       success: 0,
@@ -348,6 +394,7 @@ describe("AccountCard", () => {
       quotaExceeded: false,
       modelsExceeded: [],
       excludedModels: [],
+      excludedModelsState: "available",
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",
@@ -381,6 +428,7 @@ describe("AccountCard", () => {
       quotaExceeded: false,
       modelsExceeded: [],
       excludedModels: [],
+      excludedModelsState: "available",
       success: 0,
       failed: 1,
       usageSource: "oauth_usage",
@@ -414,6 +462,7 @@ describe("AccountCard", () => {
       quotaExceeded: false,
       modelsExceeded: [],
       excludedModels: [],
+      excludedModelsState: "available",
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",
@@ -449,6 +498,7 @@ describe("AccountCard", () => {
       quotaExceeded: false,
       modelsExceeded: [],
       excludedModels: [],
+      excludedModelsState: "available",
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",

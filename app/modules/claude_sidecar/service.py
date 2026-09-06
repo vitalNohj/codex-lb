@@ -427,7 +427,7 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
                 priority=_priority_value(entry.get("priority")),
                 paused=bool(entry.get("disabled")),
                 excluded_models=excluded if excluded is not None else [],
-                excluded_models_available=excluded is not None,
+                excluded_models_state="available" if excluded is not None else "unreadable",
             )
         )
     return accounts
@@ -485,7 +485,7 @@ def _to_auth_account(
         status=auth.status,
         paused=auth.disabled,
         excluded_models=list(auth.excluded_models),
-        excluded_models_available=auth.excluded_models_available,
+        excluded_models_state="available" if auth.excluded_models_available else "unreadable",
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

@@ -379,7 +379,7 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
             "priority": 0,
             "paused": False,
             "excludedModels": [],
-            "excludedModelsAvailable": False,
+            "excludedModelsState": "unreadable",
         },
         {
             "name": "claude-b@example.com.json",
@@ -388,7 +388,7 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
             "priority": 10,
             "paused": True,
             "excludedModels": [],
-            "excludedModelsAvailable": False,
+            "excludedModelsState": "unreadable",
         },
     ]
 
@@ -725,12 +725,12 @@ async def test_get_routing_reports_excluded_models(async_client, monkeypatch):
     assert response.status_code == 200
     accounts = {acct["name"]: acct for acct in response.json()["accounts"]}
     assert accounts["claude-a@example.com.json"]["excludedModels"] == ["claude-demo-*"]
-    assert accounts["claude-a@example.com.json"]["excludedModelsAvailable"] is True
+    assert accounts["claude-a@example.com.json"]["excludedModelsState"] == "available"
     # b carries neither the field nor a readable auth file: an unreadable list is
     # not an empty one, so the editor must be locked instead of offering an empty
     # list the operator could save back over real exclusions.
     assert accounts["claude-b@example.com.json"]["excludedModels"] == []
-    assert accounts["claude-b@example.com.json"]["excludedModelsAvailable"] is False
+    assert accounts["claude-b@example.com.json"]["excludedModelsState"] == "unreadable"
 
 
 @pytest.mark.asyncio
@@ -767,7 +767,7 @@ async def test_get_routing_marks_empty_auth_file_list_available(async_client, mo
     assert response.status_code == 200
     account = response.json()["accounts"][0]
     assert account["excludedModels"] == []
-    assert account["excludedModelsAvailable"] is True
+    assert account["excludedModelsState"] == "available"
 
 
 @pytest.mark.asyncio
@@ -802,7 +802,7 @@ async def test_get_routing_flags_unreadable_auth_file(async_client, monkeypatch,
     assert response.status_code == 200
     account = response.json()["accounts"][0]
     assert account["excludedModels"] == []
-    assert account["excludedModelsAvailable"] is False
+    assert account["excludedModelsState"] == "unreadable"
 
 
 @pytest.mark.asyncio
@@ -850,7 +850,7 @@ async def test_get_routing_reads_excluded_models_from_auth_file(async_client, mo
     body = response.text
     account = response.json()["accounts"][0]
     assert account["excludedModels"] == ["claude-demo-*"]
-    assert account["excludedModelsAvailable"] is True
+    assert account["excludedModelsState"] == "available"
     assert "synthetic-access-token" not in body
     assert "synthetic-refresh-token" not in body
 

@@ -107,6 +107,7 @@ describe("AccountSummarySchema", () => {
           quotaExceeded: false,
           modelsExceeded: [],
           excludedModels: [],
+          excludedModelsState: "available",
           success: 10,
           failed: 0,
         },

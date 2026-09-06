@@ -2173,6 +2173,7 @@ export const handlers = [
           nextRecoverAt: null,
           modelsExceeded: [],
           excludedModels: [],
+          excludedModelsState: "available",
           success: 1,
           failed: 0,
           planType: "pro",
@@ -2204,6 +2205,7 @@ export const handlers = [
           priority: 0,
           paused: false,
           excludedModels: [],
+          excludedModelsState: "available",
         },
         {
           name: "claude-b@example.com.json",
@@ -2212,6 +2214,7 @@ export const handlers = [
           priority: 10,
           paused: true,
           excludedModels: [],
+          excludedModelsState: "available",
         },
       ],
     });
@@ -2260,6 +2263,7 @@ export const handlers = [
           paused: false,
           excludedModels:
             body.name === "claude-a@example.com.json" ? (body.excludedModels ?? []) : [],
+          excludedModelsState: "available",
         },
         {
           name: "claude-b@example.com.json",
@@ -2269,6 +2273,7 @@ export const handlers = [
           paused: true,
           excludedModels:
             body.name === "claude-b@example.com.json" ? (body.excludedModels ?? []) : [],
+          excludedModelsState: "available",
         },
       ],
     });

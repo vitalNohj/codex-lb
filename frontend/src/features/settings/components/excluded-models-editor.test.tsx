@@ -216,13 +216,35 @@ describe("ExcludedModelsEditor", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(`At most ${MAX_PATTERNS} patterns`);
   });
 
+  it("refuses to toggle a family on beyond the maximum number of patterns", async () => {
+    const user = userEvent.setup();
+    const onChange = renderEditor(
+      Array.from({ length: MAX_PATTERNS }, (_, index) => `claude-full-${index}`),
+    );
+
+    await user.click(screen.getByRole("switch", { name: "Exclude Fable on a@example.com" }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(`At most ${MAX_PATTERNS} patterns`);
+  });
+
+  it("still turns a family off when the list is at the maximum", async () => {
+    const user = userEvent.setup();
+    const full = Array.from({ length: MAX_PATTERNS - 1 }, (_, index) => `claude-full-${index}`);
+    const onChange = renderEditor([...full, "claude-fable-*"]);
+
+    await user.click(screen.getByRole("switch", { name: "Exclude Fable on a@example.com" }));
+
+    expect(onChange).toHaveBeenCalledWith(full);
+  });
+
   it("locks every control and explains when the stored list could not be read", () => {
     render(
       <ExcludedModelsEditor
         name="claude-a@example.com.json"
         emailLabel="a@example.com"
         excludedModels={[]}
-        available={false}
+        state="unreadable"
         onChange={vi.fn()}
       />,
     );
@@ -237,6 +259,25 @@ describe("ExcludedModelsEditor", () => {
         name: "Add excluded model pattern to claude-a@example.com.json",
       }),
     ).toBeDisabled();
+  });
+
+  it("locks an unsupported row without claiming a read failed", () => {
+    render(
+      <ExcludedModelsEditor
+        name="a@example.com"
+        emailLabel="a@example.com"
+        excludedModels={[]}
+        state="unsupported"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not read/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Excluded models are not available for this row."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Exclude Fable on a@example.com" })).toBeDisabled();
   });
 
   it("stays editable when the list is readable but empty", () => {

@@ -11,6 +11,7 @@ import {
   isFamilyExcluded,
   toggleFamily,
 } from "@/features/settings/lib/excluded-model-families";
+import type { ExcludedModelsState } from "@/features/settings/lib/excluded-models-state";
 
 /** Mirrors `MAX_PATTERN_LENGTH` in app/modules/claude_sidecar/excluded_models.py. */
 export const MAX_PATTERN_LENGTH = 128;
@@ -25,11 +26,14 @@ export type ExcludedModelsEditorProps = {
   excludedModels: string[];
   disabled?: boolean;
   /**
-   * False when codex-lb could not read this account's stored exclusion list.
-   * The list shown would not be the real one, so saving it back would wipe
-   * exclusions set by hand: render the failure and lock every control instead.
+   * How this account's stored list must be presented.
+   *
+   * `unreadable` means codex-lb could not read the real list, so saving the
+   * list shown would wipe exclusions set by hand: report the failure and lock
+   * every control. `unsupported` means this row has no CLIProxyAPI auth file to
+   * edit; that is not a failure, so it is stated neutrally.
    */
-  available?: boolean;
+  state?: ExcludedModelsState;
   onChange: (next: string[]) => void;
 };
 
@@ -45,14 +49,14 @@ export function ExcludedModelsEditor({
   emailLabel,
   excludedModels,
   disabled = false,
-  available = true,
+  state = "available",
   onChange,
 }: ExcludedModelsEditorProps) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
   const inputId = useId();
   const custom = customPatterns(excludedModels);
-  const locked = disabled || !available;
+  const locked = disabled || state !== "available";
 
   const addDraft = () => {
     const pattern = draft.trim();
@@ -95,12 +99,17 @@ export function ExcludedModelsEditor({
           CLIProxyAPI will not route these models to this account.
         </p>
       </div>
-      {available ? null : (
+      {state === "unreadable" ? (
         <p role="alert" className="text-[11px] text-destructive">
           Could not read this account&apos;s excluded models. Editing is disabled so a
           save cannot overwrite them.
         </p>
-      )}
+      ) : null}
+      {state === "unsupported" ? (
+        <p className="text-[11px] text-muted-foreground">
+          Excluded models are not available for this row.
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-x-4 gap-y-1.5">
         {EXCLUDED_MODEL_FAMILIES.map((family) => {
           const excluded = isFamilyExcluded(family.id, excludedModels);
@@ -116,9 +125,15 @@ export function ExcludedModelsEditor({
                 checked={excluded}
                 disabled={locked}
                 aria-label={`Exclude ${family.label} on ${emailLabel}`}
-                onCheckedChange={(next) =>
-                  onChange(toggleFamily(family.id, excludedModels, next))
-                }
+                onCheckedChange={(next) => {
+                  const updated = toggleFamily(family.id, excludedModels, next);
+                  if (updated.length > MAX_PATTERNS) {
+                    setHint(`At most ${MAX_PATTERNS} patterns; remove one first`);
+                    return;
+                  }
+                  setHint(null);
+                  onChange(updated);
+                }}
               />
               {family.label}
             </label>

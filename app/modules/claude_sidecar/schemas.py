@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.modules.accounts.schemas import SidecarAuthAccount
-from app.modules.claude_sidecar.excluded_models import MAX_PATTERNS
+from app.modules.claude_sidecar.excluded_models import MAX_PATTERNS, ExcludedModelsState
 from app.modules.shared.schemas import DashboardModel
 
 ClaudeSidecarStatus = Literal["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]
@@ -55,7 +55,7 @@ class ClaudeSidecarRoutingAccount(DashboardModel):
     priority: int = 0
     paused: bool = False
     excluded_models: list[str] = Field(default_factory=list)
-    excluded_models_available: bool = True
+    excluded_models_state: ExcludedModelsState = "unreadable"
 
 
 class ClaudeSidecarRoutingResponse(DashboardModel):

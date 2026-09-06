@@ -119,13 +119,30 @@ def test_parse_auth_files_reads_excluded_models_from_entry():
                 "name": "claude-a.json",
                 "provider": "claude",
                 "email": "a@example.com",
-                "excluded_models": ["  claude-demo-* ", "CLAUDE-DEMO-*"],
+                "excluded_models": ["claude-demo-*"],
             }
         ]
     )
 
     assert accounts[0].excluded_models == ("claude-demo-*",)
     assert accounts[0].excluded_models_available is True
+
+
+def test_parse_auth_files_marks_denormalized_entry_list_unavailable():
+    # A list a save would rewrite is not the file's true content, so it must not
+    # be offered as an editable list a whole-list PUT would truncate on disk.
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "excluded_models": ["  claude-demo-* ", "CLAUDE-DEMO-*"],
+            }
+        ]
+    )
+
+    assert accounts[0].excluded_models == ()
+    assert accounts[0].excluded_models_available is False
 
 
 def test_parse_auth_files_marks_unreadable_excluded_models_unavailable(tmp_path, monkeypatch):
@@ -199,6 +216,7 @@ def test_snapshot_round_trips_excluded_models():
                 failed=0,
                 last_refresh=None,
                 excluded_models=("claude-demo-*",),
+                excluded_models_available=True,
             ),
         ),
     )
@@ -256,3 +274,6 @@ def test_snapshot_without_excluded_models_key_decodes_to_empty_tuple():
 
     assert decoded is not None
     assert decoded.accounts[0].excluded_models == ()
+    # A snapshot persisted before this key existed recorded no read at all, so
+    # it must decode as unreadable rather than as an empty, saveable list.
+    assert decoded.accounts[0].excluded_models_available is False

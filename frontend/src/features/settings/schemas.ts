@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ExcludedModelsStateSchema } from "@/features/settings/lib/excluded-models-state";
+
 const RoutingStrategySchema = z.enum([
   "usage_weighted",
   "round_robin",
@@ -625,7 +627,7 @@ export const ClaudeSidecarRoutingAccountSchema = z.object({
   priority: z.number().int().default(0),
   paused: z.boolean().default(false),
   excludedModels: z.array(z.string()).default([]),
-  excludedModelsAvailable: z.boolean().default(true),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
 });
 export const ClaudeSidecarRoutingResponseSchema = z.object({
   status: ClaudeSidecarRoutingStatusSchema,

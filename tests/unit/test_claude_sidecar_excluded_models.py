@@ -77,6 +77,25 @@ class TestExcludedModelsFromMapping:
     def test_missing_key_returns_empty_list(self) -> None:
         assert excluded_models_from_mapping({"name": "claude-a.json"}) == []
 
+    def test_comma_joined_string_form_is_unreadable(self) -> None:
+        # A present key whose value is not a list of strings is not a successful
+        # read: reporting [] would offer an unlocked empty editor over a real list.
+        assert excluded_models_from_mapping({"excluded_models": "a-*,b-*"}) is None
+        assert excluded_models_from_mapping({"excluded-models": "a-*,b-*"}) is None
+
+    def test_non_string_entries_make_the_list_unreadable(self) -> None:
+        assert excluded_models_from_mapping({"excluded_models": ["a-*", 7]}) is None
+
+    def test_list_that_normalization_would_change_is_unreadable(self) -> None:
+        # Read-side normalization is display-only: a save replaces the whole
+        # list, so handing back a shortened copy would delete the rest on disk.
+        assert excluded_models_from_mapping({"excluded_models": ["  a-* "]}) is None
+        assert excluded_models_from_mapping({"excluded_models": ["a-*", "A-*"]}) is None
+        assert excluded_models_from_mapping({"excluded_models": ["a-*,b-*"]}) is None
+        assert excluded_models_from_mapping({"excluded_models": ["x" * (MAX_PATTERN_LENGTH + 1)]}) is None
+        over_cap = [f"model-{index}" for index in range(MAX_PATTERNS + 1)]
+        assert excluded_models_from_mapping({"excluded_models": over_cap}) is None
+
 
 class TestExcludedModelsFromAuthFile:
     def test_returns_only_the_exclusion_list(self, tmp_path: Path) -> None:
@@ -129,13 +148,18 @@ class TestExcludedModelsFromAuthFile:
         path.write_text("[1, 2, 3]", encoding="utf-8")
         assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) is None
 
-    def test_file_contents_are_normalized(self, tmp_path: Path) -> None:
+    def test_file_needing_normalization_is_unreadable(self, tmp_path: Path) -> None:
         path = _write_auth_file(
             tmp_path,
             "claude-c.json",
             {"excluded_models": ["  alpha-* ", "ALPHA-*", "", 7]},
         )
-        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == ["alpha-*"]
+        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) is None
+
+    def test_over_cap_file_is_unreadable_rather_than_truncated(self, tmp_path: Path) -> None:
+        patterns = [f"claude-{index}-*" for index in range(MAX_PATTERNS + 8)]
+        path = _write_auth_file(tmp_path, "claude-many.json", {"excluded_models": patterns})
+        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) is None
 
 
 class TestExcludedModelsForEntry:
@@ -162,4 +186,9 @@ class TestExcludedModelsForEntry:
 
     def test_unreadable_file_is_unreadable(self, tmp_path: Path) -> None:
         entry = {"path": str(tmp_path / "missing.json")}
+        assert excluded_models_for_entry(entry, auth_dir=tmp_path) is None
+
+    def test_entry_field_in_string_form_is_unreadable(self, tmp_path: Path) -> None:
+        path = _write_auth_file(tmp_path, "claude-h.json", {"excluded_models": ["from-file-*"]})
+        entry = {"path": str(path), "excluded_models": "claude-fable-*,claude-opus-5*"}
         assert excluded_models_for_entry(entry, auth_dir=tmp_path) is None

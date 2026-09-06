@@ -91,6 +91,7 @@ describe("accountTypeKey", () => {
           quotaExceeded: false,
           modelsExceeded: [],
           excludedModels: [],
+          excludedModelsState: "available",
           success: 0,
           failed: 0,
         },
