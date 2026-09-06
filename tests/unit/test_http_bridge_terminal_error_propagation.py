@@ -16,6 +16,7 @@ from __future__ import annotations
 from app.core.openai.models import OpenAIError
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy import service as proxy_service
+from app.modules.proxy._service.http_bridge import upstream_events as http_bridge_upstream_events
 
 _USAGE_LIMIT_MESSAGE = "Rate limit exceeded. Try again in 300s"
 
@@ -99,10 +100,49 @@ def test_retry_exhaustion_keeps_captured_http_status_override() -> None:
         http_status=429,
     )
 
-    if request_state.error_http_status_override is None:
-        request_state.error_http_status_override = 502
+    http_bridge_upstream_events._apply_http_bridge_terminal_error_status(request_state)
 
     assert request_state.error_http_status_override == 429
+
+
+def test_terminal_status_is_derived_from_captured_code_when_status_missing() -> None:
+    """A capture site that recorded only a code must not get a contradicting 502.
+
+    The emitted event carries the captured code, so forcing 502 here would
+    reintroduce the exact laundering (429-class body behind a 502 status).
+    """
+    request_state = _request_state_with_retry_failure_overrides(
+        error_code="usage_limit_reached",
+        error_message=_USAGE_LIMIT_MESSAGE,
+        error_type="usage_limit_reached",
+        http_status=429,
+    )
+    request_state.error_http_status_override = None
+
+    http_bridge_upstream_events._apply_http_bridge_terminal_error_status(request_state)
+    code, _message, _error_type, status = _terminal_error_from_state(request_state)
+
+    assert code == "usage_limit_reached"
+    assert status == 429
+    assert request_state.error_http_status_override == status
+
+
+def test_terminal_status_matches_emitted_code_for_selection_failure() -> None:
+    """A genuine selection failure keeps its own 503, not a re-labelled 429/502."""
+    request_state = _request_state_with_retry_failure_overrides(
+        error_code="no_accounts",
+        error_message="No active accounts available",
+        error_type="server_error",
+        http_status=503,
+    )
+    request_state.error_http_status_override = None
+
+    http_bridge_upstream_events._apply_http_bridge_terminal_error_status(request_state)
+    code, _message, _error_type, status = _terminal_error_from_state(request_state)
+
+    assert code == "no_accounts"
+    assert status == 503
+    assert request_state.error_http_status_override == status
 
 
 def test_retry_exhaustion_without_overrides_still_reports_stream_incomplete() -> None:
@@ -116,8 +156,7 @@ def test_retry_exhaustion_without_overrides_still_reports_stream_incomplete() ->
         started_at=0.0,
     )
 
-    if request_state.error_http_status_override is None:
-        request_state.error_http_status_override = 502
+    http_bridge_upstream_events._apply_http_bridge_terminal_error_status(request_state)
 
     code, _message, _error_type, status = _terminal_error_from_state(request_state)
 

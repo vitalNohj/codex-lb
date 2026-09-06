@@ -1144,6 +1144,10 @@ class _WebSocketRequestState:
     account_capacity_wait_suppress_keepalive: bool = False
     account_capacity_wait_reason: str | None = None
     account_capacity_wait_started_at: float | None = None
+    # Seconds this request has already spent sleeping for account capacity
+    # while the downstream connection was held with no bytes flowing.
+    # Cumulative across every recovery iteration.
+    silent_capacity_hold_seconds: float = 0.0
     account_capacity_wait_retry_after_seconds: float | None = None
     capacity_startup_wait_event: asyncio.Event | None = None
     capacity_startup_ready_event: asyncio.Event | None = None

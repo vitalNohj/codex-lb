@@ -3925,13 +3925,159 @@ async def test_http_bridge_submit_capacity_wait_fails_fast_when_recovery_outlast
         ):
             pass
 
-    assert exc_info.value is not capacity_error
+    # The condition keeps its own honest classification; only the timing of
+    # the answer changes, plus the Retry-After the client can act on.
+    assert exc_info.value is capacity_error
     assert exc_info.value.status_code == 429
     assert exc_info.value.retry_after_seconds == 30
+    assert exc_info.value.payload["error"]["code"] == "account_response_create_cap"
     assert exc_info.value.payload["error"]["type"] == "rate_limit_error"
     assert exc_info.value.payload["error"]["message"] == "Account response-create concurrency limit reached"
     assert waited == []
     assert submit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_submit_capacity_wait_fails_fast_past_cumulative_silent_hold_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default-config trace: a 300s hint against a 7200s budget must not hold.
+
+    ``_ACCOUNT_SELECTION_RECOVERY_MAX_SLEEP_SECONDS`` caps the hint at 300s, so
+    it always fits the 7200s bridge budget. Only the absolute cumulative
+    silent-hold cap stops the client being parked for minutes with no bytes.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session(key_value="sid-submit-silent-hold-cap")
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-submit-silent-hold-cap",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        transport="http",
+        event_queue=asyncio.Queue(),
+    )
+    capacity_error = ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "Rate limit exceeded. Try again in 300s",
+            error_type="usage_limit_reached",
+        ),
+    )
+    submit = AsyncMock(side_effect=capacity_error)
+    clock = [0.0]
+    waited: list[float] = []
+
+    async def fake_capacity_wait(**kwargs: object):
+        waited.append(cast(float, kwargs["sleep_seconds"]))
+        clock[0] += waited[-1]
+        if False:
+            yield ""
+
+    monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
+    monkeypatch.setattr(http_bridge_streaming_module, "_iter_account_capacity_wait_sse", fake_capacity_wait)
+    monkeypatch.setattr(
+        http_bridge_streaming_module,
+        "_service_time",
+        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+
+    # The real hint parser: "Try again in 300s" against the default 7200s
+    # bridge request budget.
+    assert http_bridge_streaming_module._http_bridge_account_capacity_wait_seconds(capacity_error) == 300.0
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        async for _ in service._stream_http_bridge_session_events(
+            session,
+            request_state=request_state,
+            text_data='{"type":"response.create"}',
+            queue_limit=4,
+            propagate_http_errors=True,
+            downstream_turn_state=None,
+            request_deadline=7200.0,
+        ):
+            pass
+
+    assert exc_info.value is capacity_error
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.payload["error"]["code"] == "usage_limit_reached"
+    assert exc_info.value.retry_after_seconds == 300
+    assert waited == []
+    assert clock[0] == 0.0
+    assert submit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_submit_capacity_wait_smooths_over_short_account_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sub-cap transient switch still waits in place instead of failing fast."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session(key_value="sid-submit-short-switch")
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-submit-short-switch",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        transport="http",
+        event_queue=asyncio.Queue(),
+    )
+    assert request_state.event_queue is not None
+    request_state.event_queue.put_nowait(
+        'data: {"type":"response.completed","response":{"id":"resp_short_switch"}}\n\n'
+    )
+    request_state.event_queue.put_nowait(None)
+    capacity_error = ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "Rate limit exceeded. Try again in 5s",
+            error_type="usage_limit_reached",
+        ),
+    )
+    submit = AsyncMock(side_effect=[capacity_error, None])
+    detach = AsyncMock()
+    clock = [0.0]
+    waited: list[float] = []
+
+    async def fake_capacity_wait(**kwargs: object):
+        waited.append(cast(float, kwargs["sleep_seconds"]))
+        clock[0] += waited[-1]
+        request_state.silent_capacity_hold_seconds += waited[-1]
+        if False:
+            yield ""
+
+    monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
+    monkeypatch.setattr(service, "_detach_http_bridge_request", detach)
+    monkeypatch.setattr(http_bridge_streaming_module, "_iter_account_capacity_wait_sse", fake_capacity_wait)
+    monkeypatch.setattr(
+        http_bridge_streaming_module,
+        "_service_time",
+        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in service._stream_http_bridge_session_events(
+            session,
+            request_state=request_state,
+            text_data='{"type":"response.create"}',
+            queue_limit=4,
+            propagate_http_errors=True,
+            downstream_turn_state=None,
+            request_deadline=7200.0,
+        )
+    ]
+
+    assert waited == [5.0]
+    assert submit.await_count == 2
+    event_types = [cast(dict[str, object], proxy_service.parse_sse_data_json(chunk))["type"] for chunk in chunks]
+    assert event_types == ["response.completed"]
 
 
 @pytest.mark.asyncio
@@ -8002,7 +8148,11 @@ async def test_stream_via_http_bridge_keeps_sse_alive_while_session_creation_wai
 async def test_stream_via_http_bridge_fails_fast_when_session_creation_recovery_outlasts_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 120s recovery hint against a 1s budget answers 429 without sleeping."""
+    """A 120s recovery hint against a 1s budget answers immediately, no sleep.
+
+    A genuine selection failure keeps its own 503 ``no_accounts``; failing fast
+    changes only when the client is told, not what the condition is called.
+    """
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     settings = SimpleNamespace(
         sticky_threads_enabled=False,
@@ -8091,9 +8241,9 @@ async def test_stream_via_http_bridge_fails_fast_when_session_creation_recovery_
         ):
             chunks.append(chunk)
 
-    assert exc_info.value.status_code == 429
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.payload["error"]["code"] == "no_accounts"
     assert exc_info.value.retry_after_seconds == 120
-    assert exc_info.value.payload["error"]["type"] == "rate_limit_error"
     assert chunks == []
     assert now == 100.0
     assert get_or_create.await_count == 1

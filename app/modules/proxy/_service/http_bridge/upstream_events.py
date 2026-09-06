@@ -196,6 +196,7 @@ from app.modules.proxy.affinity import (
     _extract_model_class,
 )
 from app.modules.proxy.continuity import is_http_bridge_account_neutral_replay
+from app.modules.proxy.error_status import status_for_error_fields
 from app.modules.proxy.helpers import (
     _normalize_error_code,
     is_upstream_model_capacity_error,
@@ -338,14 +339,25 @@ def _apply_http_bridge_terminal_error_status(
     two agree: an upstream ``usage_limit_reached`` reaches the client as a 429
     rather than a 502 the client would treat as a retryable transport fault.
 
+    A capture site that recorded a code but no status still gets a status that
+    matches its code, derived through the same classification the downstream
+    error mapping uses, so the two can never disagree.
+
     Only a failure that captured nothing specific - a genuine transport drop -
     falls back to 502, and that fallback overwrites any status left behind by
     an earlier attempt so it cannot contradict the emitted ``stream_incomplete``.
     """
-    surfaces_captured_error = _stream_terminal_captured_error(request_state, reason=reason) is not None
-    if surfaces_captured_error and request_state.error_http_status_override is not None:
+    captured_error = _stream_terminal_captured_error(request_state, reason=reason)
+    if captured_error is None:
+        request_state.error_http_status_override = 502
         return
-    request_state.error_http_status_override = 502
+    if request_state.error_http_status_override is not None:
+        return
+    captured_code, _captured_message, captured_type = captured_error
+    request_state.error_http_status_override = status_for_error_fields(
+        code=captured_code,
+        error_type=captured_type,
+    )
 
 
 def _http_bridge_operation_state_for_event(event_type: str | None) -> str | None:

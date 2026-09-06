@@ -734,8 +734,8 @@ def _build_stream_incomplete_terminal_event_for_request(
 ) -> tuple[str, str, OpenAIEvent | None, dict[str, JsonValue] | None, str | None]:
     """Build the terminal ``response.failed`` event for a failed request.
 
-    Unless ``reason`` masks it (see
-    ``_stream_terminal_event_uses_captured_error``), the honest terminal error
+    Unless ``reason`` masks it (see ``_stream_terminal_captured_error``), the
+    honest terminal error
     is whatever the failing path already captured on the request state via
     ``error_code_override`` and its siblings - an upstream
     ``usage_limit_reached``, for example. Discarding those overrides in favour

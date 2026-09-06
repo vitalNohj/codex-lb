@@ -261,6 +261,10 @@ from app.modules.proxy.custom_alias_catalog import (
     apply_custom_alias_catalog_overrides,
     load_custom_alias_catalog,
 )
+from app.modules.proxy.error_status import (
+    UNAVAILABLE_SELECTION_ERROR_CODES,
+    status_for_error_fields,
+)
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.images_observability import (
@@ -646,13 +650,7 @@ class _ParsedTranscriptionMultipart:
     ordered_text_fields: tuple[tuple[str, str], ...]
 
 
-_UNAVAILABLE_SELECTION_ERROR_CODES = {
-    "no_accounts",
-    "no_plan_support_for_model",
-    "additional_quota_data_unavailable",
-    "quota_exhausted",
-    "no_additional_quota_eligible_accounts",
-}
+_UNAVAILABLE_SELECTION_ERROR_CODES = UNAVAILABLE_SELECTION_ERROR_CODES
 _STREAM_STARTUP_ERROR_PROBE_SECONDS = 0.05
 _CAPACITY_WAIT_MARKER_GRACE_SECONDS = 0.05
 # Keep bridge startup probing above tiny event-loop scheduling jitter:
@@ -9463,23 +9461,10 @@ def _mask_previous_response_not_found_error(
 
 
 def _status_for_error(error_value: OpenAIError | None) -> int:
-    if error_value and error_value.code == "previous_response_not_found":
-        return 502
-    if error_value and error_value.code in _UNAVAILABLE_SELECTION_ERROR_CODES:
-        return 503
-    if error_value and error_value.code in {"rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    if error_value and error_value.code in {"invalid_api_key", "invalid_authentication", "token_invalidated"}:
-        return 401
-    if error_value and error_value.code == "invalid_request_error":
-        return 400
-    if error_value and error_value.type == "authentication_error":
-        return 401
-    if error_value and error_value.type == "invalid_request_error":
-        return 400
-    if error_value and error_value.type in {"rate_limit_error", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    return 502
+    return status_for_error_fields(
+        code=error_value.code if error_value else None,
+        error_type=error_value.type if error_value else None,
+    )
 
 
 def _status_for_image_error_envelope(envelope: object) -> int:
