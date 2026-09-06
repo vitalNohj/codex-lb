@@ -39,6 +39,22 @@ The dashboard MUST provide an excluded-models editor for each CLIProxyAPI Claude
 - **THEN** the editor does not add it to the exclusion list
 - **AND** the editor explains that CLIProxyAPI wire ids are required
 
+### Requirement: Excluded-models editor honors the read-availability state
+
+The excluded-models editor MUST render according to the account's `excludedModelsState` and MUST NOT claim a read succeeded when it did not, nor claim a failure when there was none. When the state is `available` the editor is fully interactive. When it is `unreadable` the editor MUST disable every switch, chip, and input and show a read-failure alert, because saving the list shown would overwrite exclusions the operator set by hand. When it is `unsupported` the editor MUST be locked but presented neutrally as "not available for this row", making no failure claim.
+
+#### Scenario: An unreadable account is locked and reports the failure
+
+- **WHEN** the editor renders for an account whose `excludedModelsState` is `unreadable`
+- **THEN** the editor disables its controls
+- **AND** the editor states that the exclusion list could not be read
+
+#### Scenario: An unsupported row is locked without a failure claim
+
+- **WHEN** the editor renders for an account whose `excludedModelsState` is `unsupported`
+- **THEN** the editor disables its controls
+- **AND** the editor does not render a read-failure alert
+
 ### Requirement: Excluded-models editing surfaces
 
 The Settings CLIProxyAPI routing section MUST render the excluded-models editor on each Claude account row alongside that row's pause control, and the Accounts Claude detail view MUST render the same editor for each sidecar auth account. Both editors MUST be disabled while a routing mutation is in flight. The dashboard Claude account card MUST render the account's current exclusions compactly, using the family label when a pattern belongs to a known family and the raw pattern otherwise, and MUST offer an editing control even when the list is empty. The dashboard Claude list row MUST summarize the exclusions in its existing subtitle area rather than adding a column.

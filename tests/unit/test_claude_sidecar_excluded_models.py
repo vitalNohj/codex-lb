@@ -77,6 +77,13 @@ class TestExcludedModelsFromMapping:
     def test_missing_key_returns_empty_list(self) -> None:
         assert excluded_models_from_mapping({"name": "claude-a.json"}) == []
 
+    def test_null_value_reads_as_an_available_empty_list(self) -> None:
+        # Go marshals a nil slice as null unless tagged omitempty, so a list that
+        # was set and later cleared persists this way. That is a successful read
+        # of "no exclusions", not a failure that should lock the editor.
+        assert excluded_models_from_mapping({"excluded_models": None}) == []
+        assert excluded_models_from_mapping({"excluded-models": None}) == []
+
     def test_comma_joined_string_form_is_unreadable(self) -> None:
         # A present key whose value is not a list of strings is not a successful
         # read: reporting [] would offer an unlocked empty editor over a real list.
@@ -119,6 +126,10 @@ class TestExcludedModelsFromAuthFile:
 
     def test_readable_file_without_the_key_returns_an_empty_list(self, tmp_path: Path) -> None:
         path = _write_auth_file(tmp_path, "claude-none.json", {"email": "a@example.com"})
+        assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == []
+
+    def test_null_exclusion_value_in_file_reads_as_empty(self, tmp_path: Path) -> None:
+        path = _write_auth_file(tmp_path, "claude-null.json", {"excluded_models": None})
         assert excluded_models_from_auth_file(str(path), auth_dir=tmp_path) == []
 
     def test_missing_file_is_unreadable(self, tmp_path: Path) -> None:

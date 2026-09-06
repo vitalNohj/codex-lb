@@ -21,6 +21,11 @@ when it would not survive ``normalize_excluded_models`` unchanged. Every write
 replaces the whole list, so handing out a normalized copy of a list that
 normalization shortened or filtered would silently delete the dropped patterns
 from disk on the next save.
+
+A JSON ``null`` is not such a failure: Go marshals a nil slice as ``null``
+unless the field is tagged ``omitempty``, so a list that was set and later
+cleared through CLIProxyAPI persists that way. It carries the same meaning as
+an absent key and reads as a readable empty list.
 """
 
 from __future__ import annotations
@@ -91,10 +96,13 @@ def normalize_excluded_models(raw: object) -> list[str]:
 def _stored_excluded_models(raw: object) -> list[str] | None:
     """Return a stored list only when it is exactly what a save would write back.
 
+    An explicit ``null`` means the list was cleared and reads as an empty list.
     A value that is not a list of strings, or that ``normalize_excluded_models``
     would change, reads as unreadable: offering the normalized copy would let a
     whole-list save drop the entries normalization removed.
     """
+    if raw is None:
+        return []
     if not isinstance(raw, list) or any(not isinstance(entry, str) for entry in raw):
         return None
     normalized = normalize_excluded_models(raw)
@@ -107,9 +115,10 @@ def _stored_excluded_models(raw: object) -> list[str] | None:
 def excluded_models_from_mapping(entry: Mapping[str, object]) -> list[str] | None:
     """Return the exclusion list carried by an auth-file mapping.
 
-    A mapping without the key carries no exclusions and reads as an empty list.
-    A key whose value is not a verbatim, already-normalized list of strings is
-    unreadable and returns ``None``.
+    A mapping without the key, or one whose value is ``null``, carries no
+    exclusions and reads as an empty list. A key whose value is anything else
+    that is not a verbatim, already-normalized list of strings is unreadable and
+    returns ``None``.
     """
     if _SNAKE_KEY in entry:
         return _stored_excluded_models(entry[_SNAKE_KEY])
@@ -124,8 +133,8 @@ def excluded_models_from_auth_file(path: str | None, auth_dir: Path | None = Non
     Returns ``None`` when the list cannot be read: the path is absent, resolves
     outside the CLIProxyAPI auth directory, is missing, does not parse as a JSON
     object, or carries an exclusion value that is not already normalized. A file
-    that parses but carries no exclusion key is readable and returns an empty
-    list. Only the exclusion key is read out of the file; no other key is
+    that parses but carries no exclusion key, or carries a ``null`` one, is
+    readable and returns an empty list. Only the exclusion key is read out of the file; no other key is
     returned or logged.
     """
     if not isinstance(path, str) or not path.strip():

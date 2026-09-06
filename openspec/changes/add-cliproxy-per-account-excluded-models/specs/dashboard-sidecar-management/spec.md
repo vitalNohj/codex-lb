@@ -60,7 +60,7 @@ codex-lb MUST expose each Claude account's live model-exclusion list as an `excl
 
 - **GIVEN** a CLIProxyAPI auth-files listing entry whose `path` resolves outside the CLIProxyAPI auth directory
 - **WHEN** codex-lb resolves that account's exclusion list
-- **THEN** codex-lb reports an empty `excludedModels` for that account
+- **THEN** codex-lb reports `excludedModelsState="unreadable"` and an empty `excludedModels` for that account
 - **AND** codex-lb does not read or log the contents of that path
 
 #### Scenario: Sidecar auth rows include the exclusion list
@@ -75,6 +75,44 @@ codex-lb MUST expose each Claude account's live model-exclusion list as an `excl
 - **WHEN** codex-lb returns routing, quota, or accounts responses for that account
 - **THEN** the response contains the exclusion list
 - **AND** the response contains no field from that auth file other than the exclusion list
+
+### Requirement: Report whether an account's excluded-models list could be read
+
+codex-lb MUST report an `excludedModelsState` of `available`, `unreadable`, or `unsupported` alongside `excludedModels` everywhere the list is exposed (routing response, quota endpoint, accounts list), and reads MUST be fail-closed so that an unread list is never presented as an empty one. `available` means the list was read verbatim from CLIProxyAPI and MAY be edited and saved back. `unreadable` means the read failed - no auth-file path, a path outside the CLIProxyAPI auth directory, a missing or unparsable file, a value that is not a list of strings, or a list that normalization would not leave unchanged - and editing MUST be locked with the failure surfaced, because a whole-list save of the list shown would overwrite the real exclusions. `unsupported` means the row has no CLIProxyAPI auth file to edit at all; editing MUST be unavailable but MUST NOT be presented as a failure. An absent exclusion key, or one whose value is JSON `null`, is a successful read of an empty list and MUST report `available`.
+
+#### Scenario: A readable list is editable
+
+- **GIVEN** an auth file inside the CLIProxyAPI auth directory whose `excluded_models` list is already normalized
+- **WHEN** codex-lb reports that account
+- **THEN** `excludedModelsState` is `available`
+- **AND** `excludedModels` is that list verbatim
+
+#### Scenario: A cleared list stored as null reads as an available empty list
+
+- **GIVEN** an auth file whose `excluded_models` value is JSON `null`
+- **WHEN** codex-lb reports that account
+- **THEN** `excludedModelsState` is `available`
+- **AND** `excludedModels` is empty
+
+#### Scenario: A list that normalization would change is unreadable
+
+- **GIVEN** an auth file whose `excluded_models` list holds more entries than the cap, an over-length pattern, a comma-containing pattern, or a non-string entry
+- **WHEN** codex-lb reports that account
+- **THEN** `excludedModelsState` is `unreadable`
+- **AND** codex-lb does not offer the normalized copy as the account's list
+
+#### Scenario: A quota snapshot persisted before the availability key decodes as unreadable
+
+- **GIVEN** a persisted Claude sidecar quota snapshot with no `excluded_models_available` key
+- **WHEN** codex-lb decodes that snapshot
+- **THEN** that account reports `excludedModelsState="unreadable"`
+
+#### Scenario: A row with no CLIProxyAPI auth file is unsupported
+
+- **GIVEN** a sidecar account row synthesized from usage estimates rather than a CLIProxyAPI auth file
+- **WHEN** codex-lb reports that row
+- **THEN** `excludedModelsState` is `unsupported`
+- **AND** the row is not reported as a read failure
 
 ### Requirement: Excluded models are not account-specific code
 
