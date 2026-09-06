@@ -7,6 +7,10 @@ from typing import Any
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
+from app.modules.claude_sidecar.excluded_models import (
+    excluded_models_for_entry,
+    normalize_excluded_models,
+)
 from app.modules.claude_sidecar.oauth_usage_response import build_anthropic_oauth_usage_payload
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -280,6 +284,30 @@ class ClaudeSidecarService:
         await self._patch_snapshot_disabled(name, paused)
         return await self.get_routing()
 
+    async def set_account_excluded_models(
+        self,
+        name: str,
+        excluded_models: list[str],
+    ) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        patterns = normalize_excluded_models(excluded_models)
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.patch_auth_file_excluded_models(name, patterns)
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+        await self._patch_snapshot_excluded_models(name, patterns)
+        return await self.get_routing()
+
     async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.
 
@@ -297,6 +325,31 @@ class ClaudeSidecarService:
             return
         updated = [
             replace(auth, disabled=paused) if auth.name == name else auth
+            for auth in snapshot.accounts
+        ]
+        if updated == list(snapshot.accounts):
+            return
+        patched = replace(snapshot, accounts=tuple(updated))
+        await self._settings_repository.update_operational(
+            claude_sidecar_quota_state_json=snapshot_to_json(patched),
+        )
+        await get_settings_cache().invalidate()
+
+    async def _patch_snapshot_excluded_models(self, name: str, excluded_models: list[str]) -> None:
+        """Reflect an exclusion-list change in the stored quota snapshot immediately.
+
+        Same reasoning as ``_patch_snapshot_disabled``: the dashboard reads the
+        polled snapshot rather than live auth files, and the poller Core-UPDATEs
+        the same JSON without ``version_id_col``, so re-read immediately before
+        writing.
+        """
+        current = await self._settings_repository.get_fresh()
+        snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
+        if snapshot is None:
+            return
+        patterns = tuple(excluded_models)
+        updated = [
+            replace(auth, excluded_models=patterns) if auth.name == name else auth
             for auth in snapshot.accounts
         ]
         if updated == list(snapshot.accounts):
@@ -369,6 +422,7 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
                 email=email if isinstance(email, str) else None,
                 priority=_priority_value(entry.get("priority")),
                 paused=bool(entry.get("disabled")),
+                excluded_models=excluded_models_for_entry(entry),
             )
         )
     return accounts
@@ -408,10 +462,7 @@ def _classify_status(settings) -> tuple[ClaudeSidecarStatus, str | None]:
 
 
 def _model_summaries(models) -> list[ClaudeSidecarModelSummary]:
-    return [
-        ClaudeSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by)
-        for model in models
-    ]
+    return [ClaudeSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models]
 
 
 def _sanitize_message(message: str) -> str:
@@ -428,6 +479,7 @@ def _to_auth_account(
         email=auth.email,
         status=auth.status,
         paused=auth.disabled,
+        excluded_models=list(auth.excluded_models),
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

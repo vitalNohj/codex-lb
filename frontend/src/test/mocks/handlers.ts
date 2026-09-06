@@ -1239,7 +1239,7 @@ export const handlers = [
     return HttpResponse.json(state.settings);
   }),
 
-  http.get("/api/settings/telemetry", ({ request }) => {
+  http.get("*/api/settings/telemetry", ({ request }) => {
     // include_preview=true is the on-demand path: the envelope is attached
     // regardless of consent state.
     if (new URL(request.url).searchParams.get("include_preview") === "true") {
@@ -1251,7 +1251,7 @@ export const handlers = [
     return HttpResponse.json(state.telemetryConsent);
   }),
 
-  http.put("/api/settings/telemetry", async ({ request }) => {
+  http.put("*/api/settings/telemetry", async ({ request }) => {
     const payload = await parseJsonBody(request, TelemetryConsentPayloadSchema);
     if (!payload) {
       return HttpResponse.json(state.telemetryConsent);
@@ -2172,6 +2172,7 @@ export const handlers = [
           quotaExceeded: false,
           nextRecoverAt: null,
           modelsExceeded: [],
+          excludedModels: [],
           success: 1,
           failed: 0,
           planType: "pro",
@@ -2202,6 +2203,7 @@ export const handlers = [
           email: "a@example.com",
           priority: 0,
           paused: false,
+          excludedModels: [],
         },
         {
           name: "claude-b@example.com.json",
@@ -2209,6 +2211,7 @@ export const handlers = [
           email: "b@example.com",
           priority: 10,
           paused: true,
+          excludedModels: [],
         },
       ],
     });
@@ -2239,6 +2242,35 @@ export const handlers = [
       message: null,
       strategy: "fill_first",
       accounts: [],
+    });
+  }),
+
+  http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+    const body = (await request.json()) as { name?: string; excludedModels?: string[] };
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      strategy: "fill_first",
+      accounts: [
+        {
+          name: "claude-a@example.com.json",
+          authIndex: "0",
+          email: "a@example.com",
+          priority: 0,
+          paused: false,
+          excludedModels:
+            body.name === "claude-a@example.com.json" ? (body.excludedModels ?? []) : [],
+        },
+        {
+          name: "claude-b@example.com.json",
+          authIndex: "1",
+          email: "b@example.com",
+          priority: 10,
+          paused: true,
+          excludedModels:
+            body.name === "claude-b@example.com.json" ? (body.excludedModels ?? []) : [],
+        },
+      ],
     });
   }),
 

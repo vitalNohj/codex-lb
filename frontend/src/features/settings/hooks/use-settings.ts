@@ -23,6 +23,7 @@ import {
   getTelemetryConsent,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
+  setClaudeSidecarAccountExcludedModels,
   setClaudeSidecarAccountPaused,
   setClaudeSidecarAccountPriority,
   setClaudeSidecarRoutingStrategy,
@@ -423,6 +424,23 @@ export function useClaudeSidecarAccountPause() {
   });
 }
 
+export function useClaudeSidecarAccountExcludedModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, excludedModels }: { name: string; excludedModels: string[] }) =>
+      setClaudeSidecarAccountExcludedModels(name, excludedModels),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update CLIProxyAPI excluded models");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "routing"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "quota"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
   const queryClient = useQueryClient();
   const routingQueryKey = ["settings", "claude-sidecar", "routing"] as const;
@@ -459,8 +477,18 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
     },
   });
   const pausedMutation = useClaudeSidecarAccountPause();
+  const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
   const testMutation = useSidecarConnectionTest("claude");
-  return { statusQuery, modelsQuery, routingQuery, strategyMutation, priorityMutation, pausedMutation, testMutation };
+  return {
+    statusQuery,
+    modelsQuery,
+    routingQuery,
+    strategyMutation,
+    priorityMutation,
+    pausedMutation,
+    excludedModelsMutation,
+    testMutation,
+  };
 }
 
 export function useClaudeSidecarQuota() {

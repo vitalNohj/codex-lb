@@ -1,4 +1,5 @@
-import { Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
+import { useState } from "react";
+import { Ban, Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -6,7 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
-import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
+import {
+  useClaudeSidecarAccountExcludedModels,
+  useClaudeSidecarAccountPause,
+} from "@/features/settings/hooks/use-settings";
+import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
+import { excludedModelLabels } from "@/features/settings/lib/excluded-model-families";
 import { StatusBadge } from "@/components/status-badge";
 import {
   accountSubscriptionCredits,
@@ -314,7 +320,10 @@ export function ClaudeAuthCard({
 }) {
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
+  const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
+  const [editingExclusions, setEditingExclusions] = useState(false);
   const title = auth.email ?? auth.name;
+  const exclusionLabels = excludedModelLabels(auth.excludedModels);
   const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
   const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
   const providerLabel = auth.provider === "claude"
@@ -386,7 +395,44 @@ export function ClaudeAuthCard({
           {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
           {auth.paused ? "Resume" : "Pause"}
         </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+          aria-expanded={editingExclusions}
+          aria-label={`Exclude models on ${title}`}
+          onClick={() => setEditingExclusions((open) => !open)}
+        >
+          <Ban className="h-3 w-3" />
+          Exclude models
+        </Button>
       </div>
+
+      {/* Excluded models */}
+      {exclusionLabels.length > 0 ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground">Excluded</span>
+          {exclusionLabels.map((label) => (
+            <Badge key={label} variant="secondary" className="text-[11px]">
+              {label}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      {editingExclusions ? (
+        <div className="mt-2 border-t pt-2">
+          <ExcludedModelsEditor
+            name={auth.name}
+            emailLabel={title}
+            excludedModels={auth.excludedModels}
+            disabled={excludedModelsMutation.isPending}
+            onChange={(next) =>
+              excludedModelsMutation.mutate({ name: auth.name, excludedModels: next })
+            }
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -194,6 +194,7 @@ describe("AccountCard", () => {
       paused: false,
       quotaExceeded: false,
       modelsExceeded: [],
+      excludedModels: [],
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",
@@ -217,6 +218,117 @@ describe("AccountCard", () => {
     expect(screen.queryByText("Credits:")).toBeNull();
   });
 
+  it("shows an excluded badge for a CLI Proxy API auth with exclusions", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      provider: "claude",
+      paused: false,
+      excludedModels: ["claude-fable-*", "claude-opus-4-*"],
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByText("Excluded")).toBeInTheDocument();
+    // A known family renders as its label; anything else renders raw.
+    expect(screen.getByText("Fable")).toBeInTheDocument();
+    expect(screen.getByText("claude-opus-4-*")).toBeInTheDocument();
+  });
+
+  it("shows no excluded badge but still offers editing when the list is empty", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      provider: "claude",
+      paused: false,
+      excludedModels: [],
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.queryByText("Excluded")).toBeNull();
+    expect(screen.queryByText("Fable")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the excluded-models editor from the card", async () => {
+    const user = userEvent.setup();
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      provider: "claude",
+      paused: false,
+      excludedModels: [],
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      primaryRemainingPercent: 75,
+      secondaryRemainingPercent: 96,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(
+      screen.queryByRole("switch", { name: "Exclude Fable on claude-one@example.com" }),
+    ).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
+    );
+
+    expect(
+      screen.getByRole("switch", { name: "Exclude Fable on claude-one@example.com" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows Resume for a paused CLI Proxy API auth card", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
@@ -235,6 +347,7 @@ describe("AccountCard", () => {
       paused: true,
       quotaExceeded: false,
       modelsExceeded: [],
+      excludedModels: [],
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",
@@ -267,6 +380,7 @@ describe("AccountCard", () => {
       paused: false,
       quotaExceeded: false,
       modelsExceeded: [],
+      excludedModels: [],
       success: 0,
       failed: 1,
       usageSource: "oauth_usage",
@@ -299,6 +413,7 @@ describe("AccountCard", () => {
       paused: false,
       quotaExceeded: false,
       modelsExceeded: [],
+      excludedModels: [],
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",
@@ -333,6 +448,7 @@ describe("AccountCard", () => {
       paused: false,
       quotaExceeded: false,
       modelsExceeded: [],
+      excludedModels: [],
       success: 0,
       failed: 0,
       usageSource: "oauth_usage",

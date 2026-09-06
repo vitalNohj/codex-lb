@@ -4,8 +4,10 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ClaudeSidecarQuotaEstimation } from "@/features/accounts/components/claude-sidecar-quota-estimation";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
+import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import {
+  useClaudeSidecarAccountExcludedModels,
   useClaudeSidecarAccountPause,
   useSidecarConnectionTest,
   type SidecarConnectionProvider,
@@ -41,6 +43,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const testProvider = testProviderFor(account.provider);
   const testMutation = useSidecarConnectionTest(testProvider);
   const pauseMutation = useClaudeSidecarAccountPause();
+  const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
   const settingsAnchor = isOpenRouter
     ? "/settings#openrouter-sidecar"
     : isOrcaRouter
@@ -113,7 +116,8 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
           </div>
           <ul className="divide-y">
             {account.sidecarAuths.map((auth, idx) => (
-              <li key={`${auth.name}-${idx}`} className="flex items-center justify-between gap-3 py-2">
+              <li key={`${auth.name}-${idx}`} className="space-y-2 py-2">
+                <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <span
                     aria-hidden="true"
@@ -170,6 +174,18 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                     </Button>
                   ) : null}
                 </div>
+                </div>
+                {isClaude ? (
+                  <ExcludedModelsEditor
+                    name={auth.name}
+                    emailLabel={auth.email ?? auth.name}
+                    excludedModels={auth.excludedModels}
+                    disabled={busy || excludedModelsMutation.isPending}
+                    onChange={(next) =>
+                      excludedModelsMutation.mutate({ name: auth.name, excludedModels: next })
+                    }
+                  />
+                ) : null}
               </li>
             ))}
           </ul>

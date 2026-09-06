@@ -294,6 +294,7 @@ describe("AccountList", () => {
                 paused: false,
                 quotaExceeded: false,
                 modelsExceeded: [],
+                excludedModels: [],
                 success: 0,
                 failed: 0,
                 usageSource: "oauth_usage",
@@ -307,6 +308,7 @@ describe("AccountList", () => {
                 paused: true,
                 quotaExceeded: false,
                 modelsExceeded: [],
+                excludedModels: [],
                 success: 0,
                 failed: 0,
                 usageSource: "oauth_usage",
@@ -325,6 +327,59 @@ describe("AccountList", () => {
     expect(screen.getByText("two@example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume two@example.com" })).toBeInTheDocument();
+  });
+
+  it("summarizes auth exclusions in the existing list-row subtitle", () => {
+    renderWithProviders(
+      <AccountList
+        accounts={[
+          createAccountSummary({
+            accountId: "claude-sidecar",
+            displayName: "CLI Proxy API",
+            planType: "claude",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "claude",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "claude-1",
+                authIndex: "0",
+                email: "one@example.com",
+                provider: "claude",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                excludedModels: ["claude-fable-*"],
+                success: 0,
+                failed: 0,
+                primaryRemainingPercent: 75,
+                secondaryRemainingPercent: 96,
+              },
+              {
+                name: "claude-2",
+                authIndex: "1",
+                email: "two@example.com",
+                provider: "claude",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                excludedModels: [],
+                success: 0,
+                failed: 0,
+                primaryRemainingPercent: 100,
+                secondaryRemainingPercent: 38,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Excluded: Fable/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Excluded:/)).toHaveLength(1);
   });
 
   it("sorts subscription credits independently of purchased credits", async () => {
@@ -427,6 +482,7 @@ describe("AccountList", () => {
                 paused: false,
                 quotaExceeded: false,
                 modelsExceeded: [],
+                excludedModels: [],
                 success: 0,
                 failed: 0,
               },

@@ -9,6 +9,10 @@ from typing import Literal
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.modules.claude_sidecar.excluded_models import (
+    excluded_models_for_entry,
+    normalize_excluded_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +56,7 @@ class SidecarAuthQuota:
     credential_path: str | None = None
     oauth_usage: SidecarOAuthUsage | None = None
     provider: str | None = None
+    excluded_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +132,7 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         success=_int(entry.get("success")) or 0,
         failed=_int(entry.get("failed")) or 0,
         last_refresh=_parse_datetime(entry.get("updated_at") or entry.get("modtime") or entry.get("created_at")),
+        excluded_models=tuple(excluded_models_for_entry(entry)),
     )
 
 
@@ -281,6 +287,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "failed": account.failed,
                 "last_refresh": account.last_refresh.isoformat() if account.last_refresh else None,
                 "oauth_usage": _oauth_usage_to_json(account.oauth_usage),
+                "excluded_models": list(account.excluded_models),
             }
             for account in snapshot.accounts
         ],
@@ -344,6 +351,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     failed=_int(entry.get("failed")) or 0,
                     last_refresh=_parse_datetime(entry.get("last_refresh")),
                     oauth_usage=_oauth_usage_from_json(entry.get("oauth_usage")),
+                    excluded_models=tuple(normalize_excluded_models(entry.get("excluded_models"))),
                 )
             )
     message_field = parsed.get("message")
