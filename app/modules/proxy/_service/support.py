@@ -19,7 +19,7 @@ from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import CodexControlRequestPrivacyPolicy, ProxyResponseError
 from app.core.clients.proxy_websocket import UpstreamWebSocket
 from app.core.config.settings import get_settings
-from app.core.errors import OpenAIErrorEnvelope, openai_error
+from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, openai_error
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import classify_event_type
@@ -1113,6 +1113,7 @@ class _WebSocketRequestState:
     error_message_override: str | None = None
     error_type_override: str | None = None
     error_param_override: str | None = None
+    error_recovery_metadata_override: OpenAIErrorDetail = field(default_factory=dict)
     failure_phase_override: str | None = None
     failure_detail_override: str | None = None
     upstream_error_code_override: str | None = None
@@ -1437,11 +1438,30 @@ class _DownstreamWebSocketActivity:
         self.mark()
 
 
+def _upstream_error_recovery_metadata(payload: Mapping[str, Any] | None) -> OpenAIErrorDetail:
+    if not isinstance(payload, Mapping):
+        return {}
+    response = payload.get("response")
+    container = response if isinstance(response, Mapping) else payload
+    error = container.get("error")
+    if not isinstance(error, Mapping):
+        error = container
+    metadata: OpenAIErrorDetail = {}
+    resets_at = error.get("resets_at")
+    if isinstance(resets_at, int | float) and not isinstance(resets_at, bool):
+        metadata["resets_at"] = resets_at
+    resets_in = error.get("resets_in_seconds")
+    if isinstance(resets_in, int | float) and not isinstance(resets_in, bool):
+        metadata["resets_in_seconds"] = resets_in
+    return metadata
+
+
 def _clear_websocket_request_error_overrides(request_state: _WebSocketRequestState) -> None:
     request_state.error_code_override = None
     request_state.error_message_override = None
     request_state.error_type_override = None
     request_state.error_param_override = None
+    request_state.error_recovery_metadata_override = {}
     request_state.failure_phase_override = None
     request_state.failure_detail_override = None
     request_state.upstream_error_code_override = None

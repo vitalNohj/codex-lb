@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, Mock
 import aiohttp
 import anyio
 import pytest
-from fastapi import WebSocket
+from fastapi import Request, WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
@@ -21030,8 +21030,9 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
 @pytest.mark.parametrize(
     "failure", ["admission_timeout", "reconnect_timeout", "reconnect_generic", "reconnect_specific", None]
 )
+@pytest.mark.parametrize("hint", [None, "resets_in_seconds", "resets_at"])
 async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
-    monkeypatch: pytest.MonkeyPatch, failure: str | None
+    monkeypatch: pytest.MonkeyPatch, failure: str | None, hint: str | None
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     admission = Mock()
@@ -21054,7 +21055,7 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
     )
     session = _make_bridge_session(pending_requests=deque([request_state]), queued_request_count=1)
     send_text = AsyncMock()
-    monkeypatch.setattr(session.upstream, "send_text", send_text)
+    monkeypatch.setattr(session.upstream, "send_text", send_text, raising=False)
     slept: list[float] = []
 
     async def sleep(seconds: float) -> None:
@@ -21076,7 +21077,9 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         if failure == "reconnect_generic":
             raise RuntimeError("Reconnect failed")
         if failure == "reconnect_specific":
-            raise ProxyResponseError(503, openai_error("no_accounts", "No replacement accounts"))
+            envelope = openai_error("no_accounts", "No replacement accounts")
+            envelope["error"]["resets_in_seconds"] = 17
+            raise ProxyResponseError(503, envelope)
 
     monkeypatch.setattr(http_bridge_upstream_events_module.asyncio, "sleep", sleep)
     monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
@@ -21085,6 +21088,8 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
     monkeypatch.setattr(service, "_get_work_admission", lambda: SimpleNamespace(acquire_response_create=acquire))
     monkeypatch.setattr(service, "_http_bridge_text_with_account_installation_id", lambda _s, _r, text: text)
     message = "Selected model is at capacity. Please try a different model."
+    monkeypatch.setattr(proxy_api.time, "time", lambda: 1000.0)
+    metadata = {hint: 1300 if hint == "resets_at" else 300} if hint else {}
 
     await service._process_http_bridge_upstream_text(
         session,
@@ -21092,7 +21097,7 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
             {
                 "type": "error",
                 "status": 429,
-                "error": {"code": "usage_limit_reached", "type": "usage_limit_reached", "message": message},
+                "error": {"code": "usage_limit_reached", "type": "usage_limit_reached", "message": message, **metadata},
             }
         ),
     )
@@ -21113,6 +21118,12 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         assert error["code"] == ("no_accounts" if specific else "usage_limit_reached")
         assert error["message"] == ("No replacement accounts" if specific else message)
         assert request_state.error_http_status_override == (503 if specific else 429)
+        downstream = proxy_api._logged_error_json_response(
+            Request({"type": "http", "method": "POST", "path": "/v1/responses", "headers": []}),
+            request_state.error_http_status_override,
+            proxy_support_module._openai_error_envelope_from_response_failed_payload(payload),
+        )
+        assert downstream.headers.get("Retry-After") == ("17" if specific else "300" if hint else None)
         assert request_state.event_queue.get_nowait() is None
         send_text.assert_not_awaited()
     else:
@@ -21122,11 +21133,13 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         assert request_state.error_message_override is None
         assert request_state.error_type_override is None
         assert request_state.error_http_status_override is None
+        assert request_state.error_recovery_metadata_override == {}
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hint", [None, "resets_in_seconds", "resets_at"])
 async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_declines_replay(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, hint: str | None,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     request_state = proxy_service._WebSocketRequestState(
@@ -21149,6 +21162,8 @@ async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_de
     assert session.key.strength == "hard"
     assert await service._http_bridge_precreated_retry_allowed(session) is False
     monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    monkeypatch.setattr(proxy_api.time, "time", lambda: 1000.0)
+    metadata = {hint: 1300 if hint == "resets_at" else 300} if hint else {}
 
     await service._process_http_bridge_upstream_text(
         session,
@@ -21160,6 +21175,7 @@ async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_de
                     "code": "usage_limit_reached",
                     "type": "usage_limit_reached",
                     "message": "Upstream quota exhausted",
+                    **metadata,
                 },
             }
         ),
@@ -21179,6 +21195,12 @@ async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_de
     assert error["message"] == "Upstream quota exhausted"
     assert error["type"] == "usage_limit_reached"
     assert request_state.error_http_status_override == 429
+    downstream = proxy_api._logged_error_json_response(
+        Request({"type": "http", "method": "POST", "path": "/v1/responses", "headers": []}),
+        request_state.error_http_status_override,
+        proxy_support_module._openai_error_envelope_from_response_failed_payload(payload),
+    )
+    assert downstream.headers.get("Retry-After") == ("300" if hint else None)
     assert await request_state.event_queue.get() is None
     assert request_state.replay_count == 0
     assert session.queued_request_count == 0

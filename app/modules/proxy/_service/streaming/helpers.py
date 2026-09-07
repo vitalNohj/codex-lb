@@ -44,6 +44,7 @@ from app.core.errors import (
 )
 from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+    OpenAIErrorDetail,
     response_failed_event,
 )
 from app.core.openai.models import OpenAIEvent
@@ -683,6 +684,7 @@ def _build_rewritten_stream_response_failed_event(
     error_code: str,
     error_message: str,
     error_type: str = "server_error",
+    recovery_metadata: OpenAIErrorDetail | None = None,
 ) -> tuple[str, OpenAIEvent | None, dict[str, JsonValue] | None, str | None]:
     rewritten_event_payload = response_failed_event(
         error_code,
@@ -690,6 +692,7 @@ def _build_rewritten_stream_response_failed_event(
         error_type=error_type,
         response_id=response_id,
     )
+    rewritten_event_payload["response"]["error"].update(recovery_metadata or {})
     rewritten_event_block = format_sse_event(rewritten_event_payload)
     rewritten_payload = parse_sse_data_json(rewritten_event_block)
     rewritten_event = parse_sse_event(rewritten_event_block)
@@ -758,17 +761,10 @@ def _build_stream_incomplete_terminal_event_for_request(
         error_code=error_code,
         error_message=error_message,
         error_type=error_type,
+        recovery_metadata=request_state.error_recovery_metadata_override if captured_error is not None else None,
     )
     downstream_text = json.dumps(
-        cast(
-            dict[str, JsonValue],
-            response_failed_event(
-                error_code,
-                error_message,
-                error_type=error_type,
-                response_id=_websocket_downstream_response_id(request_state),
-            ),
-        ),
+        payload,
         ensure_ascii=True,
         separators=(",", ":"),
     )

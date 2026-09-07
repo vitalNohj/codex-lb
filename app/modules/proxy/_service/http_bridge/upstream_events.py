@@ -146,6 +146,7 @@ from app.modules.proxy._service.support import (
     _clear_websocket_deferred_reasoning_downstream_texts,
     _clear_websocket_precreated_replay_fallback,
     _clear_websocket_request_error_overrides,
+    _upstream_error_recovery_metadata,
     _HTTPBridgeCompletedDeliveryScope,
     _HTTPBridgeRetryCircuitAttemptSelection,
     _HTTPBridgeSession,
@@ -333,6 +334,7 @@ def _capture_http_bridge_capacity_fail_fast_error(
     code: str | None,
     message: str | None,
     error_type: str | None,
+    payload: dict[str, JsonValue] | None,
 ) -> None:
     """Record the upstream error a refused capacity wait must surface.
 
@@ -345,6 +347,7 @@ def _capture_http_bridge_capacity_fail_fast_error(
     request_state.error_code_override = code or "upstream_unavailable"
     request_state.error_message_override = message or "Upstream error"
     request_state.error_type_override = error_type or "server_error"
+    request_state.error_recovery_metadata_override = _upstream_error_recovery_metadata(payload)
 
 
 def _apply_http_bridge_terminal_error_status(
@@ -2466,6 +2469,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         ),
                         message=retry_error_message,
                         error_type=_websocket_event_error_type(event_type, payload),
+                        payload=payload,
                     )
                 suppress_capacity_keepalives_until_retry_finishes = (
                     status_request_state.account_capacity_wait_suppress_keepalive
@@ -2474,6 +2478,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                     retried = retry_after_wait and await self._retry_http_bridge_precreated_request(
                         session,
                         request_state=status_request_state,
+                        triggering_error_payload=payload,
                         triggering_error=(
                             retry_error_code,
                             retry_error_message,
@@ -2545,6 +2550,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                     retried = await self._retry_http_bridge_precreated_request(
                         session,
                         request_state=status_request_state,
+                        triggering_error_payload=payload,
                         triggering_error=(
                             owner_pinned_quota_error,
                             retry_error_message,
@@ -2664,6 +2670,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 retried = await self._retry_http_bridge_precreated_request(
                     session,
                     request_state=status_request_state,
+                    triggering_error_payload=payload,
                     triggering_error=(
                         retry_error_code,
                         retry_error_message,

@@ -152,6 +152,7 @@ from app.modules.proxy._service.support import (
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     _api_key_fair_share_threshold_pct_from_settings,
     _clear_websocket_request_error_overrides,
+    _upstream_error_recovery_metadata,
     _copy_websocket_route_metadata_from_session,
     _event_type_from_payload,
     _HTTPBridgeResponseCreateAttempt,
@@ -3002,6 +3003,7 @@ class _HTTPBridgeRequestSubmitMixin:
         request_state: _WebSocketRequestState | None = None,
         restart_reader: bool = False,
         triggering_error: tuple[str | None, str | None, str | None] | None = None,
+        triggering_error_payload: dict[str, JsonValue] | None = None,
     ) -> bool:
         if (
             request_state is not None
@@ -3015,6 +3017,7 @@ class _HTTPBridgeRequestSubmitMixin:
             request_state.error_code_override = code or "upstream_unavailable"
             request_state.error_message_override = message or "Upstream error"
             request_state.error_type_override = error_type or "server_error"
+            request_state.error_recovery_metadata_override = _upstream_error_recovery_metadata(triggering_error_payload)
         async with session.pending_lock:
             candidates = [request_state] if request_state is not None else list(session.pending_requests)
             preserved_errors = [
@@ -3025,6 +3028,7 @@ class _HTTPBridgeRequestSubmitMixin:
                     candidate.error_message_override,
                     candidate.error_type_override,
                     candidate.error_param_override,
+                    candidate.error_recovery_metadata_override,
                 )
                 for candidate in candidates
                 if candidate.error_code_override is not None
@@ -3037,7 +3041,7 @@ class _HTTPBridgeRequestSubmitMixin:
             return retried
         finally:
             if not retried:
-                for candidate, status, code, message, error_type, param in preserved_errors:
+                for candidate, status, code, message, error_type, param, metadata in preserved_errors:
                     if candidate.error_code_override is None or (
                         candidate.error_code_override in _GENERIC_PRECREATED_RETRY_ERROR_CODES
                         and code not in _GENERIC_PRECREATED_RETRY_ERROR_CODES
@@ -3047,6 +3051,7 @@ class _HTTPBridgeRequestSubmitMixin:
                         candidate.error_message_override = message
                         candidate.error_type_override = error_type
                         candidate.error_param_override = param
+                        candidate.error_recovery_metadata_override = metadata
 
     async def _attempt_http_bridge_precreated_request_replay(
         self: Any,
@@ -3408,6 +3413,9 @@ class _HTTPBridgeRequestSubmitMixin:
                 request_state.error_type_override,
                 request_state.error_param_override,
             ) = _http_bridge_precreated_retry_failure_error(exc)
+            request_state.error_recovery_metadata_override = _upstream_error_recovery_metadata(
+                exc.payload if isinstance(exc, ProxyResponseError) else None
+            )
             if isinstance(exc, ProxyResponseError):
                 logger.info(
                     "HTTP bridge pre-created retry failed with terminal proxy error code=%s message=%s",
@@ -3515,6 +3523,9 @@ class _HTTPBridgeRequestSubmitMixin:
                 request_state.error_type_override,
                 request_state.error_param_override,
             ) = _http_bridge_precreated_retry_failure_error(exc)
+            request_state.error_recovery_metadata_override = _upstream_error_recovery_metadata(
+                exc.payload if isinstance(exc, ProxyResponseError) else None
+            )
             if isinstance(exc, ProxyResponseError):
                 logger.info(
                     "HTTP bridge pre-created auth retry failed with terminal proxy error code=%s message=%s",

@@ -7816,6 +7816,9 @@ def _logged_error_json_response(
     error = public_content.get("error")
     if status_code in {429, 503} and isinstance(error, dict):
         reset_in = error.get("resets_in_seconds")
+        reset_at = error.get("resets_at")
+        if reset_in is None and isinstance(reset_at, int | float) and not isinstance(reset_at, bool):
+            reset_in = reset_at - time.time()
         if (
             isinstance(reset_in, int | float)
             and not isinstance(reset_in, bool)
