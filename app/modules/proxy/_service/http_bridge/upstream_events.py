@@ -154,6 +154,7 @@ from app.modules.proxy._service.support import (
     _record_response_event,
     _signal_propagated_capacity_startup_ready,
     _signal_propagated_capacity_startup_wait,
+    _SilentCapacityHold,
     _websocket_request_can_replay_before_visible_output,
     _websocket_should_defer_reasoning_prelude,
     _WebSocketReceiveTimeout,
@@ -325,6 +326,26 @@ async def _update_http_bridge_operation_state(
             state,
             exc_info=True,
         )
+
+
+def _capture_http_bridge_capacity_fail_fast_error(
+    request_state: _WebSocketRequestState,
+    *,
+    code: str | None,
+    message: str | None,
+    error_type: str | None,
+) -> None:
+    """Record the upstream error a refused capacity wait must surface.
+
+    The refusal changes only *when* the client is told; the condition keeps its
+    own upstream classification, and the status is derived from that same code
+    so the emitted body and the status line agree.
+    """
+    if request_state.error_code_override is not None:
+        return
+    request_state.error_code_override = code or "upstream_unavailable"
+    request_state.error_message_override = message or "Upstream error"
+    request_state.error_type_override = error_type or "server_error"
 
 
 def _apply_http_bridge_terminal_error_status(
@@ -778,6 +799,16 @@ async def _wait_before_http_bridge_model_capacity_retry(
         return False
 
     sleep_seconds = min(_ACCOUNT_SELECTION_RECOVERY_DEFAULT_SLEEP_SECONDS, remaining_budget_seconds)
+    holds_downstream_silently = not emit_keepalives
+    if not request_state.silent_capacity_hold.allows(
+        sleep_seconds,
+        holds_downstream_silently=holds_downstream_silently,
+    ):
+        # This retry would park the client past its silent-hold allowance.
+        # Decline the wait so the caller emits the terminal upstream error now,
+        # carrying the real recovery hint as Retry-After.
+        request_state.capacity_fail_fast_retry_after_seconds = sleep_seconds
+        return False
     request_state.account_capacity_waiting = True
     request_state.account_capacity_wait_reason = error_message
     request_state.account_capacity_wait_started_at = (
@@ -816,6 +847,8 @@ async def _wait_before_http_bridge_model_capacity_retry(
             await asyncio.sleep(chunk_seconds)
             remaining_sleep_seconds -= chunk_seconds
             keepalive_countdown_seconds -= chunk_seconds
+            if holds_downstream_silently:
+                request_state.silent_capacity_hold.record(chunk_seconds)
         return (
             not cancel_when_detached or request_state.event_queue is not None
         ) and _service_time().monotonic() < deadline
@@ -2424,6 +2457,17 @@ class _HTTPBridgeUpstreamEventsMixin:
                 )
                 if wait_request_had_event_queue and status_request_state.event_queue is None:
                     retry_after_wait = False
+                capacity_hold_refused = status_request_state.capacity_fail_fast_retry_after_seconds is not None
+                if capacity_hold_refused:
+                    _capture_http_bridge_capacity_fail_fast_error(
+                        status_request_state,
+                        code=_normalize_error_code(
+                            _websocket_event_error_code(event_type, payload),
+                            _websocket_event_error_type(event_type, payload),
+                        ),
+                        message=retry_error_message,
+                        error_type=_websocket_event_error_type(event_type, payload),
+                    )
                 suppress_capacity_keepalives_until_retry_finishes = (
                     status_request_state.account_capacity_wait_suppress_keepalive
                 )
@@ -2447,7 +2491,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         session.pending_requests.remove(status_request_state)
                         if _http_bridge_request_counts_against_queue(status_request_state):
                             session.queued_request_count = max(0, session.queued_request_count - 1)
-                if retry_after_wait or not status_request_state.propagate_http_errors:
+                if retry_after_wait or capacity_hold_refused or not status_request_state.propagate_http_errors:
                     _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,

@@ -82,10 +82,44 @@ _HARD_HTTP_BRIDGE_AFFINITY_KINDS = frozenset(
 )
 _ACCOUNT_SELECTION_RECOVERY_MIN_SLEEP_SECONDS = 1.0
 _HARD_AFFINITY_RECOVERY_SLEEP_SECONDS = 2.0
+_MAX_SILENT_CAPACITY_HOLD_SECONDS = 30.0
 _ACCOUNT_SELECTION_RECOVERY_DEFAULT_SLEEP_SECONDS = 30.0
 _ACCOUNT_SELECTION_RECOVERY_MAX_SLEEP_SECONDS = 300.0
 _ACCOUNT_SELECTION_RECOVERY_HEARTBEAT_SECONDS = 10.0
 _ACCOUNT_SELECTION_RETRY_HINT_RE = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+
+
+@dataclass
+class _SilentCapacityHold:
+    """Cumulative time one request has parked its client on capacity sleeps.
+
+    A capacity recovery sleep that emits no downstream bytes holds the client
+    open with nothing to show for it. The allowance is absolute and
+    deliberately independent of the request budget: a recovery hint is capped
+    at ``_ACCOUNT_SELECTION_RECOVERY_MAX_SLEEP_SECONDS`` and therefore always
+    fits an hours-long budget, so only a small absolute cap keeps a client from
+    being parked for minutes. It is cumulative across every recovery iteration
+    of the request, since a per-sleep check would just fragment the same long
+    hold into repeated shorter ones.
+
+    Waits that do emit keepalives, and waits that are exempt from the cap, must
+    not consume the allowance either, or they would silently convert a later
+    short transient wait into a fail-fast.
+    """
+
+    consumed_seconds: float = 0.0
+
+    @property
+    def remaining_seconds(self) -> float:
+        return max(0.0, _MAX_SILENT_CAPACITY_HOLD_SECONDS - self.consumed_seconds)
+
+    def allows(self, wait_seconds: float, *, holds_downstream_silently: bool) -> bool:
+        if not holds_downstream_silently:
+            return True
+        return wait_seconds <= self.remaining_seconds
+
+    def record(self, wait_seconds: float) -> None:
+        self.consumed_seconds += max(0.0, wait_seconds)
 _LOCAL_ACCOUNT_CAP_ERROR_CODES = frozenset(
     {"account_response_create_cap", "account_stream_cap", "api_key_stream_fair_share"}
 )
@@ -1144,10 +1178,12 @@ class _WebSocketRequestState:
     account_capacity_wait_suppress_keepalive: bool = False
     account_capacity_wait_reason: str | None = None
     account_capacity_wait_started_at: float | None = None
-    # Seconds this request has already spent sleeping for account capacity
-    # while the downstream connection was held with no bytes flowing.
-    # Cumulative across every recovery iteration.
-    silent_capacity_hold_seconds: float = 0.0
+    # Time this request has already spent sleeping for account capacity while
+    # the downstream connection was held with no bytes flowing.
+    silent_capacity_hold: _SilentCapacityHold = field(default_factory=_SilentCapacityHold)
+    # Recovery hint to publish as Retry-After when a capacity wait was refused
+    # because it would have exceeded the silent-hold allowance.
+    capacity_fail_fast_retry_after_seconds: float | None = None
     account_capacity_wait_retry_after_seconds: float | None = None
     capacity_startup_wait_event: asyncio.Event | None = None
     capacity_startup_ready_event: asyncio.Event | None = None

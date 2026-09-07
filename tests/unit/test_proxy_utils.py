@@ -48261,3 +48261,136 @@ async def test_stream_with_retry_reframes_data_only_delta_frames_after_ttft(monk
     assert chunks[2] == 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"b"}\n\n'
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_cap(monkeypatch):
+    """The non-bridge recovery wait must not park a client for the 300s hint.
+
+    This is the observed ``sleep_seconds=300`` hang for requests that bypass
+    the HTTP bridge: the hint fits the multi-minute request budget, so only the
+    cumulative silent-hold cap stops the hold. The condition keeps its honest
+    503 ``no_accounts`` classification and carries the real hint as Retry-After.
+    """
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget_compatible",
+        AsyncMock(
+            return_value=AccountSelection(
+                account=None,
+                error_message="Selected model is at capacity. Try again in 300s",
+                error_code="no_accounts",
+            )
+        ),
+    )
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "hi",
+            "input": "hello",
+            "stream": True,
+        }
+    )
+
+    assert (
+        proxy_support._account_selection_recovery_sleep_seconds_from_message(
+            "Selected model is at capacity. Try again in 300s",
+            error_code="no_accounts",
+            suppress_uncoded_local_selector_hint=True,
+        )
+        == 300.0
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        async for _ in service._stream_with_retry(
+            payload,
+            {},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+        ):
+            pass
+
+    assert slept == []
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.payload["error"]["code"] == "no_accounts"
+    assert exc_info.value.retry_after_seconds == 300
+
+
+@pytest.mark.asyncio
+async def test_stream_with_retry_selection_recovery_smooths_over_short_wait(monkeypatch):
+    """A sub-cap transient selection failure still waits in place and recovers."""
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    account = _make_account("acc_short_selection_recovery")
+    slept: list[float] = []
+    selection_calls = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def select_account(_deadline: float, **_kwargs: object) -> AccountSelection:
+        nonlocal selection_calls
+        selection_calls += 1
+        if selection_calls == 1:
+            return AccountSelection(
+                account=None,
+                error_message="Selected model is at capacity. Try again in 5s",
+                error_code="no_accounts",
+            )
+        return AccountSelection(account=account, error_message=None)
+
+    async def fake_stream_once(*_args: object, **_kwargs: object):
+        yield 'data: {"type":"response.completed","response":{"id":"resp_short_selection_recovery"}}\n\n'
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_stream_once", fake_stream_once)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "hi",
+            "input": "hello",
+            "stream": True,
+        }
+    )
+
+    chunks = [
+        chunk
+        async for chunk in service._stream_with_retry(
+            payload,
+            {},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+        )
+    ]
+
+    assert slept == [5.0]
+    assert selection_calls == 2
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
