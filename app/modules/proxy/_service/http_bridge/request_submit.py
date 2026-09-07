@@ -152,13 +152,13 @@ from app.modules.proxy._service.support import (
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     _api_key_fair_share_threshold_pct_from_settings,
     _clear_websocket_request_error_overrides,
-    _upstream_error_recovery_metadata,
     _copy_websocket_route_metadata_from_session,
     _event_type_from_payload,
     _HTTPBridgeResponseCreateAttempt,
     _HTTPBridgeRetryCircuitAttemptSelection,
     _HTTPBridgeSession,
     _request_log_client_fields,
+    _upstream_error_recovery_metadata,
     _websocket_request_can_replay_before_visible_output,
     _WebSocketRequestState,
 )

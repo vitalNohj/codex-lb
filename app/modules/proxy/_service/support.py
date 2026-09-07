@@ -1184,8 +1184,8 @@ class _WebSocketRequestState:
     # Time this request has already spent sleeping for account capacity while
     # the downstream connection was held with no bytes flowing.
     silent_capacity_hold: _SilentCapacityHold = field(default_factory=_SilentCapacityHold)
-    # Recovery hint to publish as Retry-After when a capacity wait was refused
-    # because it would have exceeded the silent-hold allowance.
+    # Local retry interval used only when the terminal error has no upstream
+    # recovery hint, after a wait exceeds the silent-hold allowance.
     capacity_fail_fast_retry_after_seconds: float | None = None
     account_capacity_wait_retry_after_seconds: float | None = None
     capacity_startup_wait_event: asyncio.Event | None = None
