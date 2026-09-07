@@ -15,7 +15,9 @@ import {
   useTelemetryPreview,
 } from "@/features/settings/hooks/use-settings";
 import { ApiError } from "@/lib/api-client";
-import { createDashboardSettings } from "@/test/mocks/factories";
+import { createAccountSummary, createDashboardOverview, createDashboardSettings } from "@/test/mocks/factories";
+import { SidecarAuthAccountSchema } from "@/features/accounts/schemas";
+import { ClaudeSidecarQuotaResponseSchema, ClaudeSidecarRoutingResponseSchema } from "@/features/settings/schemas";
 import { server } from "@/test/mocks/server";
 
 function createTestQueryClient(): QueryClient {
@@ -340,6 +342,82 @@ describe("useSettings", () => {
 });
 
 describe("useClaudeSidecarAccountExcludedModels", () => {
+  it.each(["routing", "quota", "accounts", "dashboard"] as const)(
+    "preserves saved exclusions after a failed %s refresh",
+    async (surface) => {
+      const queryClient = createTestQueryClient();
+      const user = userEvent.setup();
+      const name = "claude-a@example.com.json";
+      const auth = SidecarAuthAccountSchema.parse({ name, excludedModelsState: "available" });
+      const other = SidecarAuthAccountSchema.parse({ name: "other.json", excludedModels: ["keep-*"], excludedModelsState: "available" });
+      const account = createAccountSummary({ sidecarAuths: [auth, other] });
+      const routing = ClaudeSidecarRoutingResponseSchema.parse({ status: "healthy", accounts: [auth, other] });
+      const quota = ClaudeSidecarQuotaResponseSchema.parse({ status: "healthy", accounts: [auth, other] });
+      const accounts = { accounts: [account] };
+      const dashboard = createDashboardOverview({ accounts: [account] });
+      const queryKey = surface === "accounts" ? ["accounts", "list"]
+        : surface === "dashboard" ? ["dashboard", "overview", "24h"]
+        : ["settings", "claude-sidecar", surface];
+      const initialData = surface === "routing" ? routing : surface === "quota" ? quota
+        : surface === "accounts" ? accounts : dashboard;
+      const payloads: unknown[] = [];
+      let failedReads = 0;
+      server.use(
+        http.get("*/api/test-exclusions", () => {
+          failedReads += 1;
+          return new HttpResponse(null, { status: 500 });
+        }),
+        http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+          const body = await request.json() as { name: string; excludedModels: string[] };
+          payloads.push(body);
+          return HttpResponse.json({ ...routing, accounts: [{ ...auth, excludedModels: body.excludedModels }, other] });
+        }),
+      );
+      function Editor() {
+        const query = useQuery({
+          queryKey,
+          initialData,
+          staleTime: Infinity,
+          queryFn: async () => {
+            const response = await fetch("/api/test-exclusions");
+            if (!response.ok) throw new Error("Refresh failed");
+            return initialData;
+          },
+        });
+        const mutation = useClaudeSidecarAccountExcludedModels();
+        const first = query.data.accounts[0];
+        const row = "sidecarAuths" in first ? first.sidecarAuths[0] : first;
+        return createElement(ExcludedModelsEditor, {
+          name,
+          emailLabel: "a@example.com",
+          excludedModels: row.excludedModels,
+          state: row.excludedModelsState,
+          disabled: mutation.isPending,
+          onChange: (excludedModels: string[]) => mutation.mutate({ name, excludedModels }),
+        });
+      }
+      render(createElement(Editor), { wrapper: createWrapper(queryClient) });
+      const fable = screen.getByRole("switch", { name: "Exclude Fable on a@example.com" });
+      const haiku = screen.getByRole("switch", { name: "Exclude Haiku on a@example.com" });
+      await user.click(fable);
+      await waitFor(() => expect(failedReads).toBe(1));
+      await waitFor(() => expect(haiku).toBeEnabled());
+      expect(fable).toBeChecked();
+      await user.click(haiku);
+      await waitFor(() => expect(payloads).toEqual([
+        { name, excludedModels: ["claude-fable-*"] },
+        { name, excludedModels: ["claude-fable-*", "claude-haiku-*"] },
+      ]));
+      await waitFor(() => expect(failedReads).toBe(2));
+      await waitFor(() => expect(haiku).toBeEnabled());
+      const cached = queryClient.getQueryData<typeof initialData>(queryKey)!;
+      const first = cached.accounts[0];
+      expect("sidecarAuths" in first ? first.sidecarAuths[1] : cached.accounts[1]).toEqual(
+        expect.objectContaining({ name: "other.json", excludedModels: ["keep-*"], excludedModelsState: "available" }),
+      );
+    },
+  );
+
   it.each([
     ["dashboard"],
     ["accounts", "list"],

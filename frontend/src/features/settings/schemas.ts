@@ -579,6 +579,8 @@ const ClaudeSidecarQuotaStatusSchema = z.enum([
 
 export const ClaudeSidecarQuotaAuthSchema = z.object({
   name: z.string(),
+  excludedModels: z.array(z.string()).default([]),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
