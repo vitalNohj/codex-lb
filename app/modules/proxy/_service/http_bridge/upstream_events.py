@@ -2475,6 +2475,9 @@ class _HTTPBridgeUpstreamEventsMixin:
                     retried = retry_after_wait and await self._retry_http_bridge_precreated_request(
                         session,
                         request_state=status_request_state,
+                        triggering_error=(
+                            retry_error_code, retry_error_message, _websocket_event_error_type(event_type, payload)
+                        ),
                     )
                     if retried:
                         _signal_http_bridge_model_capacity_retry_ready(
@@ -2538,7 +2541,13 @@ class _HTTPBridgeUpstreamEventsMixin:
                             session.queued_request_count += 1
                         status_request_state.awaiting_response_created = True
                         status_request_state.response_id = None
-                    retried = await self._retry_http_bridge_precreated_request(session)
+                    retried = await self._retry_http_bridge_precreated_request(
+                        session,
+                        request_state=status_request_state,
+                        triggering_error=(
+                            owner_pinned_quota_error, retry_error_message, _websocket_event_error_type(event_type, payload)
+                        ),
+                    )
                     if retried:
                         return
                     session.upstream_turn_state = previous_upstream_turn_state
@@ -2649,7 +2658,13 @@ class _HTTPBridgeUpstreamEventsMixin:
                         session.queued_request_count += 1
                     status_request_state.awaiting_response_created = True
                     status_request_state.response_id = None
-                retried = await self._retry_http_bridge_precreated_request(session)
+                retried = await self._retry_http_bridge_precreated_request(
+                    session,
+                    request_state=status_request_state,
+                    triggering_error=(
+                        retry_error_code, retry_error_message, _websocket_event_error_type(event_type, payload)
+                    ),
+                )
                 if retried:
                     return
                 async with session.pending_lock:

@@ -4810,7 +4810,15 @@ async def test_http_bridge_model_capacity_waits_before_precreated_retry(
     handle_call = handle_stream_error.await_args
     assert handle_call is not None
     assert handle_call.args[2] == expected_retry_error_code
-    retry_precreated.assert_awaited_once_with(session, request_state=request_state)
+    retry_precreated.assert_awaited_once_with(
+        session,
+        request_state=request_state,
+        triggering_error=(
+            expected_retry_error_code,
+            "Selected model is at capacity. Please try a different model.",
+            "invalid_request_error",
+        ),
+    )
     assert request_state in session.pending_requests
     assert session.queued_request_count == 1
     assert request_state.account_capacity_waiting is False
@@ -4866,6 +4874,7 @@ async def test_http_bridge_model_capacity_waits_before_retrying_safe_injected_an
         retry_session: proxy_service._HTTPBridgeSession,
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
+        **_kwargs: Any,
     ) -> bool:
         assert retry_session is session
         assert request_state is not None
@@ -21002,6 +21011,59 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
 
 
 @pytest.mark.asyncio
+async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_declines_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-quota-circuit",
+        model="gpt-5.2",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        awaiting_response_created=True,
+        hard_continuity_anchor=True,
+        event_queue=asyncio.Queue(),
+        request_text='{"type":"response.create","model":"gpt-5.2","input":"hello"}',
+        transport="http",
+        skip_request_log=True,
+    )
+    session = _make_bridge_session(pending_requests=deque([request_state]), queued_request_count=1)
+    await service._record_http_bridge_retry_circuit_failure(session, detail="stream_idle_timeout")
+    await service._record_http_bridge_retry_circuit_failure(session, detail="stream_idle_timeout")
+    assert session.key.strength == "hard"
+    assert await service._http_bridge_precreated_retry_allowed(session) is False
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps({
+            "type": "error",
+            "status": 429,
+            "error": {
+                "code": "usage_limit_reached",
+                "type": "usage_limit_reached",
+                "message": "Upstream quota exhausted",
+            },
+        }),
+    )
+
+    assert request_state.event_queue is not None
+    block = await request_state.event_queue.get()
+    assert block is not None
+    payload = proxy_service.parse_sse_data_json(block)
+    assert payload["type"] == "response.failed"
+    assert payload["response"]["error"]["code"] == "usage_limit_reached"
+    assert payload["response"]["error"]["message"] == "Upstream quota exhausted"
+    assert payload["response"]["error"]["type"] == "usage_limit_reached"
+    assert request_state.error_http_status_override == 429
+    assert await request_state.event_queue.get() is None
+    assert request_state.replay_count == 0
+    assert session.queued_request_count == 0
+
+
+@pytest.mark.asyncio
 async def test_process_http_bridge_upstream_text_surfaces_failed_replay_usage_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -21046,7 +21108,7 @@ async def test_process_http_bridge_upstream_text_surfaces_failed_replay_usage_li
     )
     handle_stream_error = AsyncMock()
 
-    async def failed_replay(target_session: proxy_service._HTTPBridgeSession) -> bool:
+    async def failed_replay(target_session: proxy_service._HTTPBridgeSession, **_kwargs: Any) -> bool:
         target_session.account = cast(Any, SimpleNamespace(id="acc-replacement", status=AccountStatus.ACTIVE))
         (
             request_state.error_http_status_override,
@@ -21153,7 +21215,7 @@ async def test_process_http_bridge_upstream_text_surfaces_exhausted_retry_usage_
         idle_ttl_seconds=120.0,
     )
 
-    async def exhausted_retry(target_session: proxy_service._HTTPBridgeSession) -> bool:
+    async def exhausted_retry(target_session: proxy_service._HTTPBridgeSession, **_kwargs: Any) -> bool:
         del target_session
         # Mirrors _http_bridge_precreated_retry_failure_error unpacking the
         # terminal ProxyResponseError onto the request state.
@@ -21433,7 +21495,7 @@ async def test_http_bridge_replays_proxy_verified_full_resend_after_owner_quota(
     handle_stream_error = AsyncMock()
     release_create_lease = AsyncMock()
 
-    async def retry_precreated(retry_session):
+    async def retry_precreated(retry_session, **_kwargs):
         assert retry_session is session
         assert session.upstream_turn_state is None
         assert session.downstream_turn_state is None

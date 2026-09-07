@@ -2998,7 +2998,13 @@ class _HTTPBridgeRequestSubmitMixin:
         *,
         request_state: _WebSocketRequestState | None = None,
         restart_reader: bool = False,
+        triggering_error: tuple[str | None, str | None, str | None] | None = None,
     ) -> bool:
+        if request_state is not None and triggering_error is not None and request_state.error_code_override is None:
+            code, message, error_type = triggering_error
+            request_state.error_code_override = code or "upstream_unavailable"
+            request_state.error_message_override = message or "Upstream error"
+            request_state.error_type_override = error_type or "server_error"
         clean_close_retry_max_count = self._http_bridge_clean_close_retry_max_count()
         account_neutral_recovery = is_http_bridge_account_neutral_replay(
             kind=session.key.affinity_kind,

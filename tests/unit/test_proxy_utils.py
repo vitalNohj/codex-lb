@@ -48264,7 +48264,10 @@ async def test_stream_with_retry_reframes_data_only_delta_frames_after_ttft(monk
 
 
 @pytest.mark.asyncio
-async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_cap(monkeypatch):
+@pytest.mark.parametrize("hint_seconds, expected_slept, selection_count", [(300, 0, 1), (10, 30, 4)])
+async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_cap(
+    monkeypatch, hint_seconds, expected_slept, selection_count
+):
     """The non-bridge recovery wait must not park a client for the 300s hint.
 
     This is the observed ``sleep_seconds=300`` hang for requests that bypass
@@ -48283,17 +48286,17 @@ async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        service,
-        "_select_account_with_budget_compatible",
-        AsyncMock(
-            return_value=AccountSelection(
+    selection = AsyncMock(
+        side_effect=[
+            AccountSelection(
                 account=None,
-                error_message="Selected model is at capacity. Try again in 300s",
+                error_message=f"Selected model is at capacity. Try again in {hint_seconds}s",
                 error_code="no_accounts",
             )
-        ),
+            for _ in range(selection_count)
+        ]
     )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", selection)
 
     payload = ResponsesRequest.model_validate(
         {
@@ -48327,10 +48330,11 @@ async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_
         ):
             pass
 
-    assert slept == []
+    assert sum(slept) == expected_slept
+    assert selection.await_count == selection_count
     assert exc_info.value.status_code == 503
     assert exc_info.value.payload["error"]["code"] == "no_accounts"
-    assert exc_info.value.retry_after_seconds == 300
+    assert exc_info.value.retry_after_seconds == hint_seconds
 
 
 @pytest.mark.asyncio
