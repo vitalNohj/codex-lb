@@ -21055,7 +21055,8 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", ["capacity_refusal", "admission_timeout", "reconnect_timeout", "reconnect_generic", "reconnect_specific", None]
+    "failure",
+    ["capacity_refusal", "admission_timeout", "reconnect_timeout", "reconnect_generic", "reconnect_specific", None],
 )
 @pytest.mark.parametrize("hint", [None, "resets_in_seconds", "resets_at"])
 async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
@@ -21119,7 +21120,9 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
     metadata = {hint: 1300 if hint == "resets_at" else 300} if hint else {}
     if failure == "capacity_refusal":
         with monkeypatch.context() as wait_patch:
-            wait_patch.setattr(http_bridge_upstream_events_module, "_ACCOUNT_SELECTION_RECOVERY_DEFAULT_SLEEP_SECONDS", 10)
+            wait_patch.setattr(
+                http_bridge_upstream_events_module, "_ACCOUNT_SELECTION_RECOVERY_DEFAULT_SLEEP_SECONDS", 10
+            )
             assert await http_bridge_upstream_events_module._wait_before_http_bridge_model_capacity_retry(
                 request_state, emit_keepalives=False, error_message=message
             )
@@ -21188,7 +21191,8 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hint", [None, "resets_in_seconds", "resets_at"])
 async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_declines_replay(
-    monkeypatch: pytest.MonkeyPatch, hint: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    hint: str | None,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     request_state = proxy_service._WebSocketRequestState(
