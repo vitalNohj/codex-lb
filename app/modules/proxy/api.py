@@ -7812,6 +7812,17 @@ def _logged_error_json_response(
         public_content = content
     code, message = _error_details_from_content(public_content)
     effective_headers = dict(headers or {})
+    error = public_content.get("error")
+    if status_code in {429, 503} and isinstance(error, dict):
+        reset_in = error.get("resets_in_seconds")
+        if (
+            isinstance(reset_in, int | float)
+            and not isinstance(reset_in, bool)
+            and reset_in > 0
+            and (isinstance(reset_in, int) or math.isfinite(reset_in))
+            and not any(key.lower() == "retry-after" for key in effective_headers)
+        ):
+            effective_headers["Retry-After"] = str(math.ceil(reset_in))
     if status_code == 429 and is_local_overload_error_code(code):
         effective_headers = merge_retry_after_headers(effective_headers)
     log_error_response(

@@ -28263,8 +28263,10 @@ async def test_hidden_http_bridge_model_capacity_retry_suppresses_reconnect_wait
         _session: proxy_service._HTTPBridgeSession,
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
+        triggering_error: tuple[str, str | None, str | None] | None = None,
     ) -> bool:
         assert request_state is not None
+        assert triggering_error is not None
         assert request_state.response_create_gate is response_create_gate
         assert request_state.response_create_gate_acquired is True
         assert request_state.response_create_admission is None
@@ -28531,9 +28533,10 @@ async def test_http_bridge_model_capacity_wait_retries_only_original_pending_req
         _session: proxy_service._HTTPBridgeSession,
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
+        triggering_error: tuple[str, str | None, str | None] | None = None,
     ) -> bool:
         retry_calls.append(request_state)
-        return await original_retry(_session, request_state=request_state)
+        return await original_retry(_session, request_state=request_state, triggering_error=triggering_error)
 
     async def replace_original_during_wait(*_args: object, **_kwargs: object) -> bool:
         async with session.pending_lock:

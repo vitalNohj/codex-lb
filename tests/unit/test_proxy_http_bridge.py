@@ -5108,7 +5108,14 @@ async def test_http_bridge_model_capacity_wait_suppresses_keepalive_when_errors_
 
     assert request_state.event_queue is not None
     assert request_state.event_queue.empty()
-    retry_precreated.assert_awaited_once_with(session, request_state=request_state)
+    retry_precreated.assert_awaited_once_with(
+        session, request_state=request_state,
+        triggering_error=(
+            "server_is_overloaded",
+            "Selected model is at capacity. Please try a different model.",
+            "invalid_request_error",
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -5169,7 +5176,14 @@ async def test_http_bridge_model_capacity_wait_hides_keepalive_for_non_sdk_propa
 
     assert request_state.event_queue is not None
     assert request_state.event_queue.empty()
-    retry_precreated.assert_awaited_once_with(session, request_state=request_state)
+    retry_precreated.assert_awaited_once_with(
+        session, request_state=request_state,
+        triggering_error=(
+            "server_is_overloaded",
+            "Selected model is at capacity. Please try a different model.",
+            "invalid_request_error",
+        ),
+    )
 
 
 @pytest.mark.asyncio
