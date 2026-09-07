@@ -99,6 +99,7 @@ from app.modules.proxy.load_balancer import (
     _mapped_model_has_registry_entry,
 )
 from app.modules.proxy.repo_bundle import ProxyRepositories
+from app.modules.proxy.selection_errors import selection_failure_response
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.proxy.work_admission import AdmissionLease
 from app.modules.request_logs.repository import PreviousResponseOwnerRecord, RequestLogsRepository
@@ -48338,6 +48339,74 @@ async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_
     assert exc_info.value.status_code == 503
     assert exc_info.value.payload["error"]["code"] == "no_accounts"
     assert exc_info.value.retry_after_seconds == hint_seconds
+
+
+def test_capacity_fail_fast_prefers_caller_classification_over_stale_transient() -> None:
+    """A carried-forward transient must not replace the current condition.
+
+    ``last_transient_exc`` is only cleared on the pre-dispatch-transport path,
+    so it can still hold an earlier account's failure when a later selection
+    fails for a different reason. Raising it verbatim would hand the client
+    account A's quota error for what is really a pool-wide selection failure -
+    the same laundering this module exists to prevent.
+    """
+    stale_account_a_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "Account A: the usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+    )
+    current_selection_failure = selection_failure_response(
+        AccountSelection(
+            account=None,
+            error_message="No active accounts available",
+            error_code="no_accounts",
+        )
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=stale_account_a_error,
+            error_response=current_selection_failure,
+            recovery_hint_seconds=120.0,
+        )
+
+    raised = exc_info.value
+    assert raised is not stale_account_a_error
+    assert raised.status_code == 503
+    assert raised.payload["error"]["code"] == "no_accounts"
+    assert "Account A" not in json.dumps(raised.payload)
+    assert raised.retry_after_seconds == 120
+    # The superseded transient stays available as the cause for diagnostics.
+    assert raised.__cause__ is stale_account_a_error
+    # The stale error must not be mutated on its way past.
+    assert stale_account_a_error.retry_after_seconds is None
+
+
+def test_capacity_fail_fast_raises_transient_when_caller_classified_nothing() -> None:
+    """With no caller classification the transient is the honest answer."""
+    quota_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "The usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=quota_error,
+            recovery_hint_seconds=45.0,
+        )
+
+    raised = exc_info.value
+    assert raised is quota_error
+    assert raised.status_code == 429
+    assert raised.payload["error"]["code"] == "usage_limit_reached"
+    assert raised.retry_after_seconds == 45
 
 
 @pytest.mark.asyncio

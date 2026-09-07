@@ -226,9 +226,19 @@ def _raise_capacity_recovery_fail_fast(
     503 ``no_accounts``, both carrying the real recovery hint as ``Retry-After``
     so the client keeps the actionable wait it would otherwise have spent held
     open with no bytes.
+
+    An explicit classification from the caller always wins over ``exc``.
+    ``exc`` is a carried-forward transient (``last_transient_exc``) that is
+    only cleared on the pre-dispatch-transport path, so it can still hold an
+    earlier account's failure while the caller describes the condition that
+    actually stopped this request. Raising it verbatim would hand the client a
+    stale account's error with a fresh ``Retry-After`` - the same laundering
+    this module exists to prevent. ``exc`` is therefore raised as-is only when
+    the caller classified nothing, and is otherwise chained as the cause.
     """
     retry_after_seconds = max(1, math.ceil(recovery_hint_seconds))
-    if isinstance(exc, ProxyResponseError):
+    caller_classified = error_response is not None or error_code is not None
+    if isinstance(exc, ProxyResponseError) and not caller_classified:
         if exc.retry_after_seconds is None:
             exc.retry_after_seconds = retry_after_seconds
         raise exc
