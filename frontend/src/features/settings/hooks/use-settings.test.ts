@@ -1,11 +1,13 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { createElement, type PropsWithChildren } from "react";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 
 import * as settingsApi from "@/features/settings/api";
+import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import {
   useClaudeSidecarAccountExcludedModels,
   useSettings,
@@ -338,6 +340,77 @@ describe("useSettings", () => {
 });
 
 describe("useClaudeSidecarAccountExcludedModels", () => {
+  it.each([
+    ["dashboard"],
+    ["accounts", "list"],
+    ["settings", "claude-sidecar", "routing"],
+    ["settings", "claude-sidecar", "quota"],
+  ])("preserves successive edits while refreshing %s", async (...queryKey) => {
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    const name = "claude-a@example.com.json";
+    const payloads: unknown[] = [];
+    let stored: string[] = [];
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    let refreshStarted = false;
+
+    server.use(
+      http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+        const body = await request.json() as { name: string; excludedModels: string[] };
+        payloads.push(body);
+        stored = body.excludedModels;
+        return HttpResponse.json({ status: "healthy", message: null, strategy: null, accounts: [] });
+      }),
+    );
+
+    function Editor() {
+      const query = useQuery({
+        queryKey,
+        queryFn: async () => {
+          if (payloads.length === 1) {
+            refreshStarted = true;
+            await refreshGate;
+          }
+          return [...stored];
+        },
+      });
+      const mutation = useClaudeSidecarAccountExcludedModels();
+      if (!query.data) return null;
+      return createElement(ExcludedModelsEditor, {
+        name,
+        emailLabel: "a@example.com",
+        excludedModels: query.data,
+        disabled: mutation.isPending,
+        onChange: (excludedModels: string[]) => mutation.mutate({ name, excludedModels }),
+      });
+    }
+
+    render(createElement(Editor), { wrapper: createWrapper(queryClient) });
+    try {
+      const fable = await screen.findByRole("switch", { name: "Exclude Fable on a@example.com" });
+      const haiku = screen.getByRole("switch", { name: "Exclude Haiku on a@example.com" });
+      await user.click(fable);
+      await waitFor(() => expect(refreshStarted).toBe(true));
+      await user.click(haiku);
+      expect(haiku).toBeDisabled();
+      expect(payloads).toEqual([{ name, excludedModels: ["claude-fable-*"] }]);
+
+      releaseRefresh();
+      await waitFor(() => expect(haiku).toBeEnabled());
+      expect(fable).toBeChecked();
+      await user.click(haiku);
+      await waitFor(() => expect(payloads).toEqual([
+        { name, excludedModels: ["claude-fable-*"] },
+        { name, excludedModels: ["claude-fable-*", "claude-haiku-*"] },
+      ]));
+      await waitFor(() => expect(haiku).toBeEnabled());
+      expect(haiku).toBeChecked();
+    } finally {
+      releaseRefresh();
+    }
+  });
+
   it("toasts when the endpoint answers 200 with a non-healthy status", async () => {
     const queryClient = createTestQueryClient();
     const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");

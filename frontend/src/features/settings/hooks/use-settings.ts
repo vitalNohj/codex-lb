@@ -440,12 +440,12 @@ export function useClaudeSidecarAccountExcludedModels() {
     onError: (error: Error) => {
       toast.error(error.message || "Failed to update CLIProxyAPI excluded models");
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "routing"] });
-      void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "quota"] });
-      void queryClient.invalidateQueries({ queryKey: ["accounts", "list"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    },
+    onSettled: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "routing"] }),
+      queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "quota"] }),
+      queryClient.invalidateQueries({ queryKey: ["accounts", "list"] }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+    ]),
   });
 }
 
