@@ -21011,9 +21011,11 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("admission_times_out", [True, False])
+@pytest.mark.parametrize(
+    "failure", ["admission_timeout", "reconnect_timeout", "reconnect_generic", "reconnect_specific", None]
+)
 async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
-    monkeypatch: pytest.MonkeyPatch, admission_times_out: bool
+    monkeypatch: pytest.MonkeyPatch, failure: str | None
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     admission = Mock()
@@ -21045,13 +21047,23 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         admission.release.assert_called_once()
         assert sum(slept) == pytest.approx(30)
         assert request_state.error_code_override is None
-        if admission_times_out:
+        if failure == "admission_timeout":
             raise TimeoutError
         return replacement_admission
 
+    async def reconnect(*_args: Any, **_kwargs: Any) -> None:
+        admission.release.assert_called_once()
+        assert request_state.error_code_override is None
+        if failure == "reconnect_timeout":
+            raise TimeoutError
+        if failure == "reconnect_generic":
+            raise RuntimeError("Reconnect failed")
+        if failure == "reconnect_specific":
+            raise ProxyResponseError(503, openai_error("no_accounts", "No replacement accounts"))
+
     monkeypatch.setattr(http_bridge_upstream_events_module.asyncio, "sleep", sleep)
     monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
-    monkeypatch.setattr(service, "_reconnect_http_bridge_session", AsyncMock())
+    monkeypatch.setattr(service, "_reconnect_http_bridge_session", reconnect)
     monkeypatch.setattr(service, "_acquire_account_response_create_lease_or_overload", AsyncMock(return_value=None))
     monkeypatch.setattr(service, "_get_work_admission", lambda: SimpleNamespace(acquire_response_create=acquire))
     monkeypatch.setattr(service, "_http_bridge_text_with_account_installation_id", lambda _s, _r, text: text)
@@ -21068,15 +21080,16 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
 
     assert request_state.event_queue is not None
     assert sum(slept) == pytest.approx(30)
-    if admission_times_out:
+    if failure is not None:
         block = request_state.event_queue.get_nowait()
         assert block is not None
         payload = proxy_service.parse_sse_data_json(block)
         assert isinstance(payload, dict)
         assert payload["type"] == "response.failed"
-        assert payload["response"]["error"]["code"] == "usage_limit_reached"
-        assert payload["response"]["error"]["message"] == message
-        assert request_state.error_http_status_override == 429
+        specific = failure == "reconnect_specific"
+        assert payload["response"]["error"]["code"] == ("no_accounts" if specific else "usage_limit_reached")
+        assert payload["response"]["error"]["message"] == ("No replacement accounts" if specific else message)
+        assert request_state.error_http_status_override == (503 if specific else 429)
         assert request_state.event_queue.get_nowait() is None
         session.upstream.send_text.assert_not_awaited()
     else:

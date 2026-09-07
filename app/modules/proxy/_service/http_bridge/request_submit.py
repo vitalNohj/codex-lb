@@ -541,6 +541,9 @@ def _request_kind_from_headers(headers: Mapping[str, str] | None) -> str:
     return "normal"
 
 
+_GENERIC_PRECREATED_RETRY_ERROR_CODES = frozenset({"upstream_unavailable", "stream_incomplete"})
+
+
 class _HTTPBridgeRequestSubmitMixin:
     @staticmethod
     def _http_bridge_clean_close_retry_max_count() -> int:
@@ -3000,7 +3003,14 @@ class _HTTPBridgeRequestSubmitMixin:
         restart_reader: bool = False,
         triggering_error: tuple[str | None, str | None, str | None] | None = None,
     ) -> bool:
-        if request_state is not None and triggering_error is not None and request_state.error_code_override is None:
+        if (
+            request_state is not None
+            and triggering_error is not None
+            and (
+                request_state.error_code_override is None
+                or request_state.error_code_override in _GENERIC_PRECREATED_RETRY_ERROR_CODES
+            )
+        ):
             code, message, error_type = triggering_error
             request_state.error_code_override = code or "upstream_unavailable"
             request_state.error_message_override = message or "Upstream error"
@@ -3028,7 +3038,10 @@ class _HTTPBridgeRequestSubmitMixin:
         finally:
             if not retried:
                 for candidate, status, code, message, error_type, param in preserved_errors:
-                    if candidate.error_code_override is None:
+                    if candidate.error_code_override is None or (
+                        candidate.error_code_override in _GENERIC_PRECREATED_RETRY_ERROR_CODES
+                        and code not in _GENERIC_PRECREATED_RETRY_ERROR_CODES
+                    ):
                         candidate.error_http_status_override = status
                         candidate.error_code_override = code
                         candidate.error_message_override = message
