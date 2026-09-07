@@ -42,6 +42,7 @@ import type {
   AccountProxyBindingRequest,
   ClaudeSidecarRoutingStrategy,
   ClaudeSidecarRoutingResponse,
+  ClaudeSidecarRoutingAccount,
   ClaudeSidecarQuotaResponse,
   DashboardSettings,
   SettingsUpdateRequest,
@@ -430,19 +431,7 @@ export function useClaudeSidecarAccountPause() {
 
 export function useClaudeSidecarAccountExcludedModels() {
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ name, excludedModels }: { name: string; excludedModels: string[] }) =>
-      setClaudeSidecarAccountExcludedModels(name, excludedModels),
-    onSuccess: async (response, { name }) => {
-      // The endpoint answers 200 with a non-healthy status when CLIProxyAPI
-      // rejected or never saw the change; without this the toggle would just
-      // revert on the next refetch with no explanation.
-      if (response.status !== "healthy") {
-        toast.error(response.message || "Failed to update CLIProxyAPI excluded models");
-        return;
-      }
-      const saved = response.accounts.find((account) => account.name === name);
-      if (!saved) return;
+  const reconcileCaches = async (name: string, saved?: ClaudeSidecarRoutingAccount | null) => {
 
       await Promise.all([
         queryClient.cancelQueries({ queryKey: ["settings", "claude-sidecar", "routing"] }),
@@ -452,7 +441,7 @@ export function useClaudeSidecarAccountExcludedModels() {
       ]);
       const reconcile = <T extends Pick<SidecarAuthAccount, "name" | "excludedModels" | "excludedModelsState">>(account: T): T =>
         account.name === name
-          ? { ...account, excludedModels: saved.excludedModels, excludedModelsState: saved.excludedModelsState }
+          ? { ...account, excludedModels: saved?.excludedModels ?? account.excludedModels, excludedModelsState: saved?.excludedModelsState ?? "unreadable" }
           : account;
       const reconcileSummary = (account: AccountSummary): AccountSummary => ({
         ...account,
@@ -474,9 +463,21 @@ export function useClaudeSidecarAccountExcludedModels() {
         { queryKey: ["dashboard", "overview"] },
         (data) => data && { ...data, accounts: data.accounts.map(reconcileSummary) },
       );
+  };
+  return useMutation({
+    mutationFn: ({ name, excludedModels }: { name: string; excludedModels: string[] }) =>
+      setClaudeSidecarAccountExcludedModels(name, excludedModels),
+    onSuccess: async (response, { name }) => {
+      if (response.status !== "healthy") {
+        toast.error(response.message || "Failed to update CLIProxyAPI excluded models");
+      }
+      const saved = response.savedAccount?.name === name ? response.savedAccount
+        : response.status === "healthy" ? response.accounts.find((account) => account.name === name) : undefined;
+      await reconcileCaches(name, saved);
     },
-    onError: (error: Error) => {
+    onError: async (error: Error, { name }) => {
       toast.error(error.message || "Failed to update CLIProxyAPI excluded models");
+      await reconcileCaches(name);
     },
     onSettled: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "routing"] }),

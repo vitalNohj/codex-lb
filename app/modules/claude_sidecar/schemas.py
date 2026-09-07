@@ -63,6 +63,7 @@ class ClaudeSidecarRoutingResponse(DashboardModel):
     message: str | None = None
     strategy: ClaudeSidecarRoutingStrategy | None = None
     accounts: list[ClaudeSidecarRoutingAccount] = Field(default_factory=list)
+    saved_account: ClaudeSidecarRoutingAccount | None = None
 
 
 class ClaudeSidecarRoutingStrategyUpdate(DashboardModel):

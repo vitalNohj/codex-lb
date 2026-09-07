@@ -636,6 +636,7 @@ export const ClaudeSidecarRoutingResponseSchema = z.object({
   message: z.string().nullable().optional(),
   strategy: ClaudeSidecarRoutingStrategySchema.nullable().optional(),
   accounts: z.array(ClaudeSidecarRoutingAccountSchema).default([]),
+  savedAccount: ClaudeSidecarRoutingAccountSchema.nullable().optional(),
 });
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;

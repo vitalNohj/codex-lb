@@ -627,7 +627,8 @@ async def test_put_routing_paused_without_management_key(async_client, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_put_routing_excluded_models_round_trips(async_client, monkeypatch):
+@pytest.mark.parametrize("read_fails", [False, True])
+async def test_put_routing_excluded_models_round_trips(async_client, monkeypatch, read_fails):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()
     response = await async_client.put(
@@ -652,6 +653,12 @@ async def test_put_routing_excluded_models_round_trips(async_client, monkeypatch
     assert _FakeSidecarClient.excluded_models_updates == [
         ("claude-a@example.com.json", ["claude-demo-*", "claude-other-5*"])
     ]
+    assert response.json()["savedAccount"]["excludedModels"] == ["claude-demo-*", "claude-other-5*"]
+    assert response.json()["savedAccount"]["excludedModelsState"] == "available"
+    if read_fails:
+        async def fail_read(self):
+            raise ClaudeSidecarUnavailableError("connection refused")
+        monkeypatch.setattr(_FakeSidecarClient, "get_routing_strategy", fail_read)
     assert response.json()["status"] == "healthy"
 
     response = await async_client.put(
@@ -661,6 +668,9 @@ async def test_put_routing_excluded_models_round_trips(async_client, monkeypatch
 
     assert response.status_code == 200
     assert _FakeSidecarClient.excluded_models_updates[-1] == ("claude-a@example.com.json", [])
+    assert response.json()["status"] == ("unreachable" if read_fails else "healthy")
+    assert response.json()["savedAccount"]["excludedModels"] == []
+    assert response.json()["savedAccount"]["excludedModelsState"] == "available"
 
 
 @pytest.mark.asyncio

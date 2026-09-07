@@ -342,9 +342,11 @@ describe("useSettings", () => {
 });
 
 describe("useClaudeSidecarAccountExcludedModels", () => {
-  it.each(["routing", "quota", "accounts", "dashboard"] as const)(
-    "preserves saved exclusions after a failed %s refresh",
-    async (surface) => {
+  it.each((["routing", "quota", "accounts", "dashboard"] as const).flatMap((surface) =>
+    (["healthy", "confirmed", "unknown", "transport"] as const).map((outcome) => ({ surface, outcome })),
+  ))(
+    "preserves exclusions after failed $surface refresh with $outcome write outcome",
+    async ({ surface, outcome }) => {
       const queryClient = createTestQueryClient();
       const user = userEvent.setup();
       const name = "claude-a@example.com.json";
@@ -370,7 +372,11 @@ describe("useClaudeSidecarAccountExcludedModels", () => {
         http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
           const body = await request.json() as { name: string; excludedModels: string[] };
           payloads.push(body);
-          return HttpResponse.json({ ...routing, accounts: [{ ...auth, excludedModels: body.excludedModels }, other] });
+          if (outcome === "transport") return HttpResponse.error();
+          return HttpResponse.json(outcome === "healthy"
+            ? { ...routing, accounts: [{ ...auth, excludedModels: body.excludedModels }, other] }
+            : { status: "unreachable", accounts: [], savedAccount: outcome === "confirmed"
+              ? { ...auth, excludedModels: body.excludedModels } : null });
         }),
       );
       function Editor() {
@@ -401,6 +407,13 @@ describe("useClaudeSidecarAccountExcludedModels", () => {
       const haiku = screen.getByRole("switch", { name: "Exclude Haiku on a@example.com" });
       await user.click(fable);
       await waitFor(() => expect(failedReads).toBe(1));
+      if (outcome === "unknown" || outcome === "transport") {
+        await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+        expect(haiku).toBeDisabled();
+        await user.click(haiku);
+        expect(payloads).toEqual([{ name, excludedModels: ["claude-fable-*"] }]);
+        return;
+      }
       await waitFor(() => expect(haiku).toBeEnabled());
       expect(fable).toBeChecked();
       await user.click(haiku);
@@ -419,7 +432,7 @@ describe("useClaudeSidecarAccountExcludedModels", () => {
   );
 
   it.each([
-    ["dashboard"],
+    ["dashboard", "overview", "24h"],
     ["accounts", "list"],
     ["settings", "claude-sidecar", "routing"],
     ["settings", "claude-sidecar", "quota"],
@@ -450,7 +463,10 @@ describe("useClaudeSidecarAccountExcludedModels", () => {
             refreshStarted = true;
             await refreshGate;
           }
-          return [...stored];
+          const row = SidecarAuthAccountSchema.parse({ name, excludedModels: [...stored], excludedModelsState: "available" });
+          return queryKey[0] === "settings"
+            ? { accounts: [row] }
+            : { accounts: [createAccountSummary({ sidecarAuths: [row] })] };
         },
       });
       const mutation = useClaudeSidecarAccountExcludedModels();
@@ -458,7 +474,8 @@ describe("useClaudeSidecarAccountExcludedModels", () => {
       return createElement(ExcludedModelsEditor, {
         name,
         emailLabel: "a@example.com",
-        excludedModels: query.data,
+        excludedModels: "sidecarAuths" in query.data.accounts[0]
+          ? query.data.accounts[0].sidecarAuths[0].excludedModels : query.data.accounts[0].excludedModels,
         disabled: mutation.isPending,
         onChange: (excludedModels: string[]) => mutation.mutate({ name, excludedModels }),
       });

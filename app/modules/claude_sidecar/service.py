@@ -307,7 +307,11 @@ class ClaudeSidecarService:
             message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
             return ClaudeSidecarRoutingResponse(status=status, message=message)
         await self._patch_snapshot_excluded_models(name, patterns)
-        return await self.get_routing()
+        response = await self.get_routing()
+        response.saved_account = ClaudeSidecarRoutingAccount(
+            name=name, excluded_models=patterns, excluded_models_state="available"
+        )
+        return response
 
     async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.
