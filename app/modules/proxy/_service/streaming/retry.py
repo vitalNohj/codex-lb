@@ -235,13 +235,23 @@ def _raise_capacity_recovery_fail_fast(
     stale account's error with a fresh ``Retry-After`` - the same laundering
     this module exists to prevent. ``exc`` is therefore raised as-is only when
     the caller classified nothing, and is otherwise chained as the cause.
+
+    Superseding ``exc``'s *classification* must not discard its *recovery
+    metadata*: ``recovery_hint_seconds`` is the local interval before the next
+    internal attempt, while ``exc.retry_after_seconds`` carries the upstream
+    hint for when the condition actually clears. Only the latter is actionable
+    for the client, so it keeps precedence and the local interval is used only
+    when no upstream hint exists.
     """
     retry_after_seconds = max(1, math.ceil(recovery_hint_seconds))
     caller_classified = error_response is not None or error_code is not None
-    if isinstance(exc, ProxyResponseError) and not caller_classified:
-        if exc.retry_after_seconds is None:
-            exc.retry_after_seconds = retry_after_seconds
-        raise exc
+    if isinstance(exc, ProxyResponseError):
+        if not caller_classified:
+            if exc.retry_after_seconds is None:
+                exc.retry_after_seconds = retry_after_seconds
+            raise exc
+        # A superseded upstream error still owns the honest recovery hint.
+        retry_after_seconds = exc.retry_after_seconds or retry_after_seconds
     if error_response is not None:
         status_code, error_payload = error_response
     else:

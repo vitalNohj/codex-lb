@@ -48393,6 +48393,63 @@ def test_capacity_fail_fast_prefers_caller_classification_over_stale_transient()
     assert stale_account_a_error.retry_after_seconds is None
 
 
+def test_capacity_fail_fast_keeps_superseded_upstream_recovery_hint() -> None:
+    """Superseding the classification must not discard the upstream hint.
+
+    ``recovery_hint_seconds`` is the local interval before codex-lb's next
+    internal attempt; ``exc.retry_after_seconds`` is when upstream said the
+    condition clears. Only the latter is actionable for the client, so it keeps
+    precedence even when the caller's classification wins.
+    """
+    upstream_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "The usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+        retry_after_seconds=300,
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=upstream_error,
+            error_code="account_response_create_cap",
+            error_message="Account response-create concurrency limit reached",
+            error_type="rate_limit_error",
+            recovery_hint_seconds=30.0,
+        )
+
+    raised = exc_info.value
+    assert raised is not upstream_error
+    assert raised.payload["error"]["code"] == "account_response_create_cap"
+    # The upstream hint wins over the local 30s polling interval.
+    assert raised.retry_after_seconds == 300
+
+
+def test_capacity_fail_fast_uses_local_interval_without_upstream_hint() -> None:
+    """With no upstream hint the local interval is the honest fallback."""
+    upstream_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "The usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=upstream_error,
+            error_code="account_response_create_cap",
+            error_message="Account response-create concurrency limit reached",
+            error_type="rate_limit_error",
+            recovery_hint_seconds=30.0,
+        )
+
+    assert exc_info.value.retry_after_seconds == 30
+
+
 def test_capacity_fail_fast_raises_transient_when_caller_classified_nothing() -> None:
     """With no caller classification the transient is the honest answer."""
     quota_error = proxy_module.ProxyResponseError(
