@@ -21053,7 +21053,8 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         response_create_admission=admission,
     )
     session = _make_bridge_session(pending_requests=deque([request_state]), queued_request_count=1)
-    session.upstream.send_text = AsyncMock()
+    send_text = AsyncMock()
+    monkeypatch.setattr(session.upstream, "send_text", send_text)
     slept: list[float] = []
 
     async def sleep(seconds: float) -> None:
@@ -21105,13 +21106,17 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         assert isinstance(payload, dict)
         assert payload["type"] == "response.failed"
         specific = failure == "reconnect_specific"
-        assert payload["response"]["error"]["code"] == ("no_accounts" if specific else "usage_limit_reached")
-        assert payload["response"]["error"]["message"] == ("No replacement accounts" if specific else message)
+        response = payload["response"]
+        assert isinstance(response, dict)
+        error = response["error"]
+        assert isinstance(error, dict)
+        assert error["code"] == ("no_accounts" if specific else "usage_limit_reached")
+        assert error["message"] == ("No replacement accounts" if specific else message)
         assert request_state.error_http_status_override == (503 if specific else 429)
         assert request_state.event_queue.get_nowait() is None
-        session.upstream.send_text.assert_not_awaited()
+        send_text.assert_not_awaited()
     else:
-        session.upstream.send_text.assert_awaited_once()
+        send_text.assert_awaited_once()
         assert request_state.event_queue.empty()
         assert request_state.error_code_override is None
         assert request_state.error_message_override is None
@@ -21164,10 +21169,15 @@ async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_de
     block = await request_state.event_queue.get()
     assert block is not None
     payload = proxy_service.parse_sse_data_json(block)
+    assert isinstance(payload, dict)
     assert payload["type"] == "response.failed"
-    assert payload["response"]["error"]["code"] == "usage_limit_reached"
-    assert payload["response"]["error"]["message"] == "Upstream quota exhausted"
-    assert payload["response"]["error"]["type"] == "usage_limit_reached"
+    response = payload["response"]
+    assert isinstance(response, dict)
+    error = response["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == "usage_limit_reached"
+    assert error["message"] == "Upstream quota exhausted"
+    assert error["type"] == "usage_limit_reached"
     assert request_state.error_http_status_override == 429
     assert await request_state.event_queue.get() is None
     assert request_state.replay_count == 0
