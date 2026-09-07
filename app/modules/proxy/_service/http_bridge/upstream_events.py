@@ -154,7 +154,6 @@ from app.modules.proxy._service.support import (
     _record_response_event,
     _signal_propagated_capacity_startup_ready,
     _signal_propagated_capacity_startup_wait,
-    _SilentCapacityHold,
     _websocket_request_can_replay_before_visible_output,
     _websocket_should_defer_reasoning_prelude,
     _WebSocketReceiveTimeout,
@@ -2476,7 +2475,9 @@ class _HTTPBridgeUpstreamEventsMixin:
                         session,
                         request_state=status_request_state,
                         triggering_error=(
-                            retry_error_code, retry_error_message, _websocket_event_error_type(event_type, payload)
+                            retry_error_code,
+                            retry_error_message,
+                            _websocket_event_error_type(event_type, payload),
                         ),
                     )
                     if retried:
@@ -2545,7 +2546,9 @@ class _HTTPBridgeUpstreamEventsMixin:
                         session,
                         request_state=status_request_state,
                         triggering_error=(
-                            owner_pinned_quota_error, retry_error_message, _websocket_event_error_type(event_type, payload)
+                            owner_pinned_quota_error,
+                            retry_error_message,
+                            _websocket_event_error_type(event_type, payload),
                         ),
                     )
                     if retried:
@@ -2662,7 +2665,9 @@ class _HTTPBridgeUpstreamEventsMixin:
                     session,
                     request_state=status_request_state,
                     triggering_error=(
-                        retry_error_code, retry_error_message, _websocket_event_error_type(event_type, payload)
+                        retry_error_code,
+                        retry_error_message,
+                        _websocket_event_error_type(event_type, payload),
                     ),
                 )
                 if retried:

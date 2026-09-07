@@ -47,10 +47,10 @@ from app.modules.proxy._service.support import (
     _account_capacity_wait_payload,
     _account_selection_recovery_sleep_seconds,
     _request_log_client_fields,
-    _SilentCapacityHold,
     _RetryableStreamError,
     _signal_propagated_capacity_startup_wait,
     _signal_propagated_responses_service_cleanup_ready,
+    _SilentCapacityHold,
     _stream_settlement_error_payload,
     _StreamSettlement,
     _TerminalStreamError,
@@ -71,6 +71,7 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.continuity import resolve_required_account_id
+from app.modules.proxy.error_status import status_for_error_fields
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _is_account_model_unsupported_error,
@@ -82,7 +83,6 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
 from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
-from app.modules.proxy.error_status import status_for_error_fields
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
 
 _REQUEST_TRANSPORT_HTTP = "http"
@@ -2193,9 +2193,7 @@ class _StreamingRetryMixin:
                                         remaining_budget_seconds = _facade()._remaining_budget_seconds(deadline)
                                         if remaining_budget_seconds <= 0:
                                             raise
-                                        emit_keepalives = (
-                                            not propagate_http_errors or not enforce_openai_sdk_contract
-                                        )
+                                        emit_keepalives = not propagate_http_errors or not enforce_openai_sdk_contract
                                         if not silent_capacity_hold.allows(
                                             recovery_sleep_seconds,
                                             holds_downstream_silently=not emit_keepalives,

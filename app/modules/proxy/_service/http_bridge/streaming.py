@@ -169,9 +169,9 @@ from app.modules.proxy._service.support import (
     _HTTPBridgeSessionKey,
     _is_local_account_cap_code,
     _signal_propagated_capacity_startup_ready,
-    _SilentCapacityHold,
     _signal_propagated_capacity_startup_wait,
     _signal_propagated_responses_service_cleanup_ready,
+    _SilentCapacityHold,
     _ttft_event_visible_at,
     _WebSocketRequestState,
 )
@@ -2200,7 +2200,9 @@ class _HTTPBridgeStreamingMixin:
                         holds_downstream_silently=propagate_http_errors,
                     )
                     if wait_plan is not None:
-                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge session creation "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f error=%s",
@@ -2461,7 +2463,9 @@ class _HTTPBridgeStreamingMixin:
                         )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge recovery session creation "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f path=%s error=%s",
@@ -3079,7 +3083,9 @@ class _HTTPBridgeStreamingMixin:
                         )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before replacing retired HTTP bridge gate "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f error=%s",
@@ -3191,7 +3197,9 @@ class _HTTPBridgeStreamingMixin:
                         )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge soft reroute session "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f error=%s",
@@ -3452,7 +3460,9 @@ class _HTTPBridgeStreamingMixin:
                         )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge local recovery session "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f path=%s error=%s",

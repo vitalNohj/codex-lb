@@ -5109,7 +5109,8 @@ async def test_http_bridge_model_capacity_wait_suppresses_keepalive_when_errors_
     assert request_state.event_queue is not None
     assert request_state.event_queue.empty()
     retry_precreated.assert_awaited_once_with(
-        session, request_state=request_state,
+        session,
+        request_state=request_state,
         triggering_error=(
             "server_is_overloaded",
             "Selected model is at capacity. Please try a different model.",
@@ -5177,7 +5178,8 @@ async def test_http_bridge_model_capacity_wait_hides_keepalive_for_non_sdk_propa
     assert request_state.event_queue is not None
     assert request_state.event_queue.empty()
     retry_precreated.assert_awaited_once_with(
-        session, request_state=request_state,
+        session,
+        request_state=request_state,
         triggering_error=(
             "server_is_overloaded",
             "Selected model is at capacity. Please try a different model.",
@@ -21085,11 +21087,13 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
 
     await service._process_http_bridge_upstream_text(
         session,
-        json.dumps({
-            "type": "error",
-            "status": 429,
-            "error": {"code": "usage_limit_reached", "type": "usage_limit_reached", "message": message},
-        }),
+        json.dumps(
+            {
+                "type": "error",
+                "status": 429,
+                "error": {"code": "usage_limit_reached", "type": "usage_limit_reached", "message": message},
+            }
+        ),
     )
 
     assert request_state.event_queue is not None
@@ -21143,15 +21147,17 @@ async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_de
 
     await service._process_http_bridge_upstream_text(
         session,
-        json.dumps({
-            "type": "error",
-            "status": 429,
-            "error": {
-                "code": "usage_limit_reached",
-                "type": "usage_limit_reached",
-                "message": "Upstream quota exhausted",
-            },
-        }),
+        json.dumps(
+            {
+                "type": "error",
+                "status": 429,
+                "error": {
+                    "code": "usage_limit_reached",
+                    "type": "usage_limit_reached",
+                    "message": "Upstream quota exhausted",
+                },
+            }
+        ),
     )
 
     assert request_state.event_queue is not None

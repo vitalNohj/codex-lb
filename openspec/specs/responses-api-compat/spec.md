@@ -3240,6 +3240,18 @@ When the service prepares a Responses `response.create` request for the upstream
 - **AND** the error envelope param is `input`
 - **AND** the service MUST NOT connect the upstream websocket for that request
 
+### Requirement: Capacity recovery preserves terminal errors and bounds silent waits
+
+For HTTP Responses requests, capacity recovery waits that emit no downstream bytes MUST share a cumulative 30-second allowance per request, independent of the total request budget. This applies to HTTP bridge capacity waits, pre-created model-capacity replay waits, and direct HTTP streaming recovery. If the next wait exceeds the remaining allowance, the proxy MUST decline the wait and surface the capacity error. Short waits that fit MAY still recover in place. Waits emitting keepalives MUST NOT consume this allowance. Per-session `response_create_gate_timeout` contention is exempt from both the allowance and its accounting.
+
+The HTTP bridge capacity wait planner MUST also decline an account recovery hint that exceeds the remaining request budget, even if the wait would emit keepalives. Gate contention remains exempt from this refusal and bounded by the request deadline. The wait requirements below apply only when these limits permit waiting.
+
+When replay fails or is declined, the terminal event MUST preserve a captured upstream code, message, and type rather than replace them with `stream_incomplete`. The shared pre-created replay boundary MUST preserve that error across replay preparation and unsuccessful exits. A later specific upstream failure MAY supersede it, but a generic retry or transport failure MUST NOT. Successful replay MUST leave stale error overrides cleared. Explicit continuity masking remains governed by the continuity requirements.
+
+Before HTTP output is committed, an upstream `usage_limit_reached` MUST surface as HTTP 429 with the upstream message. A genuine `no_accounts` selection failure remains HTTP 503. Capacity refusals MUST attach `Retry-After` from the available recovery hint. JSON errors with a positive finite `resets_in_seconds` MUST supply a rounded-up `Retry-After` for 429 and 503 unless one is already present. After output is committed, the terminal error travels in-stream under the existing streaming contract. A transport drop with no captured upstream error retains the 502 `stream_incomplete` fallback.
+
+Regression coverage: `tests/integration/test_responses_quota_propagation.py`, `tests/unit/test_http_bridge_terminal_error_propagation.py`, and the capacity recovery and replay cases in `tests/unit/test_proxy_http_bridge.py` and `tests/unit/test_proxy_utils.py`.
+
 ### Requirement: Streaming Responses requests use a bounded retry budget
 When a streaming `/v1/responses` request encounters upstream instability, the proxy MUST enforce a configurable total request budget across selection, token refresh, account-capacity recovery waits, and upstream stream attempts. Each upstream stream attempt MUST clamp its connect timeout, idle timeout, and total request timeout to the remaining request budget.
 
@@ -3255,7 +3267,7 @@ When a streaming `/v1/responses` request encounters upstream instability, the pr
 
 #### Scenario: Recoverable account-capacity wait is bounded by the request budget
 - **WHEN** account selection reports a recoverable retry hint such as temporary rate-limit or stream-capacity exhaustion
-- **AND** the streaming request still has remaining request budget
+- **AND** the streaming request still has remaining request budget and the capacity recovery limits above permit waiting
 - **THEN** the proxy may wait for at most the smaller of the recovery hint and the remaining request budget before retrying selection
 - **AND** if the budget is exhausted before an account becomes available, the request fails through the normal no-account or rate-limit error path instead of starting a fresh full-budget wait
 
@@ -3267,6 +3279,7 @@ When a streaming `/v1/responses` request encounters upstream instability, the pr
 
 #### Scenario: Local account cap selection waits instead of failing immediately
 - **WHEN** account selection for a streaming Responses request fails locally with `account_stream_cap` or `account_response_create_cap`
+- **AND** the capacity recovery limits above permit waiting
 - **THEN** the proxy treats the condition as a recoverable account-capacity wait within the request budget
 - **AND** it retries account selection after the bounded wait instead of returning an immediate 429
 - **AND** permanent `no_accounts` failures remain non-waitable unless they carry a distinct recoverable capacity or upstream quota signal
@@ -3279,11 +3292,13 @@ When a streaming `/v1/responses` request encounters upstream instability, the pr
 
 #### Scenario: SDK-contract propagated startup errors remain observable
 - **WHEN** a route requests HTTP error propagation, enforces the OpenAI SDK stream contract, and waits for local account capacity before startup
+- **AND** the capacity recovery limits above permit waiting
 - **THEN** the route MUST perform the bounded recovery wait instead of raising the first cap error immediately
 - **AND** it MUST NOT emit an account-capacity keepalive before startup succeeds, so a terminal startup error can still use the route's structured error path
 
 #### Scenario: Existing HTTP bridge session waits on submit capacity
 - **WHEN** HTTP bridge session submission reaches `account_response_create_cap`
+- **AND** the capacity recovery limits above permit waiting
 - **THEN** a hard-affinity or file-pinned request MUST wait and retry submission within the bridge request budget
 - **AND** a soft-affinity request MUST retain its existing alternate-session reroute behavior before waiting on the saturated session
 
@@ -4191,13 +4206,13 @@ When upstream returns a temporary model-capacity failure whose message says that
 - **WHEN** a replayable pre-created HTTP bridge request receives the selected-model capacity message with a quota or
   rate-limit error code
 - **THEN** the proxy MUST preserve that quota or rate-limit classification for account health handling
-- **AND** the proxy MUST still apply the model-capacity wait before replaying the request.
+- **AND** the proxy MUST apply the model-capacity wait before replaying only when the [capacity recovery limits](#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) permit waiting.
 
 ### Requirement: HTTP bridge model-capacity retry waits preserve stream contracts
 
 The proxy MUST wait before replaying a pre-created HTTP bridge request with a selected-model capacity failure only
-when the failure happened before any downstream-visible response event and the request is still replayable as a fresh
-request.
+when the failure happened before any downstream-visible response event, the request is still replayable as a fresh
+request, and the [capacity recovery limits](#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) permit waiting.
 
 #### Scenario: Public propagated-error streams do not receive pre-retry keepalives
 
@@ -4222,7 +4237,7 @@ request.
   that anchor
 - **AND** upstream returns a selected-model capacity error before visible output
 - **THEN** the proxy MUST apply the model-capacity wait before stripping the injected anchor and replaying the fresh
-  request.
+  request only when the [capacity recovery limits](#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) permit waiting.
 
 #### Scenario: Remote-owner relay preserves the hidden startup wait
 

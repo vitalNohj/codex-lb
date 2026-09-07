@@ -120,6 +120,8 @@ class _SilentCapacityHold:
 
     def record(self, wait_seconds: float) -> None:
         self.consumed_seconds += max(0.0, wait_seconds)
+
+
 _LOCAL_ACCOUNT_CAP_ERROR_CODES = frozenset(
     {"account_response_create_cap", "account_stream_cap", "api_key_stream_fair_share"}
 )
