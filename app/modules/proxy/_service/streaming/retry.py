@@ -212,6 +212,7 @@ def _resolved_configured_stream_transport(dashboard_settings: Any, base_settings
 def _raise_capacity_recovery_fail_fast(
     *,
     exc: BaseException | None = None,
+    same_failure: bool,
     error_code: str | None = None,
     error_message: str | None = None,
     error_type: str | None = None,
@@ -236,12 +237,6 @@ def _raise_capacity_recovery_fail_fast(
     this module exists to prevent. ``exc`` is therefore raised as-is only when
     the caller classified nothing, and is otherwise chained as the cause.
 
-    Superseding ``exc``'s *classification* must not discard its *recovery
-    metadata*: ``recovery_hint_seconds`` is the local interval before the next
-    internal attempt, while ``exc.retry_after_seconds`` carries the upstream
-    hint for when the condition actually clears. Only the latter is actionable
-    for the client, so it keeps precedence and the local interval is used only
-    when no upstream hint exists.
     """
     retry_after_seconds = max(1, math.ceil(recovery_hint_seconds))
     caller_classified = error_response is not None or error_code is not None
@@ -250,8 +245,8 @@ def _raise_capacity_recovery_fail_fast(
             if exc.retry_after_seconds is None:
                 exc.retry_after_seconds = retry_after_seconds
             raise exc
-        # A superseded upstream error still owns the honest recovery hint.
-        retry_after_seconds = exc.retry_after_seconds or retry_after_seconds
+        if same_failure and exc.retry_after_seconds is not None:
+            retry_after_seconds = exc.retry_after_seconds
     if error_response is not None:
         status_code, error_payload = error_response
     else:
@@ -908,6 +903,7 @@ class _StreamingRetryMixin:
                     ):
                         _raise_capacity_recovery_fail_fast(
                             exc=exc,
+                            same_failure=True,
                             recovery_hint_seconds=recovery_sleep_seconds,
                         )
                     async for wait_event in _iter_account_capacity_recovery_wait(
@@ -1261,6 +1257,7 @@ class _StreamingRetryMixin:
                             ):
                                 _raise_capacity_recovery_fail_fast(
                                     exc=last_transient_exc,
+                                    same_failure=True,
                                     error_code="account_response_create_cap",
                                     error_message=(deferred_error.message if deferred_error else None)
                                     or "Account response-create concurrency limit reached",
@@ -1350,6 +1347,7 @@ class _StreamingRetryMixin:
                             ):
                                 _raise_capacity_recovery_fail_fast(
                                     exc=last_transient_exc,
+                                    same_failure=False,
                                     error_response=selection_failure_response(selection),
                                     recovery_hint_seconds=recovery_sleep_seconds,
                                 )
@@ -2220,6 +2218,7 @@ class _StreamingRetryMixin:
                                         ):
                                             _raise_capacity_recovery_fail_fast(
                                                 exc=tex if isinstance(tex, ProxyResponseError) else None,
+                                                same_failure=True,
                                                 error_code=code,
                                                 error_message=error_message,
                                                 error_type="rate_limit_error",

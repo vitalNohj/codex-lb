@@ -48349,6 +48349,81 @@ async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_
     assert exc_info.value.retry_after_seconds == hint_seconds
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_failure", [False, True])
+@pytest.mark.parametrize("upstream_hint", [None, 300])
+async def test_stream_with_retry_capacity_hint_belongs_to_winning_failure(monkeypatch, same_failure, upstream_hint):
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    account = _make_account("acc_capacity_hint_owner")
+    slept: list[float] = []
+    stream_calls = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def fake_stream_once(*_args: object, **_kwargs: object):
+        nonlocal stream_calls
+        stream_calls += 1
+        code = "account_response_create_cap" if same_failure else "usage_limit_reached"
+        raise proxy_module.ProxyResponseError(
+            429,
+            openai_error(code, "Upstream capacity exhausted. Try again in 30s", error_type="rate_limit_error"),
+            retry_after_seconds=upstream_hint,
+        )
+        yield ""
+
+    selections = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_code="account_stream_cap",
+                error_message="Account stream concurrency limit reached. Try again in 10s",
+            ),
+            AccountSelection(account=account, error_message=None),
+            AccountSelection(
+                account=None,
+                error_code="account_stream_cap",
+                error_message="Account stream concurrency limit reached. Try again in 30s",
+            ),
+        ]
+    )
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=account.id if same_failure else None)
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", selections)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_stream_once", fake_stream_once)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(return_value={"failure_class": "quota"}))
+    monkeypatch.setattr(service._load_balancer, "record_errors", AsyncMock())
+
+    payload = ResponsesRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True})
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        async for _ in service._stream_with_retry(
+            payload,
+            {},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+            upstream_stream_transport_override="http",
+        ):
+            pass
+
+    assert stream_calls > 0
+    assert sum(slept) >= 10
+    assert exc_info.value.payload["error"]["code"] == (
+        "account_response_create_cap" if same_failure else "account_stream_cap"
+    )
+    assert exc_info.value.retry_after_seconds == (upstream_hint if same_failure and upstream_hint else 30)
+
+
 def test_capacity_fail_fast_prefers_caller_classification_over_stale_transient() -> None:
     """A carried-forward transient must not replace the current condition.
 
@@ -48377,6 +48452,7 @@ def test_capacity_fail_fast_prefers_caller_classification_over_stale_transient()
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         streaming_retry_module._raise_capacity_recovery_fail_fast(
             exc=stale_account_a_error,
+            same_failure=False,
             error_response=current_selection_failure,
             recovery_hint_seconds=120.0,
         )
@@ -48414,6 +48490,7 @@ def test_capacity_fail_fast_keeps_superseded_upstream_recovery_hint() -> None:
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         streaming_retry_module._raise_capacity_recovery_fail_fast(
             exc=upstream_error,
+            same_failure=True,
             error_code="account_response_create_cap",
             error_message="Account response-create concurrency limit reached",
             error_type="rate_limit_error",
@@ -48441,6 +48518,7 @@ def test_capacity_fail_fast_uses_local_interval_without_upstream_hint() -> None:
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         streaming_retry_module._raise_capacity_recovery_fail_fast(
             exc=upstream_error,
+            same_failure=True,
             error_code="account_response_create_cap",
             error_message="Account response-create concurrency limit reached",
             error_type="rate_limit_error",
@@ -48464,6 +48542,7 @@ def test_capacity_fail_fast_raises_transient_when_caller_classified_nothing() ->
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         streaming_retry_module._raise_capacity_recovery_fail_fast(
             exc=quota_error,
+            same_failure=True,
             recovery_hint_seconds=45.0,
         )
 
