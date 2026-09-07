@@ -237,6 +237,8 @@ def _raise_capacity_recovery_fail_fast(
     this module exists to prevent. ``exc`` is therefore raised as-is only when
     the caller classified nothing, and is otherwise chained as the cause.
 
+    ``same_failure`` distinguishes reclassification of ``exc`` from a subsequent
+    selection failure, so only reclassification can inherit its recovery hint.
     """
     retry_after_seconds = max(1, math.ceil(recovery_hint_seconds))
     caller_classified = error_response is not None or error_code is not None
