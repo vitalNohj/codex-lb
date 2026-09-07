@@ -53,6 +53,7 @@ from app.core.errors import (
     OpenAIErrorDetail,
     OpenAIErrorEnvelope,
     ResponseFailedEvent,
+    error_retry_after_seconds,
     openai_error,
     response_failed_event,
 )
@@ -526,7 +527,11 @@ class ProxyResponseError(Exception):
         self.upstream_status_code = upstream_status_code
         self.upstream_error_code = upstream_error_code
         self.failed_session = failed_session
-        self.retry_after_seconds = retry_after_seconds
+        self.retry_after_seconds = (
+            error_retry_after_seconds(payload.get("error"), retry_after_seconds)
+            if status_code in {429, 503}
+            else retry_after_seconds
+        )
         self.reservation_released = reservation_released
 
 

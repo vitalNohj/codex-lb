@@ -4813,6 +4813,15 @@ async def test_http_bridge_model_capacity_waits_before_precreated_retry(
     retry_precreated.assert_awaited_once_with(
         session,
         request_state=request_state,
+        triggering_error_payload={
+            "type": "error",
+            "status": 400,
+            "error": {
+                "type": "invalid_request_error",
+                "code": upstream_code,
+                "message": "Selected model is at capacity. Please try a different model.",
+            },
+        },
         triggering_error=(
             expected_retry_error_code,
             "Selected model is at capacity. Please try a different model.",
@@ -5111,6 +5120,15 @@ async def test_http_bridge_model_capacity_wait_suppresses_keepalive_when_errors_
     retry_precreated.assert_awaited_once_with(
         session,
         request_state=request_state,
+        triggering_error_payload={
+            "type": "error",
+            "status": 400,
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_request_error",
+                "message": "Selected model is at capacity. Please try a different model.",
+            },
+        },
         triggering_error=(
             "server_is_overloaded",
             "Selected model is at capacity. Please try a different model.",
@@ -5180,6 +5198,15 @@ async def test_http_bridge_model_capacity_wait_hides_keepalive_for_non_sdk_propa
     retry_precreated.assert_awaited_once_with(
         session,
         request_state=request_state,
+        triggering_error_payload={
+            "type": "error",
+            "status": 400,
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_request_error",
+                "message": "Selected model is at capacity. Please try a different model.",
+            },
+        },
         triggering_error=(
             "server_is_overloaded",
             "Selected model is at capacity. Please try a different model.",
@@ -21028,7 +21055,7 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", ["admission_timeout", "reconnect_timeout", "reconnect_generic", "reconnect_specific", None]
+    "failure", ["capacity_refusal", "admission_timeout", "reconnect_timeout", "reconnect_generic", "reconnect_specific", None]
 )
 @pytest.mark.parametrize("hint", [None, "resets_in_seconds", "resets_at"])
 async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
@@ -21090,6 +21117,13 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
     message = "Selected model is at capacity. Please try a different model."
     monkeypatch.setattr(proxy_api.time, "time", lambda: 1000.0)
     metadata = {hint: 1300 if hint == "resets_at" else 300} if hint else {}
+    if failure == "capacity_refusal":
+        with monkeypatch.context() as wait_patch:
+            wait_patch.setattr(http_bridge_upstream_events_module, "_ACCOUNT_SELECTION_RECOVERY_DEFAULT_SLEEP_SECONDS", 10)
+            assert await http_bridge_upstream_events_module._wait_before_http_bridge_model_capacity_retry(
+                request_state, emit_keepalives=False, error_message=message
+            )
+        assert request_state.silent_capacity_hold.consumed_seconds == 10
 
     await service._process_http_bridge_upstream_text(
         session,
@@ -21103,7 +21137,7 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
     )
 
     assert request_state.event_queue is not None
-    assert sum(slept) == pytest.approx(30)
+    assert sum(slept) == pytest.approx(10 if failure == "capacity_refusal" else 30)
     if failure is not None:
         block = request_state.event_queue.get_nowait()
         assert block is not None
@@ -21118,12 +21152,27 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
         assert error["code"] == ("no_accounts" if specific else "usage_limit_reached")
         assert error["message"] == ("No replacement accounts" if specific else message)
         assert request_state.error_http_status_override == (503 if specific else 429)
-        downstream = proxy_api._logged_error_json_response(
-            Request({"type": "http", "method": "POST", "path": "/v1/responses", "headers": []}),
+        fallback = request_state.capacity_fail_fast_retry_after_seconds
+        if failure == "capacity_refusal":
+            assert fallback == 30
+        terminal_error = ProxyResponseError(
             request_state.error_http_status_override,
             proxy_support_module._openai_error_envelope_from_response_failed_payload(payload),
+            retry_after_seconds=int(fallback) if fallback is not None else None,
         )
-        assert downstream.headers.get("Retry-After") == ("17" if specific else "300" if hint else None)
+        headers = (
+            {"Retry-After": str(terminal_error.retry_after_seconds)}
+            if terminal_error.retry_after_seconds is not None
+            else {}
+        )
+        downstream = proxy_api._logged_error_json_response(
+            Request({"type": "http", "method": "POST", "path": "/v1/responses", "headers": []}),
+            terminal_error.status_code,
+            terminal_error.payload,
+            headers=headers,
+        )
+        expected_hint = "17" if specific else "300" if hint else "30" if failure == "capacity_refusal" else None
+        assert downstream.headers.get("Retry-After") == expected_hint
         assert request_state.event_queue.get_nowait() is None
         send_text.assert_not_awaited()
     else:

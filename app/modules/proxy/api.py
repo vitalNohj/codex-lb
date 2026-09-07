@@ -81,6 +81,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
     OpenAIErrorEnvelope,
+    error_retry_after_seconds,
     is_previous_response_not_found_error,
     openai_error,
     response_failed_event,
@@ -7815,18 +7816,9 @@ def _logged_error_json_response(
     effective_headers = dict(headers or {})
     error = public_content.get("error")
     if status_code in {429, 503} and isinstance(error, dict):
-        reset_in = error.get("resets_in_seconds")
-        reset_at = error.get("resets_at")
-        if reset_in is None and isinstance(reset_at, int | float) and not isinstance(reset_at, bool):
-            reset_in = reset_at - time.time()
-        if (
-            isinstance(reset_in, int | float)
-            and not isinstance(reset_in, bool)
-            and reset_in > 0
-            and (isinstance(reset_in, int) or math.isfinite(reset_in))
-            and not any(key.lower() == "retry-after" for key in effective_headers)
-        ):
-            effective_headers["Retry-After"] = str(math.ceil(reset_in))
+        retry_after = error_retry_after_seconds(error)
+        if retry_after is not None and not any(key.lower() == "retry-after" for key in effective_headers):
+            effective_headers["Retry-After"] = str(retry_after)
     if status_code == 429 and is_local_overload_error_code(code):
         effective_headers = merge_retry_after_headers(effective_headers)
     log_error_response(

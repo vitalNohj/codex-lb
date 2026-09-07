@@ -28265,7 +28265,9 @@ async def test_hidden_http_bridge_model_capacity_retry_suppresses_reconnect_wait
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
         triggering_error: tuple[str, str | None, str | None] | None = None,
+        triggering_error_payload: dict[str, JsonValue] | None = None,
     ) -> bool:
+        assert triggering_error_payload is not None
         assert request_state is not None
         assert triggering_error is not None
         assert request_state.response_create_gate is response_create_gate
@@ -28535,9 +28537,15 @@ async def test_http_bridge_model_capacity_wait_retries_only_original_pending_req
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
         triggering_error: tuple[str, str | None, str | None] | None = None,
+        triggering_error_payload: dict[str, JsonValue] | None = None,
     ) -> bool:
         retry_calls.append(request_state)
-        return await original_retry(_session, request_state=request_state, triggering_error=triggering_error)
+        return await original_retry(
+            _session,
+            request_state=request_state,
+            triggering_error=triggering_error,
+            triggering_error_payload=triggering_error_payload,
+        )
 
     async def replace_original_during_wait(*_args: object, **_kwargs: object) -> bool:
         async with session.pending_lock:

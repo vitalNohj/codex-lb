@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Literal, NotRequired, TypedDict
@@ -59,6 +60,22 @@ def openai_error(
     if resets_at is not None:
         detail["resets_at"] = int(resets_at)
     return {"error": detail}
+
+
+def error_retry_after_seconds(error: object, fallback: int | None = None) -> int | None:
+    if isinstance(error, dict):
+        reset_in = error.get("resets_in_seconds")
+        reset_at = error.get("resets_at")
+        if reset_in is None and isinstance(reset_at, int | float) and not isinstance(reset_at, bool):
+            reset_in = reset_at - time.time()
+        if (
+            isinstance(reset_in, int | float)
+            and not isinstance(reset_in, bool)
+            and reset_in > 0
+            and (isinstance(reset_in, int) or math.isfinite(reset_in))
+        ):
+            return math.ceil(reset_in)
+    return fallback
 
 
 def dashboard_error(
