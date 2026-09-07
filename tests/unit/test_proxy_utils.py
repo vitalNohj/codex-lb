@@ -48392,7 +48392,9 @@ async def test_stream_with_retry_capacity_hint_belongs_to_winning_failure(monkey
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(
-        service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=account.id if same_failure else None)
+        service,
+        "_resolve_websocket_previous_response_owner",
+        AsyncMock(return_value=account.id if same_failure else None),
     )
     monkeypatch.setattr(service, "_select_account_with_budget_compatible", selections)
     monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
