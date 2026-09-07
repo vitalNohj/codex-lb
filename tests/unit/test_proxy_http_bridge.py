@@ -21011,6 +21011,84 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("admission_times_out", [True, False])
+async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
+    monkeypatch: pytest.MonkeyPatch, admission_times_out: bool
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    admission = Mock()
+    replacement_admission = Mock()
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-quota-admission",
+        model="gpt-5.2",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        bridge_request_deadline=time.monotonic() + 120,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        request_text='{"type":"response.create","model":"gpt-5.2","input":"hello"}',
+        transport="http",
+        propagate_http_errors=True,
+        skip_request_log=True,
+        response_create_admission=admission,
+    )
+    session = _make_bridge_session(pending_requests=deque([request_state]), queued_request_count=1)
+    session.upstream.send_text = AsyncMock()
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def acquire():
+        admission.release.assert_called_once()
+        assert sum(slept) == pytest.approx(30)
+        assert request_state.error_code_override is None
+        if admission_times_out:
+            raise TimeoutError
+        return replacement_admission
+
+    monkeypatch.setattr(http_bridge_upstream_events_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    monkeypatch.setattr(service, "_reconnect_http_bridge_session", AsyncMock())
+    monkeypatch.setattr(service, "_acquire_account_response_create_lease_or_overload", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_get_work_admission", lambda: SimpleNamespace(acquire_response_create=acquire))
+    monkeypatch.setattr(service, "_http_bridge_text_with_account_installation_id", lambda _s, _r, text: text)
+    message = "Selected model is at capacity. Please try a different model."
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps({
+            "type": "error",
+            "status": 429,
+            "error": {"code": "usage_limit_reached", "type": "usage_limit_reached", "message": message},
+        }),
+    )
+
+    assert request_state.event_queue is not None
+    assert sum(slept) == pytest.approx(30)
+    if admission_times_out:
+        block = request_state.event_queue.get_nowait()
+        assert block is not None
+        payload = proxy_service.parse_sse_data_json(block)
+        assert isinstance(payload, dict)
+        assert payload["type"] == "response.failed"
+        assert payload["response"]["error"]["code"] == "usage_limit_reached"
+        assert payload["response"]["error"]["message"] == message
+        assert request_state.error_http_status_override == 429
+        assert request_state.event_queue.get_nowait() is None
+        session.upstream.send_text.assert_not_awaited()
+    else:
+        session.upstream.send_text.assert_awaited_once()
+        assert request_state.event_queue.empty()
+        assert request_state.error_code_override is None
+        assert request_state.error_message_override is None
+        assert request_state.error_type_override is None
+        assert request_state.error_http_status_override is None
+
+
+@pytest.mark.asyncio
 async def test_process_http_bridge_upstream_text_preserves_quota_when_circuit_declines_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

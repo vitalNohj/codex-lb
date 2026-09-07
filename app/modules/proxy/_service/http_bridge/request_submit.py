@@ -3005,6 +3005,43 @@ class _HTTPBridgeRequestSubmitMixin:
             request_state.error_code_override = code or "upstream_unavailable"
             request_state.error_message_override = message or "Upstream error"
             request_state.error_type_override = error_type or "server_error"
+        async with session.pending_lock:
+            candidates = [request_state] if request_state is not None else list(session.pending_requests)
+            preserved_errors = [
+                (
+                    candidate,
+                    candidate.error_http_status_override,
+                    candidate.error_code_override,
+                    candidate.error_message_override,
+                    candidate.error_type_override,
+                    candidate.error_param_override,
+                )
+                for candidate in candidates
+                if candidate.error_code_override is not None
+            ]
+        retried = False
+        try:
+            retried = await self._attempt_http_bridge_precreated_request_replay(
+                session, request_state=request_state, restart_reader=restart_reader
+            )
+            return retried
+        finally:
+            if not retried:
+                for candidate, status, code, message, error_type, param in preserved_errors:
+                    if candidate.error_code_override is None:
+                        candidate.error_http_status_override = status
+                        candidate.error_code_override = code
+                        candidate.error_message_override = message
+                        candidate.error_type_override = error_type
+                        candidate.error_param_override = param
+
+    async def _attempt_http_bridge_precreated_request_replay(
+        self: Any,
+        session: "_HTTPBridgeSession",
+        *,
+        request_state: _WebSocketRequestState | None = None,
+        restart_reader: bool = False,
+    ) -> bool:
         clean_close_retry_max_count = self._http_bridge_clean_close_retry_max_count()
         account_neutral_recovery = is_http_bridge_account_neutral_replay(
             kind=session.key.affinity_kind,
