@@ -113,15 +113,7 @@ class ClaudeSidecarQuotaPoller:
         try:
             async with exclusion_write_lock(), get_background_session() as session:
                 repo = SettingsRepository(session)
-                accounts = []
-                for auth in snapshot.accounts:
-                    patterns = excluded_models_from_auth_file(auth.credential_path)
-                    accounts.append(replace(
-                        auth,
-                        excluded_models=tuple(patterns or ()),
-                        excluded_models_available=patterns is not None,
-                    ))
-                snapshot = replace(snapshot, accounts=tuple(accounts))
+                snapshot = await asyncio.to_thread(_refresh_exclusions, snapshot)
                 await repo.update_operational(
                     claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
                     claude_sidecar_quota_checked_at=snapshot.checked_at,
@@ -129,6 +121,18 @@ class ClaudeSidecarQuotaPoller:
             await get_settings_cache().invalidate()
         except Exception:
             logger.warning("failed to persist Claude sidecar quota snapshot", exc_info=True)
+
+
+def _refresh_exclusions(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:
+    accounts = []
+    for auth in snapshot.accounts:
+        patterns = excluded_models_from_auth_file(auth.credential_path)
+        accounts.append(replace(
+            auth,
+            excluded_models=tuple(patterns or ()),
+            excluded_models_available=patterns is not None,
+        ))
+    return replace(snapshot, accounts=tuple(accounts))
 
 
 async def _classify_poll_result(

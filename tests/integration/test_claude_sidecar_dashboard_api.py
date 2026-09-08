@@ -925,6 +925,25 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
         )
 
     snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
+    import threading
+    from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
+
+    loop = asyncio.get_running_loop()
+    responsive_reads = []
+
+    def slow_read(credential_path):
+        progressed = threading.Event()
+        loop.call_soon_threadsafe(progressed.set)
+        responsive_reads.append(progressed.wait(timeout=2))
+        return excluded_models_from_auth_file(credential_path)
+
+    for module in (
+        "app.modules.claude_sidecar.quota_poller",
+        "app.modules.claude_sidecar.service",
+        "app.modules.accounts.sidecar_summary",
+    ):
+        monkeypatch.setattr(f"{module}.excluded_models_from_auth_file", slow_read)
+
     entered = asyncio.Event()
     resume = asyncio.Event()
     original_update = SettingsRepository.update_operational
@@ -962,6 +981,15 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
     assert response.status_code == 200
     accounts = {acct["name"]: acct for acct in response.json()["accounts"]}
     assert accounts["claude-a@example.com.json"]["excludedModels"] == ["claude-demo-*"]
+    for endpoint in ("/api/accounts", "/api/dashboard/overview"):
+        before = len(responsive_reads)
+        response = await async_client.get(endpoint)
+        assert response.status_code == 200
+        assert len(responsive_reads) > before
+        rows = [auth for account in response.json()["accounts"] for auth in account.get("sidecarAuths", [])]
+        assert next(row for row in rows if row["name"] == path.name)["excludedModels"] == ["claude-demo-*"]
+    assert len(responsive_reads) >= 4
+    assert all(responsive_reads)
 
 
 @pytest.mark.asyncio

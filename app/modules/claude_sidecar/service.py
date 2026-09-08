@@ -160,10 +160,12 @@ class ClaudeSidecarService:
             status=snapshot.status,
             message=snapshot.message,
             checked_at=snapshot.checked_at,
-            accounts=[
-                _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or ""))
-                for auth in snapshot.accounts
-            ],
+            accounts=await asyncio.to_thread(
+                lambda: [
+                    _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or ""))
+                    for auth in snapshot.accounts
+                ]
+            ),
         )
 
     async def get_pooled_oauth_usage_payload(self, *, hide_upstream: bool = False) -> dict[str, Any]:

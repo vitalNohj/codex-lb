@@ -339,7 +339,7 @@ class AccountsService:
                 snapshot=snapshot_from_json(settings.claude_sidecar_quota_state_json),
                 now=now,
             )
-        return build_claude_sidecar_summary(settings, request_usage, estimates)
+        return await asyncio.to_thread(build_claude_sidecar_summary, settings, request_usage, estimates)
 
     async def get_account_trends(self, account_id: str) -> AccountTrendsResponse | None:
         account = await self._get_visible_account(account_id)

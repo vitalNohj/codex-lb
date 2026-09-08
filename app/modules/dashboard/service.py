@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 from app.core import usage as usage_core
@@ -229,7 +230,7 @@ class DashboardService:
                 snapshot=snapshot_from_json(settings.claude_sidecar_quota_state_json),
                 now=now,
             )
-        return build_claude_sidecar_summary(settings, request_usage, estimates)
+        return await asyncio.to_thread(build_claude_sidecar_summary, settings, request_usage, estimates)
 
     async def _build_openrouter_sidecar_summary(self):
         settings = await self._repo.get_settings()
