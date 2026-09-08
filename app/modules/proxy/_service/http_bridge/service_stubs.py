@@ -468,6 +468,10 @@ def _build_stream_incomplete_terminal_event_for_request(*args: Any, **kwargs: An
     return _service_global("_build_stream_incomplete_terminal_event_for_request")(*args, **kwargs)
 
 
+def _stream_terminal_captured_error(*args: Any, **kwargs: Any) -> Any:
+    return _service_global("_stream_terminal_captured_error")(*args, **kwargs)
+
+
 def _rewrite_websocket_suppressed_duplicate_tool_call_completion_event(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_rewrite_websocket_suppressed_duplicate_tool_call_completion_event")(*args, **kwargs)
 

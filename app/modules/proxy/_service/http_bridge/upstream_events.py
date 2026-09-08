@@ -107,6 +107,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _service_get_settings,
     _service_tier_from_event_payload,
     _service_time,
+    _stream_terminal_captured_error,
     _upstream_websocket_disconnect_message,
     _websocket_auth_request_can_switch_account,
     _websocket_downstream_response_id,
@@ -153,6 +154,7 @@ from app.modules.proxy._service.support import (
     _record_response_event,
     _signal_propagated_capacity_startup_ready,
     _signal_propagated_capacity_startup_wait,
+    _upstream_error_recovery_metadata,
     _websocket_request_can_replay_before_visible_output,
     _websocket_should_defer_reasoning_prelude,
     _WebSocketReceiveTimeout,
@@ -195,6 +197,7 @@ from app.modules.proxy.affinity import (
     _extract_model_class,
 )
 from app.modules.proxy.continuity import is_http_bridge_account_neutral_replay
+from app.modules.proxy.error_status import status_for_error_fields
 from app.modules.proxy.helpers import (
     _normalize_error_code,
     is_upstream_model_capacity_error,
@@ -323,6 +326,61 @@ async def _update_http_bridge_operation_state(
             state,
             exc_info=True,
         )
+
+
+def _capture_http_bridge_capacity_fail_fast_error(
+    request_state: _WebSocketRequestState,
+    *,
+    code: str | None,
+    message: str | None,
+    error_type: str | None,
+    payload: dict[str, JsonValue] | None,
+) -> None:
+    """Record the upstream error a refused capacity wait must surface.
+
+    The refusal changes only *when* the client is told; the condition keeps its
+    own upstream classification, and the status is derived from that same code
+    so the emitted body and the status line agree.
+    """
+    if request_state.error_code_override is not None:
+        return
+    request_state.error_code_override = code or "upstream_unavailable"
+    request_state.error_message_override = message or "Upstream error"
+    request_state.error_type_override = error_type or "server_error"
+    request_state.error_recovery_metadata_override = _upstream_error_recovery_metadata(payload)
+
+
+def _apply_http_bridge_terminal_error_status(
+    request_state: _WebSocketRequestState,
+    *,
+    reason: str | None = None,
+) -> None:
+    """Set the downstream HTTP status for a terminal HTTP-bridge failure.
+
+    When the failing path already captured a specific upstream error, that
+    error's own status wins and the emitted event carries the same code, so the
+    two agree: an upstream ``usage_limit_reached`` reaches the client as a 429
+    rather than a 502 the client would treat as a retryable transport fault.
+
+    A capture site that recorded a code but no status still gets a status that
+    matches its code, derived through the same classification the downstream
+    error mapping uses, so the two can never disagree.
+
+    Only a failure that captured nothing specific - a genuine transport drop -
+    falls back to 502, and that fallback overwrites any status left behind by
+    an earlier attempt so it cannot contradict the emitted ``stream_incomplete``.
+    """
+    captured_error = _stream_terminal_captured_error(request_state, reason=reason)
+    if captured_error is None:
+        request_state.error_http_status_override = 502
+        return
+    if request_state.error_http_status_override is not None:
+        return
+    captured_code, _captured_message, captured_type = captured_error
+    request_state.error_http_status_override = status_for_error_fields(
+        code=captured_code,
+        error_type=captured_type,
+    )
 
 
 def _http_bridge_operation_state_for_event(event_type: str | None) -> str | None:
@@ -743,6 +801,16 @@ async def _wait_before_http_bridge_model_capacity_retry(
         return False
 
     sleep_seconds = min(_ACCOUNT_SELECTION_RECOVERY_DEFAULT_SLEEP_SECONDS, remaining_budget_seconds)
+    holds_downstream_silently = not emit_keepalives
+    if not request_state.silent_capacity_hold.allows(
+        sleep_seconds,
+        holds_downstream_silently=holds_downstream_silently,
+    ):
+        # This retry would park the client past its silent-hold allowance.
+        # Decline the wait so the caller emits the terminal upstream error now,
+        # carrying the real recovery hint as Retry-After.
+        request_state.capacity_fail_fast_retry_after_seconds = sleep_seconds
+        return False
     request_state.account_capacity_waiting = True
     request_state.account_capacity_wait_reason = error_message
     request_state.account_capacity_wait_started_at = (
@@ -781,6 +849,8 @@ async def _wait_before_http_bridge_model_capacity_retry(
             await asyncio.sleep(chunk_seconds)
             remaining_sleep_seconds -= chunk_seconds
             keepalive_countdown_seconds -= chunk_seconds
+            if holds_downstream_silently:
+                request_state.silent_capacity_hold.record(chunk_seconds)
         return (
             not cancel_when_detached or request_state.event_queue is not None
         ) and _service_time().monotonic() < deadline
@@ -2023,7 +2093,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             )
             grouped_terminal_events = []
             for grouped_request_state in grouped_previous_response_request_states:
-                grouped_request_state.error_http_status_override = 502
+                _apply_http_bridge_terminal_error_status(grouped_request_state, reason=grouped_error_reason)
                 (
                     _grouped_downstream_text,
                     grouped_event_block,
@@ -2339,7 +2409,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 ):
                     _clear_websocket_request_error_overrides(status_request_state)
                 else:
-                    status_request_state.error_http_status_override = 502
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -2389,6 +2459,18 @@ class _HTTPBridgeUpstreamEventsMixin:
                 )
                 if wait_request_had_event_queue and status_request_state.event_queue is None:
                     retry_after_wait = False
+                capacity_hold_refused = status_request_state.capacity_fail_fast_retry_after_seconds is not None
+                if capacity_hold_refused:
+                    _capture_http_bridge_capacity_fail_fast_error(
+                        status_request_state,
+                        code=_normalize_error_code(
+                            _websocket_event_error_code(event_type, payload),
+                            _websocket_event_error_type(event_type, payload),
+                        ),
+                        message=retry_error_message,
+                        error_type=_websocket_event_error_type(event_type, payload),
+                        payload=payload,
+                    )
                 suppress_capacity_keepalives_until_retry_finishes = (
                     status_request_state.account_capacity_wait_suppress_keepalive
                 )
@@ -2396,6 +2478,12 @@ class _HTTPBridgeUpstreamEventsMixin:
                     retried = retry_after_wait and await self._retry_http_bridge_precreated_request(
                         session,
                         request_state=status_request_state,
+                        triggering_error_payload=payload,
+                        triggering_error=(
+                            retry_error_code,
+                            retry_error_message,
+                            _websocket_event_error_type(event_type, payload),
+                        ),
                     )
                     if retried:
                         _signal_http_bridge_model_capacity_retry_ready(
@@ -2412,8 +2500,8 @@ class _HTTPBridgeUpstreamEventsMixin:
                         session.pending_requests.remove(status_request_state)
                         if _http_bridge_request_counts_against_queue(status_request_state):
                             session.queued_request_count = max(0, session.queued_request_count - 1)
-                if retry_after_wait or not status_request_state.propagate_http_errors:
-                    status_request_state.error_http_status_override = 502
+                if retry_after_wait or capacity_hold_refused or not status_request_state.propagate_http_errors:
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -2459,7 +2547,16 @@ class _HTTPBridgeUpstreamEventsMixin:
                             session.queued_request_count += 1
                         status_request_state.awaiting_response_created = True
                         status_request_state.response_id = None
-                    retried = await self._retry_http_bridge_precreated_request(session)
+                    retried = await self._retry_http_bridge_precreated_request(
+                        session,
+                        request_state=status_request_state,
+                        triggering_error_payload=payload,
+                        triggering_error=(
+                            owner_pinned_quota_error,
+                            retry_error_message,
+                            _websocket_event_error_type(event_type, payload),
+                        ),
+                    )
                     if retried:
                         return
                     session.upstream_turn_state = previous_upstream_turn_state
@@ -2468,7 +2565,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         if status_request_state in session.pending_requests:
                             session.pending_requests.remove(status_request_state)
                             session.queued_request_count = max(0, session.queued_request_count - 1)
-                    status_request_state.error_http_status_override = 502
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -2477,6 +2574,8 @@ class _HTTPBridgeUpstreamEventsMixin:
                         event_type,
                     ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
                 else:
+                    # The rewritten event hardcodes ``upstream_unavailable``,
+                    # so the status is not derived from a captured error.
                     status_request_state.error_http_status_override = 502
                     session.upstream_control.reconnect_requested = True
                     session.upstream_control.retire_after_drain = True
@@ -2568,14 +2667,23 @@ class _HTTPBridgeUpstreamEventsMixin:
                         session.queued_request_count += 1
                     status_request_state.awaiting_response_created = True
                     status_request_state.response_id = None
-                retried = await self._retry_http_bridge_precreated_request(session)
+                retried = await self._retry_http_bridge_precreated_request(
+                    session,
+                    request_state=status_request_state,
+                    triggering_error_payload=payload,
+                    triggering_error=(
+                        retry_error_code,
+                        retry_error_message,
+                        _websocket_event_error_type(event_type, payload),
+                    ),
+                )
                 if retried:
                     return
                 async with session.pending_lock:
                     if status_request_state in session.pending_requests:
                         session.pending_requests.remove(status_request_state)
                         session.queued_request_count = max(0, session.queued_request_count - 1)
-                status_request_state.error_http_status_override = 502
+                _apply_http_bridge_terminal_error_status(status_request_state)
                 (
                     _downstream_text,
                     event_block,

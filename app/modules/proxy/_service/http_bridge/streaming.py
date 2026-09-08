@@ -6,7 +6,7 @@ import json
 import logging
 import math
 from collections.abc import AsyncGenerator, Callable
-from typing import Any, AsyncIterator, Mapping, TypeVar, cast
+from typing import Any, AsyncIterator, Mapping, NamedTuple, NoReturn, TypeVar, cast
 from uuid import uuid4
 
 import anyio
@@ -171,6 +171,7 @@ from app.modules.proxy._service.support import (
     _signal_propagated_capacity_startup_ready,
     _signal_propagated_capacity_startup_wait,
     _signal_propagated_responses_service_cleanup_ready,
+    _SilentCapacityHold,
     _ttft_event_visible_at,
     _WebSocketRequestState,
 )
@@ -596,11 +597,53 @@ def _http_bridge_unanchored_fork_can_spill_on_cap(
     )
 
 
+class _HTTPBridgeCapacityWaitPlan(NamedTuple):
+    sleep_seconds: float
+    recovery_hint_seconds: float
+    message: str | None
+    counts_against_silent_hold: bool
+
+
+def _raise_http_bridge_capacity_fail_fast(
+    exc: ProxyResponseError,
+    *,
+    recovery_hint_seconds: float,
+) -> NoReturn:
+    """Re-raise a capacity error immediately, carrying its recovery hint.
+
+    Failing fast changes only *when* the client is told, never *what* the
+    condition is called: the original status, code, message and diagnostic
+    fields are preserved, so an upstream quota exhaustion still surfaces as
+    429 ``usage_limit_reached`` and a genuine selection failure still surfaces
+    as 503 ``no_accounts``. ``Retry-After`` is attached from the real recovery
+    hint so the client has the actionable wait it would otherwise have spent
+    parked on a held connection.
+    """
+    if exc.retry_after_seconds is None:
+        exc.retry_after_seconds = max(1, math.ceil(recovery_hint_seconds))
+    raise exc
+
+
 def _http_bridge_capacity_wait_plan(
     exc: ProxyResponseError,
     *,
     request_deadline: float,
-) -> tuple[float, float, str | None] | None:
+    request_state: _WebSocketRequestState | None = None,
+    holds_downstream_silently: bool = False,
+) -> _HTTPBridgeCapacityWaitPlan | None:
+    """Plan the recovery sleep for a capacity error, or decline to sleep.
+
+    Returns ``None`` when the error is not a recoverable capacity condition or
+    no budget is left, in which case the caller re-raises the original error.
+
+    Re-raises the original error immediately (with ``Retry-After`` filled in)
+    when waiting cannot pay off:
+
+    * the recovery hint outlasts the remaining request budget, so sleeping only
+      holds the connection for the rest of the budget before failing anyway; or
+    * ``holds_downstream_silently`` and the hint would push this request past
+      its remaining ``_SilentCapacityHold`` allowance.
+    """
     account_capacity_wait_seconds = _http_bridge_account_capacity_wait_seconds(exc)
     if account_capacity_wait_seconds is None:
         return None
@@ -608,6 +651,22 @@ def _http_bridge_capacity_wait_plan(
     if remaining_budget_seconds <= 0:
         return None
     code, message = _proxy_error_code_message(exc)
+    # Per-session gate contention is excluded from both fail-fast rules, and
+    # correspondingly never consumes the silent-hold allowance: its wait is a
+    # short retry interval between acquisition attempts, not an account
+    # recovery window, and the in-flight same-session turn can release the gate
+    # at any moment within the remaining budget.
+    counts_against_silent_hold = code != "response_create_gate_timeout"
+    if counts_against_silent_hold:
+        silent_hold = request_state.silent_capacity_hold if request_state is not None else _SilentCapacityHold()
+        if account_capacity_wait_seconds > remaining_budget_seconds or not silent_hold.allows(
+            account_capacity_wait_seconds,
+            holds_downstream_silently=holds_downstream_silently,
+        ):
+            _raise_http_bridge_capacity_fail_fast(
+                exc,
+                recovery_hint_seconds=account_capacity_wait_seconds,
+            )
     bounded_wait_seconds = min(account_capacity_wait_seconds, remaining_budget_seconds)
     if code == "response_create_gate_timeout":
         # Reserve the tail of the request budget for one final gate
@@ -618,7 +677,12 @@ def _http_bridge_capacity_wait_plan(
             bounded_wait_seconds,
             max(0.0, remaining_budget_seconds - attempt_reserve_seconds),
         )
-    return bounded_wait_seconds, account_capacity_wait_seconds, message
+    return _HTTPBridgeCapacityWaitPlan(
+        bounded_wait_seconds,
+        account_capacity_wait_seconds,
+        message,
+        counts_against_silent_hold,
+    )
 
 
 def _http_bridge_can_replace_retired_gate_session(
@@ -662,6 +726,7 @@ async def _iter_account_capacity_wait_sse(
     sleep_seconds: float,
     emit_keepalives: bool,
     request_state: _WebSocketRequestState | None = None,
+    counts_against_silent_hold: bool = True,
 ) -> AsyncIterator[str]:
     if not emit_keepalives:
         if request_state is not None and request_state.capacity_startup_ready_event is not None:
@@ -691,6 +756,11 @@ async def _iter_account_capacity_wait_sse(
         )
         await asyncio.sleep(chunk_seconds)
         remaining_sleep_seconds -= chunk_seconds
+        if not emit_keepalives and counts_against_silent_hold and request_state is not None:
+            # No keepalive reaches the client on this path, so every slept
+            # second is silent downstream hold. Accumulate it per request so
+            # the next recovery iteration is measured against the same cap.
+            request_state.silent_capacity_hold.record(chunk_seconds)
 
 
 def _http_bridge_interrupted_tool_outputs_input(
@@ -2123,9 +2193,16 @@ class _HTTPBridgeStreamingMixin:
                         request_state.preferred_account_id = None
                         preferred_account_has_continuity_provenance = False
                         continue
-                    wait_plan = _http_bridge_capacity_wait_plan(exc, request_deadline=request_deadline)
+                    wait_plan = _http_bridge_capacity_wait_plan(
+                        exc,
+                        request_deadline=request_deadline,
+                        request_state=request_state,
+                        holds_downstream_silently=propagate_http_errors,
+                    )
                     if wait_plan is not None:
-                        bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge session creation "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f error=%s",
@@ -2141,6 +2218,7 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
+                            counts_against_silent_hold=counts_against_silent_hold,
                         ):
                             yield line
                         if _service_time().monotonic() >= request_deadline:
@@ -2377,10 +2455,17 @@ class _HTTPBridgeStreamingMixin:
                             switch_to_account_neutral_replay()
                             owner_forward_fresh_replay = True
                             continue
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
+                        wait_plan = _http_bridge_capacity_wait_plan(
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            request_state=request_state,
+                            holds_downstream_silently=propagate_http_errors,
+                        )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge recovery session creation "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f path=%s error=%s",
@@ -2399,6 +2484,7 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
+                            counts_against_silent_hold=counts_against_silent_hold,
                         ):
                             yield line
                         if _service_time().monotonic() >= request_deadline:
@@ -2989,10 +3075,17 @@ class _HTTPBridgeStreamingMixin:
                             defer_account_health_writes=request_state.api_key_reservation is not None,
                         )
                     except ProxyResponseError as capacity_exc:
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
+                        wait_plan = _http_bridge_capacity_wait_plan(
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            request_state=request_state,
+                            holds_downstream_silently=propagate_http_errors,
+                        )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before replacing retired HTTP bridge gate "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f error=%s",
@@ -3008,6 +3101,7 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
+                            counts_against_silent_hold=counts_against_silent_hold,
                         ):
                             yield line
                         if _service_time().monotonic() >= request_deadline:
@@ -3095,10 +3189,17 @@ class _HTTPBridgeStreamingMixin:
                             defer_account_health_writes=request_state.api_key_reservation is not None,
                         )
                     except ProxyResponseError as capacity_exc:
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
+                        wait_plan = _http_bridge_capacity_wait_plan(
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            request_state=request_state,
+                            holds_downstream_silently=propagate_http_errors,
+                        )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge soft reroute session "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f error=%s",
@@ -3114,6 +3215,7 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
+                            counts_against_silent_hold=counts_against_silent_hold,
                         ):
                             yield line
                         if _service_time().monotonic() >= request_deadline:
@@ -3350,10 +3452,17 @@ class _HTTPBridgeStreamingMixin:
                             defer_account_health_writes=request_state.api_key_reservation is not None,
                         )
                     except ProxyResponseError as capacity_exc:
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
+                        wait_plan = _http_bridge_capacity_wait_plan(
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            request_state=request_state,
+                            holds_downstream_silently=propagate_http_errors,
+                        )
                         if wait_plan is None:
                             raise
-                        bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
+                        bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
+                            wait_plan
+                        )
                         logger.info(
                             "Waiting for an account to recover before retrying HTTP bridge local recovery session "
                             "request_id=%s model=%s sleep_seconds=%.1f recovery_hint_seconds=%.1f path=%s error=%s",
@@ -3370,6 +3479,7 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
+                            counts_against_silent_hold=counts_against_silent_hold,
                         ):
                             yield line
                         if _service_time().monotonic() >= request_deadline:
@@ -3888,10 +3998,15 @@ class _HTTPBridgeStreamingMixin:
             except ProxyResponseError as exc:
                 if request_state.bridge_soft_capacity_reroute_allowed:
                     raise
-                wait_plan = _http_bridge_capacity_wait_plan(exc, request_deadline=request_deadline)
+                wait_plan = _http_bridge_capacity_wait_plan(
+                    exc,
+                    request_deadline=request_deadline,
+                    request_state=request_state,
+                    holds_downstream_silently=propagate_http_errors,
+                )
                 if wait_plan is None:
                     raise
-                bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
+                bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = wait_plan
                 exc_code, _exc_message = _proxy_error_code_message(exc)
                 gate_contention = exc_code == "response_create_gate_timeout"
                 if gate_contention and session.closed:
@@ -3932,6 +4047,7 @@ class _HTTPBridgeStreamingMixin:
                         sleep_seconds=bounded_wait_seconds,
                         emit_keepalives=not propagate_http_errors,
                         request_state=request_state,
+                        counts_against_silent_hold=counts_against_silent_hold,
                     ):
                         yield line
                 finally:
@@ -4480,9 +4596,15 @@ class _HTTPBridgeStreamingMixin:
                                 "Upstream websocket closed before response.completed",
                             ),
                         )
+                    capacity_retry_after_seconds = request_state.capacity_fail_fast_retry_after_seconds
                     raise ProxyResponseError(
                         request_state.error_http_status_override,
                         _openai_error_envelope_from_response_failed_payload(block_payload),
+                        retry_after_seconds=(
+                            max(1, math.ceil(capacity_retry_after_seconds))
+                            if capacity_retry_after_seconds is not None
+                            else None
+                        ),
                     )
                 yield event_block
                 yielded_any = True

@@ -544,6 +544,9 @@ from app.modules.proxy._service.streaming.helpers import (
     _stream_request_budget_seconds as _stream_request_budget_seconds,
 )
 from app.modules.proxy._service.streaming.helpers import (
+    _stream_terminal_captured_error as _stream_terminal_captured_error,
+)
+from app.modules.proxy._service.streaming.helpers import (
     _upstream_turn_state_from_socket as _upstream_turn_state_from_socket,
 )
 from app.modules.proxy._service.streaming.retry import (
