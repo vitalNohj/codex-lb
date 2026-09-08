@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 from sqlalchemy import select
@@ -23,6 +23,7 @@ pytestmark = pytest.mark.integration
 class _FakeModel:
     id: str
     created: int | None = 123
+    owned_by: str | None = None
 
 
 class _FakeSidecarClient:
@@ -439,6 +440,35 @@ async def test_sidecar_model_list_merges_and_filters(async_client, sidecar_enabl
     assert sidecar_entry["context_length"] == 200_000
     assert sidecar_entry["contextLength"] == 200_000
     assert sidecar_entry["capabilities"]["context_length"] == 200_000
+
+
+@pytest.mark.asyncio
+async def test_sidecar_model_list_includes_discovered_prefix_models(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    config = replace(fake_sidecar.config, full_models=())
+    fake_sidecar.models = [
+        _FakeModel("claude-sonnet-4-5-20250929"),
+        _FakeModel("claude-fable-5-1"),
+        _FakeModel("gemini-2.5-pro"),
+    ]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+    registry = get_model_registry()
+    await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})
+
+    response = await async_client.get("/v1/models")
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+    assert "claude-sonnet-4-5-20250929" in ids
+    assert "claude-fable-5-1" in ids
+    assert "gemini-2.5-pro" not in ids
+    claude_entry = next(item for item in response.json()["data"] if item["id"] == "claude-sonnet-4-5-20250929")
+    assert claude_entry["owned_by"] == "anthropic"
 
 
 @pytest.mark.asyncio

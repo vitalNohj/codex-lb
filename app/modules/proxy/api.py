@@ -3903,6 +3903,26 @@ async def _build_codex_models_response_body(
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
+def _sidecar_advertised_model_ids(
+    full_models: tuple[str, ...],
+    *,
+    discovered_ids: tuple[str, ...] = (),
+) -> list[str]:
+    """Stable unique catalog IDs: pinned full models first, then discovered."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for slug in (*full_models, *discovered_ids):
+        key = slug.strip()
+        if not key:
+            continue
+        lowered = key.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        ids.append(key)
+    return ids
+
+
 async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     reservation = await _enforce_request_limits(
         api_key,
@@ -3972,7 +3992,11 @@ async def _build_models_response_body(
     if sidecar_config is not None and sidecar_config.enabled:
         discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
-        for slug in sidecar_config.full_models:
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in _sidecar_advertised_model_ids(
+            sidecar_config.full_models,
+            discovered_ids=tuple(model.id for model in discovered_models),
+        ):
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
             if decision is None or decision.provider != "claude":
                 continue
@@ -3986,7 +4010,7 @@ async def _build_models_response_body(
                     {
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
-                        "owned_by": "anthropic",
+                        "owned_by": owner_by_model.get(slug) or "anthropic",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
