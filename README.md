@@ -147,6 +147,10 @@ Configure integrations in **Settings -> External Integrations**. Each provider -
 
 The dashboard stores API keys encrypted at rest, runs connection tests, shows discovered models, and prevents duplicate full-model or prefix ownership across providers.
 
+For a CLIProxyAPI Claude account that cannot access a model, open its **Excluded models** editor in the CLIProxyAPI routing section, Accounts detail, or dashboard card. Turn on a family switch or add a custom wire model ID or wildcard pattern such as `claude-sonnet-*`, without the `cc/` alias prefix. Changes save immediately for that account. Remove a chip or turn off a family switch to restore eligibility. Pause still disables the whole account.
+
+Exclusion editing requires a configured Management API key and readable CLIProxyAPI auth data. On CLIProxyAPI 7.2.135, codex-lb must be colocated with the auth files, whose paths must resolve beneath `~/.cli-proxy-api` for the user running codex-lb. If the list cannot be read safely, the editor locks and shows a read error rather than risking overwriting existing exclusions. Usage-only rows without an auth file are not editable.
+
 ## Cost, Reference Cost, And Savings
 
 This fork separates actual spend from reference value:

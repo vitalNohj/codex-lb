@@ -8,12 +8,12 @@ from typing import Any
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
-from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.excluded_models import (
-    excluded_models_from_auth_file,
     excluded_models_for_entry,
+    excluded_models_from_auth_file,
     normalize_excluded_models,
 )
+from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.oauth_usage_response import build_anthropic_oauth_usage_payload
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -48,9 +48,7 @@ _STRATEGY_TO_WIRE: dict[ClaudeSidecarRoutingStrategy, str] = {
     "fill_first": "fill-first",
     "weighted_round_robin": "weighted-round-robin",
 }
-_WIRE_TO_STRATEGY: dict[str, ClaudeSidecarRoutingStrategy] = {
-    value: key for key, value in _STRATEGY_TO_WIRE.items()
-}
+_WIRE_TO_STRATEGY: dict[str, ClaudeSidecarRoutingStrategy] = {value: key for key, value in _STRATEGY_TO_WIRE.items()}
 
 
 class ClaudeSidecarService:
@@ -152,9 +150,7 @@ class ClaudeSidecarService:
                 now=now,
             )
             estimates_by_key = {
-                key: estimate
-                for estimate in estimates.accounts
-                if (key := _estimate_key(estimate)) is not None
+                key: estimate for estimate in estimates.accounts if (key := _estimate_key(estimate)) is not None
             }
         return ClaudeSidecarQuotaResponse(
             status=snapshot.status,
@@ -162,8 +158,7 @@ class ClaudeSidecarService:
             checked_at=snapshot.checked_at,
             accounts=await asyncio.to_thread(
                 lambda: [
-                    _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or ""))
-                    for auth in snapshot.accounts
+                    _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or "")) for auth in snapshot.accounts
                 ]
             ),
         )
@@ -342,10 +337,7 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
-        updated = [
-            replace(auth, disabled=paused) if auth.name == name else auth
-            for auth in snapshot.accounts
-        ]
+        updated = [replace(auth, disabled=paused) if auth.name == name else auth for auth in snapshot.accounts]
         if updated == list(snapshot.accounts):
             return
         patched = replace(snapshot, accounts=tuple(updated))
@@ -357,10 +349,10 @@ class ClaudeSidecarService:
     async def _patch_snapshot_excluded_models(self, name: str, excluded_models: list[str]) -> None:
         """Reflect an exclusion-list change in the stored quota snapshot immediately.
 
-        Same reasoning as ``_patch_snapshot_disabled``: the dashboard reads the
-        polled snapshot rather than live auth files, and the poller Core-UPDATEs
-        the same JSON without ``version_id_col``, so re-read immediately before
-        writing.
+        The caller holds ``exclusion_write_lock`` through the upstream write and
+        snapshot commit. Re-read the snapshot to preserve other current fields.
+        Dashboard exclusion responses separately read the authoritative auth file,
+        so a cached snapshot cannot confirm an uncertain upstream write.
         """
         current = await self._settings_repository.get_fresh()
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
@@ -368,9 +360,7 @@ class ClaudeSidecarService:
             return
         patterns = tuple(excluded_models)
         updated = [
-            replace(auth, excluded_models=patterns, excluded_models_available=True)
-            if auth.name == name
-            else auth
+            replace(auth, excluded_models=patterns, excluded_models_available=True) if auth.name == name else auth
             for auth in snapshot.accounts
         ]
         if updated == list(snapshot.accounts):

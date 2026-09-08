@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
-
 from app.db.models import DashboardSettings
 from app.modules.accounts.schemas import (
     AccountRequestUsage,
@@ -9,6 +7,7 @@ from app.modules.accounts.schemas import (
     AccountUsage,
     SidecarAuthAccount,
 )
+from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
@@ -28,10 +27,7 @@ def build_claude_sidecar_summary(
     usage_estimates: ClaudeUsageEstimates | None = None,
 ) -> AccountSummary | None:
     """Return a synthetic AccountSummary for the Claude sidecar, or None when hidden."""
-    configured = (
-        settings.claude_sidecar_api_key_encrypted is not None
-        or bool(settings.claude_sidecar_base_url)
-    )
+    configured = settings.claude_sidecar_api_key_encrypted is not None or bool(settings.claude_sidecar_base_url)
     if not configured and not settings.claude_sidecar_enabled:
         return None
 

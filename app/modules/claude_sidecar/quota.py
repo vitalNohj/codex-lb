@@ -280,9 +280,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                     {
                         "model": state.model,
                         "quota_exceeded": state.quota_exceeded,
-                        "next_recover_at": (
-                            state.next_recover_at.isoformat() if state.next_recover_at else None
-                        ),
+                        "next_recover_at": (state.next_recover_at.isoformat() if state.next_recover_at else None),
                     }
                     for state in account.model_states
                 ],

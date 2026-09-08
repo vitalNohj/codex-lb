@@ -4,7 +4,7 @@
 
 ### Requirement: Replace a CLIProxyAPI account excluded-models list
 
-codex-lb MUST let an operator replace the whole model-exclusion list on a single CLIProxyAPI Claude account by forwarding the auth-file `name` and a list of model patterns to CLIProxyAPI's `PATCH /v0/management/auth-files/fields` endpoint as the `excluded_models` field, keeping CLIProxyAPI auth files as the only source of truth and returning the fresh live routing state after a successful update. The submitted list MUST be normalized before it is sent: entries are trimmed, blank entries and entries containing a newline, NUL, or comma are dropped, entries longer than 128 characters are dropped, duplicates are removed case-insensitively keeping the first spelling, at most 32 entries are kept, and the remaining order is preserved. A comma MUST be rejected because CLIProxyAPI stores this list as a comma-joined attribute and splits it on `,` when routing, so an embedded comma would split one pattern into two.
+codex-lb MUST let an operator replace the whole model-exclusion list on a single CLIProxyAPI Claude account by forwarding the auth-file `name` and a list of model patterns to CLIProxyAPI's `PATCH /v0/management/auth-files/fields` endpoint as the `excluded_models` field, keeping CLIProxyAPI auth files as the only source of truth and attempting to refresh live routing state after a successful update. A confirmed write MUST also return `savedAccount` with the normalized list and `excludedModelsState="available"`, even if the subsequent routing read fails. The submitted list MUST be normalized before it is sent: entries are trimmed, blank entries and entries containing a newline, NUL, or comma are dropped, entries longer than 128 characters are dropped, duplicates are removed case-insensitively keeping the first spelling, at most 32 entries are kept, and the remaining order is preserved. A comma MUST be rejected because CLIProxyAPI stores this list as a comma-joined attribute and splits it on `,` when routing, so an embedded comma would split one pattern into two.
 
 #### Scenario: Setting an exclusion list succeeds
 
@@ -39,7 +39,7 @@ codex-lb MUST let an operator replace the whole model-exclusion list on a single
 
 ### Requirement: Report CLIProxyAPI account excluded-models
 
-codex-lb MUST expose each Claude account's live model-exclusion list as an `excludedModels` string array in the routing response (`GET /api/claude-sidecar/routing`) and in sidecar auth account rows returned by the quota endpoint and the accounts list, so the Settings routing section, the Accounts tab, and the dashboard account card can render the exclusions per account. When the CLIProxyAPI auth-files listing omits the field, codex-lb MUST read it from the auth file named by the listing entry's `path`, copying only the `excluded_models` (or `excluded-models`) key. Credential material from that file, including access and refresh tokens, MUST NOT appear in any dashboard response or log line.
+codex-lb MUST expose each Claude account's live model-exclusion list as an `excludedModels` string array in the routing response (`GET /api/claude-sidecar/routing`) and in sidecar auth account rows returned by the quota endpoint and the accounts list, so the Settings routing section, the Accounts tab, and the dashboard account card can render the exclusions per account. Routing reads MUST use the listing's exclusion field when present, falling back to the auth file named by the listing entry's `path` when absent. Quota, Accounts, and Dashboard auth rows MUST re-read that file for each response rather than treating persisted snapshot exclusions as authoritative confirmation after an uncertain write. File reads MUST copy only the `excluded_models` (or `excluded-models`) key. Credential material from that file, including access and refresh tokens, MUST NOT appear in any dashboard response or log line.
 
 #### Scenario: Routing response includes the exclusion list
 
@@ -65,7 +65,7 @@ codex-lb MUST expose each Claude account's live model-exclusion list as an `excl
 
 #### Scenario: Sidecar auth rows include the exclusion list
 
-- **GIVEN** the Claude sidecar quota snapshot contains an account excluding one model pattern
+- **GIVEN** the Claude sidecar quota snapshot identifies an account whose auth file excludes one model pattern
 - **WHEN** an operator requests the accounts list or the Claude sidecar quota endpoint
 - **THEN** that account's sidecar auth row reports that pattern in `excludedModels`
 
@@ -105,7 +105,8 @@ codex-lb MUST report an `excludedModelsState` of `available`, `unreadable`, or `
 
 - **GIVEN** a persisted Claude sidecar quota snapshot with no `excluded_models_available` key
 - **WHEN** codex-lb decodes that snapshot
-- **THEN** that account reports `excludedModelsState="unreadable"`
+- **THEN** its decoded `excluded_models_available` is false
+- **AND** response read availability is determined by the authoritative read, not by that legacy snapshot
 
 #### Scenario: A row with no CLIProxyAPI auth file is unsupported
 
@@ -113,6 +114,17 @@ codex-lb MUST report an `excludedModelsState` of `available`, `unreadable`, or `
 - **WHEN** codex-lb reports that row
 - **THEN** `excludedModelsState` is `unsupported`
 - **AND** the row is not reported as a read failure
+
+### Requirement: Order exclusion snapshot publication against saves
+
+codex-lb MUST serialize exclusion saves and snapshot publication using the shared exclusion write lock, preserving CLIProxyAPI auth JSON as the source of truth without a persistent generation counter or desired copy. The poller MUST re-read exclusion fields from disk while holding that lock through the database commit. Pause snapshot patches MUST also hold the lock so they cannot republish older exclusions. Batched filesystem reads MUST run off the async event loop without releasing the publication lock.
+
+#### Scenario: A save arrives during the poller's final database wait
+
+- **GIVEN** a poll holds the exclusion lock after re-reading the auth file
+- **WHEN** an exclusion save arrives while the poll awaits its snapshot database update
+- **THEN** publication and the save are serialized through commit
+- **AND** the older poll cannot overwrite the newer saved exclusions
 
 ### Requirement: Excluded models are not account-specific code
 

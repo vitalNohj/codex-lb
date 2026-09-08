@@ -32,22 +32,13 @@ writes `config.yaml`.
 ## Read path on CLIProxyAPI 7.2.135
 
 `GET /v0/management/auth-files` in the deployed CLIProxyAPI version does not return `excluded_models`
-in its list entries, though the write path (`PATCH /v0/management/auth-files/fields`) accepts it. So
-the read path prefers `excluded_models` (or the hyphenated `excluded-models`) on the list entry when a
-future version supplies it, and otherwise reads the file named by the entry's `path`, parses the JSON,
-and copies only that one key. Every other key, including token fields, is discarded and never logged or
-sent to the browser. The path is resolved and confirmed to sit under the CLIProxyAPI auth directory
-before being opened, so a hostile or malformed `path` cannot make codex-lb read arbitrary files.
-
-A live auth file may already carry an `excluded_models` list placed there by hand. That is data, not
-configuration owned by this change: the editor simply displays it and lets an operator clear it.
+in its list entries, though the write path (`PATCH /v0/management/auth-files/fields`) accepts it.
+Authoritative read and credential-safety rules are specified in
+[the backend contract](specs/dashboard-sidecar-management/spec.md#requirement-report-cliproxyapi-account-excluded-models).
+A live auth file may already carry exclusions placed there by hand. These remain operator data,
+not configuration owned by this change.
 
 ## Normalization
 
-Entries are trimmed, deduplicated case-insensitively keeping the first spelling, capped at 128
-characters each and 32 entries total, and rejected when they contain a newline, NUL, or comma. The
-comma matters for a specific reason: CLIProxyAPI keeps this list as a comma-joined attribute and
-splits it on `,` at routing time, so a comma inside one pattern would corrupt it into two patterns
-that match nothing. Order is
-preserved so the list an operator sees matches the list they built. Normalization runs on both the
-write path and the read path so a hand-edited file cannot produce a list the UI could not have made.
+See [the backend contract](specs/dashboard-sidecar-management/spec.md) for write normalization
+and fail-closed read semantics, including lists that would change under normalization.

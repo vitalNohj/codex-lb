@@ -16,8 +16,8 @@ from app.core.clients.claude_sidecar import (
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.db.session import get_background_session
-from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
+from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.oauth_usage import (
     ClaudeOAuthUsageError,
     fetch_claude_oauth_usage,
@@ -127,11 +127,13 @@ def _refresh_exclusions(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:
     accounts = []
     for auth in snapshot.accounts:
         patterns = excluded_models_from_auth_file(auth.credential_path)
-        accounts.append(replace(
-            auth,
-            excluded_models=tuple(patterns or ()),
-            excluded_models_available=patterns is not None,
-        ))
+        accounts.append(
+            replace(
+                auth,
+                excluded_models=tuple(patterns or ()),
+                excluded_models_available=patterns is not None,
+            )
+        )
     return replace(snapshot, accounts=tuple(accounts))
 
 

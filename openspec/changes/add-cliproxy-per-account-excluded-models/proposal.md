@@ -21,11 +21,8 @@ a change later with a click rather than a code edit.
 - Add `app/modules/claude_sidecar/excluded_models.py` with normalization plus a token-free read of the
   `excluded_models` key from an auth file on disk, because CLIProxyAPI 7.2.135 omits the field from
   `GET /v0/management/auth-files`.
-- Include each Claude account's `excludedModels` list plus an `excludedModelsState` of `available`,
-  `unreadable`, or `unsupported` in the routing response, the quota snapshot, and `SidecarAuthAccount`
-  rows (quota endpoint, accounts list, dashboard card). Reads are fail-closed: a list that cannot be
-  read verbatim, or that would not survive normalization unchanged, reads as `unreadable` and locks
-  editing rather than offering an empty list a save could write over the real exclusions.
+- Expose exclusion lists and their read state across routing and sidecar account responses, with
+  fail-closed reads as specified in [the backend contract](specs/dashboard-sidecar-management/spec.md).
 - Add an excluded-models editor (family switches plus custom pattern chips, autosaving) to the Settings
   CLIProxyAPI routing rows and the Accounts Claude detail view, plus compact excluded badges on the
   dashboard Claude card and list row.
@@ -48,6 +45,5 @@ a change later with a click rather than a code edit.
   `frontend/src/features/accounts/components/synthetic-account-detail.tsx`,
   `frontend/src/features/dashboard/components/account-card.tsx`,
   `frontend/src/features/dashboard/components/account-list.tsx`
-- No migrations and no service restarts required. Existing quota snapshots persisted without the
-  `excluded_models_available` key decode as unreadable, so those rows render locked with a read-failure
-  notice until the next poll re-reads the live list.
+- No migrations required. Snapshot compatibility and authoritative response reads are specified in
+  [the backend contract](specs/dashboard-sidecar-management/spec.md).
