@@ -341,7 +341,11 @@ def test_estimate_only_auth_row_is_unsupported_not_a_read_failure() -> None:
     assert row.excluded_models == []
 
 
-def test_snapshot_backed_auth_row_reports_the_read_result() -> None:
+def test_snapshot_backed_auth_row_reports_the_read_result(tmp_path, monkeypatch) -> None:
+    from dataclasses import replace
+    path = tmp_path / "claude-a@example.com.json"
+    path.write_text('{"excluded_models": ["fresh-*"]}')
+    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
     snapshot = SidecarQuotaSnapshot(
         checked_at=datetime(2026, 7, 25, 17, 0, tzinfo=timezone.utc),
         status="healthy",
@@ -395,5 +399,11 @@ def test_snapshot_backed_auth_row_reports_the_read_result() -> None:
 
     assert summary is not None
     states = {row.name: row.excluded_models_state for row in summary.sidecar_auths}
-    assert states["claude-a@example.com.json"] == "available"
+    assert states["claude-a@example.com.json"] == "unreadable"
+    snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
+    fresh = build_claude_sidecar_summary(
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)), request_usage=None,
+    )
+    assert fresh.sidecar_auths[0].excluded_models == ["fresh-*"]
+    assert fresh.sidecar_auths[0].excluded_models_state == "available"
     assert states["claude-b@example.com.json"] == "unreadable"

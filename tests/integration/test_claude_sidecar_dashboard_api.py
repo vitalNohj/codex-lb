@@ -866,7 +866,22 @@ async def test_get_routing_reads_excluded_models_from_auth_file(async_client, mo
 
 
 @pytest.mark.asyncio
-async def test_put_routing_excluded_models_patches_stored_snapshot(async_client, monkeypatch):
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_put_routing_excluded_models_patches_stored_snapshot(async_client, monkeypatch, tmp_path, uncertain):
+    import asyncio
+    from dataclasses import replace
+    from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
+
+    path = tmp_path / "claude-a@example.com.json"
+    path.write_text('{"excluded_models": []}')
+    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+
+    async def write_exclusions(self, name, patterns):
+        import json
+        path.write_text(json.dumps({"excluded_models": patterns}))
+        if uncertain:
+            raise ClaudeSidecarUnavailableError("response lost")
+    monkeypatch.setattr(_FakeSidecarClient, "patch_auth_file_excluded_models", write_exclusions)
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()
     response = await async_client.put(
@@ -909,14 +924,40 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
             claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
         )
 
-    response = await async_client.put(
-        "/api/claude-sidecar/routing/excluded-models",
-        json={"name": "claude-a@example.com.json", "excludedModels": ["claude-demo-*"]},
-    )
-    assert response.status_code == 200
+    snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    original_update = SettingsRepository.update_operational
 
-    # The dashboard reads the exclusion list from the stored snapshot; it must
-    # reflect the change without waiting for the next quota poll.
+    async def delayed_update(repo, **kwargs):
+        if asyncio.current_task() is poll_task:
+            entered.set()
+            await resume.wait()
+        return await original_update(repo, **kwargs)
+
+    monkeypatch.setattr(SettingsRepository, "update_operational", delayed_update)
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60, enabled=True)
+    poll_task = asyncio.create_task(poller._persist_snapshot(snapshot))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    save_task = asyncio.create_task(async_client.put(
+        "/api/claude-sidecar/routing/excluded-models",
+        json={"name": path.name, "excludedModels": ["claude-demo-*"]},
+    ))
+    try:
+        await asyncio.sleep(0.05)
+        assert not save_task.done()
+    finally:
+        resume.set()
+        await poll_task
+    response = await save_task
+    assert response.status_code == 200
+    assert response.json()["status"] == ("unreachable" if uncertain else "healthy")
+
+    async with SessionLocal() as session:
+        stored = await SettingsRepository(session).get_fresh()
+        from app.modules.claude_sidecar.quota import snapshot_from_json
+        published = snapshot_from_json(stored.claude_sidecar_quota_state_json)
+        assert published.accounts[0].excluded_models == (() if uncertain else ("claude-demo-*",))
     response = await async_client.get("/api/claude-sidecar/quota")
     assert response.status_code == 200
     accounts = {acct["name"]: acct for acct in response.json()["accounts"]}

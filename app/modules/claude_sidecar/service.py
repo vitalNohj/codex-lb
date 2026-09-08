@@ -8,7 +8,9 @@ from typing import Any
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
+from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.excluded_models import (
+    excluded_models_from_auth_file,
     excluded_models_for_entry,
     normalize_excluded_models,
 )
@@ -290,6 +292,12 @@ class ClaudeSidecarService:
         name: str,
         excluded_models: list[str],
     ) -> ClaudeSidecarRoutingResponse:
+        async with exclusion_write_lock():
+            return await self._set_account_excluded_models_locked(name, excluded_models)
+
+    async def _set_account_excluded_models_locked(
+        self, name: str, excluded_models: list[str]
+    ) -> ClaudeSidecarRoutingResponse:
         settings = await self._settings_repository.get_or_create()
         guarded = _routing_guard(settings)
         if guarded is not None:
@@ -314,6 +322,10 @@ class ClaudeSidecarService:
         return response
 
     async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
+        async with exclusion_write_lock():
+            await self._patch_snapshot_disabled_locked(name, paused)
+
+    async def _patch_snapshot_disabled_locked(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.
 
         The dashboard reads ``disabled`` from the polled snapshot (refreshed on
@@ -482,14 +494,15 @@ def _to_auth_account(
     auth: SidecarAuthQuota,
     estimate: ClaudeAuthUsageEstimate | None = None,
 ) -> SidecarAuthAccount:
+    patterns = excluded_models_from_auth_file(auth.credential_path)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
         status=auth.status,
         paused=auth.disabled,
-        excluded_models=list(auth.excluded_models),
-        excluded_models_state="available" if auth.excluded_models_available else "unreadable",
+        excluded_models=patterns or [],
+        excluded_models_state="available" if patterns is not None else "unreadable",
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
+
 from app.db.models import DashboardSettings
 from app.modules.accounts.schemas import (
     AccountRequestUsage,
@@ -154,6 +156,7 @@ def _build_auth_rows(
 
 
 def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) -> SidecarAuthAccount:
+    patterns = excluded_models_from_auth_file(auth.credential_path)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
@@ -161,8 +164,8 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         provider=auth.provider,
         status=_dashboard_auth_status(auth),
         paused=auth.disabled,
-        excluded_models=list(auth.excluded_models),
-        excluded_models_state="available" if auth.excluded_models_available else "unreadable",
+        excluded_models=patterns or [],
+        excluded_models_state="available" if patterns is not None else "unreadable",
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],
