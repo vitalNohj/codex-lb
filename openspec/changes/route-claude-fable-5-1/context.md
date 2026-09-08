@@ -8,7 +8,7 @@ Preserve the native Astra pricing and Fable 5.1 routing behavior present in the 
 
 The production implementation extended legacy substring pricing aliases. The reconciliation instead recognizes bounded model identities before legacy family aliases. This avoids changing the legacy alias table and prevents the new Fable 5.1 rule from matching Fable 5.10. Native rates are preserved from the production edits, not asserted here as independently verified current upstream prices.
 
-External integration costs remain governed by [external model pricing](../../../specs/external-model-pricing/spec.md). A synthetic catalog with deliberately different rates verifies that Claude request-log costs still use catalog rates rather than the native table.
+External integration costs remain governed by [external model pricing](../../specs/external-model-pricing/spec.md). A synthetic catalog with deliberately different rates verifies that Claude request-log costs still use catalog rates rather than the native table.
 
 ## Regression evidence
 

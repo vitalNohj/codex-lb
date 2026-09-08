@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import cast
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.types import JsonValue
@@ -171,7 +170,7 @@ def _set_reasoning_effort(body: dict[str, JsonValue], effort: str) -> None:
         return
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict):
-        reasoning_dict = cast(dict[str, JsonValue], reasoning)
+        reasoning_dict = reasoning
         existing_effort = reasoning_dict.get("effort")
         if isinstance(existing_effort, str) and existing_effort.strip():
             return
@@ -195,7 +194,7 @@ def set_reasoning_effort_override(body: dict[str, JsonValue], effort: str | None
         return
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict):
-        reasoning_dict = cast(dict[str, JsonValue], reasoning)
+        reasoning_dict = reasoning
         reasoning_dict.pop("effort", None)
         if not reasoning_dict:
             body.pop("reasoning", None)
@@ -214,7 +213,7 @@ def read_reasoning_effort(body: dict[str, JsonValue]) -> str | None:
         return top_level.strip()
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict):
-        effort = cast(dict[str, JsonValue], reasoning).get("effort")
+        effort = reasoning.get("effort")
         if isinstance(effort, str) and effort.strip():
             return effort.strip()
     return None

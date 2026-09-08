@@ -1283,9 +1283,9 @@ without corresponding proxy request and usage fields.
 - **WHEN** the requested model is `gpt-5.6-luna-2026-07-13`
 - **THEN** cost accounting resolves it to the `gpt-5.6-luna` price entry
 
-### Requirement: GPT-6 Astra usage cost pricing matches the current published rates
+### Requirement: GPT-6 Astra native usage cost pricing preserves reconciled rates
 
-When computing API-key usage, request-log, reservation, or aggregate cost for `gpt-6-astra`, the system MUST use these USD-per-1M-token rates for input, cached input, and output:
+When computing native API-key usage, request-log, reservation, or aggregate cost for `gpt-6-astra`, the system MUST use these reconciled USD-per-1M-token rates for input, cached input, and output. External integration costs remain governed by [external-model-pricing](../external-model-pricing/spec.md), not this native table:
 
 | Model | Standard | Fast/priority | Flex | Standard long context |
 | --- | --- | --- | --- | --- |

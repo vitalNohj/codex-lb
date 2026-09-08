@@ -278,7 +278,9 @@ When a Responses-shaped chat payload uses a flat Responses function tool, strict
 
 ### Requirement: Claude Fable 5.1 sidecar requests keep the 5.1 wire model
 
-The Claude sidecar chat-completions forward path MUST send Anthropic/CLIProxyAPI model id `claude-fable-5-1` when the client requested Fable 5.1, including dotted `5.1`, hyphen `5-1`, sidecar prefixes such as `cc/`, and reasoning-effort suffixes. It MUST NOT rewrite those ids to `claude-fable-5`. Unversioned Fable 5 ids MUST still forward as `claude-fable-5`.
+The Claude sidecar chat-completions forward path MUST send Anthropic/CLIProxyAPI model id `claude-fable-5-1` when the client requested Fable 5.1, including dotted `5.1`, hyphen `5-1`, sidecar prefixes such as `cc/`, and reasoning-effort suffixes. It MUST NOT rewrite those ids to `claude-fable-5`. Unversioned Fable 5 ids MUST still forward as `claude-fable-5`. Canonical hyphenated ids with a trailing `-YYYYMMDD` release stamp MUST retain that stamp on the wire.
+
+Fable 5.1 MUST use the same output bounds as Fable 5: a 32,768-token floor, a 128,000-token cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
 
 #### Scenario: Hyphen 5.1 id is forwarded as claude-fable-5-1
 

@@ -21,7 +21,7 @@ Cursor sends `cc/claude-fable-5-1` (Claude Fable 5.1). The Claude sidecar model 
 ### Modified Capabilities
 
 - `chat-completions-compat`: Claude sidecar wire model for Fable 5.1 MUST be `claude-fable-5-1`
-- `api-keys`: cost accounting MUST price Fable 5.1 at the published cache-hit rate
+- `api-keys`: native cost accounting preserves the [reconciled Astra and Fable 5.1 rates](../../specs/api-keys/spec.md#requirement-gpt-6-astra-native-usage-cost-pricing-preserves-reconciled-rates)
 
 ## Impact
 

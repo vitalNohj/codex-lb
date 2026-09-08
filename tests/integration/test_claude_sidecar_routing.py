@@ -142,7 +142,11 @@ async def fake_sidecar(monkeypatch):
         enabled=True,
         base_url="http://127.0.0.1:8317",
         api_key="sidecar-key",
-        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
+        prefixes=(
+            SidecarPrefix(prefix="claude", strip=False),
+            SidecarPrefix(prefix="cp-", strip=True),
+            SidecarPrefix(prefix="cc/", strip=True),
+        ),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
@@ -246,6 +250,8 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
 @pytest.mark.parametrize(
     ("model", "wire_model", "effort"),
     [
+        ("cc/claude-fable-5-1", "claude-fable-5-1", None),
+        ("cc/claude-fable-5-1-thinking-max", "claude-fable-5-1", "max"),
         ("cp_claude-fable-5-1", "claude-fable-5-1", None),
         ("claude-fable-5.1", "claude-fable-5-1", None),
         ("claude-fable-5-1-thinking-max", "claude-fable-5-1", "max"),
@@ -267,6 +273,31 @@ async def test_fable_version_survives_chat_forwarding(
     assert payload["max_tokens"] == 32_768
     if effort is not None:
         assert payload["reasoning_effort"] == effort
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_tokens", "requested_output", "expected_output"),
+    [(10, 200_000, 128_000), (170_000, 4096, 32_768), (980_000, 4096, None)],
+)
+async def test_fable_5_1_output_and_context_bounds(
+    async_client, sidecar_enabled, fake_sidecar, input_tokens, requested_output, expected_output
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "cc/claude-fable-5-1",
+            "messages": [{"role": "user", "content": "x" * (input_tokens * 4)}],
+            "max_tokens": requested_output,
+        },
+    )
+    assert response.status_code == 200
+    payload = fake_sidecar.chat_payloads[0]
+    assert payload["model"] == "claude-fable-5-1"
+    if expected_output is None:
+        assert 4096 <= payload["max_tokens"] < 32_768
+    else:
+        assert payload["max_tokens"] == expected_output
 
 
 @pytest.mark.asyncio
