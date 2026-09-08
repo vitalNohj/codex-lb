@@ -678,12 +678,15 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
-    alias = resolve_versioned_model_id(normalized) or resolve_model_alias(normalized, aliases)
-    if not alias:
-        return None
-    for key, value in pricing.items():
-        if key.lower() == alias.lower():
-            return key, value
+    # The versioned identity wins, but a caller-supplied pricing mapping that
+    # lacks its canonical key must still fall back to the legacy alias instead
+    # of dropping the cost entirely.
+    for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
+        if not alias:
+            continue
+        for key, value in pricing.items():
+            if key.lower() == alias.lower():
+                return key, value
     return None
 
 

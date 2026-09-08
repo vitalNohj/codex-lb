@@ -14,6 +14,10 @@ External integration costs remain governed by [external model pricing](../../spe
 
 A mocked `/v1/chat/completions` request for `cp_claude-fable-5-1`, dotted `claude-fable-5.1`, or `claude-fable-5-1-thinking-max` forwarded the wrong `claude-fable-5` model on the main baseline. The reconciled path preserves the intended wire version, suffix effort and output bounds, while plain Fable 5 is unchanged. Unit tests cover native tiers, the 272,000-token boundary, identity spellings, and nonmatching neighboring versions.
 
+## Review follow-up
+
+Automated review found two defects that the bounded-identity approach itself introduced, both now fixed and regressed. Resolving a version before the legacy alias made native price lookup return nothing when a caller-supplied price table carried only the family entry, which silently dropped that request's cost. Separately, routing recognized Fable 5.1 while `allowed_models` enforcement still collapsed it to `claude-fable-5`, so a key allowed only the family could reach the separately priced version. Both fixes keep one canonical identity across routing, pricing, and access control.
+
 ## Delivery constraint
 
 Production edits are preserved privately outside the deployment directory. Production must remain protected by the existing dirty-source guard until the reconciled behavior is landed and source reconciliation can be proven contained in the merged result. Deployment and live model testing are not performed by these tests.

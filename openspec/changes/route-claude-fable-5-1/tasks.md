@@ -11,3 +11,9 @@
 - [x] 2.2 Pricing, model-profile, payload and bounded-identity unit tests plus mocked chat-routing integration tests pass (211 tests).
 - [x] 2.3 Mocked API regression fails on current main and passes after reconciliation. External catalog rates remain authoritative for sidecar costs.
 - [x] 2.4 Expanded routing, pricing, quota propagation and model-exclusion regression suite passes (2,076 tests).
+
+## 3. Review follow-up
+
+- [x] 3.1 Keep the legacy family fallback when a supplied price table lacks the resolved version, so cost is never silently dropped.
+- [x] 3.2 Resolve the version in API-key access control so a `claude-fable-5` allowlist cannot reach separately priced Fable 5.1.
+- [x] 3.3 Regressions for both, failing before the fixes and passing after.

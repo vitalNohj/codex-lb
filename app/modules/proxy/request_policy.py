@@ -24,6 +24,7 @@ from app.core.openai.strict_schema import (
 )
 from app.core.openai.v1_requests import V1ResponsesRequest
 from app.core.types import JsonValue
+from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.core.utils.json_guards import is_json_list, is_json_mapping
@@ -139,6 +140,12 @@ def _canonical_model_for_access(model: str | None) -> str | None:
         return None
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
+    # A separately-routed and separately-priced version must not be collapsed
+    # into its family by a legacy glob, or an allowlist naming only the family
+    # would admit it.
+    versioned = resolve_versioned_model_id(normalized)
+    if versioned is not None:
+        return versioned
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
     if pricing_alias is not None:
         return pricing_alias

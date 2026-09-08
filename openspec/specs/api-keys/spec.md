@@ -1313,7 +1313,9 @@ The existing `priority` and `fast` service-tier aliases MUST use the Fast/priori
 
 ### Requirement: Claude Fable 5.1 pricing is distinct from Fable 5
 
-The native price table MUST recognize Anthropic Claude Fable 5.1, including sidecar-prefixed and dotted ids such as `cc/claude-fable-5-1` and `cc/claude-fable-5.1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by `external-model-pricing`: catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+The native price table MUST recognize Anthropic Claude Fable 5.1, including sidecar-prefixed and dotted ids such as `cc/claude-fable-5-1` and `cc/claude-fable-5.1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+
+A recognized version MUST NOT remove pricing that a price table would otherwise supply. When a supplied price table has no entry for the resolved version, lookup MUST fall back to the legacy family alias so the request is still priced instead of silently losing its cost.
 
 #### Scenario: Canonical Fable 5.1 model resolves pricing
 
@@ -1325,6 +1327,31 @@ The native price table MUST recognize Anthropic Claude Fable 5.1, including side
 - **WHEN** native price lookup receives model `cc/claude-fable-5-1`
 - **THEN** it resolves the distinct Fable 5.1 native price entry
 - **AND** the resolved canonical model is `claude-fable-5-1`
+
+#### Scenario: A price table without the version still prices the request
+
+- **WHEN** native price lookup receives model `cc/claude-fable-5-1`
+- **AND** the supplied price table contains only `claude-fable-5`
+- **THEN** it resolves the `claude-fable-5` entry rather than returning no price
+
+### Requirement: API-key model access does not collapse a separately priced version into its family
+
+`allowed_models` enforcement MUST resolve a requested model to the same canonical identity used for routing and native pricing. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family.
+
+#### Scenario: A Fable 5 allowlist rejects Fable 5.1
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5` requests `cc/claude-fable-5-1`
+- **THEN** the request is refused as not allowed for that key
+
+#### Scenario: A Fable 5 allowlist still admits Fable 5
+
+- **WHEN** the same API key requests `cc/claude-fable-5`
+- **THEN** the request is allowed
+
+#### Scenario: An allowlist naming the version admits it
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5-1` requests `claude-fable-5.1`
+- **THEN** the request is allowed
 
 ### Requirement: API key last-used tracking is write-behind and coalesced
 

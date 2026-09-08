@@ -21,10 +21,10 @@ Cursor sends `cc/claude-fable-5-1` (Claude Fable 5.1). The Claude sidecar model 
 ### Modified Capabilities
 
 - `chat-completions-compat`: Claude sidecar wire model for Fable 5.1 MUST be `claude-fable-5-1`
-- `api-keys`: native cost accounting preserves the [reconciled Astra and Fable 5.1 rates](../../specs/api-keys/spec.md#requirement-gpt-6-astra-native-usage-cost-pricing-preserves-reconciled-rates)
+- `api-keys`: native cost accounting preserves the [reconciled Astra and Fable 5.1 rates](../../specs/api-keys/spec.md#requirement-gpt-6-astra-native-usage-cost-pricing-preserves-reconciled-rates), keeps the legacy family fallback when a price table lacks the version, and stops a family allowlist from admitting a separately priced version
 
 ## Impact
 
-- Code: `app/core/usage/pricing.py`, `app/modules/proxy/claude_sidecar_dispatch.py`, `app/modules/proxy/sidecar_model_profiles.py`, `app/core/usage/model_ids.py`
+- Code: `app/core/usage/pricing.py`, `app/modules/proxy/claude_sidecar_dispatch.py`, `app/modules/proxy/sidecar_model_profiles.py`, `app/modules/proxy/request_policy.py`, `app/core/usage/model_ids.py`
 - Tests: `tests/unit/test_pricing.py`, `tests/unit/test_sidecar_model_profiles.py`, `tests/unit/test_claude_sidecar_dispatch.py`
 - Live: requires `codex-lb.service` restart
