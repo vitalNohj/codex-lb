@@ -5,6 +5,7 @@ from typing import cast
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.types import JsonValue
+from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.modules.proxy.sidecar_routing import prefix_variants
@@ -26,12 +27,16 @@ def canonical_sidecar_model(model: str | None) -> str | None:
     normalized = model.strip()
     if not normalized:
         return None
-    pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
+    pricing_alias = resolve_versioned_model_id(normalized) or resolve_pricing_model_alias(
+        normalized, DEFAULT_MODEL_ALIASES
+    )
     if pricing_alias is not None:
         return pricing_alias
     if not normalized.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
         candidate = f"{_CLAUDE_MODEL_FAMILY_PREFIX}{normalized}"
-        pricing_alias = resolve_pricing_model_alias(candidate, DEFAULT_MODEL_ALIASES)
+        pricing_alias = resolve_versioned_model_id(candidate) or resolve_pricing_model_alias(
+            candidate, DEFAULT_MODEL_ALIASES
+        )
         if pricing_alias is not None:
             return pricing_alias
     return normalized
@@ -79,6 +84,11 @@ def apply_sidecar_model_profile_with_suffix_effort(
 def _resolve_sidecar_wire_model_and_effort(model: str) -> tuple[str, str | None]:
     if not model:
         return model, None
+
+    versioned = resolve_versioned_model_id(model)
+    if versioned == "claude-fable-5-1":
+        _, effort = _split_model_reasoning_suffix(model)
+        return (model if _is_date_suffix_variant(model, versioned) else versioned), effort
 
     pricing_alias = resolve_pricing_model_alias(model, DEFAULT_MODEL_ALIASES)
     if pricing_alias is not None and pricing_alias.lower() != model.lower():

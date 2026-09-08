@@ -243,11 +243,48 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "wire_model", "effort"),
+    [
+        ("cp_claude-fable-5-1", "claude-fable-5-1", None),
+        ("claude-fable-5.1", "claude-fable-5-1", None),
+        ("claude-fable-5-1-thinking-max", "claude-fable-5-1", "max"),
+        ("cp_claude-fable-5.1-thinking-max", "claude-fable-5-1", "max"),
+        ("claude-fable-5", "claude-fable-5", None),
+    ],
+)
+async def test_fable_version_survives_chat_forwarding(
+    async_client, sidecar_enabled, fake_sidecar, model, wire_model, effort
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
+    )
+
+    assert response.status_code == 200
+    payload = fake_sidecar.chat_payloads[0]
+    assert payload["model"] == wire_model
+    assert payload["max_tokens"] == 32_768
+    if effort is not None:
+        assert payload["reasoning_effort"] == effort
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested_model", "catalog_model"),
+    [
+        ("claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5"),
+        ("claude-fable-5-1", "anthropic/claude-fable-5.1"),
+        ("cp_claude-fable-5.1", "anthropic/claude-fable-5.1"),
+    ],
+)
 async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
     async_client,
     sidecar_enabled,
     fake_sidecar,
     monkeypatch,
+    requested_model,
+    catalog_model,
 ):
     """CLIProxyAPI serves date-stamped ids; the catalog publishes undated ones.
 
@@ -265,7 +302,7 @@ async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
     async def _reference():
         return Catalog.from_entries(
             "openrouter",
-            [CatalogEntry(model_id="anthropic/claude-sonnet-4.5", price=ModelPrice(3.0, 15.0))],
+            [CatalogEntry(model_id=catalog_model, price=ModelPrice(3.0, 15.0))],
         )
 
     monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
@@ -289,7 +326,7 @@ async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
             response = await async_client.post(
                 "/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key.key}"},
-                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+                json={"model": requested_model, "messages": [{"role": "user", "content": "hi"}]},
             )
             assert response.status_code == 200
             await get_lookup_coordinator().drain()

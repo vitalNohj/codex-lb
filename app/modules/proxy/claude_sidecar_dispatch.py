@@ -345,6 +345,7 @@ class _OutputBounds:
 _SIDECAR_MAX_TOKENS_BOUNDS: dict[str, _OutputBounds] = {
     # 1M context, 128k max output.
     "claude-fable-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-fable-5-1": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
     "claude-mythos-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
     "claude-opus-4-8": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
     "claude-opus-4-7": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),

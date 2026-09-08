@@ -7,6 +7,7 @@ from fnmatch import fnmatchcase
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
+from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.types import UsageCostByModel, UsageCostSummary
 
 
@@ -151,6 +152,21 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_input_per_1m=0.4,
         long_context_cached_input_per_1m=0.04,
         long_context_output_per_1m=1.8,
+    ),
+    "gpt-6-astra": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+        priority_input_per_1m=20.0,
+        priority_cached_input_per_1m=2.0,
+        priority_output_per_1m=100.0,
+        flex_input_per_1m=5.0,
+        flex_cached_input_per_1m=0.5,
+        flex_output_per_1m=25.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=20.0,
+        long_context_cached_input_per_1m=2.0,
+        long_context_output_per_1m=75.0,
     ),
     "gpt-5.5": ModelPrice(
         input_per_1m=5.0,
@@ -347,6 +363,11 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     "claude-fable-5": ModelPrice(
         input_per_1m=10.0,
         cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+    ),
+    "claude-fable-5-1": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=0.25,
         output_per_1m=50.0,
     ),
     "claude-mythos-5": ModelPrice(
@@ -657,7 +678,7 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
-    alias = resolve_model_alias(normalized, aliases)
+    alias = resolve_versioned_model_id(normalized) or resolve_model_alias(normalized, aliases)
     if not alias:
         return None
     for key, value in pricing.items():

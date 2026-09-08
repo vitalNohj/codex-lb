@@ -1283,6 +1283,49 @@ without corresponding proxy request and usage fields.
 - **WHEN** the requested model is `gpt-5.6-luna-2026-07-13`
 - **THEN** cost accounting resolves it to the `gpt-5.6-luna` price entry
 
+### Requirement: GPT-6 Astra usage cost pricing matches the current published rates
+
+When computing API-key usage, request-log, reservation, or aggregate cost for `gpt-6-astra`, the system MUST use these USD-per-1M-token rates for input, cached input, and output:
+
+| Model | Standard | Fast/priority | Flex | Standard long context |
+| --- | --- | --- | --- | --- |
+| `gpt-6-astra` | `10 / 1 / 50` | `20 / 2 / 100` | `5 / 0.50 / 25` | `20 / 2 / 75` |
+
+The existing `priority` and `fast` service-tier aliases MUST use the Fast/priority rates. Standard long-context rates MUST apply only when input tokens exceed 272,000. Flex long-context pricing MUST continue to use the existing Flex short-context rates and multipliers. Suffixed aliases such as `gpt-6-astra-2026-09-03` and the discoverable alias `codex/gpt-6-astra` MUST resolve to the canonical `gpt-6-astra` price entry.
+
+#### Scenario: Astra standard usage uses the current rate
+
+- **WHEN** a standard-tier `gpt-6-astra` request has 200,000 input tokens, 100,000 cached input tokens, and 1,000,000 output tokens
+- **THEN** the token cost is `$51.10`
+
+#### Scenario: Astra Fast and Flex usage use their tier rates
+
+- **WHEN** a `gpt-6-astra` request has 200,000 input tokens, 100,000 cached input tokens, and 1,000,000 output tokens
+- **AND** the request uses `priority` or `fast`
+- **THEN** the token cost is `$102.20`
+- **WHEN** the same usage uses `flex`
+- **THEN** the token cost is `$25.55`
+
+#### Scenario: Astra standard long-context usage uses the current long-context rate
+
+- **WHEN** a standard-tier `gpt-6-astra` request has 300,000 input tokens, 50,000 cached input tokens, and 100,000 output tokens
+- **THEN** the token cost is `$12.60`
+
+### Requirement: Claude Fable 5.1 pricing is distinct from Fable 5
+
+The native price table MUST recognize Anthropic Claude Fable 5.1, including sidecar-prefixed and dotted ids such as `cc/claude-fable-5-1` and `cc/claude-fable-5.1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by `external-model-pricing`: catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+
+#### Scenario: Canonical Fable 5.1 model resolves pricing
+
+- **WHEN** native cost accounting resolves model `claude-fable-5-1` with token usage
+- **THEN** it uses the preserved Fable 5.1 native rates ($10 input / $0.25 cache-hit / $50 output per 1M tokens)
+
+#### Scenario: Sidecar-prefixed Fable 5.1 does not use Fable 5 cache-hit pricing
+
+- **WHEN** native price lookup receives model `cc/claude-fable-5-1`
+- **THEN** it resolves the distinct Fable 5.1 native price entry
+- **AND** the resolved canonical model is `claude-fable-5-1`
+
 ### Requirement: API key last-used tracking is write-behind and coalesced
 
 The system SHALL track `api_keys.last_used_at` through a process-local write-behind coalescer instead of writing the column inside each reservation-settlement transaction. Settlement paths MUST record the key's used-at timestamp in memory (keyed by API key id, keeping the per-key maximum), and a replica-local periodic flusher (constant 30-second interval, not leader-gated) MUST fold all pending touches into the database in a single transaction per flush. Every flushed write MUST apply monotonic greatest-wins semantics — the stored `last_used_at` is only advanced, never regressed, even when multiple replicas flush out of order (`GREATEST(coalesce(last_used_at, epoch), :new)` semantics; the dialect-portable guarded UPDATE `WHERE last_used_at IS NULL OR last_used_at < :new` is an acceptable implementation on both PostgreSQL and SQLite). Graceful shutdown MUST flush every recorded touch: the flusher's stop sequence MUST switch the coalescer to shutdown write-through mode before performing the final flush, so a touch recorded after (or concurrently with) the final flush — for example by a settlement task that outlived the shutdown drain of persistence tasks — is flushed immediately by the recording path itself instead of being parked in a pending map that no longer has a flusher. Shutdown-path flushes (the final flush and write-through flushes after it) MUST retry transient failures a bounded number of times (3 attempts with a short constant backoff); if every attempt fails, the pending touches (API key ids and their timestamps) MUST be logged at WARNING so operators can reconstruct the lost values, and the failure MUST NOT propagate to the caller. On process crash, losing at most one flush interval (~30 seconds) of `last_used_at` freshness is accepted: the column's only consumer is the dashboard API response field (`lastUsedAt`), which no routing, ordering, or enforcement logic reads, so observed staleness of up to the flush interval is a display-only effect. A failed periodic flush MUST retain the pending touches for a later flush rather than dropping them.
