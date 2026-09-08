@@ -147,6 +147,89 @@ def test_claude_auth_unavailable_error_without_message_maps_to_reauth() -> None:
     assert summary.sidecar_auths[0].status == "reauth_required"
 
 
+def _claude_auth(**overrides) -> SidecarAuthQuota:
+    fields: dict = {
+        "name": "claude-jvwarrior@gmail.com.json",
+        "auth_index": "abc",
+        "email": "jvwarrior@gmail.com",
+        "provider": "claude",
+        "credential_path": None,
+        "status": "active",
+        "status_message": None,
+        "disabled": False,
+        "unavailable": False,
+        "quota_exceeded": False,
+        "next_recover_at": None,
+        "model_states": (),
+        "success": 1,
+        "failed": 0,
+        "last_refresh": None,
+        "expired": None,
+    }
+    fields.update(overrides)
+    return SidecarAuthQuota(**fields)
+
+
+def _summary_for(*accounts: SidecarAuthQuota):
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 9, 8, 21, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=accounts,
+    )
+    settings = _settings(
+        claude_sidecar_enabled=True,
+        claude_sidecar_api_key_encrypted=b"key",
+        claude_sidecar_base_url="http://127.0.0.1:8317",
+        claude_sidecar_last_health_status="healthy",
+        claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+    )
+    return build_claude_sidecar_summary(settings, request_usage=None)
+
+
+def test_claude_past_oauth_expiry_maps_to_reauth_required() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="active",
+            unavailable=False,
+            expired=datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "reauth_required"
+
+
+def test_claude_future_oauth_expiry_stays_active() -> None:
+    summary = _summary_for(_claude_auth(expired=datetime(2099, 1, 1, tzinfo=timezone.utc)))
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_missing_oauth_expiry_stays_active() -> None:
+    summary = _summary_for(_claude_auth(expired=None, status="active", unavailable=False))
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+
+
+def test_claude_quota_exceeded_with_future_expiry_is_not_reauth() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="rate_limited",
+            status_message="Quota exceeded",
+            quota_exceeded=True,
+            expired=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "rate_limited"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
 def test_openrouter_summary_active_when_enabled_and_configured() -> None:
     settings = _settings(
         openrouter_sidecar_enabled=True,

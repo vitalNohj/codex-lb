@@ -8,6 +8,8 @@ from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarModelQuota,
     SidecarQuotaSnapshot,
+    dashboard_auth_status,
+    oauth_expired_from_auth_file,
     parse_auth_files,
     snapshot_from_json,
     snapshot_to_json,
@@ -144,12 +146,7 @@ def test_parse_auth_files_marks_denormalized_entry_list_unavailable():
     assert accounts[0].excluded_models_available is False
 
 
-def test_parse_auth_files_marks_unreadable_excluded_models_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
-        lambda: tmp_path,
-    )
-
+def test_parse_auth_files_marks_unreadable_excluded_models_unavailable(tmp_path):
     accounts = parse_auth_files(
         [
             {
@@ -157,18 +154,15 @@ def test_parse_auth_files_marks_unreadable_excluded_models_unavailable(tmp_path,
                 "provider": "claude",
                 "path": str(tmp_path / "missing.json"),
             }
-        ]
+        ],
+        auth_dir=tmp_path,
     )
 
     assert accounts[0].excluded_models == ()
     assert accounts[0].excluded_models_available is False
 
 
-def test_parse_auth_files_reads_excluded_models_from_auth_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
-        lambda: tmp_path,
-    )
+def test_parse_auth_files_reads_excluded_models_from_auth_file(tmp_path):
     auth_path = tmp_path / "claude-a.json"
     auth_path.write_text(
         json.dumps(
@@ -188,7 +182,8 @@ def test_parse_auth_files_reads_excluded_models_from_auth_file(tmp_path, monkeyp
                 "email": "a@example.com",
                 "path": str(auth_path),
             }
-        ]
+        ],
+        auth_dir=tmp_path,
     )
 
     assert accounts[0].excluded_models == ("claude-demo-*",)
@@ -276,3 +271,156 @@ def test_snapshot_without_excluded_models_key_decodes_to_empty_tuple():
     # A snapshot persisted before this key existed recorded no read at all, so
     # it must decode as unreadable rather than as an empty, saveable list.
     assert decoded.accounts[0].excluded_models_available is False
+
+
+def _auth(**overrides) -> SidecarAuthQuota:
+    fields: dict = {
+        "name": "claude-a.json",
+        "auth_index": "abc",
+        "email": "a@example.com",
+        "status": "active",
+        "status_message": None,
+        "disabled": False,
+        "unavailable": False,
+        "quota_exceeded": False,
+        "next_recover_at": None,
+        "model_states": (),
+        "success": 0,
+        "failed": 0,
+        "last_refresh": None,
+        "expired": None,
+    }
+    fields.update(overrides)
+    return SidecarAuthQuota(**fields)
+
+
+def test_parse_auth_files_reads_listed_expired():
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "email": "a@example.com",
+                "status": "active",
+                "expired": "2026-09-07T14:05:05Z",
+            }
+        ]
+    )
+
+    assert accounts[0].expired == datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc)
+
+
+def test_parse_auth_files_reads_expired_from_disk_without_copying_tokens(tmp_path: Path) -> None:
+    auth_path = tmp_path / "claude-a.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "expired": "2026-09-07T14:05:05Z",
+                "access_token": "synthetic-access-token",
+                "refresh_token": "synthetic-refresh-token",
+                "email": "a@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "email": "a@example.com",
+                "status": "active",
+                "path": str(auth_path),
+            }
+        ],
+        auth_dir=tmp_path,
+    )
+
+    assert accounts[0].expired == datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 9, 8, 21, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=tuple(accounts),
+    )
+    raw = snapshot_to_json(snapshot)
+    assert "synthetic-access-token" not in raw
+    assert "synthetic-refresh-token" not in raw
+    assert "access_token" not in raw
+    assert "refresh_token" not in raw
+
+
+def test_oauth_expired_from_auth_file_refuses_path_outside_auth_dir(tmp_path: Path) -> None:
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"expired": "2020-01-01T00:00:00Z"}), encoding="utf-8")
+
+    assert oauth_expired_from_auth_file(str(outside), auth_dir=auth_dir) is None
+
+
+def test_listed_expired_wins_over_disk_file(tmp_path: Path) -> None:
+    auth_path = tmp_path / "claude-a.json"
+    auth_path.write_text(
+        json.dumps({"expired": "2020-01-01T00:00:00Z", "access_token": "synthetic-access-token"}),
+        encoding="utf-8",
+    )
+
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "path": str(auth_path),
+                "expired": "2026-09-07T14:05:05Z",
+            }
+        ],
+        auth_dir=tmp_path,
+    )
+
+    assert accounts[0].expired == datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc)
+
+
+def test_dashboard_auth_status_past_expiry_is_reauth_required() -> None:
+    auth = _auth(expired=datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc), status="active")
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+    assert dashboard_auth_status(auth, now=now) == "reauth_required"
+
+
+def test_dashboard_auth_status_future_expiry_keeps_active() -> None:
+    auth = _auth(expired=datetime(2026, 9, 9, 5, 29, 23, tzinfo=timezone.utc), status="active")
+    now = datetime(2026, 9, 8, 21, 30, tzinfo=timezone.utc)
+
+    assert dashboard_auth_status(auth, now=now) == "active"
+
+
+def test_dashboard_auth_status_missing_expiry_keeps_active() -> None:
+    assert dashboard_auth_status(_auth(expired=None, status="active")) == "active"
+
+
+def test_dashboard_auth_status_quota_exceeded_with_future_expiry_is_not_reauth() -> None:
+    auth = _auth(
+        status="rate_limited",
+        status_message="Quota exceeded",
+        quota_exceeded=True,
+        expired=datetime(2026, 9, 9, 5, 29, 23, tzinfo=timezone.utc),
+    )
+    now = datetime(2026, 9, 8, 21, 30, tzinfo=timezone.utc)
+
+    assert dashboard_auth_status(auth, now=now) == "rate_limited"
+
+
+def test_snapshot_round_trips_expired() -> None:
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 9, 8, 21, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(_auth(expired=datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc)),),
+    )
+
+    decoded = snapshot_from_json(snapshot_to_json(snapshot))
+
+    assert decoded is not None
+    assert decoded.accounts[0].expired == datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc)

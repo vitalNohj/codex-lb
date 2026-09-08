@@ -11,6 +11,7 @@ from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
+    dashboard_auth_status,
     snapshot_from_json,
 )
 from app.modules.claude_sidecar.usage_estimates import (
@@ -158,7 +159,7 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         auth_index=auth.auth_index,
         email=auth.email,
         provider=auth.provider,
-        status=_dashboard_auth_status(auth),
+        status=dashboard_auth_status(auth),
         paused=auth.disabled,
         excluded_models=patterns or [],
         excluded_models_state="available" if patterns is not None else "unreadable",
@@ -179,29 +180,6 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         reset_at_secondary=estimate.reset_at_secondary if estimate else None,
         confidence=estimate.confidence if estimate else None,
     )
-
-
-def _dashboard_auth_status(auth: SidecarAuthQuota) -> str | None:
-    # ponytail: map CLIProxy auth-death shapes onto native reauth_required so
-    # StatusBadge already works; does not add a Claude re-login button.
-    if _looks_like_reauth(auth):
-        return "reauth_required"
-    return auth.status
-
-
-def _looks_like_reauth(auth: SidecarAuthQuota) -> bool:
-    # ponytail: require auth-death evidence. Generic status=error (e.g.
-    # "context canceled") is transient unavailable, not reauth.
-    message = (auth.status_message or "").lower()
-    if (
-        "authentication_error" in message
-        or "re-authenticate" in message
-        or "invalid_grant" in message
-        or ("oauth" in message and "expired" in message)
-    ):
-        return True
-    status = (auth.status or "").lower()
-    return auth.unavailable and status == "unauthorized"
 
 
 def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAccount:

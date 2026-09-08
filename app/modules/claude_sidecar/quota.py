@@ -5,11 +5,13 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.modules.claude_sidecar.excluded_models import (
+    default_auth_dir,
     excluded_models_for_entry,
     normalize_excluded_models,
 )
@@ -56,6 +58,7 @@ class SidecarAuthQuota:
     credential_path: str | None = None
     oauth_usage: SidecarOAuthUsage | None = None
     provider: str | None = None
+    expired: datetime | None = None
     excluded_models: tuple[str, ...] = ()
     excluded_models_available: bool = False
 
@@ -68,14 +71,19 @@ class SidecarQuotaSnapshot:
     accounts: tuple[SidecarAuthQuota, ...] = field(default_factory=tuple)
 
 
-def parse_auth_files(raw: Iterable[Mapping[str, JsonValue]]) -> list[SidecarAuthQuota]:
+def parse_auth_files(
+    raw: Iterable[Mapping[str, JsonValue]],
+    *,
+    auth_dir: Path | None = None,
+) -> list[SidecarAuthQuota]:
+    root = (auth_dir or default_auth_dir()).resolve()
     accounts: list[SidecarAuthQuota] = []
     for entry in raw:
         if not is_json_mapping(entry):
             continue
         if not _is_claude_entry(entry):
             continue
-        accounts.append(_parse_one(entry))
+        accounts.append(_parse_one(entry, auth_dir=root))
     return accounts
 
 
@@ -107,7 +115,7 @@ def _auth_provider(entry: Mapping[str, JsonValue]) -> str | None:
     return None
 
 
-def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
+def _parse_one(entry: Mapping[str, JsonValue], *, auth_dir: Path) -> SidecarAuthQuota:
     name = _str(entry.get("name")) or _str(entry.get("id")) or _str(entry.get("label")) or ""
     quota_field = entry.get("quota")
     quota_exceeded = False
@@ -117,7 +125,7 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         next_recover_at = _parse_datetime(quota_field.get("next_recover_at"))
     model_states_field = entry.get("model_states")
     model_states = tuple(_parse_model_states(model_states_field))
-    excluded = excluded_models_for_entry(entry)
+    excluded = excluded_models_for_entry(entry, auth_dir)
     return SidecarAuthQuota(
         name=name,
         auth_index=_str(entry.get("auth_index")),
@@ -134,9 +142,76 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         success=_int(entry.get("success")) or 0,
         failed=_int(entry.get("failed")) or 0,
         last_refresh=_parse_datetime(entry.get("updated_at") or entry.get("modtime") or entry.get("created_at")),
+        expired=_expired_from_entry(entry, auth_dir=auth_dir),
         excluded_models=tuple(excluded) if excluded is not None else (),
         excluded_models_available=excluded is not None,
     )
+
+
+def dashboard_auth_status(auth: SidecarAuthQuota, *, now: datetime | None = None) -> str | None:
+    """Map CLIProxyAPI auth-death onto the dashboard `reauth_required` badge."""
+    if _looks_like_reauth(auth, now=now):
+        return "reauth_required"
+    return auth.status
+
+
+def _looks_like_reauth(auth: SidecarAuthQuota, *, now: datetime | None = None) -> bool:
+    message = (auth.status_message or "").lower()
+    if (
+        "authentication_error" in message
+        or "re-authenticate" in message
+        or "invalid_grant" in message
+        or "refresh token expired" in message
+        or ("oauth" in message and "expired" in message)
+        or ("access token" in message and "expired" in message)
+    ):
+        return True
+    status = (auth.status or "").lower()
+    if auth.unavailable and status == "unauthorized":
+        return True
+    if auth.expired is None:
+        return False
+    clock = now or datetime.now(timezone.utc)
+    expired = auth.expired
+    if expired.tzinfo is None:
+        expired = expired.replace(tzinfo=timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    return expired <= clock
+
+
+def oauth_expired_from_auth_file(path: str, *, auth_dir: Path | None = None) -> datetime | None:
+    """Return only the auth JSON `expired` timestamp. Never returns token fields."""
+    root = (auth_dir or default_auth_dir()).expanduser()
+    try:
+        resolved = Path(path).expanduser().resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        logger.warning("could not resolve CLIProxyAPI auth-file path for expiry")
+        return None
+    if not resolved.is_relative_to(root_resolved):
+        logger.warning("refusing to read CLIProxyAPI auth-file expiry outside the auth directory")
+        return None
+    if resolved.suffix.lower() != ".json" or not resolved.is_file():
+        return None
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("could not read CLIProxyAPI auth-file expiry")
+        return None
+    if not is_json_mapping(raw):
+        return None
+    return _parse_datetime(raw.get("expired") or raw.get("expires_at"))
+
+
+def _expired_from_entry(entry: Mapping[str, JsonValue], *, auth_dir: Path) -> datetime | None:
+    listed = _parse_datetime(entry.get("expired") or entry.get("expires_at") or entry.get("expire"))
+    if listed is not None:
+        return listed
+    path = _str(entry.get("path"))
+    if not path:
+        return None
+    return oauth_expired_from_auth_file(path, auth_dir=auth_dir)
 
 
 def _parse_model_states(raw: JsonValue) -> list[SidecarModelQuota]:
@@ -287,6 +362,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "success": account.success,
                 "failed": account.failed,
                 "last_refresh": account.last_refresh.isoformat() if account.last_refresh else None,
+                "expired": account.expired.isoformat() if account.expired else None,
                 "oauth_usage": _oauth_usage_to_json(account.oauth_usage),
                 "excluded_models": list(account.excluded_models),
                 "excluded_models_available": account.excluded_models_available,
@@ -352,6 +428,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     success=_int(entry.get("success")) or 0,
                     failed=_int(entry.get("failed")) or 0,
                     last_refresh=_parse_datetime(entry.get("last_refresh")),
+                    expired=_parse_datetime(entry.get("expired")),
                     oauth_usage=_oauth_usage_from_json(entry.get("oauth_usage")),
                     # An unread list is not an empty one: snapshots persisted
                     # before this key existed must decode as unreadable so the
