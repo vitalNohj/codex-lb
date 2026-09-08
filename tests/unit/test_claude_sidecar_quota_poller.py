@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -23,6 +24,7 @@ from app.modules.claude_sidecar.quota import (
     snapshot_to_json,
 )
 from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +41,9 @@ async def test_poll_preserves_exclusions_saved_during_oauth_read(monkeypatch, tm
     settings = _FakeSettings()
     repos = []
 
-    class Client(_FakeClient):
+    class Client(ClaudeSidecarClient):
+        api_call = _FakeClient.api_call
+
         async def list_auth_files(self):
             return [{"name": path.name, "provider": "claude", "path": str(path)}]
 
@@ -51,7 +55,9 @@ async def test_poll_preserves_exclusions_saved_during_oauth_read(monkeypatch, tm
         settings.claude_sidecar_quota_state_json = snapshot_to_json(
             quota_poller_module.SidecarQuotaSnapshot(
                 checked_at=quota_poller_module.datetime.now(quota_poller_module.timezone.utc),
-                status="healthy", message=None, accounts=tuple(parsed),
+                status="healthy",
+                message=None,
+                accounts=tuple(parsed),
             )
         )
         entered.set()
@@ -65,20 +71,21 @@ async def test_poll_preserves_exclusions_saved_during_oauth_read(monkeypatch, tm
         await asyncio.wait_for(entered.wait(), timeout=5)
         path.write_text(json.dumps({"excluded_models": ["claude-fable-*"]}))
 
-        class SaveRepo:
-            async def get_fresh(self):
-                return settings
+        async def update_operational(**kwargs):
+            settings.claude_sidecar_quota_state_json = kwargs["claude_sidecar_quota_state_json"]
 
-            async def update_operational(self, **kwargs):
-                settings.claude_sidecar_quota_state_json = kwargs["claude_sidecar_quota_state_json"]
-
-        await ClaudeSidecarService(SaveRepo())._patch_snapshot_excluded_models(path.name, ["claude-fable-*"])
+        save_repo = Mock(spec=SettingsRepository)
+        save_repo.get_fresh = AsyncMock(return_value=settings)
+        save_repo.update_operational = AsyncMock(side_effect=update_operational)
+        await ClaudeSidecarService(save_repo)._patch_snapshot_excluded_models(path.name, ["claude-fable-*"])
         saved = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        assert saved is not None
         assert saved.accounts[0].excluded_models == ("claude-fable-*",)
     finally:
         resume.set()
         await task
     published = snapshot_from_json(repos[-1].last_kwargs["claude_sidecar_quota_state_json"])
+    assert published is not None
     assert published.accounts[0].excluded_models == ("claude-fable-*",)
     assert published.accounts[0].excluded_models_available is True
 

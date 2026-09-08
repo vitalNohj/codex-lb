@@ -117,6 +117,7 @@ class TestExcludedModelsFromAuthFile:
             },
         )
         result = excluded_models_from_auth_file(str(path), auth_dir=tmp_path)
+        assert result is not None
         assert result == ["alpha-*", "beta-5*"]
         assert not any("token" in entry for entry in result)
 

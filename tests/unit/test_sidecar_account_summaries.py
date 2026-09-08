@@ -16,6 +16,7 @@ from app.modules.claude_sidecar.quota import (
     snapshot_to_json,
 )
 from app.modules.claude_sidecar.usage_estimates import (
+    ClaudeAggregateUsageEstimate,
     ClaudeAuthUsageEstimate,
     ClaudeUsageEstimates,
 )
@@ -329,11 +330,22 @@ def _claude_settings(**overrides) -> DashboardSettings:
 
 def test_estimate_only_auth_row_is_unsupported_not_a_read_failure() -> None:
     """A fresh install has no snapshot yet; those rows are not failed reads."""
-    estimates = ClaudeUsageEstimates(accounts=[_estimate()], aggregate=None)
-
-    summary = build_claude_sidecar_summary(
-        _claude_settings(), request_usage=None, usage_estimates=estimates
+    estimates = ClaudeUsageEstimates(
+        accounts=[_estimate()],
+        aggregate=ClaudeAggregateUsageEstimate(
+            primary_remaining_percent=75.0,
+            secondary_remaining_percent=96.0,
+            primary_used_tokens=0,
+            secondary_used_tokens=0,
+            primary_token_budget=None,
+            secondary_token_budget=None,
+            reset_at_primary=None,
+            reset_at_secondary=None,
+            confidence="oauth",
+        ),
     )
+
+    summary = build_claude_sidecar_summary(_claude_settings(), request_usage=None, usage_estimates=estimates)
 
     assert summary is not None
     row = summary.sidecar_auths[0]
@@ -343,6 +355,7 @@ def test_estimate_only_auth_row_is_unsupported_not_a_read_failure() -> None:
 
 def test_snapshot_backed_auth_row_reports_the_read_result(tmp_path, monkeypatch) -> None:
     from dataclasses import replace
+
     path = tmp_path / "claude-a@example.com.json"
     path.write_text('{"excluded_models": ["fresh-*"]}')
     monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
@@ -402,8 +415,10 @@ def test_snapshot_backed_auth_row_reports_the_read_result(tmp_path, monkeypatch)
     assert states["claude-a@example.com.json"] == "unreadable"
     snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
     fresh = build_claude_sidecar_summary(
-        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)), request_usage=None,
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)),
+        request_usage=None,
     )
+    assert fresh is not None
     assert fresh.sidecar_auths[0].excluded_models == ["fresh-*"]
     assert fresh.sidecar_auths[0].excluded_models_state == "available"
     assert states["claude-b@example.com.json"] == "unreadable"

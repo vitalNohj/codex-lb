@@ -84,8 +84,7 @@ def test_snapshot_round_trips_through_json():
     assert decoded_only.quota_exceeded is True
     assert decoded_only.next_recover_at == datetime(2026, 6, 10, 23, 30, tzinfo=timezone.utc)
     assert any(
-        state.model == "claude-sonnet-4-5-20250929" and state.quota_exceeded
-        for state in decoded_only.model_states
+        state.model == "claude-sonnet-4-5-20250929" and state.quota_exceeded for state in decoded_only.model_states
     )
     assert isinstance(decoded_only.model_states[0], SidecarModelQuota)
 

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError, SidecarModel
+from app.core.types import JsonValue
 from app.db.models import ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
 from app.modules.claude_sidecar.quota import (
@@ -23,7 +24,7 @@ class _FakeSidecarClient:
     error: Exception | None = None
     models = [SidecarModel(id="claude-sonnet", created=123, owned_by="anthropic")]
     routing_strategy = "fill-first"
-    auth_files = [
+    auth_files: list[dict[str, JsonValue]] = [
         {
             "name": "claude-a@example.com.json",
             "auth_index": "0",
@@ -656,8 +657,10 @@ async def test_put_routing_excluded_models_round_trips(async_client, monkeypatch
     assert response.json()["savedAccount"]["excludedModels"] == ["claude-demo-*", "claude-other-5*"]
     assert response.json()["savedAccount"]["excludedModelsState"] == "available"
     if read_fails:
+
         async def fail_read(self):
             raise ClaudeSidecarUnavailableError("connection refused")
+
         monkeypatch.setattr(_FakeSidecarClient, "get_routing_strategy", fail_read)
     assert response.json()["status"] == "healthy"
 
@@ -696,9 +699,7 @@ async def test_put_routing_excluded_models_normalizes_patterns(async_client, mon
     )
 
     assert response.status_code == 200
-    assert _FakeSidecarClient.excluded_models_updates == [
-        ("claude-a@example.com.json", ["claude-demo-*"])
-    ]
+    assert _FakeSidecarClient.excluded_models_updates == [("claude-a@example.com.json", ["claude-demo-*"])]
 
 
 @pytest.mark.asyncio
@@ -870,6 +871,7 @@ async def test_get_routing_reads_excluded_models_from_auth_file(async_client, mo
 async def test_put_routing_excluded_models_patches_stored_snapshot(async_client, monkeypatch, tmp_path, uncertain):
     import asyncio
     from dataclasses import replace
+
     from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
 
     path = tmp_path / "claude-a@example.com.json"
@@ -878,9 +880,11 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
 
     async def write_exclusions(self, name, patterns):
         import json
+
         path.write_text(json.dumps({"excluded_models": patterns}))
         if uncertain:
             raise ClaudeSidecarUnavailableError("response lost")
+
     monkeypatch.setattr(_FakeSidecarClient, "patch_auth_file_excluded_models", write_exclusions)
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()
@@ -926,6 +930,7 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
 
     snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
     import threading
+
     from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
 
     loop = asyncio.get_running_loop()
@@ -958,10 +963,12 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60, enabled=True)
     poll_task = asyncio.create_task(poller._persist_snapshot(snapshot))
     await asyncio.wait_for(entered.wait(), timeout=5)
-    save_task = asyncio.create_task(async_client.put(
-        "/api/claude-sidecar/routing/excluded-models",
-        json={"name": path.name, "excludedModels": ["claude-demo-*"]},
-    ))
+    save_task = asyncio.create_task(
+        async_client.put(
+            "/api/claude-sidecar/routing/excluded-models",
+            json={"name": path.name, "excludedModels": ["claude-demo-*"]},
+        )
+    )
     try:
         await asyncio.sleep(0.05)
         assert not save_task.done()
@@ -975,7 +982,9 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
     async with SessionLocal() as session:
         stored = await SettingsRepository(session).get_fresh()
         from app.modules.claude_sidecar.quota import snapshot_from_json
+
         published = snapshot_from_json(stored.claude_sidecar_quota_state_json)
+        assert published is not None
         assert published.accounts[0].excluded_models == (() if uncertain else ("claude-demo-*",))
     response = await async_client.get("/api/claude-sidecar/quota")
     assert response.status_code == 200
