@@ -142,6 +142,12 @@ export function setClaudeSidecarAccountPaused(name: string, paused: boolean) {
   });
 }
 
+export function setClaudeSidecarAccountExcludedModels(name: string, excludedModels: string[]) {
+  return put(`${CLAUDE_SIDECAR_PATH}/routing/excluded-models`, ClaudeSidecarRoutingResponseSchema, {
+    body: { name, excludedModels },
+  });
+}
+
 export function getOpenRouterSidecarStatus() {
   return get(`${OPENROUTER_SIDECAR_PATH}/status`, OpenRouterSidecarStatusResponseSchema);
 }

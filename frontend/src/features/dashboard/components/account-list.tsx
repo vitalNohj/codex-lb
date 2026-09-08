@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import type { AccountAction } from "@/features/dashboard/components/account-card";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
+import { excludedModelLabels } from "@/features/settings/lib/excluded-model-families";
 import {
   accountSubscriptionCredits,
   formatCreditValue,
@@ -535,6 +536,7 @@ function ClaudeAuthListRow({
     quotaLabel("5h", auth.primaryRemainingPercent ?? null, auth.resetAtPrimary),
     quotaLabel("Weekly", auth.secondaryRemainingPercent ?? null, auth.resetAtSecondary),
   ];
+  const exclusionLabels = excludedModelLabels(auth.excludedModels);
   return (
     <div
       data-testid="account-list-row"
@@ -545,7 +547,10 @@ function ClaudeAuthListRow({
         <p className="truncate font-medium leading-tight">
           <span className={blurred ? "privacy-blur" : undefined}>{title}</span>
         </p>
-        <p className="mt-1 truncate text-xs text-muted-foreground">{providerLabel}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground">
+          {providerLabel}
+          {exclusionLabels.length > 0 ? ` | Excluded: ${exclusionLabels.join(", ")}` : ""}
+        </p>
       </div>
       <StatusBadge status={status} />
       <span className="text-xs text-muted-foreground">{planLabel}</span>

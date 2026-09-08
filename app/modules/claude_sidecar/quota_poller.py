@@ -16,6 +16,8 @@ from app.core.clients.claude_sidecar import (
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.db.session import get_background_session
+from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
+from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.oauth_usage import (
     ClaudeOAuthUsageError,
     fetch_claude_oauth_usage,
@@ -109,8 +111,9 @@ class ClaudeSidecarQuotaPoller:
 
     async def _persist_snapshot(self, snapshot: SidecarQuotaSnapshot) -> None:
         try:
-            async with get_background_session() as session:
+            async with exclusion_write_lock(), get_background_session() as session:
                 repo = SettingsRepository(session)
+                snapshot = await asyncio.to_thread(_refresh_exclusions, snapshot)
                 await repo.update_operational(
                     claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
                     claude_sidecar_quota_checked_at=snapshot.checked_at,
@@ -118,6 +121,20 @@ class ClaudeSidecarQuotaPoller:
             await get_settings_cache().invalidate()
         except Exception:
             logger.warning("failed to persist Claude sidecar quota snapshot", exc_info=True)
+
+
+def _refresh_exclusions(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:
+    accounts = []
+    for auth in snapshot.accounts:
+        patterns = excluded_models_from_auth_file(auth.credential_path)
+        accounts.append(
+            replace(
+                auth,
+                excluded_models=tuple(patterns or ()),
+                excluded_models_available=patterns is not None,
+            )
+        )
+    return replace(snapshot, accounts=tuple(accounts))
 
 
 async def _classify_poll_result(
@@ -156,7 +173,8 @@ async def _classify_poll_result(
             accounts=(),
         )
 
-    accounts = await _attach_oauth_usage(client, parse_auth_files(raw_files), previous_snapshot)
+    parsed = await asyncio.to_thread(parse_auth_files, raw_files)
+    accounts = await _attach_oauth_usage(client, parsed, previous_snapshot)
     return SidecarQuotaSnapshot(
         checked_at=now,
         status="healthy",

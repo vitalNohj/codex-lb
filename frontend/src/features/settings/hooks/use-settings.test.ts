@@ -1,14 +1,23 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { createElement, type PropsWithChildren } from "react";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 
 import * as settingsApi from "@/features/settings/api";
-import { useSettings, useTelemetryConsent, useTelemetryPreview } from "@/features/settings/hooks/use-settings";
+import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
+import {
+  useClaudeSidecarAccountExcludedModels,
+  useSettings,
+  useTelemetryConsent,
+  useTelemetryPreview,
+} from "@/features/settings/hooks/use-settings";
 import { ApiError } from "@/lib/api-client";
-import { createDashboardSettings } from "@/test/mocks/factories";
+import { createAccountSummary, createDashboardOverview, createDashboardSettings } from "@/test/mocks/factories";
+import { SidecarAuthAccountSchema } from "@/features/accounts/schemas";
+import { ClaudeSidecarQuotaResponseSchema, ClaudeSidecarRoutingResponseSchema } from "@/features/settings/schemas";
 import { server } from "@/test/mocks/server";
 
 function createTestQueryClient(): QueryClient {
@@ -327,6 +336,226 @@ describe("useSettings", () => {
       expect(toastError).toHaveBeenCalled();
     } finally {
       updateSpy.mockRestore();
+      toastError.mockRestore();
+    }
+  });
+});
+
+describe("useClaudeSidecarAccountExcludedModels", () => {
+  it.each((["routing", "quota", "accounts", "dashboard"] as const).flatMap((surface) =>
+    (["healthy", "confirmed", "unknown", "transport"] as const).map((outcome) => ({ surface, outcome })),
+  ))(
+    "preserves exclusions after failed $surface refresh with $outcome write outcome",
+    async ({ surface, outcome }) => {
+      const queryClient = createTestQueryClient();
+      const user = userEvent.setup();
+      const name = "claude-a@example.com.json";
+      const auth = SidecarAuthAccountSchema.parse({ name, excludedModelsState: "available" });
+      const other = SidecarAuthAccountSchema.parse({ name: "other.json", excludedModels: ["keep-*"], excludedModelsState: "available" });
+      const account = createAccountSummary({ sidecarAuths: [auth, other] });
+      const routing = ClaudeSidecarRoutingResponseSchema.parse({ status: "healthy", accounts: [auth, other] });
+      const quota = ClaudeSidecarQuotaResponseSchema.parse({ status: "healthy", accounts: [auth, other] });
+      const accounts = { accounts: [account] };
+      const dashboard = createDashboardOverview({ accounts: [account] });
+      const queryKey = surface === "accounts" ? ["accounts", "list"]
+        : surface === "dashboard" ? ["dashboard", "overview", "24h"]
+        : ["settings", "claude-sidecar", surface];
+      const initialData = surface === "routing" ? routing : surface === "quota" ? quota
+        : surface === "accounts" ? accounts : dashboard;
+      const payloads: unknown[] = [];
+      let failedReads = 0;
+      server.use(
+        http.get("*/api/test-exclusions", () => {
+          failedReads += 1;
+          return new HttpResponse(null, { status: 500 });
+        }),
+        http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+          const body = await request.json() as { name: string; excludedModels: string[] };
+          payloads.push(body);
+          if (outcome === "transport") return HttpResponse.error();
+          return HttpResponse.json(outcome === "healthy"
+            ? { ...routing, accounts: [{ ...auth, excludedModels: body.excludedModels }, other] }
+            : { status: "unreachable", accounts: [], savedAccount: outcome === "confirmed"
+              ? { ...auth, excludedModels: body.excludedModels } : null });
+        }),
+      );
+      function Editor() {
+        const query = useQuery({
+          queryKey,
+          initialData,
+          staleTime: Infinity,
+          queryFn: async () => {
+            const response = await fetch("/api/test-exclusions");
+            if (!response.ok) throw new Error("Refresh failed");
+            return initialData;
+          },
+        });
+        const mutation = useClaudeSidecarAccountExcludedModels();
+        const first = query.data.accounts[0];
+        const row = "sidecarAuths" in first ? first.sidecarAuths[0] : first;
+        return createElement(ExcludedModelsEditor, {
+          name,
+          emailLabel: "a@example.com",
+          excludedModels: row.excludedModels,
+          state: row.excludedModelsState,
+          disabled: mutation.isPending,
+          onChange: (excludedModels: string[]) => mutation.mutate({ name, excludedModels }),
+        });
+      }
+      render(createElement(Editor), { wrapper: createWrapper(queryClient) });
+      const fable = screen.getByRole("switch", { name: "Exclude Fable on a@example.com" });
+      const haiku = screen.getByRole("switch", { name: "Exclude Haiku on a@example.com" });
+      await user.click(fable);
+      await waitFor(() => expect(failedReads).toBe(1));
+      if (outcome === "unknown" || outcome === "transport") {
+        await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+        expect(haiku).toBeDisabled();
+        await user.click(haiku);
+        expect(payloads).toEqual([{ name, excludedModels: ["claude-fable-*"] }]);
+        return;
+      }
+      await waitFor(() => expect(haiku).toBeEnabled());
+      expect(fable).toBeChecked();
+      await user.click(haiku);
+      await waitFor(() => expect(payloads).toEqual([
+        { name, excludedModels: ["claude-fable-*"] },
+        { name, excludedModels: ["claude-fable-*", "claude-haiku-*"] },
+      ]));
+      await waitFor(() => expect(failedReads).toBe(2));
+      await waitFor(() => expect(haiku).toBeEnabled());
+      const cached = queryClient.getQueryData<typeof initialData>(queryKey)!;
+      const first = cached.accounts[0];
+      expect("sidecarAuths" in first ? first.sidecarAuths[1] : cached.accounts[1]).toEqual(
+        expect.objectContaining({ name: "other.json", excludedModels: ["keep-*"], excludedModelsState: "available" }),
+      );
+    },
+  );
+
+  it.each([
+    ["dashboard", "overview", "24h"],
+    ["accounts", "list"],
+    ["settings", "claude-sidecar", "routing"],
+    ["settings", "claude-sidecar", "quota"],
+  ])("preserves successive edits while refreshing %s", async (...queryKey) => {
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    const name = "claude-a@example.com.json";
+    const payloads: unknown[] = [];
+    let stored: string[] = [];
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    let refreshStarted = false;
+
+    server.use(
+      http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+        const body = await request.json() as { name: string; excludedModels: string[] };
+        payloads.push(body);
+        stored = body.excludedModels;
+        return HttpResponse.json({ status: "healthy", message: null, strategy: null, accounts: [] });
+      }),
+    );
+
+    function Editor() {
+      const query = useQuery({
+        queryKey,
+        queryFn: async () => {
+          if (payloads.length === 1) {
+            refreshStarted = true;
+            await refreshGate;
+          }
+          const row = SidecarAuthAccountSchema.parse({ name, excludedModels: [...stored], excludedModelsState: "available" });
+          return queryKey[0] === "settings"
+            ? { accounts: [row] }
+            : { accounts: [createAccountSummary({ sidecarAuths: [row] })] };
+        },
+      });
+      const mutation = useClaudeSidecarAccountExcludedModels();
+      if (!query.data) return null;
+      return createElement(ExcludedModelsEditor, {
+        name,
+        emailLabel: "a@example.com",
+        excludedModels: "sidecarAuths" in query.data.accounts[0]
+          ? query.data.accounts[0].sidecarAuths[0].excludedModels : query.data.accounts[0].excludedModels,
+        disabled: mutation.isPending,
+        onChange: (excludedModels: string[]) => mutation.mutate({ name, excludedModels }),
+      });
+    }
+
+    render(createElement(Editor), { wrapper: createWrapper(queryClient) });
+    try {
+      const fable = await screen.findByRole("switch", { name: "Exclude Fable on a@example.com" });
+      const haiku = screen.getByRole("switch", { name: "Exclude Haiku on a@example.com" });
+      await user.click(fable);
+      await waitFor(() => expect(refreshStarted).toBe(true));
+      await user.click(haiku);
+      expect(haiku).toBeDisabled();
+      expect(payloads).toEqual([{ name, excludedModels: ["claude-fable-*"] }]);
+
+      releaseRefresh();
+      await waitFor(() => expect(haiku).toBeEnabled());
+      expect(fable).toBeChecked();
+      await user.click(haiku);
+      await waitFor(() => expect(payloads).toEqual([
+        { name, excludedModels: ["claude-fable-*"] },
+        { name, excludedModels: ["claude-fable-*", "claude-haiku-*"] },
+      ]));
+      await waitFor(() => expect(haiku).toBeEnabled());
+      expect(haiku).toBeChecked();
+    } finally {
+      releaseRefresh();
+    }
+  });
+
+  it("toasts when the endpoint answers 200 with a non-healthy status", async () => {
+    const queryClient = createTestQueryClient();
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    server.use(
+      http.put("*/api/claude-sidecar/routing/excluded-models", () =>
+        HttpResponse.json({
+          status: "not_configured",
+          message: "Claude sidecar management key is not configured",
+          strategy: null,
+          accounts: [],
+        }),
+      ),
+    );
+
+    try {
+      const { result } = renderHook(() => useClaudeSidecarAccountExcludedModels(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await result.current.mutateAsync({
+        name: "claude-a@example.com.json",
+        excludedModels: ["claude-fable-*"],
+      });
+
+      await waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith(
+          "Claude sidecar management key is not configured",
+        ),
+      );
+    } finally {
+      toastError.mockRestore();
+    }
+  });
+
+  it("does not toast on a healthy response", async () => {
+    const queryClient = createTestQueryClient();
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+    try {
+      const { result } = renderHook(() => useClaudeSidecarAccountExcludedModels(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await result.current.mutateAsync({
+        name: "claude-a@example.com.json",
+        excludedModels: ["claude-fable-*"],
+      });
+
+      expect(toastError).not.toHaveBeenCalled();
+    } finally {
       toastError.mockRestore();
     }
   });

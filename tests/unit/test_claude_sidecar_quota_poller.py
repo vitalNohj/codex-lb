@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -18,10 +21,73 @@ from app.modules.claude_sidecar.quota import (
     SidecarOAuthUsage,
     SidecarOAuthUsageBucket,
     snapshot_from_json,
+    snapshot_to_json,
 )
 from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_poll_preserves_exclusions_saved_during_oauth_read(monkeypatch, tmp_path):
+    from app.modules.claude_sidecar.service import ClaudeSidecarService
+
+    path = tmp_path / "claude-test.json"
+    path.write_text(json.dumps({"excluded_models": []}))
+    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    settings = _FakeSettings()
+    repos = []
+
+    class Client(ClaudeSidecarClient):
+        api_call = _FakeClient.api_call
+
+        async def list_auth_files(self):
+            return [{"name": path.name, "provider": "claude", "path": str(path)}]
+
+    cache = _patch_environment(monkeypatch, settings=settings, client_factory=Client, repo_holder=repos)
+    monkeypatch.setattr("app.modules.claude_sidecar.service.get_settings_cache", lambda: cache)
+
+    async def attach(client, parsed, previous):
+        assert parsed[0].excluded_models == ()
+        settings.claude_sidecar_quota_state_json = snapshot_to_json(
+            quota_poller_module.SidecarQuotaSnapshot(
+                checked_at=quota_poller_module.datetime.now(quota_poller_module.timezone.utc),
+                status="healthy",
+                message=None,
+                accounts=tuple(parsed),
+            )
+        )
+        entered.set()
+        await resume.wait()
+        return parsed
+
+    monkeypatch.setattr(quota_poller_module, "_attach_oauth_usage", attach)
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60, enabled=True, _client_factory=Client)
+    task = asyncio.create_task(poller._poll_locked())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        path.write_text(json.dumps({"excluded_models": ["claude-fable-*"]}))
+
+        async def update_operational(**kwargs):
+            settings.claude_sidecar_quota_state_json = kwargs["claude_sidecar_quota_state_json"]
+
+        save_repo = Mock(spec=SettingsRepository)
+        save_repo.get_fresh = AsyncMock(return_value=settings)
+        save_repo.update_operational = AsyncMock(side_effect=update_operational)
+        await ClaudeSidecarService(save_repo)._patch_snapshot_excluded_models(path.name, ["claude-fable-*"])
+        saved = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        assert saved is not None
+        assert saved.accounts[0].excluded_models == ("claude-fable-*",)
+    finally:
+        resume.set()
+        await task
+    published = snapshot_from_json(repos[-1].last_kwargs["claude_sidecar_quota_state_json"])
+    assert published is not None
+    assert published.accounts[0].excluded_models == ("claude-fable-*",)
+    assert published.accounts[0].excluded_models_available is True
 
 
 @dataclass

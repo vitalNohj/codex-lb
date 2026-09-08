@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.dependencies import ClaudeSidecarContext, get_claude_sidecar_context
 from app.modules.claude_sidecar.schemas import (
+    ClaudeSidecarAccountExcludedModelsUpdate,
     ClaudeSidecarAccountPausedUpdate,
     ClaudeSidecarAccountPriorityUpdate,
     ClaudeSidecarModelsResponse,
@@ -79,3 +80,11 @@ async def set_account_paused(
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
 ) -> ClaudeSidecarRoutingResponse:
     return await context.service.set_account_paused(body.name, body.paused)
+
+
+@router.put("/routing/excluded-models", response_model=ClaudeSidecarRoutingResponse)
+async def set_account_excluded_models(
+    body: ClaudeSidecarAccountExcludedModelsUpdate,
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarRoutingResponse:
+    return await context.service.set_account_excluded_models(body.name, body.excluded_models)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError, SidecarModel
+from app.core.types import JsonValue
 from app.db.models import ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
 from app.modules.claude_sidecar.quota import (
@@ -22,7 +24,7 @@ class _FakeSidecarClient:
     error: Exception | None = None
     models = [SidecarModel(id="claude-sonnet", created=123, owned_by="anthropic")]
     routing_strategy = "fill-first"
-    auth_files = [
+    auth_files: list[dict[str, JsonValue]] = [
         {
             "name": "claude-a@example.com.json",
             "auth_index": "0",
@@ -40,6 +42,7 @@ class _FakeSidecarClient:
     strategy_updates: list[str] = []
     priority_updates: list[tuple[str, int]] = []
     disabled_updates: list[tuple[str, bool]] = []
+    excluded_models_updates: list[tuple[str, list[str]]] = []
 
     def __init__(self, _config) -> None:
         pass
@@ -79,6 +82,11 @@ class _FakeSidecarClient:
             raise self.error
         self.__class__.disabled_updates.append((name, disabled))
 
+    async def patch_auth_file_excluded_models(self, name: str, excluded_models: list[str]):
+        if self.error is not None:
+            raise self.error
+        self.__class__.excluded_models_updates.append((name, list(excluded_models)))
+
 
 def _reset_fake_sidecar_client() -> None:
     _FakeSidecarClient.error = None
@@ -103,6 +111,7 @@ def _reset_fake_sidecar_client() -> None:
     _FakeSidecarClient.strategy_updates = []
     _FakeSidecarClient.priority_updates = []
     _FakeSidecarClient.disabled_updates = []
+    _FakeSidecarClient.excluded_models_updates = []
 
 
 @pytest.mark.asyncio
@@ -370,6 +379,8 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
             "email": "a@example.com",
             "priority": 0,
             "paused": False,
+            "excludedModels": [],
+            "excludedModelsState": "unreadable",
         },
         {
             "name": "claude-b@example.com.json",
@@ -377,6 +388,8 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
             "email": "b@example.com",
             "priority": 10,
             "paused": True,
+            "excludedModels": [],
+            "excludedModelsState": "unreadable",
         },
     ]
 
@@ -612,3 +625,428 @@ async def test_put_routing_paused_without_management_key(async_client, monkeypat
     assert response.status_code == 200
     assert response.json()["status"] == "not_configured"
     assert _FakeSidecarClient.disabled_updates == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_fails", [False, True])
+async def test_put_routing_excluded_models_round_trips(async_client, monkeypatch, read_fails):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/excluded-models",
+        json={
+            "name": "claude-a@example.com.json",
+            "excludedModels": ["claude-demo-*", "claude-other-5*"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.excluded_models_updates == [
+        ("claude-a@example.com.json", ["claude-demo-*", "claude-other-5*"])
+    ]
+    assert response.json()["savedAccount"]["excludedModels"] == ["claude-demo-*", "claude-other-5*"]
+    assert response.json()["savedAccount"]["excludedModelsState"] == "available"
+    if read_fails:
+
+        async def fail_read(self):
+            raise ClaudeSidecarUnavailableError("connection refused")
+
+        monkeypatch.setattr(_FakeSidecarClient, "get_routing_strategy", fail_read)
+    assert response.json()["status"] == "healthy"
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/excluded-models",
+        json={"name": "claude-a@example.com.json", "excludedModels": []},
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.excluded_models_updates[-1] == ("claude-a@example.com.json", [])
+    assert response.json()["status"] == ("unreachable" if read_fails else "healthy")
+    assert response.json()["savedAccount"]["excludedModels"] == []
+    assert response.json()["savedAccount"]["excludedModelsState"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_put_routing_excluded_models_normalizes_patterns(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/excluded-models",
+        json={
+            "name": "claude-a@example.com.json",
+            "excludedModels": ["  claude-demo-* ", "CLAUDE-DEMO-*", "", "bad\nvalue"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.excluded_models_updates == [("claude-a@example.com.json", ["claude-demo-*"])]
+
+
+@pytest.mark.asyncio
+async def test_get_routing_reports_excluded_models(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    _FakeSidecarClient.auth_files = [
+        {
+            "name": "claude-a@example.com.json",
+            "auth_index": "0",
+            "provider": "claude",
+            "email": "a@example.com",
+            "excluded_models": ["claude-demo-*"],
+        },
+        {
+            "name": "claude-b@example.com.json",
+            "auth_index": "1",
+            "provider": "claude",
+            "email": "b@example.com",
+        },
+    ]
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/routing")
+
+    assert response.status_code == 200
+    accounts = {acct["name"]: acct for acct in response.json()["accounts"]}
+    assert accounts["claude-a@example.com.json"]["excludedModels"] == ["claude-demo-*"]
+    assert accounts["claude-a@example.com.json"]["excludedModelsState"] == "available"
+    # b carries neither the field nor a readable auth file: an unreadable list is
+    # not an empty one, so the editor must be locked instead of offering an empty
+    # list the operator could save back over real exclusions.
+    assert accounts["claude-b@example.com.json"]["excludedModels"] == []
+    assert accounts["claude-b@example.com.json"]["excludedModelsState"] == "unreadable"
+
+
+@pytest.mark.asyncio
+async def test_get_routing_marks_empty_auth_file_list_available(async_client, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        lambda: tmp_path,
+    )
+    _reset_fake_sidecar_client()
+    auth_path = tmp_path / "claude-a@example.com.json"
+    auth_path.write_text(json.dumps({"email": "a@example.com"}), encoding="utf-8")
+    _FakeSidecarClient.auth_files = [
+        {
+            "name": "claude-a@example.com.json",
+            "auth_index": "0",
+            "provider": "claude",
+            "email": "a@example.com",
+            "path": str(auth_path),
+        },
+    ]
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/routing")
+
+    assert response.status_code == 200
+    account = response.json()["accounts"][0]
+    assert account["excludedModels"] == []
+    assert account["excludedModelsState"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_get_routing_flags_unreadable_auth_file(async_client, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        lambda: tmp_path,
+    )
+    _reset_fake_sidecar_client()
+    _FakeSidecarClient.auth_files = [
+        {
+            "name": "claude-a@example.com.json",
+            "auth_index": "0",
+            "provider": "claude",
+            "email": "a@example.com",
+            "path": "/elsewhere/claude-a@example.com.json",
+        },
+    ]
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/routing")
+
+    assert response.status_code == 200
+    account = response.json()["accounts"][0]
+    assert account["excludedModels"] == []
+    assert account["excludedModelsState"] == "unreadable"
+
+
+@pytest.mark.asyncio
+async def test_get_routing_reads_excluded_models_from_auth_file(async_client, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        lambda: tmp_path,
+    )
+    _reset_fake_sidecar_client()
+    auth_path = tmp_path / "claude-a@example.com.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "access_token": "synthetic-access-token",
+                "refresh_token": "synthetic-refresh-token",
+                "email": "a@example.com",
+                "excluded_models": ["claude-demo-*"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeSidecarClient.auth_files = [
+        {
+            "name": "claude-a@example.com.json",
+            "auth_index": "0",
+            "provider": "claude",
+            "email": "a@example.com",
+            "path": str(auth_path),
+        },
+    ]
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.get("/api/claude-sidecar/routing")
+
+    assert response.status_code == 200
+    body = response.text
+    account = response.json()["accounts"][0]
+    assert account["excludedModels"] == ["claude-demo-*"]
+    assert account["excludedModelsState"] == "available"
+    assert "synthetic-access-token" not in body
+    assert "synthetic-refresh-token" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_put_routing_excluded_models_patches_stored_snapshot(async_client, monkeypatch, tmp_path, uncertain):
+    import asyncio
+    from dataclasses import replace
+
+    from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
+
+    path = tmp_path / "claude-a@example.com.json"
+    path.write_text('{"excluded_models": []}')
+    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+
+    async def write_exclusions(self, name, patterns):
+        import json
+
+        path.write_text(json.dumps({"excluded_models": patterns}))
+        if uncertain:
+            raise ClaudeSidecarUnavailableError("response lost")
+
+    monkeypatch.setattr(_FakeSidecarClient, "patch_auth_file_excluded_models", write_exclusions)
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    checked_at = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a@example.com.json",
+                auth_index="0",
+                email="a@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
+        )
+
+    snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
+    import threading
+
+    from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
+
+    loop = asyncio.get_running_loop()
+    responsive_reads = []
+
+    def slow_read(credential_path):
+        progressed = threading.Event()
+        loop.call_soon_threadsafe(progressed.set)
+        responsive_reads.append(progressed.wait(timeout=2))
+        return excluded_models_from_auth_file(credential_path)
+
+    for module in (
+        "app.modules.claude_sidecar.quota_poller",
+        "app.modules.claude_sidecar.service",
+        "app.modules.accounts.sidecar_summary",
+    ):
+        monkeypatch.setattr(f"{module}.excluded_models_from_auth_file", slow_read)
+
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    original_update = SettingsRepository.update_operational
+
+    async def delayed_update(repo, **kwargs):
+        if asyncio.current_task() is poll_task:
+            entered.set()
+            await resume.wait()
+        return await original_update(repo, **kwargs)
+
+    monkeypatch.setattr(SettingsRepository, "update_operational", delayed_update)
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60, enabled=True)
+    poll_task = asyncio.create_task(poller._persist_snapshot(snapshot))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    save_task = asyncio.create_task(
+        async_client.put(
+            "/api/claude-sidecar/routing/excluded-models",
+            json={"name": path.name, "excludedModels": ["claude-demo-*"]},
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not save_task.done()
+    finally:
+        resume.set()
+        await poll_task
+    response = await save_task
+    assert response.status_code == 200
+    assert response.json()["status"] == ("unreachable" if uncertain else "healthy")
+
+    async with SessionLocal() as session:
+        stored = await SettingsRepository(session).get_fresh()
+        from app.modules.claude_sidecar.quota import snapshot_from_json
+
+        published = snapshot_from_json(stored.claude_sidecar_quota_state_json)
+        assert published is not None
+        assert published.accounts[0].excluded_models == (() if uncertain else ("claude-demo-*",))
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    accounts = {acct["name"]: acct for acct in response.json()["accounts"]}
+    assert accounts["claude-a@example.com.json"]["excludedModels"] == ["claude-demo-*"]
+    for endpoint in ("/api/accounts", "/api/dashboard/overview"):
+        before = len(responsive_reads)
+        response = await async_client.get(endpoint)
+        assert response.status_code == 200
+        assert len(responsive_reads) > before
+        rows = [auth for account in response.json()["accounts"] for auth in account.get("sidecarAuths", [])]
+        assert next(row for row in rows if row["name"] == path.name)["excludedModels"] == ["claude-demo-*"]
+    assert len(responsive_reads) >= 4
+    assert all(responsive_reads)
+
+
+@pytest.mark.asyncio
+async def test_put_routing_excluded_models_without_management_key(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarClearManagementKey": True,
+        },
+    )
+    assert response.status_code == 200
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/excluded-models",
+        json={"name": "claude-a@example.com.json", "excludedModels": ["claude-demo-*"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "not_configured"
+    assert _FakeSidecarClient.excluded_models_updates == []
+
+
+@pytest.mark.asyncio
+async def test_put_routing_excluded_models_unknown_account(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+    _FakeSidecarClient.error = ClaudeSidecarError(404, "auth file not found")
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/excluded-models",
+        json={"name": "claude-missing.json", "excludedModels": ["claude-demo-*"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "error"
+    assert "not found" in (payload["message"] or "")
+    assert _FakeSidecarClient.excluded_models_updates == []

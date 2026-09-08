@@ -7,6 +7,7 @@ from app.modules.accounts.schemas import (
     AccountUsage,
     SidecarAuthAccount,
 )
+from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
@@ -26,10 +27,7 @@ def build_claude_sidecar_summary(
     usage_estimates: ClaudeUsageEstimates | None = None,
 ) -> AccountSummary | None:
     """Return a synthetic AccountSummary for the Claude sidecar, or None when hidden."""
-    configured = (
-        settings.claude_sidecar_api_key_encrypted is not None
-        or bool(settings.claude_sidecar_base_url)
-    )
+    configured = settings.claude_sidecar_api_key_encrypted is not None or bool(settings.claude_sidecar_base_url)
     if not configured and not settings.claude_sidecar_enabled:
         return None
 
@@ -154,6 +152,7 @@ def _build_auth_rows(
 
 
 def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) -> SidecarAuthAccount:
+    patterns = excluded_models_from_auth_file(auth.credential_path)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
@@ -161,6 +160,8 @@ def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) 
         provider=auth.provider,
         status=_dashboard_auth_status(auth),
         paused=auth.disabled,
+        excluded_models=patterns or [],
+        excluded_models_state="available" if patterns is not None else "unreadable",
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],
@@ -211,6 +212,11 @@ def _auth_row_from_estimate(estimate: ClaudeAuthUsageEstimate) -> SidecarAuthAcc
         email=estimate.email,
         provider="claude",
         status=None,
+        # A usage-estimate row has no auth-file name to address, so exclusions
+        # cannot be edited here. That is not a failed read and must not claim
+        # to be one.
+        excluded_models=[],
+        excluded_models_state="unsupported",
         quota_exceeded=False,
         plan_type=estimate.plan_type,
         usage_source=estimate.usage_source,

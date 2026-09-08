@@ -9,6 +9,10 @@ from typing import Literal
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.modules.claude_sidecar.excluded_models import (
+    excluded_models_for_entry,
+    normalize_excluded_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +56,8 @@ class SidecarAuthQuota:
     credential_path: str | None = None
     oauth_usage: SidecarOAuthUsage | None = None
     provider: str | None = None
+    excluded_models: tuple[str, ...] = ()
+    excluded_models_available: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +117,7 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         next_recover_at = _parse_datetime(quota_field.get("next_recover_at"))
     model_states_field = entry.get("model_states")
     model_states = tuple(_parse_model_states(model_states_field))
+    excluded = excluded_models_for_entry(entry)
     return SidecarAuthQuota(
         name=name,
         auth_index=_str(entry.get("auth_index")),
@@ -127,6 +134,8 @@ def _parse_one(entry: Mapping[str, JsonValue]) -> SidecarAuthQuota:
         success=_int(entry.get("success")) or 0,
         failed=_int(entry.get("failed")) or 0,
         last_refresh=_parse_datetime(entry.get("updated_at") or entry.get("modtime") or entry.get("created_at")),
+        excluded_models=tuple(excluded) if excluded is not None else (),
+        excluded_models_available=excluded is not None,
     )
 
 
@@ -271,9 +280,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                     {
                         "model": state.model,
                         "quota_exceeded": state.quota_exceeded,
-                        "next_recover_at": (
-                            state.next_recover_at.isoformat() if state.next_recover_at else None
-                        ),
+                        "next_recover_at": (state.next_recover_at.isoformat() if state.next_recover_at else None),
                     }
                     for state in account.model_states
                 ],
@@ -281,6 +288,8 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "failed": account.failed,
                 "last_refresh": account.last_refresh.isoformat() if account.last_refresh else None,
                 "oauth_usage": _oauth_usage_to_json(account.oauth_usage),
+                "excluded_models": list(account.excluded_models),
+                "excluded_models_available": account.excluded_models_available,
             }
             for account in snapshot.accounts
         ],
@@ -344,6 +353,12 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     failed=_int(entry.get("failed")) or 0,
                     last_refresh=_parse_datetime(entry.get("last_refresh")),
                     oauth_usage=_oauth_usage_from_json(entry.get("oauth_usage")),
+                    # An unread list is not an empty one: snapshots persisted
+                    # before this key existed must decode as unreadable so the
+                    # editor stays locked instead of offering an empty list a
+                    # save would write over the real exclusions.
+                    excluded_models=tuple(normalize_excluded_models(entry.get("excluded_models"))),
+                    excluded_models_available=bool(entry.get("excluded_models_available", False)),
                 )
             )
     message_field = parsed.get("message")

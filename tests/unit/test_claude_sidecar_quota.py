@@ -84,8 +84,7 @@ def test_snapshot_round_trips_through_json():
     assert decoded_only.quota_exceeded is True
     assert decoded_only.next_recover_at == datetime(2026, 6, 10, 23, 30, tzinfo=timezone.utc)
     assert any(
-        state.model == "claude-sonnet-4-5-20250929" and state.quota_exceeded
-        for state in decoded_only.model_states
+        state.model == "claude-sonnet-4-5-20250929" and state.quota_exceeded for state in decoded_only.model_states
     )
     assert isinstance(decoded_only.model_states[0], SidecarModelQuota)
 
@@ -110,3 +109,170 @@ def test_snapshot_from_json_returns_none_for_garbage():
     assert snapshot_from_json(None) is None
     assert snapshot_from_json("not json") is None
     assert snapshot_from_json("{}") is None
+
+
+def test_parse_auth_files_reads_excluded_models_from_entry():
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "email": "a@example.com",
+                "excluded_models": ["claude-demo-*"],
+            }
+        ]
+    )
+
+    assert accounts[0].excluded_models == ("claude-demo-*",)
+    assert accounts[0].excluded_models_available is True
+
+
+def test_parse_auth_files_marks_denormalized_entry_list_unavailable():
+    # A list a save would rewrite is not the file's true content, so it must not
+    # be offered as an editable list a whole-list PUT would truncate on disk.
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "excluded_models": ["  claude-demo-* ", "CLAUDE-DEMO-*"],
+            }
+        ]
+    )
+
+    assert accounts[0].excluded_models == ()
+    assert accounts[0].excluded_models_available is False
+
+
+def test_parse_auth_files_marks_unreadable_excluded_models_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        lambda: tmp_path,
+    )
+
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "path": str(tmp_path / "missing.json"),
+            }
+        ]
+    )
+
+    assert accounts[0].excluded_models == ()
+    assert accounts[0].excluded_models_available is False
+
+
+def test_parse_auth_files_reads_excluded_models_from_auth_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        lambda: tmp_path,
+    )
+    auth_path = tmp_path / "claude-a.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "access_token": "synthetic-access-token",
+                "excluded_models": ["claude-demo-*"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    accounts = parse_auth_files(
+        [
+            {
+                "name": "claude-a.json",
+                "provider": "claude",
+                "email": "a@example.com",
+                "path": str(auth_path),
+            }
+        ]
+    )
+
+    assert accounts[0].excluded_models == ("claude-demo-*",)
+
+
+def test_snapshot_round_trips_excluded_models():
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 6, 10, 22, 30, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a.json",
+                auth_index="0",
+                email="a@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                excluded_models=("claude-demo-*",),
+                excluded_models_available=True,
+            ),
+        ),
+    )
+
+    decoded = snapshot_from_json(snapshot_to_json(snapshot))
+
+    assert decoded is not None
+    assert decoded.accounts[0].excluded_models == ("claude-demo-*",)
+    assert decoded.accounts[0].excluded_models_available is True
+
+
+def test_snapshot_round_trips_unavailable_excluded_models():
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 6, 10, 22, 30, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a.json",
+                auth_index="0",
+                email="a@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                excluded_models=(),
+                excluded_models_available=False,
+            ),
+        ),
+    )
+
+    decoded = snapshot_from_json(snapshot_to_json(snapshot))
+
+    assert decoded is not None
+    assert decoded.accounts[0].excluded_models_available is False
+
+
+def test_snapshot_without_excluded_models_key_decodes_to_empty_tuple():
+    raw = json.dumps(
+        {
+            "checked_at": "2026-06-10T22:30:00+00:00",
+            "status": "healthy",
+            "message": None,
+            "accounts": [{"name": "claude-a.json"}],
+        }
+    )
+
+    decoded = snapshot_from_json(raw)
+
+    assert decoded is not None
+    assert decoded.accounts[0].excluded_models == ()
+    # A snapshot persisted before this key existed recorded no read at all, so
+    # it must decode as unreadable rather than as an empty, saveable list.
+    assert decoded.accounts[0].excluded_models_available is False

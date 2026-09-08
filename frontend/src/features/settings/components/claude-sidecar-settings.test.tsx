@@ -457,6 +457,110 @@ describe("ClaudeSidecarSettings", () => {
     );
   });
 
+  it("excludes a model family on one account and clears it again", async () => {
+    const user = userEvent.setup();
+    const bodies: unknown[] = [];
+    // The server owns the list: the PUT stores it and the follow-up GET (from
+    // the mutation's query invalidation) serves it back, so the switch state
+    // reflects a real round trip rather than local component state.
+    let stored: string[] = [];
+    const routingPayload = () => ({
+      status: "healthy",
+      message: null,
+      strategy: "fill_first",
+      accounts: [
+        {
+          name: "claude-a@example.com.json",
+          authIndex: "0",
+          email: "a@example.com",
+          priority: 0,
+          paused: false,
+          excludedModels: stored,
+          excludedModelsState: "available",
+        },
+      ],
+    });
+    server.use(
+      http.get("*/api/claude-sidecar/routing", () => HttpResponse.json(routingPayload())),
+      http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+        const body = (await request.json()) as { name: string; excludedModels: string[] };
+        bodies.push(body);
+        stored = body.excludedModels;
+        return HttpResponse.json(routingPayload());
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    const fableSwitch = await screen.findByRole("switch", {
+      name: "Exclude Fable on a@example.com",
+    });
+    expect(fableSwitch).not.toBeChecked();
+
+    await user.click(fableSwitch);
+
+    await waitFor(() =>
+      expect(bodies.at(-1)).toEqual({
+        name: "claude-a@example.com.json",
+        excludedModels: ["claude-fable-*"],
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "Exclude Fable on a@example.com" }),
+      ).toBeChecked(),
+    );
+
+    await user.click(screen.getByRole("switch", { name: "Exclude Fable on a@example.com" }));
+
+    await waitFor(() =>
+      expect(bodies.at(-1)).toEqual({
+        name: "claude-a@example.com.json",
+        excludedModels: [],
+      }),
+    );
+  });
+
+  it("adds a custom exclusion pattern from the routing row", async () => {
+    const user = userEvent.setup();
+    let receivedBody: unknown;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/excluded-models", async ({ request }) => {
+        receivedBody = await request.json();
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await user.type(
+      await screen.findByLabelText("Add excluded model pattern for a@example.com"),
+      "claude-opus-4-*{Enter}",
+    );
+
+    await waitFor(() =>
+      expect(receivedBody).toEqual({
+        name: "claude-a@example.com.json",
+        excludedModels: ["claude-opus-4-*"],
+      }),
+    );
+  });
+
   it("shows placeholder when management key is configured", () => {
     renderWithQueryClient(
       <ClaudeSidecarSettings

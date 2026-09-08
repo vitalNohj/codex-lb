@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ExcludedModelsStateSchema } from "@/features/settings/lib/excluded-models-state";
+
 const UsageTrendPointSchema = z.object({
   t: z.iso.datetime({ offset: true }),
   v: z.number(),
@@ -73,6 +75,8 @@ export const SidecarAuthAccountSchema = z.object({
   provider: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
   paused: z.boolean().default(false),
+  excludedModels: z.array(z.string()).default([]),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
   quotaExceeded: z.boolean().default(false),
   nextRecoverAt: z.string().datetime({ offset: true }).nullable().optional(),
   modelsExceeded: z.array(z.string()).default([]),

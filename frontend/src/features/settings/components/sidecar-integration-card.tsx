@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
+import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import {
   REASONING_EFFORT_OPTIONS,
   REASONING_EFFORT_UNSET,
@@ -1039,6 +1040,7 @@ type RoutingProps = {
   onStrategyChange: (strategy: ClaudeSidecarRoutingStrategy) => void;
   onPriorityChange: (name: string, priority: number) => void;
   onPausedChange: (name: string, paused: boolean) => void;
+  onExcludedModelsChange: (name: string, excludedModels: string[]) => void;
 };
 
 type PriorityInputProps = {
@@ -1095,6 +1097,7 @@ function Routing({
   onStrategyChange,
   onPriorityChange,
   onPausedChange,
+  onExcludedModelsChange,
 }: RoutingProps) {
   return (
     <div className="space-y-3 rounded-md border bg-muted/10 p-3" aria-label="CLIProxyAPI routing controls">
@@ -1133,8 +1136,9 @@ function Routing({
         {accounts.map((account) => (
           <div
             key={account.name}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background/60 px-2 py-1.5"
+            className="space-y-2 rounded-md border bg-background/60 px-2 py-1.5"
           >
+            <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <p className={`truncate text-xs font-medium ${account.paused ? "text-muted-foreground line-through" : ""}`}>
                 {account.email || account.name}
@@ -1163,6 +1167,15 @@ function Routing({
                 {account.paused ? "Resume" : "Pause"}
               </Button>
             </div>
+            </div>
+            <ExcludedModelsEditor
+              name={account.name}
+              emailLabel={account.email || account.name}
+              excludedModels={account.excludedModels}
+              state={account.excludedModelsState}
+              disabled={busy || isLoading}
+              onChange={(next) => onExcludedModelsChange(account.name, next)}
+            />
           </div>
         ))}
       </div>

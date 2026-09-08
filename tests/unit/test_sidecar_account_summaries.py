@@ -15,6 +15,11 @@ from app.modules.claude_sidecar.quota import (
     SidecarQuotaSnapshot,
     snapshot_to_json,
 )
+from app.modules.claude_sidecar.usage_estimates import (
+    ClaudeAggregateUsageEstimate,
+    ClaudeAuthUsageEstimate,
+    ClaudeUsageEstimates,
+)
 
 
 def _settings(**overrides) -> DashboardSettings:
@@ -290,3 +295,130 @@ def test_ollama_summary_paused_when_missing_api_key() -> None:
 
     assert summary is not None
     assert summary.status == "paused"
+
+
+def _estimate(**overrides) -> ClaudeAuthUsageEstimate:
+    base = {
+        "auth_index": "0",
+        "email": "a@example.com",
+        "source": "a@example.com",
+        "plan_type": "max_20x",
+        "usage_source": "oauth_usage",
+        "primary_remaining_percent": 75.0,
+        "secondary_remaining_percent": 96.0,
+        "primary_used_tokens": 0,
+        "secondary_used_tokens": 0,
+        "primary_token_budget": None,
+        "secondary_token_budget": None,
+        "reset_at_primary": None,
+        "reset_at_secondary": None,
+        "confidence": "oauth",
+    }
+    base.update(overrides)
+    return ClaudeAuthUsageEstimate(**base)
+
+
+def _claude_settings(**overrides) -> DashboardSettings:
+    return _settings(
+        claude_sidecar_enabled=True,
+        claude_sidecar_api_key_encrypted=b"key",
+        claude_sidecar_base_url="http://127.0.0.1:8317",
+        claude_sidecar_last_health_status="healthy",
+        **overrides,
+    )
+
+
+def test_estimate_only_auth_row_is_unsupported_not_a_read_failure() -> None:
+    """A fresh install has no snapshot yet; those rows are not failed reads."""
+    estimates = ClaudeUsageEstimates(
+        accounts=[_estimate()],
+        aggregate=ClaudeAggregateUsageEstimate(
+            primary_remaining_percent=75.0,
+            secondary_remaining_percent=96.0,
+            primary_used_tokens=0,
+            secondary_used_tokens=0,
+            primary_token_budget=None,
+            secondary_token_budget=None,
+            reset_at_primary=None,
+            reset_at_secondary=None,
+            confidence="oauth",
+        ),
+    )
+
+    summary = build_claude_sidecar_summary(_claude_settings(), request_usage=None, usage_estimates=estimates)
+
+    assert summary is not None
+    row = summary.sidecar_auths[0]
+    assert row.excluded_models_state == "unsupported"
+    assert row.excluded_models == []
+
+
+def test_snapshot_backed_auth_row_reports_the_read_result(tmp_path, monkeypatch) -> None:
+    from dataclasses import replace
+
+    path = tmp_path / "claude-a@example.com.json"
+    path.write_text('{"excluded_models": ["fresh-*"]}')
+    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 7, 25, 17, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a@example.com.json",
+                auth_index="0",
+                email="a@example.com",
+                provider="claude",
+                credential_path=None,
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=1,
+                failed=0,
+                last_refresh=None,
+                excluded_models=("claude-demo-*",),
+                excluded_models_available=True,
+            ),
+            SidecarAuthQuota(
+                name="claude-b@example.com.json",
+                auth_index="1",
+                email="b@example.com",
+                provider="claude",
+                credential_path=None,
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=1,
+                failed=0,
+                last_refresh=None,
+                excluded_models=(),
+                excluded_models_available=False,
+            ),
+        ),
+    )
+
+    summary = build_claude_sidecar_summary(
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)),
+        request_usage=None,
+    )
+
+    assert summary is not None
+    states = {row.name: row.excluded_models_state for row in summary.sidecar_auths}
+    assert states["claude-a@example.com.json"] == "unreadable"
+    snapshot = replace(snapshot, accounts=(replace(snapshot.accounts[0], credential_path=str(path)),))
+    fresh = build_claude_sidecar_summary(
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)),
+        request_usage=None,
+    )
+    assert fresh is not None
+    assert fresh.sidecar_auths[0].excluded_models == ["fresh-*"]
+    assert fresh.sidecar_auths[0].excluded_models_state == "available"
+    assert states["claude-b@example.com.json"] == "unreadable"

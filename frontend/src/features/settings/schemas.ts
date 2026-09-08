@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ExcludedModelsStateSchema } from "@/features/settings/lib/excluded-models-state";
+
 const RoutingStrategySchema = z.enum([
   "usage_weighted",
   "round_robin",
@@ -577,6 +579,8 @@ const ClaudeSidecarQuotaStatusSchema = z.enum([
 
 export const ClaudeSidecarQuotaAuthSchema = z.object({
   name: z.string(),
+  excludedModels: z.array(z.string()).default([]),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
   authIndex: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
@@ -624,12 +628,15 @@ export const ClaudeSidecarRoutingAccountSchema = z.object({
   email: z.string().nullable().optional(),
   priority: z.number().int().default(0),
   paused: z.boolean().default(false),
+  excludedModels: z.array(z.string()).default([]),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
 });
 export const ClaudeSidecarRoutingResponseSchema = z.object({
   status: ClaudeSidecarRoutingStatusSchema,
   message: z.string().nullable().optional(),
   strategy: ClaudeSidecarRoutingStrategySchema.nullable().optional(),
   accounts: z.array(ClaudeSidecarRoutingAccountSchema).default([]),
+  savedAccount: ClaudeSidecarRoutingAccountSchema.nullable().optional(),
 });
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;

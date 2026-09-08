@@ -274,6 +274,26 @@ class ClaudeSidecarClient:
                 _transport_message(exc, "update CLIProxyAPI auth-file disabled state")
             ) from exc
 
+    async def patch_auth_file_excluded_models(self, name: str, excluded_models: list[str]) -> None:
+        url = f"{self.base_url}/v0/management/auth-files/fields"
+        try:
+            async with lease_http_session() as session:
+                async with session.patch(
+                    url,
+                    headers=self._management_headers(),
+                    json={"name": name, "excluded_models": excluded_models},
+                    timeout=self._timeout(),
+                ) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(
+                _transport_message(exc, "update CLIProxyAPI auth-file excluded models")
+            ) from exc
+
     async def pop_usage_queue(self, count: int) -> list[Mapping[str, JsonValue]]:
         count = max(1, int(count))
         url = f"{self.base_url}/v0/management/usage-queue?count={count}"

@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.modules.accounts.schemas import SidecarAuthAccount
+from app.modules.claude_sidecar.excluded_models import MAX_PATTERNS, ExcludedModelsState
 from app.modules.shared.schemas import DashboardModel
 
 ClaudeSidecarStatus = Literal["disabled", "missing_api_key", "unreachable", "unauthorized", "healthy", "error"]
@@ -53,6 +54,8 @@ class ClaudeSidecarRoutingAccount(DashboardModel):
     email: str | None = None
     priority: int = 0
     paused: bool = False
+    excluded_models: list[str] = Field(default_factory=list)
+    excluded_models_state: ExcludedModelsState = "unreadable"
 
 
 class ClaudeSidecarRoutingResponse(DashboardModel):
@@ -60,6 +63,7 @@ class ClaudeSidecarRoutingResponse(DashboardModel):
     message: str | None = None
     strategy: ClaudeSidecarRoutingStrategy | None = None
     accounts: list[ClaudeSidecarRoutingAccount] = Field(default_factory=list)
+    saved_account: ClaudeSidecarRoutingAccount | None = None
 
 
 class ClaudeSidecarRoutingStrategyUpdate(DashboardModel):
@@ -74,6 +78,11 @@ class ClaudeSidecarAccountPriorityUpdate(DashboardModel):
 class ClaudeSidecarAccountPausedUpdate(DashboardModel):
     name: str = Field(min_length=1)
     paused: bool
+
+
+class ClaudeSidecarAccountExcludedModelsUpdate(DashboardModel):
+    name: str = Field(min_length=1)
+    excluded_models: list[str] = Field(default_factory=list, max_length=MAX_PATTERNS)
 
 
 class AnthropicOAuthUsageBucket(BaseModel):

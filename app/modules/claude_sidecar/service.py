@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -7,6 +8,12 @@ from typing import Any
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.accounts.schemas import SidecarAuthAccount
+from app.modules.claude_sidecar.excluded_models import (
+    excluded_models_for_entry,
+    excluded_models_from_auth_file,
+    normalize_excluded_models,
+)
+from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.oauth_usage_response import build_anthropic_oauth_usage_payload
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
@@ -41,9 +48,7 @@ _STRATEGY_TO_WIRE: dict[ClaudeSidecarRoutingStrategy, str] = {
     "fill_first": "fill-first",
     "weighted_round_robin": "weighted-round-robin",
 }
-_WIRE_TO_STRATEGY: dict[str, ClaudeSidecarRoutingStrategy] = {
-    value: key for key, value in _STRATEGY_TO_WIRE.items()
-}
+_WIRE_TO_STRATEGY: dict[str, ClaudeSidecarRoutingStrategy] = {value: key for key, value in _STRATEGY_TO_WIRE.items()}
 
 
 class ClaudeSidecarService:
@@ -145,18 +150,17 @@ class ClaudeSidecarService:
                 now=now,
             )
             estimates_by_key = {
-                key: estimate
-                for estimate in estimates.accounts
-                if (key := _estimate_key(estimate)) is not None
+                key: estimate for estimate in estimates.accounts if (key := _estimate_key(estimate)) is not None
             }
         return ClaudeSidecarQuotaResponse(
             status=snapshot.status,
             message=snapshot.message,
             checked_at=snapshot.checked_at,
-            accounts=[
-                _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or ""))
-                for auth in snapshot.accounts
-            ],
+            accounts=await asyncio.to_thread(
+                lambda: [
+                    _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or "")) for auth in snapshot.accounts
+                ]
+            ),
         )
 
     async def get_pooled_oauth_usage_payload(self, *, hide_upstream: bool = False) -> dict[str, Any]:
@@ -220,7 +224,7 @@ class ClaudeSidecarService:
         return ClaudeSidecarRoutingResponse(
             status="healthy",
             strategy=_WIRE_TO_STRATEGY.get(wire_strategy),
-            accounts=_routing_accounts(auth_files),
+            accounts=await asyncio.to_thread(_routing_accounts, auth_files),
         )
 
     async def set_routing_strategy(
@@ -280,7 +284,45 @@ class ClaudeSidecarService:
         await self._patch_snapshot_disabled(name, paused)
         return await self.get_routing()
 
+    async def set_account_excluded_models(
+        self,
+        name: str,
+        excluded_models: list[str],
+    ) -> ClaudeSidecarRoutingResponse:
+        async with exclusion_write_lock():
+            return await self._set_account_excluded_models_locked(name, excluded_models)
+
+    async def _set_account_excluded_models_locked(
+        self, name: str, excluded_models: list[str]
+    ) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        patterns = normalize_excluded_models(excluded_models)
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.patch_auth_file_excluded_models(name, patterns)
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+        await self._patch_snapshot_excluded_models(name, patterns)
+        response = await self.get_routing()
+        response.saved_account = ClaudeSidecarRoutingAccount(
+            name=name, excluded_models=patterns, excluded_models_state="available"
+        )
+        return response
+
     async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
+        async with exclusion_write_lock():
+            await self._patch_snapshot_disabled_locked(name, paused)
+
+    async def _patch_snapshot_disabled_locked(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.
 
         The dashboard reads ``disabled`` from the polled snapshot (refreshed on
@@ -295,8 +337,30 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
+        updated = [replace(auth, disabled=paused) if auth.name == name else auth for auth in snapshot.accounts]
+        if updated == list(snapshot.accounts):
+            return
+        patched = replace(snapshot, accounts=tuple(updated))
+        await self._settings_repository.update_operational(
+            claude_sidecar_quota_state_json=snapshot_to_json(patched),
+        )
+        await get_settings_cache().invalidate()
+
+    async def _patch_snapshot_excluded_models(self, name: str, excluded_models: list[str]) -> None:
+        """Reflect an exclusion-list change in the stored quota snapshot immediately.
+
+        The caller holds ``exclusion_write_lock`` through the upstream write and
+        snapshot commit. Re-read the snapshot to preserve other current fields.
+        Dashboard exclusion responses separately read the authoritative auth file,
+        so a cached snapshot cannot confirm an uncertain upstream write.
+        """
+        current = await self._settings_repository.get_fresh()
+        snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
+        if snapshot is None:
+            return
+        patterns = tuple(excluded_models)
         updated = [
-            replace(auth, disabled=paused) if auth.name == name else auth
+            replace(auth, excluded_models=patterns, excluded_models_available=True) if auth.name == name else auth
             for auth in snapshot.accounts
         ]
         if updated == list(snapshot.accounts):
@@ -362,6 +426,7 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
             continue
         auth_index = entry.get("auth_index")
         email = entry.get("email")
+        excluded = excluded_models_for_entry(entry)
         accounts.append(
             ClaudeSidecarRoutingAccount(
                 name=name,
@@ -369,6 +434,8 @@ def _routing_accounts(auth_files) -> list[ClaudeSidecarRoutingAccount]:
                 email=email if isinstance(email, str) else None,
                 priority=_priority_value(entry.get("priority")),
                 paused=bool(entry.get("disabled")),
+                excluded_models=excluded if excluded is not None else [],
+                excluded_models_state="available" if excluded is not None else "unreadable",
             )
         )
     return accounts
@@ -408,10 +475,7 @@ def _classify_status(settings) -> tuple[ClaudeSidecarStatus, str | None]:
 
 
 def _model_summaries(models) -> list[ClaudeSidecarModelSummary]:
-    return [
-        ClaudeSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by)
-        for model in models
-    ]
+    return [ClaudeSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models]
 
 
 def _sanitize_message(message: str) -> str:
@@ -422,12 +486,15 @@ def _to_auth_account(
     auth: SidecarAuthQuota,
     estimate: ClaudeAuthUsageEstimate | None = None,
 ) -> SidecarAuthAccount:
+    patterns = excluded_models_from_auth_file(auth.credential_path)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
         status=auth.status,
         paused=auth.disabled,
+        excluded_models=patterns or [],
+        excluded_models_state="available" if patterns is not None else "unreadable",
         quota_exceeded=auth.quota_exceeded,
         next_recover_at=auth.next_recover_at,
         models_exceeded=[entry.model for entry in auth.model_states if entry.quota_exceeded],

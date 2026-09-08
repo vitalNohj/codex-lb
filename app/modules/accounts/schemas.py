@@ -5,6 +5,7 @@ from typing import List
 
 from pydantic import Field, PrivateAttr, field_validator
 
+from app.modules.claude_sidecar.excluded_models import ExcludedModelsState
 from app.modules.shared.schemas import DashboardModel
 
 
@@ -87,6 +88,8 @@ class SidecarAuthAccount(DashboardModel):
     provider: str | None = None
     status: str | None = None
     paused: bool = False
+    excluded_models: list[str] = Field(default_factory=list)
+    excluded_models_state: ExcludedModelsState = "unreadable"
     quota_exceeded: bool = False
     next_recover_at: datetime | None = None
     models_exceeded: list[str] = Field(default_factory=list)

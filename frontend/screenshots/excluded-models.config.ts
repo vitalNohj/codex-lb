@@ -1,0 +1,2 @@
+import { defineConfig } from '@playwright/test';
+export default defineConfig({ testDir: '.', testMatch: 'excluded-models.spec.ts', outputDir: process.env.EXCLUSION_EVIDENCE_DIR + '/playwright-output', use: { viewport: { width: 1440, height: 1000 } }, webServer: { command: 'cd .. && bun x vite build --outDir .excluded-models-build/codex && ../.venv/bin/python -m http.server 4173 --directory .excluded-models-build', port: 4173, reuseExistingServer: false } });

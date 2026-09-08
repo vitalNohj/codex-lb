@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { ApiError } from "@/lib/api-client";
+import type { AccountSummary, SidecarAuthAccount } from "@/features/accounts/schemas";
+import type { DashboardOverview } from "@/features/dashboard/schemas";
 import {
   addUpstreamProxyPoolMember,
   createUpstreamProxyEndpoint,
@@ -23,6 +25,7 @@ import {
   getTelemetryConsent,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
+  setClaudeSidecarAccountExcludedModels,
   setClaudeSidecarAccountPaused,
   setClaudeSidecarAccountPriority,
   setClaudeSidecarRoutingStrategy,
@@ -38,6 +41,9 @@ import {
 import type {
   AccountProxyBindingRequest,
   ClaudeSidecarRoutingStrategy,
+  ClaudeSidecarRoutingResponse,
+  ClaudeSidecarRoutingAccount,
+  ClaudeSidecarQuotaResponse,
   DashboardSettings,
   SettingsUpdateRequest,
   TelemetryConsentUpdateRequest,
@@ -423,6 +429,65 @@ export function useClaudeSidecarAccountPause() {
   });
 }
 
+export function useClaudeSidecarAccountExcludedModels() {
+  const queryClient = useQueryClient();
+  const reconcileCaches = async (name: string, saved?: ClaudeSidecarRoutingAccount | null) => {
+
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: ["settings", "claude-sidecar", "routing"] }),
+        queryClient.cancelQueries({ queryKey: ["settings", "claude-sidecar", "quota"] }),
+        queryClient.cancelQueries({ queryKey: ["accounts", "list"] }),
+        queryClient.cancelQueries({ queryKey: ["dashboard", "overview"] }),
+      ]);
+      const reconcile = <T extends Pick<SidecarAuthAccount, "name" | "excludedModels" | "excludedModelsState">>(account: T): T =>
+        account.name === name
+          ? { ...account, excludedModels: saved?.excludedModels ?? account.excludedModels, excludedModelsState: saved?.excludedModelsState ?? "unreadable" }
+          : account;
+      const reconcileSummary = (account: AccountSummary): AccountSummary => ({
+        ...account,
+        sidecarAuths: account.sidecarAuths.map(reconcile),
+      });
+      queryClient.setQueriesData<ClaudeSidecarRoutingResponse>(
+        { queryKey: ["settings", "claude-sidecar", "routing"] },
+        (data) => data && { ...data, accounts: data.accounts.map(reconcile) },
+      );
+      queryClient.setQueriesData<ClaudeSidecarQuotaResponse>(
+        { queryKey: ["settings", "claude-sidecar", "quota"] },
+        (data) => data && { ...data, accounts: data.accounts.map(reconcile) },
+      );
+      queryClient.setQueriesData<{ accounts: AccountSummary[] }>(
+        { queryKey: ["accounts", "list"] },
+        (data) => data && { ...data, accounts: data.accounts.map(reconcileSummary) },
+      );
+      queryClient.setQueriesData<DashboardOverview>(
+        { queryKey: ["dashboard", "overview"] },
+        (data) => data && { ...data, accounts: data.accounts.map(reconcileSummary) },
+      );
+  };
+  return useMutation({
+    mutationFn: ({ name, excludedModels }: { name: string; excludedModels: string[] }) =>
+      setClaudeSidecarAccountExcludedModels(name, excludedModels),
+    onSuccess: async (response, { name }) => {
+      if (response.status !== "healthy") {
+        toast.error(response.message || "Failed to update CLIProxyAPI excluded models");
+      }
+      const saved = response.savedAccount?.name === name ? response.savedAccount
+        : response.status === "healthy" ? response.accounts.find((account) => account.name === name) : undefined;
+      await reconcileCaches(name, saved);
+    },
+    onError: async (error: Error, { name }) => {
+      toast.error(error.message || "Failed to update CLIProxyAPI excluded models");
+      await reconcileCaches(name);
+    },
+    onSettled: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "routing"] }),
+      queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "quota"] }),
+      queryClient.invalidateQueries({ queryKey: ["accounts", "list"] }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+    ]),
+  });
+}
+
 export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
   const queryClient = useQueryClient();
   const routingQueryKey = ["settings", "claude-sidecar", "routing"] as const;
@@ -459,8 +524,18 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
     },
   });
   const pausedMutation = useClaudeSidecarAccountPause();
+  const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
   const testMutation = useSidecarConnectionTest("claude");
-  return { statusQuery, modelsQuery, routingQuery, strategyMutation, priorityMutation, pausedMutation, testMutation };
+  return {
+    statusQuery,
+    modelsQuery,
+    routingQuery,
+    strategyMutation,
+    priorityMutation,
+    pausedMutation,
+    excludedModelsMutation,
+    testMutation,
+  };
 }
 
 export function useClaudeSidecarQuota() {
