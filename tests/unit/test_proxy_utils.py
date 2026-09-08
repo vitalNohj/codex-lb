@@ -99,6 +99,7 @@ from app.modules.proxy.load_balancer import (
     _mapped_model_has_registry_entry,
 )
 from app.modules.proxy.repo_bundle import ProxyRepositories
+from app.modules.proxy.selection_errors import selection_failure_response
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.proxy.work_admission import AdmissionLease
 from app.modules.request_logs.repository import PreviousResponseOwnerRecord, RequestLogsRepository
@@ -28263,8 +28264,12 @@ async def test_hidden_http_bridge_model_capacity_retry_suppresses_reconnect_wait
         _session: proxy_service._HTTPBridgeSession,
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
+        triggering_error: tuple[str, str | None, str | None] | None = None,
+        triggering_error_payload: dict[str, JsonValue] | None = None,
     ) -> bool:
+        assert triggering_error_payload is not None
         assert request_state is not None
+        assert triggering_error is not None
         assert request_state.response_create_gate is response_create_gate
         assert request_state.response_create_gate_acquired is True
         assert request_state.response_create_admission is None
@@ -28531,9 +28536,16 @@ async def test_http_bridge_model_capacity_wait_retries_only_original_pending_req
         _session: proxy_service._HTTPBridgeSession,
         *,
         request_state: proxy_service._WebSocketRequestState | None = None,
+        triggering_error: tuple[str, str | None, str | None] | None = None,
+        triggering_error_payload: dict[str, JsonValue] | None = None,
     ) -> bool:
         retry_calls.append(request_state)
-        return await original_retry(_session, request_state=request_state)
+        return await original_retry(
+            _session,
+            request_state=request_state,
+            triggering_error=triggering_error,
+            triggering_error_payload=triggering_error_payload,
+        )
 
     async def replace_original_during_wait(*_args: object, **_kwargs: object) -> bool:
         async with session.pending_lock:
@@ -48261,3 +48273,346 @@ async def test_stream_with_retry_reframes_data_only_delta_frames_after_ttft(monk
     assert chunks[2] == 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"b"}\n\n'
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hint_seconds, expected_slept, selection_count", [(300, 0, 1), (10, 30, 4)])
+async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_cap(
+    monkeypatch, hint_seconds, expected_slept, selection_count
+):
+    """The non-bridge recovery wait must not park a client for the 300s hint.
+
+    This is the observed ``sleep_seconds=300`` hang for requests that bypass
+    the HTTP bridge: the hint fits the multi-minute request budget, so only the
+    cumulative silent-hold cap stops the hold. The condition keeps its honest
+    503 ``no_accounts`` classification and carries the real hint as Retry-After.
+    """
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    selection = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_message=f"Selected model is at capacity. Try again in {hint_seconds}s",
+                error_code="no_accounts",
+            )
+            for _ in range(selection_count)
+        ]
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", selection)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "hi",
+            "input": "hello",
+            "stream": True,
+        }
+    )
+
+    assert (
+        proxy_support._account_selection_recovery_sleep_seconds_from_message(
+            "Selected model is at capacity. Try again in 300s",
+            error_code="no_accounts",
+            suppress_uncoded_local_selector_hint=True,
+        )
+        == 300.0
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        async for _ in service._stream_with_retry(
+            payload,
+            {},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+        ):
+            pass
+
+    assert sum(slept) == expected_slept
+    assert selection.await_count == selection_count
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.payload["error"]["code"] == "no_accounts"
+    assert exc_info.value.retry_after_seconds == hint_seconds
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_failure", [False, True])
+@pytest.mark.parametrize("upstream_hint", [None, 300])
+async def test_stream_with_retry_capacity_hint_belongs_to_winning_failure(monkeypatch, same_failure, upstream_hint):
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    account = _make_account("acc_capacity_hint_owner")
+    slept: list[float] = []
+    stream_calls = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def fake_stream_once(*_args: object, **_kwargs: object):
+        nonlocal stream_calls
+        stream_calls += 1
+        code = "account_response_create_cap" if same_failure else "usage_limit_reached"
+        raise proxy_module.ProxyResponseError(
+            429,
+            openai_error(code, "Upstream capacity exhausted. Try again in 30s", error_type="rate_limit_error"),
+            retry_after_seconds=upstream_hint,
+        )
+        yield ""
+
+    selections = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_code="account_stream_cap",
+                error_message="Account stream concurrency limit reached. Try again in 10s",
+            ),
+            AccountSelection(account=account, error_message=None),
+            AccountSelection(
+                account=None,
+                error_code="account_stream_cap",
+                error_message="Account stream concurrency limit reached. Try again in 30s",
+            ),
+        ]
+    )
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        service,
+        "_resolve_websocket_previous_response_owner",
+        AsyncMock(return_value=account.id if same_failure else None),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", selections)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_stream_once", fake_stream_once)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(return_value={"failure_class": "quota"}))
+    monkeypatch.setattr(service._load_balancer, "record_errors", AsyncMock())
+
+    payload = ResponsesRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True})
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        async for _ in service._stream_with_retry(
+            payload,
+            {},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+            upstream_stream_transport_override="http",
+        ):
+            pass
+
+    assert stream_calls > 0
+    assert sum(slept) >= 10
+    assert exc_info.value.payload["error"]["code"] == (
+        "account_response_create_cap" if same_failure else "account_stream_cap"
+    )
+    assert exc_info.value.retry_after_seconds == (upstream_hint if same_failure and upstream_hint else 30)
+
+
+def test_capacity_fail_fast_prefers_caller_classification_over_stale_transient() -> None:
+    """A carried-forward transient must not replace the current condition.
+
+    ``last_transient_exc`` is only cleared on the pre-dispatch-transport path,
+    so it can still hold an earlier account's failure when a later selection
+    fails for a different reason. Raising it verbatim would hand the client
+    account A's quota error for what is really a pool-wide selection failure -
+    the same laundering this module exists to prevent.
+    """
+    stale_account_a_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "Account A: the usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+    )
+    current_selection_failure = selection_failure_response(
+        AccountSelection(
+            account=None,
+            error_message="No active accounts available",
+            error_code="no_accounts",
+        )
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=stale_account_a_error,
+            same_failure=False,
+            error_response=current_selection_failure,
+            recovery_hint_seconds=120.0,
+        )
+
+    raised = exc_info.value
+    assert raised is not stale_account_a_error
+    assert raised.status_code == 503
+    assert raised.payload["error"]["code"] == "no_accounts"
+    assert "Account A" not in json.dumps(raised.payload)
+    assert raised.retry_after_seconds == 120
+    # The superseded transient stays available as the cause for diagnostics.
+    assert raised.__cause__ is stale_account_a_error
+    # The stale error must not be mutated on its way past.
+    assert stale_account_a_error.retry_after_seconds is None
+
+
+def test_capacity_fail_fast_keeps_superseded_upstream_recovery_hint() -> None:
+    """Superseding the classification must not discard the upstream hint.
+
+    ``recovery_hint_seconds`` is the local interval before codex-lb's next
+    internal attempt; ``exc.retry_after_seconds`` is when upstream said the
+    condition clears. Only the latter is actionable for the client, so it keeps
+    precedence even when the caller's classification wins.
+    """
+    upstream_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "The usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+        retry_after_seconds=300,
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=upstream_error,
+            same_failure=True,
+            error_code="account_response_create_cap",
+            error_message="Account response-create concurrency limit reached",
+            error_type="rate_limit_error",
+            recovery_hint_seconds=30.0,
+        )
+
+    raised = exc_info.value
+    assert raised is not upstream_error
+    assert raised.payload["error"]["code"] == "account_response_create_cap"
+    # The upstream hint wins over the local 30s polling interval.
+    assert raised.retry_after_seconds == 300
+
+
+def test_capacity_fail_fast_uses_local_interval_without_upstream_hint() -> None:
+    """With no upstream hint the local interval is the honest fallback."""
+    upstream_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "The usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=upstream_error,
+            same_failure=True,
+            error_code="account_response_create_cap",
+            error_message="Account response-create concurrency limit reached",
+            error_type="rate_limit_error",
+            recovery_hint_seconds=30.0,
+        )
+
+    assert exc_info.value.retry_after_seconds == 30
+
+
+def test_capacity_fail_fast_raises_transient_when_caller_classified_nothing() -> None:
+    """With no caller classification the transient is the honest answer."""
+    quota_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error(
+            "usage_limit_reached",
+            "The usage limit has been reached",
+            error_type="usage_limit_reached",
+        ),
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        streaming_retry_module._raise_capacity_recovery_fail_fast(
+            exc=quota_error,
+            same_failure=True,
+            recovery_hint_seconds=45.0,
+        )
+
+    raised = exc_info.value
+    assert raised is quota_error
+    assert raised.status_code == 429
+    assert raised.payload["error"]["code"] == "usage_limit_reached"
+    assert raised.retry_after_seconds == 45
+
+
+@pytest.mark.asyncio
+async def test_stream_with_retry_selection_recovery_smooths_over_short_wait(monkeypatch):
+    """A sub-cap transient selection failure still waits in place and recovers."""
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    account = _make_account("acc_short_selection_recovery")
+    slept: list[float] = []
+    selection_calls = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def select_account(_deadline: float, **_kwargs: object) -> AccountSelection:
+        nonlocal selection_calls
+        selection_calls += 1
+        if selection_calls == 1:
+            return AccountSelection(
+                account=None,
+                error_message="Selected model is at capacity. Try again in 5s",
+                error_code="no_accounts",
+            )
+        return AccountSelection(account=account, error_message=None)
+
+    async def fake_stream_once(*_args: object, **_kwargs: object):
+        yield 'data: {"type":"response.completed","response":{"id":"resp_short_selection_recovery"}}\n\n'
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(streaming_retry_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_stream_once", fake_stream_once)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "hi",
+            "input": "hello",
+            "stream": True,
+        }
+    )
+
+    chunks = [
+        chunk
+        async for chunk in service._stream_with_retry(
+            payload,
+            {},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+        )
+    ]
+
+    assert slept == [5.0]
+    assert selection_calls == 2
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"

@@ -6,6 +6,9 @@
 codex-lb refreshes usage on its own schedule and treats upstream samples conservatively. The full policy — refresh cadence, expiry, and why displays can briefly disagree with upstream — is documented in the
 [usage refresh policy context](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/usage-refresh-policy/context.md).
 
+**Why does `/v1/responses` return a quota error instead of waiting for recovery?**
+See the [Responses capacity recovery contract](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/responses-api-compat/spec.md#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) for terminal error classification, silent-wait limits, and `Retry-After` behavior. Error propagation does not restore exhausted upstream account capacity.
+
 ## Streaming
 
 **Codex CLI falls back to POST instead of WebSockets.**

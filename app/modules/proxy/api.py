@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
@@ -80,6 +81,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
     OpenAIErrorEnvelope,
+    error_retry_after_seconds,
     is_previous_response_not_found_error,
     openai_error,
     response_failed_event,
@@ -260,6 +262,10 @@ from app.modules.proxy.cursor_chat_compat import (
 from app.modules.proxy.custom_alias_catalog import (
     apply_custom_alias_catalog_overrides,
     load_custom_alias_catalog,
+)
+from app.modules.proxy.error_status import (
+    UNAVAILABLE_SELECTION_ERROR_CODES,
+    status_for_error_fields,
 )
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
@@ -646,13 +652,7 @@ class _ParsedTranscriptionMultipart:
     ordered_text_fields: tuple[tuple[str, str], ...]
 
 
-_UNAVAILABLE_SELECTION_ERROR_CODES = {
-    "no_accounts",
-    "no_plan_support_for_model",
-    "additional_quota_data_unavailable",
-    "quota_exhausted",
-    "no_additional_quota_eligible_accounts",
-}
+_UNAVAILABLE_SELECTION_ERROR_CODES = UNAVAILABLE_SELECTION_ERROR_CODES
 _STREAM_STARTUP_ERROR_PROBE_SECONDS = 0.05
 _CAPACITY_WAIT_MARKER_GRACE_SECONDS = 0.05
 # Keep bridge startup probing above tiny event-loop scheduling jitter:
@@ -7814,6 +7814,11 @@ def _logged_error_json_response(
         public_content = content
     code, message = _error_details_from_content(public_content)
     effective_headers = dict(headers or {})
+    error = public_content.get("error")
+    if status_code in {429, 503} and isinstance(error, dict):
+        retry_after = error_retry_after_seconds(error)
+        if retry_after is not None and not any(key.lower() == "retry-after" for key in effective_headers):
+            effective_headers["Retry-After"] = str(retry_after)
     if status_code == 429 and is_local_overload_error_code(code):
         effective_headers = merge_retry_after_headers(effective_headers)
     log_error_response(
@@ -9463,23 +9468,10 @@ def _mask_previous_response_not_found_error(
 
 
 def _status_for_error(error_value: OpenAIError | None) -> int:
-    if error_value and error_value.code == "previous_response_not_found":
-        return 502
-    if error_value and error_value.code in _UNAVAILABLE_SELECTION_ERROR_CODES:
-        return 503
-    if error_value and error_value.code in {"rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    if error_value and error_value.code in {"invalid_api_key", "invalid_authentication", "token_invalidated"}:
-        return 401
-    if error_value and error_value.code == "invalid_request_error":
-        return 400
-    if error_value and error_value.type == "authentication_error":
-        return 401
-    if error_value and error_value.type == "invalid_request_error":
-        return 400
-    if error_value and error_value.type in {"rate_limit_error", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    return 502
+    return status_for_error_fields(
+        code=error_value.code if error_value else None,
+        error_type=error_value.type if error_value else None,
+    )
 
 
 def _status_for_image_error_envelope(envelope: object) -> int:

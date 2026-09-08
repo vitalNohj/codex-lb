@@ -698,6 +698,7 @@ def _normalize_http_bridge_error_event(
 
     if request_state is not None:
         if request_state.error_code_override is not None:
+            rate_limit_metadata = request_state.error_recovery_metadata_override.copy()
             error_code_value = request_state.error_code_override
             explicit_error_code = True
         if request_state.error_type_override is not None:

@@ -4,10 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import sys
 import time
 from dataclasses import replace
-from typing import Any, AsyncGenerator, AsyncIterator, Mapping, TypeVar, cast
+from typing import Any, AsyncGenerator, AsyncIterator, Mapping, NoReturn, TypeVar, cast
 
 import aiohttp
 import anyio
@@ -21,7 +22,7 @@ from app.core.clients.proxy import (
     is_confirmed_pre_dispatch_transport_error,
     pop_stream_timeout_overrides,
 )
-from app.core.errors import openai_error, response_failed_event
+from app.core.errors import OpenAIErrorEnvelope, openai_error, response_failed_event
 from app.core.openai.requests import ResponsesRequest, extract_input_file_ids
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
@@ -49,6 +50,7 @@ from app.modules.proxy._service.support import (
     _RetryableStreamError,
     _signal_propagated_capacity_startup_wait,
     _signal_propagated_responses_service_cleanup_ready,
+    _SilentCapacityHold,
     _stream_settlement_error_payload,
     _StreamSettlement,
     _TerminalStreamError,
@@ -69,6 +71,7 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.continuity import resolve_required_account_id
+from app.modules.proxy.error_status import status_for_error_fields
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _is_account_model_unsupported_error,
@@ -206,6 +209,59 @@ def _resolved_configured_stream_transport(dashboard_settings: Any, base_settings
     return configured, configured in ("http", "websocket")
 
 
+def _raise_capacity_recovery_fail_fast(
+    *,
+    exc: BaseException | None = None,
+    same_failure: bool,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    error_type: str | None = None,
+    error_response: tuple[int, OpenAIErrorEnvelope] | None = None,
+    recovery_hint_seconds: float,
+) -> NoReturn:
+    """Answer a capacity condition now instead of parking the client on it.
+
+    Failing fast changes only *when* the client is told, never *what* the
+    condition is called: an upstream quota exhaustion still surfaces as 429
+    ``usage_limit_reached`` and a genuine selection failure still surfaces as
+    503 ``no_accounts``, both carrying the real recovery hint as ``Retry-After``
+    so the client keeps the actionable wait it would otherwise have spent held
+    open with no bytes.
+
+    An explicit classification from the caller always wins over ``exc``.
+    ``exc`` is a carried-forward transient (``last_transient_exc``) that is
+    only cleared on the pre-dispatch-transport path, so it can still hold an
+    earlier account's failure while the caller describes the condition that
+    actually stopped this request. Raising it verbatim would hand the client a
+    stale account's error with a fresh ``Retry-After`` - the same laundering
+    this module exists to prevent. ``exc`` is therefore raised as-is only when
+    the caller classified nothing, and is otherwise chained as the cause.
+
+    ``same_failure`` distinguishes reclassification of ``exc`` from a subsequent
+    selection failure, so only reclassification can inherit its recovery hint.
+    """
+    retry_after_seconds = max(1, math.ceil(recovery_hint_seconds))
+    caller_classified = error_response is not None or error_code is not None
+    if isinstance(exc, ProxyResponseError):
+        if not caller_classified:
+            if exc.retry_after_seconds is None:
+                exc.retry_after_seconds = retry_after_seconds
+            raise exc
+        if same_failure and exc.retry_after_seconds is not None:
+            retry_after_seconds = exc.retry_after_seconds
+    if error_response is not None:
+        status_code, error_payload = error_response
+    else:
+        code = error_code or "no_accounts"
+        status_code = status_for_error_fields(code=code, error_type=error_type)
+        error_payload = openai_error(
+            code,
+            error_message or "Upstream capacity is exhausted",
+            error_type=error_type or "server_error",
+        )
+    raise ProxyResponseError(status_code, error_payload, retry_after_seconds=retry_after_seconds) from exc
+
+
 async def _iter_account_capacity_recovery_wait(
     *,
     request_id: str,
@@ -216,6 +272,7 @@ async def _iter_account_capacity_recovery_wait(
     deadline: float,
     emit_keepalives: bool,
     stage: str,
+    silent_capacity_hold: _SilentCapacityHold | None = None,
 ) -> AsyncIterator[str]:
     if not emit_keepalives:
         _signal_propagated_capacity_startup_wait()
@@ -255,6 +312,10 @@ async def _iter_account_capacity_recovery_wait(
         )
         await asyncio.sleep(chunk_seconds)
         remaining_sleep_seconds -= chunk_seconds
+        if not emit_keepalives and silent_capacity_hold is not None:
+            # Nothing reached the client during this chunk, so it counts
+            # against the request's cumulative silent-hold allowance.
+            silent_capacity_hold.record(chunk_seconds)
 
 
 def _payload_size_estimate_bytes(payload: ResponsesRequest) -> int:
@@ -410,6 +471,7 @@ class _StreamingRetryMixin:
         post_refresh_transient_replacement_selected = False
         require_security_work_authorized = False
         account_leases: list[AccountLease] = []
+        silent_capacity_hold = _SilentCapacityHold()
         estimated_lease_tokens = _facade()._estimated_lease_tokens_from_request_usage_budget(
             estimate_api_key_request_usage(payload)
         )
@@ -836,6 +898,16 @@ class _StreamingRetryMixin:
                     )
                     if recovery_sleep_seconds is None or _facade()._remaining_budget_seconds(deadline) <= 0:
                         raise
+                    emit_keepalives = not propagate_http_errors or not enforce_openai_sdk_contract
+                    if not silent_capacity_hold.allows(
+                        recovery_sleep_seconds,
+                        holds_downstream_silently=not emit_keepalives,
+                    ):
+                        _raise_capacity_recovery_fail_fast(
+                            exc=exc,
+                            same_failure=True,
+                            recovery_hint_seconds=recovery_sleep_seconds,
+                        )
                     async for wait_event in _iter_account_capacity_recovery_wait(
                         request_id=request_id,
                         model=payload.model,
@@ -843,8 +915,9 @@ class _StreamingRetryMixin:
                         error_message=error.message if error else None,
                         recovery_sleep_seconds=recovery_sleep_seconds,
                         deadline=deadline,
-                        emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
+                        emit_keepalives=emit_keepalives,
                         stage="post_refresh_response_create",
+                        silent_capacity_hold=silent_capacity_hold,
                     ):
                         yield wait_event
                     if _facade()._remaining_budget_seconds(deadline) <= 0:
@@ -1179,6 +1252,20 @@ class _StreamingRetryMixin:
                             capacity_account = deferred_capacity_account
                             capacity_account_id = capacity_account.id
                             excluded_account_ids.discard(capacity_account_id)
+                            emit_keepalives = not propagate_http_errors or not enforce_openai_sdk_contract
+                            if not silent_capacity_hold.allows(
+                                recovery_sleep_seconds,
+                                holds_downstream_silently=not emit_keepalives,
+                            ):
+                                _raise_capacity_recovery_fail_fast(
+                                    exc=last_transient_exc,
+                                    same_failure=True,
+                                    error_code="account_response_create_cap",
+                                    error_message=(deferred_error.message if deferred_error else None)
+                                    or "Account response-create concurrency limit reached",
+                                    error_type=(deferred_error.type if deferred_error else None) or "rate_limit_error",
+                                    recovery_hint_seconds=recovery_sleep_seconds,
+                                )
                             async for wait_event in _iter_account_capacity_recovery_wait(
                                 request_id=request_id,
                                 model=payload.model,
@@ -1186,8 +1273,9 @@ class _StreamingRetryMixin:
                                 error_message=deferred_error.message if deferred_error else None,
                                 recovery_sleep_seconds=recovery_sleep_seconds,
                                 deadline=deadline,
-                                emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
+                                emit_keepalives=emit_keepalives,
                                 stage="response_create_no_alternate",
+                                silent_capacity_hold=silent_capacity_hold,
                             ):
                                 yield wait_event
                             if _facade()._remaining_budget_seconds(deadline) <= 0:
@@ -1254,6 +1342,17 @@ class _StreamingRetryMixin:
                             remaining_budget_seconds = _facade()._remaining_budget_seconds(deadline)
                             if remaining_budget_seconds <= 0:
                                 break
+                            emit_keepalives = not propagate_http_errors or not enforce_openai_sdk_contract
+                            if not silent_capacity_hold.allows(
+                                recovery_sleep_seconds,
+                                holds_downstream_silently=not emit_keepalives,
+                            ):
+                                _raise_capacity_recovery_fail_fast(
+                                    exc=last_transient_exc,
+                                    same_failure=False,
+                                    error_response=selection_failure_response(selection),
+                                    recovery_hint_seconds=recovery_sleep_seconds,
+                                )
                             async for wait_event in _iter_account_capacity_recovery_wait(
                                 request_id=request_id,
                                 model=payload.model,
@@ -1261,8 +1360,9 @@ class _StreamingRetryMixin:
                                 error_message=selection.error_message,
                                 recovery_sleep_seconds=recovery_sleep_seconds,
                                 deadline=deadline,
-                                emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
+                                emit_keepalives=emit_keepalives,
                                 stage="selection",
+                                silent_capacity_hold=silent_capacity_hold,
                             ):
                                 yield wait_event
                             if _facade()._remaining_budget_seconds(deadline) <= 0:
@@ -2113,6 +2213,19 @@ class _StreamingRetryMixin:
                                         remaining_budget_seconds = _facade()._remaining_budget_seconds(deadline)
                                         if remaining_budget_seconds <= 0:
                                             raise
+                                        emit_keepalives = not propagate_http_errors or not enforce_openai_sdk_contract
+                                        if not silent_capacity_hold.allows(
+                                            recovery_sleep_seconds,
+                                            holds_downstream_silently=not emit_keepalives,
+                                        ):
+                                            _raise_capacity_recovery_fail_fast(
+                                                exc=tex if isinstance(tex, ProxyResponseError) else None,
+                                                same_failure=True,
+                                                error_code=code,
+                                                error_message=error_message,
+                                                error_type="rate_limit_error",
+                                                recovery_hint_seconds=recovery_sleep_seconds,
+                                            )
                                         async for wait_event in _iter_account_capacity_recovery_wait(
                                             request_id=request_id,
                                             model=payload.model,
@@ -2120,9 +2233,9 @@ class _StreamingRetryMixin:
                                             error_message=error_message,
                                             recovery_sleep_seconds=recovery_sleep_seconds,
                                             deadline=deadline,
-                                            emit_keepalives=not propagate_http_errors
-                                            or not enforce_openai_sdk_contract,
+                                            emit_keepalives=emit_keepalives,
                                             stage="response_create",
+                                            silent_capacity_hold=silent_capacity_hold,
                                         ):
                                             yield wait_event
                                         if _facade()._remaining_budget_seconds(deadline) <= 0:
