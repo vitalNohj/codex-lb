@@ -11,11 +11,32 @@ cost for historical GPT-6 Astra rows that now resolve so dollar reports
 cover that usage. Folded usage rollups then receive a cost-only delta for
 rows this migration actually repriced; ``folded_through`` is left
 unchanged.
+
+Three invariants keep the repair from inventing or double-counting money:
+
+* Rows whose writer already settled their price are never touched. A row
+  carrying a ``cost_source`` other than ``static_table``, or any
+  ``price_status`` at all, belongs to external price resolution and its
+  NULL cost is a deliberate answer, not a gap (the read-side rule is
+  ``app.core.usage.logs.declares_price_provenance``).
+* The lifetime account rollup folds only the ``max(id)`` row of each
+  ``(account_id, request_id, requested_at)`` duplicate group
+  (``deduped_usage_aggregate_stmt``). A repriced row that is not its
+  group's true maximum contributes nothing to that rollup, because a
+  higher-id sibling already does. The per-API-key rollup does not
+  deduplicate, so every repriced row still counts there.
+* The hourly and demand rollups fold ``sum(cost_usd)`` behind their own
+  ``hourly_folded_through`` watermark, so repricing a row underneath it
+  leaves those buckets stale. The migration arms the existing post-upgrade
+  repair marker instead of hand-patching bucket rows. The conversation
+  satellite stores only ``request_count`` and needs no repair.
+
+``downgrade()`` deliberately does not un-price anything: see its docstring.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
@@ -33,6 +54,7 @@ _BACKFILL_BATCH_SIZE = 1000
 _MODEL_MATCH = "%gpt-6-astra%"
 _EXCLUDED_REQUEST_KINDS = ("warmup", "limit_warmup")
 _STATIC_TABLE = "static_table"
+_HOUR = timedelta(hours=1)
 
 
 def _calculate_cost(
@@ -95,6 +117,56 @@ def _read_watermark(bind: Connection) -> datetime | None:
     return _as_datetime(bind.execute(sa.select(rollup_state.c.folded_through)).scalar())
 
 
+def _rollup_state_table() -> Any:
+    return sa.table(
+        "account_usage_rollup_state",
+        sa.column("hourly_folded_through", sa.DateTime()),
+        sa.column("upgrade_repair_from", sa.DateTime()),
+    )
+
+
+def _floor_to_hour(value: datetime) -> datetime:
+    return value.replace(minute=0, second=0, microsecond=0)
+
+
+def _arm_time_rollup_repair(bind: Connection, earliest_repriced: datetime | None) -> None:
+    """Re-arm the hourly/demand post-upgrade repair over the repriced range.
+
+    ``_hourly_fold_insert`` and ``_demand_fold_insert`` both fold
+    ``sum(cost_usd)``, so every already-folded bucket holding a row this
+    migration repriced is now short by that cost. Rather than patching bucket
+    rows (which would have to reproduce their full dimension grain), point the
+    existing ``upgrade_repair_from`` marker at the earliest repriced hour: the
+    next fold pass refolds ``[marker, hourly_folded_through)`` from raw, which
+    is idempotent and converges on any input state.
+
+    Only the range already folded needs arming; newer rows are still the live
+    tail. An earlier marker already set by another upgrade is preserved, since
+    refolding a wider range is safe and dropping its range would not be. The
+    conversation satellite folds ``request_count`` only and is untouched.
+    """
+
+    if earliest_repriced is None:
+        return
+    columns = _columns(bind, "account_usage_rollup_state")
+    if not {"hourly_folded_through", "upgrade_repair_from"} <= columns:
+        return
+    rollup_state = _rollup_state_table()
+    row = bind.execute(sa.select(rollup_state.c.hourly_folded_through, rollup_state.c.upgrade_repair_from)).first()
+    if row is None:
+        return
+    hourly_watermark = _as_datetime(row[0])
+    if hourly_watermark is None or earliest_repriced >= hourly_watermark:
+        # Nothing repriced below the hourly watermark: those rows are still in
+        # the live tail and will be folded with their cost already present.
+        return
+    marker = _floor_to_hour(earliest_repriced)
+    existing = _as_datetime(row[1])
+    if existing is not None and existing <= marker:
+        return
+    bind.execute(sa.update(rollup_state).values(upgrade_repair_from=marker))
+
+
 def _request_logs_table() -> Any:
     return sa.table(
         "request_logs",
@@ -113,6 +185,7 @@ def _request_logs_table() -> Any:
         sa.column("reasoning_tokens", sa.Integer()),
         sa.column("cost_usd", sa.Float()),
         sa.column("cost_source", sa.String()),
+        sa.column("price_status", sa.String()),
     )
 
 
@@ -120,29 +193,82 @@ def _model_match(request_logs: Any) -> Any:
     return request_logs.c.model.like(_MODEL_MATCH)
 
 
-def _accumulate_deltas(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
-    latest_account: dict[tuple[object, object, object], dict[str, Any]] = {}
+def _group_max_ids(bind: Connection, rows: list[dict[str, Any]]) -> dict[tuple[object, object, object], int]:
+    """True ``max(id)`` per duplicate group, over ALL rows, not just repriced ones.
+
+    ``deduped_usage_aggregate_stmt`` folds one row per ``(account_id,
+    request_id, requested_at)`` group: the highest id, whatever its model or
+    cost provenance. Taking the maximum within the repriced subset instead
+    would credit the account rollup for a lower-id row whose higher-id sibling
+    is the row the reader actually sums -- and that sibling's cost is already
+    in the rollup, so the account total would gain a duplicate charge.
+    """
+
+    request_ids = {row["request_id"] for row in rows if row["account_id"] and row["deleted_at"] is None}
+    request_ids.discard(None)
+    if not request_ids:
+        return {}
+    request_logs = _request_logs_table()
+    max_ids: dict[tuple[object, object, object], int] = {}
+    ids = sorted(request_ids)
+    # Grouped in SQL and keyed in Python on the values the driver returns, so
+    # both sides of the key comparison come from the same read path. Binding a
+    # Python ``datetime`` back into a ``requested_at`` predicate would not
+    # match SQLite's stored text (microsecond formatting differs) and would
+    # silently find no group at all.
+    for chunk_start in range(0, len(ids), _BACKFILL_BATCH_SIZE):
+        chunk = ids[chunk_start : chunk_start + _BACKFILL_BATCH_SIZE]
+        grouped = bind.execute(
+            sa.select(
+                request_logs.c.account_id,
+                request_logs.c.request_id,
+                request_logs.c.requested_at,
+                sa.func.max(request_logs.c.id),
+            )
+            .where(
+                request_logs.c.request_id.in_(chunk),
+                request_logs.c.account_id.is_not(None),
+                request_logs.c.deleted_at.is_(None),
+                request_logs.c.request_kind.not_in(_EXCLUDED_REQUEST_KINDS),
+            )
+            .group_by(
+                request_logs.c.account_id,
+                request_logs.c.request_id,
+                request_logs.c.requested_at,
+            )
+        ).all()
+        for account_id, request_id, requested_at, max_id in grouped:
+            if max_id is not None:
+                max_ids[(account_id, request_id, requested_at)] = int(max_id)
+    return max_ids
+
+
+def _accumulate_deltas(
+    bind: Connection,
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, float], dict[str, float]]:
+    countable = [
+        row for row in rows if row["request_kind"] not in _EXCLUDED_REQUEST_KINDS and row["cost_usd"] is not None
+    ]
     key_deltas: dict[str, float] = {}
-    for row in rows:
-        if row["request_kind"] in _EXCLUDED_REQUEST_KINDS:
-            continue
-        cost = row["cost_usd"]
-        if cost is None:
-            continue
-        cost_f = float(cost)
+    for row in countable:
         api_key_id = row["api_key_id"]
         if api_key_id:
-            key_deltas[str(api_key_id)] = key_deltas.get(str(api_key_id), 0.0) + cost_f
-        account_id = row["account_id"]
-        if account_id and row["deleted_at"] is None:
-            group = (account_id, row["request_id"], row["requested_at"])
-            prev = latest_account.get(group)
-            if prev is None or int(row["id"]) > int(prev["id"]):
-                latest_account[group] = row
+            # The per-API-key aggregate does not collapse duplicates, so every
+            # repriced row contributes there.
+            key_deltas[str(api_key_id)] = key_deltas.get(str(api_key_id), 0.0) + float(row["cost_usd"])
+    group_max_ids = _group_max_ids(bind, countable)
     account_deltas: dict[str, float] = {}
-    for row in latest_account.values():
-        account_id = str(row["account_id"])
-        account_deltas[account_id] = account_deltas.get(account_id, 0.0) + float(row["cost_usd"])
+    for row in countable:
+        account_id = row["account_id"]
+        if not account_id or row["deleted_at"] is not None:
+            continue
+        group = (account_id, row["request_id"], row["requested_at"])
+        if group_max_ids.get(group) != int(row["id"]):
+            # A higher-id sibling is the row the account rollup folds, and its
+            # cost is already counted. Adding this one would double-charge.
+            continue
+        account_deltas[str(account_id)] = account_deltas.get(str(account_id), 0.0) + float(row["cost_usd"])
     return account_deltas, key_deltas
 
 
@@ -183,28 +309,28 @@ def _apply_deltas(
             )
 
 
-def _folded_astra_rows(bind: Connection, watermark: datetime) -> list[dict[str, Any]]:
-    request_logs = _request_logs_table()
-    return (
-        bind.execute(
-            sa.select(
-                request_logs.c.id,
-                request_logs.c.account_id,
-                request_logs.c.api_key_id,
-                request_logs.c.request_id,
-                request_logs.c.request_kind,
-                request_logs.c.deleted_at,
-                request_logs.c.requested_at,
-                request_logs.c.cost_usd,
-            ).where(
-                _model_match(request_logs),
-                request_logs.c.cost_usd.is_not(None),
-                request_logs.c.requested_at <= watermark,
+def _owns_price_elsewhere(request_logs: Any, columns: set[str]) -> Any:
+    """Rows whose writer already settled the price; the static table must not answer.
+
+    Mirrors ``app.core.usage.logs.declares_price_provenance``: any
+    ``price_status`` marks a row that participates in external price
+    resolution, and any ``cost_source`` other than ``static_table`` names a
+    resolved owner. For such rows a NULL ``cost_usd`` is the resolver's
+    answer, not a gap this substring-matched list price may fill. Legacy rows
+    predating both columns carry NULL in each and stay eligible.
+    """
+
+    clauses = []
+    if "cost_source" in columns:
+        clauses.append(
+            sa.or_(
+                request_logs.c.cost_source.is_(None),
+                request_logs.c.cost_source == _STATIC_TABLE,
             )
         )
-        .mappings()
-        .all()
-    )
+    if "price_status" in columns:
+        clauses.append(request_logs.c.price_status.is_(None))
+    return sa.and_(*clauses) if clauses else sa.true()
 
 
 def upgrade() -> None:
@@ -213,9 +339,12 @@ def upgrade() -> None:
         return
 
     request_logs = _request_logs_table()
-    has_cost_source = "cost_source" in _columns(bind, "request_logs")
+    log_columns = _columns(bind, "request_logs")
+    has_cost_source = "cost_source" in log_columns
+    eligible = _owns_price_elsewhere(request_logs, log_columns)
     watermark = _read_watermark(bind)
     backfilled_folded: list[dict[str, Any]] = []
+    earliest_repriced: datetime | None = None
 
     last_seen_id = 0
     while True:
@@ -240,6 +369,7 @@ def upgrade() -> None:
                     request_logs.c.id > last_seen_id,
                     _model_match(request_logs),
                     request_logs.c.cost_usd.is_(None),
+                    eligible,
                 )
                 .order_by(request_logs.c.id)
                 .limit(_BACKFILL_BATCH_SIZE)
@@ -265,6 +395,8 @@ def upgrade() -> None:
                 values["cost_source"] = _STATIC_TABLE
             bind.execute(sa.update(request_logs).where(request_logs.c.id == row["id"]).values(**values))
             requested_at = _as_datetime(row["requested_at"])
+            if requested_at is not None and (earliest_repriced is None or requested_at < earliest_repriced):
+                earliest_repriced = requested_at
             if watermark is None or requested_at is None or requested_at > watermark:
                 continue
             backfilled_folded.append(
@@ -281,20 +413,29 @@ def upgrade() -> None:
             )
         last_seen_id = int(rows[-1]["id"])
 
-    account_deltas, key_deltas = _accumulate_deltas(backfilled_folded)
+    account_deltas, key_deltas = _accumulate_deltas(bind, backfilled_folded)
     _apply_deltas(bind, account_deltas, key_deltas, sign=1)
+    _arm_time_rollup_repair(bind, earliest_repriced)
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    if not _has_table(bind, "request_logs"):
-        return
-    request_logs = _request_logs_table()
-    watermark = _read_watermark(bind)
-    if watermark is not None:
-        account_deltas, key_deltas = _accumulate_deltas(list(_folded_astra_rows(bind, watermark)))
-        _apply_deltas(bind, account_deltas, key_deltas, sign=-1)
-    values: dict[str, Any] = {"cost_usd": None}
-    if "cost_source" in _columns(bind, "request_logs"):
-        values["cost_source"] = None
-    bind.execute(sa.update(request_logs).where(_model_match(request_logs)).values(**values))
+    """Intentionally does not un-price anything.
+
+    Nothing in the schema records which rows this migration filled. A row it
+    repriced and a row the request path priced from the same static table are
+    byte-for-byte identical afterwards -- same ``cost_usd``, same
+    ``cost_source='static_table'`` -- so any reversal keyed on the model name
+    or on ``cost_source`` would blank costs the migration never wrote and
+    subtract them from rollups that legitimately contain them. That is
+    destructive and unrecoverable: the price cannot be re-derived once the
+    pricing row is gone.
+
+    Leaving the recomputed costs in place is the safe direction. They are
+    correct published list prices for usage that really happened, every rollup
+    stays consistent with the rows it folds, and re-running ``upgrade()`` is a
+    no-op because those rows are no longer NULL. The same choice was made by
+    the useragent-family backfill
+    (``20260722_000000_backfill_request_log_useragent_families``).
+    """
+
+    return

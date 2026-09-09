@@ -1254,6 +1254,297 @@ async def test_gpt_6_astra_cost_backfill_migration_populates_cost(tmp_path):
     assert rollup_row_count == 1
 
 
+async def _seed_astra_backfill_fixture(session_factory, *, watermark: str) -> None:
+    """Duplicate group, external-provenance rows, and rows that must not move.
+
+    ``req_dup`` is the duplicate shape from #904: two rows sharing
+    ``(account_id, request_id, requested_at)``, the HIGHER id already priced
+    and folded, the lower one NULL. ``deduped_usage_aggregate_stmt`` folds only
+    the max-id row, so the account rollup must not gain a second charge.
+    """
+
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO api_keys (id, name, key_hash, key_prefix, is_active, created_at)"
+                " VALUES ('key_astra', 'astra', 'hash_astra', 'sk-astra', 1, '2026-09-01 00:00:00')"
+            )
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO request_logs (
+                    account_id, api_key_id, request_id, requested_at, model, source,
+                    input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                    latency_ms, status, cost_usd, cost_source, price_status, request_kind
+                )
+                VALUES
+                  ('acc_astra', 'key_astra', 'req_plain', '2026-09-08 00:00:00', 'gpt-6-astra',
+                   NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                  ('acc_astra', 'key_astra', 'req_dup', '2026-09-08 00:02:00', 'gpt-6-astra',
+                   NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                  ('acc_astra', 'key_astra', 'req_dup', '2026-09-08 00:02:00', 'gpt-6-astra',
+                   NULL, 200000, 1000000, 0, 0, 100, 'success', 52.0, 'static_table', NULL, 'normal'),
+                  ('acc_astra', 'key_astra', 'req_billed', '2026-09-08 00:03:00', 'openai/gpt-6-astra',
+                   'openrouter', 200000, 1000000, 0, 0, 100, 'success', NULL, 'upstream_billed', NULL, 'normal'),
+                  ('acc_astra', 'key_astra', 'req_pending', '2026-09-08 00:04:00', 'openai/gpt-6-astra',
+                   'openrouter', 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, 'pending', 'normal'),
+                  ('acc_astra', 'key_astra', 'req_preexisting', '2026-09-08 00:05:00', 'gpt-6-astra',
+                   NULL, 1000000, 1000000, 0, 0, 100, 'success', 60.0, NULL, NULL, 'normal'),
+                  ('acc_astra', 'key_astra', 'req_other_model', '2026-09-08 00:06:00', 'gpt-5.6-sol',
+                   NULL, 1000000, 1000000, 0, 0, 100, 'success', 35.0, NULL, NULL, 'normal'),
+                  ('acc_astra', 'key_astra', 'req_unknown', '2026-09-08 00:07:00', 'gpt-6-not-a-real-model',
+                   NULL, 1000, 1000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal')
+                """
+            )
+        )
+        # Pre-migration folded truth. The account reader collapses the
+        # duplicate group to its max-id row: 52 + 60 + 35 = 147. The API-key
+        # reader does not deduplicate, but only these same three rows carry a
+        # cost, so it also starts at 147.
+        await session.execute(
+            text(
+                "INSERT INTO account_usage_rollups (account_id, request_count, input_tokens,"
+                " output_tokens, cached_input_tokens, total_cost_usd)"
+                " VALUES ('acc_astra', 3, 0, 0, 0, 147.0)"
+            )
+        )
+        await session.execute(
+            text(
+                "INSERT INTO api_key_usage_rollups (api_key_id, request_count, input_tokens,"
+                " output_tokens, cached_input_tokens, total_cost_usd)"
+                " VALUES ('key_astra', 3, 0, 0, 0, 147.0)"
+            )
+        )
+        await session.commit()
+        await session.execute(
+            text(
+                "UPDATE account_usage_rollup_state SET folded_through = :wm,"
+                " hourly_folded_through = :wm, conversation_folded_through = :wm,"
+                " upgrade_repair_from = NULL"
+            ),
+            {"wm": watermark},
+        )
+        await session.commit()
+
+
+async def _deduped_account_total(session, *, watermark: str) -> float:
+    """Account total recomputed the way ``deduped_usage_aggregate_stmt`` reads it."""
+
+    return float(
+        (
+            await session.execute(
+                text(
+                    "SELECT COALESCE(SUM(cost_usd), 0.0) FROM request_logs WHERE id IN ("
+                    "  SELECT MAX(id) FROM request_logs"
+                    "  WHERE request_kind NOT IN ('warmup','limit_warmup')"
+                    "    AND deleted_at IS NULL AND account_id IS NOT NULL"
+                    "    AND requested_at <= :wm"
+                    "  GROUP BY account_id, request_id, requested_at)"
+                ),
+                {"wm": watermark},
+            )
+        ).scalar_one()
+    )
+
+
+@pytest.mark.asyncio
+async def test_gpt_6_astra_backfill_preserves_external_price_provenance(tmp_path):
+    """Rows whose writer owns the price keep their NULL cost and provenance.
+
+    A NULL ``cost_usd`` on an externally priced row is the resolver's answer,
+    not a gap. Overwriting it with a substring-matched static list price also
+    destroys the ``cost_source``/``price_status`` that says who owns the row.
+    """
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'astra-provenance.sqlite'}"
+    watermark = "2026-09-08 12:00:00"
+    await to_thread.run_sync(
+        lambda: run_upgrade(db_url, "20260903_000000_merge_fork_and_upstream_1_24_heads", bootstrap_legacy=True)
+    )
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _seed_astra_backfill_fixture(session_factory, watermark=watermark)
+        await to_thread.run_sync(
+            lambda: run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        )
+        async with session_factory() as session:
+            rows = (
+                await session.execute(text("SELECT request_id, cost_usd, cost_source, price_status FROM request_logs"))
+            ).all()
+    finally:
+        await engine.dispose()
+
+    by_id = {row[0]: row for row in rows}
+
+    # Externally owned rows: untouched, including their provenance.
+    assert by_id["req_billed"][1] is None
+    assert by_id["req_billed"][2] == "upstream_billed"
+    assert by_id["req_pending"][1] is None
+    assert by_id["req_pending"][3] == "pending"
+
+    # Pre-existing prices are never recomputed or re-stamped.
+    assert by_id["req_preexisting"][1] == pytest.approx(60.0)
+    assert by_id["req_preexisting"][2] is None
+    assert by_id["req_other_model"][1] == pytest.approx(35.0)
+    assert by_id["req_unknown"][1] is None
+
+    # Rows with no declared owner are still repriced.
+    assert by_id["req_plain"][1] == pytest.approx(52.0)
+    assert by_id["req_plain"][2] == "static_table"
+
+
+@pytest.mark.asyncio
+async def test_gpt_6_astra_backfill_does_not_double_count_duplicate_request_rows(tmp_path):
+    """The account rollup must equal what the deduplicating reader computes."""
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'astra-dupes.sqlite'}"
+    watermark = "2026-09-08 12:00:00"
+    await to_thread.run_sync(
+        lambda: run_upgrade(db_url, "20260903_000000_merge_fork_and_upstream_1_24_heads", bootstrap_legacy=True)
+    )
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _seed_astra_backfill_fixture(session_factory, watermark=watermark)
+        await to_thread.run_sync(
+            lambda: run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        )
+        async with session_factory() as session:
+            account_total = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM account_usage_rollups WHERE account_id = 'acc_astra'")
+                )
+            ).scalar_one()
+            key_total = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM api_key_usage_rollups WHERE api_key_id = 'key_astra'")
+                )
+            ).scalar_one()
+            reader_total = await _deduped_account_total(session, watermark=watermark)
+    finally:
+        await engine.dispose()
+
+    # The lower-id NULL row of `req_dup` is repriced but is NOT its group's
+    # max id, so the account rollup gains only `req_plain` ($52): 147 -> 199.
+    # Folding the repriced duplicate too would give 251.
+    assert account_total == pytest.approx(199.0)
+    assert account_total == pytest.approx(reader_total)
+
+    # The API-key aggregate does not deduplicate, so BOTH repriced rows count
+    # there: 147 + 52 + 52 = 251.
+    assert key_total == pytest.approx(251.0)
+
+
+@pytest.mark.asyncio
+async def test_gpt_6_astra_backfill_arms_hourly_rollup_repair(tmp_path):
+    """Hourly/demand buckets fold sum(cost_usd), so repriced hours need a refold."""
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'astra-hourly.sqlite'}"
+    watermark = "2026-09-08 12:00:00"
+    await to_thread.run_sync(
+        lambda: run_upgrade(db_url, "20260903_000000_merge_fork_and_upstream_1_24_heads", bootstrap_legacy=True)
+    )
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _seed_astra_backfill_fixture(session_factory, watermark=watermark)
+        await to_thread.run_sync(
+            lambda: run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        )
+        async with session_factory() as session:
+            state = (
+                await session.execute(
+                    text(
+                        "SELECT upgrade_repair_from, hourly_folded_through,"
+                        " conversation_folded_through, folded_through"
+                        " FROM account_usage_rollup_state"
+                    )
+                )
+            ).one()
+    finally:
+        await engine.dispose()
+
+    # Earliest repriced row is 2026-09-08 00:00:00, floored to its hour.
+    assert str(state[0]).startswith("2026-09-08 00:00:00")
+    # The migration arms the repair marker; it never moves a fold watermark.
+    assert str(state[1]).startswith(watermark)
+    assert str(state[2]).startswith(watermark)
+    assert str(state[3]).startswith(watermark)
+
+
+@pytest.mark.asyncio
+async def test_gpt_6_astra_backfill_is_idempotent_and_rollback_is_non_destructive(tmp_path):
+    """Re-running must not re-add deltas, and downgrade must not blank costs.
+
+    Nothing distinguishes a row this migration priced from one the request
+    path priced from the same static table, so a reversal keyed on the model
+    or on ``cost_source`` would destroy costs the migration never wrote.
+    """
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'astra-roundtrip.sqlite'}"
+    watermark = "2026-09-08 12:00:00"
+    parent_revision = "20260903_000000_merge_fork_and_upstream_1_24_heads"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _totals():
+        async with session_factory() as session:
+            account_total = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM account_usage_rollups WHERE account_id = 'acc_astra'")
+                )
+            ).scalar_one()
+            key_total = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM api_key_usage_rollups WHERE api_key_id = 'key_astra'")
+                )
+            ).scalar_one()
+            costs = dict((await session.execute(text("SELECT request_id, cost_usd FROM request_logs"))).all())
+            return account_total, key_total, costs
+
+    try:
+        await _seed_astra_backfill_fixture(session_factory, watermark=watermark)
+        await to_thread.run_sync(
+            lambda: run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        )
+        after_first = await _totals()
+
+        await to_thread.run_sync(
+            lambda: run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        )
+        after_second = await _totals()
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        after_downgrade = await _totals()
+
+        # Round-trip: upgrading again after a downgrade still succeeds.
+        await to_thread.run_sync(
+            lambda: run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        )
+        after_reupgrade = await _totals()
+    finally:
+        await engine.dispose()
+
+    # Re-running adds no second delta and reprices nothing (rows are no
+    # longer NULL), so every total is unchanged.
+    assert after_second == after_first
+
+    # Rollback preserves both the recomputed costs and the pre-existing ones.
+    assert after_downgrade == after_first
+    assert after_downgrade[2]["req_preexisting"] == pytest.approx(60.0)
+    assert after_downgrade[2]["req_other_model"] == pytest.approx(35.0)
+    assert after_downgrade[2]["req_billed"] is None
+
+    assert after_reupgrade == after_first
+
+
 @pytest.mark.asyncio
 async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_models(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'sidecar-free-cost-backfill.sqlite'}"
@@ -1738,6 +2029,8 @@ async def test_orcarouter_migration_honours_an_explicitly_empty_prefix_env_var(t
             ("OmniRoute", [SidecarPrefix(prefix="orcarouter/", strip=False)]),
         )
     )
+
+
 @pytest.mark.asyncio
 async def test_usage_history_bulk_covering_indexes_migration_upgrade_and_downgrade(tmp_path):
     from alembic import command

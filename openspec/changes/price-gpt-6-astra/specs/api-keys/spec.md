@@ -55,6 +55,24 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 - **WHEN** the migration runs
 - **THEN** that row's `cost_usd` remains NULL
 
+#### Scenario: Backfill leaves externally owned prices alone
+
+- **GIVEN** a GPT-6 Astra request log whose `price_status` is set, or whose `cost_source` is a value other than `static_table`
+- **WHEN** the migration runs
+- **THEN** that row's `cost_usd`, `cost_source`, and `price_status` are unchanged, including when its `cost_usd` is NULL
+
+#### Scenario: Backfill leaves already-priced rows alone
+
+- **GIVEN** a GPT-6 Astra request log that already has a non-NULL `cost_usd`
+- **WHEN** the migration runs
+- **THEN** that row's `cost_usd` and `cost_source` are unchanged
+
+#### Scenario: Rollback does not blank costs the migration never wrote
+
+- **GIVEN** the migration has run and both migration-written and request-path-written GPT-6 Astra costs exist
+- **WHEN** the migration is downgraded
+- **THEN** no `cost_usd` or `cost_source` value is cleared and no usage-rollup total changes
+
 ### Requirement: Folded usage rollups receive GPT-6 Astra cost deltas
 
 The backfill migration MUST add newly computed GPT-6 Astra `cost_usd` onto existing usage-rollup rows for request logs already behind `folded_through`, and MUST NOT change `account_usage_rollup_state.folded_through`.
@@ -65,3 +83,23 @@ The backfill migration MUST add newly computed GPT-6 Astra `cost_usd` onto exist
 - **WHEN** the migration runs
 - **THEN** existing `account_usage_rollups` and `api_key_usage_rollups` rows gain the newly computed Astra `cost_usd` for folded request logs
 - **AND** `account_usage_rollup_state.folded_through` is left unchanged
+
+#### Scenario: Duplicate request rows are not counted twice in the account rollup
+
+- **GIVEN** two folded request logs share one `(account_id, request_id, requested_at)` group, the higher-id row already priced and the lower-id row NULL
+- **WHEN** the migration runs and reprices the lower-id row
+- **THEN** `account_usage_rollups` gains no cost for that group, because the deduplicating account reader folds only the group's `max(id)` row
+- **AND** `api_key_usage_rollups`, which does not deduplicate, gains the repriced row's cost
+
+#### Scenario: Hourly cost buckets are repaired for the repriced range
+
+- **GIVEN** rows repriced by the migration fall below `account_usage_rollup_state.hourly_folded_through`
+- **WHEN** the migration runs
+- **THEN** `account_usage_rollup_state.upgrade_repair_from` is set no later than the earliest repriced hour, so the next fold pass refolds those hourly and demand cost buckets from raw
+- **AND** `hourly_folded_through` and `conversation_folded_through` are left unchanged
+
+#### Scenario: Re-running the migration does not add a second delta
+
+- **GIVEN** the migration has already run
+- **WHEN** it runs again
+- **THEN** no row is repriced and no usage-rollup total changes
