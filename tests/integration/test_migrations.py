@@ -1136,6 +1136,125 @@ async def test_claude_opus_5_sonnet_5_cost_backfill_migration_populates_cost(tmp
 
 
 @pytest.mark.asyncio
+async def test_gpt_6_astra_cost_backfill_migration_populates_cost(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gpt-6-astra-cost-backfill.sqlite'}"
+
+    await to_thread.run_sync(
+        lambda: run_upgrade(
+            db_url,
+            "20260903_000000_merge_fork_and_upstream_1_24_heads",
+            bootstrap_legacy=True,
+        )
+    )
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO api_keys (
+                        id, name, key_hash, key_prefix, is_active, created_at
+                    )
+                    VALUES (
+                        'key_astra', 'astra', 'hash_astra', 'sk-astra', 1,
+                        '2026-09-01 00:00:00'
+                    )
+                    """
+                )
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO api_key_usage_rollups (
+                        api_key_id, request_count, input_tokens, output_tokens,
+                        cached_input_tokens, total_cost_usd
+                    )
+                    VALUES ('key_astra', 2, 2000000, 2000000, 0, 60.0)
+                    """
+                )
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, api_key_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, request_kind
+                    )
+                    VALUES
+                      (NULL, 'key_astra', 'req_astra', '2026-09-08 00:00:00', 'gpt-6-astra',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'key_astra', 'req_astra_prefixed', '2026-09-08 00:01:00',
+                       'openai/gpt-6-astra', NULL, 200000, 1000000, 0, 0, 100,
+                       'success', NULL, 'normal'),
+                      (NULL, 'key_astra', 'req_astra_cached', '2026-09-08 18:00:00',
+                       'gpt-6-astra', NULL, 200000, 1000000, 100000, 0, 100,
+                       'success', NULL, 'normal'),
+                      (NULL, 'key_astra', 'req_astra_unknown', '2026-09-08 00:03:00',
+                       'gpt-6-not-a-real-model', NULL, 1000, 1000, 0, 0, 100,
+                       'success', NULL, 'normal'),
+                      (NULL, 'key_astra', 'req_sol_existing', '2026-09-08 00:04:00',
+                       'gpt-5.6-sol', NULL, 1000000, 1000000, 0, 0, 100,
+                       'success', 35.0, 'normal'),
+                      (NULL, 'key_astra', 'req_astra_priced', '2026-09-08 00:05:00',
+                       'gpt-6-astra', NULL, 1000000, 1000000, 0, 0, 100,
+                       'success', 60.0, 'normal')
+                    """
+                )
+            )
+            await session.commit()
+            await session.execute(text("UPDATE account_usage_rollup_state SET folded_through = '2026-09-08 12:00:00'"))
+            await session.commit()
+
+        await to_thread.run_sync(
+            lambda: run_upgrade(
+                db_url,
+                "20260909_000000_backfill_gpt_6_astra_costs",
+                bootstrap_legacy=False,
+            )
+        )
+
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    text("SELECT request_id, cost_usd, cost_source FROM request_logs ORDER BY request_id")
+                )
+            ).all()
+            watermark = (
+                await session.execute(text("SELECT folded_through FROM account_usage_rollup_state"))
+            ).scalar_one()
+            key_rollup_cost = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM api_key_usage_rollups WHERE api_key_id = 'key_astra'")
+                )
+            ).scalar_one()
+            rollup_row_count = (await session.execute(text("SELECT COUNT(*) FROM api_key_usage_rollups"))).scalar_one()
+    finally:
+        await engine.dispose()
+
+    costs = {row[0]: row[1] for row in rows}
+    sources = {row[0]: row[2] for row in rows}
+    # Astra short-context: $10/M input + $50/M output
+    assert costs["req_astra"] == pytest.approx(52.0)
+    assert sources["req_astra"] == "static_table"
+    assert costs["req_astra_prefixed"] == pytest.approx(52.0)
+    assert sources["req_astra_prefixed"] == "static_table"
+    # 100k cache hits: $1 uncached + $0.10 cached + $50 output
+    assert costs["req_astra_cached"] == pytest.approx(51.1)
+    assert costs["req_astra_unknown"] is None
+    assert sources["req_astra_unknown"] is None
+    assert costs["req_sol_existing"] == pytest.approx(35.0)
+    assert costs["req_astra_priced"] == pytest.approx(60.0)
+    assert str(watermark).startswith("2026-09-08 12:00:00")
+    # Folded NULL astra ($52) + prefixed ($52) added to already-priced $60.
+    # Live-tail cached astra and already-priced astra must not be added.
+    assert key_rollup_cost == pytest.approx(164.0)
+    assert rollup_row_count == 1
+
+
+@pytest.mark.asyncio
 async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_models(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'sidecar-free-cost-backfill.sqlite'}"
 

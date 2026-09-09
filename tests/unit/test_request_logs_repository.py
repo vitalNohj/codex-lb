@@ -106,6 +106,31 @@ async def test_add_log_computes_cost_for_cc_prefixed_claude_opus_5(db_setup) -> 
 
 
 @pytest.mark.asyncio
+async def test_add_log_computes_cost_for_gpt_6_astra(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id="req_gpt_6_astra",
+            model="gpt-6-astra",
+            input_tokens=200_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=100_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        # Astra short-context: $10/M uncached input + $1/M cache-hit + $50/M output
+        assert persisted.cost_usd == pytest.approx(51.1)
+        assert persisted.cost_source == CostSource.STATIC_TABLE.value
+
+
+@pytest.mark.asyncio
 async def test_add_log_persists_request_and_connection_kinds(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:

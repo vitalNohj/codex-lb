@@ -82,6 +82,21 @@ def test_get_pricing_for_model_gpt_5_6_aliases(requested_model: str, canonical_m
     assert result == (canonical_model, DEFAULT_PRICING_MODELS[canonical_model])
 
 
+@pytest.mark.parametrize(
+    ("requested_model", "canonical_model"),
+    [
+        ("gpt-6-astra", "gpt-6-astra"),
+        ("gpt-6-astra-2026-09-03", "gpt-6-astra"),
+        ("codex/gpt-6-astra", "gpt-6-astra"),
+        ("openai/gpt-6-astra", "gpt-6-astra"),
+    ],
+)
+def test_get_pricing_for_model_gpt_6_astra_aliases(requested_model: str, canonical_model: str) -> None:
+    result = get_pricing_for_model(requested_model, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+
+    assert result == (canonical_model, DEFAULT_PRICING_MODELS[canonical_model])
+
+
 def test_get_pricing_for_model_gpt_5_4_mini_alias():
     result = get_pricing_for_model("gpt-5.4-mini-2026-03-17", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
@@ -371,6 +386,10 @@ def test_calculate_cost_from_usage_flex_service_tier():
         ("gpt-5.6-luna", "flex", 0.611),
         ("gpt-5.6-luna", "priority", 2.444),
         ("gpt-5.6-luna", "fast", 2.444),
+        ("gpt-6-astra", None, 51.1),
+        ("gpt-6-astra", "flex", 25.55),
+        ("gpt-6-astra", "priority", 102.2),
+        ("gpt-6-astra", "fast", 102.2),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_service_tiers(
@@ -398,6 +417,8 @@ def test_calculate_cost_from_usage_gpt_5_6_service_tiers(
         ("gpt-5.6-terra", "flex", 1.41),
         ("gpt-5.6-luna", None, 0.282),
         ("gpt-5.6-luna", "flex", 0.141),
+        ("gpt-6-astra", None, 12.6),
+        ("gpt-6-astra", "flex", 6.3),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_long_context(
@@ -422,6 +443,7 @@ def test_calculate_cost_from_usage_gpt_5_6_long_context(
         ("gpt-5.6-sol", 5.0, 10.0),
         ("gpt-5.6-terra", 2.0, 4.0),
         ("gpt-5.6-luna", 0.2, 0.4),
+        ("gpt-6-astra", 10.0, 20.0),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_uses_272k_long_context_boundary(
