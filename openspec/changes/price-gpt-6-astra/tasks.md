@@ -10,6 +10,8 @@
 - [x] 2.3 Add folded GPT-6 Astra cost deltas onto existing usage-rollup rows without changing `folded_through`
 - [x] 2.4 Credit the account rollup only for repriced rows that are their duplicate group's true `max(id)`
 - [x] 2.5 Arm `upgrade_repair_from` at the earliest repriced hour so hourly/demand cost buckets refold
+- [x] 2.7 Make a running replica consume that marker: `run_hourly_fold_pass` re-checks it every pass instead of only at process start
+- [x] 2.8 Keep one state contract in the repair owner: marker-driven passes are `marker_only` and never write the process-start latch, so neither a racing marker clear nor a chunk-bounded incomplete repair can re-arm the trailing-window refold
 - [x] 2.6 Make `downgrade()` a no-op: the repriced set is not recorded, so any reversal would blank costs the migration never wrote
 
 ## 3. Regression coverage
@@ -21,6 +23,8 @@
 - [x] 3.5 Integration test: duplicate request rows do not double-count in the account rollup
 - [x] 3.6 Integration test: the hourly repair marker is armed without moving any fold watermark
 - [x] 3.7 Integration test: repeat upgrade is idempotent and rollback is non-destructive
+- [x] 3.8 Integration test: an armed marker is consumed by an already-latched process, and a marker cleared between the unlocked probe and the locked read refolds nothing
+- [x] 3.9 Integration test: an incomplete marker repair leaves the process-start latch set and still converges from the persisted marker across passes
 
 ## 4. Verification
 

@@ -25,6 +25,8 @@ from app.modules.accounts.usage_time_rollup import (
     DIMENSION_SENTINEL,
     HOURLY_BUCKET_SECONDS,
     QUARTER_SLOT_SECONDS,
+    TS_FOLD_SLICE,
+    TS_MAX_SLICES_PER_PASS,
     HourlyErrorRollupRow,
     HourlyUsageRollupRow,
     QuarterDemandRollupRow,
@@ -1838,3 +1840,164 @@ async def test_marker_cleared_between_unlocked_and_locked_read_does_not_refold_t
 
     after, _errors, _demand, _watermark = await _dump_all_rollups()
     assert {r.bucket_epoch: r.request_count for r in after} == baseline
+
+
+@pytest.mark.asyncio
+async def test_incomplete_marker_repair_keeps_the_process_start_latch_set(db_setup):
+    """Marker-driven repair must never reset the once-per-process latch.
+
+    `_run_upgrade_repair` returns False whenever the suspect range needs more
+    than `TS_MAX_SLICES_PER_PASS` chunks of `TS_FOLD_SLICE` (here: a marker
+    range wider than 40 days). If a marker-driven pass assigned that False
+    back to `_upgrade_repair_done`, the process-start latch would clear and
+    the NEXT pass would take the unqualified `_run_upgrade_repair()` branch.
+    Should another leader have cleared the marker by then, the locked read
+    sees NULL and falls back to `watermark - UPGRADE_REPAIR_WINDOW`, deleting
+    and refolding a full 48h of the hourly, error and demand rollups - the
+    exact trailing-window refold the marker-only guard exists to prevent,
+    reached through the latch instead of through the race.
+
+    The invariant: only process-start repair owns the latch. Incomplete
+    marker-driven work resumes from the persisted marker, never by re-arming
+    the trailing-window defense.
+
+    Both phases drive the real repair path against the real database; nothing
+    stubs the chunk loop or its return value.
+    """
+
+    del db_setup
+    now = utcnow()
+    # Wider than TS_MAX_SLICES_PER_PASS x TS_FOLD_SLICE (20 x 48h = 960h), so
+    # one pass provably cannot finish the range and returns False.
+    oldest = floor_to_hour(now - timedelta(hours=1100))
+    recent = floor_to_hour(now - timedelta(hours=30))
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_latch", "latch@example.com"))
+        logs = RequestLogsRepository(session)
+        await _add_log(logs, account_id="acc_latch", request_id="r_latch_old", requested_at=oldest)
+        await _add_log(logs, account_id="acc_latch", request_id="r_latch_new", requested_at=recent)
+
+    # Fold everything first, with the latch already set so no repair runs.
+    time_rollup_module._upgrade_repair_done = True
+    for _ in range(10):
+        if await run_hourly_fold_pass(now=now) == 0:
+            break
+    _hourly, _errors, _demand, watermark = await _dump_all_rollups()
+    assert watermark == _hourly_target(now)
+    assert watermark - oldest > TS_MAX_SLICES_PER_PASS * TS_FOLD_SLICE
+
+    baseline, _errors, _demand, _watermark = await _dump_all_rollups()
+    baseline_counts = {r.bucket_epoch: r.request_count for r in baseline}
+
+    # A migration arms the marker across the whole range against this
+    # already-latched process.
+    async with SessionLocal() as session:
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=oldest))
+        await session.commit()
+
+    assert time_rollup_module._upgrade_repair_done is True
+    await run_hourly_fold_pass(now=now)
+
+    # Phase 1: the pass could not finish the range, so it persisted partial
+    # progress in the marker - and left the process-start latch alone.
+    async with SessionLocal() as session:
+        marker = (
+            await session.execute(
+                select(AccountUsageRollupState.upgrade_repair_from).where(AccountUsageRollupState.id == 1)
+            )
+        ).scalar_one()
+    assert marker is not None, "incomplete repair must persist its resume point"
+    assert marker > oldest, "the repair must have advanced through chunks"
+    assert marker < watermark, "the range must genuinely be unfinished"
+    assert time_rollup_module._upgrade_repair_done is True, (
+        "marker-driven repair must not reset the once-per-process latch"
+    )
+
+    # Phase 2: another leader finishes the repair and NULLs the marker before
+    # the next pass. With the latch intact this pass must do nothing at all.
+    async with SessionLocal() as session:
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=None))
+        await session.commit()
+
+    deletes = 0
+    original_execute = AsyncSession.execute
+
+    async def _counting_execute(self, statement, *args, **kwargs):
+        nonlocal deletes
+        if isinstance(statement, Delete):
+            table = getattr(statement, "table", None)
+            if getattr(table, "name", None) in (
+                "request_usage_hourly_rollups",
+                "request_usage_hourly_error_rollups",
+                "request_demand_quarter_rollups",
+            ):
+                deletes += 1
+        return await original_execute(self, statement, *args, **kwargs)
+
+    AsyncSession.execute = _counting_execute
+    try:
+        await run_hourly_fold_pass(now=now)
+    finally:
+        AsyncSession.execute = original_execute
+        time_rollup_module._upgrade_repair_done = True
+
+    # A cleared latch would take the unqualified branch and refold the
+    # trailing 48h window across all three tables.
+    assert deletes == 0
+
+    after, _errors, _demand, after_watermark = await _dump_all_rollups()
+    assert {r.bucket_epoch: r.request_count for r in after} == baseline_counts
+    assert after_watermark == watermark
+
+
+@pytest.mark.asyncio
+async def test_incomplete_marker_repair_resumes_from_the_persisted_marker(db_setup):
+    """Keeping the latch set must not strand an unfinished marker repair.
+
+    Companion to the latch-ownership test: with the marker still non-NULL the
+    unlocked probe re-triggers marker-only repair on every later pass, so a
+    range too wide for one pass converges across passes and clears itself -
+    resumption rides the persisted marker, not the latch.
+    """
+
+    del db_setup
+    now = utcnow()
+    oldest = floor_to_hour(now - timedelta(hours=1100))
+    recent = floor_to_hour(now - timedelta(hours=30))
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_resume", "resume@example.com"))
+        logs = RequestLogsRepository(session)
+        await _add_log(logs, account_id="acc_resume", request_id="r_resume_old", requested_at=oldest)
+        await _add_log(logs, account_id="acc_resume", request_id="r_resume_new", requested_at=recent)
+
+    time_rollup_module._upgrade_repair_done = True
+    for _ in range(10):
+        if await run_hourly_fold_pass(now=now) == 0:
+            break
+
+    async with SessionLocal() as session:
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=oldest))
+        await session.commit()
+
+    markers: list[datetime | None] = []
+    for _ in range(5):
+        await run_hourly_fold_pass(now=now)
+        async with SessionLocal() as session:
+            markers.append(
+                (
+                    await session.execute(
+                        select(AccountUsageRollupState.upgrade_repair_from).where(AccountUsageRollupState.id == 1)
+                    )
+                ).scalar_one()
+            )
+        assert time_rollup_module._upgrade_repair_done is True
+        if markers[-1] is None:
+            break
+
+    assert markers[-1] is None, f"marker repair never converged: {markers}"
+    assert len(markers) > 1, "this range must need more than one pass to be a resumption test"
+    # Strictly monotonic progress while unfinished.
+    advanced = [m for m in markers if m is not None]
+    assert advanced == sorted(advanced) and len(set(advanced)) == len(advanced)

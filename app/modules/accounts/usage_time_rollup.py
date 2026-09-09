@@ -126,6 +126,14 @@ TS_MAX_SLICES_PER_PASS = 20
 # statistics it cannot recompute; clamped-out buckets keep the disclosed
 # legacy fold. Neither path is a historical backfill.
 UPGRADE_REPAIR_WINDOW = timedelta(hours=48)
+
+# Process-start latch for the trailing-window defense above. Written by
+# process-start repair ONLY (`run_hourly_fold_pass`'s first branch). Later,
+# marker-driven repair passes must leave it alone: their progress and
+# resumption live in the persisted `upgrade_repair_from` marker, which the
+# locked chunk loop advances and clears. Letting a marker-driven pass write
+# this flag would let an incomplete marker repair (a range wider than
+# TS_MAX_SLICES_PER_PASS chunks) clear it and re-arm the trailing window.
 _upgrade_repair_done = False
 
 _EPOCH = datetime(1970, 1, 1)
@@ -664,17 +672,30 @@ async def run_hourly_fold_pass(*, now: datetime | None = None) -> int:
     full `UPGRADE_REPAIR_WINDOW` of three rollup tables on every subsequent
     pass. The trailing-window flip-flop defense stays exactly once per
     process, on the first pass, where it is bounded.
+
+    ONE state contract governs both paths: `_upgrade_repair_done` is the
+    process-start latch and ONLY process-start repair may write it. Progress
+    of marker-driven repair lives entirely in the persisted marker, which the
+    locked chunk loop advances and clears. Assigning a marker-only result back
+    to the latch would reopen the trailing-window branch by a second route —
+    a marker range wider than `TS_MAX_SLICES_PER_PASS` chunks returns False,
+    which would clear the latch and send the NEXT pass down the unqualified
+    branch, where a concurrently cleared marker again means a full
+    `UPGRADE_REPAIR_WINDOW` delete+refold.
     """
     global _upgrade_repair_done
     if not _upgrade_repair_done:
         # First pass of this process: marker range plus the trailing-window
-        # flip-flop defense.
+        # flip-flop defense. This is the only writer of the latch.
         _upgrade_repair_done = await _run_upgrade_repair()
     elif await _has_upgrade_repair_marker():
         # Later pass: a marker was armed after this process latched. Repair
         # only that range; a marker cleared under the lock means the work is
-        # already done and this pass must do nothing.
-        _upgrade_repair_done = await _run_upgrade_repair(marker_only=True)
+        # already done and this pass must do nothing. The result is
+        # deliberately discarded — an incomplete marker repair resumes from
+        # the persisted marker on the next pass (the probe above re-triggers
+        # it), and must never re-arm the once-per-process trailing window.
+        await _run_upgrade_repair(marker_only=True)
     target = floor_to_hour((now or utcnow()) - FOLD_LAG)
     committed = 0
     while committed < TS_MAX_SLICES_PER_PASS:
@@ -723,6 +744,13 @@ async def _run_upgrade_repair(*, marker_only: bool = False) -> bool:
 
     `marker_only` restricts the work to a persisted marker range, for passes
     triggered by the unlocked marker probe rather than by process start.
+
+    The return value answers "is the suspect range fully repaired", which is
+    only the same question as "may the process-start latch be set" for a
+    process-start call. Under `marker_only` the caller MUST discard it: see
+    the state contract in `run_hourly_fold_pass`. Resumption of an incomplete
+    marker repair rides the persisted marker, which
+    `_repair_next_upgrade_chunk` advances under the state row lock.
     """
     for _ in range(TS_MAX_SLICES_PER_PASS):
         async with get_background_session() as session:

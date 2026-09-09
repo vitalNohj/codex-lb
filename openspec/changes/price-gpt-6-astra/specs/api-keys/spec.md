@@ -103,3 +103,24 @@ The backfill migration MUST add newly computed GPT-6 Astra `cost_usd` onto exist
 - **GIVEN** the migration has already run
 - **WHEN** it runs again
 - **THEN** no row is repriced and no usage-rollup total changes
+
+#### Scenario: An already-running replica consumes the armed repair marker
+
+- **GIVEN** a fold process that has already run its process-start repair
+- **AND** the migration then arms `upgrade_repair_from` at the earliest repriced hour
+- **WHEN** the next hourly fold pass runs
+- **THEN** the repriced range is refolded and the repaired hourly and demand cost buckets include the backfilled cost, without restarting the process
+
+#### Scenario: A marker cleared by another leader refolds nothing
+
+- **GIVEN** a fold pass whose unlocked marker probe observed a marker
+- **AND** another leader clears that marker before the pass re-reads it under the state row lock
+- **WHEN** the pass proceeds
+- **THEN** no hourly, error, or demand rollup bucket is deleted or refolded
+
+#### Scenario: An incomplete marker repair resumes without re-arming the trailing window
+
+- **GIVEN** an armed marker range needing more chunks than one pass may run
+- **WHEN** successive fold passes run
+- **THEN** each pass advances the persisted marker until the range is repaired and the marker is cleared
+- **AND** the process-start repair latch stays set throughout, so no pass falls back to refolding the trailing repair window

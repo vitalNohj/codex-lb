@@ -25,6 +25,7 @@
 - After rewriting costs, add the newly computed `cost_usd` onto existing `account_usage_rollups` / `api_key_usage_rollups` rows for folded logs this migration actually repriced (`requested_at <= folded_through`). Leave `folded_through` unchanged.
 - Credit the account rollup only for a repriced row that is the true `max(id)` of its `(account_id, request_id, requested_at)` group, resolved over all rows rather than the repriced subset, because `deduped_usage_aggregate_stmt` folds exactly that row. The per-API-key aggregate does not deduplicate, so every repriced row counts there.
 - Arm the existing `account_usage_rollup_state.upgrade_repair_from` marker at the earliest repriced hour. The hourly and demand folds sum `cost_usd`, so buckets below `hourly_folded_through` are stale until the next fold pass refolds that range from raw. The conversation satellite stores only `request_count` and needs no repair.
+- Consuming that marker requires `run_hourly_fold_pass` to re-check it on every pass, not only on the first pass of a process: the migration arms it against replicas that are already running and have long since latched. One state contract governs the repair owner - the process-start latch (`_upgrade_repair_done`) belongs to process-start repair alone and gates the bounded trailing-window flip-flop defense, while marker-driven progress and resumption live entirely in the persisted marker under the state row lock. A marker-driven pass is therefore `marker_only` (never falls back to the trailing window when a racing leader clears the marker between the unlocked probe and the locked read) and never writes the latch (so a marker range wider than `TS_MAX_SLICES_PER_PASS` chunks cannot reset it and re-arm that window on the following pass).
 - Parent the migration on `20260903_000000_merge_fork_and_upstream_1_24_heads` (current single head).
 
 ## Risks / Trade-offs
@@ -37,5 +38,5 @@
 
 1. Deploy code with the new prices (new requests get cost immediately after restart).
 2. Run Alembic upgrade so historical NULL rows fill in.
-3. The next hourly fold pass consumes the armed `upgrade_repair_from` marker and refolds the repriced range, so hourly and demand dollar reports pick up the backfilled cost.
+3. The next hourly fold pass consumes the armed `upgrade_repair_from` marker and refolds the repriced range, so hourly and demand dollar reports pick up the backfilled cost. Running replicas consume it without a restart, and a range too wide for one pass resumes from the persisted marker across passes.
 4. Rollback: downgrade is a no-op for data; reverting the pricing row stops new requests from resolving Astra prices. Already-computed costs are retained deliberately.
