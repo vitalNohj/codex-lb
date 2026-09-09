@@ -2,24 +2,18 @@
 
 ## ADDED Requirements
 
-### Requirement: Claude OAuth credentials that cannot refresh are reauth_required
+### Requirement: Claude OAuth credentials with auth-failure evidence are reauth_required
 
-Codex-lb MUST set each Claude sidecar auth row's `status` to `reauth_required` when CLIProxyAPI reports an auth-death status message (`invalid_grant`, `unauthorized`, `authentication_error`, `re-authenticate`, `refresh token expired`, or an expired OAuth/access-token message), when it reports `unavailable` together with `status=unauthorized`, or when the credential's OAuth access-token expiry lapsed longer ago than CLIProxyAPI's proactive Claude refresh lead of 4 hours.
+Codex-lb MUST set each Claude sidecar auth row's `status` to `reauth_required` when CLIProxyAPI reports explicit auth-failure evidence: a `status_message` equal to `unauthorized`, or containing `invalid_grant`, `authentication_error`, `re-authenticate`, `refresh token expired`, or an expired OAuth/access-token message; or `unavailable` together with `status=unauthorized`. The `unauthorized` message MUST be matched exactly after trimming and case folding, never as a substring, because CLIProxyAPI's generic failure branch can leave raw upstream error text that merely contains the word.
 
-Codex-lb MUST NOT badge a credential whose access-token expiry lapsed within that refresh lead. CLIProxyAPI renews Claude access tokens from a background refresh loop that starts 4 hours before `expired`, so a recently lapsed persisted timestamp describes a pending or not-yet-flushed refresh, a just-restarted sidecar, or clock skew - not a credential that needs an operator login.
+Codex-lb MUST NOT derive `reauth_required` from the OAuth access-token expiry at any lapse duration. CLIProxyAPI renews Claude access tokens from a background refresh loop and exposes no field distinguishing a dead refresh token from a pending refresh, a not-yet-flushed write, a restarted sidecar or clock skew, so expiry age is suggestive rather than evidence.
 
 Codex-lb MUST NOT badge a quota-exceeded or operator-paused credential as `reauth_required`, regardless of its expiry.
 
-#### Scenario: Long-lapsed access-token expiry shows Re-auth required
+#### Scenario: Lapsed access-token expiry alone does not show Re-auth required
 
-- **GIVEN** a Claude auth whose `expired` timestamp lapsed more than 4 hours ago
+- **GIVEN** a Claude auth whose `expired` timestamp lapsed, by minutes or by months
 - **AND** CLIProxyAPI still lists that file as `status=active` and `unavailable=false`
-- **WHEN** the accounts list or Claude sidecar quota snapshot is built
-- **THEN** that sidecar auth row's `status` is `reauth_required`
-
-#### Scenario: Recently lapsed access token is a pending refresh, not re-auth
-
-- **GIVEN** a Claude auth whose `expired` timestamp lapsed within the last 4 hours
 - **AND** no auth-death status message is present
 - **WHEN** the accounts list or Claude sidecar quota snapshot is built
 - **THEN** that sidecar auth row's `status` is unchanged and is not `reauth_required`
@@ -30,6 +24,13 @@ Codex-lb MUST NOT badge a quota-exceeded or operator-paused credential as `reaut
 - **AND** no auth-death status message is present
 - **WHEN** the accounts list or Claude sidecar quota snapshot is built
 - **THEN** that sidecar auth row's `status` is not `reauth_required`
+
+#### Scenario: A transient message containing "unauthorized" is not re-auth
+
+- **GIVEN** a Claude auth whose `status_message` is a transient upstream error that contains the word `unauthorized`
+- **AND** that message is not exactly `unauthorized`
+- **WHEN** the accounts list or Claude sidecar quota snapshot is built
+- **THEN** that sidecar auth row's `status` is unchanged and is not `reauth_required`
 
 #### Scenario: Failed refresh shows Re-auth required before the token lapses
 

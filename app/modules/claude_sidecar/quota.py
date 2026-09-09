@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -155,40 +155,46 @@ def dashboard_auth_status(auth: SidecarAuthQuota, *, now: datetime | None = None
     return auth.status
 
 
-# CLIProxyAPI refreshes Claude OAuth access tokens from a background loop, with a
-# 4h lead before `expired` (sdk/auth/claude.go RefreshLead, driven by
-# sdk/cliproxy/auth/auto_refresh_loop.go). A lapsed `expired` therefore does not
-# mean the credential is dead: it also covers a refresh that has succeeded but
-# not yet been persisted, a sidecar that just restarted, and clock skew between
-# codex-lb and the auth file. Badging on expiry alone turns those routine states
-# into a false "Re-auth required".
-#
-# The credential is only unusable when the refresh loop has stopped producing a
-# working token. Upstream expresses that as a lapsed expiry that is old enough to
-# be outside the whole proactive-refresh window, not merely a moment past due.
-_REFRESH_LEAD = timedelta(hours=4)
-
-# Upstream marks a hard auth death with `unavailable` plus a `status_message` of
-# `invalid_grant` or `unauthorized`, and sets `status` to `error`. On 7.2.135 it
-# never sets `status` itself to `unauthorized` (sdk/cliproxy/auth/status.go has no
-# such status), so the message is the reliable signal; the `unavailable` +
-# `status=unauthorized` shape is still honoured for other emitters.
-_AUTH_DEATH_MESSAGES = (
+# Substring-matched auth-death signals. These phrases are specific enough that a
+# containing message still describes a dead credential.
+_AUTH_DEATH_SUBSTRINGS = (
     "authentication_error",
     "re-authenticate",
     "invalid_grant",
     "refresh token expired",
-    "unauthorized",
 )
+
+# Exact-matched auth-death signals. CLIProxyAPI writes `status_message` verbatim
+# as "unauthorized" when a refresh returns 401 (conductor_refresh.go). Its generic
+# failure branch instead leaves the raw upstream error text, which can merely
+# contain the word, so this must not be matched as a substring: doing so would
+# badge transient failures and reopen the hole closed in "harden Claude reauth
+# status mapping".
+_AUTH_DEATH_EXACT = ("unauthorized",)
 
 
 def _has_auth_death_message(message: str) -> bool:
-    if any(needle in message for needle in _AUTH_DEATH_MESSAGES):
+    if message in _AUTH_DEATH_EXACT:
+        return True
+    if any(needle in message for needle in _AUTH_DEATH_SUBSTRINGS):
         return True
     return ("oauth" in message or "access token" in message) and "expired" in message
 
 
 def _looks_like_reauth(auth: SidecarAuthQuota, *, now: datetime | None = None) -> bool:
+    """Report whether this credential needs an operator re-login.
+
+    Only explicit upstream auth-failure evidence counts. A lapsed access-token
+    `expired` is deliberately NOT a signal: CLIProxyAPI renews tokens from a
+    background loop and exposes no field distinguishing a dead refresh token from
+    a pending refresh, an unflushed write, a stopped sidecar or clock skew. No
+    lapse duration turns that ambiguity into evidence, so expiry age is not
+    consulted at all.
+
+    Known limitation: a refresh-only `invalid_grant` failure leaves the listing
+    `active`/available with no status message until real traffic is attempted, so
+    that credential reports as healthy here.
+    """
     # A quota/rate-limit cooldown also sets `unavailable`, so the message decides
     # whether an unavailable auth is dead or merely cooling down.
     if auth.quota_exceeded:
@@ -197,21 +203,10 @@ def _looks_like_reauth(auth: SidecarAuthQuota, *, now: datetime | None = None) -
     if auth.disabled:
         return False
 
-    message = (auth.status_message or "").lower()
+    message = (auth.status_message or "").strip().lower()
     if _has_auth_death_message(message):
         return True
-    if auth.unavailable and (auth.status or "").lower() == "unauthorized":
-        return True
-    if auth.expired is None:
-        return False
-
-    clock = now or datetime.now(timezone.utc)
-    expired = auth.expired
-    if expired.tzinfo is None:
-        expired = expired.replace(tzinfo=timezone.utc)
-    if clock.tzinfo is None:
-        clock = clock.replace(tzinfo=timezone.utc)
-    return expired <= clock - _REFRESH_LEAD
+    return auth.unavailable and (auth.status or "").strip().lower() == "unauthorized"
 
 
 def oauth_expired_from_auth_file(path: str, *, auth_dir: Path | None = None) -> datetime | None:

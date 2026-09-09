@@ -330,13 +330,13 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
 
 
 @pytest.mark.asyncio
-async def test_quota_endpoint_status_reflects_refresh_lead_and_protected_states(async_client):
+async def test_quota_endpoint_status_reflects_auth_evidence_and_protected_states(async_client):
     """End-user path: the badge an operator actually sees on the quota endpoint.
 
-    CLIProxyAPI renews Claude access tokens from a background loop that becomes
-    due 4h before `expired`, so a recently lapsed expiry is a pending refresh and
-    must not surface as "Re-auth required". A long-lapsed expiry, and an upstream
-    refresh failure, still must. Pause and quota cooldown keep their own labels.
+    Only explicit upstream auth-failure evidence produces "Re-auth required".
+    Access-token expiry age never does, at any lapse, because CLIProxyAPI renews
+    tokens from a background loop and publishes no field separating a dead refresh
+    token from a pending refresh. Pause and quota cooldown keep their own labels.
     All inputs here are synthetic; no auth files or live sidecar are involved.
     """
     await async_client.put(
@@ -377,6 +377,13 @@ async def test_quota_endpoint_status_reflects_refresh_lead_and_protected_states(
         accounts=(
             _auth("just-lapsed", expired=now - timedelta(minutes=5)),
             _auth("long-lapsed", expired=now - timedelta(days=1)),
+            _auth(
+                "transient-error",
+                status="error",
+                status_message="request failed: 502 unauthorized proxy upstream",
+                unavailable=True,
+                failed=1,
+            ),
             _auth("fresh", expired=now + timedelta(hours=6)),
             _auth(
                 "refresh-401",
@@ -411,7 +418,11 @@ async def test_quota_endpoint_status_reflects_refresh_lead_and_protected_states(
     by_name = {account["name"]: account for account in response.json()["accounts"]}
 
     assert by_name["just-lapsed"]["status"] == "active"
-    assert by_name["long-lapsed"]["status"] == "reauth_required"
+    # Expiry age alone is never evidence of a dead credential.
+    assert by_name["long-lapsed"]["status"] == "active"
+    # `unauthorized` is matched exactly, so a transient message containing it
+    # keeps its own status.
+    assert by_name["transient-error"]["status"] == "error"
     assert by_name["fresh"]["status"] == "active"
     assert by_name["refresh-401"]["status"] == "reauth_required"
     assert by_name["paused"]["status"] == "disabled"

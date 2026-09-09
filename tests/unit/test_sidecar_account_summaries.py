@@ -187,7 +187,14 @@ def _summary_for(*accounts: SidecarAuthQuota):
     return build_claude_sidecar_summary(settings, request_usage=None)
 
 
-def test_claude_past_oauth_expiry_maps_to_reauth_required() -> None:
+def test_claude_long_past_oauth_expiry_alone_stays_active() -> None:
+    """End-user path: expiry age alone never produces a Re-auth badge.
+
+    CLIProxyAPI renews access tokens from a background loop and publishes no
+    field separating a dead refresh token from a pending refresh, an unflushed
+    write or a stopped sidecar. The dashboard therefore reports the account as
+    upstream describes it rather than guessing from the timestamp.
+    """
     summary = _summary_for(
         _claude_auth(
             status="active",
@@ -197,7 +204,23 @@ def test_claude_past_oauth_expiry_maps_to_reauth_required() -> None:
     )
 
     assert summary is not None
-    assert summary.sidecar_auths[0].status == "reauth_required"
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_transient_message_containing_unauthorized_is_not_reauth() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="error",
+            status_message="request failed: 502 unauthorized proxy upstream",
+            unavailable=True,
+            failed=1,
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "error"
+    assert summary.sidecar_auths[0].status != "reauth_required"
 
 
 def test_claude_future_oauth_expiry_stays_active() -> None:
@@ -218,9 +241,9 @@ def test_claude_missing_oauth_expiry_stays_active() -> None:
 def test_claude_recently_lapsed_expiry_keeps_active_on_the_dashboard() -> None:
     """End-user path: a healthy idle account whose access token just lapsed.
 
-    CLIProxyAPI refreshes Claude tokens from a background loop with a 4h lead, so
-    a just-lapsed persisted `expired` is a pending refresh, not a dead login. The
-    dashboard card must keep showing the account as usable.
+    CLIProxyAPI refreshes Claude tokens from a background loop, so a just-lapsed
+    persisted `expired` is a pending refresh, not a dead login. The dashboard card
+    must keep showing the account as usable.
     """
     summary = _summary_for(
         _claude_auth(

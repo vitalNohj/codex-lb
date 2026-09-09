@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarModelQuota,
@@ -382,46 +384,47 @@ def test_listed_expired_wins_over_disk_file(tmp_path: Path) -> None:
     assert accounts[0].expired == datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc)
 
 
-def test_dashboard_auth_status_past_expiry_is_reauth_required() -> None:
-    auth = _auth(expired=datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc), status="active")
-    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
-
-    assert dashboard_auth_status(auth, now=now) == "reauth_required"
-
-
-# CLIProxyAPI 7.2.135 refreshes Claude access tokens from a background loop with a
-# 4h lead before `expired` (sdk/auth/claude.go RefreshLead). Everything below the
-# lead is a routine, self-healing state and must keep its own label.
+# CLIProxyAPI renews Claude access tokens from a background loop and exposes no
+# field distinguishing a dead refresh token from a pending refresh, an unflushed
+# write, a stopped sidecar or clock skew. Access-token expiry age is therefore
+# never a re-auth signal, at any lapse duration.
 _NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
 
-def test_expiry_just_lapsed_is_not_reauth_while_refresh_is_healthy() -> None:
-    """A token a few minutes past `expired` is a pending lazy/background refresh.
+@pytest.mark.parametrize(
+    "lapse",
+    [
+        timedelta(minutes=2),
+        timedelta(hours=3, minutes=59),
+        timedelta(hours=4, minutes=1),
+        timedelta(days=1),
+        timedelta(days=90),
+    ],
+    ids=["minutes", "just-under-4h", "just-over-4h", "one-day", "ninety-days"],
+)
+def test_expiry_age_alone_never_badges_regardless_of_lapse(lapse: timedelta) -> None:
+    """A lapsed access-token expiry is suggestive, never evidence.
 
     The persisted `expired` trails the live token after a restart, a not-yet-
-    flushed refresh, or clock skew. Badging it would cry wolf on a healthy
-    account, which is the false positive raised in review on PR 36.
+    flushed refresh, or clock skew, so badging on it cries wolf on healthy
+    accounts. No lapse duration resolves that ambiguity, so none is used.
     """
-    auth = _auth(expired=_NOW - timedelta(minutes=2), status="active")
+    auth = _auth(expired=_NOW - lapse, status="active")
 
     assert dashboard_auth_status(auth, now=_NOW) == "active"
 
 
-def test_expiry_lapsed_within_refresh_lead_is_not_reauth() -> None:
-    auth = _auth(expired=_NOW - timedelta(hours=3, minutes=59), status="active")
+def test_silent_dead_refresh_reports_active_known_limitation() -> None:
+    """Accepted coverage limit, asserted so it cannot change unnoticed.
+
+    A refresh-only `invalid_grant` failure leaves the CLIProxyAPI listing
+    `active`/available with an empty status message while it retries. Upstream
+    publishes nothing to distinguish it until real traffic is attempted, so this
+    credential reports as healthy rather than being guessed at.
+    """
+    auth = _auth(status="active", unavailable=False, status_message=None, expired=_NOW - timedelta(days=2))
 
     assert dashboard_auth_status(auth, now=_NOW) == "active"
-
-
-def test_expiry_lapsed_beyond_refresh_lead_is_reauth_required() -> None:
-    """Past the whole proactive-refresh window, refresh has demonstrably stopped.
-
-    This is the real outage shape: refresh token rejected with `invalid_grant`,
-    while CLIProxyAPI still lists the file as active and available.
-    """
-    auth = _auth(expired=_NOW - timedelta(hours=4, minutes=1), status="active")
-
-    assert dashboard_auth_status(auth, now=_NOW) == "reauth_required"
 
 
 def test_paused_account_with_lapsed_expiry_keeps_pause_label() -> None:
@@ -442,6 +445,34 @@ def test_quota_cooldown_with_lapsed_expiry_is_not_reauth() -> None:
     )
 
     assert dashboard_auth_status(auth, now=_NOW) == "rate_limited"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "request failed: 502 unauthorized proxy upstream",
+        "unauthorized_client detected downstream",
+        "connection reset while handling unauthorized retry",
+    ],
+    ids=["transient-502", "different-oauth-code", "transient-reset"],
+)
+def test_message_merely_containing_unauthorized_is_not_reauth(message: str) -> None:
+    """`unauthorized` is matched exactly, never as a substring.
+
+    CLIProxyAPI writes `status_message` verbatim as "unauthorized" on a refresh
+    401, but its generic failure branch leaves the raw upstream error text, which
+    can merely contain the word. Substring matching would badge those transient
+    failures and reopen the hole closed by "harden Claude reauth status mapping".
+    """
+    auth = _auth(status="error", status_message=message, unavailable=True, failed=1)
+
+    assert dashboard_auth_status(auth, now=_NOW) == "error"
+
+
+def test_unauthorized_status_message_is_matched_after_trimming_and_casefold() -> None:
+    auth = _auth(status="error", status_message="  Unauthorized  ", unavailable=True)
+
+    assert dashboard_auth_status(auth, now=_NOW) == "reauth_required"
 
 
 def test_unauthorized_status_message_is_reauth_even_with_fresh_token() -> None:
