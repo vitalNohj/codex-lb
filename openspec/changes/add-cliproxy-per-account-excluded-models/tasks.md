@@ -30,6 +30,10 @@
 - [x] 3.1 `openspec validate add-cliproxy-per-account-excluded-models --strict`.
 - [x] 3.2 Targeted backend pytest + frontend vitest + `bun run build`.
 - [x] 3.3 Grep gate: no account email and no model-family special case in `app/`.
-- [x] 3.4 Contract tests against a real CLIProxyAPI executable (opt-in via `CODEX_LB_CLIPROXY_BINARY`,
-      sandboxed to loopback, synthetic accounts) proving the saved list governs actual account
-      selection: exact vs explicit wildcard, retry, exhaustion, and runtime toggling.
+- [x] 3.4 Opt-in native contracts against pinned CLIProxyAPI commit
+      `856ddd8df746a38a6033dbbf6c140974bf5aea0f`, under a deny-all-network sandbox with synthetic
+      accounts, proving exact vs explicit wildcard behavior, retry, exhaustion, alias ordering,
+      runtime toggling, and actual saved-file delivery through the watcher and update consumer.
+- [ ] 3.5 Validate the preserved real-process Python-to-Go HTTP contract in
+      `tests/integration/test_claude_sidecar_excluded_models_contract.py`; the accepted native
+      contracts do not satisfy this cross-language boundary.
