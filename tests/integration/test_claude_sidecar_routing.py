@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
@@ -192,6 +195,120 @@ def _chat_sse_payloads(body: bytes | str) -> list[dict]:
 
 def _usage_chunks(payloads: list[dict]) -> list[dict]:
     return [payload for payload in payloads if payload.get("choices") == [] and "usage" in payload]
+
+
+# Every outbound dispatch boundary reachable from the two handlers the
+# catalog-to-chat regression drives (``GET /v1/models`` and
+# ``POST /v1/chat/completions``), as bound in the ``app.modules.proxy.api``
+# namespace. Provider sidecar clients come from that module's imports; the
+# native subscription and source-routed paths are the functions the handler
+# calls once no sidecar route matches. ``ClaudeSidecarClient`` is deliberately
+# absent: it is the one transport these tests are supposed to reach, and
+# ``fake_sidecar`` owns it.
+_UNEXPECTED_TRANSPORTS: tuple[str, ...] = (
+    # Other provider sidecars (api.py imports, lines 50-53).
+    "OpenRouterSidecarClient",
+    "OrcaRouterSidecarClient",
+    "get_orcarouter_sidecar_client",
+    "OllamaSidecarClient",
+    "OmniRouteSidecarClient",
+    # Native subscription + source-routed dispatch, reached when no sidecar
+    # route matches (e.g. the advertised ``gpt-*`` ids the catalog also lists).
+    "_source_chat_completion_response",
+    "collect_chat_completion",
+    "_probe_chat_stream_startup_error",
+)
+
+
+class _UnexpectedTransport(Exception):
+    """A transport other than the expected Claude fake was constructed."""
+
+
+@pytest.fixture
+def block_unexpected_transports(monkeypatch):
+    """Fail closed on every dispatch boundary except the expected Claude fake.
+
+    ``raising=True`` so a renamed or deleted symbol fails loudly here instead
+    of silently leaving a boundary open. The native ``ProxyService`` streaming
+    entry point is additionally blocked on the class itself, because the
+    handler reaches it through ``context.service`` rather than a module-level
+    name.
+    """
+
+    def _refuse(name: str):
+        def _factory(*args, **kwargs):
+            del args, kwargs
+            raise _UnexpectedTransport(name)
+
+        return _factory
+
+    for name in _UNEXPECTED_TRANSPORTS:
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _refuse(name), raising=True)
+
+    from app.modules.proxy.service import ProxyService
+
+    monkeypatch.setattr(ProxyService, "stream_responses", _refuse("ProxyService.stream_responses"), raising=True)
+
+
+@pytest_asyncio.fixture
+async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fake_sidecar, monkeypatch):
+    """Real routers, middleware and temp database, without the app lifespan.
+
+    Every background service and outbound transport this suite does not need is
+    started inside ``app.main.lifespan``; ``create_app`` only wires middleware
+    and routers. Skipping ``router.lifespan_context`` therefore avoids them
+    rather than replacing them one by one.
+
+    Ordering is explicit, not incidental: ``block_unexpected_transports`` and
+    ``fake_sidecar`` are declared as parameters so both run first, and the fake
+    is then re-applied over ``ClaudeSidecarClient`` as this fixture's last
+    setup action so the guard can never leave the expected transport blocked.
+
+    ``ProxyService`` is constructed lazily per request by
+    ``app.dependencies.get_proxy_service_for_app`` and cached on ``app.state``,
+    so the per-response persistence drain below still finds it without the
+    lifespan.
+    """
+    del _reset_db_state, block_unexpected_transports
+    import app.modules.proxy.api as proxy_api
+    from app.main import create_app
+
+    config = fake_sidecar.config
+
+    # Re-apply the expected fake LAST, over the guard, through monkeypatch so
+    # it is reverted with every other patch at teardown.
+    monkeypatch.setattr(
+        "app.modules.proxy.api.ClaudeSidecarClient",
+        lambda _config: fake_sidecar,
+        raising=True,
+    )
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    # Assert the bindings BEFORE any request: the app under test must be this
+    # task copy, the expected Claude fake must be installed, and every
+    # forbidden transport must be refusing.
+    assert proxy_api.__file__.startswith(str(Path(__file__).resolve().parents[2])), (
+        f"app module resolved outside this task copy: {proxy_api.__file__}"
+    )
+    assert proxy_api.ClaudeSidecarClient(config) is fake_sidecar
+    for name in _UNEXPECTED_TRANSPORTS:
+        with pytest.raises(_UnexpectedTransport):
+            getattr(proxy_api, name)()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
 
 
 @pytest.mark.asyncio
@@ -413,20 +530,34 @@ async def test_claude_stream_routes_to_sidecar_and_requests_usage(async_client, 
 
 
 @pytest.mark.asyncio
-async def test_sidecar_model_list_merges_and_filters(async_client, sidecar_enabled, fake_sidecar):
-    await async_client.put(
+async def test_sidecar_model_list_merges_and_filters(lifespan_free_client, sidecar_enabled, fake_sidecar):
+    # The settings write invalidates the settings cache, which bumps the durable
+    # cross-replica namespace only when a cache-invalidation poller is
+    # registered (settings_cache.py:38-53). That poller is created solely in the
+    # app lifespan (main.py:411,445) and conftest's autouse fixture sets it to
+    # None, so without the lifespan the write is an in-process cache clear plus
+    # the temp-DB commit. Assert that precondition instead of assuming it.
+    from app.core.cache.invalidation import get_cache_invalidation_poller
+
+    assert get_cache_invalidation_poller() is None
+
+    settings_response = await lifespan_free_client.put(
         "/api/settings",
         json={
             "claudeSidecarEnabled": True,
             "claudeSidecarFullModels": ["claude-sonnet-4-5-20250929"],
         },
     )
-    await _enable_api_key_auth(async_client)
+    # A failed settings write would leave the catalog assertions below passing
+    # for the wrong reason, so require it to have succeeded.
+    assert settings_response.status_code == 200, settings_response.text
+
+    await _enable_api_key_auth(lifespan_free_client)
     registry = get_model_registry()
     await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})
     key = await _create_api_key("models-key", allowed_models=["claude-sonnet-4-5-20250929"])
 
-    response = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
+    response = await lifespan_free_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
 
     assert response.status_code == 200
     data = response.json()["data"]
@@ -444,7 +575,7 @@ async def test_sidecar_model_list_merges_and_filters(async_client, sidecar_enabl
 
 @pytest.mark.asyncio
 async def test_sidecar_model_list_includes_discovered_prefix_models(
-    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
 ):
     config = replace(fake_sidecar.config, full_models=())
     fake_sidecar.models = [
@@ -460,7 +591,7 @@ async def test_sidecar_model_list_includes_discovered_prefix_models(
     registry = get_model_registry()
     await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})
 
-    response = await async_client.get("/v1/models")
+    response = await lifespan_free_client.get("/v1/models")
 
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
@@ -473,7 +604,7 @@ async def test_sidecar_model_list_includes_discovered_prefix_models(
 
 @pytest.mark.asyncio
 async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
-    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
 ):
     """An advertised id must reach the model the catalog named.
 
@@ -484,8 +615,13 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     reasoning-effort suffix. Either one makes the catalog name a model the
     request never reaches: ``cp-claude-sonnet`` becomes ``claude-sonnet``,
     ``claude-fable-5-1`` becomes ``claude-fable-5``. Read the public catalog and
-    send every advertised id back through the real request path, exactly as a
-    client that picks a model from ``GET /v1/models`` does.
+    send the discovered ids it advertises back through the real request path,
+    exactly as a client that picks a model from ``GET /v1/models`` does.
+
+    Scope: this is a Claude-sidecar test, so only the ids this fixture feeds to
+    CLIProxyAPI are dispatched. Unrelated native catalog ids stay advertised and
+    are asserted on, but are not sent anywhere - dispatching them would exercise
+    the native path, which the guards in this module deliberately forbid.
     """
 
     config = replace(
@@ -493,43 +629,49 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
         full_models=(),
         prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
     )
-    fake_sidecar.models = [
-        _FakeModel("claude-sonnet-4-5-20250929"),
-        _FakeModel("cp-claude-sonnet"),
-        # Rewritten by the dispatch-time model profile rather than the prefix:
-        # an alias mapping, a reasoning-effort suffix, and a -latest alias.
-        _FakeModel("claude-fable-5-1"),
-        _FakeModel("claude-opus-4-7-high"),
-        _FakeModel("claude-3-5-sonnet-latest"),
-    ]
+    # The dated id is the unaffected control: neither rewrite touches it, so it
+    # must be advertised AND must round-trip.
+    expected_round_trip = ("claude-sonnet-4-5-20250929",)
+    # Each of these is rewritten before dispatch, so none may be advertised:
+    # a strip-prefix id, an alias mapping, a reasoning-effort suffix, a -latest.
+    expected_omitted = (
+        "cp-claude-sonnet",
+        "claude-fable-5-1",
+        "claude-opus-4-7-high",
+        "claude-3-5-sonnet-latest",
+    )
+    discovered_ids = (*expected_round_trip, *expected_omitted)
+    fake_sidecar.models = [_FakeModel(model_id) for model_id in discovered_ids]
 
     async def load_config():
         return config
 
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
 
-    listed = await async_client.get("/v1/models")
+    listed = await lifespan_free_client.get("/v1/models")
     assert listed.status_code == 200
     advertised_ids = [item["id"] for item in listed.json()["data"]]
 
-    # The routable discovered id is still advertised; the rewritten one is not.
-    assert "claude-sonnet-4-5-20250929" in advertised_ids
-    assert "cp-claude-sonnet" not in advertised_ids
-    # Dispatch also remaps through the model profile: an alias id and a
-    # reasoning-effort suffix are both rewritten before the request leaves.
-    assert "claude-fable-5-1" not in advertised_ids
-    assert "claude-opus-4-7-high" not in advertised_ids
-    assert "claude-3-5-sonnet-latest" not in advertised_ids
+    # The routable discovered id is still advertised; every rewritten one is not.
+    for model_id in expected_round_trip:
+        assert model_id in advertised_ids
+    for model_id in expected_omitted:
+        assert model_id not in advertised_ids
 
-    for advertised in advertised_ids:
+    # Dispatch only the in-scope discovered ids, identified from this fixture's
+    # own inputs rather than from the resolver under test.
+    dispatchable = [model_id for model_id in discovered_ids if model_id in advertised_ids]
+    assert dispatchable == list(expected_round_trip)
+
+    for advertised in dispatchable:
         fake_sidecar.chat_payloads.clear()
-        response = await async_client.post(
+        response = await lifespan_free_client.post(
             "/v1/chat/completions",
             json={"model": advertised, "messages": [{"role": "user", "content": "hi"}]},
         )
-        if not fake_sidecar.chat_payloads:
-            # Not a sidecar model (e.g. an upstream Codex id); out of scope here.
-            continue
+        # No silent continue: an advertised Claude id that never reached the
+        # sidecar is exactly the failure this test exists to catch.
+        assert fake_sidecar.chat_payloads, f"advertised {advertised!r} never reached the CLIProxyAPI client"
         assert response.status_code == 200
         assert fake_sidecar.chat_payloads[-1]["model"] == advertised, (
             f"catalog advertised {advertised!r} but dispatch forwarded {fake_sidecar.chat_payloads[-1]['model']!r}"
@@ -538,7 +680,7 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
 
 @pytest.mark.asyncio
 async def test_a_pinned_full_model_under_a_strip_prefix_stays_advertised(
-    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
 ):
     """Pinning is the operator's explicit statement that an id routes as named.
 
@@ -560,11 +702,11 @@ async def test_a_pinned_full_model_under_a_strip_prefix_stays_advertised(
 
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
 
-    listed = await async_client.get("/v1/models")
+    listed = await lifespan_free_client.get("/v1/models")
     assert listed.status_code == 200
     assert "cp-claude-sonnet" in [item["id"] for item in listed.json()["data"]]
 
-    response = await async_client.post(
+    response = await lifespan_free_client.post(
         "/v1/chat/completions",
         json={"model": "cp-claude-sonnet", "messages": [{"role": "user", "content": "hi"}]},
     )
@@ -575,7 +717,7 @@ async def test_a_pinned_full_model_under_a_strip_prefix_stays_advertised(
 
 @pytest.mark.asyncio
 async def test_a_pinned_full_model_the_profile_rewrites_stays_advertised(
-    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
 ):
     """Pinned advertising is unchanged by the discovered-id routability check.
 
@@ -593,7 +735,7 @@ async def test_a_pinned_full_model_the_profile_rewrites_stays_advertised(
 
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
 
-    listed = await async_client.get("/v1/models")
+    listed = await lifespan_free_client.get("/v1/models")
 
     assert listed.status_code == 200
     assert "claude-fable-5-1" in [item["id"] for item in listed.json()["data"]]
