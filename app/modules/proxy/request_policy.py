@@ -124,6 +124,13 @@ def resolve_wire_reasoning_effort(effort: str) -> str:
     return _REASONING_EFFORT_WIRE_ALIASES.get(effort.strip().lower(), effort)
 
 
+class _AccessIdentity(NamedTuple):
+    """Canonical wire identity plus the sidecar that owns the route, if any."""
+
+    provider: str | None
+    canonical: str | None
+
+
 def validate_model_access(
     api_key: ApiKeyData | None,
     model: str | None,
@@ -136,35 +143,39 @@ def validate_model_access(
         return
     if model is None or model in api_key.allowed_models:
         return
-    requested = _canonical_model_for_access(model, routing_entries)
-    for allowed_model in api_key.allowed_models:
-        if _canonical_model_for_access(allowed_model, routing_entries) == requested:
-            return
-        # An entry that names no integration is provider-agnostic: it grants the
-        # model wherever it is served, so it matches the requested identity
-        # under that identity's own provider. An entry that does name one keeps
-        # its provider and grants only that integration.
-        if resolve_sidecar_route(allowed_model, routing_entries) is None:
-            bare_allowed = _canonical_model_for_access(allowed_model)
-            if bare_allowed is not None and requested is not None and requested.endswith(f":{bare_allowed}"):
-                return
-            if bare_allowed == requested:
-                return
+    requested = _access_identity(model, routing_entries)
+    if any(
+        _access_identities_match(requested, _access_identity(allowed_model, routing_entries))
+        for allowed_model in api_key.allowed_models
+    ):
+        return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
+def _access_identities_match(requested: _AccessIdentity, allowed: _AccessIdentity) -> bool:
+    if requested.canonical is None or allowed.canonical is None:
+        return False
+    if requested.canonical != allowed.canonical:
+        return False
+    # An unprefixed allowlist still admits a prefixed request for that wire
+    # model. Distinct sidecar owners of the same stripped slug must not.
+    if requested.provider is None or allowed.provider is None:
+        return True
+    return requested.provider == allowed.provider
+
+
 def _canonical_model_for_access(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> str | None:
+    return _access_identity(model, routing_entries).canonical
+
+
+def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
     if model is None:
-        return None
-    # The owning integration is part of the identity: two integrations can
-    # expose the same bare slug through their own strip-enabled prefixes, and
-    # they dispatch to different upstreams with different billing, so their
-    # canonical forms must never compare equal.
+        return _AccessIdentity(None, None)
+    provider: str | None = None
     route = resolve_sidecar_route(model, routing_entries)
-    provider_scope = ""
     if route is not None:
         model = route.wire_model
-        provider_scope = f"{route.provider}:"
+        provider = route.provider
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
     # A separately-routed and separately-priced version must not be collapsed
@@ -172,12 +183,12 @@ def _canonical_model_for_access(model: str | None, routing_entries: tuple[Sideca
     # would admit it.
     versioned = resolve_versioned_model_id(normalized)
     if versioned is not None:
-        return f"{provider_scope}{versioned}"
+        return _AccessIdentity(provider, versioned)
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
     if pricing_alias is not None:
-        return f"{provider_scope}{pricing_alias}"
+        return _AccessIdentity(provider, pricing_alias)
     sidecar_alias = canonical_sidecar_model(normalized)
-    return f"{provider_scope}{sidecar_alias if sidecar_alias is not None else normalized}"
+    return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
 
 
 def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | None) -> None:

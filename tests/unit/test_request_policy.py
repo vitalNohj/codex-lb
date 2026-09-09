@@ -5,6 +5,7 @@ from typing import cast
 
 import pytest
 
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.exceptions import ProxyModelNotAllowed, ProxyReasoningEffortNotAllowed
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry
@@ -18,6 +19,7 @@ from app.modules.proxy.request_policy import (
     responses_source_route_excluded,
     validate_model_access,
 )
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
 
 
 @pytest.mark.parametrize(
@@ -263,6 +265,46 @@ def test_model_access_accepts_wire_claude_model_when_cp_alias_allowed() -> None:
     api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cp-claude-fable-5"})))
 
     validate_model_access(api_key, "claude-fable-5")
+
+
+def _strip_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
+    return (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(
+                SidecarPrefix(prefix="cc/", strip=True),
+                SidecarPrefix(prefix="cp-", strip=True),
+            ),
+            full_models=(),
+        ),
+        SidecarRoutingEntry(
+            provider="openrouter",
+            prefixes=(SidecarPrefix(prefix="or/", strip=True),),
+            full_models=(),
+        ),
+    )
+
+
+def test_model_access_rejects_same_wire_model_on_a_different_sidecar() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cc/custom-slug"})))
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "or/custom-slug", routing_entries=_strip_routing_entries())
+
+
+def test_model_access_accepts_same_sidecar_owner_for_stripped_aliases() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cc/custom-slug"})))
+
+    validate_model_access(api_key, "cc/custom-slug", routing_entries=_strip_routing_entries())
+    validate_model_access(api_key, "cp-custom-slug", routing_entries=_strip_routing_entries())
+
+
+def test_model_access_accepts_prefixed_request_when_unprefixed_wire_model_allowed() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-4-7"})))
+
+    validate_model_access(api_key, "cp-claude-opus-4-7", routing_entries=_strip_routing_entries())
+
+
 def test_reasoning_effort_allowlist_rejects_max_before_wire_normalization() -> None:
     request = ResponsesRequest.model_validate(
         {

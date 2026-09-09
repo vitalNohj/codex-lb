@@ -51,6 +51,27 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **AND** the supplied price table contains only `claude-fable-5`
 - **THEN** it resolves the `claude-fable-5` entry rather than returning no price
 
+### Requirement: API-key model access does not treat distinct sidecar integrations as the same model
+
+`allowed_models` enforcement MUST retain the owning sidecar integration when comparing routed identities. A key whose allowlist names a model only through one integration's prefix or full-model id MUST NOT be granted access to the same wire model on a different enabled sidecar integration. An allowlist that names the unprefixed wire model MUST still admit prefixed requests that resolve to that wire model.
+
+#### Scenario: A Claude-prefixed allowlist rejects the same slug on OpenRouter
+
+- **GIVEN** Claude routing prefix `cc/` and OpenRouter routing prefix `or/` both strip
+- **WHEN** an API key whose `allowed_models` is exactly `cc/custom-slug` requests `or/custom-slug`
+- **THEN** the request is refused before quota reservation or upstream traffic
+
+#### Scenario: The same Claude prefix still admits that slug
+
+- **WHEN** the same API key requests `cc/custom-slug`
+- **THEN** the request is allowed
+
+#### Scenario: An unprefixed allowlist still admits a prefixed request for that wire model
+
+- **GIVEN** Claude routing prefix `cp-` with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-4-7` requests `cp-claude-opus-4-7`
+- **THEN** the request is allowed
+
 ## API-key model access reference
 
 The authoritative requirement and scenarios, including configured prefix resolution before reservation and dispatch, are maintained in [API-key model access](../../../../specs/api-keys/spec.md#requirement-api-key-model-access-does-not-collapse-a-separately-priced-version-into-its-family).

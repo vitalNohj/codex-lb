@@ -369,6 +369,8 @@ export function RecentRequestsTable({
             {requests.map((request) => {
               const time = formatTimeLong(request.requestedAt);
               const sidecarLabel = sidecarAccountLabel(request);
+              const sidecarIdentity =
+                request.source === "claude_sidecar" ? request.sidecarAccountLabel : null;
               const accountLabel = sidecarLabel
                 ? sidecarLabel
                 : request.accountId
@@ -398,7 +400,12 @@ export function RecentRequestsTable({
                     </div>
                   </TableCell>
                   <TableCell className="max-w-48 align-top text-sm">
-                    {isEmailLabel && blurred ? (
+                    {blurred && sidecarIdentity ? (
+                      <span className="block truncate">
+                        {SIDECAR_ACCOUNT_LABELS.claude_sidecar}:{" "}
+                        <span className="privacy-blur">{sidecarIdentity}</span>
+                      </span>
+                    ) : isEmailLabel && blurred ? (
                       <span className="privacy-blur block truncate" title={accountLabel}>
                         {accountLabel}
                       </span>
