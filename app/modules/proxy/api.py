@@ -1163,7 +1163,7 @@ async def _omniroute_responses_dispatch_or_none(
     if not omniroute_enabled():
         # Defense in depth on the externally callable Responses path.
         return None
-    validate_model_access(api_key, effective_model)
+    validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
     rate_limit_headers = await context.service.rate_limit_headers()
     reservation = await _enforce_request_limits(
         api_key,
@@ -4511,7 +4511,7 @@ async def v1_chat_completions(
         return capability_transport_denial
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
-    validate_model_access(api_key, payload.model)
+    requested_model = payload.model
     aliased_model = await resolve_request_model_alias(payload.model)
     if aliased_model is not None and aliased_model != payload.model:
         payload.model = aliased_model
@@ -4537,8 +4537,10 @@ async def v1_chat_completions(
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
 
+    validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:
+        validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
         reservation = await _enforce_request_limits(
             api_key,
             request_model=effective_model,

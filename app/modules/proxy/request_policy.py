@@ -33,6 +33,7 @@ from app.db.models import ModelSource
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.model_sources.catalog import source_model_reasoning_levels
 from app.modules.proxy.sidecar_model_profiles import canonical_sidecar_model
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 
 logger = logging.getLogger(__name__)
 
@@ -123,21 +124,33 @@ def resolve_wire_reasoning_effort(effort: str) -> str:
     return _REASONING_EFFORT_WIRE_ALIASES.get(effort.strip().lower(), effort)
 
 
-def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None:
+def validate_model_access(
+    api_key: ApiKeyData | None,
+    model: str | None,
+    *,
+    routing_entries: tuple[SidecarRoutingEntry, ...] = (),
+) -> None:
     if api_key is None:
         return
     if not api_key.allowed_models:
         return
-    allowed_models = {_canonical_model_for_access(allowed_model) for allowed_model in api_key.allowed_models}
-    effective_model = _canonical_model_for_access(model)
+    allowed_models = {
+        _canonical_model_for_access(allowed_model, routing_entries) for allowed_model in api_key.allowed_models
+    }
+    effective_model = _canonical_model_for_access(model, routing_entries)
     if model is None or effective_model in allowed_models or model in api_key.allowed_models:
         return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
-def _canonical_model_for_access(model: str | None) -> str | None:
+def _canonical_model_for_access(
+    model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()
+) -> str | None:
     if model is None:
         return None
+    route = resolve_sidecar_route(model, routing_entries)
+    if route is not None:
+        model = route.wire_model
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
     # A separately-routed and separately-priced version must not be collapsed

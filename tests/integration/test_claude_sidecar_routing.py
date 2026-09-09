@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -535,6 +536,49 @@ async def test_sidecar_model_not_allowed_rejects_before_sidecar(async_client, si
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "model_not_allowed"
     assert fake_sidecar.chat_payloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("allowed_model", "requested_model", "wire_model"),
+    [
+        ("claude-fable-5", "team.claude-fable-5-1", None),
+        ("claude-fable-5", "team.claude-fable-5-1-thinking-max", None),
+        ("team.claude-fable-5", "team.claude-fable-5-1", None),
+        ("claude-fable-5", "team.claude-fable-5.1", None),
+        ("claude-fable-5", "team.claude-fable-5", "claude-fable-5"),
+        ("claude-fable-5-1", "team.claude-fable-5-1", "claude-fable-5-1"),
+        ("team.claude-fable-5-1", "team.claude-fable-5-1", "claude-fable-5-1"),
+    ],
+)
+async def test_custom_prefix_model_access_before_reservation(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch, stream, allowed_model, requested_model, wire_model
+):
+    config = replace(fake_sidecar.config, prefixes=(SidecarPrefix(prefix="team.", strip=True),))
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", AsyncMock(return_value=config))
+    reserve = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.modules.proxy.api._enforce_request_limits", reserve)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("custom-prefix-key", allowed_models=[allowed_model])
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": requested_model, "messages": [{"role": "user", "content": "hi"}], "stream": stream},
+    )
+
+    if wire_model is None:
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "model_not_allowed"
+        reserve.assert_not_awaited()
+        assert fake_sidecar.chat_payloads == []
+        assert fake_sidecar.stream_payloads == []
+    else:
+        assert response.status_code == 200
+        reserve.assert_awaited_once()
+        forwarded = fake_sidecar.stream_payloads if stream else fake_sidecar.chat_payloads
+        assert forwarded[0]["model"] == wire_model
 
 
 @pytest.mark.asyncio
