@@ -1438,6 +1438,100 @@ async def test_gpt_6_astra_backfill_does_not_double_count_duplicate_request_rows
 
 
 @pytest.mark.asyncio
+async def test_gpt_6_astra_backfill_handles_more_rows_than_the_sqlite_variable_limit(tmp_path):
+    """The duplicate-group lookup must not overflow SQLite's bind-parameter cap.
+
+    Each id in that lookup's ``IN`` list is one bind parameter. SQLite's
+    default ``SQLITE_LIMIT_VARIABLE_NUMBER`` is 999 on builds older than 3.32,
+    so a batch-sized (1000) list raises "too many SQL variables" there - and it
+    would raise AFTER the per-row cost UPDATEs had already run, leaving
+    repriced rows without their rollup deltas. The limit is lowered here so the
+    guard is exercised on modern libsqlite too, which otherwise allows 32766.
+    """
+
+    row_count = 1200
+    watermark = "2026-09-08 12:00:00"
+    db_path = tmp_path / "astra-varlimit.sqlite"
+    db_url = f"sqlite+aiosqlite:///{db_path}"
+    await to_thread.run_sync(
+        lambda: run_upgrade(db_url, "20260903_000000_merge_fork_and_upstream_1_24_heads", bootstrap_legacy=True)
+    )
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO api_keys (id, name, key_hash, key_prefix, is_active, created_at)"
+                    " VALUES ('key_v', 'v', 'hash_v', 'sk-v', 1, '2026-09-01 00:00:00')"
+                )
+            )
+            for index in range(row_count):
+                await session.execute(
+                    text(
+                        "INSERT INTO request_logs (account_id, api_key_id, request_id, requested_at,"
+                        " model, input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,"
+                        " latency_ms, status, cost_usd, request_kind)"
+                        " VALUES ('acc_v', 'key_v', :rid, '2026-09-08 00:00:00', 'gpt-6-astra',"
+                        " 200000, 1000000, 0, 0, 100, 'success', NULL, 'normal')"
+                    ),
+                    {"rid": f"req_v_{index}"},
+                )
+            await session.execute(
+                text(
+                    "INSERT INTO account_usage_rollups (account_id, request_count, input_tokens,"
+                    " output_tokens, cached_input_tokens, total_cost_usd) VALUES ('acc_v', 0, 0, 0, 0, 0.0)"
+                )
+            )
+            await session.commit()
+            await session.execute(text("UPDATE account_usage_rollup_state SET folded_through = :wm"), {"wm": watermark})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    def _upgrade_with_lowered_variable_limit() -> None:
+        import sqlite3
+
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+
+        def _lower_limit(dbapi_connection, _record):  # pragma: no cover - driver hook
+            setlimit = getattr(dbapi_connection, "setlimit", None)
+            if setlimit is not None:
+                setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+
+        # Class-level listener so it also covers the engine Alembic's env.py
+        # builds internally, which is the one that runs the migration.
+        event.listen(Engine, "connect", _lower_limit)
+        try:
+            run_upgrade(db_url, "20260909_000000_backfill_gpt_6_astra_costs", bootstrap_legacy=False)
+        finally:
+            event.remove(Engine, "connect", _lower_limit)
+
+    await to_thread.run_sync(_upgrade_with_lowered_variable_limit)
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            priced = (
+                await session.execute(text("SELECT COUNT(*) FROM request_logs WHERE cost_usd IS NOT NULL"))
+            ).scalar_one()
+            account_total = (
+                await session.execute(
+                    text("SELECT total_cost_usd FROM account_usage_rollups WHERE account_id = 'acc_v'")
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+
+    # Every row repriced, and every one carried its delta into the rollup:
+    # a mid-migration overflow would leave costs written but deltas missing.
+    assert priced == row_count
+    assert account_total == pytest.approx(52.0 * row_count)
+
+
+@pytest.mark.asyncio
 async def test_gpt_6_astra_backfill_arms_hourly_rollup_repair(tmp_path):
     """Hourly/demand buckets fold sum(cost_usd), so repriced hours need a refold."""
 

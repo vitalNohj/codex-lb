@@ -1726,9 +1726,13 @@ async def test_armed_upgrade_repair_marker_refolds_backfilled_cost_into_hourly(d
     hourly, _errors, _demand, _watermark = await _dump_all_rollups()
     assert sum(r.cost_usd for r in hourly if r.bucket_epoch == bucket) == pytest.approx(0.25)
 
-    time_rollup_module._upgrade_repair_done = False
+    # NOTE: the latch is deliberately left SET here. A migration arms the
+    # marker against an already-running process, which has long since latched,
+    # so the fold pass must re-check the persisted marker rather than rely on
+    # a restart. Forcing `_upgrade_repair_done = False` would hide exactly the
+    # defect this asserts.
+    assert time_rollup_module._upgrade_repair_done is True
     await run_hourly_fold_pass(now=now)
-    time_rollup_module._upgrade_repair_done = True
 
     hourly, _errors, demand, _watermark = await _dump_all_rollups()
     repaired = [r for r in hourly if r.bucket_epoch == bucket]

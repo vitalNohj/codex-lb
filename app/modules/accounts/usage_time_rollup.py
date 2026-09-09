@@ -648,9 +648,17 @@ async def run_hourly_fold_pass(*, now: datetime | None = None) -> int:
     upgrade — falling back to the trailing `UPGRADE_REPAIR_WINDOW` as
     flip-flop defense once the marker is cleared (see the constant's note).
     An incomplete (pass-bounded) repair re-arms itself for the next pass.
+
+    A LATER pass re-runs the repair whenever the persisted marker is non-NULL
+    again. A data migration that reprices already-folded rows arms the marker
+    while this process is running and has long since latched (see
+    `20260909_000000_backfill_gpt_6_astra_costs`); without this re-check its
+    cost buckets would stay stale until an unrelated restart. The re-check is
+    one indexed read of the single state row per pass, and it does NOT re-run
+    the trailing-window flip-flop defense — that stays once per process.
     """
     global _upgrade_repair_done
-    if not _upgrade_repair_done:
+    if not _upgrade_repair_done or await _has_upgrade_repair_marker():
         _upgrade_repair_done = await _run_upgrade_repair()
     target = floor_to_hour((now or utcnow()) - FOLD_LAG)
     committed = 0
@@ -667,6 +675,26 @@ async def run_hourly_fold_pass(*, now: datetime | None = None) -> int:
 def _ceil_to_hour(value: datetime) -> datetime:
     floored = floor_to_hour(value)
     return floored if floored == value else floored + timedelta(hours=1)
+
+
+async def _has_upgrade_repair_marker() -> bool:
+    """Whether a durable repair marker is outstanding.
+
+    Cheap unlocked read of the single fold-state row. Only NEW code writes
+    NULL (after refolding the suspect range), so a non-NULL value always means
+    real repair work is pending — either from the rolling-upgrade fence or
+    from a data migration that repriced already-folded rows. Racing a
+    concurrent repair is harmless: the repair itself takes the state row lock
+    and its refold converges on any input state.
+    """
+
+    async with get_background_session() as session:
+        marker = (
+            await session.execute(
+                select(AccountUsageRollupState.upgrade_repair_from).where(AccountUsageRollupState.id == _STATE_ROW_ID)
+            )
+        ).scalar_one_or_none()
+    return marker is not None
 
 
 async def _run_upgrade_repair() -> bool:

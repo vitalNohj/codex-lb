@@ -55,6 +55,13 @@ _MODEL_MATCH = "%gpt-6-astra%"
 _EXCLUDED_REQUEST_KINDS = ("warmup", "limit_warmup")
 _STATIC_TABLE = "static_table"
 _HOUR = timedelta(hours=1)
+# Each id in the duplicate-group lookup's ``IN`` list is one bind parameter.
+# SQLite's default ``SQLITE_LIMIT_VARIABLE_NUMBER`` is 999 on builds older than
+# 3.32, so a batch-sized (1000) list raises "too many SQL variables" there --
+# after the per-row cost UPDATEs have already run, which would leave repriced
+# rows without their rollup deltas. Chunk conservatively, as
+# ``app/modules/proxy/sticky_repository.py`` does for the same reason.
+_IN_CHUNK_SIZE = 250
 
 
 def _calculate_cost(
@@ -144,6 +151,16 @@ def _arm_time_rollup_repair(bind: Connection, earliest_repriced: datetime | None
     tail. An earlier marker already set by another upgrade is preserved, since
     refolding a wider range is safe and dropping its range would not be. The
     conversation satellite folds ``request_count`` only and is untouched.
+
+    Consumption caveat: ``run_hourly_fold_pass`` checks this marker only on the
+    first pass of each process, behind the module-global ``_upgrade_repair_done``
+    latch. A replica that was already running when this migration executed has
+    long since latched, so it will not consume the marker until it restarts.
+    That matches this migration's deployment sequence, which restarts the
+    service anyway (new requests stay unpriced until the new pricing table is on
+    the running tree). The marker is durable, so a later start consumes it
+    whenever it happens; nothing is lost, the hourly and demand dollar buckets
+    simply stay short until then.
     """
 
     if earliest_repriced is None:
@@ -216,8 +233,8 @@ def _group_max_ids(bind: Connection, rows: list[dict[str, Any]]) -> dict[tuple[o
     # Python ``datetime`` back into a ``requested_at`` predicate would not
     # match SQLite's stored text (microsecond formatting differs) and would
     # silently find no group at all.
-    for chunk_start in range(0, len(ids), _BACKFILL_BATCH_SIZE):
-        chunk = ids[chunk_start : chunk_start + _BACKFILL_BATCH_SIZE]
+    for chunk_start in range(0, len(ids), _IN_CHUNK_SIZE):
+        chunk = ids[chunk_start : chunk_start + _IN_CHUNK_SIZE]
         grouped = bind.execute(
             sa.select(
                 request_logs.c.account_id,
