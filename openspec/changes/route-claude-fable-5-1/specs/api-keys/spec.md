@@ -53,7 +53,7 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 
 ### Requirement: API-key model access does not treat distinct sidecar integrations as the same model
 
-`allowed_models` enforcement MUST retain the owning sidecar integration when comparing routed identities. A key whose allowlist names a model only through one integration's prefix or full-model id MUST NOT be granted access to the same wire model on a different enabled sidecar integration. An allowlist that names the unprefixed wire model MUST still admit prefixed requests that resolve to that wire model. Conversely, an allowlist entry bound to one integration MUST NOT admit a request that resolves to no route, because such a request reaches the default dispatch path rather than the granted integration.
+`allowed_models` enforcement MUST compare the resolved owning integration and the exact canonical model as separate identity components, and MUST NOT authorize a request whose resolved integration differs from the grant's. A key whose allowlist names a model only through one integration's prefix or full-model id MUST NOT be granted access to the same wire model on a different enabled sidecar integration. An allowlist entry that resolves no route is a native identity: it authorizes native dispatch only, and MUST NOT act as a provider-agnostic wildcard admitting that wire model on an enabled sidecar integration. Conversely, an allowlist entry bound to one integration MUST NOT admit a request that resolves to no route, because such a request reaches the default dispatch path rather than the granted integration. Access to a routed model is therefore granted by naming that integration's routed identity.
 
 #### Scenario: A Claude-prefixed allowlist rejects the same slug on OpenRouter
 
@@ -66,10 +66,21 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **WHEN** the same API key requests `cc/custom-slug`
 - **THEN** the request is allowed
 
-#### Scenario: An unprefixed allowlist still admits a prefixed request for that wire model
+#### Scenario: A same-integration grant admits that integration's other prefix
+
+- **GIVEN** Claude routing prefixes `cc/` and `cp-` both with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `cc/claude-opus-4-7` requests `cp-claude-opus-4-7`
+- **THEN** the request is allowed, because both resolve to the Claude integration and the same wire model
+
+#### Scenario: A bare grant does not authorize that wire model on a sidecar integration
 
 - **GIVEN** Claude routing prefix `cp-` with stripping enabled
-- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-4-7` requests `cp-claude-opus-4-7`
+- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-4-7`, which resolves no route, requests `cp-claude-opus-4-7`
+- **THEN** the request is refused before quota reservation or upstream traffic, because a native grant is not a provider-agnostic wildcard
+
+#### Scenario: A native grant still admits its native request
+
+- **WHEN** an API key whose `allowed_models` is exactly `gpt-5` requests `gpt-5`, and neither resolves a route
 - **THEN** the request is allowed
 
 #### Scenario: An integration-bound allowlist rejects an unrouted request for the same wire model

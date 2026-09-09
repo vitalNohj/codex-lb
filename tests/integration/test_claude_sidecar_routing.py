@@ -646,9 +646,13 @@ async def test_sidecar_model_not_allowed_rejects_before_sidecar(async_client, si
         ("claude-fable-5", "team.claude-fable-5-1-thinking-max", None),
         ("team.claude-fable-5", "team.claude-fable-5-1", None),
         ("claude-fable-5", "team.claude-fable-5.1", None),
-        ("claude-fable-5", "team.claude-fable-5", "claude-fable-5"),
-        ("claude-fable-5-1", "team.claude-fable-5-1", "claude-fable-5-1"),
+        # A grant naming the same integration authorizes its routed model.
+        ("team.claude-fable-5", "team.claude-fable-5", "claude-fable-5"),
         ("team.claude-fable-5-1", "team.claude-fable-5-1", "claude-fable-5-1"),
+        # A bare grant resolves no route, so it is a native identity and does
+        # not authorize the same wire model on the sidecar integration.
+        ("claude-fable-5", "team.claude-fable-5", None),
+        ("claude-fable-5-1", "team.claude-fable-5-1", None),
     ],
 )
 async def test_custom_prefix_model_access_before_reservation(

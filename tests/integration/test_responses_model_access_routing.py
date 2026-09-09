@@ -445,6 +445,71 @@ async def test_bare_claude_grant_is_not_spent_on_another_integration(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ALL_PATHS)
+async def test_bare_native_grant_is_not_spendable_on_a_paid_sidecar(
+    lifespan_free_client,
+    sidecar_enabled,  # noqa: F811
+    two_integrations,
+    no_reservation,
+    dispatch_calls,
+    path,
+):
+    """A bare native grant must not authorize the same slug on a sidecar.
+
+    ``gpt-5`` resolves no route, so its identity carries no provider. A
+    provider-agnostic fallback would let that grant reach ``or/gpt-5``, which
+    dispatches to a paid third-party integration the operator never granted.
+    """
+    await _enable_api_key_auth(lifespan_free_client)
+    key = await _create_api_key(f"native-cross-{path.replace('/', '-')}", allowed_models=["gpt-5"])
+
+    response = await _post(lifespan_free_client, path, key, "or/gpt-5")
+
+    assert _denied(response), (
+        f"{path} authorized a paid sidecar model from a bare native grant: "
+        f"status={response.status_code} body={response.text[:200]!r}"
+    )
+    no_reservation.assert_not_awaited()
+    assert dispatch_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ALL_PATHS)
+async def test_explicit_openrouter_grant_authorizes_its_own_request(
+    lifespan_free_client,
+    sidecar_enabled,  # noqa: F811
+    two_integrations,
+    no_reservation,
+    dispatch_calls,
+    path,
+):
+    """Tightening must not revoke an explicitly granted sidecar identity.
+
+    The grant and the request resolve to the same OpenRouter identity, so the
+    request is authorized and proceeds to that integration's own dispatch
+    boundary rather than the default path.
+    """
+    await _enable_api_key_auth(lifespan_free_client)
+    key = await _create_api_key(f"or-grant-{path.replace('/', '-')}", allowed_models=["or/gpt-5"])
+
+    if path == "/v1/responses":
+        # This handler has no OpenRouter dispatch; admission is proven by
+        # reaching account selection instead.
+        await _assert_admitted_past_permission(lifespan_free_client, path, key, "or/gpt-5", dispatch_calls)
+        return
+
+    dispatched = await _post_expecting_dispatch(lifespan_free_client, path, key, "or/gpt-5")
+
+    _assert_dispatch(
+        dispatched,
+        dispatch_calls,
+        expected_boundary="OpenRouterSidecarClient" if path.endswith("chat/completions") else "_stream_responses",
+        expected_provider=None,
+        expected_model=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ALL_PATHS)
 async def test_separately_versioned_model_is_not_admitted_by_its_family(
     lifespan_free_client,
     sidecar_enabled,  # noqa: F811

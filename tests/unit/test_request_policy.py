@@ -299,10 +299,26 @@ def test_model_access_accepts_same_sidecar_owner_for_stripped_aliases() -> None:
     validate_model_access(api_key, "cp-custom-slug", routing_entries=_strip_routing_entries())
 
 
-def test_model_access_accepts_prefixed_request_when_unprefixed_wire_model_allowed() -> None:
-    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-4-7"})))
+def test_model_access_accepts_prefixed_request_for_a_same_integration_grant() -> None:
+    """Positive custom-prefix coverage, via an explicit same-integration grant."""
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cc/claude-opus-4-7"})))
 
     validate_model_access(api_key, "cp-claude-opus-4-7", routing_entries=_strip_routing_entries())
+
+
+def test_model_access_rejects_sidecar_request_for_an_ambiguous_bare_grant() -> None:
+    """A bare grant resolving no route is native, not a provider-agnostic wildcard."""
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-4-7"})))
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "cp-claude-opus-4-7", routing_entries=_strip_routing_entries())
+
+
+def test_model_access_accepts_native_request_for_a_native_grant() -> None:
+    """Both identities lack a provider, so a native grant still matches."""
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"gpt-5"})))
+
+    validate_model_access(api_key, "gpt-5", routing_entries=_strip_routing_entries())
 
 
 def test_model_access_rejects_unrouted_request_when_entry_is_bound_to_a_sidecar() -> None:

@@ -157,16 +157,11 @@ def _access_identities_match(requested: _AccessIdentity, allowed: _AccessIdentit
         return False
     if requested.canonical != allowed.canonical:
         return False
-    # An unprefixed allowlist entry still admits a request for that wire model
-    # on whichever integration serves it.
-    if allowed.provider is None:
-        return True
-    # An entry bound to one integration must not admit a request that resolved
-    # no route: that request reaches the default dispatch path, which is a
-    # different upstream from the one the operator granted.
-    if requested.provider is None:
-        return False
-    # Distinct sidecar owners of the same stripped slug never match.
+    # The owning integration is half of the identity, so a grant authorizes a
+    # request only on the integration it resolves to. Both absent means both
+    # sides are native, which still matches. A grant that resolves no route is
+    # a native identity, not a wildcard that can be spent on a paid sidecar
+    # serving the same slug.
     return requested.provider == allowed.provider
 
 
