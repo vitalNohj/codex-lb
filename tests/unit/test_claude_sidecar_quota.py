@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.modules.claude_sidecar.quota import (
@@ -387,6 +387,89 @@ def test_dashboard_auth_status_past_expiry_is_reauth_required() -> None:
     now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
     assert dashboard_auth_status(auth, now=now) == "reauth_required"
+
+
+# CLIProxyAPI 7.2.135 refreshes Claude access tokens from a background loop with a
+# 4h lead before `expired` (sdk/auth/claude.go RefreshLead). Everything below the
+# lead is a routine, self-healing state and must keep its own label.
+_NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def test_expiry_just_lapsed_is_not_reauth_while_refresh_is_healthy() -> None:
+    """A token a few minutes past `expired` is a pending lazy/background refresh.
+
+    The persisted `expired` trails the live token after a restart, a not-yet-
+    flushed refresh, or clock skew. Badging it would cry wolf on a healthy
+    account, which is the false positive raised in review on PR 36.
+    """
+    auth = _auth(expired=_NOW - timedelta(minutes=2), status="active")
+
+    assert dashboard_auth_status(auth, now=_NOW) == "active"
+
+
+def test_expiry_lapsed_within_refresh_lead_is_not_reauth() -> None:
+    auth = _auth(expired=_NOW - timedelta(hours=3, minutes=59), status="active")
+
+    assert dashboard_auth_status(auth, now=_NOW) == "active"
+
+
+def test_expiry_lapsed_beyond_refresh_lead_is_reauth_required() -> None:
+    """Past the whole proactive-refresh window, refresh has demonstrably stopped.
+
+    This is the real outage shape: refresh token rejected with `invalid_grant`,
+    while CLIProxyAPI still lists the file as active and available.
+    """
+    auth = _auth(expired=_NOW - timedelta(hours=4, minutes=1), status="active")
+
+    assert dashboard_auth_status(auth, now=_NOW) == "reauth_required"
+
+
+def test_paused_account_with_lapsed_expiry_keeps_pause_label() -> None:
+    auth = _auth(status="disabled", disabled=True, expired=_NOW - timedelta(days=2))
+
+    assert dashboard_auth_status(auth, now=_NOW) == "disabled"
+
+
+def test_quota_cooldown_with_lapsed_expiry_is_not_reauth() -> None:
+    """A quota cooldown also sets `unavailable`; it must not read as auth death."""
+    auth = _auth(
+        status="rate_limited",
+        status_message="Quota exceeded",
+        quota_exceeded=True,
+        unavailable=True,
+        failed=7,
+        expired=_NOW - timedelta(days=1),
+    )
+
+    assert dashboard_auth_status(auth, now=_NOW) == "rate_limited"
+
+
+def test_unauthorized_status_message_is_reauth_even_with_fresh_token() -> None:
+    """Upstream sets status=error + status_message=unauthorized on refresh 401.
+
+    It never sets `status` itself to `unauthorized`, so the message must be
+    honoured or this genuine re-auth need would be lost.
+    """
+    auth = _auth(
+        status="error",
+        status_message="unauthorized",
+        unavailable=True,
+        failed=3,
+        expired=_NOW + timedelta(hours=2),
+    )
+
+    assert dashboard_auth_status(auth, now=_NOW) == "reauth_required"
+
+
+def test_invalid_grant_status_message_is_reauth_before_expiry_lapses() -> None:
+    auth = _auth(
+        status="error",
+        status_message="invalid_grant",
+        unavailable=True,
+        expired=_NOW + timedelta(hours=2),
+    )
+
+    assert dashboard_auth_status(auth, now=_NOW) == "reauth_required"
 
 
 def test_dashboard_auth_status_future_expiry_keeps_active() -> None:

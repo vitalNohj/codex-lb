@@ -6,8 +6,9 @@ Claude sidecar cards only showed **Re-auth required** when CLIProxyAPI's managem
 
 ## What Changes
 
-- Treat a Claude auth whose OAuth access-token `expired` timestamp is in the past as `reauth_required`.
-- Keep the existing status-message and `unavailable`+`unauthorized` mappings.
+- Treat a Claude auth whose OAuth access-token `expired` timestamp lapsed longer ago than CLIProxyAPI's 4h proactive Claude refresh lead as `reauth_required`. A more recently lapsed token is a pending background refresh, not a dead credential.
+- Keep the existing status-message and `unavailable`+`unauthorized` mappings, and add `unauthorized` as a status message, which is what CLIProxyAPI actually writes on a refresh 401.
+- Never badge a quota-exceeded or operator-paused credential, whatever its expiry.
 - Read `expired` from the auth-files list when present; otherwise read only that field from the auth JSON at the list entry's `path` (under the CLIProxyAPI auth dir). Never return or log token fields.
 - Apply the same mapped status on accounts/dashboard sidecar rows and on the Claude quota endpoint.
 

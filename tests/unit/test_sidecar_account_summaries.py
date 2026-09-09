@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -213,6 +213,73 @@ def test_claude_missing_oauth_expiry_stays_active() -> None:
 
     assert summary is not None
     assert summary.sidecar_auths[0].status == "active"
+
+
+def test_claude_recently_lapsed_expiry_keeps_active_on_the_dashboard() -> None:
+    """End-user path: a healthy idle account whose access token just lapsed.
+
+    CLIProxyAPI refreshes Claude tokens from a background loop with a 4h lead, so
+    a just-lapsed persisted `expired` is a pending refresh, not a dead login. The
+    dashboard card must keep showing the account as usable.
+    """
+    summary = _summary_for(
+        _claude_auth(
+            status="active",
+            unavailable=False,
+            expired=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_paused_account_with_lapsed_expiry_keeps_pause_label() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="disabled",
+            disabled=True,
+            expired=datetime.now(timezone.utc) - timedelta(days=2),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "disabled"
+    assert summary.sidecar_auths[0].paused is True
+
+
+def test_claude_unauthorized_status_message_maps_to_reauth_with_fresh_token() -> None:
+    """A genuinely dead refresh must still badge even before the token lapses."""
+    summary = _summary_for(
+        _claude_auth(
+            status="error",
+            status_message="unauthorized",
+            unavailable=True,
+            failed=3,
+            expired=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "reauth_required"
+
+
+def test_claude_quota_exceeded_with_lapsed_expiry_is_not_reauth() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="rate_limited",
+            status_message="Quota exceeded",
+            quota_exceeded=True,
+            unavailable=True,
+            failed=7,
+            expired=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "rate_limited"
+    assert summary.sidecar_auths[0].status != "reauth_required"
 
 
 def test_claude_quota_exceeded_with_future_expiry_is_not_reauth() -> None:
