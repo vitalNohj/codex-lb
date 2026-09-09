@@ -18,6 +18,8 @@ A mocked `/v1/chat/completions` request for `cp_claude-fable-5-1`, dotted `claud
 
 Automated review found two defects that the bounded-identity approach itself introduced, both now fixed and regressed. Resolving a version before the legacy alias made native price lookup return nothing when a caller-supplied price table carried only the family entry, which silently dropped that request's cost. Separately, routing recognized Fable 5.1 while `allowed_models` enforcement still collapsed it to `claude-fable-5`, so a key allowed only the family could reach the separately priced version. Both fixes keep one canonical identity across routing, pricing, and access control.
 
+A later review found that resolving prefixes for allowlists dropped the owning integration. Two strip-enabled prefixes on different sidecars then compared equal on the bare wire model, so a key scoped to `cc/<slug>` could reach `or/<slug>`. Access comparison now keeps the route owner when both sides resolved, and still admits an unprefixed wire-model allowlist for a prefixed request.
+
 ## Delivery constraint
 
 Production edits are preserved privately outside the deployment directory. Production must remain protected by the existing dirty-source guard until the reconciled behavior is landed and source reconciliation can be proven contained in the merged result. Deployment and live model testing are not performed by these tests.

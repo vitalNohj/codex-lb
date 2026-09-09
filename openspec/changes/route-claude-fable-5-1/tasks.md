@@ -17,3 +17,4 @@
 - [x] 3.1 Keep the legacy family fallback when a supplied price table lacks the resolved version, so cost is never silently dropped.
 - [x] 3.2 Resolve the version in API-key access control so a `claude-fable-5` allowlist cannot reach separately priced Fable 5.1.
 - [x] 3.3 Regressions for both, failing before the fixes and passing after.
+- [x] 3.4 Keep the owning sidecar in routed allowlist comparison so a `cc/<slug>` allowlist cannot reach `or/<slug>`, without blocking unprefixed wire-model allowlists.

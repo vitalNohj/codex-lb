@@ -124,6 +124,13 @@ def resolve_wire_reasoning_effort(effort: str) -> str:
     return _REASONING_EFFORT_WIRE_ALIASES.get(effort.strip().lower(), effort)
 
 
+class _AccessIdentity(NamedTuple):
+    """Canonical wire identity plus the sidecar that owns the route, if any."""
+
+    provider: str | None
+    canonical: str | None
+
+
 def validate_model_access(
     api_key: ApiKeyData | None,
     model: str | None,
@@ -134,21 +141,41 @@ def validate_model_access(
         return
     if not api_key.allowed_models:
         return
-    allowed_models = {
-        _canonical_model_for_access(allowed_model, routing_entries) for allowed_model in api_key.allowed_models
-    }
-    effective_model = _canonical_model_for_access(model, routing_entries)
-    if model is None or effective_model in allowed_models or model in api_key.allowed_models:
+    if model is None or model in api_key.allowed_models:
+        return
+    requested = _access_identity(model, routing_entries)
+    if any(
+        _access_identities_match(requested, _access_identity(allowed_model, routing_entries))
+        for allowed_model in api_key.allowed_models
+    ):
         return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
+def _access_identities_match(requested: _AccessIdentity, allowed: _AccessIdentity) -> bool:
+    if requested.canonical is None or allowed.canonical is None:
+        return False
+    if requested.canonical != allowed.canonical:
+        return False
+    # An unprefixed allowlist still admits a prefixed request for that wire
+    # model. Distinct sidecar owners of the same stripped slug must not.
+    if requested.provider is None or allowed.provider is None:
+        return True
+    return requested.provider == allowed.provider
+
+
 def _canonical_model_for_access(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> str | None:
+    return _access_identity(model, routing_entries).canonical
+
+
+def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
     if model is None:
-        return None
+        return _AccessIdentity(None, None)
+    provider: str | None = None
     route = resolve_sidecar_route(model, routing_entries)
     if route is not None:
         model = route.wire_model
+        provider = route.provider
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
     # A separately-routed and separately-priced version must not be collapsed
@@ -156,12 +183,12 @@ def _canonical_model_for_access(model: str | None, routing_entries: tuple[Sideca
     # would admit it.
     versioned = resolve_versioned_model_id(normalized)
     if versioned is not None:
-        return versioned
+        return _AccessIdentity(provider, versioned)
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
     if pricing_alias is not None:
-        return pricing_alias
+        return _AccessIdentity(provider, pricing_alias)
     sidecar_alias = canonical_sidecar_model(normalized)
-    return sidecar_alias if sidecar_alias is not None else normalized
+    return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
 
 
 def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | None) -> None:
