@@ -4000,6 +4000,14 @@ async def _build_models_response_body(
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
             if decision is None or decision.provider != "claude":
                 continue
+            # Advertise only IDs the resolver forwards to CLIProxyAPI unchanged.
+            # A discovered ID that itself begins with a ``strip=True`` prefix is
+            # rewritten on dispatch, so publishing it would send the client to a
+            # different model than the catalog named. Pinned full models are
+            # unaffected: the resolver's full-model pass forwards them verbatim,
+            # so they always satisfy this check.
+            if decision.wire_model != slug:
+                continue
             if slug in seen_model_ids:
                 continue
             if not _model_visible_for_api_key(slug, allowed_models):

@@ -472,6 +472,95 @@ async def test_sidecar_model_list_includes_discovered_prefix_models(
 
 
 @pytest.mark.asyncio
+async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    """An advertised id must reach the model the catalog named.
+
+    CLIProxyAPI can report an id that itself begins with a configured
+    ``strip=True`` prefix (here ``cp-``). Advertising such an id verbatim sends
+    the client to a different wire model than the one listed: the catalog says
+    ``cp-claude-sonnet`` while dispatch forwards ``claude-sonnet``. Read the
+    public catalog and send every advertised id back through the real request
+    path, exactly as a client that picks a model from ``GET /v1/models`` does.
+    """
+
+    config = replace(
+        fake_sidecar.config,
+        full_models=(),
+        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
+    )
+    fake_sidecar.models = [
+        _FakeModel("claude-sonnet-4-5-20250929"),
+        _FakeModel("cp-claude-sonnet"),
+    ]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+    listed = await async_client.get("/v1/models")
+    assert listed.status_code == 200
+    advertised_ids = [item["id"] for item in listed.json()["data"]]
+
+    # The routable discovered id is still advertised; the rewritten one is not.
+    assert "claude-sonnet-4-5-20250929" in advertised_ids
+    assert "cp-claude-sonnet" not in advertised_ids
+
+    for advertised in advertised_ids:
+        fake_sidecar.chat_payloads.clear()
+        response = await async_client.post(
+            "/v1/chat/completions",
+            json={"model": advertised, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        if not fake_sidecar.chat_payloads:
+            # Not a sidecar model (e.g. an upstream Codex id); out of scope here.
+            continue
+        assert response.status_code == 200
+        assert fake_sidecar.chat_payloads[-1]["model"] == advertised, (
+            f"catalog advertised {advertised!r} but dispatch forwarded {fake_sidecar.chat_payloads[-1]['model']!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_full_model_under_a_strip_prefix_stays_advertised(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    """Pinning is the operator's explicit statement that an id routes as named.
+
+    The resolver's full-model pass forwards a pinned id verbatim even when it
+    also matches a ``strip=True`` prefix, so the advertised/dispatched identity
+    holds and the id must keep appearing. This is the counterfactual that keeps
+    the routability check from silently dropping pinned models.
+    """
+
+    config = replace(
+        fake_sidecar.config,
+        full_models=("cp-claude-sonnet",),
+        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
+    )
+    fake_sidecar.models = [_FakeModel("cp-claude-sonnet")]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+    listed = await async_client.get("/v1/models")
+    assert listed.status_code == 200
+    assert "cp-claude-sonnet" in [item["id"] for item in listed.json()["data"]]
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "cp-claude-sonnet", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "cp-claude-sonnet"
+
+
+@pytest.mark.asyncio
 async def test_gpt_request_does_not_hit_sidecar(async_client, sidecar_enabled, fake_sidecar):
     response = await async_client.post(
         "/v1/chat/completions",

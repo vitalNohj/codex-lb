@@ -15,6 +15,11 @@ CLIProxyAPI.
   it would route to CLIProxyAPI (prefix or full-model match). Unrelated IDs
   CLIProxyAPI may list (for example Gemini) stay out of the catalog unless they
   are also pinned as full models.
+- Require the advertised ID to equal the wire model the resolver would forward.
+  A discovered ID that itself begins with a `strip` prefix is rewritten on
+  dispatch, so advertising it would send the client to a different model than
+  the catalog named. Pinned full models are unaffected: the resolver's
+  full-model pass forwards them unchanged.
 - Do not change OpenRouter, OrcaRouter, Ollama, or OmniRoute advertising.
 
 ## Capabilities
