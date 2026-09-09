@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
 import type { RequestLog } from "@/features/dashboard/schemas";
+import { usePrivacyStore } from "@/hooks/use-privacy";
 
 const ISO = "2026-01-01T12:00:00+00:00";
 const NULL_FAILURE_METADATA = {
@@ -94,6 +95,7 @@ describe("RecentRequestsTable", () => {
   beforeEach(() => {
     toastSuccess.mockReset();
     toastError.mockReset();
+    usePrivacyStore.setState({ blurred: false });
   });
 
   afterEach(() => {
@@ -538,6 +540,54 @@ describe("RecentRequestsTable", () => {
     expect(within(dialog).getAllByText("CLIProxyAPI").length).toBeGreaterThan(0);
     expect(within(dialog).getByText("Transport").closest("div.space-y-1")).toHaveTextContent("HTTP");
     expect(within(dialog).queryByText("Sidecar HTTP")).not.toBeInTheDocument();
+  });
+
+  it("blurs CLIProxyAPI sidecar email in privacy mode, keeps the provider label", () => {
+    usePrivacyStore.setState({ blurred: true });
+
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={2}
+        accounts={[]}
+        requests={[
+          {
+            ...VIEW_MODE_REQUEST,
+            accountId: null,
+            requestId: "req-sidecar-email",
+            model: "claude-sonnet",
+            source: "claude_sidecar",
+            sidecarAccountLabel: "claude@example.com",
+            apiKeyName: "Claude Key",
+          },
+          {
+            ...VIEW_MODE_REQUEST,
+            accountId: null,
+            requestId: "req-sidecar-bare",
+            model: "claude-haiku",
+            source: "claude_sidecar",
+            sidecarAccountLabel: null,
+            apiKeyName: "Claude Key 2",
+          },
+        ]}
+      />,
+    );
+
+    const emailRow = screen.getByText("claude-sonnet").closest("tr");
+    expect(emailRow).not.toBeNull();
+    const emailCell = within(emailRow as HTMLElement).getAllByRole("cell")[1];
+    const email = within(emailCell).getByText("claude@example.com");
+    expect(email).toHaveClass("privacy-blur");
+    expect(email.closest("[title]")).toBeNull();
+    expect(emailCell).toHaveTextContent("CLIProxyAPI: claude@example.com");
+    expect(emailCell.querySelectorAll(".privacy-blur")).toHaveLength(1);
+    expect(emailCell.querySelector(".block.truncate")).not.toHaveClass("privacy-blur");
+
+    const bareRow = screen.getByText("claude-haiku").closest("tr");
+    expect(bareRow).not.toBeNull();
+    const bareCell = within(bareRow as HTMLElement).getAllByRole("cell")[1];
+    expect(bareCell).toHaveTextContent("CLIProxyAPI");
+    expect(bareCell.querySelector(".privacy-blur")).toBeNull();
   });
 
   it("shows TTFT and output-token TPS beside tokens", () => {
