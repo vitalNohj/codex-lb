@@ -9,7 +9,7 @@ from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.usage.logs import CANCELLED_STATUS, NON_ERROR_STATUSES
-from app.db.models import Account, RequestLog
+from app.db.models import Account, ApiKey, RequestLog
 from app.modules.accounts.usage_time_rollup import conversation_id_expr
 from app.modules.accounts.usage_time_rollup_read import (
     conversation_labeled_presence_union,
@@ -81,6 +81,16 @@ class UserAgentAggregateRow:
     useragent_group: str
     cost_usd: float
     request_count: int
+
+
+@dataclass(frozen=True)
+class ApiKeyDailyAggregateRow:
+    date: str
+    api_key_id: str | None
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
 
 
 class ReportsRepository:
@@ -352,6 +362,55 @@ class ReportsRepository:
             )
             for row in result.all()
         ]
+
+    async def aggregate_daily_by_api_key(
+        self,
+        start_date: date,
+        end_date: date,
+        timezone_info: ZoneInfo | timezone,
+        account_ids: list[str] | None = None,
+        model: str | None = None,
+        useragent_group: str | None = None,
+        api_key_ids: list[str] | None = None,
+    ) -> list[ApiKeyDailyAggregateRow]:
+        window_days = (end_date - start_date).days + 1
+        if window_days > MAX_DAILY_REPORT_DAYS:
+            raise DailyReportRangeTooLargeError(f"report date range must be {MAX_DAILY_REPORT_DAYS} days or less")
+        day_ranges = list(_daily_bucket_ranges(start_date, end_date, timezone_info))
+        if not day_ranges:
+            return []
+
+        rows: list[ApiKeyDailyAggregateRow] = []
+        for day_ranges_batch in batched(day_ranges, _SQLITE_COMPOUND_SELECT_LIMIT):
+            result = await self._session.execute(
+                _daily_by_api_key_stmt(
+                    list(day_ranges_batch),
+                    account_ids,
+                    model,
+                    useragent_group,
+                    api_key_ids,
+                )
+            )
+            rows.extend(
+                ApiKeyDailyAggregateRow(
+                    date=row.report_date,
+                    api_key_id=row.api_key_id,
+                    requests=int(row.requests or 0),
+                    input_tokens=int(row.input_tokens or 0),
+                    output_tokens=int(row.output_tokens or 0),
+                    cost_usd=float(row.cost_usd or 0.0),
+                )
+                for row in result.all()
+            )
+        return rows
+
+    async def list_api_key_labels(self, api_key_ids: list[str]) -> dict[str, tuple[str, str]]:
+        if not api_key_ids:
+            return {}
+        result = await self._session.execute(
+            select(ApiKey.id, ApiKey.name, ApiKey.key_prefix).where(ApiKey.id.in_(api_key_ids))
+        )
+        return {row.id: (row.name, row.key_prefix) for row in result.all()}
 
     async def count_active_accounts(
         self,
@@ -656,6 +715,46 @@ def _daily_rows_stmt(
         )
         .group_by(day_ranges_cte.c.report_date)
         .order_by(day_ranges_cte.c.report_date)
+    )
+
+
+def _daily_by_api_key_stmt(
+    day_ranges: list[tuple[str, datetime, datetime]],
+    account_ids: list[str] | None,
+    model: str | None,
+    useragent_group: str | None,
+    api_key_ids: list[str] | None = None,
+):
+    useragent_group_clause = _useragent_group_filter_clause(useragent_group)
+    day_ranges_cte = _day_ranges_cte(day_ranges)
+    return (
+        select(
+            day_ranges_cte.c.report_date,
+            RequestLog.api_key_id,
+            func.count(RequestLog.id).label("requests"),
+            func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(
+                func.sum(func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)),
+                0,
+            ).label("output_tokens"),
+            func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+        )
+        .select_from(
+            day_ranges_cte.join(
+                RequestLog,
+                and_(
+                    RequestLog.requested_at >= day_ranges_cte.c.day_start,
+                    RequestLog.requested_at < day_ranges_cte.c.day_end,
+                    _normal_traffic_clause(),
+                    *([RequestLog.account_id.in_(account_ids)] if account_ids else []),
+                    *([RequestLog.model == model] if model else []),
+                    *([useragent_group_clause] if useragent_group_clause is not None else []),
+                    *([RequestLog.api_key_id.in_(api_key_ids)] if api_key_ids else []),
+                ),
+            )
+        )
+        .group_by(day_ranges_cte.c.report_date, RequestLog.api_key_id)
+        .order_by(day_ranges_cte.c.report_date, RequestLog.api_key_id)
     )
 
 

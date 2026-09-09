@@ -4,9 +4,16 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.utils.time import to_utc_naive, utcnow
-from app.modules.reports.repository import MAX_DAILY_REPORT_DAYS, DailyReportRangeTooLargeError, ReportsRepository
+from app.modules.reports.repository import (
+    MAX_DAILY_REPORT_DAYS,
+    ApiKeyDailyAggregateRow,
+    DailyReportRangeTooLargeError,
+    ReportsRepository,
+)
 from app.modules.reports.schemas import (
     AccountCostEntry,
+    ApiKeyCostEntry,
+    ApiKeyDailyRow,
     DailyReportRow,
     ModelCostEntry,
     ReportComparison,
@@ -110,6 +117,22 @@ class ReportsService:
             useragent_group,
             api_key_ids,
         )
+        daily_by_api_key_rows = await self._repository.aggregate_daily_by_api_key(
+            start_date,
+            end_date,
+            timezone_info,
+            account_ids,
+            model,
+            useragent_group,
+            api_key_ids,
+        )
+        api_key_ids_found = sorted({row.api_key_id for row in daily_by_api_key_rows if row.api_key_id})
+        api_key_labels = await self._repository.list_api_key_labels(api_key_ids_found)
+        by_api_key, daily_by_api_key = build_api_key_report(
+            daily_by_api_key_rows,
+            api_key_labels,
+            window_days,
+        )
 
         model_total = sum(m.cost_usd for m in by_model)
         useragent_total = sum(u.cost_usd for u in by_useragent)
@@ -167,7 +190,96 @@ class ReportsService:
                 )
                 for u in by_useragent
             ],
+            by_api_key=by_api_key,
+            daily_by_api_key=daily_by_api_key,
         )
+
+
+def build_api_key_report(
+    daily_rows: list[ApiKeyDailyAggregateRow],
+    labels: dict[str, tuple[str, str]],
+    window_days: int,
+) -> tuple[list[ApiKeyCostEntry], list[ApiKeyDailyRow]]:
+    totals: dict[str | None, _ApiKeyTotals] = {}
+    peaks: dict[str | None, ApiKeyDailyAggregateRow] = {}
+    for row in daily_rows:
+        current = totals.get(row.api_key_id)
+        if current is None:
+            totals[row.api_key_id] = _ApiKeyTotals(
+                requests=row.requests,
+                input_tokens=row.input_tokens,
+                output_tokens=row.output_tokens,
+                cost_usd=row.cost_usd,
+            )
+        else:
+            current.requests += row.requests
+            current.input_tokens += row.input_tokens
+            current.output_tokens += row.output_tokens
+            current.cost_usd += row.cost_usd
+        peak = peaks.get(row.api_key_id)
+        if peak is None or row.requests > peak.requests or (row.requests == peak.requests and row.date > peak.date):
+            peaks[row.api_key_id] = row
+
+    cost_total = sum(total.cost_usd for total in totals.values())
+    by_api_key = [
+        _api_key_cost_entry(
+            api_key_id,
+            total,
+            peaks[api_key_id],
+            labels,
+            window_days,
+            cost_total,
+        )
+        for api_key_id, total in totals.items()
+    ]
+    by_api_key.sort(key=lambda entry: (-entry.cost_usd, entry.api_key_id or ""))
+    daily_by_api_key = [
+        ApiKeyDailyRow(
+            date=row.date,
+            api_key_id=row.api_key_id,
+            requests=row.requests,
+            cost_usd=round(row.cost_usd, 4),
+        )
+        for row in daily_rows
+    ]
+    return by_api_key, daily_by_api_key
+
+
+class _ApiKeyTotals:
+    __slots__ = ("requests", "input_tokens", "output_tokens", "cost_usd")
+
+    def __init__(self, requests: int, input_tokens: int, output_tokens: int, cost_usd: float) -> None:
+        self.requests = requests
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cost_usd = cost_usd
+
+
+def _api_key_cost_entry(
+    api_key_id: str | None,
+    total: _ApiKeyTotals,
+    peak: ApiKeyDailyAggregateRow,
+    labels: dict[str, tuple[str, str]],
+    window_days: int,
+    cost_total: float,
+) -> ApiKeyCostEntry:
+    name, key_prefix = labels.get(api_key_id, (None, None)) if api_key_id else (None, None)
+    avg_day_requests = total.requests / window_days if window_days > 0 else 0.0
+    burst_ratio = peak.requests / avg_day_requests if avg_day_requests > 0 else 0.0
+    return ApiKeyCostEntry(
+        api_key_id=api_key_id,
+        name=name,
+        key_prefix=key_prefix,
+        cost_usd=round(total.cost_usd, 4),
+        requests=total.requests,
+        tokens=total.input_tokens + total.output_tokens,
+        percentage=round((total.cost_usd / cost_total * 100), 1) if cost_total > 0 else 0,
+        avg_day_requests=round(avg_day_requests, 2),
+        peak_day_date=peak.date,
+        peak_day_requests=peak.requests,
+        peak_day_cost_usd=round(peak.cost_usd, 4),
+        burst_ratio=round(burst_ratio, 2),
+    )
 
 
 def _resolve_timezone(timezone_name: str | None) -> ZoneInfo | timezone:

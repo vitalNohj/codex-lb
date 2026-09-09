@@ -7,8 +7,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.modules.reports.repository import DailyReportRangeTooLargeError, ReportsRepository
-from app.modules.reports.service import InvalidReportDateRangeError, ReportsService
+from app.modules.reports.repository import (
+    ApiKeyDailyAggregateRow,
+    DailyReportRangeTooLargeError,
+    ReportsRepository,
+)
+from app.modules.reports.service import InvalidReportDateRangeError, ReportsService, build_api_key_report
 
 pytestmark = pytest.mark.unit
 
@@ -68,6 +72,8 @@ async def test_get_reports_averages_use_inclusive_local_calendar_days(
         aggregate_by_model=AsyncMock(return_value=[]),
         aggregate_by_account=AsyncMock(return_value=[]),
         aggregate_by_useragent=AsyncMock(return_value=[]),
+        aggregate_daily_by_api_key=AsyncMock(return_value=[]),
+        list_api_key_labels=AsyncMock(return_value={}),
         earliest_report_activity_at=AsyncMock(return_value=None),
     )
     service = ReportsService(cast(ReportsRepository, repo))
@@ -197,6 +203,8 @@ async def test_get_reports_serializes_conversation_and_breakdown_request_counts(
         aggregate_by_useragent=AsyncMock(
             return_value=[SimpleNamespace(useragent_group="opencode", cost_usd=1.2, request_count=2)]
         ),
+        aggregate_daily_by_api_key=AsyncMock(return_value=[]),
+        list_api_key_labels=AsyncMock(return_value={}),
         earliest_report_activity_at=AsyncMock(return_value=datetime(2026, 5, 1, 0, 0, 0)),
     )
     service = ReportsService(cast(ReportsRepository, repo))
@@ -248,6 +256,16 @@ async def test_get_reports_serializes_conversation_and_breakdown_request_counts(
         "opencode",
         None,
     )
+    repo.aggregate_daily_by_api_key.assert_awaited_once_with(
+        date(2026, 6, 1),
+        date(2026, 6, 1),
+        timezone.utc,
+        None,
+        None,
+        "opencode",
+        None,
+    )
+    repo.list_api_key_labels.assert_awaited_once_with([])
     repo.earliest_report_activity_at.assert_awaited_once_with(None, None, "opencode", None)
 
     assert result.daily[0].median_ttft_ms == 123.46
@@ -264,3 +282,98 @@ async def test_get_reports_serializes_conversation_and_breakdown_request_counts(
     assert result.by_useragent[0].useragent == "opencode"
     assert result.by_useragent[0].requests == 2
     assert result.by_useragent[0].percentage == 100.0
+    assert result.by_api_key == []
+    assert result.daily_by_api_key == []
+
+
+def test_build_api_key_report_compares_bursty_and_steady_keys() -> None:
+    by_api_key, daily_by_api_key = build_api_key_report(
+        [
+            ApiKeyDailyAggregateRow(
+                date="2026-06-01",
+                api_key_id="batch",
+                requests=70,
+                input_tokens=70,
+                output_tokens=70,
+                cost_usd=7.0,
+            ),
+            *[
+                ApiKeyDailyAggregateRow(
+                    date=f"2026-06-0{day}",
+                    api_key_id="agent",
+                    requests=10,
+                    input_tokens=10,
+                    output_tokens=10,
+                    cost_usd=1.0,
+                )
+                for day in range(1, 8)
+            ],
+            ApiKeyDailyAggregateRow(
+                date="2026-06-02",
+                api_key_id=None,
+                requests=3,
+                input_tokens=3,
+                output_tokens=1,
+                cost_usd=0.3,
+            ),
+            ApiKeyDailyAggregateRow(
+                date="2026-06-03",
+                api_key_id="gone",
+                requests=2,
+                input_tokens=2,
+                output_tokens=2,
+                cost_usd=0.2,
+            ),
+        ],
+        {"batch": ("Batch job", "sk-batch"), "agent": ("Agent", "sk-agent")},
+        7,
+    )
+
+    by_id = {entry.api_key_id: entry for entry in by_api_key}
+    assert by_id["batch"].requests == 70
+    assert by_id["batch"].avg_day_requests == 10
+    assert by_id["batch"].peak_day_requests == 70
+    assert by_id["batch"].peak_day_date == "2026-06-01"
+    assert by_id["batch"].burst_ratio == 7
+    assert by_id["batch"].name == "Batch job"
+    assert by_id["agent"].requests == 70
+    assert by_id["agent"].avg_day_requests == 10
+    assert by_id["agent"].peak_day_requests == 10
+    assert by_id["agent"].burst_ratio == 1
+    assert by_id[None].api_key_id is None
+    assert by_id[None].name is None
+    assert by_id["gone"].name is None
+    assert by_id["gone"].key_prefix is None
+    assert [row.api_key_id for row in daily_by_api_key if row.date == "2026-06-01"] == ["batch", "agent"]
+
+
+def test_build_api_key_report_breaks_peak_ties_with_the_latest_date() -> None:
+    by_api_key, _ = build_api_key_report(
+        [
+            ApiKeyDailyAggregateRow(
+                date="2026-06-01",
+                api_key_id="key-1",
+                requests=5,
+                input_tokens=5,
+                output_tokens=1,
+                cost_usd=0.5,
+            ),
+            ApiKeyDailyAggregateRow(
+                date="2026-06-03",
+                api_key_id="key-1",
+                requests=5,
+                input_tokens=5,
+                output_tokens=1,
+                cost_usd=0.4,
+            ),
+        ],
+        {"key-1": ("One", "sk-one")},
+        3,
+    )
+
+    assert by_api_key[0].peak_day_date == "2026-06-03"
+    assert by_api_key[0].peak_day_requests == 5
+    assert by_api_key[0].peak_day_cost_usd == 0.4
+    assert by_api_key[0].avg_day_requests == 3.33
+    assert by_api_key[0].burst_ratio == 1.5
+

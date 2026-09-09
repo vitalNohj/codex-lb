@@ -19,6 +19,7 @@ import type { QueueWaitChartProps } from "./queue-wait-chart";
 import type { ModelDistributionDonutProps } from "./model-distribution-donut";
 import type { UseragentDistributionDonutProps } from "./useragent-distribution-donut";
 import { DailyDetailTable } from "./daily-detail-table";
+import type { ApiKeyComparisonProps } from "./api-key-comparison";
 import {
   daysAgoLocalISO,
   getBrowserReportsTimeZone,
@@ -61,6 +62,11 @@ const UseragentDistributionDonut = lazy(() =>
     default: (props: UseragentDistributionDonutProps) => (
       <module.UseragentDistributionDonut {...props} />
     ),
+  })),
+);
+const ApiKeyComparison = lazy(() =>
+  import("./api-key-comparison").then((module) => ({
+    default: (props: ApiKeyComparisonProps) => <module.ApiKeyComparison {...props} />,
   })),
 );
 
@@ -363,6 +369,14 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
               ) : null}
             </div>
           ) : null}
+          <Suspense fallback={<div className="h-[320px] rounded-xl border bg-card" />}>
+            <ApiKeyComparison
+              startDate={filters.startDate}
+              endDate={filters.endDate}
+              byApiKey={reportsQuery.data.byApiKey}
+              dailyByApiKey={reportsQuery.data.dailyByApiKey}
+            />
+          </Suspense>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <div className="space-y-4 lg:col-span-1">
               <Suspense fallback={<div className="h-[220px] rounded-xl border bg-card" />}>

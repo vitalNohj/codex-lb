@@ -32,7 +32,7 @@ vi.mock("@/lib/api-client", () => ({
     daily: [],
     byModel: [],
     byUseragent: [],
-    byAccount: [],
+    byAccount: [], byApiKey: [], dailyByApiKey: [],
   }),
 }));
 

@@ -37,6 +37,8 @@ const EMPTY_REPORT: ReportsResponse = {
   byModel: [],
   byUseragent: [],
   byAccount: [],
+  byApiKey: [],
+  dailyByApiKey: [],
 };
 
 const REPORT_WITH_MODEL: ReportsResponse = {

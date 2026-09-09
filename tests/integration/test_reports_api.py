@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from app.core.crypto import TokenEncryptor
-from app.db.models import Account, AccountStatus, RequestLog
+from app.db.models import Account, AccountStatus, ApiKey, RequestLog
 from app.db.session import SessionLocal
 
 pytestmark = pytest.mark.integration
@@ -1889,3 +1889,82 @@ async def test_reports_api_filters_by_api_key_id(async_client, db_setup):
     payload3 = response3.json()
     assert payload3["summary"]["totalRequests"] == 0
     assert payload3["summary"]["totalCostUsd"] == 0.0
+
+
+async def test_reports_api_returns_api_key_burst_comparison(async_client, db_setup):
+    async with SessionLocal() as session:
+        session.add(_make_account("acc_key_compare", "key-compare@example.com"))
+        session.add_all(
+            [
+                ApiKey(id="batch", name="Batch job", key_hash="hash-batch", key_prefix="sk-batch"),
+                ApiKey(id="agent", name="Agent", key_hash="hash-agent", key_prefix="sk-agent"),
+            ]
+        )
+        logs = [
+            RequestLog(
+                account_id="acc_key_compare",
+                api_key_id="batch",
+                request_id=f"batch-{index}",
+                requested_at=datetime(2026, 6, 1, 10, index),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=10,
+                output_tokens=5,
+                cost_usd=0.10,
+            )
+            for index in range(7)
+        ]
+        logs.extend(
+            RequestLog(
+                account_id="acc_key_compare",
+                api_key_id="agent",
+                request_id=f"agent-{day}",
+                requested_at=datetime(2026, 6, day, 12, 0),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=8,
+                output_tokens=2,
+                cost_usd=0.05,
+            )
+            for day in range(1, 8)
+        )
+        logs.append(
+            RequestLog(
+                account_id="acc_key_compare",
+                api_key_id=None,
+                request_id="no-key",
+                requested_at=datetime(2026, 6, 2, 15, 0),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=1,
+                output_tokens=1,
+                cost_usd=0.01,
+            )
+        )
+        session.add_all(logs)
+        await session.commit()
+
+    response = await async_client.get(
+        "/api/reports",
+        params={"start_date": "2026-06-01", "end_date": "2026-06-07"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    by_id = {item["apiKeyId"]: item for item in payload["byApiKey"]}
+    assert by_id["batch"]["requests"] == 7
+    assert by_id["batch"]["name"] == "Batch job"
+    assert by_id["batch"]["avgDayRequests"] == 1.0
+    assert by_id["batch"]["peakDayRequests"] == 7
+    assert by_id["batch"]["peakDayDate"] == "2026-06-01"
+    assert by_id["batch"]["burstRatio"] == 7.0
+    assert by_id["agent"]["requests"] == 7
+    assert by_id["agent"]["avgDayRequests"] == 1.0
+    assert by_id["agent"]["peakDayRequests"] == 1
+    assert by_id["agent"]["burstRatio"] == 1.0
+    assert by_id[None]["requests"] == 1
+    assert by_id[None]["name"] is None
+    daily_pairs = {(row["date"], row["apiKeyId"]) for row in payload["dailyByApiKey"]}
+    assert ("2026-06-01", "batch") in daily_pairs
+    assert ("2026-06-07", "agent") in daily_pairs
+    assert ("2026-06-02", None) in daily_pairs
+

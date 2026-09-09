@@ -72,6 +72,8 @@ const EMPTY_REPORT: ReportsResponse = {
   byModel: [],
   byUseragent: [],
   byAccount: [],
+  byApiKey: [],
+  dailyByApiKey: [],
 };
 
 const useReportsMock = vi.mocked(useReports);
@@ -575,6 +577,62 @@ describe("ReportsPage", () => {
     }
   });
 
+  it("keeps the API key comparison visible when no line charts are selected", async () => {
+    window.localStorage.setItem(REPORT_CHART_VISIBILITY_STORAGE_KEY, JSON.stringify([]));
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: {
+          ...EMPTY_REPORT,
+          byApiKey: [
+            {
+              apiKeyId: "batch",
+              name: "Batch job",
+              keyPrefix: "sk-batch",
+              costUsd: 1,
+              requests: 70,
+              tokens: 700,
+              percentage: 50,
+              avgDayRequests: 10,
+              peakDayDate: "2026-06-01",
+              peakDayRequests: 70,
+              peakDayCostUsd: 1,
+              burstRatio: 7,
+            },
+            {
+              apiKeyId: "agent",
+              name: "Agent",
+              keyPrefix: "sk-agent",
+              costUsd: 1,
+              requests: 70,
+              tokens: 700,
+              percentage: 50,
+              avgDayRequests: 10,
+              peakDayDate: "2026-06-07",
+              peakDayRequests: 10,
+              peakDayCostUsd: 0.14,
+              burstRatio: 1,
+            },
+          ],
+          dailyByApiKey: [],
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(await screen.findByTestId("api-key-comparison")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Cost by Day", {
+        selector: "div.text-sm.font-semibold.text-foreground",
+      }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByTestId("api-key-pattern-batch")).toHaveTextContent(/Burst/);
+    expect(screen.getByTestId("api-key-pattern-agent")).toHaveTextContent(/Steady/);
+  });
+
   it("renders all five line charts by default", async () => {
     useReportsMock.mockReturnValue(
       asUseReportsResult({
@@ -903,7 +961,10 @@ describe("ReportsPage", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /csv/i }));
+    const dailyTitle = await screen.findByText("Daily Breakdown");
+    const dailyCard = dailyTitle.closest("div.rounded-xl.border.bg-card");
+    expect(dailyCard).not.toBeNull();
+    await user.click(within(dailyCard!).getByRole("button", { name: /csv/i }));
 
     expect(createObjectURL).toHaveBeenCalledOnce();
     const csvContent = await blobText();

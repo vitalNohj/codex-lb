@@ -43,6 +43,28 @@ class UserAgentCostEntry(DashboardModel):
     percentage: float = 0.0
 
 
+class ApiKeyCostEntry(DashboardModel):
+    api_key_id: str | None
+    name: str | None = None
+    key_prefix: str | None = None
+    cost_usd: float = 0.0
+    requests: int = 0
+    tokens: int = 0
+    percentage: float = 0.0
+    avg_day_requests: float = 0.0
+    peak_day_date: str | None = None
+    peak_day_requests: int = 0
+    peak_day_cost_usd: float = 0.0
+    burst_ratio: float = 0.0
+
+
+class ApiKeyDailyRow(DashboardModel):
+    date: str
+    api_key_id: str | None
+    requests: int = 0
+    cost_usd: float = 0.0
+
+
 class ReportSummary(DashboardModel):
     total_cost_usd: float
     total_input_tokens: int
@@ -77,3 +99,5 @@ class ReportsResponse(DashboardModel):
     by_model: list[ModelCostEntry] = Field(default_factory=list)
     by_account: list[AccountCostEntry] = Field(default_factory=list)
     by_useragent: list[UserAgentCostEntry] = Field(default_factory=list)
+    by_api_key: list[ApiKeyCostEntry] = Field(default_factory=list)
+    daily_by_api_key: list[ApiKeyDailyRow] = Field(default_factory=list)

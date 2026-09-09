@@ -15,7 +15,7 @@ function validReportsPayload() {
     daily: [{ date: "2026-06-05", requests: 4, conversations: 3, inputTokens: 100, outputTokens: 50, reasoningTokens: 35, cachedInputTokens: 0, costUsd: 1, activeAccounts: 2, cancelledCount: 2, errorCount: 1 }],
     byModel: [{ model: "gpt-5.1", costUsd: 12.5, requests: 4, percentage: 100 }],
     byUseragent: [{ useragent: "claude-code", costUsd: 12.5, requests: 4, percentage: 100 }],
-    byAccount: [],
+    byAccount: [], byApiKey: [], dailyByApiKey: [],
   };
 }
 
@@ -33,7 +33,7 @@ describe("ReportsResponseSchema", () => {
       daily: [{ date: "2026-06-05", requests: 4, conversations: 3, inputTokens: 100, outputTokens: 50, reasoningTokens: 35, cachedInputTokens: 0, costUsd: 1, activeAccounts: 2, errorCount: 1, cancelledCount: 2 }],
       byModel: [{ model: "gpt-5.1", costUsd: 12.5, requests: 4, percentage: 100 }],
       byUseragent: [{ useragent: "claude-code", costUsd: 12.5, requests: 4, percentage: 100 }],
-      byAccount: [],
+      byAccount: [], byApiKey: [], dailyByApiKey: [],
     });
     expect(parsed.summary.totalRequests).toBe(4);
     expect(parsed.summary.totalErrors).toBe(1);
@@ -100,7 +100,7 @@ describe("ReportsResponseSchema", () => {
         daily: [{ date: "2026-06-05", requests: 10, conversations: 0, inputTokens: 100, outputTokens: 50, reasoningTokens: 35, cachedInputTokens: 0, costUsd: 1, activeAccounts: 2, cancelledCount: 0, errorCount: 0 }],
         byModel: [{ model: "gpt-5.1", costUsd: 12.5, requests: 25, percentage: 100 }],
         byUseragent: [{ useragent: "claude-code", costUsd: 12.5, requests: 25, percentage: 100 }],
-        byAccount: [],
+        byAccount: [], byApiKey: [], dailyByApiKey: [],
       }),
     ).toThrow(/totalConversations/i);
   });
@@ -148,7 +148,7 @@ describe("ReportsResponseSchema", () => {
           percentage: 100,
         },
       ],
-      byAccount: [],
+      byAccount: [], byApiKey: [], dailyByApiKey: [],
     });
 
     expect(parsed.comparison.canCompare).toBe(true);
@@ -180,7 +180,7 @@ describe("ReportsResponseSchema", () => {
         daily: [],
         byModel: [],
         byUseragent: [],
-        byAccount: [],
+        byAccount: [], byApiKey: [], dailyByApiKey: [],
       }),
     ).toThrow(/comparison/i);
   });
@@ -209,7 +209,7 @@ describe("ReportsResponseSchema", () => {
         daily: [],
         byModel: [],
         byUseragent: [],
-        byAccount: [],
+        byAccount: [], byApiKey: [], dailyByApiKey: [],
       }),
     ).toThrow(/previous/i);
   });
@@ -249,7 +249,7 @@ describe("ReportsResponseSchema", () => {
           },
         ],
         byUseragent: [],
-        byAccount: [],
+        byAccount: [], byApiKey: [], dailyByApiKey: [],
       }),
     ).toThrow(/requests/i);
   });
@@ -289,8 +289,63 @@ describe("ReportsResponseSchema", () => {
             percentage: 100,
           },
         ],
-        byAccount: [],
+        byAccount: [], byApiKey: [], dailyByApiKey: [],
       }),
     ).toThrow(/byUseragent/i);
+  });
+
+  it("rejects omitted byApiKey and dailyByApiKey arrays", () => {
+    const missingByApiKey = validReportsPayload();
+    Reflect.deleteProperty(missingByApiKey, "byApiKey");
+    expect(() => ReportsResponseSchema.parse(missingByApiKey)).toThrow(/byApiKey/i);
+
+    const missingDaily = validReportsPayload();
+    Reflect.deleteProperty(missingDaily, "dailyByApiKey");
+    expect(() => ReportsResponseSchema.parse(missingDaily)).toThrow(/dailyByApiKey/i);
+  });
+
+  it("preserves API-key burst fields from the reports payload", () => {
+    const parsed = ReportsResponseSchema.parse({
+      ...validReportsPayload(),
+      byApiKey: [
+        {
+          apiKeyId: "batch",
+          name: "Batch job",
+          keyPrefix: "sk-batch",
+          costUsd: 1.25,
+          requests: 70,
+          tokens: 700,
+          percentage: 50,
+          avgDayRequests: 10,
+          peakDayDate: "2026-06-01",
+          peakDayRequests: 70,
+          peakDayCostUsd: 1.25,
+          burstRatio: 7,
+        },
+        {
+          apiKeyId: null,
+          name: null,
+          keyPrefix: null,
+          costUsd: 0.2,
+          requests: 3,
+          tokens: 30,
+          percentage: 8,
+          avgDayRequests: 0.43,
+          peakDayDate: "2026-06-02",
+          peakDayRequests: 3,
+          peakDayCostUsd: 0.2,
+          burstRatio: 7,
+        },
+      ],
+      dailyByApiKey: [
+        { date: "2026-06-01", apiKeyId: "batch", requests: 70, costUsd: 1.25 },
+        { date: "2026-06-02", apiKeyId: null, requests: 3, costUsd: 0.2 },
+      ],
+    });
+
+    expect(parsed.byApiKey[0]?.apiKeyId).toBe("batch");
+    expect(parsed.byApiKey[0]?.burstRatio).toBe(7);
+    expect(parsed.byApiKey[1]?.apiKeyId).toBeNull();
+    expect(parsed.dailyByApiKey).toHaveLength(2);
   });
 });

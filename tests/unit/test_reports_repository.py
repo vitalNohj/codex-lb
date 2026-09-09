@@ -11,7 +11,7 @@ from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.crypto import TokenEncryptor
-from app.db.models import Account, AccountStatus, Base, RequestLog
+from app.db.models import Account, AccountStatus, ApiKey, Base, RequestLog
 from app.modules.reports.repository import (
     DailyReportRangeTooLargeError,
     ReportsRepository,
@@ -55,6 +55,10 @@ def _make_account(account_id: str, email: str) -> Account:
         status=AccountStatus.ACTIVE,
         deactivation_reason=None,
     )
+
+
+def _make_api_key(key_id: str, name: str, prefix: str) -> ApiKey:
+    return ApiKey(id=key_id, name=name, key_hash=f"hash-{key_id}", key_prefix=prefix)
 
 
 @pytest.mark.asyncio
@@ -950,3 +954,103 @@ async def test_aggregate_by_useragent_separates_real_unknown_from_missing_groups
         ("CodexCLI", 0.3, 1),
         ("Missing User-Agent", 0.1, 1),
     ]
+
+
+@pytest.mark.asyncio
+async def test_aggregate_daily_by_api_key_groups_local_days_and_skips_warmup(
+    async_session: AsyncSession,
+) -> None:
+    repo = ReportsRepository(async_session)
+    timezone_info = timezone.utc
+
+    async_session.add(_make_account("acc_reports_keys", "reports-keys@example.com"))
+    async_session.add_all(
+        [
+            _make_api_key("batch", "Batch job", "sk-batch"),
+            _make_api_key("agent", "Agent", "sk-agent"),
+            RequestLog(
+                account_id="acc_reports_keys",
+                api_key_id="batch",
+                request_id="report-key-batch-1",
+                requested_at=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=10,
+                output_tokens=4,
+                cost_usd=0.7,
+            ),
+            RequestLog(
+                account_id="acc_reports_keys",
+                api_key_id="batch",
+                request_id="report-key-batch-2",
+                requested_at=datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=10,
+                output_tokens=4,
+                cost_usd=0.7,
+            ),
+            RequestLog(
+                account_id="acc_reports_keys",
+                api_key_id="agent",
+                request_id="report-key-agent-1",
+                requested_at=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=5,
+                output_tokens=2,
+                cost_usd=0.2,
+            ),
+            RequestLog(
+                account_id="acc_reports_keys",
+                api_key_id="agent",
+                request_id="report-key-agent-2",
+                requested_at=datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=5,
+                output_tokens=2,
+                cost_usd=0.2,
+            ),
+            RequestLog(
+                account_id="acc_reports_keys",
+                api_key_id=None,
+                request_id="report-key-none",
+                requested_at=datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+                model="gpt-5.1",
+                status="success",
+                input_tokens=1,
+                output_tokens=1,
+                cost_usd=0.05,
+            ),
+            RequestLog(
+                account_id="acc_reports_keys",
+                api_key_id="batch",
+                request_id="report-key-warmup",
+                requested_at=datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+                model="gpt-5.1",
+                status="success",
+                request_kind="warmup",
+                input_tokens=99,
+                output_tokens=99,
+                cost_usd=9.9,
+            ),
+        ]
+    )
+    await async_session.commit()
+
+    rows = await repo.aggregate_daily_by_api_key(
+        date(2026, 6, 1),
+        date(2026, 6, 2),
+        timezone_info,
+    )
+    labels = await repo.list_api_key_labels(["batch", "agent", "gone"])
+
+    grouped = {(row.date, row.api_key_id): row for row in rows}
+    assert grouped[("2026-06-01", "batch")].requests == 2
+    assert grouped[("2026-06-01", "batch")].cost_usd == 1.4
+    assert grouped[("2026-06-01", "agent")].requests == 1
+    assert grouped[("2026-06-02", "agent")].requests == 1
+    assert grouped[("2026-06-02", None)].requests == 1
+    assert labels == {"batch": ("Batch job", "sk-batch"), "agent": ("Agent", "sk-agent")}
+

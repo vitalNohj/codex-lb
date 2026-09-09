@@ -38,6 +38,28 @@ const AccountCostEntrySchema = z.object({
   requests: z.number(),
 });
 
+const ApiKeyCostEntrySchema = z.object({
+  apiKeyId: z.string().nullable(),
+  name: z.string().nullable(),
+  keyPrefix: z.string().nullable(),
+  costUsd: z.number(),
+  requests: z.number(),
+  tokens: z.number(),
+  percentage: z.number(),
+  avgDayRequests: z.number(),
+  peakDayDate: z.string().nullable(),
+  peakDayRequests: z.number(),
+  peakDayCostUsd: z.number(),
+  burstRatio: z.number(),
+});
+
+const ApiKeyDailyRowSchema = z.object({
+  date: z.string(),
+  apiKeyId: z.string().nullable(),
+  requests: z.number(),
+  costUsd: z.number(),
+});
+
 const ReportSummarySchema = z.object({
   totalCostUsd: z.number(),
   totalInputTokens: z.number(),
@@ -72,12 +94,16 @@ export const ReportsResponseSchema = z.object({
   byModel: z.array(ModelCostEntrySchema),
   byUseragent: z.array(UseragentCostEntrySchema),
   byAccount: z.array(AccountCostEntrySchema),
+  byApiKey: z.array(ApiKeyCostEntrySchema),
+  dailyByApiKey: z.array(ApiKeyDailyRowSchema),
 });
 
 export type DailyReportRow = z.input<typeof DailyReportRowSchema>;
 export type ModelCostEntry = z.infer<typeof ModelCostEntrySchema>;
 export type UseragentCostEntry = z.infer<typeof UseragentCostEntrySchema>;
 export type AccountCostEntry = z.infer<typeof AccountCostEntrySchema>;
+export type ApiKeyCostEntry = z.infer<typeof ApiKeyCostEntrySchema>;
+export type ApiKeyDailyRow = z.infer<typeof ApiKeyDailyRowSchema>;
 export type ReportSummary = z.infer<typeof ReportSummarySchema>;
 export type ReportComparison = z.infer<typeof ReportComparisonSchema>;
 export type ReportsResponse = z.infer<typeof ReportsResponseSchema>;
