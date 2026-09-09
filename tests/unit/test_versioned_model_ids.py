@@ -5,10 +5,12 @@ from typing import Any, cast
 
 import pytest
 
+from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.exceptions import ProxyModelNotAllowed
 from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice, get_pricing_for_model
 from app.modules.proxy.request_policy import validate_model_access
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
 
 pytestmark = pytest.mark.unit
 
@@ -78,3 +80,38 @@ def test_family_allowlist_still_admits_the_family() -> None:
     key = SimpleNamespace(allowed_models=["claude-fable-5"], allowed_reasoning_efforts=None)
 
     validate_model_access(cast(Any, key), "cc/claude-fable-5")
+
+
+def _two_provider_routing() -> tuple[SidecarRoutingEntry, ...]:
+    """Two integrations whose strip-enabled prefixes expose the same bare slug."""
+    return (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+            full_models=(),
+        ),
+        SidecarRoutingEntry(
+            provider="openrouter",
+            prefixes=(SidecarPrefix(prefix="or/", strip=True),),
+            full_models=(),
+        ),
+    )
+
+
+def test_a_key_scoped_to_one_provider_cannot_reach_another_providers_same_slug() -> None:
+    """Two integrations sharing a bare slug must not collapse to one access identity."""
+    key = SimpleNamespace(allowed_models=["cc/house-blend-1"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), "cc/house-blend-1", routing_entries=_two_provider_routing())
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "or/house-blend-1", routing_entries=_two_provider_routing())
+
+
+def test_provider_scope_does_not_break_versioned_denial_across_providers() -> None:
+    key = SimpleNamespace(allowed_models=["cc/claude-fable-5"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), "cc/claude-fable-5", routing_entries=_two_provider_routing())
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "cc/claude-fable-5-1", routing_entries=_two_provider_routing())

@@ -134,21 +134,37 @@ def validate_model_access(
         return
     if not api_key.allowed_models:
         return
-    allowed_models = {
-        _canonical_model_for_access(allowed_model, routing_entries) for allowed_model in api_key.allowed_models
-    }
-    effective_model = _canonical_model_for_access(model, routing_entries)
-    if model is None or effective_model in allowed_models or model in api_key.allowed_models:
+    if model is None or model in api_key.allowed_models:
         return
+    requested = _canonical_model_for_access(model, routing_entries)
+    for allowed_model in api_key.allowed_models:
+        if _canonical_model_for_access(allowed_model, routing_entries) == requested:
+            return
+        # An entry that names no integration is provider-agnostic: it grants the
+        # model wherever it is served, so it matches the requested identity
+        # under that identity's own provider. An entry that does name one keeps
+        # its provider and grants only that integration.
+        if resolve_sidecar_route(allowed_model, routing_entries) is None:
+            bare_allowed = _canonical_model_for_access(allowed_model)
+            if bare_allowed is not None and requested is not None and requested.endswith(f":{bare_allowed}"):
+                return
+            if bare_allowed == requested:
+                return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
 def _canonical_model_for_access(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> str | None:
     if model is None:
         return None
+    # The owning integration is part of the identity: two integrations can
+    # expose the same bare slug through their own strip-enabled prefixes, and
+    # they dispatch to different upstreams with different billing, so their
+    # canonical forms must never compare equal.
     route = resolve_sidecar_route(model, routing_entries)
+    provider_scope = ""
     if route is not None:
         model = route.wire_model
+        provider_scope = f"{route.provider}:"
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
     # A separately-routed and separately-priced version must not be collapsed
@@ -156,12 +172,12 @@ def _canonical_model_for_access(model: str | None, routing_entries: tuple[Sideca
     # would admit it.
     versioned = resolve_versioned_model_id(normalized)
     if versioned is not None:
-        return versioned
+        return f"{provider_scope}{versioned}"
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
     if pricing_alias is not None:
-        return pricing_alias
+        return f"{provider_scope}{pricing_alias}"
     sidecar_alias = canonical_sidecar_model(normalized)
-    return sidecar_alias if sidecar_alias is not None else normalized
+    return f"{provider_scope}{sidecar_alias if sidecar_alias is not None else normalized}"
 
 
 def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | None) -> None:
