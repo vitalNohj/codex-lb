@@ -347,6 +347,7 @@ from app.modules.proxy.schemas import (
     WarmupSubmittedAccount,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
+from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
@@ -3903,6 +3904,17 @@ async def _build_codex_models_response_body(
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
+def _sidecar_dispatch_model(wire_model: str) -> str:
+    """The model CLIProxyAPI would actually be asked for.
+
+    Mirrors the dispatch-time resolution in ``build_sidecar_chat_payload`` so
+    the catalog can tell whether an advertised id survives it. The throwaway
+    body absorbs the reasoning-effort side effect, which is irrelevant here.
+    """
+    dispatched, _ = apply_sidecar_model_profile_with_suffix_effort({}, stripped_model=wire_model)
+    return dispatched
+
+
 def _sidecar_advertised_model_ids(
     full_models: tuple[str, ...],
     *,
@@ -3993,6 +4005,7 @@ async def _build_models_response_body(
         discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        pinned_full_models = {full.strip().lower() for full in sidecar_config.full_models}
         for slug in _sidecar_advertised_model_ids(
             sidecar_config.full_models,
             discovered_ids=tuple(model.id for model in discovered_models),
@@ -4000,13 +4013,22 @@ async def _build_models_response_body(
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
             if decision is None or decision.provider != "claude":
                 continue
-            # Advertise only IDs the resolver forwards to CLIProxyAPI unchanged.
-            # A discovered ID that itself begins with a ``strip=True`` prefix is
-            # rewritten on dispatch, so publishing it would send the client to a
-            # different model than the catalog named. Pinned full models are
-            # unaffected: the resolver's full-model pass forwards them verbatim,
-            # so they always satisfy this check.
-            if decision.wire_model != slug:
+            # A discovered id is advertisable only when dispatch would reach the
+            # model the catalog names. Two rewrites stand between the two: the
+            # resolver's ``strip=True`` prefix removal, and the dispatch-time
+            # model profile (alias mapping plus reasoning-effort suffix split)
+            # that ``build_sidecar_chat_payload`` applies to the wire model.
+            # Either one can silently redirect the request -- ``cp-claude-sonnet``
+            # to ``claude-sonnet``, ``claude-fable-5-1`` to ``claude-fable-5`` --
+            # so resolve the id the whole way and require it to come back
+            # unchanged. An id that does not survive stays out of the catalog
+            # rather than being published as a model it does not reach.
+            #
+            # Pinning is exempt: a configured full model is the operator's
+            # explicit statement that the id is offered, and pinned advertising
+            # predates discovery. This check governs which discovered ids may
+            # join the catalog, never which pinned ids may stay in it.
+            if slug.strip().lower() not in pinned_full_models and _sidecar_dispatch_model(decision.wire_model) != slug:
                 continue
             if slug in seen_model_ids:
                 continue

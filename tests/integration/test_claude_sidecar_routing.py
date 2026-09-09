@@ -449,7 +449,7 @@ async def test_sidecar_model_list_includes_discovered_prefix_models(
     config = replace(fake_sidecar.config, full_models=())
     fake_sidecar.models = [
         _FakeModel("claude-sonnet-4-5-20250929"),
-        _FakeModel("claude-fable-5-1"),
+        _FakeModel("claude-fable-5"),
         _FakeModel("gemini-2.5-pro"),
     ]
 
@@ -465,7 +465,7 @@ async def test_sidecar_model_list_includes_discovered_prefix_models(
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
     assert "claude-sonnet-4-5-20250929" in ids
-    assert "claude-fable-5-1" in ids
+    assert "claude-fable-5" in ids
     assert "gemini-2.5-pro" not in ids
     claude_entry = next(item for item in response.json()["data"] if item["id"] == "claude-sonnet-4-5-20250929")
     assert claude_entry["owned_by"] == "anthropic"
@@ -477,12 +477,15 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
 ):
     """An advertised id must reach the model the catalog named.
 
+    Two independent rewrites sit between the advertised id and the wire model.
     CLIProxyAPI can report an id that itself begins with a configured
-    ``strip=True`` prefix (here ``cp-``). Advertising such an id verbatim sends
-    the client to a different wire model than the one listed: the catalog says
-    ``cp-claude-sonnet`` while dispatch forwards ``claude-sonnet``. Read the
-    public catalog and send every advertised id back through the real request
-    path, exactly as a client that picks a model from ``GET /v1/models`` does.
+    ``strip=True`` prefix (here ``cp-``), which the resolver removes. Dispatch
+    then applies the model profile, which maps aliases and splits a
+    reasoning-effort suffix. Either one makes the catalog name a model the
+    request never reaches: ``cp-claude-sonnet`` becomes ``claude-sonnet``,
+    ``claude-fable-5-1`` becomes ``claude-fable-5``. Read the public catalog and
+    send every advertised id back through the real request path, exactly as a
+    client that picks a model from ``GET /v1/models`` does.
     """
 
     config = replace(
@@ -493,6 +496,11 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     fake_sidecar.models = [
         _FakeModel("claude-sonnet-4-5-20250929"),
         _FakeModel("cp-claude-sonnet"),
+        # Rewritten by the dispatch-time model profile rather than the prefix:
+        # an alias mapping, a reasoning-effort suffix, and a -latest alias.
+        _FakeModel("claude-fable-5-1"),
+        _FakeModel("claude-opus-4-7-high"),
+        _FakeModel("claude-3-5-sonnet-latest"),
     ]
 
     async def load_config():
@@ -507,6 +515,11 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     # The routable discovered id is still advertised; the rewritten one is not.
     assert "claude-sonnet-4-5-20250929" in advertised_ids
     assert "cp-claude-sonnet" not in advertised_ids
+    # Dispatch also remaps through the model profile: an alias id and a
+    # reasoning-effort suffix are both rewritten before the request leaves.
+    assert "claude-fable-5-1" not in advertised_ids
+    assert "claude-opus-4-7-high" not in advertised_ids
+    assert "claude-3-5-sonnet-latest" not in advertised_ids
 
     for advertised in advertised_ids:
         fake_sidecar.chat_payloads.clear()
@@ -558,6 +571,32 @@ async def test_a_pinned_full_model_under_a_strip_prefix_stays_advertised(
 
     assert response.status_code == 200
     assert fake_sidecar.chat_payloads[-1]["model"] == "cp-claude-sonnet"
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_full_model_the_profile_rewrites_stays_advertised(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    """Pinned advertising is unchanged by the discovered-id routability check.
+
+    ``claude-fable-5-1`` is remapped to ``claude-fable-5`` by the dispatch-time
+    model profile, which is pre-existing behavior for pinned ids and not this
+    change's concern. The check decides which DISCOVERED ids may join the
+    catalog; it must never evict an id the operator pinned.
+    """
+
+    config = replace(fake_sidecar.config, full_models=("claude-fable-5-1",))
+    fake_sidecar.models = [_FakeModel("claude-sonnet-4-5-20250929")]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+    listed = await async_client.get("/v1/models")
+
+    assert listed.status_code == 200
+    assert "claude-fable-5-1" in [item["id"] for item in listed.json()["data"]]
 
 
 @pytest.mark.asyncio
