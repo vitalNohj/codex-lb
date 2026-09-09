@@ -16186,6 +16186,15 @@ def _pre_dispatch_proxy_connect_error(
     )
 
 
+def _usage_limit_reached_error(
+    message: str = "The usage limit has been reached",
+) -> proxy_service.ProxyResponseError:
+    return proxy_service.ProxyResponseError(
+        429,
+        openai_error("usage_limit_reached", message, error_type="rate_limit_error"),
+    )
+
+
 def test_is_confirmed_pre_dispatch_transport_error_requires_provable_connect_provenance():
     assert proxy_module.is_confirmed_pre_dispatch_transport_error(_pre_dispatch_proxy_connect_error()) is True
     ambiguous = proxy_service.ProxyResponseError(
@@ -36638,6 +36647,106 @@ async def test_stream_previous_response_owner_usage_limit_fails_closed(monkeypat
     assert handle_await_args.args[0] == account_owner
     assert handle_await_args.args[2] == "usage_limit_reached"
     record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stream_previsible_usage_limit_fails_over_and_reallocates_soft_sticky(monkeypatch):
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_a = _make_account("acc_usage_limit_sticky_a")
+    account_b = _make_account("acc_usage_limit_sticky_b")
+    api_key = _make_api_key_data("key_usage_limit_sticky")
+    reservation = proxy_service.ApiKeyUsageReservationData(
+        reservation_id="resv_usage_limit_sticky",
+        key_id=api_key.id,
+        model="gpt-5.1",
+    )
+    stream_accounts: list[str | None] = []
+    seen_excluded_account_ids: list[set[str]] = []
+    seen_reallocate_sticky: list[object] = []
+    handle_stream_error = AsyncMock(return_value={"failure_class": "rate_limit"})
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+
+    async def select_account(**kwargs: object) -> AccountSelection:
+        excluded = set(cast(set[str] | None, kwargs.get("exclude_account_ids")) or set())
+        seen_excluded_account_ids.append(excluded)
+        seen_reallocate_sticky.append(kwargs.get("reallocate_sticky"))
+        if not excluded:
+            return AccountSelection(account=account_a, error_message=None)
+        return AccountSelection(account=account_b, error_message=None)
+
+    async def fake_stream(
+        payload: ResponsesRequest,
+        headers: Mapping[str, str],
+        access_token: str,
+        account_id: str | None,
+        base_url: str | None = None,
+        raise_for_status: bool = False,
+        **_kwargs: object,
+    ) -> AsyncIterator[str]:
+        del payload, headers, access_token, base_url, raise_for_status
+        stream_accounts.append(account_id)
+        if account_id == account_a.chatgpt_account_id:
+            raise _usage_limit_reached_error()
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_usage_limit_failover_ok",'
+            '"usage":{"input_tokens":1,"output_tokens":2}}}\n\n'
+        )
+
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", AsyncMock())
+    monkeypatch.setattr(service._load_balancer, "record_error", AsyncMock())
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_release_unsettled_stream_api_key_usage", AsyncMock())
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_b]))
+    monkeypatch.setattr(
+        service,
+        "_acquire_account_response_create_lease_or_overload",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [{"role": "user", "content": "continue the thread"}],
+            "stream": True,
+            "prompt_cache_key": "cursor-thread-usage-limit",
+            "tools": [{"type": "function", "name": "lookup", "container_id": "ctr_account_a"}],
+        }
+    )
+    chunks = [
+        chunk
+        async for chunk in service._stream_with_retry(
+            payload,
+            {"session_id": "sid-usage-limit-sticky"},
+            codex_session_affinity=False,
+            propagate_http_errors=True,
+            openai_cache_affinity=True,
+            api_key=api_key,
+            api_key_reservation=reservation,
+            suppress_text_done_events=False,
+            request_transport="http",
+        )
+    ]
+
+    event = json.loads(chunks[0].split("data: ", 1)[1])
+    assert event["type"] == "response.completed"
+    assert event["response"]["id"] == "resp_usage_limit_failover_ok"
+    assert stream_accounts == [account_a.chatgpt_account_id, account_b.chatgpt_account_id]
+    assert seen_excluded_account_ids == [set(), {account_a.id}]
+    assert seen_reallocate_sticky[-1] is True
+    handle_stream_error.assert_awaited()
+    handle_args = handle_stream_error.await_args
+    assert handle_args is not None
+    assert handle_args.args[0] == account_a
+    assert handle_args.args[2] == "usage_limit_reached"
 
 
 @pytest.mark.asyncio

@@ -80,6 +80,7 @@ from app.modules.proxy.helpers import (
     _upstream_error_from_openai,
     classify_upstream_failure,
     is_upstream_model_capacity_error,
+    is_usage_exhaustion_code,
 )
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
 from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
@@ -124,6 +125,31 @@ def _http_downstream_request_is_sticky(payload: ResponsesRequest, headers: Mappi
         or _prompt_cache_key_from_request_model(payload) is not None
         or _sticky_key_from_session_header(headers) is not None
         or _sticky_key_from_turn_state_header(headers) is not None
+    )
+
+
+def _proxy_response_error_code(exc: BaseException) -> str | None:
+    if not isinstance(exc, ProxyResponseError):
+        return None
+    error = _parse_openai_error(exc.payload)
+    return _normalize_error_code(error.code if error else None, error.type if error else None)
+
+
+def _previsible_usage_exhaustion_releases_soft_owner(
+    exc: BaseException,
+    *,
+    file_preferred_account_id: str | None,
+    turn_state_owner_account_id: str | None,
+    require_preferred_account: bool,
+    routing_strategy: str,
+) -> bool:
+    if not is_usage_exhaustion_code(_proxy_response_error_code(exc)):
+        return False
+    return (
+        file_preferred_account_id is None
+        and turn_state_owner_account_id is None
+        and not require_preferred_account
+        and routing_strategy != "single_account"
     )
 
 
@@ -690,6 +716,21 @@ class _StreamingRetryMixin:
                 account_id,
             )
             return True
+
+        def _reallocate_soft_sticky_after_usage_exhaustion(*, error_code: str) -> None:
+            nonlocal affinity, payload_replay_required_account_id, preferred_account_id
+            if not is_usage_exhaustion_code(error_code):
+                return
+            if (
+                file_preferred_account_id is not None
+                or turn_state_owner_account_id is not None
+                or require_preferred_account
+                or routing_strategy == "single_account"
+            ):
+                return
+            payload_replay_required_account_id = None
+            preferred_account_id = None
+            affinity = replace(affinity, reallocate_sticky=True)
 
         async def _stream_post_refresh_with_capacity_recovery(
             account: Account,
@@ -2033,7 +2074,16 @@ class _StreamingRetryMixin:
                                 except BaseException as exc:
                                     if register_payload_owner and not (
                                         isinstance(exc, ProxyResponseError)
-                                        and is_confirmed_pre_dispatch_transport_error(exc)
+                                        and (
+                                            is_confirmed_pre_dispatch_transport_error(exc)
+                                            or _previsible_usage_exhaustion_releases_soft_owner(
+                                                exc,
+                                                file_preferred_account_id=file_preferred_account_id,
+                                                turn_state_owner_account_id=turn_state_owner_account_id,
+                                                require_preferred_account=require_preferred_account,
+                                                routing_strategy=routing_strategy,
+                                            )
+                                        )
                                     ):
                                         payload_replay_required_account_id = account.id
                                     raise
@@ -2343,10 +2393,21 @@ class _StreamingRetryMixin:
                                     await _release_tracked_stream_lease(current_account_lease)
                                     current_account_lease = None
                                     excluded_account_ids.add(account.id)
-                                    _move_verified_fresh_replay_from_owner(
+                                    moved_verified_replay = _move_verified_fresh_replay_from_owner(
                                         account_id=account.id,
                                         outcome="owner_previsible_failure",
                                     )
+                                    if not moved_verified_replay:
+                                        _reallocate_soft_sticky_after_usage_exhaustion(error_code=code)
+                                        if affinity.reallocate_sticky:
+                                            _facade().logger.info(
+                                                "Retrying stream after pre-visible usage exhaustion "
+                                                "request_id=%s account_id=%s attempt=%d code=%s",
+                                                request_id,
+                                                account.id,
+                                                attempt + 1,
+                                                code,
+                                            )
                                     break
                                 raise
                             error_code = tex.code if isinstance(tex, _TransientStreamError) else "server_error"
@@ -2938,11 +2999,13 @@ class _StreamingRetryMixin:
                                 last_transient_exc = retry_exc
                                 await _release_tracked_stream_lease(current_account_lease)
                                 current_account_lease = None
-                                _move_verified_fresh_replay_from_owner(
+                                moved_verified_replay = _move_verified_fresh_replay_from_owner(
                                     account_id=account.id,
                                     outcome="owner_post_refresh_failure",
                                 )
                                 excluded_account_ids.add(account.id)
+                                if not moved_verified_replay:
+                                    _reallocate_soft_sticky_after_usage_exhaustion(error_code=current_error_code)
                                 continue
                             health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
                             if health_write_allowed:

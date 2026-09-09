@@ -14,7 +14,7 @@ from app.core.balancer.logic import (
 )
 from app.core.balancer.types import UpstreamError
 from app.db.models import AccountStatus
-from app.modules.proxy.helpers import classify_upstream_failure
+from app.modules.proxy.helpers import classify_upstream_failure, is_usage_exhaustion_code
 
 pytestmark = pytest.mark.unit
 
@@ -193,6 +193,21 @@ class TestClassifyUpstreamFailure:
             phase="connect",
         )
         assert result["failure_class"] == "retryable_transient"
+
+
+class TestIsUsageExhaustionCode:
+    def test_usage_limit_and_quota_codes(self) -> None:
+        assert is_usage_exhaustion_code("usage_limit_reached") is True
+        assert is_usage_exhaustion_code("USAGE_LIMIT_REACHED") is True
+        assert is_usage_exhaustion_code("insufficient_quota") is True
+        assert is_usage_exhaustion_code("quota_exceeded") is True
+        assert is_usage_exhaustion_code("usage_not_included") is True
+
+    def test_short_rate_limit_is_not_exhaustion(self) -> None:
+        assert is_usage_exhaustion_code("rate_limit_exceeded") is False
+        assert is_usage_exhaustion_code("server_error") is False
+        assert is_usage_exhaustion_code(None) is False
+        assert is_usage_exhaustion_code("") is False
 
 
 class TestFailoverDecision:
