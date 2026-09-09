@@ -251,14 +251,47 @@ def _normalize_chat_tools(tools: list[JsonValue]) -> list[JsonValue]:
                 continue
         name = tool.get("name")
         if isinstance(name, str) and name:
+            if tool_type in (None, "function") or "input_schema" in tool:
+                normalized.append(_normalize_flat_function_tool(tool, name=name, tool_type=tool_type))
+                continue
             normalized.append(tool)
     return normalized
+
+
+def _normalize_flat_function_tool(
+    tool: dict[str, JsonValue],
+    *,
+    name: str,
+    tool_type: JsonValue,
+) -> dict[str, JsonValue]:
+    rewritten = dict(tool)
+    if rewritten.get("parameters") is None and "input_schema" in rewritten:
+        rewritten["parameters"] = rewritten.pop("input_schema")
+    else:
+        rewritten.pop("input_schema", None)
+    rewritten["type"] = tool_type if isinstance(tool_type, str) and tool_type else "function"
+    rewritten["name"] = name
+    return rewritten
 
 
 def _normalize_tool_choice(tool_choice: JsonValue | None) -> JsonValue | None:
     if not isinstance(tool_choice, dict):
         return tool_choice
     tool_type = tool_choice.get("type")
+    if (
+        isinstance(tool_type, str)
+        and tool_type in {"auto", "none", "required"}
+        and "function" not in tool_choice
+        and "name" not in tool_choice
+    ):
+        return tool_type
+    if (
+        isinstance(tool_type, str)
+        and tool_type == "any"
+        and "function" not in tool_choice
+        and "name" not in tool_choice
+    ):
+        return "required"
     if isinstance(tool_type, str) and tool_type == "web_search_preview":
         tool_choice = dict(tool_choice)
         tool_choice["type"] = "web_search"

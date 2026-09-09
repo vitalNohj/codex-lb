@@ -803,11 +803,18 @@ class ResponsesCompactRequest(BaseModel):
 
 
 _UNSUPPORTED_UPSTREAM_FIELDS = {
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
     "max_output_tokens",
     "metadata",
+    "presence_penalty",
     "prompt_cache_retention",
     "safety_identifier",
+    "seed",
+    "stop",
     "temperature",
+    "top_logprobs",
     "top_p",
     "truncation",
     "user",

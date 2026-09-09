@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonValue
+from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
 
 
 def test_chat_to_responses_omits_unset_tools() -> None:
@@ -954,7 +955,6 @@ def test_chat_tool_calls_history_maps_to_function_call_and_output():
     responses = req.to_responses_request()
 
     assert responses.input == [
-        {"role": "assistant", "content": [{"type": "output_text", "text": ""}]},
         {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": '{"q":"abc"}'},
         {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'},
         {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
@@ -999,3 +999,169 @@ def test_chat_rejects_unknown_message_role():
     }
     with pytest.raises(ValidationError, match="Unsupported message role"):
         ChatCompletionsRequest.model_validate(payload)
+
+
+_CURSOR_SHELL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "Shell",
+        "description": "run a command",
+        "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+    },
+}
+
+
+def _mapped_replay_is_account_neutral(payload: dict[str, JsonValue]) -> bool:
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    return responses_payload_is_account_neutral_fresh_replay(responses.to_replay_safety_payload())
+
+
+def test_chat_blank_assistant_tool_content_is_omitted():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "72F"},
+        ],
+        "tools": [_CURSOR_SHELL_TOOL],
+    }
+    req = ChatCompletionsRequest.model_validate(payload)
+    responses = req.to_responses_request()
+    items = responses.input
+    assert isinstance(items, list)
+    assert items[1] == {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{}"}
+    assert _mapped_replay_is_account_neutral(payload) is True
+
+
+def test_chat_structured_auto_tool_choice_maps_to_string():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [_CURSOR_SHELL_TOOL],
+        "tool_choice": {"type": "auto"},
+    }
+    req = ChatCompletionsRequest.model_validate(payload)
+    responses = req.to_responses_request()
+    assert responses.tool_choice == "auto"
+    assert _mapped_replay_is_account_neutral(payload) is True
+
+
+def test_chat_structured_any_tool_choice_maps_to_required():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [_CURSOR_SHELL_TOOL],
+        "tool_choice": {"type": "any"},
+    }
+    req = ChatCompletionsRequest.model_validate(payload)
+    responses = req.to_responses_request()
+    assert responses.tool_choice == "required"
+    assert _mapped_replay_is_account_neutral(payload) is True
+
+
+def test_chat_flat_input_schema_tools_map_to_function_declarations():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "name": "ReadFile",
+                "description": "Read a file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            }
+        ],
+    }
+    req = ChatCompletionsRequest.model_validate(payload)
+    responses = req.to_responses_request()
+    assert responses.tools == [
+        {
+            "type": "function",
+            "name": "ReadFile",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        }
+    ]
+    assert _mapped_replay_is_account_neutral(payload) is True
+
+
+def test_chat_penalty_extras_are_stripped_from_replay():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [_CURSOR_SHELL_TOOL],
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "seed": 0,
+        "logit_bias": {},
+        "logprobs": False,
+        "stop": ["\n"],
+        "max_tokens": 4096,
+        "stream": True,
+    }
+    req = ChatCompletionsRequest.model_validate(payload)
+    dumped = req.to_responses_request().to_payload()
+    for key in ("frequency_penalty", "presence_penalty", "seed", "logit_bias", "logprobs", "stop", "max_tokens"):
+        assert key not in dumped
+    assert _mapped_replay_is_account_neutral(payload) is True
+
+
+def test_chat_unpaired_tool_calls_are_not_account_neutral():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "Shell", "arguments": "{}"},
+                    }
+                ],
+            },
+        ],
+        "tools": [_CURSOR_SHELL_TOOL],
+    }
+    assert _mapped_replay_is_account_neutral(payload) is False
+
+
+def test_chat_container_id_tool_stays_non_neutral():
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "description": "lookup",
+                "parameters": {"type": "object"},
+                "container_id": "ctr_account_a",
+            }
+        ],
+    }
+    responses = ChatCompletionsRequest.model_validate(payload).to_responses_request()
+    tool = responses.tools[0]
+    assert isinstance(tool, dict)
+    assert tool["container_id"] == "ctr_account_a"
+    assert _mapped_replay_is_account_neutral(payload) is False

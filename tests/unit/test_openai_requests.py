@@ -149,6 +149,13 @@ def test_known_unsupported_upstream_fields_are_stripped():
         "top_p": 0.9,
         "truncation": "auto",
         "user": "cursor-user",
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "seed": 0,
+        "logprobs": False,
+        "top_logprobs": 1,
+        "logit_bias": {},
+        "stop": ["\n"],
         "custom_field": "kept",
     }
     request = ResponsesRequest.model_validate(payload)
@@ -162,6 +169,13 @@ def test_known_unsupported_upstream_fields_are_stripped():
     assert "top_p" not in dumped
     assert "truncation" not in dumped
     assert "user" not in dumped
+    assert "frequency_penalty" not in dumped
+    assert "presence_penalty" not in dumped
+    assert "seed" not in dumped
+    assert "logprobs" not in dumped
+    assert "top_logprobs" not in dumped
+    assert "logit_bias" not in dumped
+    assert "stop" not in dumped
     assert dumped["custom_field"] == "kept"
 
 
@@ -254,6 +268,8 @@ def test_compact_known_unsupported_upstream_fields_are_stripped():
         "temperature": 0.2,
         "top_p": 0.9,
         "user": "cursor-user",
+        "frequency_penalty": 0,
+        "seed": 0,
     }
     request = ResponsesCompactRequest.model_validate(payload)
 
@@ -264,6 +280,8 @@ def test_compact_known_unsupported_upstream_fields_are_stripped():
     assert "temperature" not in dumped
     assert "top_p" not in dumped
     assert "user" not in dumped
+    assert "frequency_penalty" not in dumped
+    assert "seed" not in dumped
 
 
 def test_compact_normalizes_fast_service_tier_to_priority_for_upstream():

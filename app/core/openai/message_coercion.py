@@ -143,16 +143,38 @@ def _ensure_text_only_content(content: JsonValue, role: str) -> None:
     raise ClientPayloadError(f"{role} messages must be text-only.", param="messages")
 
 
+def _assistant_message_item_from_content(content: JsonValue, refusal: str | None) -> OpenAIMessage | None:
+    parts: list[JsonValue] = []
+    if content is not None:
+        parts.extend(_to_content_list(_normalize_content_parts(content, "assistant")))
+    if refusal is not None:
+        parts.append(cast(JsonValue, RefusalContentPart(type="refusal", refusal=refusal)))
+    parts = [part for part in parts if not _is_blank_assistant_text_part(part)]
+    if not parts:
+        return None
+    return cast(OpenAIMessage, {"role": "assistant", "content": parts})
+
+
+def _is_blank_assistant_text_part(part: JsonValue) -> bool:
+    if isinstance(part, str):
+        return not part.strip()
+    part_dict = _json_dict_or_none(part)
+    if part_dict is None:
+        return False
+    part_type = part_dict.get("type")
+    if part_type in (None, *_TEXT_CONTENT_PART_TYPES):
+        text = part_dict.get("text")
+        return not isinstance(text, str) or not text.strip()
+    return False
+
+
 def _decompose_assistant_tool_calls(message: OpenAIMessage) -> list[JsonValue]:
     items: list[JsonValue] = []
     content = message.get("content")
     refusal = _get_assistant_refusal(message)
-    if content is not None or refusal is not None:
-        parts = _to_content_list(_normalize_content_parts(content, "assistant")) if content is not None else []
-        if refusal is not None:
-            parts.append(cast(JsonValue, RefusalContentPart(type="refusal", refusal=refusal)))
-        msg_item: OpenAIMessage = {"role": "assistant", "content": parts}
-        items.append(cast(JsonValue, msg_item))
+    assistant_item = _assistant_message_item_from_content(content, refusal)
+    if assistant_item is not None:
+        items.append(cast(JsonValue, assistant_item))
     tool_calls = message.get("tool_calls")
     if is_json_list(tool_calls):
         for tc in _content_parts(tool_calls):
