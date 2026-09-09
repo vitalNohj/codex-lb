@@ -1336,7 +1336,15 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 
 ### Requirement: API-key model access does not collapse a separately priced version into its family
 
-`allowed_models` enforcement MUST resolve a requested model to the same canonical identity used for routing and native pricing. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family.
+`allowed_models` enforcement MUST use authoritative sidecar route resolution, including configured prefix stripping, before canonicalizing both requested and allowed model ids. Sidecar entry points MUST reject unauthorized routing identities before quota reservation or upstream dispatch. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family.
+
+#### Scenario: A custom stripped prefix cannot bypass the family allowlist
+
+- **GIVEN** the Claude routing prefix is `team.` with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5` requests `team.claude-fable-5-1`
+- **THEN** the request is refused before quota reservation or upstream traffic
+- **AND** the same key can still request `team.claude-fable-5`
+- **AND** a key allowing `claude-fable-5-1` can request `team.claude-fable-5-1`
 
 #### Scenario: A Fable 5 allowlist rejects Fable 5.1
 

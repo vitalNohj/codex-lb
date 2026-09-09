@@ -51,21 +51,6 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **AND** the supplied price table contains only `claude-fable-5`
 - **THEN** it resolves the `claude-fable-5` entry rather than returning no price
 
-### Requirement: API-key model access does not collapse a separately priced version into its family
+## API-key model access reference
 
-`allowed_models` enforcement MUST resolve a requested model to the same canonical identity used for routing and native pricing. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family.
-
-#### Scenario: A Fable 5 allowlist rejects Fable 5.1
-
-- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5` requests `cc/claude-fable-5-1`
-- **THEN** the request is refused as not allowed for that key
-
-#### Scenario: A Fable 5 allowlist still admits Fable 5
-
-- **WHEN** the same API key requests `cc/claude-fable-5`
-- **THEN** the request is allowed
-
-#### Scenario: An allowlist naming the version admits it
-
-- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5-1` requests `claude-fable-5.1`
-- **THEN** the request is allowed
+The authoritative requirement and scenarios, including configured prefix resolution before reservation and dispatch, are maintained in [API-key model access](../../../../specs/api-keys/spec.md#requirement-api-key-model-access-does-not-collapse-a-separately-priced-version-into-its-family).

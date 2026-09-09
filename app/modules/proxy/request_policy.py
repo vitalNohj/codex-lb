@@ -143,9 +143,7 @@ def validate_model_access(
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
-def _canonical_model_for_access(
-    model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()
-) -> str | None:
+def _canonical_model_for_access(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> str | None:
     if model is None:
         return None
     route = resolve_sidecar_route(model, routing_entries)
@@ -164,6 +162,8 @@ def _canonical_model_for_access(
         return pricing_alias
     sidecar_alias = canonical_sidecar_model(normalized)
     return sidecar_alias if sidecar_alias is not None else normalized
+
+
 def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | None) -> None:
     if api_key is None:
         return
