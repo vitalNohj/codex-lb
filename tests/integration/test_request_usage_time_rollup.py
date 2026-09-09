@@ -1638,3 +1638,112 @@ async def test_account_hard_delete_removes_conversation_presence(db_setup):
     assert await _dump_conversation_rollups() == [
         (epoch_seconds(hour), "conv_shared", "acc_cother", False, 1),
     ]
+
+
+@pytest.mark.asyncio
+async def test_armed_upgrade_repair_marker_refolds_backfilled_cost_into_hourly(db_setup):
+    """A cost backfill arms `upgrade_repair_from`; the next fold pass must
+    actually repair the hourly and demand dollar sums, not merely record the
+    marker.
+
+    This is the second half of the GPT-6 Astra backfill's time-rollup repair
+    (`20260909_000000_backfill_gpt_6_astra_costs`). That migration cannot
+    patch hourly buckets directly -- it would have to reproduce their full
+    dimension grain -- so it points the existing marker at the earliest
+    repriced hour and relies on `_repair_next_upgrade_chunk` refolding the
+    range from raw. Asserting only that the marker was set would leave the
+    half that actually moves the numbers untested.
+
+    Stages the real sequence: rows folded while their cost was NULL, then
+    repriced underneath the watermark, then a fold pass.
+    """
+
+    del db_setup
+    now = utcnow()
+    # Beyond the trailing `UPGRADE_REPAIR_WINDOW` (48h) flip-flop defense, so
+    # only the armed marker can reach this bucket. Without that distance the
+    # trailing window would repair it anyway and the test would pass whether
+    # or not the migration armed anything.
+    hour = floor_to_hour(now - timedelta(hours=70))
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_bf", "backfill-repair@example.com"))
+        logs = RequestLogsRepository(session)
+        # Older surviving history, on an exact hour. `_repair_next_upgrade_chunk`
+        # clamps its start to `ceil_hour(min(requested_at))` so it never deletes
+        # buckets it cannot recompute from raw; without history behind the
+        # repriced hour that clamp would skip the very bucket under repair.
+        await _add_log(
+            logs,
+            account_id="acc_bf",
+            request_id="r_bf_history",
+            requested_at=hour - timedelta(hours=5),
+            cost_usd=0.05,
+        )
+        # Folded while unpriced, exactly as native Astra traffic was.
+        await _add_log(
+            logs,
+            account_id="acc_bf",
+            request_id="r_bf_null",
+            requested_at=hour + timedelta(minutes=1),
+            cost_usd=None,
+            model="gpt-6-astra",
+        )
+        # A row that was already priced at insert time in the same bucket.
+        await _add_log(
+            logs,
+            account_id="acc_bf",
+            request_id="r_bf_priced",
+            requested_at=hour + timedelta(minutes=2),
+            cost_usd=0.25,
+            model="gpt-6-astra",
+        )
+        # `add_log` now resolves an Astra price, so force the historical
+        # pre-backfill shape this repair exists for: cost genuinely NULL, and
+        # the sibling holding exactly its insert-time price.
+        await session.execute(update(RequestLog).where(RequestLog.request_id == "r_bf_null").values(cost_usd=None))
+        await session.execute(update(RequestLog).where(RequestLog.request_id == "r_bf_priced").values(cost_usd=0.25))
+        await session.commit()
+
+    time_rollup_module._upgrade_repair_done = True  # fold first, without any repair
+    assert await run_hourly_fold_pass(now=now) >= 1
+
+    bucket = epoch_seconds(hour)
+    hourly, _errors, demand, _watermark = await _dump_all_rollups()
+    folded = [r for r in hourly if r.bucket_epoch == bucket]
+    # Only the already-priced row contributed a dollar amount.
+    assert sum(r.cost_usd for r in folded) == pytest.approx(0.25)
+    assert sum(r.cost_count for r in folded) == 1
+
+    # What the backfill migration does: reprice the NULL row underneath the
+    # hourly watermark, then arm the repair marker at its hour.
+    async with SessionLocal() as session:
+        await session.execute(update(RequestLog).where(RequestLog.request_id == "r_bf_null").values(cost_usd=0.75))
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=hour))
+        await session.commit()
+
+    # The stale bucket still under-reports until the repair runs.
+    hourly, _errors, _demand, _watermark = await _dump_all_rollups()
+    assert sum(r.cost_usd for r in hourly if r.bucket_epoch == bucket) == pytest.approx(0.25)
+
+    time_rollup_module._upgrade_repair_done = False
+    await run_hourly_fold_pass(now=now)
+    time_rollup_module._upgrade_repair_done = True
+
+    hourly, _errors, demand, _watermark = await _dump_all_rollups()
+    repaired = [r for r in hourly if r.bucket_epoch == bucket]
+    # Both rows now counted: the repriced 0.75 plus the pre-existing 0.25.
+    assert sum(r.cost_usd for r in repaired) == pytest.approx(1.0)
+    assert sum(r.cost_count for r in repaired) == 2
+    assert sum(r.request_count for r in repaired) == 2
+
+    # The demand rollup folds cost_usd too and is repaired by the same chunk.
+    repaired_demand = [r for r in demand if r.slot_epoch >= bucket and r.slot_epoch < bucket + HOURLY_BUCKET_SECONDS]
+    assert sum(r.cost_usd for r in repaired_demand) == pytest.approx(1.0)
+
+    async with SessionLocal() as session:
+        state = (
+            await session.execute(select(AccountUsageRollupState).where(AccountUsageRollupState.id == 1))
+        ).scalar_one()
+        # Marker cleared once the suspect range is fully repaired.
+        assert state.upgrade_repair_from is None
