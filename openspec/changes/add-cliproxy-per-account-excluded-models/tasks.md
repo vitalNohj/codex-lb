@@ -30,3 +30,6 @@
 - [x] 3.1 `openspec validate add-cliproxy-per-account-excluded-models --strict`.
 - [x] 3.2 Targeted backend pytest + frontend vitest + `bun run build`.
 - [x] 3.3 Grep gate: no account email and no model-family special case in `app/`.
+- [x] 3.4 Contract tests against a real CLIProxyAPI executable (opt-in via `CODEX_LB_CLIPROXY_BINARY`,
+      sandboxed to loopback, synthetic accounts) proving the saved list governs actual account
+      selection: exact vs explicit wildcard, retry, exhaustion, and runtime toggling.

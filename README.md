@@ -151,6 +151,8 @@ For a CLIProxyAPI Claude account that cannot access a model, open its **Excluded
 
 Exclusion editing requires a configured Management API key and readable CLIProxyAPI auth data. On CLIProxyAPI 7.2.135, codex-lb must be colocated with the auth files, whose paths must resolve beneath `~/.cli-proxy-api` for the user running codex-lb. If the list cannot be read safely, the editor locks and shows a read error rather than risking overwriting existing exclusions. Usage-only rows without an auth file are not editable.
 
+CLIProxyAPI, not codex-lb, applies the list when it selects an account: entries are matched against the wire model ID, exactly or by an explicit wildcard, so `claude-opus-4-6` alone does not cover `claude-opus-4-7` while `claude-opus-4-*` covers both. `tests/integration/test_claude_sidecar_excluded_models_contract.py` asserts that behavior against a real CLIProxyAPI executable instead of a mocked client. It skips unless `CODEX_LB_CLIPROXY_BINARY` points at one, and runs it under a macOS `sandbox-exec` policy that permits loopback sockets only, with synthetic accounts and tokens.
+
 ## Cost, Reference Cost, And Savings
 
 This fork separates actual spend from reference value:

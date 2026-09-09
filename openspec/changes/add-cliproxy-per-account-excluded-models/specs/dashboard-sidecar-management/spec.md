@@ -143,3 +143,42 @@ The codex-lb backend MUST treat the exclusion list as opaque operator data and M
 - **WHEN** an operator sends `PUT /api/claude-sidecar/routing/excluded-models` for that account without that pattern
 - **THEN** codex-lb removes it from the CLIProxyAPI auth file
 - **AND** that account becomes eligible again for the matching models with no codex-lb code or configuration change
+
+### Requirement: A saved exclusion list governs real CLIProxyAPI account selection
+
+A list saved through `PUT /api/claude-sidecar/routing/excluded-models` MUST be verified to govern CLIProxyAPI's own account selection, not only the request codex-lb sends. That verification MUST run against a real CLIProxyAPI executable, because a substituted sidecar client can only restate the desired rule. Entries MUST match the wire model ID literally: an exact entry covers only that ID, and only an explicitly configured wildcard covers a family. The excluded account MUST NOT be selected on the first attempt or on any in-request retry, another eligible account MUST still be able to serve, and when no eligible account remains the existing exhaustion outcome MUST be preserved rather than falling back to an excluded account. Saving or clearing a list MUST change later selections in the already-running process, with no restart. Verification MUST use synthetic accounts and tokens and MUST be confined to loopback so no request can reach a provider; it MUST be skipped, never silently weakened, where that executable or that network confinement is unavailable.
+
+#### Scenario: An exact entry excludes only that wire ID
+
+- **GIVEN** two CLIProxyAPI Claude accounts that both serve a model and a sibling version of it
+- **WHEN** an operator saves an exclusion list holding only the exact wire ID on the first account
+- **THEN** CLIProxyAPI stops offering that ID on that account and still offers it on the second
+- **AND** the sibling version and unrelated models remain available on both accounts
+
+#### Scenario: An explicit wildcard excludes every matching wire ID
+
+- **GIVEN** the same two accounts
+- **WHEN** an operator saves a wildcard pattern on the first account
+- **THEN** CLIProxyAPI stops offering every ID matching that pattern on that account
+- **AND** IDs outside the pattern stay available on that account
+
+#### Scenario: Retry does not fall back onto the excluded account
+
+- **GIVEN** one account excludes a model and the other does not
+- **WHEN** attempts for that model fail and CLIProxyAPI exhausts its in-request retry path
+- **THEN** the excluded account is not selected on any attempt for that request
+- **AND** a permitted model still reaches both accounts across retries
+
+#### Scenario: Every account excluding the model preserves the exhaustion outcome
+
+- **GIVEN** both accounts exclude the same wire ID
+- **WHEN** that model is requested
+- **THEN** no account is offered the model and the existing exhaustion outcome is returned
+- **AND** models that are not excluded continue to be served by both accounts
+
+#### Scenario: Clearing an exclusion restores eligibility without a restart
+
+- **GIVEN** a saved exclusion currently removing an account from a model
+- **WHEN** an operator saves an empty list for that account in the same running CLIProxyAPI process
+- **THEN** that account becomes eligible for the model again
+- **AND** no restart of CLIProxyAPI or codex-lb is required
