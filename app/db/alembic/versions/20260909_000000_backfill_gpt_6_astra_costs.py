@@ -152,15 +152,12 @@ def _arm_time_rollup_repair(bind: Connection, earliest_repriced: datetime | None
     refolding a wider range is safe and dropping its range would not be. The
     conversation satellite folds ``request_count`` only and is untouched.
 
-    Consumption caveat: ``run_hourly_fold_pass`` checks this marker only on the
-    first pass of each process, behind the module-global ``_upgrade_repair_done``
-    latch. A replica that was already running when this migration executed has
-    long since latched, so it will not consume the marker until it restarts.
-    That matches this migration's deployment sequence, which restarts the
-    service anyway (new requests stay unpriced until the new pricing table is on
-    the running tree). The marker is durable, so a later start consumes it
-    whenever it happens; nothing is lost, the hourly and demand dollar buckets
-    simply stay short until then.
+    Consumption: ``run_hourly_fold_pass`` re-reads this marker every pass, not
+    only on the first pass of a process, so a replica that was already running
+    when this migration executed picks it up on its next scheduled pass without
+    needing a restart. That later, marker-driven pass repairs only the marker
+    range and never the trailing flip-flop window. The marker is durable
+    either way, so nothing is lost if no pass runs until a later start.
     """
 
     if earliest_repriced is None:

@@ -654,12 +654,27 @@ async def run_hourly_fold_pass(*, now: datetime | None = None) -> int:
     while this process is running and has long since latched (see
     `20260909_000000_backfill_gpt_6_astra_costs`); without this re-check its
     cost buckets would stay stale until an unrelated restart. The re-check is
-    one indexed read of the single state row per pass, and it does NOT re-run
-    the trailing-window flip-flop defense — that stays once per process.
+    one indexed read of the single state row per pass.
+
+    That later pass is `marker_only`: it repairs a persisted marker range and
+    never falls back to the trailing window. The probe read is deliberately
+    unlocked, so the marker can be cleared by another leader between it and
+    the locked read in `_repair_next_upgrade_chunk`. Without `marker_only`
+    that lost race would take the `marker is None` branch and delete+refold a
+    full `UPGRADE_REPAIR_WINDOW` of three rollup tables on every subsequent
+    pass. The trailing-window flip-flop defense stays exactly once per
+    process, on the first pass, where it is bounded.
     """
     global _upgrade_repair_done
-    if not _upgrade_repair_done or await _has_upgrade_repair_marker():
+    if not _upgrade_repair_done:
+        # First pass of this process: marker range plus the trailing-window
+        # flip-flop defense.
         _upgrade_repair_done = await _run_upgrade_repair()
+    elif await _has_upgrade_repair_marker():
+        # Later pass: a marker was armed after this process latched. Repair
+        # only that range; a marker cleared under the lock means the work is
+        # already done and this pass must do nothing.
+        _upgrade_repair_done = await _run_upgrade_repair(marker_only=True)
     target = floor_to_hour((now or utcnow()) - FOLD_LAG)
     committed = 0
     while committed < TS_MAX_SLICES_PER_PASS:
@@ -697,7 +712,7 @@ async def _has_upgrade_repair_marker() -> bool:
     return marker is not None
 
 
-async def _run_upgrade_repair() -> bool:
+async def _run_upgrade_repair(*, marker_only: bool = False) -> bool:
     """Drive the upgrade repair in pass-bounded chunks; True when complete.
 
     Same chunk/transaction discipline as the fold backfill: at most
@@ -705,21 +720,26 @@ async def _run_upgrade_repair() -> bool:
     own transaction, so repairing a legacy-folded backlog never monopolizes
     a scheduler tick. An incomplete repair returns False and resumes from
     the persisted marker on the next pass.
+
+    `marker_only` restricts the work to a persisted marker range, for passes
+    triggered by the unlocked marker probe rather than by process start.
     """
     for _ in range(TS_MAX_SLICES_PER_PASS):
         async with get_background_session() as session:
-            if await _repair_next_upgrade_chunk(session):
+            if await _repair_next_upgrade_chunk(session, marker_only=marker_only):
                 return True
     return False
 
 
-async def _repair_next_upgrade_chunk(session: AsyncSession) -> bool:
+async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool = False) -> bool:
     """Refold the next chunk of the legacy-suspect range; True when none left.
 
     The suspect range is `[upgrade_repair_from, watermark)` while the marker
     is set (stamped by the migration, or the epoch server default for a
     state row an old replica bootstrapped after it), and the trailing
-    `UPGRADE_REPAIR_WINDOW` flip-flop defense once it is NULL. Both are
+    `UPGRADE_REPAIR_WINDOW` flip-flop defense once it is NULL - except under
+    `marker_only`, where a NULL marker means the signalled repair already
+    completed and this chunk does nothing. Both are
     clamped to `ceil_hour(earliest surviving raw row)` — an unfiltered min:
     retention's oldest-first contiguous frontier guarantees every row
     (soft-deleted included) at or above it survives, so the repair never
@@ -741,6 +761,12 @@ async def _repair_next_upgrade_chunk(session: AsyncSession) -> bool:
             return True
         watermark = state.hourly_folded_through
         marker = state.upgrade_repair_from
+        if marker is None and marker_only:
+            # The marker observed by the caller's unlocked probe was cleared by
+            # another leader before this locked read: the repair it signalled is
+            # already finished. Falling back to the trailing window here would
+            # delete and refold three rollup tables for no reason, on every pass.
+            return True
         suspect_from = marker if marker is not None else watermark - UPGRADE_REPAIR_WINDOW
         earliest_raw = (await session.execute(select(func.min(RequestLog.requested_at)))).scalar_one_or_none()
         start = watermark if earliest_raw is None else max(suspect_from, _ceil_to_hour(earliest_raw))

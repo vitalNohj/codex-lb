@@ -4,7 +4,8 @@ import asyncio
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import Delete, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.modules.accounts.usage_time_rollup as time_rollup_module
 from app.core.crypto import TokenEncryptor
@@ -1751,3 +1752,89 @@ async def test_armed_upgrade_repair_marker_refolds_backfilled_cost_into_hourly(d
         ).scalar_one()
         # Marker cleared once the suspect range is fully repaired.
         assert state.upgrade_repair_from is None
+
+
+@pytest.mark.asyncio
+async def test_marker_cleared_between_unlocked_and_locked_read_does_not_refold_trailing_window(db_setup):
+    """A marker that clears mid-check must not fall back to the 48h window.
+
+    `run_hourly_fold_pass` re-checks `upgrade_repair_from` WITHOUT the state
+    row lock so a migration can arm it against an already-running process.
+    `_repair_next_upgrade_chunk` then re-reads it UNDER the lock. Between
+    those two reads another leader can finish the repair and NULL the
+    marker. The locked read then sees NULL, and if that path still fell back
+    to `watermark - UPGRADE_REPAIR_WINDOW` it would DELETE and refold a full
+    48h of the hourly, error and demand rollups on every later pass -
+    unbounded recurring work triggered by an already-finished repair.
+
+    Interleaving is forced deterministically: the unlocked probe reports a
+    marker, then clears it before the locked read runs.
+    """
+
+    del db_setup
+    now = utcnow()
+    hour = floor_to_hour(now - timedelta(hours=30))
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_rc", "repair-race@example.com"))
+        logs = RequestLogsRepository(session)
+        await _add_log(logs, account_id="acc_rc", request_id="r_rc_old", requested_at=hour - timedelta(hours=5))
+        await _add_log(logs, account_id="acc_rc", request_id="r_rc", requested_at=hour + timedelta(minutes=1))
+
+    time_rollup_module._upgrade_repair_done = True
+    assert await run_hourly_fold_pass(now=now) >= 1
+
+    bucket = epoch_seconds(hour)
+    before, _errors, _demand, _watermark = await _dump_all_rollups()
+    baseline = {r.bucket_epoch: r.request_count for r in before}
+    assert baseline[bucket] == 1
+
+    # Marker is NULL: the repair has already completed. Simulate the racing
+    # leader by reporting a marker on the unlocked probe only.
+    async with SessionLocal() as session:
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=None))
+        await session.commit()
+
+    probe_calls = 0
+    original_probe = time_rollup_module._has_upgrade_repair_marker
+
+    async def _marker_then_cleared() -> bool:
+        nonlocal probe_calls
+        probe_calls += 1
+        return True  # observed non-NULL; the racing leader clears it next
+
+    # Count DELETEs issued against the three time-rollup tables. A refold is
+    # value-idempotent, so comparing bucket contents cannot detect this defect;
+    # the wasted delete+refold work IS the symptom.
+    deletes = 0
+    original_execute = AsyncSession.execute
+
+    async def _counting_execute(self, statement, *args, **kwargs):
+        nonlocal deletes
+        if isinstance(statement, Delete):
+            table = getattr(statement, "table", None)
+            if getattr(table, "name", None) in (
+                "request_usage_hourly_rollups",
+                "request_usage_hourly_error_rollups",
+                "request_demand_quarter_rollups",
+            ):
+                deletes += 1
+        return await original_execute(self, statement, *args, **kwargs)
+
+    time_rollup_module._has_upgrade_repair_marker = _marker_then_cleared
+    AsyncSession.execute = _counting_execute
+    try:
+        await run_hourly_fold_pass(now=now)
+    finally:
+        AsyncSession.execute = original_execute
+        time_rollup_module._has_upgrade_repair_marker = original_probe
+        time_rollup_module._upgrade_repair_done = True
+
+    assert probe_calls >= 1
+    # Under the lock the marker was already NULL, so there is no marker range
+    # to repair and the pass must delete no rollup bucket at all. The trailing
+    # -window fallback would issue three DELETEs for a full 48h span.
+    assert deletes == 0
+
+    after, _errors, _demand, _watermark = await _dump_all_rollups()
+    assert {r.bucket_epoch: r.request_count for r in after} == baseline
