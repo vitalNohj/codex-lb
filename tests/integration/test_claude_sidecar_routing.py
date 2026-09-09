@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
@@ -18,6 +20,97 @@ from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_coold
 from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 
 pytestmark = pytest.mark.integration
+
+
+# Tests that intentionally exercise the default native path. They assert the
+# sidecar is bypassed, so the native boundaries must stay reachable for them;
+# every provider boundary still raises.
+_NATIVE_PATH_TESTS = frozenset({"test_gpt_request_does_not_hit_sidecar"})
+
+# Outbound boundaries that must never be reached from this file. The Claude
+# sidecar is deliberately absent: these tests assert real round-trips through
+# ``_FakeSidecarClient`` (wire model, reservations, request logs), so that
+# symbol stays bound to the fully synthetic fake that records payloads rather
+# than to a raising guard. Every other provider and the default native path
+# raise before any real client or transport is constructed.
+_FORBIDDEN_DISPATCH = (
+    "_stream_responses",
+    "_source_responses_response",
+    "_source_chat_completion_response",
+    "_probe_chat_stream_startup_error",
+    "OpenRouterSidecarClient",
+    "OrcaRouterSidecarClient",
+    "OmniRouteSidecarClient",
+    "OllamaSidecarClient",
+    "get_orcarouter_sidecar_client",
+)
+
+
+@pytest.fixture(autouse=True)
+def _block_unexpected_dispatch(monkeypatch, request):
+    """Fail before any unexpected provider or native transport is created.
+
+    A test that legitimately exercises the default native path marks itself
+    with ``@pytest.mark.allows_native_dispatch``; the native boundaries are
+    then stubbed to a synthetic upstream failure instead of an assertion, so
+    the test's own status-code and payload assertions still decide the result.
+    Provider boundaries always raise.
+    """
+    allows_native = request.node.name.split("[")[0] in _NATIVE_PATH_TESTS
+    native = {
+        "_stream_responses",
+        "_source_responses_response",
+        "_source_chat_completion_response",
+        "_probe_chat_stream_startup_error",
+    }
+
+    def _boundary(name):
+        def _explode(*args, **kwargs):
+            raise AssertionError(f"unexpected outbound dispatch boundary reached: {name}")
+
+        return _explode
+
+    for name in _FORBIDDEN_DISPATCH:
+        if allows_native and name in native:
+            # Left as real product code: no upstream account is configured in
+            # this suite, so the request fails at account selection and never
+            # constructs a client or transport. The test's own assertions
+            # (502/503 and empty sidecar payloads) decide the result.
+            continue
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _boundary(name), raising=True)
+
+
+@pytest_asyncio.fixture
+async def async_client(_reset_db_state, _block_unexpected_dispatch):
+    """Module-local client that never enters the application lifespan.
+
+    Shadows the shared ``async_client`` (tests/conftest.py:230) so this file
+    does not start ``init_http_client``, the live-usage ingestor, or the
+    schedulers that no fixture replaces. The per-response persistence drain is
+    retained because these tests assert on reservations and request logs right
+    after a response.
+
+    Depends on ``_block_unexpected_dispatch`` explicitly so the tripwires are
+    installed before any request is issued.
+    """
+    del _reset_db_state, _block_unexpected_dispatch
+    from app.main import create_app
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +253,12 @@ async def fake_sidecar(monkeypatch):
 
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
     monkeypatch.setattr("app.modules.proxy.api.ClaudeSidecarClient", lambda _config: client)
+
+    # The Claude symbol must resolve to this recording fake before any request,
+    # and must never be left bound to a raising guard in this file.
+    import app.modules.proxy.api as proxy_api
+
+    assert proxy_api.ClaudeSidecarClient(config) is client
     return client
 
 
