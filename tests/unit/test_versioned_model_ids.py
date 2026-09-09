@@ -51,7 +51,9 @@ def test_pricing_falls_back_to_the_family_when_the_version_is_absent() -> None:
         family,
     )
     assert get_pricing_for_model("gpt-6-astra", {"claude-fable-5": family}) is None
-    assert get_pricing_for_model("cc/claude-fable-5-1", DEFAULT_PRICING_MODELS)[0] == "claude-fable-5-1"
+    pricing = get_pricing_for_model("cc/claude-fable-5-1", DEFAULT_PRICING_MODELS)
+    assert pricing is not None
+    assert pricing[0] == "claude-fable-5-1"
 
 
 @pytest.mark.parametrize(

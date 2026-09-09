@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
+from app.core.types import JsonValue
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile,
     canonical_sidecar_model,
@@ -54,7 +55,7 @@ def test_apply_sidecar_model_profile_resolves_cursor_thinking_suffix() -> None:
 
 
 def test_apply_sidecar_model_profile_keeps_fable_5_1_off_fable_5() -> None:
-    body: dict[str, object] = {}
+    body: dict[str, JsonValue] = {}
     wire_model = apply_sidecar_model_profile(
         body,
         stripped_model="claude-fable-5-1-thinking-max",
@@ -64,7 +65,7 @@ def test_apply_sidecar_model_profile_keeps_fable_5_1_off_fable_5() -> None:
     assert body["model"] == "claude-fable-5-1"
     assert body["reasoning_effort"] == "max"
 
-    dotted_body: dict[str, object] = {}
+    dotted_body: dict[str, JsonValue] = {}
     dotted_wire = apply_sidecar_model_profile(
         dotted_body,
         stripped_model="claude-fable-5.1",
