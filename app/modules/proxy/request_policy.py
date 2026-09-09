@@ -157,10 +157,16 @@ def _access_identities_match(requested: _AccessIdentity, allowed: _AccessIdentit
         return False
     if requested.canonical != allowed.canonical:
         return False
-    # An unprefixed allowlist still admits a prefixed request for that wire
-    # model. Distinct sidecar owners of the same stripped slug must not.
-    if requested.provider is None or allowed.provider is None:
+    # An unprefixed allowlist entry still admits a request for that wire model
+    # on whichever integration serves it.
+    if allowed.provider is None:
         return True
+    # An entry bound to one integration must not admit a request that resolved
+    # no route: that request reaches the default dispatch path, which is a
+    # different upstream from the one the operator granted.
+    if requested.provider is None:
+        return False
+    # Distinct sidecar owners of the same stripped slug never match.
     return requested.provider == allowed.provider
 
 

@@ -53,7 +53,7 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 
 ### Requirement: API-key model access does not treat distinct sidecar integrations as the same model
 
-`allowed_models` enforcement MUST retain the owning sidecar integration when comparing routed identities. A key whose allowlist names a model only through one integration's prefix or full-model id MUST NOT be granted access to the same wire model on a different enabled sidecar integration. An allowlist that names the unprefixed wire model MUST still admit prefixed requests that resolve to that wire model.
+`allowed_models` enforcement MUST retain the owning sidecar integration when comparing routed identities. A key whose allowlist names a model only through one integration's prefix or full-model id MUST NOT be granted access to the same wire model on a different enabled sidecar integration. An allowlist that names the unprefixed wire model MUST still admit prefixed requests that resolve to that wire model. Conversely, an allowlist entry bound to one integration MUST NOT admit a request that resolves to no route, because such a request reaches the default dispatch path rather than the granted integration.
 
 #### Scenario: A Claude-prefixed allowlist rejects the same slug on OpenRouter
 
@@ -71,6 +71,12 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **GIVEN** Claude routing prefix `cp-` with stripping enabled
 - **WHEN** an API key whose `allowed_models` is exactly `claude-opus-4-7` requests `cp-claude-opus-4-7`
 - **THEN** the request is allowed
+
+#### Scenario: An integration-bound allowlist rejects an unrouted request for the same wire model
+
+- **GIVEN** Claude routing prefix `cc/` with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `cc/custom-slug` requests the bare `custom-slug`, which resolves no route
+- **THEN** the request is refused before quota reservation or upstream traffic
 
 ## API-key model access reference
 

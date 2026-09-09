@@ -305,6 +305,19 @@ def test_model_access_accepts_prefixed_request_when_unprefixed_wire_model_allowe
     validate_model_access(api_key, "cp-claude-opus-4-7", routing_entries=_strip_routing_entries())
 
 
+def test_model_access_rejects_unrouted_request_when_entry_is_bound_to_a_sidecar() -> None:
+    """A grant scoped to one integration must not leak to the default dispatch path.
+
+    ``cc/custom-slug`` names the Claude sidecar. A bare ``custom-slug`` request
+    resolves no route, so it reaches the default upstream the operator never
+    granted, and must be refused even though both sides share a wire model.
+    """
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cc/custom-slug"})))
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "custom-slug", routing_entries=_strip_routing_entries())
+
+
 def test_reasoning_effort_allowlist_rejects_max_before_wire_normalization() -> None:
     request = ResponsesRequest.model_validate(
         {
