@@ -330,6 +330,111 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
 
 
 @pytest.mark.asyncio
+async def test_quota_endpoint_status_reflects_auth_evidence_and_protected_states(async_client):
+    """End-user path: the badge an operator actually sees on the quota endpoint.
+
+    Only explicit upstream auth-failure evidence produces "Re-auth required".
+    Access-token expiry age never does, at any lapse, because CLIProxyAPI renews
+    tokens from a background loop and publishes no field separating a dead refresh
+    token from a pending refresh. Pause and quota cooldown keep their own labels.
+    All inputs here are synthetic; no auth files or live sidecar are involved.
+    """
+    await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+
+    checked_at = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+
+    def _auth(name: str, **overrides) -> SidecarAuthQuota:
+        fields: dict = {
+            "name": name,
+            "auth_index": name,
+            "email": f"{name}@example.invalid",
+            "status": "active",
+            "status_message": None,
+            "disabled": False,
+            "unavailable": False,
+            "quota_exceeded": False,
+            "next_recover_at": None,
+            "model_states": (),
+            "success": 0,
+            "failed": 0,
+            "last_refresh": None,
+        }
+        fields.update(overrides)
+        return SidecarAuthQuota(**fields)
+
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status="healthy",
+        message=None,
+        accounts=(
+            _auth("just-lapsed", expired=now - timedelta(minutes=5)),
+            _auth("long-lapsed", expired=now - timedelta(days=1)),
+            _auth(
+                "transient-error",
+                status="error",
+                status_message="request failed: 502 unauthorized proxy upstream",
+                unavailable=True,
+                failed=1,
+            ),
+            _auth("fresh", expired=now + timedelta(hours=6)),
+            _auth(
+                "refresh-401",
+                status="error",
+                status_message="unauthorized",
+                unavailable=True,
+                failed=3,
+                expired=now + timedelta(hours=2),
+            ),
+            _auth("paused", status="disabled", disabled=True, expired=now - timedelta(days=2)),
+            _auth(
+                "cooling-down",
+                status="rate_limited",
+                status_message="Quota exceeded",
+                quota_exceeded=True,
+                unavailable=True,
+                failed=7,
+                expired=now - timedelta(days=1),
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.update(
+            claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+            claude_sidecar_quota_checked_at=checked_at.replace(tzinfo=None),
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/claude-sidecar/quota")
+    assert response.status_code == 200
+    by_name = {account["name"]: account for account in response.json()["accounts"]}
+
+    assert by_name["just-lapsed"]["status"] == "active"
+    # Expiry age alone is never evidence of a dead credential.
+    assert by_name["long-lapsed"]["status"] == "active"
+    # `unauthorized` is matched exactly, so a transient message containing it
+    # keeps its own status.
+    assert by_name["transient-error"]["status"] == "error"
+    assert by_name["fresh"]["status"] == "active"
+    assert by_name["refresh-401"]["status"] == "reauth_required"
+    assert by_name["paused"]["status"] == "disabled"
+    assert by_name["paused"]["paused"] is True
+    assert by_name["cooling-down"]["status"] == "rate_limited"
+
+    # Token material never reaches the operator-facing payload.
+    assert "access_token" not in response.text
+    assert "refresh_token" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_then_healthy(async_client, monkeypatch):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()

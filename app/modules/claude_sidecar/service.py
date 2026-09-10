@@ -18,6 +18,7 @@ from app.modules.claude_sidecar.oauth_usage_response import build_anthropic_oaut
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
+    dashboard_auth_status,
     snapshot_from_json,
     snapshot_to_json,
 )
@@ -491,7 +492,7 @@ def _to_auth_account(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
-        status=auth.status,
+        status=dashboard_auth_status(auth),
         paused=auth.disabled,
         excluded_models=patterns or [],
         excluded_models_state="available" if patterns is not None else "unreadable",
