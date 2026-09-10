@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -130,6 +133,89 @@ async def openrouter_enabled(monkeypatch):
     get_settings.cache_clear()
 
 
+# Transports the catalog handler can reach, by the exact name it looks up:
+# provider clients bound in ``app.modules.proxy.api`` plus the OrcaRouter
+# factory the catalog path uses instead of the class (api.py:4076), and the
+# native dispatch symbols. ``OpenRouterSidecarClient`` is absent because it is
+# the transport this control expects to reach.
+_CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
+    "ClaudeSidecarClient",
+    "OrcaRouterSidecarClient",
+    "get_orcarouter_sidecar_client",
+    "OmniRouteSidecarClient",
+    "OllamaSidecarClient",
+    "_source_chat_completion_response",
+    "collect_chat_completion",
+    "_probe_chat_stream_startup_error",
+)
+
+
+class _UnexpectedTransport(Exception):
+    """A transport other than the expected OpenRouter fake was constructed."""
+
+
+@pytest.fixture
+def block_unexpected_transports(monkeypatch):
+    """Refuse every reachable transport except this control's expected fake."""
+
+    def _refuse(name: str):
+        def _factory(*args, **kwargs):
+            del args, kwargs
+            raise _UnexpectedTransport(name)
+
+        return _factory
+
+    for name in _CATALOG_CONTROL_REFUSED:
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _refuse(name), raising=True)
+
+    from app.modules.proxy.service import ProxyService
+
+    monkeypatch.setattr(ProxyService, "stream_responses", _refuse("ProxyService.stream_responses"), raising=True)
+
+
+@pytest_asyncio.fixture
+async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fake_openrouter, monkeypatch):
+    """Real routers, middleware and temp database, without the app lifespan.
+
+    Ordering is explicit: the guard and the expected fake are declared as
+    parameters so both run first, and the fake is re-applied last so the guard
+    can never leave the expected transport blocked.
+    """
+    del _reset_db_state, block_unexpected_transports
+    import app.modules.proxy.api as proxy_api
+    from app.main import create_app
+
+    monkeypatch.setattr(
+        "app.modules.proxy.api.OpenRouterSidecarClient",
+        lambda _config: fake_openrouter,
+        raising=True,
+    )
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    assert proxy_api.__file__.startswith(str(Path(__file__).resolve().parents[2])), (
+        f"app module resolved outside this task copy: {proxy_api.__file__}"
+    )
+    assert proxy_api.OpenRouterSidecarClient(fake_openrouter.config) is fake_openrouter
+    for name in _CATALOG_CONTROL_REFUSED:
+        with pytest.raises(_UnexpectedTransport):
+            getattr(proxy_api, name)()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
+
+
 @pytest.fixture
 async def fake_openrouter(monkeypatch):
     config = OpenRouterSidecarConfig(
@@ -226,8 +312,15 @@ async def test_openrouter_non_stream_routes_to_sidecar_and_finalizes_reservation
 
 
 @pytest.mark.asyncio
-async def test_openrouter_model_list_merges_and_filters(async_client, openrouter_enabled, fake_openrouter):
-    await async_client.put(
+async def test_openrouter_model_list_merges_and_filters(lifespan_free_client, openrouter_enabled, fake_openrouter):
+    # Without the lifespan no cache-invalidation poller is registered, so the
+    # settings write below is an in-process cache clear plus the temp-DB commit.
+    # Assert that precondition instead of assuming it.
+    from app.core.cache.invalidation import get_cache_invalidation_poller
+
+    assert get_cache_invalidation_poller() is None
+
+    settings_response = await lifespan_free_client.put(
         "/api/settings",
         json={
             "openrouterSidecarEnabled": True,
@@ -235,12 +328,14 @@ async def test_openrouter_model_list_merges_and_filters(async_client, openrouter
             "openrouterSidecarModelPrefixes": ["deepseek/"],
         },
     )
-    await _enable_api_key_auth(async_client)
+    assert settings_response.status_code == 200, settings_response.text
+
+    await _enable_api_key_auth(lifespan_free_client)
     registry = get_model_registry()
     await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})
     key = await _create_api_key("models-key", allowed_models=["deepseek/deepseek-chat"])
 
-    response = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
+    response = await lifespan_free_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
 
     assert response.status_code == 200
     data = response.json()["data"]

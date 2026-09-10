@@ -13,9 +13,12 @@ externally callable route.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import aiohttp
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
@@ -142,6 +145,121 @@ async def fake_orcarouter(monkeypatch):
     monkeypatch.setattr("app.modules.proxy.api.load_orcarouter_sidecar_config", load_config)
     monkeypatch.setattr("app.modules.proxy.api.OrcaRouterSidecarClient", lambda _config: client)
     return client
+
+
+# Transports the catalog handler can reach, by the exact name it looks up.
+# OmniRoute is deliberately NOT listed: ``no_omniroute_network`` binds it to an
+# exploding stand-in and that binding must survive, so an OmniRoute client is
+# never permitted here rather than merely refused by this guard. The OrcaRouter
+# class and factory are absent because the neighbour fake is the expected
+# transport for this control.
+_CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
+    "ClaudeSidecarClient",
+    "OpenRouterSidecarClient",
+    "OllamaSidecarClient",
+    "_source_chat_completion_response",
+    "collect_chat_completion",
+    "_probe_chat_stream_startup_error",
+)
+
+
+class _UnexpectedTransport(Exception):
+    """A transport other than the expected OrcaRouter neighbour was built."""
+
+
+@pytest.fixture
+def block_unexpected_transports(monkeypatch):
+    """Refuse every reachable transport except the expected OrcaRouter fake."""
+
+    def _refuse(name: str):
+        def _factory(*args, **kwargs):
+            del args, kwargs
+            raise _UnexpectedTransport(name)
+
+        return _factory
+
+    for name in _CATALOG_CONTROL_REFUSED:
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _refuse(name), raising=True)
+
+    from app.modules.proxy.service import ProxyService
+
+    monkeypatch.setattr(ProxyService, "stream_responses", _refuse("ProxyService.stream_responses"), raising=True)
+
+
+@pytest_asyncio.fixture
+async def lifespan_free_client(
+    _reset_db_state,
+    block_unexpected_transports,
+    no_omniroute_network,
+    fake_orcarouter,
+    monkeypatch,
+):
+    """Real routers, middleware and temp database, without the app lifespan.
+
+    ``no_omniroute_network`` is declared as a parameter so the exploding
+    OmniRoute binding is established and then left intact - the disable is what
+    this control tests, so an OmniRoute client is never made reachable. The
+    OrcaRouter neighbour fake is re-applied last, on both the class and the
+    ``get_orcarouter_sidecar_client`` factory the catalog path actually resolves
+    (api.py:4076), so the request cannot reach a real or previously cached
+    client whatever the module-global cache holds.
+
+    The settings row is seeded here because ``stored_omniroute_configuration``
+    runs after this fixture and asserts the row already exists. Under the shared
+    ``async_client`` the app lifespan creates it on the way up
+    (``ensure_auto_bootstrap_token`` -> ``get_or_create``, main.py:354);
+    ``create_app`` alone touches no database, and ``_reset_db_state`` has just
+    dropped and recreated the schema. Seeding through the product's own
+    ``SettingsRepository.get_or_create`` reproduces exactly that call against
+    the real temporary database, rather than hand-building a row.
+    """
+    del _reset_db_state, block_unexpected_transports, no_omniroute_network
+    import app.modules.proxy.api as proxy_api
+    from app.main import create_app
+
+    monkeypatch.setattr(
+        "app.modules.proxy.api.OrcaRouterSidecarClient",
+        lambda _config: fake_orcarouter,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.api.get_orcarouter_sidecar_client",
+        lambda _config: fake_orcarouter,
+        raising=True,
+    )
+
+    app = create_app()
+
+    # ``get_or_create`` COMMITs the row it inserts (repository.py:194-204), and
+    # ``SessionLocal`` is the same factory the later fixture opens its own
+    # session from (db/session.py:339), so the committed row is visible there.
+    async with SessionLocal() as session:
+        await SettingsRepository(session).get_or_create()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    assert proxy_api.__file__.startswith(str(Path(__file__).resolve().parents[2])), (
+        f"app module resolved outside this task copy: {proxy_api.__file__}"
+    )
+    assert proxy_api.OrcaRouterSidecarClient(fake_orcarouter.config) is fake_orcarouter
+    assert proxy_api.get_orcarouter_sidecar_client(fake_orcarouter.config) is fake_orcarouter
+    # The OmniRoute binding must still be the exploding stand-in, not a fake.
+    assert proxy_api.OmniRouteSidecarClient is _ExplodingOmniRouteClient
+    for name in _CATALOG_CONTROL_REFUSED:
+        with pytest.raises(_UnexpectedTransport):
+            getattr(proxy_api, name)()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
 
 
 async def _enable_api_key_auth(async_client) -> None:
@@ -361,16 +479,23 @@ async def test_dormant_omniroute_routes_do_not_conflict_with_orcarouter(
 
 @pytest.mark.asyncio
 async def test_omniroute_models_are_absent_from_model_discovery(
-    async_client,
+    lifespan_free_client,
     stored_omniroute_configuration,
     omniroute_environment_enabled,
     no_omniroute_network,
     fake_orcarouter,
 ):
-    await _enable_api_key_auth(async_client)
+    # ``_enable_api_key_auth`` writes settings; without the lifespan no
+    # cache-invalidation poller is registered, so that write is an in-process
+    # cache clear plus the temp-DB commit. It asserts its own 200 internally.
+    from app.core.cache.invalidation import get_cache_invalidation_poller
+
+    assert get_cache_invalidation_poller() is None
+
+    await _enable_api_key_auth(lifespan_free_client)
     key = await _create_api_key("models-key")
 
-    response = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
+    response = await lifespan_free_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
 
     assert response.status_code == 200
     items = response.json()["data"]
