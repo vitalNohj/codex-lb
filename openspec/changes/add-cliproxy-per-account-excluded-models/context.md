@@ -48,9 +48,12 @@ real update consumer and same-Manager selection. The provider executor is the on
 fake, and the macOS sandbox denies all network operations and writes to source, Git metadata, module
 cache and this repository.
 
-These native tests do not cross codex-lb's Python client boundary. The preserved executable fixture
-in `tests/integration/test_claude_sidecar_excluded_models_contract.py` remains the unverified
-real-process HTTP increment and must not be described as covered by native Go evidence.
+The separate real-handler contract in `tests/contract/cliproxy_exclusions/http` crosses codex-lb's
+Python route and client boundary to CLIProxyAPI's management handler and FileTokenStore. Its test
+bodies passed save, read-back and clear with synthetic accounts. The adapted public launcher has
+not been executed. The preserved `tests/integration/test_claude_sidecar_excluded_models_contract.py`
+full-main fixture remains unexecuted. Neither the native nor real-handler evidence covers full
+application lifespan, live providers, production behavior or IPv6 endpoints.
 
 ## Normalization
 

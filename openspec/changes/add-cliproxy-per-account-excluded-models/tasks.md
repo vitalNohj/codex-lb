@@ -34,6 +34,8 @@
       `856ddd8df746a38a6033dbbf6c140974bf5aea0f`, under a deny-all-network sandbox with synthetic
       accounts, proving exact vs explicit wildcard behavior, retry, exhaustion, alias ordering,
       runtime toggling, and actual saved-file delivery through the watcher and update consumer.
-- [ ] 3.5 Validate the preserved real-process Python-to-Go HTTP contract in
-      `tests/integration/test_claude_sidecar_excluded_models_contract.py`; the accepted native
-      contracts do not satisfy this cross-language boundary.
+- [x] 3.5 Validate the Python-to-Go save, read-back and clear boundary with the real-handler
+      contract bodies in `tests/contract/cliproxy_exclusions/http`, using CLIProxyAPI's real
+      management handler, Manager and FileTokenStore with synthetic accounts. The adapted public
+      launcher is unexecuted, and the preserved full-main fixture in
+      `tests/integration/test_claude_sidecar_excluded_models_contract.py` remains unexecuted.

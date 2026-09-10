@@ -21,11 +21,13 @@ The behavioral test bodies passed against CLIProxyAPI commit
 The provider executor is the only request-boundary fake. Accounts and tokens are
 synthetic. The test does not call a provider.
 
-This scope is native CLIProxyAPI behavior only. It does not validate the
-Python-to-Go HTTP boundary from codex-lb to a running CLIProxyAPI process. The
-existing executable fixture in
-`tests/integration/test_claude_sidecar_excluded_models_contract.py` remains the
-opt-in contract for that boundary and is not replaced by these tests.
+This directory also contains the separate opt-in
+[`http`](http/README.md) contract. Its real-handler test bodies passed the
+Python-to-Go HTTP save, read-back and clear path with synthetic accounts. The
+adapted public HTTP launcher has not been executed. The legacy full-main fixture
+in `tests/integration/test_claude_sidecar_excluded_models_contract.py` remains
+preserved and unexecuted; the accepted HTTP contract does not start the full
+CLIProxyAPI executable or application lifespan.
 
 ## Prerequisites
 
