@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Callable
 
@@ -1435,6 +1436,89 @@ async def test_gpt_6_astra_backfill_does_not_double_count_duplicate_request_rows
     # The API-key aggregate does not deduplicate, so BOTH repriced rows count
     # there: 147 + 52 + 52 = 251.
     assert key_total == pytest.approx(251.0)
+
+
+def test_gpt_6_astra_backfill_batches_updates_and_discards_folded_rows(monkeypatch):
+    """Each fetch is persisted and folded before the next fetch begins."""
+    migration = importlib.import_module("app.db.alembic.versions.20260909_000000_backfill_gpt_6_astra_costs")
+
+    def _row(index: int) -> dict[str, object]:
+        return {
+            "id": index,
+            "account_id": "account",
+            "api_key_id": "key",
+            "request_id": f"request-{index}",
+            "request_kind": "normal",
+            "deleted_at": None,
+            "requested_at": "2026-09-08 00:00:00",
+            "model": "gpt-6-astra",
+            "service_tier": None,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cached_input_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+
+    rows_by_batch = [
+        [_row(index) for index in range(1, 4)],
+        [_row(index) for index in range(4, 6)],
+        [],
+    ]
+    pending_batches = iter(rows_by_batch)
+    persisted: list[list[int]] = []
+    accumulated: list[list[int]] = []
+    applied: list[tuple[dict[str, float], dict[str, float]]] = []
+
+    class _Rows:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return next(pending_batches)
+
+    class _Result:
+        def mappings(self):
+            return _Rows()
+
+    class _Bind:
+        def execute(self, _statement, _parameters=None):
+            return _Result()
+
+    bind = _Bind()
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+    monkeypatch.setattr(migration, "_has_table", lambda *_args: True)
+    monkeypatch.setattr(migration, "_columns", lambda *_args: set())
+    monkeypatch.setattr(migration, "_read_watermark", lambda *_args: migration.datetime(2026, 9, 9))
+    monkeypatch.setattr(migration, "_owns_price_elsewhere", lambda *_args: True)
+    monkeypatch.setattr(migration, "_calculate_cost", lambda **_kwargs: 1.0)
+    monkeypatch.setattr(
+        migration,
+        "_update_costs_bulk",
+        lambda _bind, _table, updates, **_kwargs: persisted.append(
+            [int(update["_request_log_id"]) for update in updates]
+        ),
+    )
+
+    def _accumulate(_bind, rows):
+        accumulated.append([int(row["id"]) for row in rows])
+        return ({"account": float(len(rows))}, {"key": float(len(rows))})
+
+    monkeypatch.setattr(migration, "_accumulate_deltas", _accumulate)
+    monkeypatch.setattr(
+        migration,
+        "_apply_deltas",
+        lambda _bind, account, keys, **_kwargs: applied.append((account, keys)),
+    )
+    monkeypatch.setattr(migration, "_arm_time_rollup_repair", lambda *_args: None)
+
+    migration.upgrade()
+
+    assert persisted == [[1, 2, 3], [4, 5]]
+    assert accumulated == [[1, 2, 3], [4, 5]]
+    assert applied == [
+        ({"account": 3.0}, {"key": 3.0}),
+        ({"account": 2.0}, {"key": 2.0}),
+    ]
 
 
 @pytest.mark.asyncio

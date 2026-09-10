@@ -510,6 +510,53 @@ async def test_explicit_openrouter_grant_authorizes_its_own_request(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ALL_PATHS)
+@pytest.mark.parametrize(
+    ("requested_model", "allowed"),
+    [
+        ("gpt-6-astra", True),
+        ("gpt-6-astra-2026-09-03", True),
+        ("codex/gpt-6-astra", True),
+        ("openai/gpt-6-astra", True),
+        ("gpt-6-astra-pro", False),
+        ("unrelated/gpt-6-astra", False),
+    ],
+)
+async def test_astra_grant_admits_only_bounded_model_id_forms(
+    lifespan_free_client,
+    sidecar_enabled,  # noqa: F811
+    two_integrations,
+    no_reservation,
+    dispatch_calls,
+    path,
+    requested_model,
+    allowed,
+):
+    """An Astra grant admits its supported forms, never substring matches."""
+    await _enable_api_key_auth(lifespan_free_client)
+    key = await _create_api_key(f"astra-{path.replace('/', '-')}-{requested_model}", allowed_models=["gpt-6-astra"])
+
+    if not allowed:
+        response = await _post(lifespan_free_client, path, key, requested_model)
+        assert _denied(response), f"{path} admitted unrelated Astra-like id {requested_model!r}"
+        no_reservation.assert_not_awaited()
+        assert dispatch_calls == []
+        return
+
+    if path in NATIVE_DISPATCH_BOUNDARY:
+        dispatched = await _post_expecting_dispatch(lifespan_free_client, path, key, requested_model)
+        _assert_dispatch(
+            dispatched,
+            dispatch_calls,
+            expected_boundary=NATIVE_DISPATCH_BOUNDARY[path],
+            expected_provider=None,
+            expected_model=None,
+        )
+    else:
+        await _assert_admitted_past_permission(lifespan_free_client, path, key, requested_model, dispatch_calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ALL_PATHS)
 async def test_separately_versioned_model_is_not_admitted_by_its_family(
     lifespan_free_client,
     sidecar_enabled,  # noqa: F811

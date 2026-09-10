@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-_ASTRA_ID = re.compile(r"(?:codex/)?gpt-6-astra(?:-\d{4}-\d{2}-\d{2}|-\d{8})?", re.IGNORECASE)
+_ASTRA_ID = re.compile(r"(?:(?:codex|openai)/)?gpt-6-astra(?:-\d{4}-\d{2}-\d{2}|-\d{8})?", re.IGNORECASE)
 _FABLE_5_1_ID = re.compile(
     r"(?:^|[/:_-])claude-fable-5[.-]1"
     r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"

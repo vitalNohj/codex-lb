@@ -177,17 +177,19 @@ def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEnt
     if route is not None:
         model = route.wire_model
         provider = route.provider
-    gpt_alias = resolve_model_alias(model)
-    normalized = gpt_alias if gpt_alias is not None else model
-    # A separately-routed and separately-priced version must not be collapsed
-    # into its family by a legacy glob, or an allowlist naming only the family
-    # would admit it.
-    versioned = resolve_versioned_model_id(normalized)
+    # Access identities use the bounded matcher before legacy pricing aliases.
+    # Pricing aliases intentionally include broad historical globs, but those
+    # must not grant unrelated model ids that merely contain a priced name.
+    versioned = resolve_versioned_model_id(model)
     if versioned is not None:
         return _AccessIdentity(provider, versioned)
+    gpt_alias = resolve_model_alias(model)
+    normalized = gpt_alias if gpt_alias is not None else model
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
-    if pricing_alias is not None:
+    if pricing_alias is not None and pricing_alias != "gpt-6-astra":
         return _AccessIdentity(provider, pricing_alias)
+    if pricing_alias == "gpt-6-astra":
+        return _AccessIdentity(provider, normalized)
     sidecar_alias = canonical_sidecar_model(normalized)
     return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
 

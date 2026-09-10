@@ -323,6 +323,23 @@ def _apply_deltas(
             )
 
 
+def _update_costs_bulk(
+    bind: Connection,
+    request_logs: Any,
+    updates: list[dict[str, Any]],
+    *,
+    has_cost_source: bool,
+) -> None:
+    """Persist one fetched batch with one executemany round trip."""
+    if not updates:
+        return
+    values: dict[str, Any] = {"cost_usd": sa.bindparam("_cost_usd")}
+    if has_cost_source:
+        values["cost_source"] = _STATIC_TABLE
+    statement = sa.update(request_logs).where(request_logs.c.id == sa.bindparam("_request_log_id")).values(**values)
+    bind.execute(statement, updates)
+
+
 def _owns_price_elsewhere(request_logs: Any, columns: set[str]) -> Any:
     """Rows whose writer already settled the price; the static table must not answer.
 
@@ -357,7 +374,6 @@ def upgrade() -> None:
     has_cost_source = "cost_source" in log_columns
     eligible = _owns_price_elsewhere(request_logs, log_columns)
     watermark = _read_watermark(bind)
-    backfilled_folded: list[dict[str, Any]] = []
     earliest_repriced: datetime | None = None
 
     last_seen_id = 0
@@ -393,6 +409,8 @@ def upgrade() -> None:
         )
         if not rows:
             break
+        updates: list[dict[str, Any]] = []
+        backfilled_folded: list[dict[str, Any]] = []
         for row in rows:
             cost = _calculate_cost(
                 model=row["model"],
@@ -404,10 +422,7 @@ def upgrade() -> None:
             )
             if cost is None:
                 continue
-            values: dict[str, Any] = {"cost_usd": cost}
-            if has_cost_source:
-                values["cost_source"] = _STATIC_TABLE
-            bind.execute(sa.update(request_logs).where(request_logs.c.id == row["id"]).values(**values))
+            updates.append({"_request_log_id": row["id"], "_cost_usd": cost})
             requested_at = _as_datetime(row["requested_at"])
             if requested_at is not None and (earliest_repriced is None or requested_at < earliest_repriced):
                 earliest_repriced = requested_at
@@ -425,10 +440,19 @@ def upgrade() -> None:
                     "cost_usd": cost,
                 }
             )
+        _update_costs_bulk(
+            bind,
+            request_logs,
+            updates,
+            has_cost_source=has_cost_source,
+        )
+        # The duplicate lookup examines all rows for every request id, so a
+        # logical duplicate split across fetch batches still uses its true
+        # max(id). Apply this batch's deltas now and release its row objects.
+        account_deltas, key_deltas = _accumulate_deltas(bind, backfilled_folded)
+        _apply_deltas(bind, account_deltas, key_deltas, sign=1)
         last_seen_id = int(rows[-1]["id"])
 
-    account_deltas, key_deltas = _accumulate_deltas(bind, backfilled_folded)
-    _apply_deltas(bind, account_deltas, key_deltas, sign=1)
     _arm_time_rollup_repair(bind, earliest_repriced)
 
 
