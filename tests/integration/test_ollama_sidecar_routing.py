@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -52,6 +55,89 @@ async def ollama_enabled(monkeypatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+# Transports the catalog handler can reach, by the exact name it looks up:
+# provider clients bound in ``app.modules.proxy.api`` plus the OrcaRouter
+# factory the catalog path uses instead of the class (api.py:4076), and the
+# native dispatch symbols. ``OllamaSidecarClient`` is absent because it is the
+# transport this control expects to reach.
+_CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
+    "ClaudeSidecarClient",
+    "OpenRouterSidecarClient",
+    "OrcaRouterSidecarClient",
+    "get_orcarouter_sidecar_client",
+    "OmniRouteSidecarClient",
+    "_source_chat_completion_response",
+    "collect_chat_completion",
+    "_probe_chat_stream_startup_error",
+)
+
+
+class _UnexpectedTransport(Exception):
+    """A transport other than the expected Ollama fake was constructed."""
+
+
+@pytest.fixture
+def block_unexpected_transports(monkeypatch):
+    """Refuse every reachable transport except this control's expected fake."""
+
+    def _refuse(name: str):
+        def _factory(*args, **kwargs):
+            del args, kwargs
+            raise _UnexpectedTransport(name)
+
+        return _factory
+
+    for name in _CATALOG_CONTROL_REFUSED:
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _refuse(name), raising=True)
+
+    from app.modules.proxy.service import ProxyService
+
+    monkeypatch.setattr(ProxyService, "stream_responses", _refuse("ProxyService.stream_responses"), raising=True)
+
+
+@pytest_asyncio.fixture
+async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fake_ollama, monkeypatch):
+    """Real routers, middleware and temp database, without the app lifespan.
+
+    Ordering is explicit: the guard and the expected fake are declared as
+    parameters so both run first, and the fake is re-applied last so the guard
+    can never leave the expected transport blocked.
+    """
+    del _reset_db_state, block_unexpected_transports
+    import app.modules.proxy.api as proxy_api
+    from app.main import create_app
+
+    monkeypatch.setattr(
+        "app.modules.proxy.api.OllamaSidecarClient",
+        lambda _config: fake_ollama,
+        raising=True,
+    )
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    assert proxy_api.__file__.startswith(str(Path(__file__).resolve().parents[2])), (
+        f"app module resolved outside this task copy: {proxy_api.__file__}"
+    )
+    assert proxy_api.OllamaSidecarClient(fake_ollama.config) is fake_ollama
+    for name in _CATALOG_CONTROL_REFUSED:
+        with pytest.raises(_UnexpectedTransport):
+            getattr(proxy_api, name)()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
 
 
 @pytest.fixture
@@ -218,8 +304,14 @@ async def test_api_key_allowed_models_use_effective_ollama_model(
 
 
 @pytest.mark.asyncio
-async def test_ollama_model_list_includes_configured_only(async_client, ollama_enabled, fake_ollama):
-    await async_client.put(
+async def test_ollama_model_list_includes_configured_only(lifespan_free_client, ollama_enabled, fake_ollama):
+    # Without the lifespan no cache-invalidation poller is registered, so the
+    # settings write below is an in-process cache clear plus the temp-DB commit.
+    from app.core.cache.invalidation import get_cache_invalidation_poller
+
+    assert get_cache_invalidation_poller() is None
+
+    settings_response = await lifespan_free_client.put(
         "/api/settings",
         json={
             "ollamaSidecarEnabled": True,
@@ -227,8 +319,9 @@ async def test_ollama_model_list_includes_configured_only(async_client, ollama_e
             "ollamaSidecarFullModels": ["gpt-oss:120b-cloud"],
         },
     )
+    assert settings_response.status_code == 200, settings_response.text
 
-    response = await async_client.get("/v1/models")
+    response = await lifespan_free_client.get("/v1/models")
 
     assert response.status_code == 200
     data = response.json()["data"]

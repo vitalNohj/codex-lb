@@ -1,0 +1,21 @@
+; Opt-in CLIProxyAPI exclusion-contract policy for macOS sandbox-exec.
+; Each parameter must be an absolute, symlink-resolved path supplied identically
+; to the child. run.sh verifies the same values before invoking Go.
+;
+; This allow-default policy denies network access and writes beneath the four
+; named roots. It does not restrict all filesystem writes to the fresh run root
+; and must not be described as exclusive writable-root confinement.
+(version 1)
+(allow default)
+
+; Provider traffic and every other socket are outside this contract.
+(deny network*)
+
+; Deny writes beneath the pinned checkout, its Git common directory, the
+; pre-populated module cache, and this repository. Configured test outputs are
+; placed beneath the fresh synthetic run root.
+(deny file-write*
+  (subpath (param "CLIPROXY_SOURCE"))
+  (subpath (param "CLIPROXY_GIT"))
+  (subpath (param "GO_MODCACHE"))
+  (subpath (param "CODEX_LB_REPO")))

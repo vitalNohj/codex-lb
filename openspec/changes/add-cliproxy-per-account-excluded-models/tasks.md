@@ -30,3 +30,12 @@
 - [x] 3.1 `openspec validate add-cliproxy-per-account-excluded-models --strict`.
 - [x] 3.2 Targeted backend pytest + frontend vitest + `bun run build`.
 - [x] 3.3 Grep gate: no account email and no model-family special case in `app/`.
+- [x] 3.4 Opt-in native contracts against pinned CLIProxyAPI commit
+      `856ddd8df746a38a6033dbbf6c140974bf5aea0f`, under a deny-all-network sandbox with synthetic
+      accounts, proving exact vs explicit wildcard behavior, retry, exhaustion, alias ordering,
+      runtime toggling, and actual saved-file delivery through the watcher and update consumer.
+- [x] 3.5 Validate the Python-to-Go save, read-back and clear boundary with the real-handler
+      contract bodies in `tests/contract/cliproxy_exclusions/http`, using CLIProxyAPI's real
+      management handler, Manager and FileTokenStore with synthetic accounts. The adapted public
+      launcher is unexecuted, and the preserved full-main fixture in
+      `tests/integration/test_claude_sidecar_excluded_models_contract.py` remains unexecuted.

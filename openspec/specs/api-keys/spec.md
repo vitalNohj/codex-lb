@@ -1283,6 +1283,122 @@ without corresponding proxy request and usage fields.
 - **WHEN** the requested model is `gpt-5.6-luna-2026-07-13`
 - **THEN** cost accounting resolves it to the `gpt-5.6-luna` price entry
 
+### Requirement: GPT-6 Astra native usage cost pricing preserves reconciled rates
+
+When computing native API-key usage, request-log, reservation, or aggregate cost for `gpt-6-astra`, the system MUST use these reconciled USD-per-1M-token rates for input, cached input, and output. External integration costs remain governed by [external-model-pricing](../external-model-pricing/spec.md), not this native table:
+
+| Model | Standard | Fast/priority | Flex | Standard long context |
+| --- | --- | --- | --- | --- |
+| `gpt-6-astra` | `10 / 1 / 50` | `20 / 2 / 100` | `5 / 0.50 / 25` | `20 / 2 / 75` |
+
+The existing `priority` and `fast` service-tier aliases MUST use the Fast/priority rates. Standard long-context rates MUST apply only when input tokens exceed 272,000. Flex long-context pricing MUST continue to use the existing Flex short-context rates and multipliers. Suffixed aliases such as `gpt-6-astra-2026-09-03` and the discoverable alias `codex/gpt-6-astra` MUST resolve to the canonical `gpt-6-astra` price entry.
+
+#### Scenario: Astra standard usage uses the current rate
+
+- **WHEN** a standard-tier `gpt-6-astra` request has 200,000 input tokens, 100,000 cached input tokens, and 1,000,000 output tokens
+- **THEN** the token cost is `$51.10`
+
+#### Scenario: Astra Fast and Flex usage use their tier rates
+
+- **WHEN** a `gpt-6-astra` request has 200,000 input tokens, 100,000 cached input tokens, and 1,000,000 output tokens
+- **AND** the request uses `priority` or `fast`
+- **THEN** the token cost is `$102.20`
+- **WHEN** the same usage uses `flex`
+- **THEN** the token cost is `$25.55`
+
+#### Scenario: Astra standard long-context usage uses the current long-context rate
+
+- **WHEN** a standard-tier `gpt-6-astra` request has 300,000 input tokens, 50,000 cached input tokens, and 100,000 output tokens
+- **THEN** the token cost is `$12.60`
+
+### Requirement: Claude Fable 5.1 pricing is distinct from Fable 5
+
+The native price table MUST recognize Anthropic Claude Fable 5.1, including sidecar-prefixed and dotted ids such as `cc/claude-fable-5-1` and `cc/claude-fable-5.1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+
+A recognized version MUST NOT remove pricing that a price table would otherwise supply. When a supplied price table has no entry for the resolved version, lookup MUST fall back to the legacy family alias so the request is still priced instead of silently losing its cost.
+
+#### Scenario: Canonical Fable 5.1 model resolves pricing
+
+- **WHEN** native cost accounting resolves model `claude-fable-5-1` with token usage
+- **THEN** it uses the preserved Fable 5.1 native rates ($10 input / $0.25 cache-hit / $50 output per 1M tokens)
+
+#### Scenario: Sidecar-prefixed Fable 5.1 does not use Fable 5 cache-hit pricing
+
+- **WHEN** native price lookup receives model `cc/claude-fable-5-1`
+- **THEN** it resolves the distinct Fable 5.1 native price entry
+- **AND** the resolved canonical model is `claude-fable-5-1`
+
+#### Scenario: A price table without the version still prices the request
+
+- **WHEN** native price lookup receives model `cc/claude-fable-5-1`
+- **AND** the supplied price table contains only `claude-fable-5`
+- **THEN** it resolves the `claude-fable-5` entry rather than returning no price
+
+### Requirement: API-key model access does not collapse a separately priced version into its family
+
+`allowed_models` enforcement MUST use authoritative sidecar route resolution, including configured prefix stripping, before canonicalizing both requested and allowed model ids. Sidecar entry points MUST reject unauthorized routing identities before quota reservation or upstream dispatch. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family.
+
+#### Scenario: A custom stripped prefix cannot bypass the family allowlist
+
+- **GIVEN** the Claude routing prefix is `team.` with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5` requests `team.claude-fable-5-1`
+- **THEN** the request is refused before quota reservation or upstream traffic
+- **AND** the same key can still request `team.claude-fable-5`
+- **AND** a key allowing `claude-fable-5-1` can request `team.claude-fable-5-1`
+
+#### Scenario: A Fable 5 allowlist rejects Fable 5.1
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5` requests `cc/claude-fable-5-1`
+- **THEN** the request is refused as not allowed for that key
+
+#### Scenario: A Fable 5 allowlist still admits Fable 5
+
+- **WHEN** the same API key requests `cc/claude-fable-5`
+- **THEN** the request is allowed
+
+#### Scenario: An allowlist naming the version admits it
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5-1` requests `claude-fable-5.1`
+- **THEN** the request is allowed
+
+### Requirement: API-key model access does not treat distinct sidecar integrations as the same model
+
+`allowed_models` enforcement MUST compare the resolved owning integration and the exact canonical model as separate identity components, and MUST NOT authorize a request whose resolved integration differs from the grant's. A key whose allowlist names a model only through one integration's prefix or full-model id MUST NOT be granted access to the same wire model on a different enabled sidecar integration. An allowlist entry that resolves no route is a native identity: it authorizes native dispatch only, and MUST NOT act as a provider-agnostic wildcard admitting that wire model on an enabled sidecar integration. Conversely, an allowlist entry bound to one integration MUST NOT admit a request that resolves to no route, because such a request reaches the default dispatch path rather than the granted integration. Access to a routed model is therefore granted by naming that integration's routed identity.
+
+#### Scenario: A Claude-prefixed allowlist rejects the same slug on OpenRouter
+
+- **GIVEN** Claude routing prefix `cc/` and OpenRouter routing prefix `or/` both strip
+- **WHEN** an API key whose `allowed_models` is exactly `cc/custom-slug` requests `or/custom-slug`
+- **THEN** the request is refused before quota reservation or upstream traffic
+
+#### Scenario: The same Claude prefix still admits that slug
+
+- **WHEN** the same API key requests `cc/custom-slug`
+- **THEN** the request is allowed
+
+#### Scenario: A same-integration grant admits that integration's other prefix
+
+- **GIVEN** Claude routing prefixes `cc/` and `cp-` both with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `cc/claude-opus-4-7` requests `cp-claude-opus-4-7`
+- **THEN** the request is allowed, because both resolve to the Claude integration and the same wire model
+
+#### Scenario: A bare grant does not authorize that wire model on a sidecar integration
+
+- **GIVEN** Claude routing prefix `cp-` with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-4-7`, which resolves no route, requests `cp-claude-opus-4-7`
+- **THEN** the request is refused before quota reservation or upstream traffic, because a native grant is not a provider-agnostic wildcard
+
+#### Scenario: A native grant still admits its native request
+
+- **WHEN** an API key whose `allowed_models` is exactly `gpt-5` requests `gpt-5`, and neither resolves a route
+- **THEN** the request is allowed
+
+#### Scenario: An integration-bound allowlist rejects an unrouted request for the same wire model
+
+- **GIVEN** Claude routing prefix `cc/` with stripping enabled
+- **WHEN** an API key whose `allowed_models` is exactly `cc/custom-slug` requests the bare `custom-slug`, which resolves no route
+- **THEN** the request is refused before quota reservation or upstream traffic
+
 ### Requirement: API key last-used tracking is write-behind and coalesced
 
 The system SHALL track `api_keys.last_used_at` through a process-local write-behind coalescer instead of writing the column inside each reservation-settlement transaction. Settlement paths MUST record the key's used-at timestamp in memory (keyed by API key id, keeping the per-key maximum), and a replica-local periodic flusher (constant 30-second interval, not leader-gated) MUST fold all pending touches into the database in a single transaction per flush. Every flushed write MUST apply monotonic greatest-wins semantics — the stored `last_used_at` is only advanced, never regressed, even when multiple replicas flush out of order (`GREATEST(coalesce(last_used_at, epoch), :new)` semantics; the dialect-portable guarded UPDATE `WHERE last_used_at IS NULL OR last_used_at < :new` is an acceptable implementation on both PostgreSQL and SQLite). Graceful shutdown MUST flush every recorded touch: the flusher's stop sequence MUST switch the coalescer to shutdown write-through mode before performing the final flush, so a touch recorded after (or concurrently with) the final flush — for example by a settlement task that outlived the shutdown drain of persistence tasks — is flushed immediately by the recording path itself instead of being parked in a pending map that no longer has a flusher. Shutdown-path flushes (the final flush and write-through flushes after it) MUST retry transient failures a bounded number of times (3 attempts with a short constant backoff); if every attempt fails, the pending touches (API key ids and their timestamps) MUST be logged at WARNING so operators can reconstruct the lost values, and the failure MUST NOT propagate to the caller. On process crash, losing at most one flush interval (~30 seconds) of `last_used_at` freshness is accepted: the column's only consumer is the dashboard API response field (`lastUsedAt`), which no routing, ordering, or enforcement logic reads, so observed staleness of up to the flush interval is a display-only effect. A failed periodic flush MUST retain the pending touches for a later flush rather than dropping them.

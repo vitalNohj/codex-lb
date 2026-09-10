@@ -38,6 +38,23 @@ Authoritative read and credential-safety rules are specified in
 A live auth file may already carry exclusions placed there by hand. These remain operator data,
 not configuration owned by this change.
 
+## Verification boundaries
+
+The opt-in tests in `tests/contract/cliproxy_exclusions` compile into a clean checkout of pinned
+CLIProxyAPI commit `856ddd8df746a38a6033dbbf6c140974bf5aea0f` through a Go overlay. They exercise
+the real auth-file parser, registration, Manager selection and retry paths. A separate watcher case
+saves and clears the exclusion on disk and observes the actual fsnotify event through CLIProxyAPI's
+real update consumer and same-Manager selection. The provider executor is the only request-boundary
+fake, and the macOS sandbox denies all network operations and writes to source, Git metadata, module
+cache and this repository.
+
+The separate real-handler contract in `tests/contract/cliproxy_exclusions/http` crosses codex-lb's
+Python route and client boundary to CLIProxyAPI's management handler and FileTokenStore. Its test
+bodies passed save, read-back and clear with synthetic accounts. The adapted public launcher has
+not been executed. The preserved `tests/integration/test_claude_sidecar_excluded_models_contract.py`
+full-main fixture remains unexecuted. Neither the native nor real-handler evidence covers full
+application lifespan, live providers, production behavior or IPv6 endpoints.
+
 ## Normalization
 
 See [the backend contract](specs/dashboard-sidecar-management/spec.md) for write normalization

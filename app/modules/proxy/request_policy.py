@@ -24,6 +24,7 @@ from app.core.openai.strict_schema import (
 )
 from app.core.openai.v1_requests import V1ResponsesRequest
 from app.core.types import JsonValue
+from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.core.utils.json_guards import is_json_list, is_json_mapping
@@ -32,6 +33,7 @@ from app.db.models import ModelSource
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.model_sources.catalog import source_model_reasoning_levels
 from app.modules.proxy.sidecar_model_profiles import canonical_sidecar_model
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 
 logger = logging.getLogger(__name__)
 
@@ -122,28 +124,76 @@ def resolve_wire_reasoning_effort(effort: str) -> str:
     return _REASONING_EFFORT_WIRE_ALIASES.get(effort.strip().lower(), effort)
 
 
-def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None:
+class _AccessIdentity(NamedTuple):
+    """Canonical wire identity plus the sidecar that owns the route, if any."""
+
+    provider: str | None
+    canonical: str | None
+
+
+def validate_model_access(
+    api_key: ApiKeyData | None,
+    model: str | None,
+    *,
+    routing_entries: tuple[SidecarRoutingEntry, ...] = (),
+) -> None:
     if api_key is None:
         return
     if not api_key.allowed_models:
         return
-    allowed_models = {_canonical_model_for_access(allowed_model) for allowed_model in api_key.allowed_models}
-    effective_model = _canonical_model_for_access(model)
-    if model is None or effective_model in allowed_models or model in api_key.allowed_models:
+    if model is None or model in api_key.allowed_models:
+        return
+    requested = _access_identity(model, routing_entries)
+    if any(
+        _access_identities_match(requested, _access_identity(allowed_model, routing_entries))
+        for allowed_model in api_key.allowed_models
+    ):
         return
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
-def _canonical_model_for_access(model: str | None) -> str | None:
+def _access_identities_match(requested: _AccessIdentity, allowed: _AccessIdentity) -> bool:
+    if requested.canonical is None or allowed.canonical is None:
+        return False
+    if requested.canonical != allowed.canonical:
+        return False
+    # The owning integration is half of the identity, so a grant authorizes a
+    # request only on the integration it resolves to. Both absent means both
+    # sides are native, which still matches. A grant that resolves no route is
+    # a native identity, not a wildcard that can be spent on a paid sidecar
+    # serving the same slug.
+    return requested.provider == allowed.provider
+
+
+def _canonical_model_for_access(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> str | None:
+    return _access_identity(model, routing_entries).canonical
+
+
+def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
     if model is None:
-        return None
+        return _AccessIdentity(None, None)
+    provider: str | None = None
+    route = resolve_sidecar_route(model, routing_entries)
+    if route is not None:
+        model = route.wire_model
+        provider = route.provider
+    # Access identities use the bounded matcher before legacy pricing aliases.
+    # Pricing aliases intentionally include broad historical globs, but those
+    # must not grant unrelated model ids that merely contain a priced name.
+    versioned = resolve_versioned_model_id(model)
+    if versioned is not None:
+        return _AccessIdentity(provider, versioned)
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
-    if pricing_alias is not None:
-        return pricing_alias
+    if pricing_alias is not None and pricing_alias != "gpt-6-astra":
+        return _AccessIdentity(provider, pricing_alias)
+    if pricing_alias == "gpt-6-astra":
+        return _AccessIdentity(provider, normalized)
     sidecar_alias = canonical_sidecar_model(normalized)
-    return sidecar_alias if sidecar_alias is not None else normalized
+    return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
+
+
 def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | None) -> None:
     if api_key is None:
         return

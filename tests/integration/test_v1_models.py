@@ -2,14 +2,92 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from app.core.openai.model_registry import ModelRegistryExport, ReasoningLevel, UpstreamModel, get_model_registry
 from app.core.types import JsonValue
 from app.modules.proxy import api as proxy_api
 
 pytestmark = pytest.mark.integration
+
+# This control asserts the native catalog with every sidecar disabled, so NO
+# provider transport is permitted at all - each name is the exact symbol the
+# catalog handler looks up, including the OrcaRouter factory the catalog path
+# resolves instead of the class (api.py:4076), plus native dispatch.
+_CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
+    "ClaudeSidecarClient",
+    "OpenRouterSidecarClient",
+    "OrcaRouterSidecarClient",
+    "get_orcarouter_sidecar_client",
+    "OmniRouteSidecarClient",
+    "OllamaSidecarClient",
+    "_source_chat_completion_response",
+    "collect_chat_completion",
+    "_probe_chat_stream_startup_error",
+)
+
+
+class _UnexpectedTransport(Exception):
+    """A provider transport was constructed although all are disabled."""
+
+
+@pytest.fixture
+def block_unexpected_transports(monkeypatch):
+    """Refuse every provider and native transport.
+
+    The disable is what this control tests, so no transport is excepted and no
+    guard is relaxed because configuration claims a provider is off.
+    """
+
+    def _refuse(name: str):
+        def _factory(*args, **kwargs):
+            del args, kwargs
+            raise _UnexpectedTransport(name)
+
+        return _factory
+
+    for name in _CATALOG_CONTROL_REFUSED:
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _refuse(name), raising=True)
+
+    from app.modules.proxy.service import ProxyService
+
+    monkeypatch.setattr(ProxyService, "stream_responses", _refuse("ProxyService.stream_responses"), raising=True)
+
+
+@pytest_asyncio.fixture
+async def lifespan_free_client(_reset_db_state, block_unexpected_transports):
+    """Real routers, middleware and temp database, without the app lifespan."""
+    del _reset_db_state, block_unexpected_transports
+    import app.modules.proxy.api as live_proxy_api
+    from app.main import create_app
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    assert live_proxy_api.__file__.startswith(str(Path(__file__).resolve().parents[2])), (
+        f"app module resolved outside this task copy: {live_proxy_api.__file__}"
+    )
+    for name in _CATALOG_CONTROL_REFUSED:
+        with pytest.raises(_UnexpectedTransport):
+            getattr(live_proxy_api, name)()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
+
 
 BOOTSTRAP_MODEL_SLUGS = {
     "gpt-5.6-sol",
@@ -109,6 +187,8 @@ async def _disable_sidecars(async_client) -> None:
         },
     )
     assert response.status_code == 200
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/v1/models", "/backend-api/codex/models"])
 async def test_models_routes_release_reservation_when_catalog_read_fails(async_client, monkeypatch, path):
@@ -174,10 +254,17 @@ async def _create_model_source(
 
 
 @pytest.mark.asyncio
-async def test_v1_models_list(async_client):
-    await _disable_sidecars(async_client)
+async def test_v1_models_list(lifespan_free_client):
+    # ``_disable_sidecars`` writes settings; without the lifespan no
+    # cache-invalidation poller is registered, so that write is an in-process
+    # cache clear plus the temp-DB commit. It asserts its own 200 internally.
+    from app.core.cache.invalidation import get_cache_invalidation_poller
+
+    assert get_cache_invalidation_poller() is None
+
+    await _disable_sidecars(lifespan_free_client)
     await _populate_test_registry()
-    resp = await async_client.get("/v1/models")
+    resp = await lifespan_free_client.get("/v1/models")
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["object"] == "list"
@@ -1683,9 +1770,7 @@ async def test_v1_models_hides_alias_when_target_not_allowed(async_client):
 
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        created = await service.create_key(
-            ApiKeyCreateData(name="alias-models-key", allowed_models=["gpt-5.5"])
-        )
+        created = await service.create_key(ApiKeyCreateData(name="alias-models-key", allowed_models=["gpt-5.5"]))
 
     models_response = await async_client.get(
         "/v1/models",

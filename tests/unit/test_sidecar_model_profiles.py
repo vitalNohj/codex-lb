@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
+from app.core.types import JsonValue
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile,
     canonical_sidecar_model,
@@ -25,6 +26,8 @@ def test_canonical_sidecar_model_strips_cp_prefix_via_pricing_alias() -> None:
     assert canonical_sidecar_model("cp-claude-opus-4-7") == "claude-opus-4-7"
     assert canonical_sidecar_model("cp-claude-opus-4-8") == "claude-opus-4-8"
     assert canonical_sidecar_model("cp-claude-fable-5") == "claude-fable-5"
+    assert canonical_sidecar_model("cc/claude-fable-5-1") == "claude-fable-5-1"
+    assert canonical_sidecar_model("claude-fable-5.1") == "claude-fable-5-1"
 
 
 def test_canonical_sidecar_model_restores_claude_family_prefix() -> None:
@@ -49,6 +52,25 @@ def test_apply_sidecar_model_profile_resolves_cursor_thinking_suffix() -> None:
     assert wire_model == "claude-opus-4-7"
     assert body["model"] == "claude-opus-4-7"
     assert body["reasoning_effort"] == "high"
+
+
+def test_apply_sidecar_model_profile_keeps_fable_5_1_off_fable_5() -> None:
+    body: dict[str, JsonValue] = {}
+    wire_model = apply_sidecar_model_profile(
+        body,
+        stripped_model="claude-fable-5-1-thinking-max",
+    )
+
+    assert wire_model == "claude-fable-5-1"
+    assert body["model"] == "claude-fable-5-1"
+    assert body["reasoning_effort"] == "max"
+
+    dotted_body: dict[str, JsonValue] = {}
+    dotted_wire = apply_sidecar_model_profile(
+        dotted_body,
+        stripped_model="claude-fable-5.1",
+    )
+    assert dotted_wire == "claude-fable-5-1"
 
 
 def test_apply_sidecar_model_profile_preserves_existing_reasoning_effort() -> None:

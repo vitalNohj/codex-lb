@@ -7,6 +7,7 @@ from fnmatch import fnmatchcase
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
+from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.types import UsageCostByModel, UsageCostSummary
 
 
@@ -151,6 +152,21 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_input_per_1m=0.4,
         long_context_cached_input_per_1m=0.04,
         long_context_output_per_1m=1.8,
+    ),
+    "gpt-6-astra": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+        priority_input_per_1m=20.0,
+        priority_cached_input_per_1m=2.0,
+        priority_output_per_1m=100.0,
+        flex_input_per_1m=5.0,
+        flex_cached_input_per_1m=0.5,
+        flex_output_per_1m=25.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=20.0,
+        long_context_cached_input_per_1m=2.0,
+        long_context_output_per_1m=75.0,
     ),
     "gpt-5.5": ModelPrice(
         input_per_1m=5.0,
@@ -347,6 +363,11 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     "claude-fable-5": ModelPrice(
         input_per_1m=10.0,
         cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+    ),
+    "claude-fable-5-1": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=0.25,
         output_per_1m=50.0,
     ),
     "claude-mythos-5": ModelPrice(
@@ -554,6 +575,7 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "gpt-5.6-sol*": "gpt-5.6-sol",
     "gpt-5.6-terra*": "gpt-5.6-terra",
     "gpt-5.6-luna*": "gpt-5.6-luna",
+    "*gpt-6-astra*": "gpt-6-astra",
     "gpt-5.5-pro*": "gpt-5.5-pro",
     "gpt-5.5*": "gpt-5.5",
     "gpt-5.4-pro*": "gpt-5.4-pro",
@@ -657,12 +679,15 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
-    alias = resolve_model_alias(normalized, aliases)
-    if not alias:
-        return None
-    for key, value in pricing.items():
-        if key.lower() == alias.lower():
-            return key, value
+    # The versioned identity wins, but a caller-supplied pricing mapping that
+    # lacks its canonical key must still fall back to the legacy alias instead
+    # of dropping the cost entirely.
+    for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
+        if not alias:
+            continue
+        for key, value in pricing.items():
+            if key.lower() == alias.lower():
+                return key, value
     return None
 
 

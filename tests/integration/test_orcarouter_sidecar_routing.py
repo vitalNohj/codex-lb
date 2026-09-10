@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -174,6 +177,98 @@ async def fake_orcarouter(monkeypatch):
     return _install_fake_orcarouter(monkeypatch, api_key="orcarouter-key")
 
 
+# Transports the catalog handler can reach, by the exact name it looks up.
+# ``OrcaRouterSidecarClient`` and ``get_orcarouter_sidecar_client`` are absent
+# because both are this control's expected transport: the catalog path resolves
+# the FACTORY (api.py:4076) while dispatch resolves the class (api.py:4640).
+_CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
+    "ClaudeSidecarClient",
+    "OpenRouterSidecarClient",
+    "OmniRouteSidecarClient",
+    "OllamaSidecarClient",
+    "_source_chat_completion_response",
+    "collect_chat_completion",
+    "_probe_chat_stream_startup_error",
+)
+
+
+class _UnexpectedTransport(Exception):
+    """A transport other than the expected OrcaRouter fake was constructed."""
+
+
+@pytest.fixture
+def block_unexpected_transports(monkeypatch):
+    """Refuse every reachable transport except this control's expected fake."""
+
+    def _refuse(name: str):
+        def _factory(*args, **kwargs):
+            del args, kwargs
+            raise _UnexpectedTransport(name)
+
+        return _factory
+
+    for name in _CATALOG_CONTROL_REFUSED:
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _refuse(name), raising=True)
+
+    from app.modules.proxy.service import ProxyService
+
+    monkeypatch.setattr(ProxyService, "stream_responses", _refuse("ProxyService.stream_responses"), raising=True)
+
+
+@pytest_asyncio.fixture
+async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fake_orcarouter, monkeypatch):
+    """Real routers, middleware and temp database, without the app lifespan.
+
+    The catalog path reaches OrcaRouter through
+    ``get_orcarouter_sidecar_client`` (api.py:4076), not through the class the
+    module's shared fake patches. That factory keeps a module-global cache and
+    constructs the real client in its own namespace, so patching the class alone
+    leaves the catalog able to reach a real or previously cached client. Bind
+    the factory to the same expected fake here, scoped to this fixture, so the
+    selected request cannot reach either regardless of prior cache state. The
+    existing class binding is preserved for the paths that reach it.
+    """
+    del _reset_db_state, block_unexpected_transports
+    import app.modules.proxy.api as proxy_api
+    from app.main import create_app
+
+    monkeypatch.setattr(
+        "app.modules.proxy.api.OrcaRouterSidecarClient",
+        lambda _config: fake_orcarouter,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.api.get_orcarouter_sidecar_client",
+        lambda _config: fake_orcarouter,
+        raising=True,
+    )
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    assert proxy_api.__file__.startswith(str(Path(__file__).resolve().parents[2])), (
+        f"app module resolved outside this task copy: {proxy_api.__file__}"
+    )
+    assert proxy_api.OrcaRouterSidecarClient(fake_orcarouter.config) is fake_orcarouter
+    assert proxy_api.get_orcarouter_sidecar_client(fake_orcarouter.config) is fake_orcarouter
+    for name in _CATALOG_CONTROL_REFUSED:
+        with pytest.raises(_UnexpectedTransport):
+            getattr(proxy_api, name)()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
+
+
 async def _enable_api_key_auth(async_client) -> None:
     response = await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
     assert response.status_code == 200
@@ -248,8 +343,14 @@ async def test_orcarouter_non_stream_routes_to_sidecar_and_finalizes_reservation
 
 
 @pytest.mark.asyncio
-async def test_orcarouter_model_list_merges_and_filters(async_client, orcarouter_enabled, fake_orcarouter):
-    await async_client.put(
+async def test_orcarouter_model_list_merges_and_filters(lifespan_free_client, orcarouter_enabled, fake_orcarouter):
+    # Without the lifespan no cache-invalidation poller is registered, so the
+    # settings write below is an in-process cache clear plus the temp-DB commit.
+    from app.core.cache.invalidation import get_cache_invalidation_poller
+
+    assert get_cache_invalidation_poller() is None
+
+    settings_response = await lifespan_free_client.put(
         "/api/settings",
         json={
             "orcarouterSidecarEnabled": True,
@@ -257,12 +358,14 @@ async def test_orcarouter_model_list_merges_and_filters(async_client, orcarouter
             "orcarouterSidecarModelPrefixes": ["orcarouter/"],
         },
     )
-    await _enable_api_key_auth(async_client)
+    assert settings_response.status_code == 200, settings_response.text
+
+    await _enable_api_key_auth(lifespan_free_client)
     registry = get_model_registry()
     await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})
     key = await _create_api_key("models-key", allowed_models=["orcarouter/auto"])
 
-    response = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
+    response = await lifespan_free_client.get("/v1/models", headers={"Authorization": f"Bearer {key.key}"})
 
     assert response.status_code == 200
     data = response.json()["data"]

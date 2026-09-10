@@ -324,6 +324,21 @@ def test_build_sidecar_chat_payload_raises_cursor_max_tokens_to_model_floor() ->
     assert payload.body["max_tokens"] == 32_768
 
 
+def test_build_sidecar_chat_payload_forwards_fable_5_1_wire_model() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-fable-5-1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-fable-5-1", _config())
+
+    assert payload.body["model"] == "claude-fable-5-1"
+    assert payload.body["max_tokens"] == 32_768
+
+
 def test_build_sidecar_chat_payload_preserves_max_tokens_above_floor() -> None:
     request = ChatCompletionsRequest.model_validate(
         {

@@ -21045,7 +21045,22 @@ async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
     )
 
     handle_stream_error.assert_awaited_once()
-    retry_precreated.assert_awaited_once_with(session)
+    retry_precreated.assert_awaited_once_with(
+        session,
+        request_state=request_state,
+        triggering_error_payload={
+            "type": "error",
+            "status": 429,
+            "error": {
+                "type": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+                "plan_type": "team",
+                "resets_at": 1_778_790_595,
+                "resets_in_seconds": 14_555,
+            },
+        },
+        triggering_error=("usage_limit_reached", "The usage limit has been reached", "usage_limit_reached"),
+    )
     finalize.assert_not_awaited()
     assert request_state.event_queue is not None
     assert request_state.event_queue.empty()

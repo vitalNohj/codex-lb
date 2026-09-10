@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -145,6 +145,179 @@ def test_claude_auth_unavailable_error_without_message_maps_to_reauth() -> None:
 
     assert summary is not None
     assert summary.sidecar_auths[0].status == "reauth_required"
+
+
+def _claude_auth(**overrides) -> SidecarAuthQuota:
+    fields: dict = {
+        "name": "claude-jvwarrior@gmail.com.json",
+        "auth_index": "abc",
+        "email": "jvwarrior@gmail.com",
+        "provider": "claude",
+        "credential_path": None,
+        "status": "active",
+        "status_message": None,
+        "disabled": False,
+        "unavailable": False,
+        "quota_exceeded": False,
+        "next_recover_at": None,
+        "model_states": (),
+        "success": 1,
+        "failed": 0,
+        "last_refresh": None,
+        "expired": None,
+    }
+    fields.update(overrides)
+    return SidecarAuthQuota(**fields)
+
+
+def _summary_for(*accounts: SidecarAuthQuota):
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 9, 8, 21, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=accounts,
+    )
+    settings = _settings(
+        claude_sidecar_enabled=True,
+        claude_sidecar_api_key_encrypted=b"key",
+        claude_sidecar_base_url="http://127.0.0.1:8317",
+        claude_sidecar_last_health_status="healthy",
+        claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
+    )
+    return build_claude_sidecar_summary(settings, request_usage=None)
+
+
+def test_claude_long_past_oauth_expiry_alone_stays_active() -> None:
+    """End-user path: expiry age alone never produces a Re-auth badge.
+
+    CLIProxyAPI renews access tokens from a background loop and publishes no
+    field separating a dead refresh token from a pending refresh, an unflushed
+    write or a stopped sidecar. The dashboard therefore reports the account as
+    upstream describes it rather than guessing from the timestamp.
+    """
+    summary = _summary_for(
+        _claude_auth(
+            status="active",
+            unavailable=False,
+            expired=datetime(2026, 9, 7, 14, 5, 5, tzinfo=timezone.utc),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_transient_message_containing_unauthorized_is_not_reauth() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="error",
+            status_message="request failed: 502 unauthorized proxy upstream",
+            unavailable=True,
+            failed=1,
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "error"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_future_oauth_expiry_stays_active() -> None:
+    summary = _summary_for(_claude_auth(expired=datetime(2099, 1, 1, tzinfo=timezone.utc)))
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_missing_oauth_expiry_stays_active() -> None:
+    summary = _summary_for(_claude_auth(expired=None, status="active", unavailable=False))
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+
+
+def test_claude_recently_lapsed_expiry_keeps_active_on_the_dashboard() -> None:
+    """End-user path: a healthy idle account whose access token just lapsed.
+
+    CLIProxyAPI refreshes Claude tokens from a background loop, so a just-lapsed
+    persisted `expired` is a pending refresh, not a dead login. The dashboard card
+    must keep showing the account as usable.
+    """
+    summary = _summary_for(
+        _claude_auth(
+            status="active",
+            unavailable=False,
+            expired=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_paused_account_with_lapsed_expiry_keeps_pause_label() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="disabled",
+            disabled=True,
+            expired=datetime.now(timezone.utc) - timedelta(days=2),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "disabled"
+    assert summary.sidecar_auths[0].paused is True
+
+
+def test_claude_unauthorized_status_message_maps_to_reauth_with_fresh_token() -> None:
+    """A genuinely dead refresh must still badge even before the token lapses."""
+    summary = _summary_for(
+        _claude_auth(
+            status="error",
+            status_message="unauthorized",
+            unavailable=True,
+            failed=3,
+            expired=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "reauth_required"
+
+
+def test_claude_quota_exceeded_with_lapsed_expiry_is_not_reauth() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="rate_limited",
+            status_message="Quota exceeded",
+            quota_exceeded=True,
+            unavailable=True,
+            failed=7,
+            expired=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "rate_limited"
+    assert summary.sidecar_auths[0].status != "reauth_required"
+
+
+def test_claude_quota_exceeded_with_future_expiry_is_not_reauth() -> None:
+    summary = _summary_for(
+        _claude_auth(
+            status="rate_limited",
+            status_message="Quota exceeded",
+            quota_exceeded=True,
+            expired=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "rate_limited"
+    assert summary.sidecar_auths[0].status != "reauth_required"
 
 
 def test_openrouter_summary_active_when_enabled_and_configured() -> None:

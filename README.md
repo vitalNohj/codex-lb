@@ -151,6 +151,8 @@ For a CLIProxyAPI Claude account that cannot access a model, open its **Excluded
 
 Exclusion editing requires a configured Management API key and readable CLIProxyAPI auth data. On CLIProxyAPI 7.2.135, codex-lb must be colocated with the auth files, whose paths must resolve beneath `~/.cli-proxy-api` for the user running codex-lb. If the list cannot be read safely, the editor locks and shows a read error rather than risking overwriting existing exclusions. Usage-only rows without an auth file are not editable.
 
+CLIProxyAPI, not codex-lb, applies the list when it selects an account: entries are matched against the wire model ID, exactly or by an explicit wildcard, so `claude-opus-4-6` alone does not cover `claude-opus-4-7` while `claude-opus-4-*` covers both. The opt-in contracts in [`tests/contract/cliproxy_exclusions`](tests/contract/cliproxy_exclusions/README.md) verify eight native cases covering exact and wildcard matching, retry and exhaustion, alias handling, and saved-file add/clear delivery through the real watcher and update consumer against a pinned CLIProxyAPI revision. A separate real-handler HTTP contract passed the Python route and sidecar-client save, read-back and clear path with synthetic accounts, real FileTokenStore persistence, an independent account, and response token privacy. Its adapted public launcher has not been executed. The legacy `tests/integration/test_claude_sidecar_excluded_models_contract.py` full-main fixture remains preserved and unexecuted. This evidence does not cover the full CLIProxyAPI main executable, application lifespan, live providers, production behavior, or IPv6 endpoints.
+
 ## Cost, Reference Cost, And Savings
 
 This fork separates actual spend from reference value:
@@ -161,7 +163,7 @@ This fork separates actual spend from reference value:
 
 Free models accessed through OpenRouter or OrcaRouter, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
 
-When an integration reports what it billed for a request (OpenRouter's `usage.cost` or OrcaRouter's `usage.cost_usd`), that figure is stored as-is rather than re-derived from catalog list prices, so tiered pricing, peak multipliers, and cache discounts stay accurate. Reference cost comes only from the `/models` listings codex-lb already fetches, never from extra price lookups: once an integration stops listing a model and no other integration lists it, the retired price is dropped rather than kept, so reference cost falls back to the built-in pricing table or stays null.
+See [Model Pricing](docs/model-pricing.md) for authoritative billed costs, catalog lookup, and price retention. Native model rates do not replace external integration prices.
 
 ## Cursor And Codex Compatibility
 

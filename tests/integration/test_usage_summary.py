@@ -33,7 +33,17 @@ def _make_account(account_id: str, email: str) -> Account:
 
 
 @pytest.mark.asyncio
-async def test_usage_summary_cost_includes_cached_tokens(db_setup):
+@pytest.mark.parametrize(
+    ("model", "input_rate", "cache_rate", "output_rate"),
+    [
+        ("gpt-5.1", 1.25, 0.125, 10.0),
+        ("gpt-6-astra", 10.0, 1.0, 50.0),
+        ("gpt-6-astra-2026-09-03", 10.0, 1.0, 50.0),
+        ("codex/gpt-6-astra", 10.0, 1.0, 50.0),
+        ("claude-fable-5-1", 10.0, 0.25, 50.0),
+    ],
+)
+async def test_usage_summary_cost_includes_cached_tokens(db_setup, model, input_rate, cache_rate, output_rate):
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -46,7 +56,7 @@ async def test_usage_summary_cost_includes_cached_tokens(db_setup):
         await logs_repo.add_log(
             account_id="acc1",
             request_id="req_summary_1",
-            model="gpt-5.1",
+            model=model,
             input_tokens=1000,
             output_tokens=500,
             cached_input_tokens=200,
@@ -60,7 +70,16 @@ async def test_usage_summary_cost_includes_cached_tokens(db_setup):
         summary = await service.get_usage_summary()
         cost = summary.cost
 
-        expected_raw = (800 / 1_000_000) * 1.25 + (200 / 1_000_000) * 0.125 + (500 / 1_000_000) * 10.0
+        expected_raw = (800 * input_rate + 200 * cache_rate + 500 * output_rate) / 1_000_000
+        print(
+            {
+                "persisted_model": model,
+                "input_tokens": 1000,
+                "cached_tokens": 200,
+                "output_tokens": 500,
+                "usage_summary": summary.model_dump(mode="json"),
+            }
+        )
         expected = round(expected_raw, 6)
         assert cost.total_usd_7d == pytest.approx(expected)
 

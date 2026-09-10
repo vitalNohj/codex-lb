@@ -347,6 +347,7 @@ from app.modules.proxy.schemas import (
     WarmupSubmittedAccount,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
+from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
@@ -1123,20 +1124,14 @@ async def wham_agent_identities_jwks(
     )
 
 
-async def _omniroute_responses_dispatch_or_none(
-    request: Request,
-    responses_payload: ResponsesRequest,
-    context: ProxyContext,
-    api_key: ApiKeyData | None,
-) -> Response | None:
-    """Dispatch OmniRoute sidecar-selected models on the Responses endpoints.
+async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
+    """Routing entries for every enabled sidecar integration.
 
-    Returns the sidecar ``Response`` when the effective model is an OmniRoute
-    selected model and routing is enabled, otherwise ``None`` so the caller
-    proceeds with the existing Codex Responses path.
+    Permission checks resolve the requested model against these entries so the
+    owning integration is part of the access identity. A caller that omits them
+    compares bare strings instead, which cannot distinguish the same wire model
+    served by two different integrations.
     """
-    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
-
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
@@ -1154,6 +1149,25 @@ async def _omniroute_responses_dispatch_or_none(
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
+    return tuple(routing_entries)
+
+
+async def _omniroute_responses_dispatch_or_none(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> Response | None:
+    """Dispatch OmniRoute sidecar-selected models on the Responses endpoints.
+
+    Returns the sidecar ``Response`` when the effective model is an OmniRoute
+    selected model and routing is enabled, otherwise ``None`` so the caller
+    proceeds with the existing Codex Responses path.
+    """
+    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+
+    omniroute_config = await load_omniroute_sidecar_config()
+    routing_entries = list(await _enabled_sidecar_routing_entries())
 
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     # Only OmniRoute supports Responses dispatch today; other sidecars fall
@@ -1163,7 +1177,7 @@ async def _omniroute_responses_dispatch_or_none(
     if not omniroute_enabled():
         # Defense in depth on the externally callable Responses path.
         return None
-    validate_model_access(api_key, effective_model)
+    validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
     rate_limit_headers = await context.service.rate_limit_headers()
     reservation = await _enforce_request_limits(
         api_key,
@@ -1243,7 +1257,11 @@ async def responses(
     ) = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
     if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
         raw_source_model = responses_payload.model
-    validate_model_access(api_key, responses_payload.model)
+    validate_model_access(
+        api_key,
+        responses_payload.model,
+        routing_entries=await _enabled_sidecar_routing_entries(),
+    )
     try:
         # Terminal compaction triggers run the upstream compact flow on the
         # turn's owner account, and file-referencing requests are pinned to
@@ -1409,7 +1427,11 @@ async def v1_responses(
     ) = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
     if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
         raw_source_model = responses_payload.model
-    validate_model_access(api_key, responses_payload.model)
+    validate_model_access(
+        api_key,
+        responses_payload.model,
+        routing_entries=await _enabled_sidecar_routing_entries(),
+    )
     # File-referencing Responses requests pin to the subscription account that
     # registered the upload; that account-scoped invariant applies to /v1
     # streams too, so such requests must not be source-routed.
@@ -3903,6 +3925,37 @@ async def _build_codex_models_response_body(
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
+def _sidecar_dispatch_model(wire_model: str) -> str:
+    """The model CLIProxyAPI would actually be asked for.
+
+    Mirrors the dispatch-time resolution in ``build_sidecar_chat_payload`` so
+    the catalog can tell whether an advertised id survives it. The throwaway
+    body absorbs the reasoning-effort side effect, which is irrelevant here.
+    """
+    dispatched, _ = apply_sidecar_model_profile_with_suffix_effort({}, stripped_model=wire_model)
+    return dispatched
+
+
+def _sidecar_advertised_model_ids(
+    full_models: tuple[str, ...],
+    *,
+    discovered_ids: tuple[str, ...] = (),
+) -> list[str]:
+    """Stable unique catalog IDs: pinned full models first, then discovered."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for slug in (*full_models, *discovered_ids):
+        key = slug.strip()
+        if not key:
+            continue
+        lowered = key.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        ids.append(key)
+    return ids
+
+
 async def _build_models_response(api_key: ApiKeyData | None) -> Response:
     reservation = await _enforce_request_limits(
         api_key,
@@ -3972,9 +4025,31 @@ async def _build_models_response_body(
     if sidecar_config is not None and sidecar_config.enabled:
         discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
-        for slug in sidecar_config.full_models:
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        pinned_full_models = {full.strip().lower() for full in sidecar_config.full_models}
+        for slug in _sidecar_advertised_model_ids(
+            sidecar_config.full_models,
+            discovered_ids=tuple(model.id for model in discovered_models),
+        ):
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
             if decision is None or decision.provider != "claude":
+                continue
+            # A discovered id is advertisable only when dispatch would reach the
+            # model the catalog names. Two rewrites stand between the two: the
+            # resolver's ``strip=True`` prefix removal, and the dispatch-time
+            # model profile (alias mapping plus reasoning-effort suffix split)
+            # that ``build_sidecar_chat_payload`` applies to the wire model.
+            # Either one can silently redirect the request -- ``cp-claude-sonnet``
+            # to ``claude-sonnet``, ``claude-fable-5-1`` to ``claude-fable-5`` --
+            # so resolve the id the whole way and require it to come back
+            # unchanged. An id that does not survive stays out of the catalog
+            # rather than being published as a model it does not reach.
+            #
+            # Pinning is exempt: a configured full model is the operator's
+            # explicit statement that the id is offered, and pinned advertising
+            # predates discovery. This check governs which discovered ids may
+            # join the catalog, never which pinned ids may stay in it.
+            if slug.strip().lower() not in pinned_full_models and _sidecar_dispatch_model(decision.wire_model) != slug:
                 continue
             if slug in seen_model_ids:
                 continue
@@ -3986,7 +4061,7 @@ async def _build_models_response_body(
                     {
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
-                        "owned_by": "anthropic",
+                        "owned_by": owner_by_model.get(slug) or "anthropic",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -4511,7 +4586,7 @@ async def v1_chat_completions(
         return capability_transport_denial
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
-    validate_model_access(api_key, payload.model)
+    requested_model = payload.model
     aliased_model = await resolve_request_model_alias(payload.model)
     if aliased_model is not None and aliased_model != payload.model:
         payload.model = aliased_model
@@ -4537,8 +4612,10 @@ async def v1_chat_completions(
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
 
+    validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:
+        validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
         reservation = await _enforce_request_limits(
             api_key,
             request_model=effective_model,
@@ -4654,7 +4731,11 @@ async def v1_chat_completions(
     )
     if prohibit_fast_mode and _is_fast_mode_model_alias(effective_model):
         effective_model = responses_payload.model
-    validate_model_access(api_key, responses_payload.model)
+    validate_model_access(
+        api_key,
+        responses_payload.model,
+        routing_entries=await _enabled_sidecar_routing_entries(),
+    )
     source_selection = (
         await _select_chat_model_source(
             responses_payload.model,
