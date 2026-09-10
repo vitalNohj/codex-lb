@@ -236,8 +236,9 @@ def _start_sidecar(tmp_path: Path, model_aliases: list[dict[str, str]] | None) -
     try:
         deadline = time.monotonic() + 60.0
         while True:
-            if process.poll() is not None:
-                pytest.skip("CLIProxyAPI executable exited during startup")
+            returncode = process.poll()
+            if returncode is not None:
+                pytest.fail(f"CLIProxyAPI executable exited during startup with code {returncode}")
             try:
                 probe = httpx.get(
                     f"{base_url}/v0/management/auth-files",
@@ -249,7 +250,7 @@ def _start_sidecar(tmp_path: Path, model_aliases: list[dict[str, str]] | None) -
             except httpx.HTTPError:
                 pass
             if time.monotonic() > deadline:
-                pytest.skip("CLIProxyAPI executable did not become ready")
+                pytest.fail("CLIProxyAPI executable did not become ready within 60 seconds")
             time.sleep(0.5)
         yield _Sidecar(base_url, auth_dir, log_path)
     finally:

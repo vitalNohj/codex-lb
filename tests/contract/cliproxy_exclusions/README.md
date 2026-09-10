@@ -27,7 +27,10 @@ Python-to-Go HTTP save, read-back and clear path with synthetic accounts. The
 adapted public HTTP launcher has not been executed. The legacy full-main fixture
 in `tests/integration/test_claude_sidecar_excluded_models_contract.py` remains
 preserved and unexecuted; the accepted HTTP contract does not start the full
-CLIProxyAPI executable or application lifespan.
+CLIProxyAPI executable or application lifespan. Focused generator regressions
+verify that a configured legacy process exiting during startup or failing its
+readiness deadline is reported as a test failure, while missing opt-in
+prerequisites still skip and successful readiness still performs owned cleanup.
 
 ## Prerequisites
 
