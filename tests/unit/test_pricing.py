@@ -85,6 +85,21 @@ def test_get_pricing_for_model_gpt_5_6_aliases(requested_model: str, canonical_m
     assert result == (canonical_model, DEFAULT_PRICING_MODELS[canonical_model])
 
 
+@pytest.mark.parametrize(
+    ("requested_model", "canonical_model"),
+    [
+        ("gpt-6-astra", "gpt-6-astra"),
+        ("gpt-6-astra-2026-09-03", "gpt-6-astra"),
+        ("codex/gpt-6-astra", "gpt-6-astra"),
+        ("openai/gpt-6-astra", "gpt-6-astra"),
+    ],
+)
+def test_get_pricing_for_model_gpt_6_astra_aliases(requested_model: str, canonical_model: str) -> None:
+    result = get_pricing_for_model(requested_model, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+
+    assert result == (canonical_model, DEFAULT_PRICING_MODELS[canonical_model])
+
+
 def test_get_pricing_for_model_gpt_5_4_mini_alias():
     result = get_pricing_for_model("gpt-5.4-mini-2026-03-17", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
