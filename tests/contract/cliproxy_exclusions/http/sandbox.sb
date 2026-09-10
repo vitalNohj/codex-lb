@@ -1,0 +1,18 @@
+; Opt-in policy for the cross-language CLIProxyAPI HTTP contract.
+; Parameters are supplied by the documented outer command.
+(version 1)
+(allow default)
+
+; Deny every network operation except the single localhost fixture port.
+; FIXTURE_ADDR must use sandbox grammar localhost:<port>; application endpoints remain IPv4 127.0.0.1.
+(deny network*)
+(allow network-bind (local ip (param "FIXTURE_ADDR")))
+(allow network-inbound (local ip (param "FIXTURE_ADDR")))
+(allow network-outbound (remote ip (param "FIXTURE_ADDR")))
+
+; Protect source, Git metadata, the shared cache and repository-owned backings.
+(deny file-write*
+  (subpath (param "CLIPROXY_SOURCE"))
+  (subpath (param "CLIPROXY_GIT"))
+  (subpath (param "GO_MODCACHE"))
+  (subpath (param "CODEX_LB_REPO")))
