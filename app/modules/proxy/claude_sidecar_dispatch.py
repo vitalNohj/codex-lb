@@ -345,6 +345,7 @@ class _OutputBounds:
 _SIDECAR_MAX_TOKENS_BOUNDS: dict[str, _OutputBounds] = {
     # 1M context, 128k max output.
     "claude-fable-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
+    "claude-fable-5-1": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
     "claude-mythos-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
     "claude-opus-4-8": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
     "claude-opus-4-7": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
@@ -800,11 +801,12 @@ def sanitize_sidecar_chat_tool_ids(body: dict[str, JsonValue]) -> None:
 def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict):
-        reasoning_dict = cast(dict[str, JsonValue], reasoning)
+        reasoning_dict = reasoning
         effort = reasoning_dict.get("effort")
         if isinstance(effort, str) and effort.strip() and not isinstance(body.get("reasoning_effort"), str):
             body["reasoning_effort"] = effort.strip()
-        if isinstance(body.get("reasoning_effort"), str) and body["reasoning_effort"].strip():
+        existing_effort = body.get("reasoning_effort")
+        if isinstance(existing_effort, str) and existing_effort.strip():
             body.pop("reasoning", None)
     for key in ("previous_response_id", "truncation", "user", "text", "metadata"):
         body.pop(key, None)
@@ -1432,7 +1434,7 @@ def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
         parsed = json.loads(data)
     except json.JSONDecodeError:
         return None
-    return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
+    return parsed if is_json_mapping(parsed) else None
 
 
 _MAX_PERSISTED_TOKEN_COUNT = (1 << 31) - 1

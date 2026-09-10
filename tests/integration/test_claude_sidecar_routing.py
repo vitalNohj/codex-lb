@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
@@ -17,6 +20,97 @@ from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_coold
 from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 
 pytestmark = pytest.mark.integration
+
+
+# Tests that intentionally exercise the default native path. They assert the
+# sidecar is bypassed, so the native boundaries must stay reachable for them;
+# every provider boundary still raises.
+_NATIVE_PATH_TESTS = frozenset({"test_gpt_request_does_not_hit_sidecar"})
+
+# Outbound boundaries that must never be reached from this file. The Claude
+# sidecar is deliberately absent: these tests assert real round-trips through
+# ``_FakeSidecarClient`` (wire model, reservations, request logs), so that
+# symbol stays bound to the fully synthetic fake that records payloads rather
+# than to a raising guard. Every other provider and the default native path
+# raise before any real client or transport is constructed.
+_FORBIDDEN_DISPATCH = (
+    "_stream_responses",
+    "_source_responses_response",
+    "_source_chat_completion_response",
+    "_probe_chat_stream_startup_error",
+    "OpenRouterSidecarClient",
+    "OrcaRouterSidecarClient",
+    "OmniRouteSidecarClient",
+    "OllamaSidecarClient",
+    "get_orcarouter_sidecar_client",
+)
+
+
+@pytest.fixture(autouse=True)
+def _block_unexpected_dispatch(monkeypatch, request):
+    """Fail before any unexpected provider or native transport is created.
+
+    A test that legitimately exercises the default native path marks itself
+    with ``@pytest.mark.allows_native_dispatch``; the native boundaries are
+    then stubbed to a synthetic upstream failure instead of an assertion, so
+    the test's own status-code and payload assertions still decide the result.
+    Provider boundaries always raise.
+    """
+    allows_native = request.node.name.split("[")[0] in _NATIVE_PATH_TESTS
+    native = {
+        "_stream_responses",
+        "_source_responses_response",
+        "_source_chat_completion_response",
+        "_probe_chat_stream_startup_error",
+    }
+
+    def _boundary(name):
+        def _explode(*args, **kwargs):
+            raise AssertionError(f"unexpected outbound dispatch boundary reached: {name}")
+
+        return _explode
+
+    for name in _FORBIDDEN_DISPATCH:
+        if allows_native and name in native:
+            # Left as real product code: no upstream account is configured in
+            # this suite, so the request fails at account selection and never
+            # constructs a client or transport. The test's own assertions
+            # (502/503 and empty sidecar payloads) decide the result.
+            continue
+        monkeypatch.setattr(f"app.modules.proxy.api.{name}", _boundary(name), raising=True)
+
+
+@pytest_asyncio.fixture
+async def async_client(_reset_db_state, _block_unexpected_dispatch):
+    """Module-local client that never enters the application lifespan.
+
+    Shadows the shared ``async_client`` (tests/conftest.py:230) so this file
+    does not start ``init_http_client``, the live-usage ingestor, or the
+    schedulers that no fixture replaces. The per-response persistence drain is
+    retained because these tests assert on reservations and request logs right
+    after a response.
+
+    Depends on ``_block_unexpected_dispatch`` explicitly so the tripwires are
+    installed before any request is issued.
+    """
+    del _reset_db_state, _block_unexpected_dispatch
+    from app.main import create_app
+
+    app = create_app()
+
+    async def _drain_proxy_persistence(response) -> None:
+        del response
+        service = getattr(app.state, "proxy_service", None)
+        if service is not None and hasattr(service, "drain_persistence_tasks"):
+            await service.drain_persistence_tasks(timeout_seconds=5)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        event_hooks={"response": [_drain_proxy_persistence]},
+    ) as client:
+        yield client
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +236,11 @@ async def fake_sidecar(monkeypatch):
         enabled=True,
         base_url="http://127.0.0.1:8317",
         api_key="sidecar-key",
-        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
+        prefixes=(
+            SidecarPrefix(prefix="claude", strip=False),
+            SidecarPrefix(prefix="cp-", strip=True),
+            SidecarPrefix(prefix="cc/", strip=True),
+        ),
         connect_timeout_seconds=8.0,
         request_timeout_seconds=600.0,
         models_cache_ttl_seconds=60.0,
@@ -155,6 +253,12 @@ async def fake_sidecar(monkeypatch):
 
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
     monkeypatch.setattr("app.modules.proxy.api.ClaudeSidecarClient", lambda _config: client)
+
+    # The Claude symbol must resolve to this recording fake before any request,
+    # and must never be left bound to a raising guard in this file.
+    import app.modules.proxy.api as proxy_api
+
+    assert proxy_api.ClaudeSidecarClient(config) is client
     return client
 
 
@@ -243,11 +347,75 @@ async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "wire_model", "effort"),
+    [
+        ("cc/claude-fable-5-1", "claude-fable-5-1", None),
+        ("cc/claude-fable-5-1-thinking-max", "claude-fable-5-1", "max"),
+        ("cp_claude-fable-5-1", "claude-fable-5-1", None),
+        ("claude-fable-5.1", "claude-fable-5-1", None),
+        ("claude-fable-5-1-thinking-max", "claude-fable-5-1", "max"),
+        ("cp_claude-fable-5.1-thinking-max", "claude-fable-5-1", "max"),
+        ("claude-fable-5", "claude-fable-5", None),
+    ],
+)
+async def test_fable_version_survives_chat_forwarding(
+    async_client, sidecar_enabled, fake_sidecar, model, wire_model, effort
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
+    )
+
+    assert response.status_code == 200
+    payload = fake_sidecar.chat_payloads[0]
+    assert payload["model"] == wire_model
+    assert payload["max_tokens"] == 32_768
+    if effort is not None:
+        assert payload["reasoning_effort"] == effort
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_tokens", "requested_output", "expected_output"),
+    [(10, 200_000, 128_000), (170_000, 4096, 32_768), (980_000, 4096, None)],
+)
+async def test_fable_5_1_output_and_context_bounds(
+    async_client, sidecar_enabled, fake_sidecar, input_tokens, requested_output, expected_output
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "cc/claude-fable-5-1",
+            "messages": [{"role": "user", "content": "x" * (input_tokens * 4)}],
+            "max_tokens": requested_output,
+        },
+    )
+    assert response.status_code == 200
+    payload = fake_sidecar.chat_payloads[0]
+    assert payload["model"] == "claude-fable-5-1"
+    if expected_output is None:
+        assert 4096 <= payload["max_tokens"] < 32_768
+    else:
+        assert payload["max_tokens"] == expected_output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested_model", "catalog_model"),
+    [
+        ("claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5"),
+        ("claude-fable-5-1", "anthropic/claude-fable-5.1"),
+        ("cp_claude-fable-5.1", "anthropic/claude-fable-5.1"),
+    ],
+)
 async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
     async_client,
     sidecar_enabled,
     fake_sidecar,
     monkeypatch,
+    requested_model,
+    catalog_model,
 ):
     """CLIProxyAPI serves date-stamped ids; the catalog publishes undated ones.
 
@@ -265,7 +433,7 @@ async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
     async def _reference():
         return Catalog.from_entries(
             "openrouter",
-            [CatalogEntry(model_id="anthropic/claude-sonnet-4.5", price=ModelPrice(3.0, 15.0))],
+            [CatalogEntry(model_id=catalog_model, price=ModelPrice(3.0, 15.0))],
         )
 
     monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
@@ -289,7 +457,7 @@ async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
             response = await async_client.post(
                 "/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key.key}"},
-                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+                json={"model": requested_model, "messages": [{"role": "user", "content": "hi"}]},
             )
             assert response.status_code == 200
             await get_lookup_coordinator().drain()
@@ -467,6 +635,53 @@ async def test_sidecar_model_not_allowed_rejects_before_sidecar(async_client, si
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "model_not_allowed"
     assert fake_sidecar.chat_payloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("allowed_model", "requested_model", "wire_model"),
+    [
+        ("claude-fable-5", "team.claude-fable-5-1", None),
+        ("claude-fable-5", "team.claude-fable-5-1-thinking-max", None),
+        ("team.claude-fable-5", "team.claude-fable-5-1", None),
+        ("claude-fable-5", "team.claude-fable-5.1", None),
+        # A grant naming the same integration authorizes its routed model.
+        ("team.claude-fable-5", "team.claude-fable-5", "claude-fable-5"),
+        ("team.claude-fable-5-1", "team.claude-fable-5-1", "claude-fable-5-1"),
+        # A bare grant resolves no route, so it is a native identity and does
+        # not authorize the same wire model on the sidecar integration.
+        ("claude-fable-5", "team.claude-fable-5", None),
+        ("claude-fable-5-1", "team.claude-fable-5-1", None),
+    ],
+)
+async def test_custom_prefix_model_access_before_reservation(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch, stream, allowed_model, requested_model, wire_model
+):
+    config = replace(fake_sidecar.config, prefixes=(SidecarPrefix(prefix="team.", strip=True),))
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", AsyncMock(return_value=config))
+    reserve = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.modules.proxy.api._enforce_request_limits", reserve)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("custom-prefix-key", allowed_models=[allowed_model])
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": requested_model, "messages": [{"role": "user", "content": "hi"}], "stream": stream},
+    )
+
+    if wire_model is None:
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "model_not_allowed"
+        reserve.assert_not_awaited()
+        assert fake_sidecar.chat_payloads == []
+        assert fake_sidecar.stream_payloads == []
+    else:
+        assert response.status_code == 200
+        reserve.assert_awaited_once()
+        forwarded = fake_sidecar.stream_payloads if stream else fake_sidecar.chat_payloads
+        assert forwarded[0]["model"] == wire_model
 
 
 @pytest.mark.asyncio

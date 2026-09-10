@@ -1123,20 +1123,14 @@ async def wham_agent_identities_jwks(
     )
 
 
-async def _omniroute_responses_dispatch_or_none(
-    request: Request,
-    responses_payload: ResponsesRequest,
-    context: ProxyContext,
-    api_key: ApiKeyData | None,
-) -> Response | None:
-    """Dispatch OmniRoute sidecar-selected models on the Responses endpoints.
+async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
+    """Routing entries for every enabled sidecar integration.
 
-    Returns the sidecar ``Response`` when the effective model is an OmniRoute
-    selected model and routing is enabled, otherwise ``None`` so the caller
-    proceeds with the existing Codex Responses path.
+    Permission checks resolve the requested model against these entries so the
+    owning integration is part of the access identity. A caller that omits them
+    compares bare strings instead, which cannot distinguish the same wire model
+    served by two different integrations.
     """
-    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
-
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
@@ -1154,6 +1148,25 @@ async def _omniroute_responses_dispatch_or_none(
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
+    return tuple(routing_entries)
+
+
+async def _omniroute_responses_dispatch_or_none(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> Response | None:
+    """Dispatch OmniRoute sidecar-selected models on the Responses endpoints.
+
+    Returns the sidecar ``Response`` when the effective model is an OmniRoute
+    selected model and routing is enabled, otherwise ``None`` so the caller
+    proceeds with the existing Codex Responses path.
+    """
+    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+
+    omniroute_config = await load_omniroute_sidecar_config()
+    routing_entries = list(await _enabled_sidecar_routing_entries())
 
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     # Only OmniRoute supports Responses dispatch today; other sidecars fall
@@ -1163,7 +1176,7 @@ async def _omniroute_responses_dispatch_or_none(
     if not omniroute_enabled():
         # Defense in depth on the externally callable Responses path.
         return None
-    validate_model_access(api_key, effective_model)
+    validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
     rate_limit_headers = await context.service.rate_limit_headers()
     reservation = await _enforce_request_limits(
         api_key,
@@ -1243,7 +1256,11 @@ async def responses(
     ) = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
     if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
         raw_source_model = responses_payload.model
-    validate_model_access(api_key, responses_payload.model)
+    validate_model_access(
+        api_key,
+        responses_payload.model,
+        routing_entries=await _enabled_sidecar_routing_entries(),
+    )
     try:
         # Terminal compaction triggers run the upstream compact flow on the
         # turn's owner account, and file-referencing requests are pinned to
@@ -1409,7 +1426,11 @@ async def v1_responses(
     ) = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
     if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
         raw_source_model = responses_payload.model
-    validate_model_access(api_key, responses_payload.model)
+    validate_model_access(
+        api_key,
+        responses_payload.model,
+        routing_entries=await _enabled_sidecar_routing_entries(),
+    )
     # File-referencing Responses requests pin to the subscription account that
     # registered the upload; that account-scoped invariant applies to /v1
     # streams too, so such requests must not be source-routed.
@@ -4511,7 +4532,7 @@ async def v1_chat_completions(
         return capability_transport_denial
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
-    validate_model_access(api_key, payload.model)
+    requested_model = payload.model
     aliased_model = await resolve_request_model_alias(payload.model)
     if aliased_model is not None and aliased_model != payload.model:
         payload.model = aliased_model
@@ -4537,8 +4558,10 @@ async def v1_chat_completions(
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
 
+    validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:
+        validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
         reservation = await _enforce_request_limits(
             api_key,
             request_model=effective_model,
@@ -4654,7 +4677,11 @@ async def v1_chat_completions(
     )
     if prohibit_fast_mode and _is_fast_mode_model_alias(effective_model):
         effective_model = responses_payload.model
-    validate_model_access(api_key, responses_payload.model)
+    validate_model_access(
+        api_key,
+        responses_payload.model,
+        routing_entries=await _enabled_sidecar_routing_entries(),
+    )
     source_selection = (
         await _select_chat_model_source(
             responses_payload.model,

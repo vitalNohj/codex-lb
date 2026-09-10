@@ -69,7 +69,8 @@ async def test_invalid_billed_cost_without_catalog_price_stays_unknown(monkeypat
     assert cost_microdollars(result) == 0
 
     entry = to_request_log_entry(
-        RequestLog(
+        include_sensitive_metadata=False,
+        log=RequestLog(
             request_id="req-invalid-billed-cost",
             request_kind="normal",
             model="vendor/unknown",
@@ -83,7 +84,7 @@ async def test_invalid_billed_cost_without_catalog_price_stays_unknown(monkeypat
             cost_usd=result.cost_usd,
             cost_source=result.cost_source,
             price_status=result.price_status,
-        )
+        ),
     )
     assert entry.cost_usd is None
     assert entry.cost_breakdown.total_usd is None
@@ -155,7 +156,8 @@ async def test_invalid_calculated_total_stays_unknown_through_logging_and_quota(
     assert cost_microdollars(result) == 0
 
     entry = to_request_log_entry(
-        RequestLog(
+        include_sensitive_metadata=False,
+        log=RequestLog(
             request_id="req-invalid-calculated-total",
             request_kind="normal",
             model="gpt-4o-lookalike",
@@ -169,7 +171,7 @@ async def test_invalid_calculated_total_stays_unknown_through_logging_and_quota(
             cost_usd=result.cost_usd,
             cost_source=result.cost_source,
             price_status=result.price_status,
-        )
+        ),
     )
 
     assert entry.cost_usd is None
@@ -209,7 +211,8 @@ async def test_valid_alternate_billed_field_drives_log_and_quota(monkeypatch) ->
         billed_cost_usd=billed_cost,
     )
     entry = to_request_log_entry(
-        RequestLog(
+        include_sensitive_metadata=False,
+        log=RequestLog(
             request_id="req-valid-alternate-billed-cost",
             request_kind="normal",
             model="vendor/model",
@@ -223,7 +226,7 @@ async def test_valid_alternate_billed_field_drives_log_and_quota(monkeypatch) ->
             cost_usd=result.cost_usd,
             cost_source=result.cost_source,
             price_status=result.price_status,
-        )
+        ),
     )
 
     assert entry.cost_usd == pytest.approx(0.01)

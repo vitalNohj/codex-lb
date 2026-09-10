@@ -161,7 +161,7 @@ This fork separates actual spend from reference value:
 
 Free models accessed through OpenRouter or OrcaRouter, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
 
-When an integration reports what it billed for a request (OpenRouter's `usage.cost` or OrcaRouter's `usage.cost_usd`), that figure is stored as-is rather than re-derived from catalog list prices, so tiered pricing, peak multipliers, and cache discounts stay accurate. Reference cost comes only from the `/models` listings codex-lb already fetches, never from extra price lookups: once an integration stops listing a model and no other integration lists it, the retired price is dropped rather than kept, so reference cost falls back to the built-in pricing table or stays null.
+See [Model Pricing](docs/model-pricing.md) for authoritative billed costs, catalog lookup, and price retention. Native model rates do not replace external integration prices.
 
 ## Cursor And Codex Compatibility
 
