@@ -379,12 +379,14 @@ class UsageUpdater:
         *,
         ignore_refresh_disabled: bool = False,
         access_token_override: str | None = None,
+        ignore_persisted_cooldown: bool = False,
     ) -> bool:
         """Refresh one account regardless of cached/fresh usage rows."""
         result = await self.force_refresh_result(
             account,
             ignore_refresh_disabled=ignore_refresh_disabled,
             access_token_override=access_token_override,
+            ignore_persisted_cooldown=ignore_persisted_cooldown,
         )
         return result.usage_written
 
@@ -394,6 +396,7 @@ class UsageUpdater:
         *,
         ignore_refresh_disabled: bool = False,
         access_token_override: str | None = None,
+        ignore_persisted_cooldown: bool = False,
     ) -> AccountRefreshResult:
         """Refresh one account and expose whether the upstream fetch completed."""
         settings = get_settings()
@@ -404,10 +407,13 @@ class UsageUpdater:
         try:
             result = await _USAGE_REFRESH_SINGLEFLIGHT.run(
                 account.id,
-                lambda: self._refresh_account(
-                    account,
-                    usage_account_id=account.chatgpt_account_id,
-                    access_token_override=access_token_override,
+                lambda account=account, access_token_override=access_token_override, ignore_persisted_cooldown=ignore_persisted_cooldown: (
+                    self._refresh_account(
+                        account,
+                        usage_account_id=account.chatgpt_account_id,
+                        access_token_override=access_token_override,
+                        ignore_persisted_cooldown=ignore_persisted_cooldown,
+                    )
                 ),
                 join_existing=False,
             )
@@ -548,6 +554,7 @@ class UsageUpdater:
         *,
         usage_account_id: str | None,
         access_token_override: str | None = None,
+        ignore_persisted_cooldown: bool = False,
     ) -> AccountRefreshResult:
         access_token = access_token_override or self._encryptor.decrypt(account.access_token_encrypted)
         payload: UsagePayload | None = None
@@ -749,7 +756,13 @@ class UsageUpdater:
             snapshot_windows,
         )
         usage_written = any(_usage_entry_written(entry) for entry in entries)
-        await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
+        await self._recover_quota_status_from_usage(
+            account,
+            primary=primary,
+            secondary=secondary,
+            monthly=monthly,
+            ignore_persisted_cooldown=ignore_persisted_cooldown,
+        )
         return AccountRefreshResult(usage_written=usage_written)
 
     async def _deactivate_for_client_error(self, account: Account, exc: UsageFetchError) -> None:
@@ -835,11 +848,12 @@ class UsageUpdater:
         primary: UsageWindow | None,
         secondary: UsageWindow | None,
         monthly: UsageWindow | None = None,
+        ignore_persisted_cooldown: bool = False,
     ) -> None:
         if not self._auth_manager:
             return
         if account.status == AccountStatus.RATE_LIMITED:
-            if account.blocked_at is not None:
+            if account.blocked_at is not None and not ignore_persisted_cooldown:
                 # An account marked RATE_LIMITED by an actual 429 always
                 # carries a blocked_at marker. Honor the persisted cooldown
                 # deadline (Retry-After hint, upstream reset metadata, or the
@@ -850,6 +864,9 @@ class UsageUpdater:
                 # ended: throttles are not always quota-based. Rows without
                 # blocked_at are stale window-derived markings and keep the
                 # fresh-usage recovery below.
+                # Reset-credit consume is the exception: upstream already
+                # confirmed the blocked window was reset, so the post-reset
+                # usage snapshot is allowed to recover before that deadline.
                 now = time.time()
                 cooldown_deadline = plausible_rate_limit_reset_at(account.reset_at, now=now) or (
                     float(account.blocked_at) + RATE_LIMITED_MIN_COOLDOWN_SECONDS
@@ -869,7 +886,11 @@ class UsageUpdater:
             target_reset_at = None
             expected_status = AccountStatus.RATE_LIMITED
         elif account.status == AccountStatus.QUOTA_EXCEEDED:
-            if account.blocked_at is not None and time.time() < account.blocked_at + QUOTA_EXCEEDED_COOLDOWN_SECONDS:
+            if (
+                not ignore_persisted_cooldown
+                and account.blocked_at is not None
+                and time.time() < account.blocked_at + QUOTA_EXCEEDED_COOLDOWN_SECONDS
+            ):
                 return
             long_window = monthly or secondary
             windows = [window for window in (primary, long_window) if window is not None]

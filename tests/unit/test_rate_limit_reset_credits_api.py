@@ -920,6 +920,7 @@ async def test_redeem_restores_snapshot_when_force_refresh_returns_false(
     store = RateLimitResetCreditsStore()
     await store.set("acc_1", _snapshot([_credit("only")], available_count=1))
     fetch_calls = 0
+    force_refresh_kwargs: list[dict[str, object]] = []
 
     async def fetch_fn(*args: Any, **kwargs: Any) -> ResetCreditsResponse:
         nonlocal fetch_calls
@@ -943,8 +944,9 @@ async def test_redeem_restores_snapshot_when_force_refresh_returns_false(
         )
 
     class _UsageUpdater:
-        async def force_refresh(self, account: Account) -> bool:
+        async def force_refresh(self, account: Account, **kwargs: object) -> bool:
             assert account.id == "acc_1"
+            force_refresh_kwargs.append(kwargs)
             return False
 
     class _SelectionCache:
@@ -974,6 +976,7 @@ async def test_redeem_restores_snapshot_when_force_refresh_returns_false(
     assert restored is not None
     assert restored.available_count == 0
     assert selection_cache.invalidated == 0
+    assert force_refresh_kwargs == [{"ignore_persisted_cooldown": True}]
 
 
 @pytest.mark.asyncio

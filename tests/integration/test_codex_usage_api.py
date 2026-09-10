@@ -767,8 +767,11 @@ async def test_codex_usage_reset_consume_forwards_and_refreshes(async_client, db
             *,
             ignore_refresh_disabled: bool = False,
             access_token_override: str | None = None,
+            ignore_persisted_cooldown: bool = False,
         ) -> bool:
-            refreshed_account_ids.append(f"{account.id}:{ignore_refresh_disabled}:{access_token_override}")
+            refreshed_account_ids.append(
+                f"{account.id}:{ignore_refresh_disabled}:{access_token_override}:{ignore_persisted_cooldown}"
+            )
             return True
 
     monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", stub_fetch_usage)
@@ -796,7 +799,7 @@ async def test_codex_usage_reset_consume_forwards_and_refreshes(async_client, db
             "allow_direct_egress": True,
         }
     ]
-    assert refreshed_account_ids == ["acc_reset_consume:True:chatgpt-token"]
+    assert refreshed_account_ids == ["acc_reset_consume:True:chatgpt-token:True"]
     assert get_account_selection_cache().generation > cache_generation
     assert get_rate_limit_reset_credits_store().get("acc_reset_consume") is None
 
@@ -843,9 +846,11 @@ async def test_codex_usage_reset_consume_refreshes_matched_workspace_account(asy
             *,
             ignore_refresh_disabled: bool = False,
             access_token_override: str | None = None,
+            ignore_persisted_cooldown: bool = False,
         ) -> bool:
             del ignore_refresh_disabled
             assert access_token_override == "chatgpt-token"
+            assert ignore_persisted_cooldown is True
             refreshed_account_ids.append(account.id)
             return True
 
