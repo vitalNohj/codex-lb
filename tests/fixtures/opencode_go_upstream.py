@@ -173,6 +173,13 @@ class FakeOpenCodeGoUpstream:
         # content it already received and never sees a terminator. ``None``
         # streams normally.
         self.truncate_stream_after_frames: int | None = None
+        # SSE event separator written on the wire. The specification permits
+        # ``\r\n\r\n`` and ``\r\r`` as well as ``\n\n``; a server is free to
+        # pick any of them, so a client must handle all three.
+        self.event_separator = "\n\n"
+        # Write each frame split into this many TCP writes, so a multi-byte
+        # character can land across a chunk boundary. ``1`` writes whole frames.
+        self.split_frames_into = 1
         # Set when a streaming response was abandoned before its terminator.
         # This is how a disconnect test observes that the upstream socket really
         # went away rather than draining in the background.
@@ -452,11 +459,15 @@ class FakeOpenCodeGoUpstream:
             # stream ends mid-flight rather than ending cleanly early.
             frames = frames[: self.truncate_stream_after_frames]
 
+        if self.event_separator != "\n\n":
+            frames = [frame.replace(b"\n\n", self.event_separator.encode()) for frame in frames]
+
         try:
             for frame in frames:
                 if self.stream_frame_delay_seconds:
                     await asyncio.sleep(self.stream_frame_delay_seconds)
-                await response.write(frame)
+                for piece in _split_bytes(frame, self.split_frames_into):
+                    await response.write(piece)
                 self.stream_frames_sent += 1
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, OSError):
@@ -534,6 +545,19 @@ async def fake_opencode_go_upstream(
         yield upstream
     finally:
         await upstream.stop()
+
+
+def _split_bytes(payload: bytes, pieces: int) -> list[bytes]:
+    """Cut ``payload`` into ``pieces`` byte runs, ignoring character boundaries.
+
+    Deliberately byte-oriented: the point is to reproduce a TCP segmentation
+    that lands mid-character, which is what a per-chunk ``decode`` mishandles.
+    """
+
+    if pieces <= 1 or len(payload) <= 1:
+        return [payload]
+    size = max(1, len(payload) // pieces)
+    return [payload[index : index + size] for index in range(0, len(payload), size)]
 
 
 def build_sse_reader() -> Callable[[bytes], list[dict[str, Any]]]:
