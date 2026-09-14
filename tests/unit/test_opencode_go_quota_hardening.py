@@ -17,6 +17,8 @@ counts, and real ``asyncio`` cancellation. No network, no credentials.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 
 import pytest
 
@@ -235,13 +237,16 @@ class TestBoundedBodyConsumption:
             await OpenCodeGoClient(_config()).fetch_usage()
 
     @pytest.mark.asyncio
-    async def test_decompressed_size_is_what_counts_not_the_wire_size(self, monkeypatch):
-        """A small compressed payload that expands past the cap is still rejected.
+    async def test_expanded_stream_with_small_declared_wire_length_is_bounded(self, monkeypatch):
+        """Counting happens on what the consumer receives, not the wire length.
 
-        ``aiohttp`` decompresses transparently, so what reaches ``iter_chunked``
-        is the *expanded* stream. A gzip bomb is tiny on the wire and enormous in
-        memory, which is exactly why a ``Content-Length`` check cannot be the
-        defence - only counting decoded bytes is.
+        **Scope of this test, stated precisely:** the fixture yields already
+        expanded bytes while advertising a small compressed ``Content-Length``.
+        That proves the *consumer* counts decoded bytes and ignores a small
+        declared length - it does **not** exercise aiohttp's decompressor, and
+        so says nothing about peak allocation inside the transport. The real
+        transport behaviour is covered by the loopback test in
+        ``TestRealTransportCompression``.
         """
         import gzip
 
@@ -249,7 +254,6 @@ class TestBoundedBodyConsumption:
         wire = gzip.compress(raw)
         assert len(wire) < MAX_USAGE_RESPONSE_BYTES  # small on the wire
 
-        # The content stream yields what the transport already decompressed.
         content = _StreamingContent([raw[i : i + _CHUNK_BYTES] for i in range(0, len(raw), _CHUNK_BYTES)])
         response = _StreamingResponse(
             200,
@@ -435,6 +439,154 @@ class TestSingleFlightCancellation:
         assert not [w for w in recwarn.list if "never retrieved" in str(w.message)]
 
     @pytest.mark.asyncio
+    async def test_reset_permanently_invalidates_a_held_producers_late_success(self):
+        """A producer in flight across ``reset()`` must not repopulate the cache.
+
+        ``reset()`` is what a settings change calls. The detached producer's
+        closure still holds the *old* credential-derived config, so if its late
+        ``record_success`` lands it resurrects state the operator just
+        invalidated - and a subsequent read could serve the previous
+        subscription's numbers.
+        """
+        cache = OpenCodeGoQuotaCache(ttl_seconds=300.0)
+        config = _config(api_key="key-old")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _fetch():
+            started.set()
+            await release.wait()
+            # The stale producer tries to write its result after the reset.
+            return cache.record_success(config, "stale-quota")
+
+        waiter = asyncio.create_task(cache.fetch_single_flight(config, _fetch))
+        await started.wait()
+
+        cache.reset()
+        release.set()
+        with contextlib.suppress(BaseException):
+            await waiter
+        await asyncio.sleep(0.05)
+
+        # The invalidated state must stay invalidated.
+        assert cache.last_good(config) is None
+        assert cache.fresh(config, now=time.monotonic()) is None
+
+    @pytest.mark.asyncio
+    async def test_reset_permanently_invalidates_a_held_producers_late_failure(self):
+        """Same invariant for the failure path."""
+        cache = OpenCodeGoQuotaCache(ttl_seconds=300.0, failure_ttl_seconds=300.0)
+        config = _config(api_key="key-old")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _fetch():
+            started.set()
+            await release.wait()
+            cache.record_failure(config, "unavailable", "stale failure")
+            raise RuntimeError("late failure")
+
+        waiter = asyncio.create_task(cache.fetch_single_flight(config, _fetch))
+        await started.wait()
+
+        cache.reset()
+        release.set()
+        with contextlib.suppress(BaseException):
+            await waiter
+        await asyncio.sleep(0.05)
+
+        assert cache.recent_failure(config, now=time.monotonic()) is None
+
+    @pytest.mark.asyncio
+    async def test_a_rekey_after_reset_does_not_see_the_old_producers_result(self):
+        """End-to-end shape of the defect: reset, rekey, then the old fetch lands."""
+        cache = OpenCodeGoQuotaCache(ttl_seconds=300.0)
+        old_config = _config(api_key="key-old")
+        new_config = _config(api_key="key-new")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _old_fetch():
+            started.set()
+            await release.wait()
+            return cache.record_success(old_config, "old-subscription-quota")
+
+        stale = asyncio.create_task(cache.fetch_single_flight(old_config, _old_fetch))
+        await started.wait()
+
+        # Operator swaps the key: settings change -> reset.
+        cache.reset()
+
+        async def _new_fetch():
+            return cache.record_success(new_config, "new-subscription-quota")
+
+        assert await cache.fetch_single_flight(new_config, _new_fetch) is not None
+
+        # Now the stale producer finally completes.
+        release.set()
+        with contextlib.suppress(BaseException):
+            await stale
+        await asyncio.sleep(0.05)
+
+        # The new key's entry must survive, and the old key must have none.
+        assert cache.last_good(old_config) is None
+        new_entry = cache.last_good(new_config)
+        assert new_entry is not None and new_entry.quota == "new-subscription-quota"
+
+    @pytest.mark.asyncio
+    async def test_reset_leaves_no_stranded_producer_task(self):
+        """Invalidation must not come at the cost of a leaked task."""
+        cache = OpenCodeGoQuotaCache(ttl_seconds=300.0)
+        config = _config()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        before = len(asyncio.all_tasks())
+
+        async def _fetch():
+            started.set()
+            await release.wait()
+            return "done"
+
+        waiter = asyncio.create_task(cache.fetch_single_flight(config, _fetch))
+        await started.wait()
+        cache.reset()
+        release.set()
+        with contextlib.suppress(BaseException):
+            await waiter
+        await asyncio.sleep(0.05)
+
+        assert len(asyncio.all_tasks()) <= before
+
+    @pytest.mark.asyncio
+    async def test_reset_does_not_break_cancellation_isolation_for_live_callers(self):
+        """The earlier cancellation guarantee must survive this fix."""
+        cache = OpenCodeGoQuotaCache(ttl_seconds=300.0)
+        config = _config()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _fetch():
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return "result"
+
+        first = asyncio.create_task(cache.fetch_single_flight(config, _fetch))
+        await started.wait()
+        second = asyncio.create_task(cache.fetch_single_flight(config, _fetch))
+        await asyncio.sleep(0)
+
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        release.set()
+        assert await asyncio.wait_for(second, timeout=2) == "result"
+        assert calls == 1
+
+    @pytest.mark.asyncio
     async def test_a_different_config_never_joins_the_inflight_request(self):
         """Config isolation survives the producer-ownership change."""
         cache = OpenCodeGoQuotaCache(ttl_seconds=300.0)
@@ -456,3 +608,124 @@ class TestSingleFlightCancellation:
 
         release.set()
         assert await first == "key-a"
+
+
+class TestRealTransportCompression:
+    """Real loopback HTTP, real aiohttp transport, real gzip decompression.
+
+    The fake-based test above proves only that the *consumer* counts decoded
+    bytes. It cannot say whether aiohttp's decompressor inflates the whole body
+    before ``iter_chunked`` yields anything - and if it did, the byte cap would
+    be enforced too late to bound peak memory.
+
+    Fixtures are modest (a few multiples of a deliberately small cap, patched
+    for the test) so nothing here is resource exhausting.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _real_http_session(self, monkeypatch):
+        """Lease a genuine ``aiohttp`` session for the duration of the test.
+
+        The production lease helper expects the app lifespan to have created the
+        shared client. These tests run outside it, so a real session is created
+        here - real transport is the entire point, so it must not be faked.
+        """
+        import contextlib
+
+        import aiohttp
+
+        @contextlib.asynccontextmanager
+        async def _lease():
+            async with aiohttp.ClientSession() as session:
+                yield session
+
+        monkeypatch.setattr("app.core.clients.opencode_go.lease_http_session", _lease)
+
+    @pytest.mark.asyncio
+    async def test_gzip_response_is_bounded_by_decoded_size_over_real_transport(self, monkeypatch):
+        import gzip
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        # Small cap so the fixture stays tiny while still crossing it.
+        small_cap = 256 * 1024
+        monkeypatch.setattr(opencode_go_client, "MAX_USAGE_RESPONSE_BYTES", small_cap)
+
+        raw = b"z" * (small_cap * 4)
+        wire = gzip.compress(raw)
+        assert len(wire) < small_cap, "compressed payload must be small on the wire"
+
+        async def handler(request):
+            return web.Response(
+                body=wire,
+                headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+            )
+
+        app = web.Application()
+        app.router.add_get("/usage", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            config = _config(base_url=str(server.make_url("")).rstrip("/"))
+            with pytest.raises(OpenCodeGoUnavailableError) as excinfo:
+                await OpenCodeGoClient(config).fetch_usage()
+            assert "too large" in str(excinfo.value).lower()
+        finally:
+            await server.close()
+
+    @pytest.mark.asyncio
+    async def test_small_gzip_response_still_parses_over_real_transport(self, monkeypatch):
+        """Control: compression itself is not what triggers rejection."""
+        import gzip
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        monkeypatch.setattr(opencode_go_client, "MAX_USAGE_RESPONSE_BYTES", 256 * 1024)
+        wire = gzip.compress(b'{"usage": {"rolling": {"status": "ok", "percent": 7}}}')
+
+        async def handler(request):
+            return web.Response(
+                body=wire,
+                headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+            )
+
+        app = web.Application()
+        app.router.add_get("/usage", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            config = _config(base_url=str(server.make_url("")).rstrip("/"))
+            body = await OpenCodeGoClient(config).fetch_usage()
+            assert body == {"usage": {"rolling": {"status": "ok", "percent": 7}}}
+        finally:
+            await server.close()
+
+    @pytest.mark.asyncio
+    async def test_uncompressed_oversize_response_is_bounded_over_real_transport(self, monkeypatch):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        small_cap = 256 * 1024
+        monkeypatch.setattr(opencode_go_client, "MAX_USAGE_RESPONSE_BYTES", small_cap)
+
+        async def handler(request):
+            response = web.StreamResponse(headers={"Content-Type": "application/json"})
+            await response.prepare(request)
+            chunk = b"q" * 32 * 1024
+            for _ in range((small_cap // len(chunk)) * 3):
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_get("/usage", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            config = _config(base_url=str(server.make_url("")).rstrip("/"))
+            with pytest.raises(OpenCodeGoUnavailableError):
+                await OpenCodeGoClient(config).fetch_usage()
+        finally:
+            await server.close()
