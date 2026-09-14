@@ -230,6 +230,26 @@ async def _drain_proxy_persistence_tasks(
         return False
 
 
+async def _drain_opencode_go_settlements(timeout_seconds: float) -> None:
+    """Join OpenCode Go's detached settlement tasks within the shutdown budget.
+
+    Never raises: shutdown must continue even if a settlement fails, and a
+    partial drain is reported rather than hidden so an operator can correlate a
+    missing request-log row with the shutdown that truncated it.
+    """
+
+    try:
+        from app.modules.proxy.opencode_go_sidecar_dispatch import drain_opencode_go_settlement_tasks
+
+        if not await drain_opencode_go_settlement_tasks(timeout_seconds=timeout_seconds):
+            logger.warning(
+                "OpenCode Go settlement tasks did not finish within the shutdown drain deadline; "
+                "some request logs or reservation settlements may be incomplete"
+            )
+    except Exception:
+        logger.warning("Failed to drain OpenCode Go settlement tasks during shutdown", exc_info=True)
+
+
 async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> None:
     # Closing admission is synchronous with producer checks on the event loop,
     # so no task can appear after the stable drain passes complete.
@@ -685,6 +705,15 @@ async def lifespan(app: FastAPI):
             remaining_drain_seconds,
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
+        # OpenCode Go settles stream accounting on a detached task so a client
+        # disconnect cannot strand the reservation. Those tasks are not owned by
+        # ProxyService, so the drain above does not cover them; without this
+        # join a settlement in flight when shutdown begins would be abandoned
+        # when the HTTP client and DB engine close below - reintroducing the
+        # stranded reservation it exists to prevent. Drained here, inside the
+        # same committed deadline and before teardown, rather than as a new
+        # shutdown phase.
+        await _drain_opencode_go_settlements(shutdown_state.remaining_drain_timeout_seconds() or 0.0)
 
         # Cancel heartbeat and age the shared ring row near expiry.
         if heartbeat_task is not None:

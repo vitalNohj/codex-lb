@@ -264,30 +264,23 @@ async def test_a_raw_socket_close_mid_body_is_observed_by_the_upstream(live_serv
     assert held_upstream.streams_started == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect, visible only over a real socket: a client that aborts "
-        "mid-body leaves its reservation in 'reserved' and writes no "
-        "request-log row, so quota is consumed with nothing recording why. "
-        "Measured for 30s, which is persistence rather than proof it never "
-        "clears - a stale-release path exists elsewhere and may reclaim it "
-        "later. The ASGITransport tests could not see this because they only "
-        "abandoned already-completed responses. Owner: "
-        "codexlb-opencode-go-integration."
-    ),
-)
 @pytest.mark.asyncio
 async def test_a_disconnected_stream_settles_its_reservation_exactly_once(
     live_server, opencode_go_enabled, held_upstream
 ):
     """Accounting after a real disconnect, against a non-empty reservation.
 
-    Measured on the composed tree: `go_logs=0, all_logs=0,
-    reservations=['reserved']` after the upstream confirmed the disconnect and
-    300 polls over 30s. The completed-stream control on the same transport and
-    fixture writes its row and settles, so this is specific to the abort path
-    rather than a database or timing artifact.
+    **This was `xfail(strict=True)` on my branch and the marker is now removed,
+    because the composed backend head claims the fix.** Previously measured on
+    my tree: `go_logs=0, all_logs=0, reservations=['reserved']` after the
+    upstream confirmed the disconnect and 300 polls over 30s - quota consumed
+    with nothing recording why. The owner's stated root cause is that terminal
+    settlement ran inside a `finally` on a call stack the disconnect was already
+    cancelling, and it is now detached onto its own task.
+
+    The marker is dropped rather than kept, so required behavior cannot stay
+    hidden behind an investigative xfail: if the composed tree has not actually
+    fixed this, this test fails loudly.
 
     Two precision points, both of which a looser assertion would get wrong:
 
@@ -417,4 +410,75 @@ async def test_a_completed_stream_over_a_real_socket_still_settles_once(
     # that actually indicates an unsettled hold - would have passed it.
     assert [row.status for row in reservations] == ["finalized"], (
         f"a completed stream did not finalize its reservation: {[row.status for row in reservations]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_disconnected_responses_stream_also_settles_exactly_once(
+    live_server, opencode_go_enabled, held_upstream
+):
+    """The same disconnect accounting on the Responses inbound protocol.
+
+    Retained from the backend owner's `de16ef20`: the two protocols run separate
+    stream iterators with separate ``finally`` blocks, so fixing one says
+    nothing about the other, and the Chat-only coverage above would miss a
+    Responses-side regression entirely.
+
+    **Kept, but strengthened to this file's standard.** The owner's version
+    aborted without recording what the producer was doing, so it would have
+    passed as a buffered false positive - exactly the failure mode this file
+    exists to replace. The producer-state evidence and the exact terminal-status
+    assertion below are carried over from the Chat case.
+    """
+    await _configure(live_server)
+    client_key = await _create_key_with_a_real_limit("socket-settlement-responses")
+
+    host, port = live_server.removeprefix("http://").split(":")
+    body = json.dumps({"model": GO_MODEL, "input": "hi", "stream": True}).encode()
+    request = (
+        b"POST /v1/responses HTTP/1.1\r\n"
+        b"Host: " + host.encode() + b"\r\n"
+        b"Authorization: Bearer " + client_key.encode() + b"\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+        b"\r\n" + body
+    )
+
+    reader, writer = await asyncio.open_connection(host, int(port))
+    writer.write(request)
+    await writer.drain()
+    await _read_until_body_started(reader, held_upstream)
+
+    # Producer-state evidence at the moment of the abort, recorded before the
+    # close and asserted after, so a buffered body fails rather than passes.
+    frames_at_abort = held_upstream.stream_frames_sent
+    assert frames_at_abort > 0, "the upstream stream never started"
+    assert not held_upstream.stream_disconnected.is_set()
+
+    writer.transport.abort()
+    writer.close()
+
+    await asyncio.wait_for(held_upstream.stream_disconnected.wait(), timeout=20)
+    assert frames_at_abort < 400, (
+        f"the producer had already sent {frames_at_abort} of 400 frames before "
+        "the abort, so the body was buffered and this is not a mid-body "
+        "disconnect"
+    )
+    assert held_upstream.streams_started == 1
+
+    for _ in range(100):
+        if await _go_logs():
+            break
+        await asyncio.sleep(0.1)
+
+    logs = await _go_logs()
+    assert len(logs) == 1, f"expected exactly one log row after a real disconnect, got {len(logs)}"
+
+    reservations = await _reservations()
+    assert reservations, "no reservation row exists, so the settlement assertion would be vacuous"
+    statuses = [row.status for row in reservations]
+    # Same exact terminal set as the Chat case: only `finalized` and `released`
+    # are statuses this codebase actually writes.
+    assert all(status in {"finalized", "released"} for status in statuses), (
+        f"a reservation was stranded after a Responses disconnect: {statuses}"
     )

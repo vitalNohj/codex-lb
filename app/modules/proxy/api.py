@@ -1155,8 +1155,13 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
-    if opencode_go_is_usable(opencode_go_config):
-        assert opencode_go_config is not None
+    # Ownership, deliberately NOT usability. An enabled integration owns its
+    # models even with no credential, so an ``opencode-go/`` request is claimed
+    # here and refused by the dispatch-time credential gate. Dropping the entry
+    # instead would make the model unowned, and the request would fall through
+    # to Codex or another provider - sending the prompt somewhere else entirely,
+    # which is the very disclosure the credential gate exists to prevent.
+    if opencode_go_config is not None and opencode_go_config.enabled:
         routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
@@ -4096,8 +4101,13 @@ async def _build_models_response_body(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
-    if opencode_go_is_usable(opencode_go_config):
-        assert opencode_go_config is not None
+    # Ownership, deliberately NOT usability. An enabled integration owns its
+    # models even with no credential, so an ``opencode-go/`` request is claimed
+    # here and refused by the dispatch-time credential gate. Dropping the entry
+    # instead would make the model unowned, and the request would fall through
+    # to Codex or another provider - sending the prompt somewhere else entirely,
+    # which is the very disclosure the credential gate exists to prevent.
+    if opencode_go_config is not None and opencode_go_config.enabled:
         routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
@@ -4729,8 +4739,13 @@ async def v1_chat_completions(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
-    if opencode_go_is_usable(opencode_go_config):
-        assert opencode_go_config is not None
+    # Ownership, deliberately NOT usability. An enabled integration owns its
+    # models even with no credential, so an ``opencode-go/`` request is claimed
+    # here and refused by the dispatch-time credential gate. Dropping the entry
+    # instead would make the model unowned, and the request would fall through
+    # to Codex or another provider - sending the prompt somewhere else entirely,
+    # which is the very disclosure the credential gate exists to prevent.
+    if opencode_go_config is not None and opencode_go_config.enabled:
         routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
