@@ -92,6 +92,12 @@ export type OpenCodeGoCardState =
        * to the dashboard failed, and the numbers are from an earlier success.
        */
       refreshFailed: boolean;
+      /**
+       * True when that failed refetch was a 404 on a route we had already used
+       * successfully, i.e. the endpoint stopped answering rather than never
+       * having existed. Narrower than `refreshFailed` and worth its own copy.
+       */
+      endpointUnavailable: boolean;
       message: string | null;
       /** When the displayed values were obtained upstream. */
       checkedAt: string | null;
@@ -163,17 +169,21 @@ export function resolveOpenCodeGoCardState(
 ): OpenCodeGoCardState {
   const { data, isPending, error } = input;
 
-  // An absent route is a property of the deployment, not of one request, so it
-  // wins even if a cached snapshot somehow exists.
-  if (error instanceof ApiError && error.status === 404) {
-    return { kind: "absent" };
-  }
-
   // A failed request does NOT discard a snapshot we already read successfully.
   // Throwing away good data on a transient refetch or a remount would replace
   // real numbers with "unavailable", which is less true than what we know. The
   // values are kept and labelled as a failed refresh, never as current.
   const hasCachedData = data !== undefined;
+
+  // A 404 means "this deployment has no Go quota route" only when we have never
+  // seen the route work. Once a snapshot has been read successfully the route
+  // demonstrably existed, so a later 404 is one failed request - a redeploy, a
+  // rollback, a proxy hiccup - and it cannot retroactively prove the route never
+  // existed. Treating it as absent would silently delete real numbers from the
+  // page, which is the opposite of the no-data case this branch is for.
+  if (error instanceof ApiError && error.status === 404 && !hasCachedData) {
+    return { kind: "absent" };
+  }
 
   if (error && !hasCachedData) {
     // A schema mismatch is an integration bug, not a provider outage, and an
@@ -192,9 +202,15 @@ export function resolveOpenCodeGoCardState(
     };
   }
 
-  // A malformed body with cached data present is still an integration fault we
-  // must surface, but the known-good numbers stay visible behind it.
+  // A malformed body or a vanished route with cached data present is still a
+  // fault we must surface, but the known-good numbers stay visible behind it.
   const refreshFailed = Boolean(error) && hasCachedData;
+
+  // A 404 against a route that previously worked is worth naming specifically:
+  // "the endpoint is no longer answering" is actionable in a way that a generic
+  // refresh failure is not.
+  const endpointUnavailable =
+    refreshFailed && error instanceof ApiError && error.status === 404;
 
   if (isPending || !data) {
     return { kind: "loading" };
@@ -243,6 +259,7 @@ export function resolveOpenCodeGoCardState(
     stale: data.stale || data.status === "stale" || refreshFailed,
     staleReason: data.staleReason?.trim() ? data.staleReason.trim() : null,
     refreshFailed,
+    endpointUnavailable,
     message,
     checkedAt: data.checkedAt ?? null,
     refreshedAt: data.refreshedAt ?? null,

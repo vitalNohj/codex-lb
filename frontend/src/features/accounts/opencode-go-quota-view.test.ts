@@ -501,15 +501,66 @@ describe("resolveOpenCodeGoCardState cached-data retention", () => {
     ).toMatchObject({ kind: "notice", notice: "unavailable" });
   });
 
-  it("keeps a 404 absent even when a cached snapshot exists", () => {
-    // An absent route is a property of the deployment, not a transient failure.
+  it("retains the snapshot when a previously working route starts 404ing", () => {
+    // A 404 after a success cannot prove the route never existed - it proves the
+    // opposite. Deleting real numbers on that evidence would be wrong.
+    const state = expectQuota(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota(),
+        isPending: false,
+        error: new ApiError({ message: "Not Found", status: 404, code: "not_found" }),
+      }),
+    );
+
+    expect(state.windows).toHaveLength(2);
+    expect(state.endpointUnavailable).toBe(true);
+    expect(state.refreshFailed).toBe(true);
+    expect(state.stale).toBe(true);
+  });
+
+  it("still reports absent for a 404 with no snapshot to keep", () => {
+    // The no-data 404 case is unchanged: nothing was ever read, so the
+    // deployment genuinely has no Go quota route and the card is hidden.
+    expect(
+      resolveOpenCodeGoCardState({
+        data: undefined,
+        isPending: false,
+        error: new ApiError({ message: "Not Found", status: 404, code: "not_found" }),
+      }).kind,
+    ).toBe("absent");
+  });
+
+  it("distinguishes a vanished endpoint from an ordinary refresh failure", () => {
+    const gone = expectQuota(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota(),
+        isPending: false,
+        error: new ApiError({ message: "Not Found", status: 404, code: "not_found" }),
+      }),
+    );
+    const flaky = expectQuota(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota(),
+        isPending: false,
+        error: new ApiError({ message: "boom", status: 500, code: "request_failed" }),
+      }),
+    );
+
+    expect(gone.endpointUnavailable).toBe(true);
+    expect(flaky.endpointUnavailable).toBe(false);
+    expect(flaky.refreshFailed).toBe(true);
+  });
+
+  it("keeps a deliberate disabled response distinct from a vanished endpoint", () => {
+    // Switching the integration off is an answer, not a failure: the server
+    // replied successfully, so old numbers must not linger.
     const state = resolveOpenCodeGoCardState({
-      data: createOpenCodeGoQuota(),
+      data: createOpenCodeGoQuota({ status: "disabled", windows: [] }),
       isPending: false,
-      error: new ApiError({ message: "Not Found", status: 404, code: "not_found" }),
+      error: null,
     });
 
-    expect(state.kind).toBe("absent");
+    expect(state).toMatchObject({ kind: "notice", notice: "disabled" });
   });
 
   it("reports a switched-off integration rather than retaining old numbers", () => {
@@ -532,6 +583,7 @@ describe("resolveOpenCodeGoCardState cached-data retention", () => {
     );
 
     expect(state.refreshFailed).toBe(false);
+    expect(state.endpointUnavailable).toBe(false);
     expect(state.stale).toBe(false);
   });
 });

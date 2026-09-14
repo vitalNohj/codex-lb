@@ -650,9 +650,10 @@ describe("OpenCodeGoQuotaCard cached data", () => {
     expect(screen.queryByTestId("opencode-go-degraded")).not.toBeInTheDocument();
   });
 
-  it("still hides the card entirely when the route turns out to be absent", async () => {
-    // No-data 404 behaviour is deliberately separate from cached-data retention:
-    // an absent route is a property of the deployment, not a transient failure.
+  it("retains values when a route that worked starts returning 404", async () => {
+    // A 404 *after* a success proves the route existed, so it cannot be read as
+    // "this deployment has no Go endpoint". Hiding the card here would silently
+    // delete real numbers from the page.
     let calls = 0;
     server.use(
       http.get(QUOTA_ROUTE, () => {
@@ -666,7 +667,37 @@ describe("OpenCodeGoQuotaCard cached data", () => {
 
     await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
 
+    await waitFor(() =>
+      expect(screen.getByText("Go usage endpoint stopped responding")).toBeInTheDocument(),
+    );
+    expect(container).not.toBeEmptyDOMElement();
+    expect(screen.getByText("42%")).toBeInTheDocument();
+    expect(screen.getByTestId("opencode-go-stale-badge")).toBeInTheDocument();
+  });
+
+  it("still hides the card when the route 404s and nothing was ever read", async () => {
+    // The no-data 404 case is unchanged and stays distinct from retention.
+    server.use(
+      http.get(QUOTA_ROUTE, () =>
+        HttpResponse.json({ error: { code: "not_found", message: "Not Found" } }, { status: 404 }),
+      ),
+    );
+
+    const { container } = renderWithProviders(<OpenCodeGoQuotaCard />);
+
     await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it("names a vanished endpoint differently from an ordinary refresh failure", async () => {
+    mockThenFail(500);
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() =>
+      expect(screen.getByText("Could not reach codex-lb to refresh")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Go usage endpoint stopped responding")).not.toBeInTheDocument();
   });
 
   it("reports a switched-off integration instead of showing old numbers", async () => {

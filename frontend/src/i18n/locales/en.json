@@ -92,6 +92,7 @@
   "accounts.oauth.waitingComplete": "Waiting for authorization to complete...",
   "accounts.opencodeGo.allModels": "All models ({{count}})",
   "accounts.opencodeGo.checkedAt": "Last checked {{time}}",
+  "accounts.opencodeGo.endpointUnavailableTitle": "Go usage endpoint stopped responding",
   "accounts.opencodeGo.exhaustedBadge": "At limit",
   "accounts.opencodeGo.freshnessUnknown": "Measurement time not reported",
   "accounts.opencodeGo.loading": "Loading OpenCode Go usage...",

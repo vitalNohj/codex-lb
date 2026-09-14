@@ -254,9 +254,11 @@ function QuotaContent({
           className={cn("space-y-1 rounded-lg border p-3 text-xs", NOTICE_TONE.unavailable)}
         >
           <p className="font-medium">
-            {state.refreshFailed
-              ? t("accounts.opencodeGo.refreshFailedTitle")
-              : t("accounts.opencodeGo.staleTitle")}
+            {state.endpointUnavailable
+              ? t("accounts.opencodeGo.endpointUnavailableTitle")
+              : state.refreshFailed
+                ? t("accounts.opencodeGo.refreshFailedTitle")
+                : t("accounts.opencodeGo.staleTitle")}
           </p>
           <p>{t("accounts.opencodeGo.showingLastKnown")}</p>
           {/*

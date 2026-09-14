@@ -92,6 +92,7 @@
   "accounts.oauth.waitingComplete": "Authorization 완료 대기 중...",
   "accounts.opencodeGo.allModels": "전체 모델 ({{count}})",
   "accounts.opencodeGo.checkedAt": "마지막 확인 {{time}}",
+  "accounts.opencodeGo.endpointUnavailableTitle": "Go 사용량 endpoint가 응답하지 않음",
   "accounts.opencodeGo.exhaustedBadge": "한도 도달",
   "accounts.opencodeGo.freshnessUnknown": "측정 시각이 보고되지 않음",
   "accounts.opencodeGo.loading": "OpenCode Go 사용량 불러오는 중...",

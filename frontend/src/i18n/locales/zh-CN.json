@@ -92,6 +92,7 @@
   "accounts.oauth.waitingComplete": "正在等待授权完成...",
   "accounts.opencodeGo.allModels": "全部模型（{{count}}）",
   "accounts.opencodeGo.checkedAt": "上次检查 {{time}}",
+  "accounts.opencodeGo.endpointUnavailableTitle": "Go 用量 endpoint 已停止响应",
   "accounts.opencodeGo.exhaustedBadge": "已达上限",
   "accounts.opencodeGo.freshnessUnknown": "未上报测量时间",
   "accounts.opencodeGo.loading": "正在加载 OpenCode Go 用量...",
