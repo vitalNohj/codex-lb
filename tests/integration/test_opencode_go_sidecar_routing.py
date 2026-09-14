@@ -47,8 +47,7 @@ class _FakeStreamContext:
             raise self.error
 
         default = [
-            b'data: {"id":"chunk-1","object":"chat.completion.chunk",'
-            b'"choices":[{"delta":{"content":"hi"}}]}\n\n',
+            b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n',
             b'data: {"id":"chunk-2","object":"chat.completion.chunk","choices":[],'
             b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
             b"data: [DONE]\n\n",
@@ -506,9 +505,7 @@ async def test_unknown_client_gets_no_session_header(async_client, opencode_go_e
 
 
 @pytest.mark.asyncio
-async def test_upstream_401_becomes_503_and_releases_reservation(
-    async_client, opencode_go_enabled, fake_opencode_go
-):
+async def test_upstream_401_becomes_503_and_releases_reservation(async_client, opencode_go_enabled, fake_opencode_go):
     fake_opencode_go.chat_error = OpenCodeGoSidecarError(
         401, "Missing API key.", body={"error": {"message": "Missing API key."}}
     )
@@ -570,9 +567,7 @@ async def test_upstream_unavailable_becomes_503(async_client, opencode_go_enable
 
 
 @pytest.mark.asyncio
-async def test_upstream_error_never_leaks_the_key_to_client_or_log(
-    async_client, opencode_go_enabled, fake_opencode_go
-):
+async def test_upstream_error_never_leaks_the_key_to_client_or_log(async_client, opencode_go_enabled, fake_opencode_go):
     secret = "sk-go-test-key"
     fake_opencode_go.chat_error = OpenCodeGoSidecarError(
         400,
@@ -622,9 +617,7 @@ async def test_test_endpoint_records_health_and_counts_only_supported_models(
 
 
 @pytest.mark.asyncio
-async def test_test_endpoint_reports_unauthorized_without_leaking_the_key(
-    async_client, monkeypatch, fake_opencode_go
-):
+async def test_test_endpoint_reports_unauthorized_without_leaking_the_key(async_client, monkeypatch, fake_opencode_go):
     secret = "sk-go-test-key"
 
     async def _raise():
@@ -647,9 +640,7 @@ async def test_test_endpoint_reports_unauthorized_without_leaking_the_key(
 
 
 @pytest.mark.asyncio
-async def test_accounts_page_shows_a_read_only_go_card_without_fake_oauth_usage(
-    async_client, opencode_go_enabled
-):
+async def test_accounts_page_shows_a_read_only_go_card_without_fake_oauth_usage(async_client, opencode_go_enabled):
     await _settings_payload(async_client)
 
     response = await async_client.get("/api/accounts")
@@ -690,3 +681,163 @@ async def test_other_integrations_keep_their_routes(async_client, opencode_go_en
     assert body["orcarouterSidecarEnabled"] is True
     assert body["orcarouterSidecarModelPrefixes"] == [{"prefix": "orcarouter/", "strip": False}]
     assert body["opencodeGoSidecarEnabled"] is True
+
+
+# --------------------------------------------------------------------------
+# Inbound Responses compatibility - never fall through to another provider
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_responses_supported_model_is_served_by_go_not_codex(async_client, opencode_go_enabled, fake_opencode_go):
+    """A Go model on /v1/responses is answered by Go, in Responses shape.
+
+    The conversion is inbound compatibility: codex-lb speaks Responses to the
+    client and /chat/completions to Go. Go's own /responses endpoint is never
+    called.
+    """
+
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["object"] == "response"
+    assert body["status"] == "completed"
+    assert body["output"][0]["content"][0]["text"] == "hi"
+    # Served by Go, over chat completions, with the prefix stripped.
+    assert fake_opencode_go.chat_payloads[0]["model"] == "glm-5.3"
+    assert (await _go_logs())[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_responses_unsupported_go_model_is_refused_not_rerouted(
+    async_client, opencode_go_enabled, fake_opencode_go
+):
+    """The core guarantee: refuse rather than silently serve from Codex.
+
+    A /messages-only Go model cannot be served here. Falling through would bill
+    a different account and return another model's output under the requested
+    model's name, with nothing in the response revealing the substitution.
+    """
+
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/qwen3.7-plus", "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "opencode_go_model_unsupported"
+    # Neither Go nor any other upstream was asked to serve it.
+    assert fake_opencode_go.chat_payloads == []
+    assert fake_opencode_go.stream_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_is_synthesized_from_go_chat_stream(async_client, opencode_go_enabled, fake_opencode_go):
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": True},
+    )
+
+    assert response.status_code == 200
+    text = response.text
+    assert "response.created" in text
+    assert "response.output_text.delta" in text
+    assert "response.completed" in text
+    assert "data: [DONE]" in text
+    assert fake_opencode_go.stream_payloads[0]["model"] == "glm-5.3"
+    assert fake_opencode_go.stream_payloads[0]["stream_options"] == {"include_usage": True}
+    assert (await _go_logs())[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_responses_carries_session_identity_to_go(async_client, opencode_go_enabled, fake_opencode_go):
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+    headers = {
+        "Authorization": f"Bearer {key.key}",
+        "user-agent": "opencode/1.0",
+        "x-session-id": "responses-conv-1",
+    }
+
+    for _ in range(2):
+        assert (
+            await async_client.post(
+                "/v1/responses",
+                headers=headers,
+                json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": False},
+            )
+        ).status_code == 200
+
+    from app.core.conversation.opencode_go_session import resolve_opencode_go_session_id
+
+    resolved = [resolve_opencode_go_session_id(h) for h in fake_opencode_go.chat_headers]
+    assert resolved[0] is not None
+    assert resolved[0] == resolved[1]
+    assert "responses-conv-1" not in resolved[0]
+
+
+@pytest.mark.asyncio
+async def test_responses_upstream_401_becomes_503_not_a_codex_retry(
+    async_client, opencode_go_enabled, fake_opencode_go
+):
+    fake_opencode_go.chat_error = OpenCodeGoSidecarError(
+        401, "Missing API key.", body={"error": {"message": "Missing API key."}}
+    )
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": False},
+    )
+
+    # A Go credential failure is reported as a Go failure, not laundered into a
+    # successful answer from some other provider.
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "60"
+
+
+@pytest.mark.asyncio
+async def test_responses_for_non_go_model_still_uses_the_existing_path(
+    async_client, opencode_go_enabled, fake_opencode_go
+):
+    """Non-regression: unrelated Responses traffic is untouched by this branch."""
+
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "codex_cli_rs/1.0"},
+        json={"model": "gpt-5.4", "input": "hi", "stream": False},
+    )
+
+    # The Codex path's own answer is not this test's concern (no upstream
+    # account is configured here); what matters is that OpenCode Go was never
+    # consulted for a model that is not its own.
+    assert fake_opencode_go.chat_payloads == []
+    assert fake_opencode_go.stream_payloads == []
+    assert await _go_logs() == []

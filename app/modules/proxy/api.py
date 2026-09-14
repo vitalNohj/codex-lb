@@ -49,8 +49,8 @@ from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
-from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
+from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import (
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
@@ -292,16 +292,17 @@ from app.modules.proxy.omniroute_sidecar_dispatch import (
     proxy_chat_to_omniroute,
     proxy_responses_to_omniroute,
 )
-from app.modules.proxy.openrouter_sidecar_dispatch import (
-    load_openrouter_sidecar_config,
-    openrouter_routing_entry,
-    proxy_chat_to_openrouter,
-)
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     load_opencode_go_sidecar_config,
     opencode_go_routing_entry,
     proxy_chat_to_opencode_go,
+    proxy_responses_to_opencode_go,
+)
+from app.modules.proxy.openrouter_sidecar_dispatch import (
+    load_openrouter_sidecar_config,
+    openrouter_routing_entry,
+    proxy_chat_to_openrouter,
 )
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     load_orcarouter_sidecar_config,
@@ -1162,6 +1163,56 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
     return tuple(routing_entries)
 
 
+async def _opencode_go_responses_dispatch_or_none(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> Response | None:
+    """Claim every Responses request whose model resolves to OpenCode Go.
+
+    Returns ``None`` only when the model does **not** belong to OpenCode Go, so
+    unrelated traffic keeps its existing Codex path byte for byte.
+
+    When the model *does* resolve to OpenCode Go this never returns ``None``:
+    letting a Go-resolved request fall through would serve it from Codex or
+    another upstream, billing the wrong account and returning a different
+    model's output under the requested model's name, with nothing in the
+    response telling the caller it happened. An unsupported Go model therefore
+    gets an explicit 400 from the dispatcher rather than a silent reroute.
+    """
+
+    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+
+    opencode_go_config = await load_opencode_go_sidecar_config()
+    routing_entries = await _enabled_sidecar_routing_entries()
+
+    decision = resolve_sidecar_route(effective_model, routing_entries)
+    if decision is None or decision.provider != "opencode_go" or opencode_go_config is None:
+        return None
+
+    validate_model_access(api_key, effective_model, routing_entries=routing_entries)
+    rate_limit_headers = await context.service.rate_limit_headers()
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=effective_model,
+        request_service_tier=responses_payload.service_tier,
+        request_usage_budget=None,
+    )
+    settings = get_settings()
+    return await proxy_responses_to_opencode_go(
+        request,
+        responses_payload,
+        effective_model=effective_model,
+        api_key=api_key,
+        reservation=reservation,
+        rate_limit_headers=rate_limit_headers,
+        sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+        client=OpenCodeGoSidecarClient(opencode_go_config),
+        wire_model=decision.wire_model,
+    )
+
+
 async def _omniroute_responses_dispatch_or_none(
     request: Request,
     responses_payload: ResponsesRequest,
@@ -1258,6 +1309,14 @@ async def responses(
     omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
     if omniroute_response is not None:
         return omniroute_response
+
+    # Must run before any source selection below. A model that resolves to
+    # OpenCode Go is answered (or explicitly refused) by Go and never allowed to
+    # reach the Codex path, which would bill a different account and return
+    # another model's output under the requested model's name.
+    opencode_go_response = await _opencode_go_responses_dispatch_or_none(request, responses_payload, context, api_key)
+    if opencode_go_response is not None:
+        return opencode_go_response
 
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
@@ -1428,6 +1487,14 @@ async def v1_responses(
     omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
     if omniroute_response is not None:
         return omniroute_response
+
+    # Must run before any source selection below. A model that resolves to
+    # OpenCode Go is answered (or explicitly refused) by Go and never allowed to
+    # reach the Codex path, which would bill a different account and return
+    # another model's output under the requested model's name.
+    opencode_go_response = await _opencode_go_responses_dispatch_or_none(request, responses_payload, context, api_key)
+    if opencode_go_response is not None:
+        return opencode_go_response
 
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (

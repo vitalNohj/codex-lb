@@ -12,6 +12,12 @@ Follows the OrcaRouter dispatch shape. The differences that matter:
   forwarded; the client builds its own header dict from stored configuration.
 * ``Retry-After`` from a 429 is relayed verbatim. Only the upstream knows when
   its own window reopens.
+
+Inbound Responses traffic is served by converting to and from chat completions
+with the shared ``responses_chat_bridge``. That is **inbound compatibility** for
+clients that speak Responses, and it is not an upstream Responses client: this
+integration never calls OpenCode Go's ``/responses`` endpoint, and the models Go
+serves there stay unsupported.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
@@ -65,6 +72,11 @@ from app.modules.proxy.external_pricing_logging import (
 from app.modules.proxy.opencode_go_models import (
     is_opencode_go_model_supported,
     unsupported_model_message,
+)
+from app.modules.proxy.responses_chat_bridge import (
+    ResponsesStreamSynthesizer,
+    chat_to_responses_result,
+    responses_to_chat_request,
 )
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -286,6 +298,276 @@ async def proxy_chat_to_opencode_go(
         cost=cost,
     )
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
+
+
+async def proxy_responses_to_opencode_go(
+    request: Request,
+    payload: ResponsesRequest,
+    *,
+    effective_model: str,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    rate_limit_headers: Mapping[str, str],
+    sse_keepalive_interval_seconds: float,
+    client: OpenCodeGoSidecarClient,
+    wire_model: str | None = None,
+) -> Response:
+    """Serve an inbound Responses request from OpenCode Go chat completions.
+
+    This exists so that a request whose model resolves to OpenCode Go can never
+    fall through to Codex or any other upstream. Silently answering an
+    ``opencode-go/``-prefixed request from a different provider would bill the
+    wrong account and return a different model's output under the requested
+    model's name - a far worse failure than an explicit refusal, and one the
+    caller has no way to detect.
+
+    So every Go-resolved Responses request terminates here, with exactly two
+    outcomes: a supported ``/chat/completions`` model is served through the
+    shared Responses<->chat conversion, and anything else returns 400
+    ``opencode_go_model_unsupported`` naming the real endpoint. Note the
+    boundary this does not cross: the conversion is inbound compatibility only,
+    and Go's own ``/responses`` endpoint is never called.
+    """
+
+    forward_model = wire_model or effective_model
+    requested_at = time.monotonic()
+
+    if not is_opencode_go_model_supported(forward_model):
+        message = unsupported_model_message(forward_model)
+        await _release_opencode_go_reservation(reservation, api_key=api_key)
+        await _log_opencode_go_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code=_UNSUPPORTED_MODEL_CODE,
+            error_message=message,
+        )
+        return JSONResponse(
+            status_code=400,
+            content=openai_error(_UNSUPPORTED_MODEL_CODE, message, error_type="invalid_request_error"),
+            headers=dict(rate_limit_headers),
+        )
+
+    chat_request = responses_to_chat_request(payload, forward_model)
+    chat_body = build_opencode_go_chat_payload(chat_request, forward_model).body
+    client_headers = dict(request.headers)
+
+    if payload.stream:
+        ensure_stream_usage_requested(chat_body)
+        return StreamingResponse(
+            inject_sse_keepalives(
+                _opencode_go_responses_stream_iterator(
+                    chat_body,
+                    api_key=api_key,
+                    reservation=reservation,
+                    model=effective_model,
+                    started_at=requested_at,
+                    client=client,
+                    client_headers=client_headers,
+                ),
+                sse_keepalive_interval_seconds,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
+        )
+
+    try:
+        response_body = await client.chat_completion(chat_body, client_headers=client_headers)
+    except OpenCodeGoSidecarUnavailableError:
+        await _release_opencode_go_reservation(reservation, api_key=api_key)
+        await _log_opencode_go_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code="opencode_go_sidecar_unavailable",
+            error_message="OpenCode Go unavailable",
+        )
+        return JSONResponse(
+            status_code=503,
+            content=openai_error(
+                "opencode_go_sidecar_unavailable",
+                "OpenCode Go unavailable",
+                error_type="upstream_error",
+            ),
+            headers=dict(rate_limit_headers),
+        )
+    except OpenCodeGoSidecarError as exc:
+        sanitized_message = sanitize_opencode_go_message(exc.message, api_key=client.config.api_key)
+        settlement = await external_response_settlement(
+            provider=OPENCODE_GO_PRICING_PROVIDER,
+            model=effective_model,
+            usage=extract_usage(exc.body),
+            billed_cost_usd=extract_billed_cost(exc.body),
+            completed=False,
+        )
+        await _finalize_or_release_opencode_go_reservation(
+            reservation,
+            api_key=api_key,
+            model=effective_model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
+        await _log_opencode_go_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code="opencode_go_sidecar_error",
+            error_message=sanitized_message,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
+        client_error = client_facing_sidecar_error(
+            status_code=exc.status_code,
+            message=sanitized_message,
+            error_code="opencode_go_sidecar_error",
+            body=sanitize_opencode_go_error_body(exc.body, api_key=client.config.api_key),
+            extra_headers=_headers_with_retry_after(rate_limit_headers, exc),
+        )
+        return JSONResponse(
+            status_code=client_error.status_code,
+            content=client_error.content,
+            headers=client_error.headers,
+        )
+
+    usage = extract_usage(response_body)
+    cost = await _opencode_go_request_cost(effective_model, usage, billed_cost_usd=extract_billed_cost(response_body))
+    await _finalize_or_release_opencode_go_reservation(
+        reservation,
+        api_key=api_key,
+        model=effective_model,
+        usage=usage,
+        cost=cost,
+    )
+    await _log_opencode_go_request(
+        api_key=api_key,
+        model=effective_model,
+        started_at=requested_at,
+        status="success",
+        usage=usage,
+        cost=cost,
+    )
+    return JSONResponse(
+        content=chat_to_responses_result(response_body, model=effective_model),
+        status_code=200,
+        headers=dict(rate_limit_headers),
+    )
+
+
+async def _opencode_go_responses_stream_iterator(
+    payload: Mapping[str, JsonValue],
+    *,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    model: str,
+    started_at: float,
+    client: OpenCodeGoSidecarClient,
+    client_headers: Mapping[str, str] | None = None,
+) -> AsyncIterator[bytes]:
+    """Relay a Go chat stream as a Responses event stream.
+
+    Settlement and logging sit in ``finally`` for the same reason as the chat
+    path: a client disconnect or a cancellation must not leak a reservation or
+    lose usage the upstream already reported.
+    """
+
+    usage: SidecarUsage | None = None
+    billed_cost = BilledCostAccumulator()
+    completed = False
+    error_code = "opencode_go_sidecar_stream_incomplete"
+    error_message: str | None = None
+    synthesizer = ResponsesStreamSynthesizer(model=model)
+    try:
+        async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
+            decoder = _SseUsageDecoder()
+            async for raw_chunk in chunks:
+                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                    if event == "[DONE]":
+                        completed = True
+                    else:
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                        billed_cost.observe(extract_billed_cost(event))
+                    for responses_event in synthesizer.feed(event):
+                        yield _responses_sse(responses_event)
+            for event in decoder.flush():
+                if event == "[DONE]":
+                    completed = True
+                else:
+                    event_usage = extract_usage(event)
+                    if event_usage is not None:
+                        usage = event_usage
+                    billed_cost.observe(extract_billed_cost(event))
+                for responses_event in synthesizer.feed(event):
+                    yield _responses_sse(responses_event)
+            for responses_event in synthesizer.finish():
+                yield _responses_sse(responses_event)
+            yield b"data: [DONE]\n\n"
+    except OpenCodeGoSidecarUnavailableError:
+        error_code = "opencode_go_sidecar_unavailable"
+        error_message = "OpenCode Go unavailable"
+        yield _error_sse(
+            openai_error(
+                "opencode_go_sidecar_unavailable",
+                "OpenCode Go unavailable",
+                error_type="upstream_error",
+            )
+        )
+        yield b"data: [DONE]\n\n"
+    except OpenCodeGoSidecarError as exc:
+        error_code = "opencode_go_sidecar_error"
+        error_message = sanitize_opencode_go_message(exc.message, api_key=client.config.api_key)
+        billed_cost.observe(extract_billed_cost(exc.body))
+        client_error = client_facing_sidecar_error(
+            status_code=exc.status_code,
+            message=error_message,
+            error_code="opencode_go_sidecar_error",
+            body=sanitize_opencode_go_error_body(exc.body, api_key=client.config.api_key),
+        )
+        yield _error_sse(client_error.content)
+        yield b"data: [DONE]\n\n"
+    except BaseException as exc:
+        error_code = "opencode_go_sidecar_stream_interrupted"
+        error_message = sanitize_opencode_go_message(
+            str(exc) or exc.__class__.__name__,
+            api_key=client.config.api_key,
+        )
+        raise
+    finally:
+        settlement = await external_response_settlement(
+            provider=OPENCODE_GO_PRICING_PROVIDER,
+            model=model,
+            usage=usage,
+            billed_cost_usd=billed_cost.value,
+            completed=completed,
+        )
+        await _finalize_or_release_opencode_go_reservation(
+            reservation,
+            api_key=api_key,
+            model=model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
+        await _log_opencode_go_request(
+            api_key=api_key,
+            model=model,
+            started_at=started_at,
+            status="success" if completed else "error",
+            error_code=None if completed else error_code,
+            error_message=None if completed else error_message,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
+
+
+def _responses_sse(event: JsonObject) -> bytes:
+    data = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
+    event_type = event.get("type")
+    prefix = f"event: {event_type}\n" if isinstance(event_type, str) and event_type else ""
+    return f"{prefix}data: {data}\n\n".encode("utf-8")
 
 
 def _headers_with_retry_after(
