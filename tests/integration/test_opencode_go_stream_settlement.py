@@ -23,6 +23,17 @@ Cases covered here that no other file in this lane covers:
   * exactly-once log/settlement accounting on each of the above
 
 No authenticated request to any real provider is made.
+
+SCOPE (corrected): these tests drive the **OrcaRouter** sidecar, not the native
+OpenCode Go provider. They were written before the native provider existed, and
+OrcaRouter is the integration pattern it was built from, so they remain valuable
+as baseline regressions for the shipped providers.
+
+Their results are evidence about OrcaRouter and **must not be cited as native Go
+evidence**. The native equivalents - auth, session identity, tool calls,
+streaming settlement, cancellation and no-fallback - live in
+``test_opencode_go_native_chain.py``, which drives the real ``opencode_go``
+dispatch path.
 """
 
 from __future__ import annotations

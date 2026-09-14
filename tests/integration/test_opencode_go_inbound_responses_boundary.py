@@ -25,6 +25,17 @@ that check, a Go model would be sent to OmniRoute - which is exactly the "no
 automatic fallback to another paid provider" rule the captain set.
 
 No authenticated call is made to any real provider by any test here.
+
+SCOPE (corrected): these tests drive the **OrcaRouter** sidecar, not the native
+OpenCode Go provider. They were written before the native provider existed, and
+OrcaRouter is the integration pattern it was built from, so they remain valuable
+as baseline regressions for the shipped providers.
+
+Their results are evidence about OrcaRouter and **must not be cited as native Go
+evidence**. The native equivalents - auth, session identity, tool calls,
+streaming settlement, cancellation and no-fallback - live in
+``test_opencode_go_native_chain.py``, which drives the real ``opencode_go``
+dispatch path.
 """
 
 from __future__ import annotations

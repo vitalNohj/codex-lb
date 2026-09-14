@@ -37,6 +37,17 @@ request is made to any provider, and no test infers live provider behavior from
 a fixture the test itself wrote. Claims about the live provider's per-endpoint
 auth, usage windows, or model catalog remain exactly as unverified as the
 prior-art report left them.
+
+SCOPE (corrected): these tests drive the **OrcaRouter** sidecar, not the native
+OpenCode Go provider. They were written before the native provider existed, and
+OrcaRouter is the integration pattern it was built from, so they remain valuable
+as baseline regressions for the shipped providers.
+
+Their results are evidence about OrcaRouter and **must not be cited as native Go
+evidence**. The native equivalents - auth, session identity, tool calls,
+streaming settlement, cancellation and no-fallback - live in
+``test_opencode_go_native_chain.py``, which drives the real ``opencode_go``
+dispatch path.
 """
 
 from __future__ import annotations
