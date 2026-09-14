@@ -426,3 +426,62 @@ def test_client_cache_is_evicted_when_config_changes() -> None:
     second = get_opencode_go_sidecar_client(_config(api_key="sk-go-two"))
     assert second is not first
     reset_opencode_go_sidecar_client_cache()
+
+
+# --------------------------------------------------------------------------
+# Go-vs-Zen enforced on every configuration path (PR 43 review finding)
+# --------------------------------------------------------------------------
+
+
+class TestGoEndpointEnforcedFromEnvironment:
+    """The environment must not be a way around the Go/Zen guard.
+
+    The dashboard validator already rejected a Zen URL, but a fresh install
+    seeds this column from ``CODEX_LB_OPENCODE_GO_SIDECAR_BASE_URL``. That
+    second path reached the same client, which would then send the Go
+    subscription key to the pay-as-you-go Zen endpoint - billing credits
+    instead of the subscription, with no error anywhere.
+    """
+
+    @staticmethod
+    def _settings(base_url: str):
+        from app.core.config.settings import Settings
+
+        return Settings(opencode_go_sidecar_base_url=base_url)
+
+    def test_a_zen_base_url_from_the_environment_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="OpenCode Go endpoint"):
+            self._settings("https://opencode.ai/zen/v1")
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://opencode.ai/zen/v1/gold",
+            "https://opencode.ai/zen/going/v1",
+            "https://example.com/zen/go/v1",
+            "http://opencode.ai/zen/go/v1",
+        ],
+        ids=["path-lookalike", "segment-lookalike", "other-host", "plaintext"],
+    )
+    def test_lookalike_urls_are_rejected(self, base_url: str) -> None:
+        with pytest.raises(ValueError, match="OpenCode Go endpoint"):
+            self._settings(base_url)
+
+    def test_the_documented_go_url_is_accepted(self) -> None:
+        assert self._settings("https://opencode.ai/zen/go/v1").opencode_go_sidecar_base_url == (
+            "https://opencode.ai/zen/go/v1"
+        )
+
+    def test_static_and_dashboard_validation_share_one_predicate(self) -> None:
+        """Two copies of this rule could drift; one definition cannot.
+
+        Both validators import the same leaf predicate, so a future change to
+        what counts as a Go endpoint cannot leave one entry point permissive.
+        """
+
+        from app.core.config import settings as static_settings
+        from app.core.config.opencode_go_endpoint import is_opencode_go_base_url as canonical
+        from app.modules.settings import schemas as dashboard_schemas
+
+        assert static_settings.is_opencode_go_base_url is canonical
+        assert dashboard_schemas.is_opencode_go_base_url is canonical

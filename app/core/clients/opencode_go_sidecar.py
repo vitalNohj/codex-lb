@@ -41,6 +41,12 @@ import aiohttp
 from app import __version__
 from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
 from app.core.clients.http import lease_http_session
+from app.core.config.opencode_go_endpoint import (
+    OPENCODE_GO_DEFAULT_BASE_URL as _OPENCODE_GO_DEFAULT_BASE_URL,
+)
+from app.core.config.opencode_go_endpoint import (
+    is_opencode_go_base_url as is_opencode_go_base_url,  # re-exported for existing importers
+)
 from app.core.conversation.opencode_go_session import apply_opencode_go_session_header
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
@@ -57,8 +63,9 @@ OPENCODE_GO_PRICING_PROVIDER = "opencode_go"
 OPENCODE_GO_PROVIDER = "opencode_go"
 
 #: The documented Go base URL. Zen lives at ``/zen/v1`` and is a different
-#: product with different billing.
-OPENCODE_GO_DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
+#: product with different billing. Re-exported from the leaf endpoint module so
+#: existing importers of this client keep working.
+OPENCODE_GO_DEFAULT_BASE_URL = _OPENCODE_GO_DEFAULT_BASE_URL
 
 #: Go's client obligations ask for a client-specific user agent rather than a
 #: generic SDK or HTTP-library name. Third-party projects that sent a library
@@ -101,21 +108,6 @@ class OpenCodeGoSidecarError(Exception):
 class OpenCodeGoSidecarUnavailableError(OpenCodeGoSidecarError):
     def __init__(self, message: str) -> None:
         super().__init__(503, message, body=None)
-
-
-def is_opencode_go_base_url(base_url: str) -> bool:
-    """Is this an OpenCode **Go** base URL rather than Zen or something else?
-
-    Checked as a path *segment* so ``/zen/go/v1`` matches while a lookalike such
-    as ``/zen/v1/gold`` does not. Host is checked too, because a ``/go/`` path on
-    an unrelated host says nothing about which product bills the request.
-    """
-
-    normalized = base_url.strip().rstrip("/").lower()
-    if not normalized.startswith("https://opencode.ai/"):
-        return False
-    path = normalized[len("https://opencode.ai") :]
-    return "/go/" in f"{path}/"
 
 
 class OpenCodeGoSidecarClient:

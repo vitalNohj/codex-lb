@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 
-from app.core.clients.opencode_go_sidecar import is_opencode_go_base_url
+from app.core.config.opencode_go_endpoint import OPENCODE_GO_BASE_URL_ERROR, is_opencode_go_base_url
 from app.modules.shared.schemas import DashboardModel
 
 _DEFAULT_WEEKLY_PACE_WORKING_DAYS = "0,1,2,3,4,5,6"
@@ -105,11 +105,7 @@ def _normalize_opencode_go_sidecar_base_url(value: str | None) -> str | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("opencode_go_sidecar_base_url must be an http(s) URL")
     if not is_opencode_go_base_url(normalized):
-        raise ValueError(
-            "opencode_go_sidecar_base_url must be an OpenCode Go endpoint such as "
-            "https://opencode.ai/zen/go/v1 - an OpenCode Zen URL bills pay-as-you-go "
-            "credits instead of the Go subscription"
-        )
+        raise ValueError(f"opencode_go_sidecar_base_url {OPENCODE_GO_BASE_URL_ERROR}")
     return normalized
 
 
@@ -171,9 +167,7 @@ def _normalize_ollama_sidecar_base_url(value: str | None) -> str | None:
     return normalized
 
 
-_SIDECAR_REASONING_EFFORT_VALUES: frozenset[str] = frozenset(
-    {"none", "minimal", "low", "medium", "high", "xhigh"}
-)
+_SIDECAR_REASONING_EFFORT_VALUES: frozenset[str] = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
 
 
 def _normalize_sidecar_default_reasoning_effort(value: str | None) -> str | None:
@@ -183,9 +177,7 @@ def _normalize_sidecar_default_reasoning_effort(value: str | None) -> str | None
     if not normalized:
         return None
     if normalized not in _SIDECAR_REASONING_EFFORT_VALUES:
-        raise ValueError(
-            "default_reasoning_effort must be one of none, minimal, low, medium, high, xhigh"
-        )
+        raise ValueError("default_reasoning_effort must be one of none, minimal, low, medium, high, xhigh")
     return normalized
 
 
@@ -216,9 +208,7 @@ class ClaudeSidecarAuthPlan(DashboardModel):
     def _validate_identity_and_budget(self) -> "ClaudeSidecarAuthPlan":
         if not (self.auth_index or self.email or self.source):
             raise ValueError("Claude auth plan must include auth_index, email, or source")
-        if self.plan_type == "custom" and (
-            self.primary_token_budget is None or self.secondary_token_budget is None
-        ):
+        if self.plan_type == "custom" and (self.primary_token_budget is None or self.secondary_token_budget is None):
             raise ValueError("custom Claude auth plan requires both token budgets")
         return self
 
@@ -606,7 +596,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
         if value not in _WEEKLY_PACE_SMOOTHING_MINUTES:
             raise ValueError("weekly_pace_smoothing_minutes must be one of 15, 30, 60, 120, 240")
         return value
-
 
     @field_validator("claude_sidecar_base_url")
     @classmethod
