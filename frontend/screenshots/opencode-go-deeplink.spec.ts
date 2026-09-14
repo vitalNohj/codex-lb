@@ -297,3 +297,49 @@ test("a server-side enable on a card that loaded disabled becomes genuinely sele
     await page.screenshot({ path: `${evidence}/11-server-enable-adopted.png` });
   }
 });
+
+test("an acknowledged disable is not resurrected when the server later re-enables", async ({ page }) => {
+  // Full ABA cycle through the real card: server on -> operator disables ->
+  // server acknowledges off -> server later reports on again.
+  let enabled = true;
+  await page.route("**/api/**", async (route) => {
+    const p = new URL(route.request().url()).pathname.replace(/^\/codex/, "");
+    if (p === "/api/settings" && route.request().method() === "PUT") {
+      enabled = false; // the disable is acknowledged
+      return route.fulfill({ json: { ...GO_SETTINGS, opencodeGoSidecarEnabled: false } });
+    }
+    let body: unknown = {};
+    if (p === "/api/dashboard-auth/session") body = authSession;
+    else if (p === "/api/settings") body = { ...GO_SETTINGS, opencodeGoSidecarEnabled: enabled };
+    else if (p === "/api/settings/upstream-proxy") body = upstreamProxyAdmin;
+    else if (p === "/api/opencode-go-sidecar/status") body = goStatus;
+    else if (p === "/api/opencode-go-sidecar/models") body = { models: OPENCODE_GO_MODELS };
+    else if (p.endsWith("/status")) body = emptySidecar("https://example.invalid");
+    else if (p.endsWith("/models")) body = { models: [] };
+    else if (p === "/api/accounts") body = { accounts: [] };
+    else if (p === "/api/api-keys" || p === "/api/api-keys/") body = { apiKeys: [] };
+    await route.fulfill({ json: body });
+  });
+  await page.route("http://localhost:4174/codex/settings", async (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: await readFile(new URL("../.opencode-go-build/codex/index.html", import.meta.url), "utf8"),
+    }),
+  );
+
+  await page.goto("http://localhost:4174/codex/settings#opencode-go-sidecar");
+  const toggle = page.getByRole("switch", { name: "Enable OpenCode Go Integration" });
+  await expect(toggle).toBeChecked();
+
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByText(/OpenCode Go reachable/)).toBeVisible();
+
+  // Server now reports enabled again; the retired intent must not win.
+  enabled = true;
+  await page.reload();
+
+  await expect(page.getByRole("switch", { name: "Enable OpenCode Go Integration" })).toBeChecked();
+  await page.getByRole("button", { name: /Discovered models/ }).click();
+  await expect(page.getByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+});

@@ -647,4 +647,127 @@ describe("OpenCodeGoSidecarSettings", () => {
       expect(await screen.findByText("Key removal rejected")).toBeInTheDocument();
     });
   });
+
+  /**
+   * Enable state has two writers (the operator's switch and the server), so the
+   * interesting behaviour is in transitions, not snapshots. Each case below
+   * drives a real card through an ordered sequence on one QueryClient with no
+   * remount, and asserts usability at the end.
+   *
+   * The ABA case is the one that matters: a completed local intent must be
+   * retired by the server acknowledgement, so that a *later* server change back
+   * to the original value cannot resurrect it.
+   */
+  describe("enable-state transitions", () => {
+    type Step =
+      | { server: boolean }
+      | { toggle: true }
+      | { toggleFailing: true };
+
+    async function drive(start: boolean, steps: Step[]) {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const failing = vi.fn().mockRejectedValue(new Error("save rejected"));
+      let save = onSave;
+      const view = (enabled: boolean) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings
+            settings={{ ...ENABLED_SETTINGS, opencodeGoSidecarEnabled: enabled }}
+            busy={false}
+            onSave={(patch) => save(patch)}
+          />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(start));
+      for (const step of steps) {
+        if ("server" in step) {
+          rerender(view(step.server));
+          continue;
+        }
+        save = "toggleFailing" in step ? failing : onSave;
+        await user.click(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }));
+        save = onSave;
+      }
+      await openDiscoveredModels(user);
+      return {
+        switchOn: (screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }) as HTMLElement)
+          .getAttribute("data-state") === "checked",
+        addable: screen.queryByRole("button", { name: "Add full model glm-5.3" }) !== null,
+      };
+    }
+
+    const cases: Array<{ name: string; start: boolean; steps: Step[]; on: boolean }> = [
+      // ABA, the reported gap: the disable is acknowledged, then the server
+      // later re-enables. The retired intent must not come back.
+      {
+        name: "on -> local disable -> server confirms off -> server re-enables",
+        start: true,
+        steps: [{ toggle: true }, { server: false }, { server: true }],
+        on: true,
+      },
+      // Reverse direction: an acknowledged enable must not resurrect either.
+      {
+        name: "off -> local enable -> server confirms on -> server disables",
+        start: false,
+        steps: [{ toggle: true }, { server: true }, { server: false }],
+        on: false,
+      },
+      // Repeated server updates after the intent is retired.
+      {
+        name: "on -> local disable -> off -> on -> off -> on",
+        start: true,
+        steps: [{ toggle: true }, { server: false }, { server: true }, { server: false }, { server: true }],
+        on: true,
+      },
+      // Still-pending intent: the server has not acknowledged, so the operator
+      // wins even though the prop still carries the pre-change value.
+      {
+        name: "on -> local disable -> stale re-render still says on",
+        start: true,
+        steps: [{ toggle: true }, { server: true }],
+        on: false,
+      },
+      // No-remount adoption of a server enable on a card that mounted disabled.
+      {
+        name: "off -> server enables",
+        start: false,
+        steps: [{ server: true }],
+        on: true,
+      },
+      // A failed save leaves the switch off; the server still says on, and the
+      // operator's intent must not be silently discarded.
+      {
+        name: "on -> failed local disable",
+        start: true,
+        steps: [{ toggleFailing: true }],
+        on: false,
+      },
+      // Retry after a failure, then acknowledgement.
+      {
+        name: "on -> failed disable -> retry -> server confirms off",
+        start: true,
+        steps: [{ toggleFailing: true }, { toggle: true }, { server: false }],
+        on: false,
+      },
+      // Operator changes their mind before any acknowledgement.
+      {
+        name: "on -> local disable -> local enable",
+        start: true,
+        steps: [{ toggle: true }, { toggle: true }],
+        on: true,
+      },
+    ];
+
+    it.each(cases)("$name -> enabled=$on", async ({ start, steps, on }) => {
+      const result = await drive(start, steps);
+
+      expect(result.switchOn).toBe(on);
+      // Usability must agree with the switch: an enabled integration offers its
+      // models, a disabled one never does.
+      expect(result.addable).toBe(on);
+    });
+  });
 });
