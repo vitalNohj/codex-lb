@@ -45,6 +45,11 @@ const ENABLED_SETTINGS = createDashboardSettings({
   opencodeGoSidecarApiKeyConfigured: true,
 });
 
+const DISABLED_SETTINGS = createDashboardSettings({
+  opencodeGoSidecarEnabled: false,
+  opencodeGoSidecarApiKeyConfigured: true,
+});
+
 /** A discovered catalogue, as a successful models fetch would have left it. */
 function serveModels() {
   server.use(
@@ -59,23 +64,32 @@ function serveModels() {
   );
 }
 
-function renderSettings(onSave: (patch: unknown) => Promise<unknown>) {
+function renderSettings(
+  onSave: (patch: unknown) => Promise<unknown>,
+  settings: DashboardSettings = ENABLED_SETTINGS as DashboardSettings,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const saveSpy = vi.fn(onSave);
-  render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
-      {/* Settings stay enabled: the component is told the server still says
-          "on", which is exactly the state during a pending disable. */}
-      <OpenCodeGoSidecarSettings
-        settings={ENABLED_SETTINGS as DashboardSettings}
-        busy={false}
-        onSave={saveSpy as never}
-      />
+      {/* Settings stay enabled by default: the component is told the server
+          still says "on", which is exactly the state during a pending disable. */}
+      <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={saveSpy as never} />
     </QueryClientProvider>,
   );
-  return { saveSpy };
+
+  /** Re-render with new server settings, WITHOUT remounting the card. */
+  const updateServerSettings = (next: DashboardSettings) => {
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <OpenCodeGoSidecarSettings settings={next} busy={false} onSave={saveSpy as never} />
+      </QueryClientProvider>,
+    );
+  };
+
+  return { saveSpy, updateServerSettings };
 }
 
 async function openDiscoveredModels(user: ReturnType<typeof userEvent.setup>) {
@@ -184,6 +198,37 @@ describe("OpenCode Go models during a pending disable", () => {
 
     await waitFor(async () => {
       expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(0);
+    });
+  });
+
+  // OPEN DEFECT, routed to codexlb-opencode-go-settings-r1. `it.fails` is
+  // investigative: it fails now for the right reason and becomes a hard failure
+  // the moment the local switch follows the server value, at which point this
+  // must be converted to a plain `it(...)`. It must not ship as `it.fails`.
+  it.fails("becomes usable when the server enables it without a remount", async () => {
+    // The mirror image of the pending-disable race, and the reason an AND guard
+    // needs both directions tested. The card seeds its local switch from
+    // `initial.enabled` via `useState`, which never re-syncs from props, so a
+    // card mounted while disabled keeps `enabled === false` forever. If the
+    // server then reports the integration enabled - a refetch, another tab, or
+    // a save completing - `enabled && sidecarEnabled` stays false and the
+    // catalogue is permanently unusable without a full remount.
+    //
+    // Asserted as the accepted behavior. It is expected to fail while the local
+    // state does not follow the server value.
+    const user = userEvent.setup();
+    serveModels();
+    const { updateServerSettings } = renderSettings(
+      async () => undefined,
+      DISABLED_SETTINGS as DashboardSettings,
+    );
+
+    // Server now says enabled; the card is NOT remounted.
+    updateServerSettings(ENABLED_SETTINGS as DashboardSettings);
+    await openDiscoveredModels(user);
+
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
     });
   });
 
