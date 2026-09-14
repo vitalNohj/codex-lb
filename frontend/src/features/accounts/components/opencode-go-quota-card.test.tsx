@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
@@ -517,5 +518,174 @@ describe("OpenCodeGoQuotaCard", () => {
     await waitFor(() => {
       expect(container).toBeEmptyDOMElement();
     });
+  });
+});
+
+/**
+ * Retaining a known-good snapshot when our own request to codex-lb fails.
+ *
+ * Throwing cached values away on a transient refetch replaces real numbers with
+ * "unavailable", which is *less* true than what we already know. They are kept
+ * and labelled as a failed refresh - never presented as current.
+ */
+describe("OpenCodeGoQuotaCard cached data", () => {
+  const QUOTA_KEY = ["accounts", "opencode-go", "quota"];
+
+  function mockThenFail(status = 500) {
+    let calls = 0;
+    server.use(
+      http.get(QUOTA_ROUTE, () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json(createOpenCodeGoQuota());
+        return HttpResponse.json({ error: { code: "boom", message: "boom" } }, { status });
+      }),
+    );
+  }
+
+  it("keeps the last successful values visible when a refetch fails", async () => {
+    mockThenFail();
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    expect(await screen.findByText("42%")).toBeInTheDocument();
+
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() => expect(screen.getByTestId("opencode-go-stale-badge")).toBeInTheDocument());
+    // The real numbers survive rather than collapsing to an error notice.
+    expect(screen.getByText("42%")).toBeInTheDocument();
+    expect(screen.getByText("68%")).toBeInTheDocument();
+    expect(screen.queryByTestId("opencode-go-quota-notice")).not.toBeInTheDocument();
+  });
+
+  it("never presents retained values as current", async () => {
+    mockThenFail();
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() => expect(screen.getByTestId("opencode-go-degraded")).toBeInTheDocument());
+    expect(screen.getByText("Could not reach codex-lb to refresh")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing the last values that were read successfully/),
+    ).toBeInTheDocument();
+  });
+
+  it("reports true freshness of the retained snapshot, not the failed attempt", async () => {
+    mockThenFail();
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+    const before = screen.getByTestId("opencode-go-freshness").textContent;
+
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+    await waitFor(() => expect(screen.getByTestId("opencode-go-stale-badge")).toBeInTheDocument());
+
+    // The timestamp still describes when the displayed numbers were obtained.
+    expect(screen.getByTestId("opencode-go-freshness")).toHaveTextContent(before ?? "");
+  });
+
+  it("does not attribute our own request failure to OpenCode", async () => {
+    // The failing response body says "boom"; that belongs to a different request
+    // and must not be shown as the upstream's stale reason.
+    mockThenFail();
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() => expect(screen.getByTestId("opencode-go-degraded")).toBeInTheDocument());
+    expect(screen.queryByText("boom")).not.toBeInTheDocument();
+  });
+
+  it("keeps cached values across a remount while the endpoint is failing", async () => {
+    mockThenFail();
+    // The shared test client uses gcTime: 0, which evicts on unmount and would
+    // make this vacuous. A real dashboard keeps the cache, so model that.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 5 * 60_000 } },
+    });
+    const { unmount } = renderWithProviders(<OpenCodeGoQuotaCard />, { queryClient });
+    expect(await screen.findByText("42%")).toBeInTheDocument();
+
+    unmount();
+    // Remounting against the same client refetches, and that refetch fails.
+    renderWithProviders(<OpenCodeGoQuotaCard />, { queryClient });
+
+    // Cached values are painted immediately on remount, then the background
+    // refetch fails and the snapshot is marked as not-current.
+    expect(screen.getByText("42%")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("opencode-go-stale-badge")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("42%")).toBeInTheDocument();
+  });
+
+  it("recovers to a clean current state once the endpoint reconnects", async () => {
+    mockThenFail();
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+    await waitFor(() => expect(screen.getByTestId("opencode-go-stale-badge")).toBeInTheDocument());
+
+    // Endpoint comes back with fresh numbers.
+    server.use(
+      http.get(QUOTA_ROUTE, () =>
+        HttpResponse.json(
+          createOpenCodeGoQuota({
+            windows: [
+              {
+                key: "five_hour",
+                upstreamKey: "rolling",
+                status: "ok",
+                percentUsed: 9,
+                resetsAt: null,
+                limitReached: false,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() => expect(screen.getByText("9%")).toBeInTheDocument());
+    expect(screen.queryByTestId("opencode-go-stale-badge")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("opencode-go-degraded")).not.toBeInTheDocument();
+  });
+
+  it("still hides the card entirely when the route turns out to be absent", async () => {
+    // No-data 404 behaviour is deliberately separate from cached-data retention:
+    // an absent route is a property of the deployment, not a transient failure.
+    let calls = 0;
+    server.use(
+      http.get(QUOTA_ROUTE, () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json(createOpenCodeGoQuota());
+        return HttpResponse.json({ error: { code: "not_found", message: "Not Found" } }, { status: 404 });
+      }),
+    );
+    const { queryClient, container } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it("reports a switched-off integration instead of showing old numbers", async () => {
+    let calls = 0;
+    server.use(
+      http.get(QUOTA_ROUTE, () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json(createOpenCodeGoQuota());
+        return HttpResponse.json(createOpenCodeGoQuota({ status: "disabled", windows: [] }));
+      }),
+    );
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    await screen.findByText("42%");
+
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("opencode-go-quota-notice")).toHaveAttribute("data-notice", "disabled");
+    });
+    expect(screen.queryByText("42%")).not.toBeInTheDocument();
   });
 });

@@ -219,7 +219,9 @@ function QuotaContent({
 
   // `checkedAt` is when the numbers on screen were obtained upstream, which is
   // the only timestamp that describes the data itself. `refreshedAt` describes
-  // when the answer was produced and is a weaker fallback.
+  // when the answer was produced and is a weaker fallback. When our own refetch
+  // fails, both still describe the cached snapshot - which is the true age of
+  // what is on screen, so the label stays correct without special-casing.
   const freshnessLabel =
     state.checkedAt !== null
       ? t("accounts.opencodeGo.measuredAt", {
@@ -251,9 +253,18 @@ function QuotaContent({
           data-testid="opencode-go-degraded"
           className={cn("space-y-1 rounded-lg border p-3 text-xs", NOTICE_TONE.unavailable)}
         >
-          <p className="font-medium">{t("accounts.opencodeGo.staleTitle")}</p>
+          <p className="font-medium">
+            {state.refreshFailed
+              ? t("accounts.opencodeGo.refreshFailedTitle")
+              : t("accounts.opencodeGo.staleTitle")}
+          </p>
           <p>{t("accounts.opencodeGo.showingLastKnown")}</p>
-          {state.staleReason ?? state.message ? (
+          {/*
+            Only show the server's stale reason when the server is the one that
+            failed. When our own refetch failed, that error belongs to a
+            different request and must not be presented as upstream's.
+          */}
+          {!state.refreshFailed && (state.staleReason ?? state.message) ? (
             <p className="break-words font-mono text-[11px] opacity-80">
               {state.staleReason ?? state.message}
             </p>

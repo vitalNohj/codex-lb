@@ -85,6 +85,13 @@ export type OpenCodeGoCardState =
       hasModelDetail: boolean;
       stale: boolean;
       staleReason: string | null;
+      /**
+       * True when the values on screen came from a cached snapshot whose most
+       * recent *client-side* refetch failed. Distinct from `stale`, which is the
+       * server telling us its own upstream refresh failed - here our own request
+       * to the dashboard failed, and the numbers are from an earlier success.
+       */
+      refreshFailed: boolean;
       message: string | null;
       /** When the displayed values were obtained upstream. */
       checkedAt: string | null;
@@ -156,10 +163,19 @@ export function resolveOpenCodeGoCardState(
 ): OpenCodeGoCardState {
   const { data, isPending, error } = input;
 
-  if (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      return { kind: "absent" };
-    }
+  // An absent route is a property of the deployment, not of one request, so it
+  // wins even if a cached snapshot somehow exists.
+  if (error instanceof ApiError && error.status === 404) {
+    return { kind: "absent" };
+  }
+
+  // A failed request does NOT discard a snapshot we already read successfully.
+  // Throwing away good data on a transient refetch or a remount would replace
+  // real numbers with "unavailable", which is less true than what we know. The
+  // values are kept and labelled as a failed refresh, never as current.
+  const hasCachedData = data !== undefined;
+
+  if (error && !hasCachedData) {
     // A schema mismatch is an integration bug, not a provider outage, and an
     // operator needs to be able to tell those apart at a glance.
     if (error instanceof ApiError && error.code === "invalid_response_schema") {
@@ -176,12 +192,19 @@ export function resolveOpenCodeGoCardState(
     };
   }
 
+  // A malformed body with cached data present is still an integration fault we
+  // must surface, but the known-good numbers stay visible behind it.
+  const refreshFailed = Boolean(error) && hasCachedData;
+
   if (isPending || !data) {
     return { kind: "loading" };
   }
 
   const message = data.message?.trim() ? data.message.trim() : null;
 
+  // Disabled/not-configured are deliberate configuration states, so they are
+  // reported even when a stale snapshot from a previously configured key exists:
+  // showing old numbers for a switched-off integration would be misleading.
   if (data.status === "disabled") {
     return { kind: "notice", notice: "disabled", message, actionable: true };
   }
@@ -215,8 +238,11 @@ export function resolveOpenCodeGoCardState(
     windows,
     models: hasModelDetail ? models.filter((model) => model.windows.length > 0) : [],
     hasModelDetail,
-    stale: data.stale || data.status === "stale",
+    // Either the server could not refresh upstream, or our own refetch failed.
+    // Both mean the numbers on screen are not known to be current.
+    stale: data.stale || data.status === "stale" || refreshFailed,
     staleReason: data.staleReason?.trim() ? data.staleReason.trim() : null,
+    refreshFailed,
     message,
     checkedAt: data.checkedAt ?? null,
     refreshedAt: data.refreshedAt ?? null,

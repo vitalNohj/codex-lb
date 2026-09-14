@@ -464,3 +464,74 @@ describe("hasExhaustedWindow", () => {
     ).toBe(false);
   });
 });
+
+describe("resolveOpenCodeGoCardState cached-data retention", () => {
+  const boom = new ApiError({ message: "boom", status: 500, code: "request_failed" });
+
+  it("retains a known-good snapshot when the latest request failed", () => {
+    const state = expectQuota(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota(),
+        isPending: false,
+        error: boom,
+      }),
+    );
+
+    expect(state.windows).toHaveLength(2);
+    expect(state.refreshFailed).toBe(true);
+    // Retained values are never presented as current.
+    expect(state.stale).toBe(true);
+  });
+
+  it("does not adopt our own request error as the upstream stale reason", () => {
+    const state = expectQuota(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota(),
+        isPending: false,
+        error: boom,
+      }),
+    );
+
+    expect(state.staleReason).toBeNull();
+  });
+
+  it("falls back to a notice only when there is no cached snapshot to keep", () => {
+    expect(
+      resolveOpenCodeGoCardState({ data: undefined, isPending: false, error: boom }),
+    ).toMatchObject({ kind: "notice", notice: "unavailable" });
+  });
+
+  it("keeps a 404 absent even when a cached snapshot exists", () => {
+    // An absent route is a property of the deployment, not a transient failure.
+    const state = resolveOpenCodeGoCardState({
+      data: createOpenCodeGoQuota(),
+      isPending: false,
+      error: new ApiError({ message: "Not Found", status: 404, code: "not_found" }),
+    });
+
+    expect(state.kind).toBe("absent");
+  });
+
+  it("reports a switched-off integration rather than retaining old numbers", () => {
+    const state = resolveOpenCodeGoCardState({
+      data: createOpenCodeGoQuota({ status: "disabled", windows: [] }),
+      isPending: false,
+      error: null,
+    });
+
+    expect(state).toMatchObject({ kind: "notice", notice: "disabled" });
+  });
+
+  it("clears the failed-refresh flag once a request succeeds again", () => {
+    const state = expectQuota(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota(),
+        isPending: false,
+        error: null,
+      }),
+    );
+
+    expect(state.refreshFailed).toBe(false);
+    expect(state.stale).toBe(false);
+  });
+});

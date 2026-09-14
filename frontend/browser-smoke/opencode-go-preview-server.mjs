@@ -191,7 +191,13 @@ const SCENARIOS = {
 };
 
 /** Non-scenario responses: malformed body, absent route, and a slow read. */
-const SPECIAL = new Set(["malformed", "absent", "loading"]);
+const SPECIAL = new Set(["malformed", "absent", "loading", "flaky"]);
+
+/**
+ * `flaky` serves one good snapshot then fails every later request, which is the
+ * refetch/remount path where cached values must survive.
+ */
+let flakyCalls = 0;
 
 const account = (over = {}) => ({
   accountId: "acc_primary",
@@ -302,6 +308,15 @@ const server = createServer(async (req, res) => {
     if (scenario === "loading") {
       await new Promise((r) => setTimeout(r, 60_000));
       return sendJson(res, SCENARIOS.default);
+    }
+    if (scenario === "flaky") {
+      flakyCalls += 1;
+      if (flakyCalls === 1) return sendJson(res, SCENARIOS.default);
+      return sendJson(res, { error: { code: "boom", message: "boom" } }, 500);
+    }
+    if (scenario === "reset-flaky") {
+      flakyCalls = 0;
+      return sendJson(res, { ok: true });
     }
     return sendJson(res, SCENARIOS[scenario] ?? SCENARIOS.default);
   }

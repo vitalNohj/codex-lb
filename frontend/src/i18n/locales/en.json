@@ -113,6 +113,7 @@
   "accounts.opencodeGo.notices.unavailable.description": "Usage could not be read and no earlier values are held, so the current limits are unknown.",
   "accounts.opencodeGo.notices.unavailable.title": "Usage unavailable",
   "accounts.opencodeGo.openSettings": "Go settings",
+  "accounts.opencodeGo.refreshFailedTitle": "Could not reach codex-lb to refresh",
   "accounts.opencodeGo.scope.account": "These windows cover the whole OpenCode Go subscription, across every model.",
   "accounts.opencodeGo.scope.per_model": "OpenCode reports these windows per model.",
   "accounts.opencodeGo.scope.unknown": "OpenCode reports these windows without saying whether they cover the whole subscription or a single model, so neither is claimed here.",

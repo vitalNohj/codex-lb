@@ -251,6 +251,84 @@ async function reviewScenario(page, scenario, viewport) {
   page.off("pageerror", onPageError);
 }
 
+/**
+ * Remount with the endpoint failing: the cached snapshot must stay on screen
+ * rather than collapsing to an error notice.
+ *
+ * Note on scope. The app's query policy uses a 30s staleTime, so a remount this
+ * soon after a success intentionally issues **no** request at all - which is why
+ * no stale marker is expected here. What this check proves is the user-visible
+ * half: leaving the page and coming back while the dashboard API is broken still
+ * shows the real numbers, at their true measured time, with no error text
+ * leaking in. The failed-refetch path itself (stale marker, refresh-failed copy,
+ * freshness preserved, upstream not blamed) is asserted deterministically in the
+ * component tests, where the refetch can be forced without waiting out staleTime.
+ */
+async function reviewCachedRetention(page) {
+  const viewport = { name: "wide", width: 1440, height: 1000 };
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await page.goto(`${baseUrl}/codex/accounts?scenario=default`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(CARD, { timeout: 15_000 });
+  const card = page.locator(CARD);
+  await page.waitForSelector("[data-testid=opencode-go-window-value]", { timeout: 15_000 });
+  const firstValue = await card.locator("[data-testid=opencode-go-window-value]").first().innerText();
+  const firstFreshness = await card.locator("[data-testid=opencode-go-freshness]").innerText();
+
+  // Break the endpoint, then remount the card via client-side navigation. This
+  // keeps the app (and its query cache) alive, which is the real user path:
+  // leave the page, come back, and the dashboard API is now failing.
+  await page.route("**/api/opencode-go/quota*", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "boom", message: "boom" } }),
+    }),
+  );
+  await page.getByRole("link", { name: "Settings" }).first().click();
+  await page.waitForTimeout(400);
+  await page.getByRole("link", { name: "Accounts" }).first().click();
+  await page.waitForSelector(CARD, { timeout: 15_000 });
+  await page.waitForTimeout(1500);
+
+  const after = await page.evaluate(() => {
+    const c = document.querySelector("[data-testid=opencode-go-quota-card]");
+    if (!c) return { present: false };
+    return {
+      present: true,
+      value: c.querySelector("[data-testid=opencode-go-window-value]")?.textContent,
+      freshness: c.querySelector("[data-testid=opencode-go-freshness]")?.textContent,
+      stale: !!c.querySelector("[data-testid=opencode-go-stale-badge]"),
+      notice: c.querySelector("[data-testid=opencode-go-quota-notice]")?.getAttribute("data-notice"),
+      degraded: c.querySelector("[data-testid=opencode-go-degraded]")?.innerText,
+      text: c.innerText,
+    };
+  });
+
+  const s = "cached-retention";
+  if (!after.present) {
+    record(s, viewport.name, "FAIL", "card vanished instead of retaining cached values");
+  } else if (after.notice) {
+    record(s, viewport.name, "FAIL", `discarded cached values for notice "${after.notice}"`);
+  } else {
+    if (after.value !== firstValue) {
+      record(s, viewport.name, "FAIL", `retained value changed: ${firstValue} -> ${after.value}`);
+    }
+    if (after.freshness !== firstFreshness) {
+      record(s, viewport.name, "FAIL", `freshness drifted: ${firstFreshness} -> ${after.freshness}`);
+    }
+    if (/\bboom\b/.test(after.text)) {
+      record(s, viewport.name, "FAIL", "our own request error attributed to OpenCode");
+    }
+    record(
+      s,
+      viewport.name,
+      "ok",
+      `retained cached values across remount with a failing endpoint, freshness preserved${after.stale ? ", marked stale" : ""}`,
+    );
+  }
+  await (after.present ? card : page).screenshot({ path: join(outDir, `${s}.png`) });
+}
+
 const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader"] });
 // Fresh throwaway context: no existing profile, no persisted state.
 const context = await browser.newContext({ deviceScaleFactor: 2, locale: "en-US" });
@@ -265,6 +343,11 @@ for (const scenario of SCENARIOS) {
     }
   }
 }
+
+await reviewCachedRetention(page).catch((error) =>
+  record("cached-retention", "wide", "FAIL", `threw: ${error.message.slice(0, 200)}`),
+);
+await page.unroute("**/api/opencode-go/quota*").catch(() => {});
 
 await context.close();
 await browser.close();

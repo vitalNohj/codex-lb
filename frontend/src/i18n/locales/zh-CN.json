@@ -113,6 +113,7 @@
   "accounts.opencodeGo.notices.unavailable.description": "未能读取用量且没有保留更早的数值，因此当前额度未知。",
   "accounts.opencodeGo.notices.unavailable.title": "用量不可用",
   "accounts.opencodeGo.openSettings": "Go 设置",
+  "accounts.opencodeGo.refreshFailedTitle": "无法连接 codex-lb 以刷新",
   "accounts.opencodeGo.scope.account": "这些 window 覆盖整个 OpenCode Go 订阅的所有模型。",
   "accounts.opencodeGo.scope.per_model": "OpenCode 按模型上报这些 window。",
   "accounts.opencodeGo.scope.unknown": "OpenCode 上报这些 window 时未说明其覆盖整个订阅还是单个模型，因此此处不做任何断言。",
