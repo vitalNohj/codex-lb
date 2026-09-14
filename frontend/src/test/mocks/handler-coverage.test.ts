@@ -78,6 +78,8 @@ const EXPECTED_ENDPOINTS = [
 	"POST /api/settings/upstream-proxy/pools",
 	"POST /api/settings/upstream-proxy/pools/:poolId/members",
 	"PUT /api/settings/upstream-proxy/accounts/:accountId/binding",
+	// opencode go
+	"GET */api/opencode-go/quota",
 	"GET */api/claude-sidecar/status",
 	"GET */api/claude-sidecar/models",
 	"POST */api/claude-sidecar/test",

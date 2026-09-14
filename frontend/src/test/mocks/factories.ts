@@ -12,6 +12,8 @@ import {
 	OauthStartResponseSchema,
 	OauthStatusResponseSchema,
 } from "@/features/accounts/schemas";
+import type { OpenCodeGoQuotaResponse } from "@/features/accounts/opencode-go-schemas";
+import { OpenCodeGoQuotaResponseSchema } from "@/features/accounts/opencode-go-schemas";
 import type { ApiKey, ApiKeyCreateResponse } from "@/features/api-keys/schemas";
 import {
 	ApiKeyCreateResponseSchema,
@@ -87,6 +89,7 @@ export type OauthCompleteResponse = z.infer<typeof OauthCompleteResponseSchema>;
 export type {
 	AccountSummary,
 	AccountTrendsResponse,
+	OpenCodeGoQuotaResponse,
 	DashboardOverview,
 	DashboardProjections,
 	RequestLogsResponse,
@@ -149,6 +152,51 @@ export function createAccountSummary(
 		},
 		limitWarmupEnabled: false,
 		limitWarmup: null,
+		...overrides,
+	});
+}
+
+/**
+ * OpenCode Go quota fixture, shaped to the quota lane's published contract.
+ *
+ * A **UI fixture only**. It asserts nothing about what the provider supports.
+ * In particular the default mirrors today's real server behaviour rather than a
+ * more flattering shape: `scope: "unknown"` because the upstream payload carries
+ * no model or account dimension, and `modelBreakdownAvailable: false` with an
+ * empty `models` list. Tests that need per-model rows opt in explicitly, which
+ * keeps "we invented a model breakdown" impossible to do by accident.
+ */
+export function createOpenCodeGoQuota(
+	overrides: Partial<OpenCodeGoQuotaResponse> = {},
+): OpenCodeGoQuotaResponse {
+	return OpenCodeGoQuotaResponseSchema.parse({
+		status: "ok",
+		scope: "unknown",
+		message: null,
+		checkedAt: offsetIso(-2),
+		refreshedAt: offsetIso(-2),
+		stale: false,
+		staleReason: null,
+		modelBreakdownAvailable: false,
+		models: [],
+		windows: [
+			{
+				key: "five_hour",
+				upstreamKey: "rolling",
+				status: "ok",
+				percentUsed: 42,
+				resetsAt: offsetIso(95),
+				limitReached: false,
+			},
+			{
+				key: "weekly",
+				upstreamKey: "weekly",
+				status: "ok",
+				percentUsed: 68,
+				resetsAt: offsetIso(3 * 24 * 60),
+				limitReached: false,
+			},
+		],
 		...overrides,
 	});
 }

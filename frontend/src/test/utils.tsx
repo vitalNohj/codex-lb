@@ -32,9 +32,11 @@ function Providers({ children, queryClient }: ProvidersProps) {
 
 export function renderWithProviders(
   ui: ReactElement,
-  options?: Omit<RenderOptions, "wrapper">,
+  // `queryClient` lets a test reuse one client across renders, which is how
+  // cache-retention and remount behaviour is exercised.
+  options?: Omit<RenderOptions, "wrapper"> & { queryClient?: QueryClient },
 ): RenderResult & { queryClient: QueryClient } {
-  const queryClient = createTestQueryClient();
+  const queryClient = options?.queryClient ?? createTestQueryClient();
   const result = render(ui, {
     wrapper: ({ children }) => <Providers queryClient={queryClient}>{children}</Providers>,
     ...options,
