@@ -356,11 +356,15 @@ async def test_a_disconnected_stream_settles_its_reservation_exactly_once(
     # The live stranded status is `reserved`. Assert the positive requirement -
     # every row reached a terminal state - rather than the absence of a status
     # that never occurs on this path anyway.
-    terminal = {"settled", "finalized", "released", "cancelled", "expired"}
+    # Terminal statuses this codebase actually writes, read from the source
+    # rather than guessed: `finalized` when the request settled, `released` when
+    # the hold was handed back. An earlier revision invented `settled`,
+    # `cancelled` and `expired` for reservations, which widened the whitelist
+    # past anything the code can produce.
+    terminal = {"finalized", "released"}
     assert all(status in terminal for status in statuses), (
         f"a reservation did not reach a terminal status after a disconnect: {statuses}"
     )
-    assert "reserved" not in statuses, f"a reservation is still held as 'reserved' after the client aborted: {statuses}"
 
 
 @pytest.mark.asyncio
@@ -407,5 +411,10 @@ async def test_a_completed_stream_over_a_real_socket_still_settles_once(
     assert logs[0].output_tokens == 7
 
     reservations = await _reservations()
-    assert reservations
-    assert "pending" not in [row.status for row in reservations]
+    assert reservations, "no reservation row exists, so this control would be vacuous"
+    # A completed request must FINALIZE. Checking "not pending" was wrong twice
+    # over: nothing on this path is ever `pending`, and `reserved` - the status
+    # that actually indicates an unsettled hold - would have passed it.
+    assert [row.status for row in reservations] == ["finalized"], (
+        f"a completed stream did not finalize its reservation: {[row.status for row in reservations]}"
+    )

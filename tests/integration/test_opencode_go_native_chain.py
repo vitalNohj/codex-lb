@@ -459,55 +459,58 @@ async def test_the_go_key_is_never_returned_by_the_settings_api(async_client, op
     assert response.json()["opencodeGoSidecarApiKeyConfigured"] is True
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "open defect at checkpoint 21e69ae6: an unconfigured Go model on "
+        "/v1/responses still falls through to Codex account selection and "
+        "returns a generic 'No available accounts ... degraded mode' 503 that "
+        "names neither OpenCode Go nor the missing credential. No prompt "
+        "reaches the Go upstream, but the request is routed Codex-ward and the "
+        "operator is pointed at the wrong subsystem. Owner is adding "
+        "other-provider traps; remove this marker on the corrected head."
+    ),
+)
 @pytest.mark.asyncio
 async def test_an_unconfigured_integration_never_puts_the_prompt_on_the_wire(
     async_client, opencode_go_enabled, go_upstream, monkeypatch
 ):
     """After a key clear, no prompt egress and no fallthrough to any provider.
 
-    The load-bearing assertion is **no Go egress**: after a key clear, nothing
-    reaches the upstream at all, so the user's prompt never leaves the process.
-    That is asserted on the fake upstream's recorded requests, which is direct
-    evidence.
+    No Go egress is necessary but **not sufficient**: a Go-resolved request that
+    is refused by the Go dispatcher can still fall through into Codex account
+    selection, which bills the wrong account and returns a misleading error.
 
-    **Limit on the fallthrough traps, stated rather than implied.** The
-    other-provider traps below are a weak signal in this environment: a control
-    probe sending a genuine Codex model (`gpt-5.4`) to `/v1/responses` also
-    fails with 503 *without* tripping the `ProxyService` trap, because the Codex
-    path errors earlier on absent upstream configuration. So a silent trap here
-    does **not** prove the request was never routed Codex-ward - it only proves
-    it did not reach these specific constructors. Read the Go-egress assertion
-    as the real evidence and the traps as a supplementary guard that would catch
-    a sidecar reroute.
-
-    Covers `/v1/responses` as well as `/v1/chat/completions`, since the
-    Responses path has its own dispatch branch and its own Codex fallthrough.
+    The seam is spied at ``_select_responses_model_source``, which a control
+    probe proves is genuinely reached for a real Codex model. An earlier version
+    of this test trapped client constructors instead; those are never reached in
+    this environment, so the trap stayed silent either way and proved nothing.
     """
     import app.modules.proxy.api as proxy_api
 
-    diverted: list[str] = []
+    reached: list[str] = []
+    original = proxy_api._select_responses_model_source
 
-    def _trap(name: str):
-        def _refuse(*args, **kwargs):
-            del args, kwargs
-            diverted.append(name)
-            raise AssertionError(f"an unconfigured Go request reached {name}")
+    async def _spy(*args, **kwargs):
+        reached.append("_select_responses_model_source")
+        return await original(*args, **kwargs)
 
-        return _refuse
-
-    for name in (
-        "ProxyService",
-        "OmniRouteSidecarClient",
-        "OrcaRouterSidecarClient",
-        "OpenRouterSidecarClient",
-        "ClaudeSidecarClient",
-        "OllamaSidecarClient",
-    ):
-        if hasattr(proxy_api, name):
-            monkeypatch.setattr(proxy_api, name, _trap(name), raising=False)
+    monkeypatch.setattr(proxy_api, "_select_responses_model_source", _spy, raising=True)
 
     await _configure(async_client)
     client_key = await _create_key("native-no-egress")
+
+    # Control: the seam really is reached for a non-Go model, so a silent spy
+    # below is meaningful rather than vacuous.
+    await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.4", "input": "hi", "stream": False},
+        headers={"Authorization": f"Bearer {client_key}"},
+    )
+    assert reached == ["_select_responses_model_source"], (
+        "the control probe did not reach the Codex source selector, so this test cannot detect a fallthrough"
+    )
+
     cleared = await async_client.put("/api/settings", json={"opencodeGoSidecarClearApiKey": True})
     assert cleared.status_code == 200, cleared.text
 
@@ -518,12 +521,20 @@ async def test_an_unconfigured_integration_never_puts_the_prompt_on_the_wire(
         ("/v1/chat/completions", {"model": GO_MODEL, "messages": [{"role": "user", "content": secret}]}),
         ("/v1/responses", {"model": GO_MODEL, "input": secret, "stream": False}),
     ):
+        reached.clear()
         response = await async_client.post(path, json=payload, headers={"Authorization": f"Bearer {client_key}"})
         assert response.status_code != 200, f"{path} served without a credential"
 
+        # The error must name the Go cause, not a generic degraded-mode message
+        # that sends the operator looking at their Codex accounts.
+        body = response.json()
+        assert "opencode_go" in json.dumps(body), (
+            f"{path} returned an error that does not identify OpenCode Go as the cause: {body}"
+        )
+        assert reached == [], f"{path} fell through to Codex account selection: {reached}"
+
     sent = go_upstream.requests[before:]
     assert sent == [], f"an unconfigured integration sent {[r.path for r in sent]} upstream"
-    assert diverted == [], f"an unconfigured Go request fell through to {diverted}"
 
 
 @pytest.mark.asyncio
@@ -551,21 +562,14 @@ async def test_clearing_the_key_stops_the_integration_serving(async_client, open
     )
     assert after.status_code != 200, "the integration still served after its key was cleared"
 
-    # Measured behavior, recorded rather than asserted as ideal. codex-lb does
-    # not refuse locally once the key is gone: it still issues the upstream
-    # request, with **no** Authorization header, and turns the resulting 401
-    # into a 503. The security-relevant properties do hold - no credential is
-    # sent, and the caller gets no content - so this is a wasted round trip and
-    # a slightly opaque error rather than a leak.
+    # Fail closed, strictly. Not one unauthenticated POST is permitted: an
+    # integration with no credential must refuse locally, before the caller's
+    # prompt is put on the wire.
     #
-    # Asserted exactly so the shape is pinned: if a later change starts sending
-    # a stale credential, or starts succeeding, this fails.
-    attempts = go_upstream.requests_for("/v1/chat/completions")
-    assert len(attempts) in {served, served + 1}
-    if len(attempts) > served:
-        assert attempts[-1].header("authorization") is None, (
-            "a request was sent upstream after the key was cleared, carrying a "
-            "credential - the cleared key must never be reused"
-        )
-        assert UPSTREAM_KEY not in attempts[-1].raw_body.decode()
-        assert UPSTREAM_KEY not in json.dumps(dict(attempts[-1].headers))
+    # An earlier revision of this assertion tolerated `served + 1` and described
+    # it as "a wasted round trip rather than a leak". That framing was wrong -
+    # the request carried the user's prompt to an upstream that could not serve
+    # it, so "no credential was sent" never made it safe.
+    assert len(go_upstream.requests_for("/v1/chat/completions")) == served, (
+        "an unconfigured integration still sent a request upstream"
+    )
