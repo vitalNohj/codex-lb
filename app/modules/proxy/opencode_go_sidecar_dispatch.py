@@ -95,6 +95,8 @@ logger = logging.getLogger(__name__)
 OPENCODE_GO_SIDECAR_SOURCE = "opencode_go_sidecar"
 
 _UNSUPPORTED_MODEL_CODE = "opencode_go_model_unsupported"
+_NOT_CONFIGURED_CODE = "opencode_go_not_configured"
+_NOT_CONFIGURED_MESSAGE = "OpenCode Go is enabled but no API key is configured."
 
 #: An SSE event ends at two consecutive line endings, in any combination of the
 #: three the spec permits. Mirrors ``_SSE_LINE_BOUNDARY`` in
@@ -107,11 +109,44 @@ class OpenCodeGoChatPayload:
     body: dict[str, JsonValue]
 
 
+def opencode_go_is_usable(config: OpenCodeGoSidecarConfig | None) -> bool:
+    """Can this configuration actually serve a request?
+
+    Enabled is not sufficient. Without a usable credential every request would
+    be refused by the upstream anyway, so dispatching one only succeeds in
+    sending the caller's prompt to a third party that will not answer it.
+
+    ``api_key`` is ``None`` for all three unusable states - never set, cleared,
+    and failed to decrypt - so they collapse to one check here rather than
+    three, and a key we cannot read is treated exactly like a key we do not
+    have.
+    """
+
+    return config is not None and config.enabled and bool((config.api_key or "").strip())
+
+
 def opencode_go_routing_entry(config: OpenCodeGoSidecarConfig) -> SidecarRoutingEntry:
     return SidecarRoutingEntry(
         provider=OPENCODE_GO_PROVIDER,
         prefixes=config.prefixes,
         full_models=config.full_models,
+    )
+
+
+def opencode_go_not_configured_response(rate_limit_headers: Mapping[str, str]) -> JSONResponse:
+    """Refuse locally, before any request body leaves the process.
+
+    503 rather than 401: the caller's own API key was already accepted, so this
+    is an operator-side configuration gap, not a client authentication failure -
+    the same reasoning that maps an upstream 401/403 to 503. ``Retry-After``
+    matches that path so a long-running coding client backs off instead of
+    treating the condition as fatal.
+    """
+
+    return JSONResponse(
+        status_code=503,
+        content=openai_error(_NOT_CONFIGURED_CODE, _NOT_CONFIGURED_MESSAGE, error_type="upstream_error"),
+        headers={**dict(rate_limit_headers), "Retry-After": "60"},
     )
 
 
@@ -179,6 +214,22 @@ async def proxy_chat_to_opencode_go(
 ) -> Response:
     forward_model = wire_model or effective_model
     requested_at = time.monotonic()
+
+    # Credential gate first, before the payload is built or sent. An enabled but
+    # unconfigured integration must not put the caller's prompt on the wire to
+    # an upstream that cannot answer it: the disclosure happens on the way out,
+    # and the 401 coming back proves nothing about what was already received.
+    if not opencode_go_is_usable(client.config):
+        await _release_opencode_go_reservation(reservation, api_key=api_key)
+        await _log_opencode_go_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code=_NOT_CONFIGURED_CODE,
+            error_message=_NOT_CONFIGURED_MESSAGE,
+        )
+        return opencode_go_not_configured_response(rate_limit_headers)
 
     # Protocol gate before any upstream call. Go serves this catalogue across
     # three differently-shaped endpoints, and which model lives where is per
@@ -338,6 +389,21 @@ async def proxy_responses_to_opencode_go(
 
     forward_model = wire_model or effective_model
     requested_at = time.monotonic()
+
+    # Same credential gate as the chat path, for the same reason: the Responses
+    # ``input`` is user prompt content and must not leave the process when the
+    # integration has no key.
+    if not opencode_go_is_usable(client.config):
+        await _release_opencode_go_reservation(reservation, api_key=api_key)
+        await _log_opencode_go_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code=_NOT_CONFIGURED_CODE,
+            error_message=_NOT_CONFIGURED_MESSAGE,
+        )
+        return opencode_go_not_configured_response(rate_limit_headers)
 
     if not is_opencode_go_model_supported(forward_model):
         message = unsupported_model_message(forward_model)

@@ -295,6 +295,7 @@ from app.modules.proxy.omniroute_sidecar_dispatch import (
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     load_opencode_go_sidecar_config,
+    opencode_go_is_usable,
     opencode_go_routing_entry,
     proxy_chat_to_opencode_go,
     proxy_responses_to_opencode_go,
@@ -1154,7 +1155,8 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
-    if opencode_go_config is not None and opencode_go_config.enabled:
+    if opencode_go_is_usable(opencode_go_config):
+        assert opencode_go_config is not None
         routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
@@ -4094,7 +4096,8 @@ async def _build_models_response_body(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
-    if opencode_go_config is not None and opencode_go_config.enabled:
+    if opencode_go_is_usable(opencode_go_config):
+        assert opencode_go_config is not None
         routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
@@ -4197,7 +4200,11 @@ async def _build_models_response_body(
                     }
                 )
             )
-    if opencode_go_config is not None and opencode_go_config.enabled:
+    # Requires a usable credential, not merely ``enabled``: an unconfigured
+    # integration must not poll the subscription, and a model it cannot serve
+    # must not be advertised as available.
+    if opencode_go_is_usable(opencode_go_config):
+        assert opencode_go_config is not None
         # Config-keyed client so ``models_cache_ttl_seconds`` spans requests.
         discovered_models = await get_opencode_go_sidecar_client(opencode_go_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
@@ -4722,7 +4729,8 @@ async def v1_chat_completions(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
-    if opencode_go_config is not None and opencode_go_config.enabled:
+    if opencode_go_is_usable(opencode_go_config):
+        assert opencode_go_config is not None
         routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
