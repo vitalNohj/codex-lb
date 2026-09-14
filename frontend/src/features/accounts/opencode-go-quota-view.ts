@@ -75,6 +75,13 @@ export type OpenCodeGoCardState =
       message: string | null;
       /** True when the user can fix this in Go settings. */
       actionable: boolean;
+      /**
+       * True when this notice describes a *cached* response whose latest refetch
+       * failed. A notice is a claim about the integration's current state, so a
+       * stale one must say so - otherwise an old `disabled` or `unavailable`
+       * answer is presented as though it were just confirmed.
+       */
+      stale: boolean;
     }
   | {
       kind: "quota";
@@ -189,7 +196,9 @@ export function resolveOpenCodeGoCardState(
     // A schema mismatch is an integration bug, not a provider outage, and an
     // operator needs to be able to tell those apart at a glance.
     if (error instanceof ApiError && error.code === "invalid_response_schema") {
-      return { kind: "notice", notice: "malformed", message: null, actionable: false };
+      // No cached data reached this branch, so nothing here is stale - it is a
+      // live failure with nothing behind it.
+      return { kind: "notice", notice: "malformed", message: null, actionable: false, stale: false };
     }
     // Anything else is "we could not read our own snapshot". Deliberately not
     // reported as an upstream credential problem: per the contract a 401 here
@@ -199,6 +208,7 @@ export function resolveOpenCodeGoCardState(
       notice: "unavailable",
       message: error instanceof Error && error.message ? error.message : null,
       actionable: false,
+      stale: false,
     };
   }
 
@@ -221,11 +231,19 @@ export function resolveOpenCodeGoCardState(
   // Disabled/not-configured are deliberate configuration states, so they are
   // reported even when a stale snapshot from a previously configured key exists:
   // showing old numbers for a switched-off integration would be misleading.
+  // They still carry `stale` when the latest refetch failed, because "Go is off"
+  // read from a cached response is not the same claim as "Go is off right now".
   if (data.status === "disabled") {
-    return { kind: "notice", notice: "disabled", message, actionable: true };
+    return { kind: "notice", notice: "disabled", message, actionable: true, stale: refreshFailed };
   }
   if (data.status === "not_configured") {
-    return { kind: "notice", notice: "not_configured", message, actionable: true };
+    return {
+      kind: "notice",
+      notice: "not_configured",
+      message,
+      actionable: true,
+      stale: refreshFailed,
+    };
   }
 
   const windows = data.windows.map(toQuotaWindowView);
@@ -245,6 +263,7 @@ export function resolveOpenCodeGoCardState(
       notice: statusNotice(data.status),
       message: message ?? (data.staleReason?.trim() ? data.staleReason.trim() : null),
       actionable: data.status === "unauthorized",
+      stale: refreshFailed || data.stale || data.status === "stale",
     };
   }
 

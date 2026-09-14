@@ -720,3 +720,44 @@ describe("OpenCodeGoQuotaCard cached data", () => {
     expect(screen.queryByText("42%")).not.toBeInTheDocument();
   });
 });
+
+describe("OpenCodeGoQuotaCard stale notices", () => {
+  const QUOTA_KEY = ["accounts", "opencode-go", "quota"];
+
+  it("discloses that a disabled notice came from a cached response", async () => {
+    let calls = 0;
+    server.use(
+      http.get(QUOTA_ROUTE, () => {
+        calls += 1;
+        if (calls === 1) {
+          return HttpResponse.json(createOpenCodeGoQuota({ status: "disabled", windows: [] }));
+        }
+        return HttpResponse.json({ error: { code: "boom", message: "boom" } }, { status: 500 });
+      }),
+    );
+
+    const { queryClient } = renderWithProviders(<OpenCodeGoQuotaCard />);
+    expect(await screen.findByText("OpenCode Go is off")).toBeInTheDocument();
+    // Freshly confirmed: no stale disclosure yet.
+    expect(screen.queryByTestId("opencode-go-notice-stale-badge")).not.toBeInTheDocument();
+
+    await queryClient.refetchQueries({ queryKey: QUOTA_KEY });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("opencode-go-notice-stale-badge")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("opencode-go-quota-notice")).toHaveAttribute("data-stale", "true");
+    expect(
+      screen.getByText(/last answer that was read successfully/),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves a freshly confirmed notice unmarked", async () => {
+    mockQuota({ status: "disabled", windows: [] });
+
+    renderWithProviders(<OpenCodeGoQuotaCard />);
+
+    expect(await screen.findByText("OpenCode Go is off")).toBeInTheDocument();
+    expect(screen.queryByTestId("opencode-go-notice-stale-badge")).not.toBeInTheDocument();
+  });
+});
