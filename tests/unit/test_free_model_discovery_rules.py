@@ -312,3 +312,81 @@ def test_plan_sanitizer_redacts_the_token_not_just_the_bearer_prefix():
 
     assert sentinel not in sanitized
     assert "[redacted]" in sanitized
+
+
+@pytest.mark.asyncio
+async def test_gather_owned_cancels_siblings_before_returning_the_error():
+    """A provider error must not leave its sibling probing.
+
+    The bare ``gather`` this replaced propagated the first exception while
+    siblings kept running; the driver's caller then released the leader lock,
+    so detached tasks kept hitting providers while the next tick could start a
+    second driver. Ownership must end with no task still running.
+
+    NOT EXECUTED in the pass that added it.
+    """
+
+    import asyncio
+
+    from app.modules.free_model_discovery.runner import _gather_owned
+
+    started = asyncio.Event()
+    sibling_cleanup_ran = asyncio.Event()
+
+    async def _failing() -> None:
+        await started.wait()
+        raise RuntimeError("provider exploded")
+
+    async def _long_sibling() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(3600)  # a real run paces for hours
+        except asyncio.CancelledError:
+            sibling_cleanup_ran.set()
+            raise
+
+    tasks = [asyncio.create_task(_failing()), asyncio.create_task(_long_sibling())]
+
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        await _gather_owned(tasks)
+
+    # The original error still propagates, AND nothing is left behind.
+    assert all(task.done() for task in tasks)
+    assert sibling_cleanup_ran.is_set()
+
+
+@pytest.mark.asyncio
+async def test_gather_owned_cancels_siblings_when_the_parent_is_cancelled():
+    """Shutdown cancels the driver; its provider tasks must not outlive it.
+
+    NOT EXECUTED in the pass that added it.
+    """
+
+    import asyncio
+
+    from app.modules.free_model_discovery.runner import _gather_owned
+
+    both_started = asyncio.Event()
+    cleanups: list[str] = []
+
+    async def _worker(name: str) -> None:
+        if name == "b":
+            both_started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cleanups.append(name)
+            raise
+
+    tasks = [asyncio.create_task(_worker("a")), asyncio.create_task(_worker("b"))]
+    parent = asyncio.create_task(_gather_owned(tasks))
+    await both_started.wait()
+
+    parent.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await parent
+
+    # Cancellation propagated to every sibling and each ran its cleanup before
+    # ownership was released.
+    assert all(task.done() for task in tasks)
+    assert sorted(cleanups) == ["a", "b"]

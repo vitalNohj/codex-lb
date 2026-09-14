@@ -13,7 +13,12 @@ from app.core.clients.claude_sidecar import SidecarModel
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarError, OpenRouterSidecarUnavailableError
 from app.core.clients.orcarouter_sidecar import reset_orcarouter_sidecar_client_cache
 from app.core.utils.time import utcnow
-from app.db.models import DashboardSettings, FreeModelDiscoveryRun, FreeModelProbeState
+from app.db.models import (
+    DashboardSettings,
+    FreeModelDiscoveryRun,
+    FreeModelDiscoveryRunItem,
+    FreeModelProbeState,
+)
 from app.db.session import SessionLocal
 from app.modules.free_model_discovery import runner as runner_module
 from app.modules.free_model_discovery import service as service_module
@@ -410,44 +415,148 @@ async def test_start_is_rejected_when_discovery_execution_is_disabled(async_clie
 
 
 @pytest.mark.asyncio
-async def test_migration_refuses_duplicate_running_rows_without_changing_them():
-    """The single-active migration must surface duplicates for an operator
-    decision, never rewrite run rows to make room for its index."""
+async def test_operator_write_between_discovery_read_and_update_forces_a_retry(monkeypatch):
+    """Force the interleaving the CAS exists for.
 
-    migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "app/db/alembic/versions/20260914_020000_single_active_free_model_discovery_run.py"
-    )
-    source = migration_path.read_text()
-    assert "UPDATE" not in source.upper().replace("UPDATED_AT", ""), (
-        "migration must not rewrite run rows"
-    )
-    assert "raise RuntimeError" in source
-    assert "op.create_index" in source
+    Seeding settings *before* discovery reads them proves nothing: the append
+    would simply read the newer value. The operator write has to land after
+    discovery's read and before its conditional update, which is exactly the
+    window that used to lose one side silently.
 
-
-@pytest.mark.asyncio
-async def test_concurrent_operator_save_does_not_lose_a_discovered_pin(async_client):
-    """A discovery append and an operator save of the same column must not
-    silently overwrite each other; the append re-reads and merges on conflict."""
+    NOT EXECUTED in the pass that added it.
+    """
 
     from app.modules.free_model_discovery.service import FreeModelDiscoveryService
+    from app.modules.settings import repository as settings_repository_module
 
     async with SessionLocal() as session:
-        service = FreeModelDiscoveryService(session)
-        # Simulate the interleaving: another writer commits a different pin
-        # after this service last read settings.
-        async with SessionLocal() as other:
-            other_settings = (await other.execute(select(DashboardSettings))).scalar_one()
-            other_settings.openrouter_sidecar_full_models_json = json.dumps(["operator/manual:free"])
-            await other.commit()
+        settings = (await session.execute(select(DashboardSettings))).scalar_one()
+        settings.openrouter_sidecar_full_models_json = json.dumps(["seed/model:free"])
+        await session.commit()
 
-        added = await service.pin_full_model("openrouter", "discovered/model:free")
-        assert added is True
+    conflicts: list[int] = []
+    original = settings_repository_module.SettingsRepository.update_operational_json_column
+
+    async def _racing_update(self, column, value):
+        if not conflicts:
+            conflicts.append(1)
+            # Another writer commits between this caller's read and its update.
+            async with SessionLocal() as other:
+                other_settings = (await other.execute(select(DashboardSettings))).scalar_one()
+                other_settings.openrouter_sidecar_full_models_json = json.dumps(
+                    ["seed/model:free", "operator/manual:free"]
+                )
+                await other.commit()
+        return await original(self, column, value)
+
+    monkeypatch.setattr(
+        settings_repository_module.SettingsRepository,
+        "update_operational_json_column",
+        _racing_update,
+    )
+
+    async with SessionLocal() as session:
+        added = await FreeModelDiscoveryService(session).pin_full_model(
+            "openrouter", "discovered/model:free"
+        )
+
+    assert added is True
+    assert conflicts == [1], "the racing write must have been triggered"
 
     async with SessionLocal() as session:
         settings = (await session.execute(select(DashboardSettings))).scalar_one()
         pinned = json.loads(settings.openrouter_sidecar_full_models_json or "[]")
-        # Both survive: the operator's edit and the discovered id.
-        assert "operator/manual:free" in pinned
-        assert "discovered/model:free" in pinned
+
+    # All three survive: the retry merged onto the operator's committed value
+    # instead of overwriting it with a stale read.
+    assert "seed/model:free" in pinned
+    assert "operator/manual:free" in pinned
+    assert "discovered/model:free" in pinned
+
+
+@pytest.mark.asyncio
+async def test_stale_operator_save_cannot_overwrite_a_discovery_append():
+    """The reverse direction: an operator form loaded before the append must
+    not silently clobber it. The existing version CAS answers 409.
+
+    NOT EXECUTED in the pass that added it.
+    """
+
+    from app.core.exceptions import DashboardSettingsConflictError
+    from app.modules.free_model_discovery.service import FreeModelDiscoveryService
+    from app.modules.settings.repository import SettingsRepository
+
+    async with SessionLocal() as stale_session:
+        stale_repository = SettingsRepository(stale_session)
+        stale_settings = await stale_repository.get_or_create()
+        stale_version = stale_settings.version
+
+        # Discovery appends after that form was loaded.
+        async with SessionLocal() as discovery_session:
+            added = await FreeModelDiscoveryService(discovery_session).pin_full_model(
+                "openrouter", "discovered/model:free"
+            )
+            assert added is True
+
+        with pytest.raises(DashboardSettingsConflictError):
+            await stale_repository.update(
+                openrouter_sidecar_full_models=["operator/only:free"],
+                expected_version=stale_version,
+            )
+
+    async with SessionLocal() as session:
+        settings = (await session.execute(select(DashboardSettings))).scalar_one()
+        pinned = json.loads(settings.openrouter_sidecar_full_models_json or "[]")
+
+    assert "discovered/model:free" in pinned
+
+
+@pytest.mark.asyncio
+async def test_loaded_run_item_survives_pinning_and_verdict_persistence(fake_clients):
+    """Regression for the expiration bug: pinning must not expire the caller's
+    run item, whose attributes ``record_verdict`` reads synchronously right
+    after. On an async session an implicit lazy load raises rather than
+    querying, so this would fail at the verdict write, not at the pin.
+
+    NOT EXECUTED in the pass that added it.
+    """
+
+    from app.modules.free_model_discovery.repository import FreeModelDiscoveryRepository
+    from app.modules.free_model_discovery.service import FreeModelDiscoveryService
+
+    now = utcnow()
+    async with SessionLocal() as session:
+        repository = FreeModelDiscoveryRepository(session)
+        run = await repository.create_run(
+            started_at=now,
+            deadline_at=now + timedelta(hours=1),
+            pacing_floor_seconds=1.0,
+            pacing_cap_seconds=2.0,
+            max_attempts_per_item=3,
+            items=[("openrouter", "discovered/model:free", "new")],
+        )
+        item = await repository.next_queued_item(run.id, "openrouter")
+        assert item is not None
+
+        added = await FreeModelDiscoveryService(session).pin_full_model(
+            "openrouter", item.model_id
+        )
+        assert added is True
+
+        # The attributes the runner touches next must still be readable without
+        # awaiting a refresh here.
+        await repository.record_verdict(
+            item,
+            verdict="passed",
+            attempted_at=now,
+            http_status=200,
+            outcome="ok",
+            content_chars=2,
+            content_ok_match=True,
+            reasoning_chars=None,
+            added_to_full_models=added,
+        )
+
+    async with SessionLocal() as session:
+        stored = (await session.execute(select(FreeModelDiscoveryRunItem))).scalars().all()
+        assert [row.state for row in stored] == ["passed"]

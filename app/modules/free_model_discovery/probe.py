@@ -111,11 +111,17 @@ async def probe_model(
             ),
             retry_after_seconds=_retry_after_from_body(exc.body),
         )
-    return classify_completion(body)
+    return classify_completion(body, api_key=api_key)
 
 
-def classify_completion(body: JsonValue) -> ProbeResult:
-    """Classify a 200 response body. Malformed bodies are inconclusive."""
+def classify_completion(body: JsonValue, *, api_key: str | None = None) -> ProbeResult:
+    """Classify a 200 response body. Malformed bodies are inconclusive.
+
+    ``api_key`` redacts upstream-controlled text. Routers stuff throttles and
+    auth failures into a 200 envelope with an ``error`` key, so this path also
+    persists provider text and needs the same guarantee as the exception paths;
+    covering only exceptions left the echoed-credential case open.
+    """
 
     if not is_json_mapping(body):
         return ProbeResult(verdict="inconclusive", http_status=200, outcome="200 without a JSON object body")
@@ -123,7 +129,12 @@ def classify_completion(body: JsonValue) -> ProbeResult:
     # and no choices. That is not a verdict on the model.
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
-        return ProbeResult(verdict="inconclusive", http_status=200, outcome=_clip(_describe_missing_choices(body)))
+        return ProbeResult(
+            verdict="inconclusive",
+            http_status=200,
+            # Redact before clipping: clipping a secret still persists a prefix.
+            outcome=_clip(redact_provider_text(_describe_missing_choices(body), api_key=api_key)),
+        )
     first = choices[0]
     if not is_json_mapping(first):
         return ProbeResult(verdict="inconclusive", http_status=200, outcome="200 with a malformed first choice")

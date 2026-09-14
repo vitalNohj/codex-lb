@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clients.openrouter_sidecar import (
@@ -292,6 +293,23 @@ class FreeModelDiscoveryService:
         await self._repository.request_cancel(run_id)
         return await self.get_run(run_id)
 
+    async def _reload_expired_caller_objects(self) -> None:
+        """Re-load session instances a rollback expired, awaiting the I/O here.
+
+        A rollback expires the whole identity map. The caller's run item is read
+        synchronously after this service returns, and on an async session an
+        implicit lazy load raises ``MissingGreenlet`` instead of querying, so the
+        refresh has to happen while we can still await it.
+        """
+
+        for instance in list(self._session.identity_map.values()):
+            if instance is None or not inspect(instance).expired:
+                continue
+            try:
+                await self._session.refresh(instance)
+            except Exception:  # pragma: no cover - instance deleted concurrently
+                logger.debug("Could not refresh expired instance after settings conflict", exc_info=True)
+
     # --- pin write --------------------------------------------------------
 
     async def pin_full_model(self, provider: FreeModelProvider, model_id: str) -> bool:
@@ -311,8 +329,15 @@ class FreeModelDiscoveryService:
         for attempt in range(_ADD_MODEL_MAX_ATTEMPTS):
             # Re-read inside the loop: on a conflict the other writer's version
             # of this column is what we must merge into, not the stale copy.
-            self._session.expire_all()
+            #
+            # Expire ONLY the settings row. ``expire_all()`` would also expire
+            # the caller's loaded run item, whose attributes are read
+            # synchronously right after this returns (``record_verdict``), and
+            # on an async session that lazy reload raises rather than silently
+            # querying. A conflict rollback expires the whole identity map for
+            # the same reason, so the item is refreshed explicitly below.
             settings = await self._settings_repository.get_or_create()
+            await self._session.refresh(settings)
             if normalize_model_key(model_id) in all_pinned_keys(settings):
                 return False
             current = list(parse_sidecar_full_models(getattr(settings, column)))
@@ -325,6 +350,12 @@ class FreeModelDiscoveryService:
                 # An operator (or another append) committed first. Their edit
                 # stands; re-read and re-apply this id on top of it rather than
                 # overwriting, which is what used to lose one side silently.
+                #
+                # The rollback inside commit_refresh expired every instance in
+                # this session, including objects this service does not own, so
+                # restore the ones the caller still uses before returning or
+                # retrying.
+                await self._reload_expired_caller_objects()
                 if attempt == _ADD_MODEL_MAX_ATTEMPTS - 1:
                     logger.warning(
                         "Gave up pinning discovered model after %s version conflicts provider=%s",
