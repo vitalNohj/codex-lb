@@ -306,10 +306,20 @@ class ResponsesStreamSynthesizer:
             )
         return out
 
-    def finish(self) -> list[JsonObject]:
-        return self._finish()
+    def finish(self, *, upstream_completed: bool = True) -> list[JsonObject]:
+        """Emit the terminal events for this response.
 
-    def _finish(self) -> list[JsonObject]:
+        ``upstream_completed`` must reflect whether the upstream actually sent
+        its ``[DONE]`` sentinel. A stream that ended early - a truncated body, a
+        dropped connection - is **not** a completed response, and saying so would
+        tell the client its partial answer is the whole answer, with nothing in
+        the payload to contradict it. That is worse than an explicit failure,
+        because it is silent and indistinguishable from success.
+        """
+
+        return self._finish(upstream_completed=upstream_completed)
+
+    def _finish(self, *, upstream_completed: bool = True) -> list[JsonObject]:
         if self._completed:
             return []
         self._completed = True
@@ -321,7 +331,11 @@ class ResponsesStreamSynthesizer:
             out.append(self._output_item_added())
             self._item_added = True
         out.append(self._output_item_done())
-        out.append(self._response_completed())
+        # ``response.incomplete`` is the protocol's existing terminal event for
+        # a response that stopped short; this repo's own converters already
+        # recognize it (app/core/openai/chat_responses.py) and map it to a
+        # non-``stop`` finish reason, so no new vocabulary is invented here.
+        out.append(self._response_completed() if upstream_completed else self._response_incomplete())
         return out
 
     def _message_item(self) -> JsonObject:
@@ -366,6 +380,18 @@ class ResponsesStreamSynthesizer:
 
     def _response_completed(self) -> JsonObject:
         return {"type": "response.completed", "response": self._response_object("completed")}
+
+    def _response_incomplete(self) -> JsonObject:
+        """Terminal event for a stream that ended without upstream completion.
+
+        ``incomplete_details.reason`` is ``"interrupted"``: the upstream stopped
+        mid-response. It is deliberately not ``"max_output_tokens"`` or a content
+        filter, which would assert a cause this layer cannot observe.
+        """
+
+        response = self._response_object("incomplete")
+        response["incomplete_details"] = {"reason": "interrupted"}
+        return {"type": "response.incomplete", "response": response}
 
 
 def _chat_chunk_delta_text(event: JsonObject) -> str:

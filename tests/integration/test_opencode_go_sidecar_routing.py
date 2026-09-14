@@ -946,3 +946,63 @@ async def test_responses_stream_survives_crlf_and_split_multibyte(async_client, 
     assert "response.output_text.delta" in response.text
     assert "caf\\u00e9" in response.text or "café" in response.text
     assert "response.completed" in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_responses_stream_is_not_reported_complete(
+    async_client, opencode_go_enabled, fake_opencode_go
+):
+    """End-to-end: an upstream that stops early must not look like success.
+
+    The client receives whatever text arrived, terminated by
+    ``response.incomplete`` rather than ``response.completed``, so it can tell a
+    partial answer from a whole one.
+    """
+
+    # Content, then a clean EOF. No [DONE] from the upstream.
+    fake_opencode_go.stream_chunks = [
+        b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hel"}}]}\n\n',
+    ]
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": True},
+    )
+
+    assert response.status_code == 200
+    text = response.text
+    assert "response.incomplete" in text
+    assert "response.completed" not in text
+    assert "hel" in text
+    # The truncation is also recorded rather than logged as a success.
+    assert (await _go_logs())[0].status == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_complete_responses_stream_still_reports_completed(
+    async_client, opencode_go_enabled, fake_opencode_go
+):
+    """Control: the guard must not relabel genuinely finished responses."""
+
+    fake_opencode_go.stream_chunks = [
+        b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert "response.completed" in response.text
+    assert "response.incomplete" not in response.text
+    assert (await _go_logs())[0].status == "success"

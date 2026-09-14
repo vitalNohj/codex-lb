@@ -686,7 +686,11 @@ async def _omniroute_responses_stream_iterator(
                         usage = event_usage
                 for responses_event in synthesizer.feed(event):
                     yield _responses_sse(responses_event)
-            for responses_event in synthesizer.finish():
+            # Same correctness rule as the OpenCode Go path: a clean EOF without
+            # the upstream's ``[DONE]`` is a truncated response, not a completed
+            # one. This call site shares the bridge, so it would otherwise keep
+            # the old behaviour purely by defaulting.
+            for responses_event in synthesizer.finish(upstream_completed=completed):
                 yield _responses_sse(responses_event)
             yield b"data: [DONE]\n\n"
     except OmniRouteSidecarUnavailableError:

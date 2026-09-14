@@ -690,7 +690,10 @@ async def _opencode_go_responses_stream_iterator(
                     billed_cost.observe(extract_billed_cost(event))
                 for responses_event in synthesizer.feed(event):
                     yield _responses_sse(responses_event)
-            for responses_event in synthesizer.finish():
+            # ``completed`` is True only if the upstream sent ``[DONE]``. A
+            # clean EOF without it is a truncated response, and must not be
+            # reported to the client as a completed one.
+            for responses_event in synthesizer.finish(upstream_completed=completed):
                 yield _responses_sse(responses_event)
             yield b"data: [DONE]\n\n"
     except OpenCodeGoSidecarUnavailableError:
