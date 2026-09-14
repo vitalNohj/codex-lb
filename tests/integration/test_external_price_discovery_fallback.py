@@ -610,12 +610,73 @@ async def test_an_exact_match_does_not_fetch_the_secondary_reference(db_setup, m
     orca_calls = _install_serving("orcarouter", catalog=_catalog("orcarouter", {"z-ai/glm-5.3": ModelPrice(9.0, 90.0)}))
     _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False, prefixes=(("go/", True),))
 
+    # A prefix rewrite is pre-search, so this is still a direct exact match.
     cost, status = await _settle(CATALOGLESS_PROVIDER, "go/z-ai/glm-5.3")
 
     assert status is ExternalPriceStatus.RESOLVED
     assert cost is not None
     assert cost.catalog_source == OPENROUTER_REFERENCE_SOURCE
     assert orca_calls["count"] == 0, "the secondary reference must not be consulted for an exact primary match"
+
+
+@pytest.mark.asyncio
+async def test_an_exactly_requested_dated_release_beats_an_undated_fallback(db_setup, monkeypatch) -> None:
+    """A dated rewrite is a fallback, so it must not settle the search.
+
+    ``alias`` and ``prefix`` rewrites run *before* any catalog is searched, so an
+    ``exact`` hit after them is still a first-listing match and skipping the
+    secondary reference stays safe. ``dated-release`` runs *after* a search has
+    already failed, dropping to a less specific id - so ``dated-release+exact``
+    means "the undated form matched", not "the requested id matched".
+
+    Here OpenRouter lists only the undated model while OrcaRouter lists the
+    exactly-requested dated release at a very different rate. Treating the
+    undated hit as final skipped OrcaRouter and persisted the wrong release's
+    price - a 30x error on these fixtures, and silent.
+    """
+
+    del db_setup
+    _install_reference(monkeypatch, _catalog(OPENROUTER_REFERENCE_SOURCE, {"vendor/model": ModelPrice(1.0, 1.0)}))
+    orca_calls = _install_serving(
+        "orcarouter", catalog=_catalog("orcarouter", {"vendor/model-20250929": ModelPrice(30.0, 30.0)})
+    )
+    _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False)
+
+    cost, status = await _settle(CATALOGLESS_PROVIDER, "vendor/model-20250929")
+
+    assert orca_calls["count"] >= 1, "a dated-release rewrite must still consult the fallback"
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    assert cost.catalog_model == "vendor/model-20250929", "the exactly requested release must win"
+    assert cost.catalog_source == ORCAROUTER_REFERENCE_SOURCE
+    assert cost.cost_usd == pytest.approx(60.0)
+
+
+@pytest.mark.asyncio
+async def test_a_pre_search_alias_exact_still_skips_the_secondary_reference(db_setup, monkeypatch) -> None:
+    """The dated fix must not broaden into disabling the skip for alias rewrites.
+
+    An operator alias is applied before any catalog is consulted, so the
+    resulting ``exact`` hit is a genuine first-listing match.
+    """
+
+    del db_setup
+    _install_reference(monkeypatch, _catalog(OPENROUTER_REFERENCE_SOURCE, {"vendor/model": ModelPrice(1.0, 1.0)}))
+    orca_calls = _install_serving(
+        "orcarouter", catalog=_catalog("orcarouter", {"vendor/model": ModelPrice(30.0, 30.0)})
+    )
+    _install_serving(
+        CATALOGLESS_PROVIDER,
+        catalog=None,
+        publishes_price_catalog=False,
+        aliases={"nickname": "vendor/model"},
+    )
+
+    cost, _ = await _settle(CATALOGLESS_PROVIDER, "nickname")
+
+    assert orca_calls["count"] == 0
+    assert cost is not None
+    assert cost.catalog_source == OPENROUTER_REFERENCE_SOURCE
 
 
 @pytest.mark.asyncio
