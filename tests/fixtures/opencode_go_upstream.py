@@ -168,6 +168,11 @@ class FakeOpenCodeGoUpstream:
         # Seconds of delay injected before each streamed frame, so a
         # cancellation test has a window to disconnect inside.
         self.stream_frame_delay_seconds = 0.0
+        # End the stream after N frames WITHOUT writing ``data: [DONE]``, which
+        # is how a real truncated upstream looks: the client keeps the partial
+        # content it already received and never sees a terminator. ``None``
+        # streams normally.
+        self.truncate_stream_after_frames: int | None = None
         # Set when a streaming response was abandoned before its terminator.
         # This is how a disconnect test observes that the upstream socket really
         # went away rather than draining in the background.
@@ -441,6 +446,11 @@ class FakeOpenCodeGoUpstream:
             }
             frames.append(f"data: {json.dumps(trailing)}\n\n".encode())
         frames.append(b"data: [DONE]\n\n")
+
+        if self.truncate_stream_after_frames is not None:
+            # Drop the terminator along with everything past the cut, so the
+            # stream ends mid-flight rather than ending cleanly early.
+            frames = frames[: self.truncate_stream_after_frames]
 
         try:
             for frame in frames:
