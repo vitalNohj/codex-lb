@@ -42,12 +42,34 @@ pytestmark = pytest.mark.integration
     "url",
     [
         "https://opencode.ai/zen/go/v1",
-        "https://opencode.ai/zen/go/v1/",
-        "https://opencode.ai/ZEN/GO/V1",
+        "https://opencode.ai/zen/go/v1/",  # the one tolerated trailing slash
     ],
 )
-def test_a_real_go_base_url_is_accepted(url):
+def test_the_canonical_go_base_url_is_accepted(url):
     assert is_opencode_go_base_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://opencode.ai/ZEN/GO/V1",
+        "https://opencode.ai/zen//go/v1",
+        "https://opencode.ai/zen/./go/v1",
+        "https://opencode.ai/zen/go/v1/../go/v1",
+    ],
+)
+def test_a_non_canonical_spelling_of_the_go_url_is_rejected(url):
+    """Backend ``c11b9f2e`` accepts only the documented endpoint, spelled exactly.
+
+    An earlier revision of this test asserted that ``/ZEN/GO/V1`` was *accepted*,
+    on the assumption that case-folding was harmless. The shipped fix is
+    stricter and better: case-folding and empty-segment removal make these
+    compare equal to the canonical path while being transmitted verbatim as a
+    different path, and callers build request URLs by concatenation. Accepting
+    one spelling removes that whole class of disagreement rather than
+    enumerating it. My assumption was the weaker one and is corrected here.
+    """
+    assert is_opencode_go_base_url(url) is False
 
 
 @pytest.mark.parametrize(
@@ -66,16 +88,6 @@ def test_a_non_go_base_url_is_rejected(url):
     assert is_opencode_go_base_url(url) is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect: the predicate matches '/go/' anywhere in the raw URL, so a "
-        "Zen base URL carrying it in the fragment or query is accepted. A Go key "
-        "on the Zen path bills pay-as-you-go credits. Owner: "
-        "codexlb-opencode-go-integration. Remove this marker when the check "
-        "parses the URL and inspects only the path."
-    ),
-)
 @pytest.mark.parametrize(
     "url",
     [
@@ -100,13 +112,11 @@ def test_go_identity_never_depends_on_a_component_the_server_does_not_receive():
 
     A fragment is never transmitted, and a query string does not change which
     product serves the request, so neither may flip Go identity. Asserted by
-    comparing a clean Zen URL against the same URL with `/go/` appended in each
-    component - the verdict must not move.
+    comparing a clean Zen URL against the same URL with ``/go/`` added in each
+    component: the verdict must not move.
 
-    Deliberately not asserting the current buggy value: pinning
-    `is_opencode_go_base_url(...) is True` here would have to be edited by hand
-    when the fix lands, which is exactly the hand-editing the xfail above exists
-    to avoid.
+    Fixed by backend ``c11b9f2e`` (canonical-only Go URL). The expected-failure
+    scaffolding this carried while the defect was open has been removed.
     """
     baseline = is_opencode_go_base_url("https://opencode.ai/zen/v1")
     assert baseline is False
@@ -114,12 +124,12 @@ def test_go_identity_never_depends_on_a_component_the_server_does_not_receive():
     for noisy in (
         "https://opencode.ai/zen/v1#/go/",
         "https://opencode.ai/zen/v1?x=/go/",
+        "https://opencode.ai/zen/v1#anchor/go/more",
     ):
-        if is_opencode_go_base_url(noisy) != baseline:
-            pytest.xfail(
-                "open defect: a fragment or query flips Go identity; see the "
-                "parametrized xfail above. Owner: codexlb-opencode-go-integration"
-            )
+        assert is_opencode_go_base_url(noisy) == baseline, (
+            f"{noisy!r} changed the Go verdict via a component the server never "
+            "receives or that does not select the product"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -190,64 +200,222 @@ async def test_an_ordinary_usage_body_is_still_read():
     assert parsed["usage"]["rolling"]["percent"] == 1
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "open defect: the reader has no streamed bound, so an upstream that "
+        "declares a small or absent Content-Length and then sends more is read "
+        "in full. Owner: codexlb-opencode-go-quota-r1. Remove this marker when "
+        "the body is capped as it is consumed, not only on its declared size."
+    ),
+)
+@pytest.mark.asyncio
+async def test_a_body_larger_than_its_declared_length_is_refused_while_streaming():
+    """Declared-size refusal is not enough; the wire can disagree with the header.
+
+    A header check only rejects an upstream that is honest about its size. The
+    real bound has to hold while the body is consumed, because a hostile or
+    broken server can under-declare ``Content-Length``, omit it entirely under
+    chunked encoding, or expand under content-encoding.
+
+    Bounded on purpose: this serves ~2 MiB from loopback, enough to exceed any
+    sane usage-payload cap while allocating almost nothing. It does not attempt
+    to prove a decompression bound - that needs the owner's chosen cap to exist
+    first - and is written to fail for the single reason that no streamed limit
+    is applied.
+    """
+    import aiohttp
+    from aiohttp import web
+
+    from app.core.clients.opencode_go import OpenCodeGoUnavailableError, _read_response_json
+
+    chunk = b"x" * 64 * 1024
+    chunks = 32  # ~2 MiB total, streamed, never held whole in the test
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(status=200, headers={"Content-Type": "application/json"})
+        await response.prepare(request)  # chunked: no Content-Length at all
+        for _ in range(chunks):
+            await response.write(chunk)
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/v1/usage", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = int(runner.addresses[0][1])
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{port}/v1/usage") as response:
+                assert response.content_length is None, "expected a chunked body with no declared size"
+                with pytest.raises(OpenCodeGoUnavailableError):
+                    await _read_response_json(response)
+    finally:
+        await runner.cleanup()
+
+
 # ---------------------------------------------------------------------------
 # 3. Single-flight cancellation
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_cancelling_the_first_quota_caller_does_not_abort_the_waiters():
-    """A cancelled owner must not take the shared request down with it.
+def _quota_config(api_key: str = "sk-go-single-flight-Zq7SvT2pLm9K"):
+    from app.modules.opencode_go.service import OpenCodeGoConfig
 
-    Two dashboard tabs asking for quota at once share one upstream round trip.
-    If the first caller navigates away and its task is cancelled, the second
-    must still get its answer - otherwise one user's navigation breaks another's
-    card, and the failure is timing-dependent and near-impossible to diagnose.
+    return OpenCodeGoConfig(
+        enabled=True,
+        base_url="https://opencode.ai/zen/go/v1",
+        api_key=api_key,
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "open defect, now genuinely reproduced: cancelling the INITIATING caller "
+        "of OpenCodeGoQuotaCache.fetch_single_flight tears down the shared fetch, "
+        "so callers that joined it are never answered. Owner: "
+        "codexlb-opencode-go-quota-r1. Remove this marker when the initiator's "
+        "cancellation stops propagating into the shared request."
+    ),
+)
+@pytest.mark.asyncio
+async def test_cancelling_the_initiating_quota_caller_still_answers_the_survivor():
+    """The reported defect, driven through the real cache rather than a helper.
+
+    An earlier version of this test awaited ``wait_on_shared_future`` directly.
+    That was not a reproduction: the previous code already used that helper for
+    secondary callers, so the test passed on the defective build and proved
+    nothing. Firstmate was right to reject it.
+
+    What actually matters is ``OpenCodeGoQuotaCache.fetch_single_flight``: the
+    **initiator** owns the upstream request, and if its task is cancelled the
+    request must not be torn down under the callers still waiting on it. Two
+    dashboard tabs share one round trip; one navigating away must not break the
+    other.
     """
-    from app.core.utils.shared_future import wait_on_shared_future
+    from app.modules.opencode_go.service import OpenCodeGoQuotaCache
 
-    loop = asyncio.get_running_loop()
-    shared = loop.create_future()
+    cache = OpenCodeGoQuotaCache()
+    config = _quota_config()
+    release = asyncio.get_running_loop().create_future()
+    fetch_calls = 0
 
-    first = asyncio.ensure_future(wait_on_shared_future(shared))
-    second = asyncio.ensure_future(wait_on_shared_future(shared))
+    async def fetch():
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return await release
+
+    initiator = asyncio.ensure_future(cache.fetch_single_flight(config, fetch))
+    await asyncio.sleep(0)
+    survivor = asyncio.ensure_future(cache.fetch_single_flight(config, fetch))
     await asyncio.sleep(0)
 
-    first.cancel()
+    # Exactly one upstream request for two callers - the point of single flight.
+    assert fetch_calls == 1
+
+    initiator.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await first
+        await initiator
+    await asyncio.sleep(0)
 
-    # The shared request itself must survive the owner's cancellation.
-    assert not shared.cancelled(), "cancelling one waiter cancelled the shared request"
-
-    shared.set_result("quota")
-    assert await second == "quota"
+    sentinel = object()
+    if release.done():
+        # The initiator's cancellation propagated into the shared fetch itself,
+        # which is precisely the reported defect: the survivor can no longer be
+        # answered because the request it joined was torn down.
+        pytest.fail(
+            "cancelling the initiating caller completed/aborted the shared "
+            f"fetch ({release}); the surviving caller cannot be answered"
+        )
+    release.set_result(sentinel)
+    assert await asyncio.wait_for(survivor, timeout=5) is sentinel, (
+        "cancelling the initiating caller aborted the shared request and left the surviving caller without an answer"
+    )
 
 
 @pytest.mark.asyncio
-async def test_every_waiter_receives_the_shared_result():
-    from app.core.utils.shared_future import wait_on_shared_future
+async def test_one_upstream_request_serves_every_concurrent_quota_caller():
+    from app.modules.opencode_go.service import OpenCodeGoQuotaCache
 
-    loop = asyncio.get_running_loop()
-    shared = loop.create_future()
-    waiters = [asyncio.ensure_future(wait_on_shared_future(shared)) for _ in range(4)]
-    await asyncio.sleep(0)
+    cache = OpenCodeGoQuotaCache()
+    config = _quota_config()
+    release = asyncio.get_running_loop().create_future()
+    fetch_calls = 0
 
-    shared.set_result("quota")
-    assert await asyncio.gather(*waiters) == ["quota"] * 4
+    async def fetch():
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return await release
+
+    callers = []
+    for _ in range(4):
+        callers.append(asyncio.ensure_future(cache.fetch_single_flight(config, fetch)))
+        await asyncio.sleep(0)
+
+    sentinel = object()
+    release.set_result(sentinel)
+    assert await asyncio.wait_for(asyncio.gather(*callers), timeout=5) == [sentinel] * 4
+    assert fetch_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_a_shared_failure_reaches_every_waiter():
-    """One upstream failure must not leave a waiter hanging forever."""
-    from app.core.utils.shared_future import wait_on_shared_future
+async def test_an_upstream_failure_reaches_every_concurrent_quota_caller():
+    """One failure must not leave a joined caller hanging forever."""
+    from app.modules.opencode_go.service import OpenCodeGoQuotaCache
 
-    loop = asyncio.get_running_loop()
-    shared = loop.create_future()
-    waiters = [asyncio.ensure_future(wait_on_shared_future(shared)) for _ in range(3)]
-    await asyncio.sleep(0)
+    cache = OpenCodeGoQuotaCache()
+    config = _quota_config()
+    release = asyncio.get_running_loop().create_future()
 
-    shared.set_exception(RuntimeError("upstream down"))
-    for waiter in waiters:
+    async def fetch():
+        return await release
+
+    callers = []
+    for _ in range(3):
+        callers.append(asyncio.ensure_future(cache.fetch_single_flight(config, fetch)))
+        await asyncio.sleep(0)
+
+    release.set_exception(RuntimeError("upstream down"))
+    for caller in callers:
         with pytest.raises(RuntimeError, match="upstream down"):
-            await waiter
+            await asyncio.wait_for(caller, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_a_re_keyed_subscription_does_not_receive_the_previous_keys_answer():
+    """A config change must start its own request, not join the in-flight one.
+
+    Otherwise rotating the API key could show the previous subscription's
+    numbers, which is a cross-credential data leak on a dashboard.
+    """
+    from app.modules.opencode_go.service import OpenCodeGoQuotaCache
+
+    cache = OpenCodeGoQuotaCache()
+    first_release = asyncio.get_running_loop().create_future()
+    second_release = asyncio.get_running_loop().create_future()
+
+    async def first_fetch():
+        return await first_release
+
+    async def second_fetch():
+        return await second_release
+
+    first = asyncio.ensure_future(cache.fetch_single_flight(_quota_config("sk-go-key-one"), first_fetch))
+    await asyncio.sleep(0)
+    second = asyncio.ensure_future(cache.fetch_single_flight(_quota_config("sk-go-key-two"), second_fetch))
+    await asyncio.sleep(0)
+
+    first_answer = object()
+    second_answer = object()
+    second_release.set_result(second_answer)
+    first_release.set_result(first_answer)
+
+    assert await asyncio.wait_for(second, timeout=5) is second_answer, (
+        "a re-keyed config joined the previous key's in-flight request"
+    )
+    assert await asyncio.wait_for(first, timeout=5) is first_answer
