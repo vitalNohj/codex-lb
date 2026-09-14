@@ -31,9 +31,12 @@ from enum import Enum
 
 from app.core.usage.external_pricing.catalogs import (
     OPENROUTER_REFERENCE_SOURCE,
+    ORCAROUTER_REFERENCE_SOURCE,
     PROVIDER_OPENROUTER,
+    PROVIDER_ORCAROUTER,
     Catalog,
     CatalogFetchError,
+    as_orcarouter_reference,
     fetch_openrouter_catalog,
     is_external_priced_provider,
     order_catalogs,
@@ -137,17 +140,45 @@ class CatalogAvailability(str, Enum):
     def authoritative(self) -> bool:
         return self is CatalogAvailability.ANSWERED
 
+    @property
+    def failed(self) -> bool:
+        """Whether this source was asked and could not answer.
+
+        ``DISABLED`` is deliberately not a failure. A source the operator never
+        configured was never asked, so it is withholding nothing and cannot be a
+        reason to hold a stored value in place; a configured source that timed out
+        or published something unreadable is, and is.
+        """
+
+        return self in (
+            CatalogAvailability.UNAVAILABLE,
+            CatalogAvailability.TIMED_OUT,
+            CatalogAvailability.UNUSABLE,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SourceConsultations:
+    """What each price source did on one pass, kept apart by role.
+
+    ``serving`` is the integration that served the request. ``reference`` is the
+    OpenRouter pricing reference. ``orcarouter_reference`` is the operator's own
+    OrcaRouter integration borrowed as the secondary reference, and it defaults to
+    ``DISABLED`` because an operator who has not configured OrcaRouter was never
+    asked -- that is a source with nothing to say, not one that failed.
+    """
+
     serving: CatalogAvailability
     reference: CatalogAvailability
+    orcarouter_reference: CatalogAvailability = CatalogAvailability.DISABLED
 
     def source_availability(self, source: str, provider_key: str) -> CatalogAvailability | None:
         if source == provider_key:
             return self.serving
         if source in (OPENROUTER_REFERENCE_SOURCE, PROVIDER_OPENROUTER):
             return self.reference
+        if source in (ORCAROUTER_REFERENCE_SOURCE, PROVIDER_ORCAROUTER):
+            return self.orcarouter_reference
         return None
 
     def source_answered(self, source: str, provider_key: str) -> bool:
@@ -155,16 +186,31 @@ class SourceConsultations:
         return availability is not None and availability.authoritative
 
     def with_unusable_resolution(self, resolution: Resolution, provider_key: str) -> "SourceConsultations":
+        """Mark whichever source published the price this build could not read.
+
+        Only the source that actually produced the unreadable entry is downgraded;
+        the others' answers this pass are untouched, because one catalog's schema
+        change is not evidence about another catalog.
+        """
+
         if resolution.outcome is not ResolutionOutcome.PRICE_UNPARSEABLE:
             return self
         source = resolution.catalog_source
+        if source is None:
+            return self
+        serving = self.serving
+        reference = self.reference
+        orcarouter_reference = self.orcarouter_reference
+        if source == provider_key:
+            serving = CatalogAvailability.UNUSABLE
+        elif source in (OPENROUTER_REFERENCE_SOURCE, PROVIDER_OPENROUTER):
+            reference = CatalogAvailability.UNUSABLE
+        elif source in (ORCAROUTER_REFERENCE_SOURCE, PROVIDER_ORCAROUTER):
+            orcarouter_reference = CatalogAvailability.UNUSABLE
         return SourceConsultations(
-            serving=(CatalogAvailability.UNUSABLE if source == provider_key else self.serving),
-            reference=(
-                CatalogAvailability.UNUSABLE
-                if source in (OPENROUTER_REFERENCE_SOURCE, PROVIDER_OPENROUTER) and source != provider_key
-                else self.reference
-            ),
+            serving=serving,
+            reference=reference,
+            orcarouter_reference=orcarouter_reference,
         )
 
 
@@ -255,6 +301,27 @@ _coordinator = _LookupCoordinator()
 _serving_context_loaders: dict[str, ServingContextLoader] = {}
 _reference_catalog_memo: tuple[float, Catalog | None] | None = None
 _reference_catalog_lock = asyncio.Lock()
+_orcarouter_reference_memo: tuple[float, "OrcaRouterReference"] | None = None
+_orcarouter_reference_lock = asyncio.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class OrcaRouterReference:
+    """OrcaRouter's catalog in its secondary role, plus why it is or is not here.
+
+    ``catalog`` and ``availability`` are separate answers. A ``None`` catalog with
+    ``DISABLED`` means the operator has not configured OrcaRouter, so nothing was
+    asked; with ``UNAVAILABLE`` it means the configured integration could not be
+    reached this time. Only the second is a failure, and only the second may
+    hold a stored rate in place.
+    """
+
+    catalog: Catalog | None
+    availability: CatalogAvailability
+
+    @classmethod
+    def not_configured(cls) -> "OrcaRouterReference":
+        return cls(catalog=None, availability=CatalogAvailability.DISABLED)
 
 
 def register_serving_context_loader(provider: str, loader: ServingContextLoader) -> None:
@@ -268,10 +335,25 @@ def register_serving_context_loader(provider: str, loader: ServingContextLoader)
     _serving_context_loaders[provider.strip().lower()] = loader
 
 
+def registered_serving_context_providers() -> frozenset[str]:
+    """Providers that have declared how to reach their own serving context.
+
+    Exposed so the gap between "eligible for external pricing" and "knows how to
+    be consulted" is checkable rather than silent. A provider added to
+    ``EXTERNAL_PRICED_PROVIDERS`` without a loader would otherwise have every one
+    of its ids read as a permanently unavailable serving catalog, which holds the
+    pricing references off and leaves the model unpriced forever with a failure
+    line naming a catalog that does not exist.
+    """
+
+    return frozenset(_serving_context_loaders)
+
+
 def reset_serving_context_loaders() -> None:
-    global _reference_catalog_memo
+    global _reference_catalog_memo, _orcarouter_reference_memo
     _serving_context_loaders.clear()
     _reference_catalog_memo = None
+    _orcarouter_reference_memo = None
 
 
 def get_lookup_coordinator() -> _LookupCoordinator:
@@ -374,6 +456,7 @@ def source_consultations(
     serving: ServingContext | None,
     *,
     reference_available: bool,
+    orcarouter_reference: CatalogAvailability = CatalogAvailability.DISABLED,
 ) -> SourceConsultations:
     if serving is not None and not serving.integration_enabled:
         serving_availability = CatalogAvailability.DISABLED
@@ -384,6 +467,7 @@ def source_consultations(
     return SourceConsultations(
         serving=serving_availability,
         reference=(CatalogAvailability.ANSWERED if reference_available else CatalogAvailability.UNAVAILABLE),
+        orcarouter_reference=orcarouter_reference,
     )
 
 
@@ -425,6 +509,10 @@ def preservation_reason(
         and not (
             consultations.source_answered(provider_key, provider_key)
             and consultations.source_answered(OPENROUTER_REFERENCE_SOURCE, provider_key)
+            # The secondary reference only has to have not failed. Requiring it to
+            # have *answered* would make every record preservable for operators
+            # who never configured OrcaRouter, which is most of them.
+            and not consultations.orcarouter_reference.failed
         )
     ):
         return "an ownerless settled record cannot be weakened without complete source answers"
@@ -436,6 +524,36 @@ def preservation_reason(
     ):
         return f"serving source {provider_key} did not provide an authoritative answer"
     return None
+
+
+def _is_exactly_settled(resolution: Resolution) -> bool:
+    """Whether a further catalog could not change this resolution.
+
+    True only for an outcome an ``exact`` match produced. ``exact`` consults the
+    catalogs in precedence order and returns the first that lists the id, so
+    appending a lower-precedence catalog cannot alter it - which is what makes
+    skipping the secondary reference safe rather than merely cheaper.
+
+    Deliberately false for every other step. ``normalized`` and
+    ``vendor-qualified`` collect candidates from *all* catalogs and abstain when
+    they disagree, so a catalog that was never loaded is a collision that was
+    never detected. It is also false for an unresolved or ambiguous outcome,
+    which is precisely when the fallback has something to contribute.
+
+    The step is matched on its final component because alias, prefix, and
+    dated-release rewrites accumulate a prefix on it (``prefix+exact``). Those
+    rewrites change which id was asked about, not how the catalogs were
+    searched, so the argument above still holds for them.
+    """
+
+    step = resolution.step
+    if step is None or step.rsplit("+", 1)[-1] != "exact":
+        return False
+    return resolution.outcome in (
+        ResolutionOutcome.RESOLVED,
+        ResolutionOutcome.NOT_TOKEN_PRICED,
+        ResolutionOutcome.PRICE_UNPARSEABLE,
+    )
 
 
 async def _run_lookup(
@@ -460,6 +578,34 @@ async def _run_lookup(
         async with asyncio.timeout(LOOKUP_WORK_TIMEOUT_SECONDS):
             serving = await load_serving_context(provider_key)
             reference = await _load_reference_catalog()
+
+            aliases = serving.aliases if serving is not None else None
+            prefixes = serving.prefixes if serving is not None else ()
+            serving_catalog = serving.catalog if serving is not None else None
+
+            resolution = resolve_model_price(
+                model_key,
+                catalogs=order_catalogs(serving_catalog, reference),
+                aliases=aliases,
+                prefixes=prefixes,
+            )
+            # The secondary reference is a fallback, so it is fetched only when
+            # the primary sources did not already settle the id by exact match.
+            # Exact is the one step a further catalog cannot change: it returns
+            # the first catalog that lists the id, and appending a third leaves
+            # that untouched. Every weaker step gathers candidates across all
+            # catalogs to detect collisions, so skipping OrcaRouter there could
+            # record a price that a second source contradicts.
+            orcarouter = OrcaRouterReference.not_configured()
+            if not _is_exactly_settled(resolution):
+                orcarouter = await load_orcarouter_reference(provider_key)
+                if orcarouter.catalog is not None:
+                    resolution = resolve_model_price(
+                        model_key,
+                        catalogs=order_catalogs(serving_catalog, reference, orcarouter.catalog),
+                        aliases=aliases,
+                        prefixes=prefixes,
+                    )
     except TimeoutError:
         await preserve_record_for_retry(
             provider_key,
@@ -470,20 +616,15 @@ async def _run_lookup(
         )
         return _StorageResult.AVAILABLE
 
-    serving_catalog = serving.catalog if serving is not None else None
-    catalogs = order_catalogs(serving_catalog, reference)
-    resolution = resolve_model_price(
-        model_key,
-        catalogs=catalogs,
-        aliases=serving.aliases if serving is not None else None,
-        prefixes=serving.prefixes if serving is not None else (),
-    )
-
     reason = preservation_reason(
         previous,
         provider_key,
         resolution,
-        consultations=source_consultations(serving, reference_available=reference is not None),
+        consultations=source_consultations(
+            serving,
+            reference_available=reference is not None,
+            orcarouter_reference=orcarouter.availability,
+        ),
     )
     if reason is not None:
         await preserve_record_for_retry(
@@ -594,19 +735,75 @@ async def preserve_record_for_retry(
 async def load_serving_context(provider_key: str) -> ServingContext | None:
     """Serving catalog and routing config for ``provider_key``, or ``None``.
 
-    ``None`` means the integration could not be consulted, which is distinct from
-    it having nothing to say: callers must preserve prior values rather than treat
-    it as an empty catalogue.
+    ``None`` means the integration could not be consulted *this time*, which is
+    distinct from it having nothing to say: callers must preserve prior values
+    rather than treat it as an empty catalogue.
+
+    A provider with no registered loader is the third case and is neither of
+    those. Nothing will arrive by waiting, because no code exists to ask: the
+    provider was declared eligible for external pricing without declaring how to
+    reach it. Reporting that as a transient outage is what made such a provider's
+    models permanently unpriced -- the pricing references were held off on behalf
+    of a serving catalog that is never coming -- so it is reported instead as an
+    integration that publishes no price catalog, which is what it is from here,
+    and logged as the wiring defect it is.
     """
 
     loader = _serving_context_loaders.get(provider_key)
     if loader is None:
-        return None
+        logger.warning(
+            "provider %s participates in external pricing but registered no serving-context loader; "
+            "pricing it from the reference catalogs alone",
+            provider_key,
+        )
+        return ServingContext(catalog=None, aliases={}, prefixes=(), publishes_price_catalog=False)
     try:
         return await loader(provider_key)
     except Exception:
         logger.warning("serving catalog unavailable for provider=%s", provider_key, exc_info=True)
         return None
+
+
+async def load_orcarouter_reference(provider_key: str) -> OrcaRouterReference:
+    """OrcaRouter's catalog as the secondary pricing reference, memoised briefly.
+
+    Returns ``not_configured`` in the two cases where OrcaRouter has nothing to
+    contribute rather than having failed: when no OrcaRouter loader is registered
+    at all, and when ``provider_key`` *is* OrcaRouter, whose catalog is already in
+    play as the serving catalog and must not be counted a second time under a
+    weaker label.
+
+    A configured-but-unreachable OrcaRouter reports ``UNAVAILABLE`` so a stored
+    rate it owns is preserved instead of being dropped on a transient outage.
+    """
+
+    global _orcarouter_reference_memo
+
+    if provider_key == PROVIDER_ORCAROUTER or PROVIDER_ORCAROUTER not in _serving_context_loaders:
+        return OrcaRouterReference.not_configured()
+
+    async with _orcarouter_reference_lock:
+        memo = _orcarouter_reference_memo
+        if memo is not None and (time.monotonic() - memo[0]) < _REFERENCE_CATALOG_MEMO_SECONDS:
+            return memo[1]
+        context = await load_serving_context(PROVIDER_ORCAROUTER)
+        if context is None:
+            # The loader raised or the settings could not be read. That is a
+            # failure to consult, not an answer.
+            result = OrcaRouterReference(catalog=None, availability=CatalogAvailability.UNAVAILABLE)
+        elif not context.integration_enabled:
+            # The operator switched OrcaRouter off. It was never asked, so it has
+            # neither failed nor answered, and it holds nothing in place.
+            result = OrcaRouterReference.not_configured()
+        elif context.catalog is None:
+            result = OrcaRouterReference(catalog=None, availability=CatalogAvailability.UNAVAILABLE)
+        else:
+            result = OrcaRouterReference(
+                catalog=as_orcarouter_reference(context.catalog),
+                availability=CatalogAvailability.ANSWERED,
+            )
+        _orcarouter_reference_memo = (time.monotonic(), result)
+        return result
 
 
 async def drain_pending_lookups() -> None:

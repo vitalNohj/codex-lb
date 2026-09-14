@@ -16,6 +16,16 @@ request would list at rather than what was debited.
 
 The two never merge. A calculated figure never overwrites a billed one, and a
 billed one is never recomputed or reconciled against list pricing.
+
+That precedence is only sound while "reported as billed" is true, so it is gated
+on the provider actually billing per request. A flat-rate subscription upstream
+still emits a cost field, reporting ``0`` because it has no per-request debit to
+state -- not because the request was free. Admitting that figure would put the
+strongest provenance in the system behind a number that describes nothing, hide
+the resolver's answer permanently, and render subscription traffic as free. A
+genuinely free per-request model is different and keeps its honest ``0``:
+OpenRouter debits exactly nothing for a ``:free`` id, and that is real spend.
+See ``PER_REQUEST_BILLED_PROVIDERS``.
 """
 
 from __future__ import annotations
@@ -26,6 +36,7 @@ from math import isfinite
 from typing import Generic, Protocol, TypeVar
 
 from app.core.usage.external_pricing import calculated_cost_for_request
+from app.core.usage.external_pricing.providers import reports_per_request_billed_cost
 from app.core.usage.pricing import UsageTokens
 from app.db.models import CostSource, ExternalPriceStatus
 
@@ -113,7 +124,11 @@ async def external_request_cost(
 
     status_value = status.value if status is not None else None
 
-    valid_billed_cost = validated_billed_cost(billed_cost_usd)
+    # A provider that does not bill per request has no billed amount to report,
+    # whatever its response body says. Discarding the figure here rather than at
+    # each dispatch keeps one rule in one place: the alternative is every future
+    # integration remembering not to pass its own zero through.
+    valid_billed_cost = validated_billed_cost(billed_cost_usd) if reports_per_request_billed_cost(provider) else None
     if valid_billed_cost is not None:
         return ExternalRequestCost(
             cost_usd=valid_billed_cost,

@@ -115,7 +115,10 @@ def _log(**overrides) -> RequestLog:
 def test_an_unknown_cost_reports_no_savings_rather_than_the_whole_reference(price_status: str) -> None:
     """A NULL cost is unknown spend, not zero spend."""
 
-    entry = to_request_log_entry(_log(price_status=price_status, reference_cost_usd=0.000075))
+    entry = to_request_log_entry(
+        _log(price_status=price_status, reference_cost_usd=0.000075),
+        include_sensitive_metadata=False,
+    )
 
     assert entry.cost_usd is None
     assert entry.savings_usd is None, "an unknown cost must not read as the full reference saved"
@@ -127,7 +130,8 @@ def test_a_resolved_row_still_reports_real_savings() -> None:
             cost_usd=0.0,
             price_status=ExternalPriceStatus.RESOLVED.value,
             reference_cost_usd=0.016,
-        )
+        ),
+        include_sensitive_metadata=False,
     )
 
     assert entry.savings_usd == pytest.approx(0.016)
