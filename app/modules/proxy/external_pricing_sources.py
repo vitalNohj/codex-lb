@@ -18,6 +18,16 @@ CLIProxyAPI
     the vendor's catalog knows, instead of stripping ``cc/`` blindly and hoping the
     remainder means something.
 
+OpenCode Go
+    Publishes a model listing with **no** ``pricing`` block of any kind, so like
+    CLIProxyAPI it supplies no price catalog -- only its routing prefixes and
+    the operator's alias map. Declaring that explicitly (rather than handing over
+    an empty catalog) is what lets the resolver keep searching for a rate for
+    ``glm-5.3`` instead of settling it as permanently not token priced. Whatever
+    figure it eventually resolves is a **list-price usage estimate**: Go is a
+    flat $10/month subscription and the estimate is not what the operator is
+    charged.
+
 Ollama and OmniRoute are absent on purpose: local inference has no published
 external rate, and OmniRoute does not identify a catalog model to price.
 """
@@ -30,6 +40,7 @@ from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
 from app.core.types import JsonValue
 from app.core.usage.external_pricing.catalogs import (
     PROVIDER_CLIPROXY,
+    PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
     catalog_from_sidecar_models,
@@ -155,9 +166,48 @@ async def _load_cliproxy_context(_provider: str) -> ServingContext | None:
     )
 
 
+async def _load_opencode_go_context(_provider: str) -> ServingContext | None:
+    """Routing identity for OpenCode Go ids; no price catalog.
+
+    OpenCode Go's ``GET /zen/go/v1/models`` returns only
+    ``{id, object, created, owned_by}``. There is no ``pricing`` block to parse,
+    so supplying a catalog here -- even an empty one -- would make every Go id
+    resolve to "listed but not token priced" and stop the search before any
+    catalog that does carry a rate is consulted. Contributing only the prefixes
+    and aliases lets ``opencode-go/glm-5.3`` reduce to ``glm-5.3`` and then match
+    a catalog entry that actually carries a price.
+
+    Any rate found that way is the underlying model's public list price. Go is a
+    flat $10/month subscription, so that figure is a usage estimate and never
+    the amount billed; ``cost_source`` records the difference.
+    """
+
+    from app.modules.proxy.opencode_go_sidecar_dispatch import load_opencode_go_sidecar_config
+
+    config = await load_opencode_go_sidecar_config()
+    if config is None:
+        # The loader could not read dashboard settings. Nothing is known about
+        # this integration, least of all whether the operator turned it off, so
+        # this is a failure to consult and callers must preserve prior values.
+        return None
+    if not config.enabled:
+        return ServingContext.disabled(
+            aliases=await load_model_aliases(),
+            prefixes=_prefix_pairs(config.prefixes),
+        )
+    return ServingContext(
+        catalog=None,
+        aliases=await load_model_aliases(),
+        prefixes=_prefix_pairs(config.prefixes),
+        # Not a fetch failure: this integration has no rates to publish.
+        publishes_price_catalog=False,
+    )
+
+
 def register_external_pricing_sources() -> None:
     """Register every participating integration. Idempotent."""
 
     register_serving_context_loader(PROVIDER_ORCAROUTER, _load_orcarouter_context)
+    register_serving_context_loader(PROVIDER_OPENCODE_GO, _load_opencode_go_context)
     register_serving_context_loader(PROVIDER_OPENROUTER, _load_openrouter_context)
     register_serving_context_loader(PROVIDER_CLIPROXY, _load_cliproxy_context)

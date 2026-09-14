@@ -1396,6 +1396,61 @@ class DashboardSettings(Base):
     orcarouter_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     orcarouter_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     orcarouter_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
+    opencode_go_sidecar_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    # OpenCode **Go**, not Zen. The two are different products on different base
+    # paths with different billing; a Go key sent to the Zen path bills PAYG
+    # credits. ``is_opencode_go_base_url`` enforces the distinction on save.
+    opencode_go_sidecar_base_url: Mapped[str] = mapped_column(
+        String,
+        default="https://opencode.ai/zen/go/v1",
+        server_default=text("'https://opencode.ai/zen/go/v1'"),
+        nullable=False,
+    )
+    opencode_go_sidecar_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    opencode_go_sidecar_model_prefixes_json: Mapped[str] = mapped_column(
+        Text,
+        # Matches the migration: existing rows are never backfilled with an
+        # active ``opencode-go/`` prefix, because prefix uniqueness is enforced
+        # regardless of enabled state and a backfill would make the next
+        # settings PUT fail closed. SettingsRepository.get_or_create seeds the
+        # prefix for genuinely new rows.
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
+    opencode_go_sidecar_full_models_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
+    opencode_go_sidecar_connect_timeout_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=8.0,
+        server_default=text("8.0"),
+        nullable=False,
+    )
+    opencode_go_sidecar_request_timeout_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=600.0,
+        server_default=text("600.0"),
+        nullable=False,
+    )
+    opencode_go_sidecar_models_cache_ttl_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=60.0,
+        server_default=text("60.0"),
+        nullable=False,
+    )
+    opencode_go_sidecar_last_health_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    opencode_go_sidecar_last_health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opencode_go_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    opencode_go_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     omniroute_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

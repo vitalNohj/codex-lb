@@ -12,7 +12,7 @@ from app.core.utils.json_guards import is_json_list, is_json_mapping
 _OUTPUT_TEXT_TYPE = "output_text"
 
 
-def responses_to_omniroute_chat_request(
+def responses_to_chat_request(
     payload: ResponsesRequest,
     effective_model: str,
 ) -> ChatCompletionsRequest:
@@ -143,7 +143,7 @@ def _responses_image_part_to_chat(part: Mapping[str, JsonValue]) -> JsonValue | 
     return {"type": "image_url", "image_url": image_payload}
 
 
-def omniroute_chat_to_responses_result(chat_body: JsonValue, *, model: str) -> JsonObject:
+def chat_to_responses_result(chat_body: JsonValue, *, model: str) -> JsonObject:
     """Wrap an OmniRoute chat-completion JSON body in a Responses result."""
 
     message = _first_choice_message(chat_body)

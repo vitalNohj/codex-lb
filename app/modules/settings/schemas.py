@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 
+from app.core.clients.opencode_go_sidecar import is_opencode_go_base_url
 from app.modules.shared.schemas import DashboardModel
 
 _DEFAULT_WEEKLY_PACE_WORKING_DAYS = "0,1,2,3,4,5,6"
@@ -81,6 +82,34 @@ def _normalize_orcarouter_sidecar_base_url(value: str | None) -> str | None:
     parsed = urlparse(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("orcarouter_sidecar_base_url must be an http(s) URL")
+    return normalized
+
+
+def _normalize_opencode_go_sidecar_base_url(value: str | None) -> str | None:
+    """Validate an OpenCode **Go** base URL.
+
+    Beyond the usual http(s) check this rejects an OpenCode **Zen** URL. The two
+    are different products: Go is the $10/month subscription on ``/zen/go/v1``,
+    Zen is pay-as-you-go credits on ``/zen/v1``. Pointing a Go key at the Zen
+    path silently bills PAYG credits instead of the subscription, and the two
+    paths do not even share per-endpoint authentication conventions, so this is
+    a wrong-product error rather than a preference.
+    """
+
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("opencode_go_sidecar_base_url must not be blank")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("opencode_go_sidecar_base_url must be an http(s) URL")
+    if not is_opencode_go_base_url(normalized):
+        raise ValueError(
+            "opencode_go_sidecar_base_url must be an OpenCode Go endpoint such as "
+            "https://opencode.ai/zen/go/v1 - an OpenCode Zen URL bills pay-as-you-go "
+            "credits instead of the Go subscription"
+        )
     return normalized
 
 
@@ -320,6 +349,24 @@ class DashboardSettingsResponse(DashboardModel):
     orcarouter_sidecar_last_checked_at: datetime | None = None
     orcarouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     orcarouter_sidecar_default_reasoning_effort: str | None = None
+    opencode_go_sidecar_enabled: bool = False
+    opencode_go_sidecar_base_url: str = Field(default="https://opencode.ai/zen/go/v1", min_length=1)
+    opencode_go_sidecar_api_key_configured: bool = False
+    opencode_go_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(
+        # ``strip=True``: OpenCode's own config format is ``opencode-go/<id>``,
+        # so the prefix is an alias that must come off before the wire model is
+        # sent, not part of the upstream model id.
+        default_factory=lambda: [SidecarModelPrefix(prefix="opencode-go/", strip=True)],
+        max_length=32,
+    )
+    opencode_go_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
+    opencode_go_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    opencode_go_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    opencode_go_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    opencode_go_sidecar_last_health_status: str | None = None
+    opencode_go_sidecar_last_health_message: str | None = None
+    opencode_go_sidecar_last_checked_at: datetime | None = None
+    opencode_go_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     omniroute_sidecar_enabled: bool = False
     omniroute_sidecar_base_url: str = Field(default="http://127.0.0.1:20128/v1", min_length=1)
     omniroute_sidecar_api_key_configured: bool = False
@@ -444,6 +491,15 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     orcarouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     orcarouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     orcarouter_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
+    opencode_go_sidecar_enabled: bool | None = None
+    opencode_go_sidecar_base_url: str | None = Field(default=None, max_length=2048)
+    opencode_go_sidecar_api_key: str | None = Field(default=None, max_length=4096)
+    opencode_go_sidecar_clear_api_key: bool | None = None
+    opencode_go_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, max_length=32)
+    opencode_go_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
+    opencode_go_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    opencode_go_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
+    opencode_go_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     omniroute_sidecar_enabled: bool | None = None
     omniroute_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     omniroute_sidecar_api_key: str | None = Field(default=None, max_length=4096)
@@ -646,6 +702,36 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator("orcarouter_sidecar_api_key")
     @classmethod
     def _normalize_orcarouter_sidecar_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("opencode_go_sidecar_base_url")
+    @classmethod
+    def _normalize_opencode_go_sidecar_base_url(cls, value: str | None) -> str | None:
+        return _normalize_opencode_go_sidecar_base_url(value)
+
+    @field_validator("opencode_go_sidecar_model_prefixes")
+    @classmethod
+    def _normalize_opencode_go_sidecar_prefixes(
+        cls,
+        value: list[SidecarModelPrefix] | None,
+    ) -> list[SidecarModelPrefix] | None:
+        return _normalize_sidecar_model_prefixes(value, field_name="opencode_go_sidecar_model_prefixes")
+
+    @field_validator("opencode_go_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _coerce_opencode_go_sidecar_prefixes(cls, value: object) -> object:
+        return _coerce_sidecar_model_prefixes(value)
+
+    @field_validator("opencode_go_sidecar_full_models")
+    @classmethod
+    def _normalize_opencode_go_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_sidecar_full_models(value, field_name="opencode_go_sidecar_full_models")
+
+    @field_validator("opencode_go_sidecar_api_key")
+    @classmethod
+    def _normalize_opencode_go_sidecar_api_key(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip()

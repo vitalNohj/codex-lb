@@ -150,6 +150,25 @@ class SettingsRepository:
             orcarouter_sidecar_connect_timeout_seconds=static_settings.orcarouter_sidecar_connect_timeout_seconds,
             orcarouter_sidecar_request_timeout_seconds=static_settings.orcarouter_sidecar_request_timeout_seconds,
             orcarouter_sidecar_models_cache_ttl_seconds=static_settings.orcarouter_sidecar_models_cache_ttl_seconds,
+            opencode_go_sidecar_enabled=static_settings.opencode_go_sidecar_enabled,
+            opencode_go_sidecar_base_url=static_settings.opencode_go_sidecar_base_url,
+            opencode_go_sidecar_api_key_encrypted=(
+                TokenEncryptor().encrypt(static_settings.opencode_go_sidecar_api_key.strip())
+                if static_settings.opencode_go_sidecar_api_key.strip()
+                else None
+            ),
+            # Same rule as OrcaRouter: the ``opencode-go/`` seed lives in the
+            # settings default, so an absent
+            # CODEX_LB_OPENCODE_GO_SIDECAR_MODEL_PREFIXES still seeds it while an
+            # explicitly emptied value is honoured as empty. The migration's
+            # fresh-install seed shares this helper so both entry points agree.
+            opencode_go_sidecar_model_prefixes_json=dump_configured_sidecar_prefixes(
+                static_settings.opencode_go_sidecar_model_prefixes
+            ),
+            opencode_go_sidecar_full_models_json="[]",
+            opencode_go_sidecar_connect_timeout_seconds=static_settings.opencode_go_sidecar_connect_timeout_seconds,
+            opencode_go_sidecar_request_timeout_seconds=static_settings.opencode_go_sidecar_request_timeout_seconds,
+            opencode_go_sidecar_models_cache_ttl_seconds=static_settings.opencode_go_sidecar_models_cache_ttl_seconds,
             omniroute_sidecar_enabled=static_settings.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=static_settings.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_encrypted=(
@@ -247,6 +266,10 @@ class SettingsRepository:
         orcarouter_sidecar_last_health_message: str | None | object = _UNSET,
         orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         orcarouter_sidecar_last_model_count: int | None | object = _UNSET,
+        opencode_go_sidecar_last_health_status: str | None | object = _UNSET,
+        opencode_go_sidecar_last_health_message: str | None | object = _UNSET,
+        opencode_go_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        opencode_go_sidecar_last_model_count: int | None | object = _UNSET,
         omniroute_sidecar_last_health_status: str | None | object = _UNSET,
         omniroute_sidecar_last_health_message: str | None | object = _UNSET,
         omniroute_sidecar_last_checked_at: datetime | None | object = _UNSET,
@@ -278,6 +301,10 @@ class SettingsRepository:
             "orcarouter_sidecar_last_health_message": orcarouter_sidecar_last_health_message,
             "orcarouter_sidecar_last_checked_at": orcarouter_sidecar_last_checked_at,
             "orcarouter_sidecar_last_model_count": orcarouter_sidecar_last_model_count,
+            "opencode_go_sidecar_last_health_status": opencode_go_sidecar_last_health_status,
+            "opencode_go_sidecar_last_health_message": opencode_go_sidecar_last_health_message,
+            "opencode_go_sidecar_last_checked_at": opencode_go_sidecar_last_checked_at,
+            "opencode_go_sidecar_last_model_count": opencode_go_sidecar_last_model_count,
             "omniroute_sidecar_last_health_status": omniroute_sidecar_last_health_status,
             "omniroute_sidecar_last_health_message": omniroute_sidecar_last_health_message,
             "omniroute_sidecar_last_checked_at": omniroute_sidecar_last_checked_at,
@@ -393,6 +420,14 @@ class SettingsRepository:
         orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         orcarouter_sidecar_last_model_count: int | None | object = _UNSET,
         orcarouter_sidecar_default_reasoning_effort: str | None | object = _UNSET,
+        opencode_go_sidecar_enabled: bool | None = None,
+        opencode_go_sidecar_base_url: str | None = None,
+        opencode_go_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        opencode_go_sidecar_model_prefixes_json: str | None = None,
+        opencode_go_sidecar_full_models_json: str | None = None,
+        opencode_go_sidecar_connect_timeout_seconds: float | None = None,
+        opencode_go_sidecar_request_timeout_seconds: float | None = None,
+        opencode_go_sidecar_models_cache_ttl_seconds: float | None = None,
         omniroute_sidecar_enabled: bool | None = None,
         omniroute_sidecar_base_url: str | None = None,
         omniroute_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -628,6 +663,22 @@ class SettingsRepository:
             settings.orcarouter_sidecar_last_model_count = orcarouter_sidecar_last_model_count
         if orcarouter_sidecar_default_reasoning_effort is not _UNSET:
             settings.orcarouter_sidecar_default_reasoning_effort = orcarouter_sidecar_default_reasoning_effort
+        if opencode_go_sidecar_enabled is not None:
+            settings.opencode_go_sidecar_enabled = opencode_go_sidecar_enabled
+        if opencode_go_sidecar_base_url is not None:
+            settings.opencode_go_sidecar_base_url = opencode_go_sidecar_base_url
+        if opencode_go_sidecar_api_key_encrypted is not _UNSET:
+            settings.opencode_go_sidecar_api_key_encrypted = opencode_go_sidecar_api_key_encrypted
+        if opencode_go_sidecar_model_prefixes_json is not None:
+            settings.opencode_go_sidecar_model_prefixes_json = opencode_go_sidecar_model_prefixes_json
+        if opencode_go_sidecar_full_models_json is not None:
+            settings.opencode_go_sidecar_full_models_json = opencode_go_sidecar_full_models_json
+        if opencode_go_sidecar_connect_timeout_seconds is not None:
+            settings.opencode_go_sidecar_connect_timeout_seconds = opencode_go_sidecar_connect_timeout_seconds
+        if opencode_go_sidecar_request_timeout_seconds is not None:
+            settings.opencode_go_sidecar_request_timeout_seconds = opencode_go_sidecar_request_timeout_seconds
+        if opencode_go_sidecar_models_cache_ttl_seconds is not None:
+            settings.opencode_go_sidecar_models_cache_ttl_seconds = opencode_go_sidecar_models_cache_ttl_seconds
         if omniroute_sidecar_enabled is not None:
             settings.omniroute_sidecar_enabled = omniroute_sidecar_enabled
         if omniroute_sidecar_base_url is not None:

@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import asyncio
+
+import aiohttp
+import pytest
+
+from app import __version__
+from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.clients.opencode_go_sidecar import (
+    OpenCodeGoSidecarClient,
+    OpenCodeGoSidecarConfig,
+    OpenCodeGoSidecarError,
+    OpenCodeGoSidecarUnavailableError,
+    get_opencode_go_sidecar_client,
+    is_opencode_go_base_url,
+    opencode_go_request_headers,
+    reset_opencode_go_sidecar_client_cache,
+    sanitize_opencode_go_error_body,
+    sanitize_opencode_go_message,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def _config(**overrides) -> OpenCodeGoSidecarConfig:
+    values = {
+        "enabled": True,
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key": None,
+        "prefixes": (SidecarPrefix(prefix="opencode-go/", strip=True),),
+        "connect_timeout_seconds": 8.0,
+        "request_timeout_seconds": 600.0,
+        "models_cache_ttl_seconds": 60.0,
+    }
+    values.update(overrides)
+    return OpenCodeGoSidecarConfig(**values)
+
+
+class _FakeContent:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def iter_chunked(self, _size: int):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        status: int,
+        text: str,
+        chunks: list[bytes] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status = status
+        self._text = text
+        self.content = _FakeContent(chunks or [])
+        self.headers = headers or {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def text(self) -> str:
+        return self._text
+
+
+class _FakeSession:
+    def __init__(
+        self,
+        *,
+        get_response: _FakeResponse | Exception | None = None,
+        post_response: _FakeResponse | Exception | None = None,
+    ) -> None:
+        self.get_response = get_response
+        self.post_response = post_response
+        self.last_url: str | None = None
+        self.last_headers: dict[str, str] | None = None
+        self.last_json = None
+
+    def get(self, url: str, *, headers, timeout):
+        self.last_url = url
+        self.last_headers = headers
+        if isinstance(self.get_response, Exception):
+            raise self.get_response
+        assert self.get_response is not None
+        return self.get_response
+
+    def post(self, url: str, *, headers, json, timeout):
+        self.last_url = url
+        self.last_headers = headers
+        self.last_json = json
+        if isinstance(self.post_response, Exception):
+            raise self.post_response
+        assert self.post_response is not None
+        return self.post_response
+
+
+class _Lease:
+    def __init__(self, session: _FakeSession) -> None:
+        self.session = session
+
+    async def __aenter__(self) -> _FakeSession:
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def _patch(monkeypatch, session: _FakeSession) -> None:
+    monkeypatch.setattr("app.core.clients.opencode_go_sidecar.lease_http_session", lambda: _Lease(session))
+
+
+# --------------------------------------------------------------------------
+# Go vs Zen
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://opencode.ai/zen/go/v1", True),
+        ("https://opencode.ai/zen/go/v1/", True),
+        ("HTTPS://OPENCODE.AI/zen/go/v1", True),
+        # Zen is a different product with different billing.
+        ("https://opencode.ai/zen/v1", False),
+        # A "go" that is not its own path segment must not pass.
+        ("https://opencode.ai/zen/v1/gold", False),
+        ("https://opencode.ai/zen/going/v1", False),
+        # A /go/ path on some other host says nothing about which product bills.
+        ("https://example.com/zen/go/v1", False),
+        ("http://opencode.ai/zen/go/v1", False),
+    ],
+)
+def test_is_opencode_go_base_url_distinguishes_go_from_zen(url: str, expected: bool) -> None:
+    assert is_opencode_go_base_url(url) is expected
+
+
+# --------------------------------------------------------------------------
+# Headers / user agent
+# --------------------------------------------------------------------------
+
+
+def test_request_headers_carry_codex_lb_user_agent_and_bearer() -> None:
+    headers = opencode_go_request_headers(_config(api_key="sk-go-secret"))
+
+    # Go's client obligations ask for a client-specific user agent, not a
+    # generic SDK or HTTP-library name.
+    assert headers["User-Agent"] == f"codex-lb/{__version__}"
+    assert headers["Authorization"] == "Bearer sk-go-secret"
+    assert headers["Accept"] == "application/json"
+
+
+def test_request_headers_omit_authorization_when_unconfigured() -> None:
+    headers = opencode_go_request_headers(_config(api_key=None))
+
+    assert "Authorization" not in headers
+
+
+@pytest.mark.asyncio
+async def test_models_request_uses_go_path_and_user_agent(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(200, '{"object":"list","data":[]}'))
+    _patch(monkeypatch, session)
+
+    await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).list_models()
+
+    assert session.last_url == "https://opencode.ai/zen/go/v1/models"
+    assert session.last_headers["User-Agent"] == f"codex-lb/{__version__}"
+
+
+# --------------------------------------------------------------------------
+# Model listing
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_models_parses_listing_and_publishes_no_prices(monkeypatch) -> None:
+    from app.core.usage.runtime_pricing import get_runtime_pricing_registry
+
+    get_runtime_pricing_registry().clear()
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            '{"object":"list","data":['
+            '{"id":"glm-5.3","object":"model","created":1789353162,"owned_by":"opencode"},'
+            '{"id":"kimi-k3","object":"model","created":1789353162}'
+            "]}",
+        )
+    )
+    _patch(monkeypatch, session)
+
+    models = await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).list_models()
+
+    assert [model.id for model in models] == ["glm-5.3", "kimi-k3"]
+    assert models[1].owned_by == "opencode"
+    # Go's listing carries no pricing block at all. Writing an empty price would
+    # assert "this model is free"; the correct statement is "this endpoint does
+    # not say", so nothing is published.
+    assert all(model.pricing is None for model in models)
+    assert get_runtime_pricing_registry().runtime_pricing_for_model("glm-5.3", provider="opencode_go") is None
+
+
+@pytest.mark.asyncio
+async def test_list_models_rejects_malformed_payload(monkeypatch) -> None:
+    _patch(monkeypatch, _FakeSession(get_response=_FakeResponse(200, '{"object":"list"}')))
+
+    with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+        await OpenCodeGoSidecarClient(_config()).list_models()
+
+    assert excinfo.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_list_models_cached_serves_stale_after_failure(monkeypatch) -> None:
+    good = _FakeSession(get_response=_FakeResponse(200, '{"object":"list","data":[{"id":"glm-5.3"}]}'))
+    _patch(monkeypatch, good)
+    client = OpenCodeGoSidecarClient(_config(api_key="sk-go-key", models_cache_ttl_seconds=0.0))
+    assert [m.id for m in await client.list_models_cached()] == ["glm-5.3"]
+
+    _patch(monkeypatch, _FakeSession(get_response=aiohttp.ClientError("boom")))
+    # TTL is zero, so this call refetches, fails, and must fall back to the
+    # cached listing rather than reporting an empty catalogue.
+    assert [m.id for m in await client.list_models_cached()] == ["glm-5.3"]
+
+
+# --------------------------------------------------------------------------
+# Errors, Retry-After, transport
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_surfaces_upstream_error_message(monkeypatch) -> None:
+    _patch(
+        monkeypatch,
+        _FakeSession(post_response=_FakeResponse(400, '{"error":{"message":"bad model","type":"invalid"}}')),
+    )
+
+    with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+        await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.message == "bad model"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_is_captured_verbatim_from_429(monkeypatch) -> None:
+    _patch(
+        monkeypatch,
+        _FakeSession(
+            post_response=_FakeResponse(
+                429,
+                '{"error":{"message":"rate limited"}}',
+                headers={"Retry-After": "137"},
+            )
+        ),
+    )
+
+    with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+        await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+    assert excinfo.value.status_code == 429
+    # Relayed, not recomputed: only the upstream knows when its window reopens,
+    # and Go's caps are hard dollar limits where a too-short guess is costly.
+    assert excinfo.value.retry_after == "137"
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_becomes_unavailable(monkeypatch) -> None:
+    _patch(monkeypatch, _FakeSession(post_response=asyncio.TimeoutError()))
+
+    with pytest.raises(OpenCodeGoSidecarUnavailableError) as excinfo:
+        await OpenCodeGoSidecarClient(_config()).chat_completion({"model": "glm-5.3"})
+
+    assert excinfo.value.status_code == 503
+
+
+# --------------------------------------------------------------------------
+# Streaming
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_completion_yields_chunks(monkeypatch) -> None:
+    chunks = [b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', b"data: [DONE]\n\n"]
+    _patch(monkeypatch, _FakeSession(post_response=_FakeResponse(200, "", chunks=chunks)))
+
+    received: list[bytes] = []
+    async with OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).stream_chat_completion(
+        {"model": "glm-5.3", "stream": True}
+    ) as stream:
+        async for chunk in stream:
+            received.append(chunk)
+
+    assert received == chunks
+
+
+@pytest.mark.asyncio
+async def test_stream_raises_before_yielding_on_upstream_error(monkeypatch) -> None:
+    _patch(monkeypatch, _FakeSession(post_response=_FakeResponse(401, '{"error":{"message":"Missing API key."}}')))
+
+    with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+        async with OpenCodeGoSidecarClient(_config()).stream_chat_completion({"model": "glm-5.3"}) as stream:
+            async for _chunk in stream:  # pragma: no cover - must not be reached
+                pass
+
+    assert excinfo.value.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Session header threading (client level)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_client_forwards_direct_session_header(monkeypatch) -> None:
+    session = _FakeSession(post_response=_FakeResponse(200, "{}"))
+    _patch(monkeypatch, session)
+
+    await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion(
+        {"model": "glm-5.3"},
+        client_headers={"user-agent": "opencode/1.0", "x-opencode-session": "ses_client_value"},
+    )
+
+    assert session.last_headers["x-opencode-session"] == "ses_client_value"
+
+
+@pytest.mark.asyncio
+async def test_client_cannot_have_authorization_or_host_overridden(monkeypatch) -> None:
+    session = _FakeSession(post_response=_FakeResponse(200, "{}"))
+    _patch(monkeypatch, session)
+
+    await OpenCodeGoSidecarClient(_config(api_key="sk-go-real")).chat_completion(
+        {"model": "glm-5.3"},
+        client_headers={
+            "user-agent": "opencode/1.0",
+            "authorization": "Bearer attacker-token",
+            "host": "evil.example.com",
+            "x-forwarded-for": "10.0.0.1",
+        },
+    )
+
+    # The outbound header set is built from stored config; the only inbound
+    # header that can influence it is the derived session id.
+    assert session.last_headers["Authorization"] == "Bearer sk-go-real"
+    assert "host" not in {key.lower() for key in session.last_headers}
+    assert "x-forwarded-for" not in {key.lower() for key in session.last_headers}
+
+
+@pytest.mark.asyncio
+async def test_client_sends_no_session_header_for_unknown_client(monkeypatch) -> None:
+    session = _FakeSession(post_response=_FakeResponse(200, "{}"))
+    _patch(monkeypatch, session)
+
+    await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion(
+        {"model": "glm-5.3"},
+        client_headers={"user-agent": "curl/8.4.0"},
+    )
+
+    # Honest outcome: no identity is known, so none is invented.
+    assert "x-opencode-session" not in {key.lower() for key in session.last_headers}
+
+
+@pytest.mark.asyncio
+async def test_session_header_is_not_accumulated_across_requests(monkeypatch) -> None:
+    session = _FakeSession(post_response=_FakeResponse(200, "{}"))
+    _patch(monkeypatch, session)
+    client = OpenCodeGoSidecarClient(_config(api_key="sk-go-key"))
+
+    await client.chat_completion(
+        {"model": "glm-5.3"},
+        client_headers={"user-agent": "opencode/1.0", "x-opencode-session": "first"},
+    )
+    await client.chat_completion({"model": "glm-5.3"}, client_headers={"user-agent": "curl/8.4.0"})
+
+    # A reused header mapping must not carry the previous request's session.
+    assert "x-opencode-session" not in {key.lower() for key in session.last_headers}
+
+
+# --------------------------------------------------------------------------
+# Redaction
+# --------------------------------------------------------------------------
+
+
+def test_sanitize_removes_configured_key_bearer_and_bare_sk() -> None:
+    key = "sk-go-abcdef0123456789"
+    message = f"Invalid credential {key} (Authorization: Bearer {key}) for sk-go-otherkey12345"
+
+    sanitized = sanitize_opencode_go_message(message, api_key=key)
+
+    assert key not in sanitized
+    assert "sk-go-otherkey12345" not in sanitized
+    assert "[redacted]" in sanitized
+
+
+def test_sanitize_preserves_ordinary_upstream_prose() -> None:
+    # A short purely-alphabetic configured value is ambiguous with prose, so it
+    # is only redacted in a credential position - the message stays legible.
+    assert sanitize_opencode_go_message("Invalid API key", api_key="key") == "Invalid API key"
+
+
+def test_sanitize_error_body_scrubs_nested_strings() -> None:
+    key = "sk-go-abcdef0123456789"
+    body = {"error": {"message": f"bad {key}", "meta": [f"Bearer {key}", {"echo": key}]}}
+
+    sanitized = sanitize_opencode_go_error_body(body, api_key=key)
+
+    assert key not in repr(sanitized)
+
+
+# --------------------------------------------------------------------------
+# Client cache
+# --------------------------------------------------------------------------
+
+
+def test_client_cache_is_evicted_when_config_changes() -> None:
+    reset_opencode_go_sidecar_client_cache()
+    first = get_opencode_go_sidecar_client(_config(api_key="sk-go-one"))
+    assert get_opencode_go_sidecar_client(_config(api_key="sk-go-one")) is first
+
+    # A settings change must drop the cached client together with its cached
+    # models and its copy of the old credential.
+    second = get_opencode_go_sidecar_client(_config(api_key="sk-go-two"))
+    assert second is not first
+    reset_opencode_go_sidecar_client_cache()

@@ -42,6 +42,7 @@ from app.core.types import JsonValue
 from app.core.usage.external_pricing.providers import (
     EXTERNAL_PRICED_PROVIDERS,
     PROVIDER_CLIPROXY,
+    PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
     is_external_priced_provider,
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "EXTERNAL_PRICED_PROVIDERS",
     "PROVIDER_CLIPROXY",
+    "PROVIDER_OPENCODE_GO",
     "PROVIDER_OPENROUTER",
     "PROVIDER_ORCAROUTER",
     "OPENROUTER_REFERENCE_SOURCE",

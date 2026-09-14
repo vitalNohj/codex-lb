@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from app.core.openai.requests import ResponsesRequest
-from app.modules.proxy.omniroute_responses_dispatch import (
+from app.modules.proxy.responses_chat_bridge import (
     ResponsesStreamSynthesizer,
-    omniroute_chat_to_responses_result,
-    responses_to_omniroute_chat_request,
+    chat_to_responses_result,
+    responses_to_chat_request,
 )
 
 pytestmark = pytest.mark.unit
@@ -25,7 +25,7 @@ def _responses_request(**overrides) -> ResponsesRequest:
 
 
 def test_request_translation_builds_messages_from_instructions_and_input():
-    chat = responses_to_omniroute_chat_request(_responses_request(), "omniroute/test-chat")
+    chat = responses_to_chat_request(_responses_request(), "omniroute/test-chat")
 
     assert chat.model == "omniroute/test-chat"
     assert chat.messages == [
@@ -35,7 +35,7 @@ def test_request_translation_builds_messages_from_instructions_and_input():
 
 
 def test_request_translation_handles_string_input():
-    chat = responses_to_omniroute_chat_request(
+    chat = responses_to_chat_request(
         _responses_request(instructions="", input="just text"),
         "omniroute/test-chat",
     )
@@ -57,7 +57,7 @@ def test_request_translation_preserves_input_image_parts():
         ],
     )
 
-    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.messages == [
         {
@@ -87,7 +87,7 @@ def test_request_translation_preserves_image_url_object_with_detail():
         ],
     )
 
-    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.messages[0]["content"][1] == {
         "type": "image_url",
@@ -100,7 +100,7 @@ def test_request_translation_carries_tools_and_stream():
         stream=True,
         tools=[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
     )
-    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.stream is True
     assert chat.tools and chat.tools[0]["name"] == "lookup"
@@ -115,7 +115,7 @@ def test_non_streaming_result_wraps_assistant_text():
         "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
     }
 
-    result = omniroute_chat_to_responses_result(chat_body, model="omniroute/test-chat")
+    result = chat_to_responses_result(chat_body, model="omniroute/test-chat")
 
     assert result["object"] == "response"
     assert result["status"] == "completed"
@@ -143,7 +143,7 @@ def test_non_streaming_result_maps_tool_calls():
         ],
     }
 
-    result = omniroute_chat_to_responses_result(chat_body, model="omniroute/test-chat")
+    result = chat_to_responses_result(chat_body, model="omniroute/test-chat")
 
     function_calls = [item for item in result["output"] if item["type"] == "function_call"]
     assert function_calls and function_calls[0]["call_id"] == "call_1"

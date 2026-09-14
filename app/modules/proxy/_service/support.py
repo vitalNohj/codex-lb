@@ -17,6 +17,7 @@ import anyio
 from app.core.auth.refresh import RefreshError, is_transient_refresh_contention, refresh_contention_kind
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import CodexControlRequestPrivacyPolicy, ProxyResponseError
+from app.core.conversation.headers import extract_conversation_id
 from app.core.clients.proxy_websocket import UpstreamWebSocket
 from app.core.config.settings import get_settings
 from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, openai_error
@@ -599,12 +600,6 @@ def _supported_optional_kwargs(
     return kwargs
 
 
-_CONVERSATION_HEADERS_BY_USERAGENT_PREFIX = (
-    ("opencode", ("x-parent-session-id", "x-opencode-session", "x-session-id", "x-session-affinity")),
-    ("codex", ("thread-id",)),
-)
-
-
 def _request_log_useragent_fields(headers: Mapping[str, str]) -> tuple[str | None, str | None]:
     raw_useragent = next((value for key, value in headers.items() if key.lower() == "user-agent"), None)
     if raw_useragent is None:
@@ -623,16 +618,7 @@ def _request_log_client_fields(
     headers: Mapping[str, str],
 ) -> tuple[str | None, str | None, str | None]:
     useragent, useragent_group = _request_log_useragent_fields(headers)
-    normalized_useragent = (useragent or "").strip().casefold()
-    normalized_headers = {key.casefold(): value for key, value in headers.items()}
-    for prefix, header_names in _CONVERSATION_HEADERS_BY_USERAGENT_PREFIX:
-        if normalized_useragent.startswith(prefix):
-            for header_name in header_names:
-                value = normalized_headers.get(header_name)
-                if value and (conversation_id := value.strip()):
-                    return useragent, useragent_group, conversation_id
-            break
-    return useragent, useragent_group, None
+    return useragent, useragent_group, extract_conversation_id(headers)
 
 
 class _RetryableStreamError(Exception):

@@ -15,12 +15,17 @@ from __future__ import annotations
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_ORCAROUTER = "orcarouter"
 PROVIDER_CLIPROXY = "cliproxy"
+#: OpenCode Go. Participates so its ids reach the resolver, but it publishes no
+#: rates of its own: ``GET /zen/go/v1/models`` carries no pricing block at all.
+#: Its cost is always a list-price *estimate*, never subscription spend.
+PROVIDER_OPENCODE_GO = "opencode_go"
 
 EXTERNAL_PRICED_PROVIDERS: frozenset[str] = frozenset(
     {
         PROVIDER_OPENROUTER,
         PROVIDER_ORCAROUTER,
         PROVIDER_CLIPROXY,
+        PROVIDER_OPENCODE_GO,
     }
 )
 
@@ -34,6 +39,7 @@ EXTERNAL_PRICED_LOG_SOURCES: frozenset[str] = frozenset(
         "openrouter_sidecar",
         "orcarouter_sidecar",
         "claude_sidecar",
+        "opencode_go_sidecar",
     }
 )
 
@@ -41,6 +47,7 @@ _LOG_SOURCE_PROVIDERS: dict[str, str] = {
     "openrouter_sidecar": PROVIDER_OPENROUTER,
     "orcarouter_sidecar": PROVIDER_ORCAROUTER,
     "claude_sidecar": PROVIDER_CLIPROXY,
+    "opencode_go_sidecar": PROVIDER_OPENCODE_GO,
 }
 
 

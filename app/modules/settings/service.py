@@ -117,6 +117,18 @@ class DashboardSettingsData:
     orcarouter_sidecar_last_checked_at: datetime | None
     orcarouter_sidecar_last_model_count: int | None
     orcarouter_sidecar_default_reasoning_effort: str | None
+    opencode_go_sidecar_enabled: bool
+    opencode_go_sidecar_base_url: str
+    opencode_go_sidecar_api_key_configured: bool
+    opencode_go_sidecar_model_prefixes: list[SidecarPrefix]
+    opencode_go_sidecar_full_models: list[str]
+    opencode_go_sidecar_connect_timeout_seconds: float
+    opencode_go_sidecar_request_timeout_seconds: float
+    opencode_go_sidecar_models_cache_ttl_seconds: float
+    opencode_go_sidecar_last_health_status: str | None
+    opencode_go_sidecar_last_health_message: str | None
+    opencode_go_sidecar_last_checked_at: datetime | None
+    opencode_go_sidecar_last_model_count: int | None
     omniroute_sidecar_enabled: bool
     omniroute_sidecar_base_url: str
     omniroute_sidecar_api_key_configured: bool
@@ -237,6 +249,15 @@ class DashboardSettingsUpdateData:
     orcarouter_sidecar_request_timeout_seconds: float
     orcarouter_sidecar_models_cache_ttl_seconds: float
     orcarouter_sidecar_default_reasoning_effort: str | None
+    opencode_go_sidecar_enabled: bool
+    opencode_go_sidecar_base_url: str
+    opencode_go_sidecar_api_key: str | None
+    opencode_go_sidecar_clear_api_key: bool
+    opencode_go_sidecar_model_prefixes: list[SidecarPrefix]
+    opencode_go_sidecar_full_models: list[str]
+    opencode_go_sidecar_connect_timeout_seconds: float
+    opencode_go_sidecar_request_timeout_seconds: float
+    opencode_go_sidecar_models_cache_ttl_seconds: float
     omniroute_sidecar_enabled: bool
     omniroute_sidecar_base_url: str
     omniroute_sidecar_api_key: str | None
@@ -351,6 +372,14 @@ class SettingsService:
             orcarouter_api_key_encrypted = (
                 self._encryptor.encrypt(orcarouter_api_key_value) if orcarouter_api_key_value else None
             )
+        opencode_go_api_key_encrypted = current.opencode_go_sidecar_api_key_encrypted
+        if payload.opencode_go_sidecar_clear_api_key:
+            opencode_go_api_key_encrypted = None
+        elif payload.opencode_go_sidecar_api_key is not None:
+            opencode_go_api_key_value = payload.opencode_go_sidecar_api_key.strip()
+            opencode_go_api_key_encrypted = (
+                self._encryptor.encrypt(opencode_go_api_key_value) if opencode_go_api_key_value else None
+            )
         omniroute_api_key_encrypted = current.omniroute_sidecar_api_key_encrypted
         if payload.omniroute_sidecar_clear_api_key:
             omniroute_api_key_encrypted = None
@@ -456,6 +485,16 @@ class SettingsService:
             orcarouter_sidecar_request_timeout_seconds=payload.orcarouter_sidecar_request_timeout_seconds,
             orcarouter_sidecar_models_cache_ttl_seconds=payload.orcarouter_sidecar_models_cache_ttl_seconds,
             orcarouter_sidecar_default_reasoning_effort=payload.orcarouter_sidecar_default_reasoning_effort,
+            opencode_go_sidecar_enabled=payload.opencode_go_sidecar_enabled,
+            opencode_go_sidecar_base_url=payload.opencode_go_sidecar_base_url,
+            opencode_go_sidecar_api_key_encrypted=opencode_go_api_key_encrypted,
+            opencode_go_sidecar_model_prefixes_json=_dump_sidecar_model_prefixes(
+                payload.opencode_go_sidecar_model_prefixes
+            ),
+            opencode_go_sidecar_full_models_json=_dump_sidecar_full_models(payload.opencode_go_sidecar_full_models),
+            opencode_go_sidecar_connect_timeout_seconds=payload.opencode_go_sidecar_connect_timeout_seconds,
+            opencode_go_sidecar_request_timeout_seconds=payload.opencode_go_sidecar_request_timeout_seconds,
+            opencode_go_sidecar_models_cache_ttl_seconds=payload.opencode_go_sidecar_models_cache_ttl_seconds,
             omniroute_sidecar_enabled=payload.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=payload.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_encrypted=omniroute_api_key_encrypted,
@@ -609,6 +648,20 @@ class SettingsService:
             orcarouter_sidecar_last_checked_at=row.orcarouter_sidecar_last_checked_at,
             orcarouter_sidecar_last_model_count=row.orcarouter_sidecar_last_model_count,
             orcarouter_sidecar_default_reasoning_effort=row.orcarouter_sidecar_default_reasoning_effort,
+            opencode_go_sidecar_enabled=row.opencode_go_sidecar_enabled,
+            opencode_go_sidecar_base_url=row.opencode_go_sidecar_base_url,
+            opencode_go_sidecar_api_key_configured=row.opencode_go_sidecar_api_key_encrypted is not None,
+            opencode_go_sidecar_model_prefixes=_parse_sidecar_model_prefixes(
+                row.opencode_go_sidecar_model_prefixes_json
+            ),
+            opencode_go_sidecar_full_models=_parse_sidecar_full_models(row.opencode_go_sidecar_full_models_json),
+            opencode_go_sidecar_connect_timeout_seconds=row.opencode_go_sidecar_connect_timeout_seconds,
+            opencode_go_sidecar_request_timeout_seconds=row.opencode_go_sidecar_request_timeout_seconds,
+            opencode_go_sidecar_models_cache_ttl_seconds=row.opencode_go_sidecar_models_cache_ttl_seconds,
+            opencode_go_sidecar_last_health_status=row.opencode_go_sidecar_last_health_status,
+            opencode_go_sidecar_last_health_message=row.opencode_go_sidecar_last_health_message,
+            opencode_go_sidecar_last_checked_at=row.opencode_go_sidecar_last_checked_at,
+            opencode_go_sidecar_last_model_count=row.opencode_go_sidecar_last_model_count,
             omniroute_sidecar_enabled=row.omniroute_sidecar_enabled,
             omniroute_sidecar_base_url=row.omniroute_sidecar_base_url,
             omniroute_sidecar_api_key_configured=row.omniroute_sidecar_api_key_encrypted is not None,
@@ -958,6 +1011,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
             ("OrcaRouter", payload.orcarouter_sidecar_model_prefixes),
+            ("OpenCode Go", payload.opencode_go_sidecar_model_prefixes),
             *omniroute_prefixes,
             ("Ollama", payload.ollama_sidecar_model_prefixes),
         )
@@ -967,6 +1021,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
             ("OrcaRouter", payload.orcarouter_sidecar_full_models),
+            ("OpenCode Go", payload.opencode_go_sidecar_full_models),
             *omniroute_full_models,
             ("Ollama", payload.ollama_sidecar_full_models),
         )
