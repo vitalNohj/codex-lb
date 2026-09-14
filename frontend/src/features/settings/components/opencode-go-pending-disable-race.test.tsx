@@ -1,129 +1,99 @@
 /**
- * The pending-disable window: between flipping the switch and the save landing.
+ * The pending-disable window, driven through the real settings component.
  *
- * `opencode-go-disable-clears-selectability.test.tsx` proves the guard works
- * once `enabled={false}` reaches the browser. That is the *post-refresh* state,
- * and it is not the whole story - which is why this file exists separately
- * rather than as more cases in that one.
+ * `opencode-go-disable-clears-selectability.test.tsx` covers the *post-refresh*
+ * state: the guard once `enabled={false}` has already reached the models
+ * browser. This file covers the window *before* that - between the operator
+ * moving the switch and the save round-tripping - which is a different failure
+ * and needs a different setup.
  *
- * The gap, confirmed in the composed source at Settings `2ae060e3`:
+ * ## Why this file was rewritten
  *
- *   `sidecar-integration-card.tsx`
- *     const setEnabled = (nextEnabled) => {
- *       setEnabledState(nextEnabled);          // local state, immediate
- *       void onSave(buildEnablePatch(nextEnabled));   // async, not awaited
- *     };
+ * An earlier version of this test built a `PendingDisableHarness` that
+ * hardcoded `enabled={serverEnabled}` and a home-made toggle button. That was
+ * unsound as a regression test, and Firstmate was right to call it out: the
+ * harness reproduced the *defect* in the test file itself, so composing the
+ * owner's fix could never change its result, and "fixing" it would have meant
+ * editing my stand-in rather than the product. A test that can only be
+ * satisfied by editing itself proves nothing.
  *
- *   `opencode-go-sidecar-settings.tsx`
- *     const sidecarEnabled = settings.opencodeGoSidecarEnabled ?? false;
- *     render: (...) => <OpenCodeGoModelsBrowser enabled={sidecarEnabled} ... />
+ * Everything below therefore renders the real `OpenCodeGoSidecarSettings`,
+ * moves the real enable switch, and lets the real `SidecarIntegrationCard`
+ * provider wire `models.render`. The save is deferred so the pending window is
+ * held open deliberately. A mutation that reverts the production seam
+ * (`enabled={enabled && sidecarEnabled}` back to `enabled={sidecarEnabled}`)
+ * must fail these; that is the check the old harness could not offer.
  *
- * The card's own switch state updates synchronously, but the models browser is
- * handed `sidecarEnabled`, which is server-backed and only changes after the
- * save round-trips and the settings query refetches. In between - a real window
- * on a slow or failing request - the switch reads "off" while the catalogue
- * still offers models to add.
- *
- * These tests drive the **actual switch** and a **deferred** save, rather than
- * re-rendering with `enabled={false}`, because re-rendering with the final props
- * is precisely the case that already passes and would hide this.
- *
- * Owner: codexlb-opencode-go-settings-r1, actively correcting. `2ae060e3` is a
- * checkpoint. The `it.fails` markers are investigative evidence against this one
- * open race and must become plain assertions on the corrected head.
+ * The historical simulation is retained only in
+ * `data/codexlb-opencode-go-e2e-r1/finding-settings-pending-disable-race.md`
+ * as diagnosis of how the race was found - not as regression evidence.
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import * as React from "react";
-import { BrowserRouter } from "react-router-dom";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
-import { OpenCodeGoModelsBrowser } from "@/features/settings/components/opencode-go-models-browser";
+import { OpenCodeGoSidecarSettings } from "@/features/settings/components/opencode-go-sidecar-settings";
+import type { DashboardSettings } from "@/features/settings/schemas";
+import { createDashboardSettings } from "@/test/mocks/factories";
+import { server } from "@/test/mocks/server";
 
-type Model = {
-  id: string;
-  protocol: "chat_completions" | "messages" | "responses" | "unknown";
-  supported: boolean;
-};
+const ENABLED_SETTINGS = createDashboardSettings({
+  opencodeGoSidecarEnabled: true,
+  opencodeGoSidecarApiKeyConfigured: true,
+});
 
-const CACHED_MODELS: Model[] = [
-  { id: "glm-5.3", protocol: "chat_completions", supported: true },
-  { id: "kimi-k3", protocol: "chat_completions", supported: true },
-];
-
-/**
- * A minimal stand-in for the settings card's enable control, reproducing the
- * composed wiring exactly: local switch state is immediate, the save is async
- * and not awaited, and the browser is fed the *server-backed* value.
- *
- * Built here rather than mounting the whole settings page so the race is
- * isolated and the test cannot pass for an unrelated reason.
- */
-function PendingDisableHarness({
-  onSave,
-  onAddModel,
-}: {
-  onSave: (enabled: boolean) => Promise<void>;
-  onAddModel: (id: string) => void;
-}) {
-  const [switchOn, setSwitchOn] = React.useState(true);
-  // Server-backed: only advances when the save resolves, mirroring the refetch.
-  const [serverEnabled, setServerEnabled] = React.useState(true);
-
-  const setEnabled = (next: boolean) => {
-    setSwitchOn(next);
-    // Mirrors the composed `setEnabled`: fire-and-forget, server value advances
-    // only on success. The `.catch` is the card's own error handling, not a
-    // test convenience - a rejected save must leave the server value behind.
-    void onSave(next)
-      .then(() => setServerEnabled(next))
-      .catch(() => {});
-  };
-
-  return (
-    <div>
-      <button type="button" aria-label="Toggle integration" onClick={() => setEnabled(!switchOn)}>
-        {switchOn ? "Enabled" : "Disabled"}
-      </button>
-      <OpenCodeGoModelsBrowser
-        models={CACHED_MODELS}
-        selectedModels={[]}
-        isLoading={false}
-        configured={true}
-        enabled={serverEnabled}
-        onAddModel={onAddModel}
-      />
-    </div>
+/** A discovered catalogue, as a successful models fetch would have left it. */
+function serveModels() {
+  server.use(
+    http.get("*/api/opencode-go-sidecar/models", () =>
+      HttpResponse.json({
+        models: [
+          { id: "glm-5.3", protocol: "chat_completions", supported: true, ownedBy: "opencode" },
+          { id: "kimi-k3", protocol: "chat_completions", supported: true, ownedBy: "opencode" },
+        ],
+      }),
+    ),
   );
 }
 
-function renderHarness(save: (enabled: boolean) => Promise<void>) {
-  const onAddModel = vi.fn();
+function renderSettings(onSave: (patch: unknown) => Promise<unknown>) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  const saveSpy = vi.fn(onSave);
   render(
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <PendingDisableHarness onSave={save} onAddModel={onAddModel} />
-      </BrowserRouter>
+      {/* Settings stay enabled: the component is told the server still says
+          "on", which is exactly the state during a pending disable. */}
+      <OpenCodeGoSidecarSettings
+        settings={ENABLED_SETTINGS as DashboardSettings}
+        busy={false}
+        onSave={saveSpy as never}
+      />
     </QueryClientProvider>,
   );
-  return { onAddModel };
+  return { saveSpy };
 }
 
-function openThePanel() {
-  act(() => {
-    screen.getByRole("button", { name: /Discovered models/i }).click();
-  });
+async function openDiscoveredModels(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /Discovered models/i }));
 }
 
-function rowFor(modelId: string): HTMLElement {
-  const row = screen.getByText(modelId).closest("li");
-  expect(row, `no row rendered for ${modelId}`).not.toBeNull();
-  return row as HTMLElement;
+async function rowFor(modelId: string): Promise<HTMLElement> {
+  // The id can appear both in the discovered list and in the selected
+  // full-models list, so scope to list rows and take the discovered one.
+  // ``findAllByText`` rather than ``findByText``: a bare match throws
+  // "found multiple elements" the moment a model is also selected elsewhere,
+  // which is a test-selector failure masquerading as a product failure.
+  const labels = await screen.findAllByText(modelId);
+  const rows = labels
+    .map((label) => label.closest("li"))
+    .filter((row): row is HTMLElement => row !== null && within(row).queryAllByRole("button").length > 0);
+  expect(rows.length, `no model row rendered for ${modelId}`).toBeGreaterThan(0);
+  return rows[0];
 }
 
 function enabledControlsIn(row: HTMLElement): HTMLElement[] {
@@ -132,79 +102,110 @@ function enabledControlsIn(row: HTMLElement): HTMLElement[] {
     .filter((control) => !control.hasAttribute("disabled"));
 }
 
+/** The card's enable switch, by role rather than by a label this test owns. */
+async function enableSwitch(): Promise<HTMLElement> {
+  const switches = await screen.findAllByRole("switch");
+  expect(switches.length, "no enable switch rendered").toBeGreaterThan(0);
+  return switches[0];
+}
+
 describe("OpenCode Go models during a pending disable", () => {
-  it("offers models while the integration is enabled and saved", async () => {
-    // Control: without this the rest prove nothing.
-    renderHarness(async () => {});
-    openThePanel();
-    expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(1);
+  it("offers a supported model while enabled and saved", async () => {
+    // Control. Without an offerable control in the healthy state the rest of
+    // this file proves nothing.
+    const user = userEvent.setup();
+    serveModels();
+    renderSettings(async () => undefined);
+    await openDiscoveredModels(user);
+
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
+    });
   });
 
-  it.fails("stops offering models as soon as the switch is turned off", async () => {
+  it("stops offering models the instant the switch is turned off", async () => {
     const user = userEvent.setup();
-    // A save that never resolves: the whole pending window, held open.
-    renderHarness(() => new Promise<void>(() => {}));
-    openThePanel();
-    expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(1);
-
-    await user.click(screen.getByRole("button", { name: "Toggle integration" }));
-
-    // The operator has switched it off. Nothing should still be addable, even
-    // though the server has not acknowledged yet.
-    expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(0);
-  });
-
-  it.fails("invokes no add callback during the pending window", async () => {
-    const user = userEvent.setup();
-    const { onAddModel } = renderHarness(() => new Promise<void>(() => {}));
-    openThePanel();
-
-    await user.click(screen.getByRole("button", { name: "Toggle integration" }));
-
-    const row = rowFor("glm-5.3");
-    const controls = within(row).queryAllByRole("button");
-    expect(controls.length, "the row rendered no controls").toBeGreaterThan(0);
-    await act(async () => {
-      for (const control of controls) {
-        control.click();
-      }
+    serveModels();
+    // A save that never resolves: the pending window, held open.
+    renderSettings(() => new Promise(() => {}));
+    await openDiscoveredModels(user);
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
     });
 
-    expect(onAddModel).not.toHaveBeenCalled();
+    await user.click(await enableSwitch());
+
+    // The operator has switched it off. Nothing may still be addable, even
+    // though the server has not acknowledged and the settings prop still says
+    // enabled.
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(0);
+    });
+    expect(enabledControlsIn(await rowFor("kimi-k3"))).toHaveLength(0);
   });
 
-  it.fails("keeps models unusable when the disable save fails", async () => {
+  it("invokes no save patch from a model row during the pending window", async () => {
     const user = userEvent.setup();
-    // The save rejects, so the server value never advances. The switch shows
-    // "Disabled"; the catalogue must not contradict it.
-    renderHarness(async () => {
+    serveModels();
+    const { saveSpy } = renderSettings(() => new Promise(() => {}));
+    await openDiscoveredModels(user);
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
+    });
+
+    await user.click(await enableSwitch());
+    const enablePatches = saveSpy.mock.calls.length;
+
+    // Click every control in the row, whatever it is now called. A purely
+    // visual fix would satisfy a disabled-attribute check but still let a
+    // full-model patch through here.
+    const row = await rowFor("glm-5.3");
+    for (const control of within(row).queryAllByRole("button")) {
+      await user.click(control).catch(() => undefined);
+    }
+
+    expect(saveSpy.mock.calls.length).toBe(enablePatches);
+  });
+
+  it("keeps models unusable when the disable save fails", async () => {
+    const user = userEvent.setup();
+    serveModels();
+    // The save rejects, so the server value never advances. This window never
+    // closes on its own, which is why it matters more than a slow save.
+    renderSettings(async () => {
       throw new Error("save failed");
     });
-    openThePanel();
-
-    await user.click(screen.getByRole("button", { name: "Toggle integration" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Toggle integration" })).toHaveTextContent("Disabled");
+    await openDiscoveredModels(user);
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
     });
-    expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(0);
+
+    await user.click(await enableSwitch());
+
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(0);
+    });
   });
 
-  it("restores usability once a re-enable save completes", async () => {
+  it("restores usability when the switch is turned back on", async () => {
     // The other direction must keep working, or a fix that simply pinned the
-    // browser to "off" would look correct here.
+    // catalogue to "off" would look correct above.
     const user = userEvent.setup();
-    renderHarness(async () => {});
-    openThePanel();
-
-    await user.click(screen.getByRole("button", { name: "Toggle integration" }));
-    await waitFor(() => {
-      expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(0);
+    serveModels();
+    renderSettings(async () => undefined);
+    await openDiscoveredModels(user);
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
     });
 
-    await user.click(screen.getByRole("button", { name: "Toggle integration" }));
-    await waitFor(() => {
-      expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(1);
+    await user.click(await enableSwitch());
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(0);
+    });
+
+    await user.click(await enableSwitch());
+    await waitFor(async () => {
+      expect(enabledControlsIn(await rowFor("glm-5.3"))).toHaveLength(1);
     });
   });
 });
