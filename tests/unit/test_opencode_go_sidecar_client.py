@@ -56,6 +56,12 @@ class _FakeResponse:
     ) -> None:
         self.status = status
         self._text = text
+        # The client reads bodies by streaming ``content`` under a byte cap, so
+        # a fake that only served ``text()`` would exercise a path the real
+        # client no longer takes. When a test supplies ``text`` and no explicit
+        # chunks, serve those same bytes through ``content``.
+        if chunks is None and text:
+            chunks = [text.encode("utf-8")]
         self.content = _FakeContent(chunks or [])
         self.headers = headers or {}
 
@@ -640,3 +646,172 @@ class TestGoEndpointEnforcedFromEnvironment:
 
         assert static_settings.is_opencode_go_base_url is canonical
         assert dashboard_schemas.is_opencode_go_base_url is canonical
+
+
+# --------------------------------------------------------------------------
+# Bounded body reads (PR 46 finding 1)
+# --------------------------------------------------------------------------
+
+
+class TestResponseBodyIsBounded:
+    """A remote party must not decide how much memory this process allocates.
+
+    ``resp.text()`` buffers the whole body before anything can inspect its size,
+    so an upstream that is hostile, misconfigured, or actually a captive portal
+    could hand over an arbitrarily large body. Reproduced through the real
+    client: an 8 MiB chunked listing was buffered and parsed in full.
+
+    The cap mirrors the sibling quota client's contract rather than inventing a
+    second size policy.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_chunked_body_is_rejected(self, monkeypatch) -> None:
+        """No ``Content-Length`` to trust, so only counted bytes can bound it."""
+
+        from app.core.clients.opencode_go_sidecar import MAX_RESPONSE_BYTES
+
+        oversize = b"x" * (MAX_RESPONSE_BYTES + 8192)
+        _patch(monkeypatch, _FakeSession(get_response=_FakeResponse(200, "", chunks=[oversize])))
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).list_models()
+
+        assert excinfo.value.status_code == 502
+        assert "too large" in excinfo.value.message
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_declared_length_is_rejected_before_reading(self, monkeypatch) -> None:
+        """The advisory fast path: refuse before pulling the body at all."""
+
+        from app.core.clients.opencode_go_sidecar import MAX_RESPONSE_BYTES
+
+        response = _FakeResponse(200, "", headers={"Content-Length": str(MAX_RESPONSE_BYTES + 1)})
+        _patch(monkeypatch, _FakeSession(get_response=response))
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).list_models()
+
+        assert "declared over" in excinfo.value.message
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_response_still_parses(self, monkeypatch) -> None:
+        """Control: the cap must not break the responses we actually serve."""
+
+        body = b'{"object":"list","data":[{"id":"glm-5.3"},{"id":"kimi-k3"}]}'
+        _patch(monkeypatch, _FakeSession(get_response=_FakeResponse(200, "", chunks=[body])))
+
+        models = await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).list_models()
+
+        assert [model.id for model in models] == ["glm-5.3", "kimi-k3"]
+
+    @pytest.mark.asyncio
+    async def test_a_body_split_across_chunks_is_reassembled(self, monkeypatch) -> None:
+        """Counting bytes must not change how an ordinary body is decoded."""
+
+        body = '{"object":"list","data":[{"id":"café-model"}]}'.encode("utf-8")
+        cut = body.index(b"\xc3") + 1
+        _patch(monkeypatch, _FakeSession(get_response=_FakeResponse(200, "", chunks=[body[:cut], body[cut:]])))
+
+        models = await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).list_models()
+
+        assert [model.id for model in models] == ["café-model"]
+
+
+class TestTheCapDoesNotDestroyTheUpstreamStatus:
+    """Bounding an *error* body must not discard what the error said.
+
+    The cap applies to error bodies too - they are equally attacker-influenced.
+    But the status line and ``Retry-After`` live in the headers, and they are
+    the parts this integration acts on. Reading the body first and letting the
+    cap raise would replace a 429 with a generic 502, dropping the upstream's
+    own retry window; Go's caps are hard dollar limits, so a lost ``Retry-After``
+    turns one rate limit into a retry storm. A 401/403 would likewise be
+    downgraded to an unattributable upstream fault.
+
+    So an oversized error body degrades to "no body" while the status survives.
+    """
+
+    @staticmethod
+    def _oversized_error(status: int, headers: dict[str, str] | None = None) -> _FakeResponse:
+        from app.core.clients.opencode_go_sidecar import MAX_RESPONSE_BYTES
+
+        return _FakeResponse(status, "", chunks=[b"x" * (MAX_RESPONSE_BYTES + 8192)], headers=headers)
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_429_keeps_its_status_and_retry_after(self, monkeypatch) -> None:
+        _patch(monkeypatch, _FakeSession(post_response=self._oversized_error(429, {"Retry-After": "137"})))
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.retry_after == "137"
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_401_stays_a_credential_problem(self, monkeypatch) -> None:
+        """Not remapped to 502: the dashboard and caller act on this difference."""
+
+        _patch(monkeypatch, _FakeSession(post_response=self._oversized_error(401)))
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+        assert excinfo.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_the_oversized_error_body_itself_is_still_dropped(self, monkeypatch) -> None:
+        """Preserving the status is not an excuse to relay the oversized body.
+
+        ``client_facing_sidecar_error`` relays bodies to the caller, so the
+        capped payload must not survive into the exception.
+        """
+
+        _patch(monkeypatch, _FakeSession(post_response=self._oversized_error(429, {"Retry-After": "137"})))
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+        assert excinfo.value.body is None
+        assert excinfo.value.message == "OpenCode Go returned HTTP 429"
+
+    @pytest.mark.asyncio
+    async def test_the_streaming_error_path_keeps_the_status_too(self, monkeypatch) -> None:
+        """The third call site reads an error body before streaming begins."""
+
+        _patch(monkeypatch, _FakeSession(post_response=self._oversized_error(429, {"Retry-After": "42"})))
+
+        client = OpenCodeGoSidecarClient(_config(api_key="sk-go-key"))
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            async with client.stream_chat_completion({"model": "glm-5.3"}):
+                pass
+
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.retry_after == "42"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_sized_error_still_reports_its_message(self, monkeypatch) -> None:
+        """Control: the degradation applies only when the cap actually trips."""
+
+        _patch(
+            monkeypatch,
+            _FakeSession(post_response=_FakeResponse(400, '{"error":{"message":"bad model"}}')),
+        )
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.message == "bad model"
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_success_body_is_still_rejected(self, monkeypatch) -> None:
+        """Counterfactual: the cap is not silently disabled for 2xx responses."""
+
+        _patch(monkeypatch, _FakeSession(post_response=self._oversized_error(200)))
+
+        with pytest.raises(OpenCodeGoSidecarError) as excinfo:
+            await OpenCodeGoSidecarClient(_config(api_key="sk-go-key")).chat_completion({"model": "glm-5.3"})
+
+        assert excinfo.value.status_code == 502
+        assert "too large" in excinfo.value.message

@@ -151,7 +151,22 @@ def test_ollama_participates_in_longest_prefix_matching() -> None:
 
 
 def test_orcarouter_sits_between_openrouter_and_omniroute() -> None:
-    assert SIDECAR_PROVIDER_ORDER == ("claude", "openrouter", "orcarouter", "omniroute", "ollama")
+    # Deliberately the full tuple, not a relative-order subset: this is a
+    # complete contract over the tiebreak order, and asserting only that
+    # orcarouter sits between its two neighbours would stop noticing a provider
+    # inserted anywhere else. A new integration is expected to update this line
+    # as part of adding itself. ``opencode_go`` is last because it was added
+    # last, and appending leaves every existing provider's relative rank
+    # unchanged - an inserted entry would silently re-rank the providers after
+    # it.
+    assert SIDECAR_PROVIDER_ORDER == (
+        "claude",
+        "openrouter",
+        "orcarouter",
+        "omniroute",
+        "ollama",
+        "opencode_go",
+    )
 
 
 def test_orcarouter_auto_is_forwarded_unstripped() -> None:

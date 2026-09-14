@@ -67,6 +67,17 @@ OPENCODE_GO_PROVIDER = "opencode_go"
 #: existing importers of this client keep working.
 OPENCODE_GO_DEFAULT_BASE_URL = _OPENCODE_GO_DEFAULT_BASE_URL
 
+#: Hard ceiling on a non-streaming body this client will hold in memory - the
+#: models listing, a non-streaming chat completion, and the error body of a
+#: failed streaming request. Chosen to match the sibling quota client's
+#: ``MAX_USAGE_RESPONSE_BYTES`` so one size policy governs both, and generous
+#: against the real catalogue (the live listing is a few KiB).
+MAX_RESPONSE_BYTES = 1024 * 1024
+
+#: Read granularity for the bounded read. Small enough that the overshoot past
+#: the cap before detection stays negligible.
+_READ_CHUNK_BYTES = 64 * 1024
+
 #: Go's client obligations ask for a client-specific user agent rather than a
 #: generic SDK or HTTP-library name. Third-party projects that sent a library
 #: default had their background polls flagged by OpenCode; one worked around it
@@ -110,6 +121,18 @@ class OpenCodeGoSidecarUnavailableError(OpenCodeGoSidecarError):
         super().__init__(503, message, body=None)
 
 
+class OpenCodeGoSidecarResponseTooLargeError(OpenCodeGoSidecarError):
+    """The upstream body exceeded :data:`MAX_RESPONSE_BYTES`.
+
+    502 rather than 503: the upstream answered, and what it sent is unusable.
+    Calling it "unavailable" would invite a retry that reproduces the same
+    oversized transfer.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(502, message, body=None)
+
+
 class OpenCodeGoSidecarClient:
     def __init__(self, config: OpenCodeGoSidecarConfig) -> None:
         self._config = config
@@ -147,9 +170,16 @@ class OpenCodeGoSidecarClient:
         try:
             async with lease_http_session() as session:
                 async with session.get(url, headers=self._headers(), timeout=self._timeout()) as resp:
-                    data = await _read_response_json(resp)
+                    # Status first: an oversized *error* body must still surface
+                    # the upstream's status and Retry-After, not be replaced by
+                    # a generic 502. See ``_read_error_body``.
                     if resp.status >= 400:
-                        raise _error_from_status(resp.status, data, resp.headers.get("Retry-After"))
+                        raise _error_from_status(
+                            resp.status,
+                            await _read_error_body(resp),
+                            resp.headers.get("Retry-After"),
+                        )
+                    data = await _read_response_json(resp)
         except OpenCodeGoSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
@@ -220,10 +250,13 @@ class OpenCodeGoSidecarClient:
                     json=dict(payload),
                     timeout=self._timeout(),
                 ) as resp:
-                    data = await _read_response_json(resp)
                     if resp.status >= 400:
-                        raise _error_from_status(resp.status, data, resp.headers.get("Retry-After"))
-                    return data
+                        raise _error_from_status(
+                            resp.status,
+                            await _read_error_body(resp),
+                            resp.headers.get("Retry-After"),
+                        )
+                    return await _read_response_json(resp)
         except OpenCodeGoSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
@@ -247,8 +280,11 @@ class OpenCodeGoSidecarClient:
                     timeout=self._timeout(),
                 ) as resp:
                     if resp.status >= 400:
-                        data = await _read_response_json(resp)
-                        raise _error_from_status(resp.status, data, resp.headers.get("Retry-After"))
+                        raise _error_from_status(
+                            resp.status,
+                            await _read_error_body(resp),
+                            resp.headers.get("Retry-After"),
+                        )
                     yield resp.content.iter_chunked(8192)
         except OpenCodeGoSidecarError:
             raise
@@ -407,8 +443,89 @@ def sanitize_opencode_go_error_body(body: JsonValue | None, *, api_key: str | No
     return body
 
 
+def _declared_length_over_cap(resp: aiohttp.ClientResponse) -> bool:
+    """Does upstream declare a length already known to be too large?
+
+    An advisory fast path only. A chunked or compressed response carries no
+    usable length and a hostile one can lie, so this never substitutes for
+    counting the bytes actually read.
+    """
+
+    raw = resp.headers.get("Content-Length")
+    if raw is None:
+        return False
+    try:
+        return int(raw) > MAX_RESPONSE_BYTES
+    except (TypeError, ValueError):
+        return False
+
+
+async def _read_error_body(resp: aiohttp.ClientResponse) -> JsonValue:
+    """Read an error body under the same cap, without losing the status.
+
+    The cap still applies - an error body is exactly as attacker-influenced as a
+    success body - but exceeding it must not *replace* the upstream's answer.
+    ``_read_response_json`` raises 502, which would erase a 429 and its
+    ``Retry-After``, and this integration's 429 handling depends on relaying
+    that header verbatim; a dropped one turns a rate limit into a retry storm
+    against a subscription with hard dollar caps. A 401/403 would likewise be
+    downgraded to a generic upstream fault, losing the credential-problem
+    signal the dashboard and the caller both act on.
+
+    So an oversized or unreadable error body degrades to "no body" and lets
+    :func:`_error_from_status` fall back to its ``HTTP <status>`` message. The
+    status and ``Retry-After`` come from the headers and are unaffected.
+    """
+
+    try:
+        return await _read_response_json(resp)
+    except OpenCodeGoSidecarError:
+        return None
+
+
 async def _read_response_json(resp: aiohttp.ClientResponse) -> JsonValue:
-    text = await resp.text()
+    """Read a non-streaming body under a hard byte cap.
+
+    Streams and counts rather than calling ``resp.text()``: that buffers the
+    whole body before anything can inspect its size, so an upstream that is
+    hostile, misconfigured, or actually a captive portal decides how much memory
+    this process allocates. Counting decoded chunks bounds the real in-memory
+    cost, including chunked and compressed transfers where ``Content-Length`` is
+    absent or misleading.
+
+    Mirrors the contract the sibling quota client already enforces
+    (``MAX_USAGE_RESPONSE_BYTES`` in ``app/core/clients/opencode_go.py``) rather
+    than inventing a second size policy.
+    """
+
+    if _declared_length_over_cap(resp):
+        raise OpenCodeGoSidecarResponseTooLargeError(
+            f"OpenCode Go response is too large (declared over {MAX_RESPONSE_BYTES} bytes)"
+        )
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        async for chunk in resp.content.iter_chunked(_READ_CHUNK_BYTES):
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                # Stop pulling immediately: the point is to not allocate the
+                # rest. The partial body is dropped rather than reported - it is
+                # attacker-influenced and cannot be a valid document.
+                raise OpenCodeGoSidecarResponseTooLargeError(
+                    f"OpenCode Go response is too large (exceeded {MAX_RESPONSE_BYTES} bytes)"
+                )
+            chunks.append(chunk)
+    except OpenCodeGoSidecarError:
+        raise
+    except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+        raise OpenCodeGoSidecarUnavailableError(
+            f"Failed to read OpenCode Go response: {exc.__class__.__name__}"
+        ) from exc
+
+    if not chunks:
+        return {}
+    text = b"".join(chunks).decode("utf-8", errors="replace")
     if not text:
         return {}
     try:
