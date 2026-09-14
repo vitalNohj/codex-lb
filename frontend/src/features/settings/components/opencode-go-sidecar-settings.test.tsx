@@ -390,6 +390,65 @@ describe("OpenCodeGoSidecarSettings", () => {
       resolveSave?.();
     });
 
+    it("adopts a server-side enable on a card that mounted disabled", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={vi.fn()} />
+        </QueryClientProvider>
+      );
+      // Mounted disabled: local enable state seeds false.
+      const { rerender } = render(view(CONFIGURED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      expect(
+        await screen.findByText(/not discovered while the integration is disabled/i),
+      ).toBeInTheDocument();
+
+      // A settings refresh reports it enabled - no remount, same QueryClient.
+      // Discovery now loads, so the rows must become genuinely selectable.
+      rerender(view({ ...CONFIGURED_SETTINGS, opencodeGoSidecarEnabled: true }));
+
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+      expect(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" })).toBeChecked();
+    });
+
+    it("does not resurrect addability from a refresh that repeats the pre-disable value", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      let resolveSave: (() => void) | undefined;
+      const onSave = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveSave = () => resolve(); }),
+      );
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={onSave} />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(ENABLED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      await user.click(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }));
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+
+      // An unrelated re-render lands mid-disable, still carrying the stale
+      // enabled=true the server has not yet been told to change. The operator's
+      // outstanding intent must win, or the rows flicker back to addable.
+      rerender(view(ENABLED_SETTINGS));
+
+      expect(screen.getByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: "Add full model glm-5.3" }),
+      ).not.toBeInTheDocument();
+
+      resolveSave?.();
+    });
+
     it("treats a server-side disable as unusable even though the local switch is untouched", async () => {
       const user = userEvent.setup();
       const queryClient = new QueryClient({
@@ -586,6 +645,129 @@ describe("OpenCodeGoSidecarSettings", () => {
       await user.click(screen.getByRole("button", { name: "Remove key" }));
 
       expect(await screen.findByText("Key removal rejected")).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Enable state has two writers (the operator's switch and the server), so the
+   * interesting behaviour is in transitions, not snapshots. Each case below
+   * drives a real card through an ordered sequence on one QueryClient with no
+   * remount, and asserts usability at the end.
+   *
+   * The ABA case is the one that matters: a completed local intent must be
+   * retired by the server acknowledgement, so that a *later* server change back
+   * to the original value cannot resurrect it.
+   */
+  describe("enable-state transitions", () => {
+    type Step =
+      | { server: boolean }
+      | { toggle: true }
+      | { toggleFailing: true };
+
+    async function drive(start: boolean, steps: Step[]) {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const failing = vi.fn().mockRejectedValue(new Error("save rejected"));
+      let save = onSave;
+      const view = (enabled: boolean) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings
+            settings={{ ...ENABLED_SETTINGS, opencodeGoSidecarEnabled: enabled }}
+            busy={false}
+            onSave={(patch) => save(patch)}
+          />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(start));
+      for (const step of steps) {
+        if ("server" in step) {
+          rerender(view(step.server));
+          continue;
+        }
+        save = "toggleFailing" in step ? failing : onSave;
+        await user.click(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }));
+        save = onSave;
+      }
+      await openDiscoveredModels(user);
+      return {
+        switchOn: (screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }) as HTMLElement)
+          .getAttribute("data-state") === "checked",
+        addable: screen.queryByRole("button", { name: "Add full model glm-5.3" }) !== null,
+      };
+    }
+
+    const cases: Array<{ name: string; start: boolean; steps: Step[]; on: boolean }> = [
+      // ABA, the reported gap: the disable is acknowledged, then the server
+      // later re-enables. The retired intent must not come back.
+      {
+        name: "on -> local disable -> server confirms off -> server re-enables",
+        start: true,
+        steps: [{ toggle: true }, { server: false }, { server: true }],
+        on: true,
+      },
+      // Reverse direction: an acknowledged enable must not resurrect either.
+      {
+        name: "off -> local enable -> server confirms on -> server disables",
+        start: false,
+        steps: [{ toggle: true }, { server: true }, { server: false }],
+        on: false,
+      },
+      // Repeated server updates after the intent is retired.
+      {
+        name: "on -> local disable -> off -> on -> off -> on",
+        start: true,
+        steps: [{ toggle: true }, { server: false }, { server: true }, { server: false }, { server: true }],
+        on: true,
+      },
+      // Still-pending intent: the server has not acknowledged, so the operator
+      // wins even though the prop still carries the pre-change value.
+      {
+        name: "on -> local disable -> stale re-render still says on",
+        start: true,
+        steps: [{ toggle: true }, { server: true }],
+        on: false,
+      },
+      // No-remount adoption of a server enable on a card that mounted disabled.
+      {
+        name: "off -> server enables",
+        start: false,
+        steps: [{ server: true }],
+        on: true,
+      },
+      // A failed save leaves the switch off; the server still says on, and the
+      // operator's intent must not be silently discarded.
+      {
+        name: "on -> failed local disable",
+        start: true,
+        steps: [{ toggleFailing: true }],
+        on: false,
+      },
+      // Retry after a failure, then acknowledgement.
+      {
+        name: "on -> failed disable -> retry -> server confirms off",
+        start: true,
+        steps: [{ toggleFailing: true }, { toggle: true }, { server: false }],
+        on: false,
+      },
+      // Operator changes their mind before any acknowledgement.
+      {
+        name: "on -> local disable -> local enable",
+        start: true,
+        steps: [{ toggle: true }, { toggle: true }],
+        on: true,
+      },
+    ];
+
+    it.each(cases)("$name -> enabled=$on", async ({ start, steps, on }) => {
+      const result = await drive(start, steps);
+
+      expect(result.switchOn).toBe(on);
+      // Usability must agree with the switch: an enabled integration offers its
+      // models, a disabled one never does.
+      expect(result.addable).toBe(on);
     });
   });
 });

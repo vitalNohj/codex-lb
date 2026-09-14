@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api-client";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
+import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 const BASE_SETTINGS = {
@@ -197,6 +198,84 @@ describe("shared sidecar integration settings", () => {
     );
 
     expect(screen.queryByText(/already used by OmniRoute/i)).toBeNull();
+  });
+
+  /**
+   * Enable state lives in the shared provider, so the ABA retirement fixed for
+   * OpenCode Go must hold for every integration that uses the same switch.
+   * Asserted directly here rather than inferred from Go-only coverage.
+   */
+  describe("shared enable-state retirement", () => {
+    const providers = [
+      {
+        name: "OrcaRouter",
+        Component: OrcaRouterSidecarSettings,
+        label: "Enable OrcaRouter Integration",
+        field: "orcarouterSidecarEnabled",
+      },
+      {
+        name: "OpenRouter",
+        Component: OpenRouterSidecarSettings,
+        label: "Enable OpenRouter Integration",
+        field: "openrouterSidecarEnabled",
+      },
+    ] as const;
+
+    it.each(providers)(
+      "$name: an acknowledged disable is not resurrected when the server re-enables",
+      async ({ Component, label, field }) => {
+        const user = userEvent.setup();
+        const queryClient = new QueryClient({
+          defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+        });
+        const onSave = vi.fn().mockResolvedValue(undefined);
+        const view = (enabled: boolean) => (
+          <QueryClientProvider client={queryClient}>
+            <Component
+              settings={{ ...BASE_SETTINGS, [field]: enabled } as DashboardSettings}
+              busy={false}
+              onSave={onSave}
+            />
+          </QueryClientProvider>
+        );
+        const { rerender } = render(view(true));
+
+        await user.click(screen.getByRole("switch", { name: label }));
+        expect(screen.getByRole("switch", { name: label })).not.toBeChecked();
+
+        rerender(view(false)); // server acknowledges the disable
+        rerender(view(true)); // server later re-enables
+
+        expect(screen.getByRole("switch", { name: label })).toBeChecked();
+      },
+    );
+
+    it.each(providers)("$name: a still-pending disable survives a stale re-render", async ({
+      Component,
+      label,
+      field,
+    }) => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const view = (enabled: boolean) => (
+        <QueryClientProvider client={queryClient}>
+          <Component
+            settings={{ ...BASE_SETTINGS, [field]: enabled } as DashboardSettings}
+            busy={false}
+            onSave={onSave}
+          />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(true));
+
+      await user.click(screen.getByRole("switch", { name: label }));
+      rerender(view(true)); // unrelated re-render, server not yet updated
+
+      expect(screen.getByRole("switch", { name: label })).not.toBeChecked();
+    });
   });
 
   it("surfaces backend sidecar conflict details from error.details", async () => {

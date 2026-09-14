@@ -403,7 +403,36 @@ function SidecarIntegrationCardProvider({
   buildEffortPatch,
   children,
 }: SidecarIntegrationCardProviderProps) {
-  const [enabled, setEnabledState] = useState(initial.enabled);
+  // Enable state has two writers: the operator's switch and the server. The
+  // local value is only meaningful while the operator has an outstanding change
+  // the server has not confirmed yet; otherwise the server value is
+  // authoritative, so a refresh that enables a card which mounted disabled is
+  // adopted instead of being pinned to the seed value forever.
+  //
+  // `against` is the server value the intent was formed from, so the intent
+  // survives re-renders that still carry that pre-change value. `retired` is
+  // what closes the ABA hole: once the server reports anything different, the
+  // intent is finished for good. Merely *ignoring* a mismatched intent would
+  // let it resurrect later, when the server happened to swing back to
+  // `against` - e.g. on -> local disable -> server confirms off -> server
+  // re-enables would snap back to disabled.
+  //
+  // Retirement is computed during render rather than in an effect: an effect
+  // would leave one render showing the stale value, which for this control is
+  // exactly the flicker back to "addable" mid-disable that we already fixed.
+  const [enableIntent, setEnableIntent] = useState<{
+    value: boolean;
+    against: boolean;
+    retired: boolean;
+  } | null>(null);
+  const intentPending =
+    enableIntent !== null && !enableIntent.retired && enableIntent.against === initial.enabled;
+  if (enableIntent !== null && !enableIntent.retired && enableIntent.against !== initial.enabled) {
+    // The server moved off the value this intent was formed against, so it has
+    // been answered. Retire it permanently.
+    setEnableIntent({ ...enableIntent, retired: true });
+  }
+  const enabled = intentPending ? enableIntent.value : initial.enabled;
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
   const [apiKey, setApiKey] = useState("");
   const [managementKey, setManagementKey] = useState("");
@@ -497,7 +526,7 @@ function SidecarIntegrationCardProvider({
   };
 
   const setEnabled = (nextEnabled: boolean) => {
-    setEnabledState(nextEnabled);
+    setEnableIntent({ value: nextEnabled, against: initial.enabled, retired: false });
     void onSave(buildEnablePatch(nextEnabled));
   };
 
