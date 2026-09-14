@@ -24,6 +24,7 @@ from __future__ import annotations
 from app.core.usage.external_pricing.catalogs import (
     EXTERNAL_PRICED_PROVIDERS,
     PROVIDER_CLIPROXY,
+    PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
     is_external_priced_provider,
@@ -39,6 +40,7 @@ from app.core.usage.external_pricing.service import (
 __all__ = [
     "EXTERNAL_PRICED_PROVIDERS",
     "PROVIDER_CLIPROXY",
+    "PROVIDER_OPENCODE_GO",
     "PROVIDER_OPENROUTER",
     "PROVIDER_ORCAROUTER",
     "CalculatedCost",

@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 160 settings. Every setting is an environment
+codex-lb currently exposes 179 settings. Every setting is an environment
 variable with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process). All defaults work with zero configuration —
 start from [Configuration](../configuration.md) for the handful that matter,
@@ -263,6 +263,7 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_CLAUDE_SIDECAR_USAGE_COLLECTION_ENABLED` | `bool` | `True` |
 | `CODEX_LB_CLAUDE_SIDECAR_USAGE_POLL_INTERVAL_SECONDS` | `float` | `15.0` |
 | `CODEX_LB_CLAUDE_SIDECAR_USAGE_QUEUE_BATCH_SIZE` | `int` | `100` |
+| `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
 | `CODEX_LB_OLLAMA_SIDECAR_API_KEY` | `str` | `''` |
 | `CODEX_LB_OLLAMA_SIDECAR_BASE_URL` | `str` | `'https://ollama.com'` |
 | `CODEX_LB_OLLAMA_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
@@ -278,6 +279,13 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_OMNIROUTE_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
 | `CODEX_LB_OMNIROUTE_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
 | `CODEX_LB_OMNIROUTE_SIDECAR_SELECTED_MODELS` | `list[str]` | `[]` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_API_KEY` | `str` | `''` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_BASE_URL` | `str` | `'https://opencode.ai/zen/go/v1'` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_ENABLED` | `bool` | `False` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_MODEL_PREFIXES` | `list[str]` | `['opencode-go/']` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
 | `CODEX_LB_OPENROUTER_SIDECAR_API_KEY` | `str` | `''` |
 | `CODEX_LB_OPENROUTER_SIDECAR_BASE_URL` | `str` | `'https://openrouter.ai/api/v1'` |
 | `CODEX_LB_OPENROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
@@ -292,7 +300,6 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES` | `list[str]` | `['orcarouter/']` |
 | `CODEX_LB_ORCAROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
 | `CODEX_LB_ORCAROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
 | `CODEX_LB_TELEMETRY_ENABLED` | `bool \| None` | `None` |
 | `CODEX_LB_TELEMETRY_ENDPOINT` | `str` | `'https://telemetry.tokmaxxing.com'` |
 | `CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` | `bool` | `False` |

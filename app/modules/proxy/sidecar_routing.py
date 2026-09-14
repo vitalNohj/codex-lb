@@ -24,7 +24,14 @@ from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.config.product_capabilities import is_capability_enabled
 
 # Deterministic tiebreak order. Lower index wins.
-SIDECAR_PROVIDER_ORDER: tuple[str, ...] = ("claude", "openrouter", "orcarouter", "omniroute", "ollama")
+SIDECAR_PROVIDER_ORDER: tuple[str, ...] = (
+    "claude",
+    "openrouter",
+    "orcarouter",
+    "omniroute",
+    "ollama",
+    "opencode_go",
+)
 
 
 @dataclass(frozen=True, slots=True)

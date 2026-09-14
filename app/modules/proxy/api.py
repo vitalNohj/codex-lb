@@ -50,6 +50,7 @@ from app.core.clients.files import FileProxyError
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import (
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
@@ -295,6 +296,12 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     load_openrouter_sidecar_config,
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
+)
+from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
+from app.modules.proxy.opencode_go_sidecar_dispatch import (
+    load_opencode_go_sidecar_config,
+    opencode_go_routing_entry,
+    proxy_chat_to_opencode_go,
 )
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     load_orcarouter_sidecar_config,
@@ -1135,6 +1142,7 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
+    opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -1145,6 +1153,8 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -4006,6 +4016,7 @@ async def _build_models_response_body(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
+    opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -4016,6 +4027,8 @@ async def _build_models_response_body(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -4112,6 +4125,40 @@ async def _build_models_response_body(
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "orcarouter",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        # Config-keyed client so ``models_cache_ttl_seconds`` spans requests.
+        discovered_models = await get_opencode_go_sidecar_client(opencode_go_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in opencode_go_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "opencode_go":
+                continue
+            # Never advertise a model this build cannot dispatch. OpenCode Go
+            # serves its catalogue across ``/chat/completions``, ``/messages``
+            # and ``/responses``, and only the first is implemented here.
+            # Publishing an id whose real endpoint we do not speak would
+            # promise a route that returns an upstream format error, so an
+            # operator pinning such an id sees it stay out of the catalog
+            # rather than appear and then fail.
+            if not is_opencode_go_model_supported(decision.wire_model):
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "opencode",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -4597,6 +4644,7 @@ async def v1_chat_completions(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
+    opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -4607,6 +4655,8 @@ async def v1_chat_completions(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -4662,6 +4712,19 @@ async def v1_chat_completions(
                 sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
                 client=OrcaRouterSidecarClient(orcarouter_config),
                 cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if decision.provider == "opencode_go":
+            assert opencode_go_config is not None
+            return await proxy_chat_to_opencode_go(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OpenCodeGoSidecarClient(opencode_go_config),
                 wire_model=decision.wire_model,
             )
         if decision.provider == "ollama":

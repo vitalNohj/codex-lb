@@ -249,6 +249,18 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         orcarouter_sidecar_last_checked_at=settings.orcarouter_sidecar_last_checked_at,
         orcarouter_sidecar_last_model_count=settings.orcarouter_sidecar_last_model_count,
         orcarouter_sidecar_default_reasoning_effort=settings.orcarouter_sidecar_default_reasoning_effort,
+        opencode_go_sidecar_enabled=settings.opencode_go_sidecar_enabled,
+        opencode_go_sidecar_base_url=settings.opencode_go_sidecar_base_url,
+        opencode_go_sidecar_api_key_configured=settings.opencode_go_sidecar_api_key_configured,
+        opencode_go_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.opencode_go_sidecar_model_prefixes],
+        opencode_go_sidecar_full_models=settings.opencode_go_sidecar_full_models,
+        opencode_go_sidecar_connect_timeout_seconds=settings.opencode_go_sidecar_connect_timeout_seconds,
+        opencode_go_sidecar_request_timeout_seconds=settings.opencode_go_sidecar_request_timeout_seconds,
+        opencode_go_sidecar_models_cache_ttl_seconds=settings.opencode_go_sidecar_models_cache_ttl_seconds,
+        opencode_go_sidecar_last_health_status=settings.opencode_go_sidecar_last_health_status,
+        opencode_go_sidecar_last_health_message=settings.opencode_go_sidecar_last_health_message,
+        opencode_go_sidecar_last_checked_at=settings.opencode_go_sidecar_last_checked_at,
+        opencode_go_sidecar_last_model_count=settings.opencode_go_sidecar_last_model_count,
         **_neutralized_omniroute_response_fields(settings),
         ollama_sidecar_enabled=settings.ollama_sidecar_enabled,
         ollama_sidecar_base_url=settings.ollama_sidecar_base_url,
@@ -1179,6 +1191,45 @@ async def update_settings(
                     if payload.orcarouter_sidecar_models_cache_ttl_seconds is not None
                     else current.orcarouter_sidecar_models_cache_ttl_seconds
                 ),
+                opencode_go_sidecar_enabled=(
+                    payload.opencode_go_sidecar_enabled
+                    if payload.opencode_go_sidecar_enabled is not None
+                    else current.opencode_go_sidecar_enabled
+                ),
+                opencode_go_sidecar_base_url=(
+                    payload.opencode_go_sidecar_base_url or current.opencode_go_sidecar_base_url
+                ),
+                opencode_go_sidecar_api_key=(
+                    payload.opencode_go_sidecar_api_key
+                    if "opencode_go_sidecar_api_key" in payload.model_fields_set
+                    else None
+                ),
+                opencode_go_sidecar_clear_api_key=payload.opencode_go_sidecar_clear_api_key is True,
+                opencode_go_sidecar_model_prefixes=(
+                    [_sidecar_prefix_data(prefix) for prefix in payload.opencode_go_sidecar_model_prefixes]
+                    if payload.opencode_go_sidecar_model_prefixes is not None
+                    else current.opencode_go_sidecar_model_prefixes
+                ),
+                opencode_go_sidecar_full_models=(
+                    payload.opencode_go_sidecar_full_models
+                    if payload.opencode_go_sidecar_full_models is not None
+                    else current.opencode_go_sidecar_full_models
+                ),
+                opencode_go_sidecar_connect_timeout_seconds=(
+                    payload.opencode_go_sidecar_connect_timeout_seconds
+                    if payload.opencode_go_sidecar_connect_timeout_seconds is not None
+                    else current.opencode_go_sidecar_connect_timeout_seconds
+                ),
+                opencode_go_sidecar_request_timeout_seconds=(
+                    payload.opencode_go_sidecar_request_timeout_seconds
+                    if payload.opencode_go_sidecar_request_timeout_seconds is not None
+                    else current.opencode_go_sidecar_request_timeout_seconds
+                ),
+                opencode_go_sidecar_models_cache_ttl_seconds=(
+                    payload.opencode_go_sidecar_models_cache_ttl_seconds
+                    if payload.opencode_go_sidecar_models_cache_ttl_seconds is not None
+                    else current.opencode_go_sidecar_models_cache_ttl_seconds
+                ),
                 orcarouter_sidecar_default_reasoning_effort=(
                     payload.orcarouter_sidecar_default_reasoning_effort
                     if "orcarouter_sidecar_default_reasoning_effort" in payload.model_fields_set
@@ -1433,6 +1484,18 @@ async def update_settings(
             "orcarouter_sidecar_last_checked_at",
             "orcarouter_sidecar_last_model_count",
             "orcarouter_sidecar_default_reasoning_effort",
+            "opencode_go_sidecar_enabled",
+            "opencode_go_sidecar_base_url",
+            "opencode_go_sidecar_api_key_configured",
+            "opencode_go_sidecar_model_prefixes",
+            "opencode_go_sidecar_full_models",
+            "opencode_go_sidecar_connect_timeout_seconds",
+            "opencode_go_sidecar_request_timeout_seconds",
+            "opencode_go_sidecar_models_cache_ttl_seconds",
+            "opencode_go_sidecar_last_health_status",
+            "opencode_go_sidecar_last_health_message",
+            "opencode_go_sidecar_last_checked_at",
+            "opencode_go_sidecar_last_model_count",
             "omniroute_sidecar_enabled",
             "omniroute_sidecar_base_url",
             "omniroute_sidecar_api_key_configured",
