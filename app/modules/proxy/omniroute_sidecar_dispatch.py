@@ -51,10 +51,10 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
-from app.modules.proxy.omniroute_responses_dispatch import (
+from app.modules.proxy.responses_chat_bridge import (
     ResponsesStreamSynthesizer,
-    omniroute_chat_to_responses_result,
-    responses_to_omniroute_chat_request,
+    chat_to_responses_result,
+    responses_to_chat_request,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
@@ -553,7 +553,7 @@ async def proxy_responses_to_omniroute(
     """
 
     forward_model = wire_model or effective_model
-    chat_request = responses_to_omniroute_chat_request(payload, forward_model)
+    chat_request = responses_to_chat_request(payload, forward_model)
     chat_payload = build_omniroute_chat_payload(chat_request, forward_model)
     chat_body = chat_payload.body
     requested_reasoning_effort = chat_payload.requested_reasoning_effort
@@ -645,7 +645,7 @@ async def proxy_responses_to_omniroute(
         reasoning_effort=effective_reasoning_effort,
         requested_reasoning_effort=requested_reasoning_effort,
     )
-    result = omniroute_chat_to_responses_result(response_body, model=effective_model)
+    result = chat_to_responses_result(response_body, model=effective_model)
     return JSONResponse(content=result, status_code=200, headers=dict(rate_limit_headers))
 
 
