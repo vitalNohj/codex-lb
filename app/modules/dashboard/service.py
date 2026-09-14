@@ -11,6 +11,7 @@ from app.core.utils.time import utcnow
 from app.db.models import UsageHistory
 from app.modules.accounts.mappers import build_account_summaries
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
+from app.modules.accounts.opencode_go_sidecar_summary import build_opencode_go_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
 from app.modules.accounts.schemas import AccountRequestUsage
@@ -124,6 +125,9 @@ class DashboardService:
         orcarouter_sidecar = await self._build_orcarouter_sidecar_summary()
         if orcarouter_sidecar is not None:
             account_summaries.append(orcarouter_sidecar)
+        opencode_go_sidecar = await self._build_opencode_go_sidecar_summary()
+        if opencode_go_sidecar is not None:
+            account_summaries.append(opencode_go_sidecar)
         omniroute_sidecar = await self._build_omniroute_sidecar_summary()
         if omniroute_sidecar is not None:
             account_summaries.append(omniroute_sidecar)
@@ -255,6 +259,17 @@ class DashboardService:
             total_savings_usd=usage_summary.total_savings_usd,
         )
         return build_orcarouter_sidecar_summary(settings, request_usage)
+
+    async def _build_opencode_go_sidecar_summary(self):
+        settings = await self._repo.get_settings()
+        usage_summary = await self._repo.request_usage_summary_for_source("opencode_go_sidecar")
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
+        )
+        return build_opencode_go_sidecar_summary(settings, request_usage)
 
     async def _build_omniroute_sidecar_summary(self):
         settings = await self._repo.get_settings()

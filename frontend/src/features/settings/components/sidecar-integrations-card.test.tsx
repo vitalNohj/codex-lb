@@ -84,6 +84,14 @@ const BASE_SETTINGS = {
   orcarouterSidecarConnectTimeoutSeconds: 8,
   orcarouterSidecarRequestTimeoutSeconds: 600,
   orcarouterSidecarModelsCacheTtlSeconds: 60,
+  opencodeGoSidecarEnabled: false,
+  opencodeGoSidecarBaseUrl: "https://opencode.ai/zen/go/v1",
+  opencodeGoSidecarApiKeyConfigured: false,
+  opencodeGoSidecarModelPrefixes: [{ prefix: "opencode-go/", strip: true }],
+  opencodeGoSidecarFullModels: [],
+  opencodeGoSidecarConnectTimeoutSeconds: 8,
+  opencodeGoSidecarRequestTimeoutSeconds: 600,
+  opencodeGoSidecarModelsCacheTtlSeconds: 60,
   guestAccessEnabled: false,
   prohibitFastMode: false,
   httpDownstreamTransportPolicy: "smart",
@@ -105,13 +113,18 @@ const BASE_SETTINGS = {
   guestPasswordConfigured: false,
 } as DashboardSettings;
 
-function renderCard(settings: DashboardSettings) {
+function renderCard(settings: DashboardSettings, locationHash?: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <SidecarIntegrationsCard settings={settings} busy={false} onSave={vi.fn()} />
+      <SidecarIntegrationsCard
+        settings={settings}
+        busy={false}
+        onSave={vi.fn()}
+        locationHash={locationHash}
+      />
     </QueryClientProvider>,
   );
 }
@@ -125,6 +138,7 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getByRole("tab", { name: /OpenRouter/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OrcaRouter/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Ollama/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /OpenCode Go/ })).toBeInTheDocument();
   });
 
   // Tab order is the locked surface contract, matching SIDECAR_PROVIDER_ORDER
@@ -137,6 +151,7 @@ describe("SidecarIntegrationsCard", () => {
       "OpenRouter",
       "OrcaRouter",
       "Ollama",
+      "OpenCode Go",
     ]);
   });
 
@@ -213,5 +228,68 @@ describe("SidecarIntegrationsCard", () => {
     await user.click(screen.getByRole("tab", { name: "OrcaRouter" }));
 
     expect(screen.getByRole("switch", { name: "Enable OrcaRouter Integration" })).toBeInTheDocument();
+  });
+
+  it("shows the OpenCode Go integration when its tab is selected", async () => {
+    const user = userEvent.setup();
+    renderCard(BASE_SETTINGS);
+
+    await user.click(screen.getByRole("tab", { name: "OpenCode Go" }));
+
+    expect(
+      screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }),
+    ).toBeInTheDocument();
+  });
+
+  // The Accounts page links to /settings#<section-id>. Inactive tab panels are
+  // unmounted, so the hash must select the owning tab or the link lands on a
+  // page with nothing revealed.
+  describe("deep links from the Accounts page", () => {
+    it.each([
+      ["#opencode-go-sidecar", "OpenCode Go", "Enable OpenCode Go Integration"],
+      ["#orcarouter-sidecar", "OrcaRouter", "Enable OrcaRouter Integration"],
+      ["#ollama-sidecar", "Ollama", "Enable Ollama Integration"],
+      ["#claude-sidecar", "CLIProxyAPI", "Enable CLI Proxy integration"],
+    ])("%s selects the %s tab over the first-enabled default", (hash, tabLabel, switchName) => {
+      // OpenRouter is the enabled integration, so the default would win here.
+      renderCard(BASE_SETTINGS, hash);
+
+      expect(screen.getByRole("tab", { name: new RegExp(tabLabel) })).toHaveAttribute(
+        "data-state",
+        "active",
+      );
+      expect(screen.getByRole("switch", { name: switchName })).toBeInTheDocument();
+    });
+
+    it("ignores a hash that matches no integration", () => {
+      renderCard(BASE_SETTINGS, "#firewall");
+
+      expect(screen.getByRole("tab", { name: "OpenRouter (enabled)" })).toHaveAttribute(
+        "data-state",
+        "active",
+      );
+    });
+
+    it("keeps the first-enabled default when there is no hash", () => {
+      renderCard(BASE_SETTINGS);
+
+      expect(screen.getByRole("tab", { name: "OpenRouter (enabled)" })).toHaveAttribute(
+        "data-state",
+        "active",
+      );
+    });
+  });
+
+  it("defaults to the OpenCode Go tab when only OpenCode Go is enabled", () => {
+    renderCard({
+      ...BASE_SETTINGS,
+      openrouterSidecarEnabled: false,
+      opencodeGoSidecarEnabled: true,
+    });
+
+    expect(screen.getByRole("tab", { name: "OpenCode Go (enabled)" })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
   });
 });

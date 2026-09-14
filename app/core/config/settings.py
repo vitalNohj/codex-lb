@@ -16,6 +16,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.auth.dashboard_mode import DashboardAuthMode, normalize_dashboard_auth_proxy_header
+from app.core.config.opencode_go_endpoint import OPENCODE_GO_BASE_URL_ERROR, is_opencode_go_base_url
 from app.core.utils.proxy_env import outbound_proxy_env_configured
 
 logger = logging.getLogger(__name__)
@@ -175,7 +176,7 @@ def _normalize_string_list(value: StringListInput, *, field_name: str) -> list[s
     if value is None:
         return []
     if isinstance(value, str):
-        entries = [entry.strip() for entry in value.split(',')]
+        entries = [entry.strip() for entry in value.split(",")]
         return [entry for entry in entries if entry]
     if isinstance(value, list):
         normalized: list[str] = []
@@ -304,6 +305,14 @@ class Settings(BaseSettings):
     orcarouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     orcarouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     orcarouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    opencode_go_sidecar_enabled: bool = False
+    # OpenCode **Go** ($10/month subscription), not OpenCode Zen (PAYG credits).
+    opencode_go_sidecar_base_url: str = "https://opencode.ai/zen/go/v1"
+    opencode_go_sidecar_api_key: str = ""
+    opencode_go_sidecar_model_prefixes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["opencode-go/"])
+    opencode_go_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    opencode_go_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    opencode_go_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     omniroute_sidecar_enabled: bool = False
     omniroute_sidecar_base_url: str = "http://127.0.0.1:20128/v1"
     omniroute_sidecar_api_key: str = ""
@@ -725,7 +734,7 @@ class Settings(BaseSettings):
     def _normalize_claude_sidecar_base_url(cls, value: object) -> str:
         if not isinstance(value, str):
             raise TypeError("claude_sidecar_base_url must be a string")
-        normalized = value.strip().rstrip('/')
+        normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError("claude_sidecar_base_url must not be blank")
         return normalized
@@ -758,6 +767,35 @@ class Settings(BaseSettings):
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError("orcarouter_sidecar_base_url must not be blank")
+        return normalized
+
+    @field_validator("opencode_go_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _normalize_opencode_go_sidecar_model_prefixes(cls, value: StringListInput) -> list[str]:
+        return _normalize_string_list(value, field_name="opencode_go_sidecar_model_prefixes")
+
+    @field_validator("opencode_go_sidecar_base_url", mode="before")
+    @classmethod
+    def _normalize_opencode_go_sidecar_base_url(cls, value: object) -> str:
+        """Reject a non-Go base URL from the environment, not just from the UI.
+
+        The dashboard validator already refuses an OpenCode **Zen** URL, but
+        that only guards the settings PUT. A fresh install seeds this column
+        from ``CODEX_LB_OPENCODE_GO_SIDECAR_BASE_URL``, so the environment is a
+        second, unguarded way in - and it reaches the same client, which would
+        then send the Go subscription key to the pay-as-you-go Zen endpoint and
+        bill credits instead of the subscription. Validating in both places is
+        what makes "never route Go to Zen" a property of the system rather than
+        of one code path.
+        """
+
+        if not isinstance(value, str):
+            raise TypeError("opencode_go_sidecar_base_url must be a string")
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("opencode_go_sidecar_base_url must not be blank")
+        if not is_opencode_go_base_url(normalized):
+            raise ValueError(f"opencode_go_sidecar_base_url {OPENCODE_GO_BASE_URL_ERROR}")
         return normalized
 
     @field_validator("omniroute_sidecar_selected_models", mode="before")

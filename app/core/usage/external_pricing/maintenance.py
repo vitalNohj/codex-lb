@@ -21,12 +21,15 @@ from app.core.usage.external_pricing.catalogs import (
     Catalog,
     CatalogFetchError,
     fetch_openrouter_catalog,
+    order_catalogs,
 )
 from app.core.usage.external_pricing.resolution import ResolutionOutcome, resolve_model_price
 from app.core.usage.external_pricing.service import (
     CatalogAvailability,
+    OrcaRouterReference,
     ServingContext,
     SourceConsultations,
+    load_orcarouter_reference,
     load_serving_context,
     preservation_reason,
     preserve_record_for_retry,
@@ -145,6 +148,16 @@ async def run_maintenance_pass() -> MaintenanceReport:
             report.catalog_failures.append(f"{provider}: serving catalog unavailable")
 
     reference_unavailable = reference_error is not None
+    # Resolved once per provider rather than once per record: every record of a
+    # given provider consults the same secondary reference, and one refresh must
+    # not become one catalog fetch per row.
+    orcarouter_references: dict[str, OrcaRouterReference] = {}
+    for provider in providers:
+        secondary = await load_orcarouter_reference(provider)
+        orcarouter_references[provider] = secondary
+        if secondary.availability.failed:
+            report.catalog_failures.append(f"{provider}: orcarouter pricing reference unavailable")
+
     for record in records:
         disabled = record.provider in disabled_providers
         context = contexts.get(record.provider)
@@ -157,6 +170,10 @@ async def run_maintenance_pass() -> MaintenanceReport:
             serving_failed=serving_failed,
             reference=reference,
             reference_unavailable=reference_unavailable,
+            orcarouter_reference=orcarouter_references.get(
+                record.provider,
+                OrcaRouterReference.not_configured(),
+            ),
             context=context,
             report=report,
         )
@@ -188,10 +205,11 @@ async def _refresh_record(
     serving_failed: bool,
     reference: Catalog | None,
     reference_unavailable: bool,
+    orcarouter_reference: OrcaRouterReference,
     context: ServingContext | None,
     report: MaintenanceReport,
 ) -> None:
-    catalogs = [catalog for catalog in (serving, reference) if catalog is not None]
+    catalogs = order_catalogs(serving, reference, orcarouter_reference.catalog)
     resolution = resolve_model_price(
         record.incoming_model,
         catalogs=catalogs,
@@ -208,6 +226,7 @@ async def _refresh_record(
             else CatalogAvailability.ANSWERED
         ),
         reference=(CatalogAvailability.UNAVAILABLE if reference_unavailable else CatalogAvailability.ANSWERED),
+        orcarouter_reference=orcarouter_reference.availability,
     )
     reason = preservation_reason(
         record,
@@ -240,7 +259,7 @@ async def _refresh_record(
         else:
             owner = record.catalog_source
             source_unavailable = (owner is not None and not consultations.source_answered(owner, record.provider)) or (
-                owner is None and (serving_failed or reference_unavailable)
+                owner is None and (serving_failed or reference_unavailable or orcarouter_reference.availability.failed)
             )
             if source_unavailable:
                 _count_preserved(report, disabled=serving_disabled)

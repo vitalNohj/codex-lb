@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
+from app.core.clients.opencode_go_sidecar import get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.orcarouter_sidecar import get_orcarouter_sidecar_client
 from app.core.openai.model_registry import get_model_registry, is_public_model
@@ -21,6 +22,11 @@ from app.modules.model_sources.catalog import source_models_to_upstream_models
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
+from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
+from app.modules.proxy.opencode_go_sidecar_dispatch import (
+    load_opencode_go_sidecar_config,
+    opencode_go_is_usable,
+)
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
 from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
 
@@ -118,6 +124,26 @@ async def list_models() -> dict:
                 continue
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"OrcaRouter: {sidecar_model.id}", "sourceOnly": False})
+    opencode_go_config = await load_opencode_go_sidecar_config()
+    # Usable credential required: opening the dashboard model picker must not
+    # poll a subscription the deployment has no key for.
+    if opencode_go_is_usable(opencode_go_config):
+        try:
+            opencode_go_models = await get_opencode_go_sidecar_client(opencode_go_config).list_models_cached()
+        except Exception:
+            logger.warning("failed to append OpenCode Go models to dashboard model list", exc_info=True)
+            opencode_go_models = []
+        for sidecar_model in opencode_go_models:
+            # This picker feeds aliases and API-key model allowances, so an
+            # entry here is an offer to route. Models Go serves on /messages or
+            # /responses are not routable by this build and are left out rather
+            # than offered and then rejected at dispatch time.
+            if not is_opencode_go_model_supported(sidecar_model.id):
+                continue
+            if sidecar_model.id in seen_model_ids:
+                continue
+            seen_model_ids.add(sidecar_model.id)
+            models.append({"id": sidecar_model.id, "name": f"OpenCode Go: {sidecar_model.id}", "sourceOnly": False})
     omniroute_config = await load_omniroute_sidecar_config()
     if omniroute_config is not None and omniroute_config.enabled:
         try:

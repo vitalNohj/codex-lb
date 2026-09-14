@@ -14,6 +14,9 @@ import {
   OmniRouteSidecarModelsResponseSchema,
   OmniRouteSidecarStatusResponseSchema,
   OmniRouteSidecarTestResponseSchema,
+  OpenCodeGoSidecarModelsResponseSchema,
+  OpenCodeGoSidecarStatusResponseSchema,
+  OpenCodeGoSidecarTestResponseSchema,
   OpenRouterSidecarModelsResponseSchema,
   OpenRouterSidecarStatusResponseSchema,
   OpenRouterSidecarTestResponseSchema,
@@ -40,6 +43,7 @@ const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
 const ORCAROUTER_SIDECAR_PATH = "/api/orcarouter-sidecar";
 const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
 const OLLAMA_SIDECAR_PATH = "/api/ollama-sidecar";
+const OPENCODE_GO_SIDECAR_PATH = "/api/opencode-go-sidecar";
 const TELEMETRY_PATH = `${SETTINGS_PATH}/telemetry`;
 
 export function getSettings() {
@@ -194,4 +198,16 @@ export function testOllamaSidecarConnection() {
 
 export function listOllamaSidecarModels() {
   return get(`${OLLAMA_SIDECAR_PATH}/models`, OllamaSidecarModelsResponseSchema);
+}
+
+export function getOpenCodeGoSidecarStatus() {
+  return get(`${OPENCODE_GO_SIDECAR_PATH}/status`, OpenCodeGoSidecarStatusResponseSchema);
+}
+
+export function testOpenCodeGoSidecarConnection() {
+  return post(`${OPENCODE_GO_SIDECAR_PATH}/test`, OpenCodeGoSidecarTestResponseSchema);
+}
+
+export function listOpenCodeGoSidecarModels() {
+  return get(`${OPENCODE_GO_SIDECAR_PATH}/models`, OpenCodeGoSidecarModelsResponseSchema);
 }

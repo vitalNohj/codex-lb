@@ -238,6 +238,13 @@ async def async_client(app_instance):
         service = getattr(app_instance.state, "proxy_service", None)
         if service is not None and hasattr(service, "drain_persistence_tasks"):
             await service.drain_persistence_tasks(timeout_seconds=5)
+        # OpenCode Go settles stream accounting on a detached task so a client
+        # disconnect cannot strand the reservation; join it here for the same
+        # reason as above. The detach contract itself is pinned by the real
+        # socket disconnect tests, which do not use this hook.
+        from app.modules.proxy.opencode_go_sidecar_dispatch import drain_opencode_go_settlement_tasks
+
+        await drain_opencode_go_settlement_tasks(timeout_seconds=5)
 
     async with app_instance.router.lifespan_context(app_instance):
         transport = ASGITransport(app=app_instance)

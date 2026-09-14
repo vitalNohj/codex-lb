@@ -88,6 +88,8 @@ from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
 from app.modules.ollama_sidecar import api as ollama_sidecar_api
 from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
+from app.modules.opencode_go import api as opencode_go_api
+from app.modules.opencode_go_sidecar import api as opencode_go_sidecar_api
 from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
 from app.modules.orcarouter_sidecar import api as orcarouter_sidecar_api
 from app.modules.proxy import api as proxy_api
@@ -226,6 +228,26 @@ async def _drain_proxy_persistence_tasks(
     except Exception:
         logger.warning(failure_message, exc_info=True)
         return False
+
+
+async def _drain_opencode_go_settlements(timeout_seconds: float) -> None:
+    """Join OpenCode Go's detached settlement tasks within the shutdown budget.
+
+    Never raises: shutdown must continue even if a settlement fails, and a
+    partial drain is reported rather than hidden so an operator can correlate a
+    missing request-log row with the shutdown that truncated it.
+    """
+
+    try:
+        from app.modules.proxy.opencode_go_sidecar_dispatch import drain_opencode_go_settlement_tasks
+
+        if not await drain_opencode_go_settlement_tasks(timeout_seconds=timeout_seconds):
+            logger.warning(
+                "OpenCode Go settlement tasks did not finish within the shutdown drain deadline; "
+                "some request logs or reservation settlements may be incomplete"
+            )
+    except Exception:
+        logger.warning("Failed to drain OpenCode Go settlement tasks during shutdown", exc_info=True)
 
 
 async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> None:
@@ -683,6 +705,15 @@ async def lifespan(app: FastAPI):
             remaining_drain_seconds,
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
+        # OpenCode Go settles stream accounting on a detached task so a client
+        # disconnect cannot strand the reservation. Those tasks are not owned by
+        # ProxyService, so the drain above does not cover them; without this
+        # join a settlement in flight when shutdown begins would be abandoned
+        # when the HTTP client and DB engine close below - reintroducing the
+        # stranded reservation it exists to prevent. Drained here, inside the
+        # same committed deadline and before teardown, rather than as a new
+        # shutdown phase.
+        await _drain_opencode_go_settlements(shutdown_state.remaining_drain_timeout_seconds() or 0.0)
 
         # Cancel heartbeat and age the shared ring row near expiry.
         if heartbeat_task is not None:
@@ -809,7 +840,16 @@ async def lifespan(app: FastAPI):
                     shutdown_state.mark_lifespan_completed()
 
 
-def create_app() -> FastAPI:
+def create_app(*, static_dir: Path | None = None) -> FastAPI:
+    """Build the application.
+
+    ``static_dir`` is keyword-only and defaults to ``None``, which keeps the
+    production layout (``app/static``) byte-for-byte unchanged: the module-level
+    construction below passes nothing and consults no new configuration. It
+    exists so a verification harness can serve an explicitly named build
+    directory and prove which exact build was served, without overwriting the
+    retained ``app/static`` evidence.
+    """
     settings = get_settings()
     configure_memory_monitor(reject_threshold_mb=settings.memory_reject_threshold_mb)
     app = FastAPI(
@@ -871,6 +911,11 @@ def create_app() -> FastAPI:
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
     app.include_router(orcarouter_sidecar_api.router)
+    app.include_router(opencode_go_sidecar_api.router)
+    # Quota read (GET /api/opencode-go/quota). Without this include the route is
+    # simply absent, which is why preserving the quota module's files was not the
+    # same as restoring a reachable endpoint.
+    app.include_router(opencode_go_api.router)
     if omniroute_enabled():
         # Dormant while the OmniRoute capability is disabled: the module stays
         # importable for a future re-enable, but its status/test/models routes
@@ -896,7 +941,7 @@ def create_app() -> FastAPI:
     app.include_router(model_sources_api.router)
     app.include_router(health_api.router)
 
-    static_dir = Path(__file__).parent / "static"
+    static_dir = static_dir if static_dir is not None else Path(__file__).parent / "static"
     index_html = static_dir / "index.html"
     static_root = static_dir.resolve()
     frontend_build_hint = "Frontend assets are missing. Run `cd frontend && bun run build`."

@@ -214,11 +214,13 @@ def _settings_update(
     claude_prefixes: list[SidecarPrefix] | None = None,
     openrouter_prefixes: list[SidecarPrefix] | None = None,
     orcarouter_prefixes: list[SidecarPrefix] | None = None,
+    opencode_go_prefixes: list[SidecarPrefix] | None = None,
     omniroute_prefixes: list[SidecarPrefix] | None = None,
     ollama_prefixes: list[SidecarPrefix] | None = None,
     claude_models: list[str] | None = None,
     openrouter_models: list[str] | None = None,
     orcarouter_models: list[str] | None = None,
+    opencode_go_models: list[str] | None = None,
     omniroute_models: list[str] | None = None,
     ollama_models: list[str] | None = None,
 ) -> DashboardSettingsUpdateData:
@@ -304,6 +306,18 @@ def _settings_update(
         orcarouter_sidecar_request_timeout_seconds=600.0,
         orcarouter_sidecar_models_cache_ttl_seconds=60.0,
         orcarouter_sidecar_default_reasoning_effort=None,
+        # OpenCode Go participates in the same cross-integration uniqueness
+        # check, so the fixture has to carry its fields. Disabled and
+        # unconfigured by default, matching the shipped default.
+        opencode_go_sidecar_enabled=False,
+        opencode_go_sidecar_base_url="https://opencode.ai/zen/go/v1",
+        opencode_go_sidecar_api_key=None,
+        opencode_go_sidecar_clear_api_key=False,
+        opencode_go_sidecar_model_prefixes=opencode_go_prefixes or [],
+        opencode_go_sidecar_full_models=opencode_go_models or [],
+        opencode_go_sidecar_connect_timeout_seconds=8.0,
+        opencode_go_sidecar_request_timeout_seconds=600.0,
+        opencode_go_sidecar_models_cache_ttl_seconds=60.0,
         omniroute_sidecar_enabled=False,
         omniroute_sidecar_base_url="http://127.0.0.1:20128/v1",
         omniroute_sidecar_api_key=None,
@@ -425,6 +439,50 @@ def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "orcarouter/"
     assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "OpenRouter"}
+
+
+def test_sidecar_route_validator_rejects_opencode_go_duplicate_prefixes() -> None:
+    """The new provider is inside the uniqueness guarantee, not beside it.
+
+    Uniqueness is what makes the provider tiebreak order unreachable in
+    practice; an integration omitted from the check would let two providers own
+    the same prefix and make the owner depend on that order.
+    """
+
+    payload = _settings_update(
+        openrouter_prefixes=[SidecarPrefix(prefix="opencode-go/", strip=False)],
+        opencode_go_prefixes=[SidecarPrefix(prefix="opencode-go/", strip=True)],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "prefix"
+    assert exc_info.value.conflict.value == "opencode-go/"
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OpenCode Go", "OpenRouter"}
+
+
+def test_sidecar_route_validator_rejects_opencode_go_duplicate_full_models() -> None:
+    payload = _settings_update(
+        opencode_go_models=["glm-5.3"],
+        ollama_models=["GLM-5.3"],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "full_model"
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OpenCode Go", "Ollama"}
+
+
+def test_sidecar_route_validator_accepts_the_default_payload() -> None:
+    """Control: the shipped unconfigured default is not itself a conflict.
+
+    Two integrations both carrying an empty prefix list must not be read as
+    colliding on the empty value.
+    """
+
+    _validate_unique_sidecar_routes(_settings_update())
 
 
 def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence() -> None:

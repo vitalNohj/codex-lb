@@ -14,11 +14,16 @@ Two roles, deliberately distinct:
     of the 98 shared ids are priced differently.
 
 *pricing reference*
-    OpenRouter's structured catalog, consulted as the broad fallback for ids the
-    serving catalog does not price. It is a **pricing** reference only. Absence
-    from OpenRouter says nothing about whether a model exists, was added, or was
-    removed; serving integrations own discovery and routing state, and nothing
-    here may feed back into them.
+    A broad catalog consulted as the fallback for ids the serving catalog does not
+    price. OpenRouter is the primary reference; the operator's own OrcaRouter
+    integration, when it is configured and enabled, is the secondary one. Both are
+    **pricing** references only. Absence from them says nothing about whether a
+    model exists, was added, or was removed; serving integrations own discovery
+    and routing state, and nothing here may feed back into them.
+
+    The two references are asked in that order and never merged. Each entry keeps
+    the source that published it, so a stored rate always names the catalog it
+    came from and a later pass can tell which source is entitled to change it.
 
 Fetching happens off the request path. Every fetcher raises on transport, HTTP,
 or shape failure so a caller can tell a real absence from an unreachable source
@@ -42,6 +47,7 @@ from app.core.types import JsonValue
 from app.core.usage.external_pricing.providers import (
     EXTERNAL_PRICED_PROVIDERS,
     PROVIDER_CLIPROXY,
+    PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
     is_external_priced_provider,
@@ -55,12 +61,15 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "EXTERNAL_PRICED_PROVIDERS",
     "PROVIDER_CLIPROXY",
+    "PROVIDER_OPENCODE_GO",
     "PROVIDER_OPENROUTER",
     "PROVIDER_ORCAROUTER",
     "OPENROUTER_REFERENCE_SOURCE",
+    "ORCAROUTER_REFERENCE_SOURCE",
     "Catalog",
     "CatalogEntry",
     "CatalogFetchError",
+    "as_orcarouter_reference",
     "catalog_from_sidecar_models",
     "fetch_openrouter_catalog",
     "is_external_priced_provider",
@@ -72,6 +81,15 @@ __all__ = [
 # Broad pricing reference. Public, unauthenticated, and structured.
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
 OPENROUTER_REFERENCE_SOURCE = "openrouter:reference"
+
+# Secondary pricing reference. Unlike OpenRouter this is not a public endpoint
+# this module fetches on its own: it is the catalog the operator's *already
+# configured* OrcaRouter integration publishes, reused in a second role. The
+# source label is deliberately distinct from ``PROVIDER_ORCAROUTER`` so a record
+# priced from OrcaRouter-as-reference is never mistaken for one priced from
+# OrcaRouter-as-the-serving-integration; only the latter is authoritative for
+# OrcaRouter's own ids.
+ORCAROUTER_REFERENCE_SOURCE = "orcarouter:reference"
 
 _PER_TOKEN_TO_PER_1M = 1_000_000.0
 _FETCH_TIMEOUT_SECONDS = 20.0
@@ -287,11 +305,32 @@ async def _fetch_json(url: str, *, source: str) -> JsonValue:
         raise CatalogFetchError(f"{source} catalog returned invalid JSON: {exc}") from exc
 
 
-def order_catalogs(serving: Catalog | None, reference: Catalog | None) -> list[Catalog]:
-    """Serving catalog first, pricing reference second, skipping absent ones."""
+def as_orcarouter_reference(catalog: Catalog) -> Catalog:
+    """Relabel OrcaRouter's serving catalog for use as a pricing reference.
+
+    Relabelling rather than passing the catalog through is what keeps the two
+    roles separable. ``PROVIDER_ORCAROUTER`` marks rates OrcaRouter published for
+    requests it served and is authoritative for them; this label marks the same
+    rates borrowed as a fallback for another integration's ids, where OrcaRouter
+    is one opinion about a model it is not billing.
+    """
+
+    return Catalog.from_entries(ORCAROUTER_REFERENCE_SOURCE, catalog.entries.values())
+
+
+def order_catalogs(*catalogs: Catalog | None) -> list[Catalog]:
+    """Catalogs in precedence order, skipping absent and duplicated sources.
+
+    Callers pass the serving catalog first and then each pricing reference in
+    fallback order. A source that appears twice is kept once, at its strongest
+    position: the same catalog contributed under one label cannot outvote itself.
+    """
 
     ordered: list[Catalog] = []
-    for catalog in (serving, reference):
-        if catalog is not None:
-            ordered.append(catalog)
+    seen: set[str] = set()
+    for catalog in catalogs:
+        if catalog is None or catalog.source in seen:
+            continue
+        seen.add(catalog.source)
+        ordered.append(catalog)
     return ordered

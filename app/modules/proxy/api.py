@@ -49,6 +49,7 @@ from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
+from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import (
@@ -290,6 +291,14 @@ from app.modules.proxy.omniroute_sidecar_dispatch import (
     omniroute_routing_entry,
     proxy_chat_to_omniroute,
     proxy_responses_to_omniroute,
+)
+from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
+from app.modules.proxy.opencode_go_sidecar_dispatch import (
+    load_opencode_go_sidecar_config,
+    opencode_go_is_usable,
+    opencode_go_routing_entry,
+    proxy_chat_to_opencode_go,
+    proxy_responses_to_opencode_go,
 )
 from app.modules.proxy.openrouter_sidecar_dispatch import (
     load_openrouter_sidecar_config,
@@ -1135,6 +1144,7 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
+    opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -1145,11 +1155,69 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
+    # Ownership, deliberately NOT usability. An enabled integration owns its
+    # models even with no credential, so an ``opencode-go/`` request is claimed
+    # here and refused by the dispatch-time credential gate. Dropping the entry
+    # instead would make the model unowned, and the request would fall through
+    # to Codex or another provider - sending the prompt somewhere else entirely,
+    # which is the very disclosure the credential gate exists to prevent.
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
     return tuple(routing_entries)
+
+
+async def _opencode_go_responses_dispatch_or_none(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> Response | None:
+    """Claim every Responses request whose model resolves to OpenCode Go.
+
+    Returns ``None`` only when the model does **not** belong to OpenCode Go, so
+    unrelated traffic keeps its existing Codex path byte for byte.
+
+    When the model *does* resolve to OpenCode Go this never returns ``None``:
+    letting a Go-resolved request fall through would serve it from Codex or
+    another upstream, billing the wrong account and returning a different
+    model's output under the requested model's name, with nothing in the
+    response telling the caller it happened. An unsupported Go model therefore
+    gets an explicit 400 from the dispatcher rather than a silent reroute.
+    """
+
+    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+
+    opencode_go_config = await load_opencode_go_sidecar_config()
+    routing_entries = await _enabled_sidecar_routing_entries()
+
+    decision = resolve_sidecar_route(effective_model, routing_entries)
+    if decision is None or decision.provider != "opencode_go" or opencode_go_config is None:
+        return None
+
+    validate_model_access(api_key, effective_model, routing_entries=routing_entries)
+    rate_limit_headers = await context.service.rate_limit_headers()
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=effective_model,
+        request_service_tier=responses_payload.service_tier,
+        request_usage_budget=None,
+    )
+    settings = get_settings()
+    return await proxy_responses_to_opencode_go(
+        request,
+        responses_payload,
+        effective_model=effective_model,
+        api_key=api_key,
+        reservation=reservation,
+        rate_limit_headers=rate_limit_headers,
+        sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+        client=OpenCodeGoSidecarClient(opencode_go_config),
+        wire_model=decision.wire_model,
+    )
 
 
 async def _omniroute_responses_dispatch_or_none(
@@ -1248,6 +1316,14 @@ async def responses(
     omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
     if omniroute_response is not None:
         return omniroute_response
+
+    # Must run before any source selection below. A model that resolves to
+    # OpenCode Go is answered (or explicitly refused) by Go and never allowed to
+    # reach the Codex path, which would bill a different account and return
+    # another model's output under the requested model's name.
+    opencode_go_response = await _opencode_go_responses_dispatch_or_none(request, responses_payload, context, api_key)
+    if opencode_go_response is not None:
+        return opencode_go_response
 
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
@@ -1418,6 +1494,14 @@ async def v1_responses(
     omniroute_response = await _omniroute_responses_dispatch_or_none(request, responses_payload, context, api_key)
     if omniroute_response is not None:
         return omniroute_response
+
+    # Must run before any source selection below. A model that resolves to
+    # OpenCode Go is answered (or explicitly refused) by Go and never allowed to
+    # reach the Codex path, which would bill a different account and return
+    # another model's output under the requested model's name.
+    opencode_go_response = await _opencode_go_responses_dispatch_or_none(request, responses_payload, context, api_key)
+    if opencode_go_response is not None:
+        return opencode_go_response
 
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
@@ -4006,6 +4090,7 @@ async def _build_models_response_body(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
+    opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -4016,6 +4101,14 @@ async def _build_models_response_body(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
+    # Ownership, deliberately NOT usability. An enabled integration owns its
+    # models even with no credential, so an ``opencode-go/`` request is claimed
+    # here and refused by the dispatch-time credential gate. Dropping the entry
+    # instead would make the model unowned, and the request would fall through
+    # to Codex or another provider - sending the prompt somewhere else entirely,
+    # which is the very disclosure the credential gate exists to prevent.
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -4112,6 +4205,44 @@ async def _build_models_response_body(
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "orcarouter",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+    # Requires a usable credential, not merely ``enabled``: an unconfigured
+    # integration must not poll the subscription, and a model it cannot serve
+    # must not be advertised as available.
+    if opencode_go_is_usable(opencode_go_config):
+        assert opencode_go_config is not None
+        # Config-keyed client so ``models_cache_ttl_seconds`` spans requests.
+        discovered_models = await get_opencode_go_sidecar_client(opencode_go_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in opencode_go_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "opencode_go":
+                continue
+            # Never advertise a model this build cannot dispatch. OpenCode Go
+            # serves its catalogue across ``/chat/completions``, ``/messages``
+            # and ``/responses``, and only the first is implemented here.
+            # Publishing an id whose real endpoint we do not speak would
+            # promise a route that returns an upstream format error, so an
+            # operator pinning such an id sees it stay out of the catalog
+            # rather than appear and then fail.
+            if not is_opencode_go_model_supported(decision.wire_model):
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "opencode",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -4597,6 +4728,7 @@ async def v1_chat_completions(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
+    opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
     ollama_config = await load_ollama_sidecar_config()
 
@@ -4607,6 +4739,14 @@ async def v1_chat_completions(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
+    # Ownership, deliberately NOT usability. An enabled integration owns its
+    # models even with no credential, so an ``opencode-go/`` request is claimed
+    # here and refused by the dispatch-time credential gate. Dropping the entry
+    # instead would make the model unowned, and the request would fall through
+    # to Codex or another provider - sending the prompt somewhere else entirely,
+    # which is the very disclosure the credential gate exists to prevent.
+    if opencode_go_config is not None and opencode_go_config.enabled:
+        routing_entries.append(opencode_go_routing_entry(opencode_go_config))
     if omniroute_config is not None and omniroute_config.enabled:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
@@ -4662,6 +4802,19 @@ async def v1_chat_completions(
                 sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
                 client=OrcaRouterSidecarClient(orcarouter_config),
                 cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if decision.provider == "opencode_go":
+            assert opencode_go_config is not None
+            return await proxy_chat_to_opencode_go(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OpenCodeGoSidecarClient(opencode_go_config),
                 wire_model=decision.wire_model,
             )
         if decision.provider == "ollama":

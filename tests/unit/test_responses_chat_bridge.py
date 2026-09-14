@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from app.core.openai.requests import ResponsesRequest
-from app.modules.proxy.omniroute_responses_dispatch import (
+from app.modules.proxy.responses_chat_bridge import (
     ResponsesStreamSynthesizer,
-    omniroute_chat_to_responses_result,
-    responses_to_omniroute_chat_request,
+    chat_to_responses_result,
+    responses_to_chat_request,
 )
 
 pytestmark = pytest.mark.unit
@@ -25,7 +25,7 @@ def _responses_request(**overrides) -> ResponsesRequest:
 
 
 def test_request_translation_builds_messages_from_instructions_and_input():
-    chat = responses_to_omniroute_chat_request(_responses_request(), "omniroute/test-chat")
+    chat = responses_to_chat_request(_responses_request(), "omniroute/test-chat")
 
     assert chat.model == "omniroute/test-chat"
     assert chat.messages == [
@@ -35,7 +35,7 @@ def test_request_translation_builds_messages_from_instructions_and_input():
 
 
 def test_request_translation_handles_string_input():
-    chat = responses_to_omniroute_chat_request(
+    chat = responses_to_chat_request(
         _responses_request(instructions="", input="just text"),
         "omniroute/test-chat",
     )
@@ -57,7 +57,7 @@ def test_request_translation_preserves_input_image_parts():
         ],
     )
 
-    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.messages == [
         {
@@ -87,7 +87,7 @@ def test_request_translation_preserves_image_url_object_with_detail():
         ],
     )
 
-    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.messages[0]["content"][1] == {
         "type": "image_url",
@@ -100,7 +100,7 @@ def test_request_translation_carries_tools_and_stream():
         stream=True,
         tools=[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
     )
-    chat = responses_to_omniroute_chat_request(request, "omniroute/test-chat")
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.stream is True
     assert chat.tools and chat.tools[0]["name"] == "lookup"
@@ -115,7 +115,7 @@ def test_non_streaming_result_wraps_assistant_text():
         "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
     }
 
-    result = omniroute_chat_to_responses_result(chat_body, model="omniroute/test-chat")
+    result = chat_to_responses_result(chat_body, model="omniroute/test-chat")
 
     assert result["object"] == "response"
     assert result["status"] == "completed"
@@ -143,7 +143,7 @@ def test_non_streaming_result_maps_tool_calls():
         ],
     }
 
-    result = omniroute_chat_to_responses_result(chat_body, model="omniroute/test-chat")
+    result = chat_to_responses_result(chat_body, model="omniroute/test-chat")
 
     function_calls = [item for item in result["output"] if item["type"] == "function_call"]
     assert function_calls and function_calls[0]["call_id"] == "call_1"
@@ -184,3 +184,78 @@ def test_stream_synthesizer_captures_usage():
 
     completed = events[-1]["response"]
     assert completed["usage"] == {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5}
+
+
+# --------------------------------------------------------------------------
+# A truncated stream must not be reported as complete (PR 46 finding 2)
+# --------------------------------------------------------------------------
+
+
+class TestTerminalEventReflectsUpstreamCompletion:
+    """``response.completed`` is a claim about the upstream, not about us.
+
+    A clean EOF without the upstream's ``[DONE]`` means the response stopped
+    short. Reporting it as completed tells the client its partial answer is the
+    whole answer, with nothing in the payload to contradict it - silent and
+    indistinguishable from success, which is worse than an explicit failure.
+    """
+
+    #: The terminal event is the last one emitted, by construction. Naming the
+    #: candidates explicitly rather than pattern-matching on the type string
+    #: keeps the assertion from quietly selecting some other event if the
+    #: sequence changes.
+    _TERMINAL_TYPES = {"response.completed", "response.incomplete", "response.failed"}
+
+    @classmethod
+    def _terminal(cls, events: list) -> str:
+        terminal = [event["type"] for event in events if event["type"] in cls._TERMINAL_TYPES]
+        assert len(terminal) == 1, f"expected exactly one terminal event, got {terminal}"
+        assert events[-1]["type"] == terminal[0], "the terminal event must be last"
+        return terminal[0]
+
+    def test_a_genuinely_complete_stream_reports_completed(self) -> None:
+        synth = ResponsesStreamSynthesizer(model="glm-5.3")
+        synth.feed({"choices": [{"delta": {"content": "hello"}}]})
+
+        events = synth.finish(upstream_completed=True)
+
+        assert self._terminal(events) == "response.completed"
+        assert events[-1]["response"]["status"] == "completed"
+
+    def test_a_truncated_stream_reports_incomplete(self) -> None:
+        synth = ResponsesStreamSynthesizer(model="glm-5.3")
+        synth.feed({"choices": [{"delta": {"content": "hel"}}]})
+
+        events = synth.finish(upstream_completed=False)
+
+        assert self._terminal(events) == "response.incomplete"
+        assert events[-1]["response"]["status"] == "incomplete"
+        assert "response.completed" not in {event["type"] for event in events}
+
+    def test_the_incomplete_event_names_a_reason_it_can_observe(self) -> None:
+        """``interrupted``, not a guess at max-tokens or a content filter."""
+
+        synth = ResponsesStreamSynthesizer(model="glm-5.3")
+        synth.feed({"choices": [{"delta": {"content": "hel"}}]})
+
+        events = synth.finish(upstream_completed=False)
+
+        assert events[-1]["response"]["incomplete_details"] == {"reason": "interrupted"}
+
+    def test_the_partial_text_is_still_delivered(self) -> None:
+        """Incomplete is not empty: the client keeps what did arrive."""
+
+        synth = ResponsesStreamSynthesizer(model="glm-5.3")
+        synth.feed({"choices": [{"delta": {"content": "hel"}}]})
+
+        events = synth.finish(upstream_completed=False)
+
+        assert events[-1]["response"]["output"][0]["content"][0]["text"] == "hel"
+
+    def test_the_default_preserves_the_completed_path(self) -> None:
+        """Callers that pass nothing keep prior behaviour; both sites are explicit."""
+
+        synth = ResponsesStreamSynthesizer(model="glm-5.3")
+        synth.feed({"choices": [{"delta": {"content": "hi"}}]})
+
+        assert self._terminal(synth.finish()) == "response.completed"
