@@ -1,0 +1,363 @@
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import cast
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.clients.openrouter_sidecar import (
+    OpenRouterSidecarClient,
+    OpenRouterSidecarError,
+    OpenRouterSidecarUnavailableError,
+)
+from app.core.clients.orcarouter_sidecar import (
+    OrcaRouterSidecarError,
+    OrcaRouterSidecarUnavailableError,
+    get_orcarouter_sidecar_client,
+)
+from app.core.config.settings_cache import get_settings_cache
+from app.core.exceptions import DashboardBadRequestError, DashboardConflictError, DashboardNotFoundError
+from app.core.utils.time import utcnow
+from app.db.models import DashboardSettings, FreeModelDiscoveryRun, FreeModelDiscoveryRunItem
+from app.modules.free_model_discovery.candidates import (
+    build_candidates,
+    normalize_model_key,
+    split_candidates,
+)
+from app.modules.free_model_discovery.pacing import (
+    DEFAULT_MAX_ATTEMPTS_PER_ITEM,
+    DEFAULT_PACING_CAP_SECONDS,
+    DEFAULT_PACING_FLOOR_SECONDS,
+    DEFAULT_RUN_WALL_CLOCK,
+)
+from app.modules.free_model_discovery.probe import SidecarProbeClient
+from app.modules.free_model_discovery.repository import FreeModelDiscoveryRepository
+from app.modules.free_model_discovery.schemas import (
+    FREE_MODEL_PROVIDERS,
+    FreeModelCandidate,
+    FreeModelCandidateGroup,
+    FreeModelDiscoveryPlanResponse,
+    FreeModelDiscoveryProviderProgress,
+    FreeModelDiscoveryRunCounts,
+    FreeModelDiscoveryRunItemResponse,
+    FreeModelDiscoveryRunResponse,
+    FreeModelDiscoveryRunsResponse,
+    FreeModelDiscoveryRunSummary,
+    FreeModelDiscoveryStartRequest,
+    FreeModelItemState,
+    FreeModelProvider,
+    FreeModelProviderPlan,
+    FreeModelProviderPlanStatus,
+    FreeModelRunStatus,
+)
+from app.modules.proxy.openrouter_sidecar_dispatch import openrouter_sidecar_config_from_settings
+from app.modules.proxy.orcarouter_sidecar_dispatch import orcarouter_sidecar_config_from_settings
+from app.modules.proxy.sidecar_routing import parse_sidecar_full_models
+from app.modules.settings.repository import SettingsRepository
+
+logger = logging.getLogger(__name__)
+
+# Frozen queue order inside a run: operator-facing priority.
+_GROUP_ORDER = {"new": 0, "unresolved": 1, "due": 2, "cooldown": 3}
+
+_FULL_MODELS_COLUMN = {
+    "openrouter": "openrouter_sidecar_full_models_json",
+    "orcarouter": "orcarouter_sidecar_full_models_json",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAccess:
+    status: FreeModelProviderPlanStatus
+    message: str | None
+    client: SidecarProbeClient | None
+
+
+def provider_access(settings: DashboardSettings, provider: FreeModelProvider) -> ProviderAccess:
+    """Resolve a provider's client from settings, or the reason it is unusable."""
+
+    if provider == "openrouter":
+        if not settings.openrouter_sidecar_enabled:
+            return ProviderAccess("disabled", "OpenRouter sidecar is disabled", None)
+        if settings.openrouter_sidecar_api_key_encrypted is None:
+            return ProviderAccess("missing_api_key", "OpenRouter sidecar API key is not configured", None)
+        return ProviderAccess("ok", None, OpenRouterSidecarClient(openrouter_sidecar_config_from_settings(settings)))
+    if not settings.orcarouter_sidecar_enabled:
+        return ProviderAccess("disabled", "OrcaRouter sidecar is disabled", None)
+    if settings.orcarouter_sidecar_api_key_encrypted is None:
+        return ProviderAccess("missing_api_key", "OrcaRouter sidecar API key is not configured", None)
+    return ProviderAccess("ok", None, get_orcarouter_sidecar_client(orcarouter_sidecar_config_from_settings(settings)))
+
+
+def all_pinned_keys(settings: DashboardSettings) -> set[str]:
+    """Every full-model id pinned by any sidecar, lowercased.
+
+    The settings validator rejects one id pinned under two sidecars, so a
+    candidate already pinned anywhere must be excluded, not just under its
+    own provider.
+    """
+
+    columns = (
+        settings.claude_sidecar_full_models_json,
+        settings.openrouter_sidecar_full_models_json,
+        settings.orcarouter_sidecar_full_models_json,
+        settings.omniroute_sidecar_selected_models_json,
+        settings.ollama_sidecar_full_models_json,
+    )
+    keys: set[str] = set()
+    for raw in columns:
+        for model_id in parse_sidecar_full_models(raw):
+            keys.add(normalize_model_key(model_id))
+    return keys
+
+
+class FreeModelDiscoveryService:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._repository = FreeModelDiscoveryRepository(session)
+        self._settings_repository = SettingsRepository(session)
+
+    # --- plan -----------------------------------------------------------
+
+    async def build_plan(self) -> FreeModelDiscoveryPlanResponse:
+        now = utcnow()
+        settings = await self._settings_repository.get_or_create()
+        active = await self._repository.get_active_run()
+        latest = await self._repository.get_latest_run()
+        last_finished = latest if latest is not None and latest.status != "running" else None
+        pinned = all_pinned_keys(settings)
+        providers: list[FreeModelProviderPlan] = []
+        for provider in FREE_MODEL_PROVIDERS:
+            providers.append(await self._plan_provider(provider, settings, pinned, last_finished, now))
+        return FreeModelDiscoveryPlanResponse(
+            generated_at=now,
+            providers=providers,
+            active_run_id=active.id if active is not None else None,
+        )
+
+    async def _plan_provider(
+        self,
+        provider: FreeModelProvider,
+        settings: DashboardSettings,
+        pinned: set[str],
+        last_finished: FreeModelDiscoveryRun | None,
+        now: datetime,
+    ) -> FreeModelProviderPlan:
+        access = provider_access(settings, provider)
+        if access.client is None:
+            return FreeModelProviderPlan(provider=provider, status=access.status, message=access.message)
+        try:
+            # ``list_models`` (not ``list_models_cached``) so a transport failure
+            # surfaces as a plan status instead of an empty candidate list.
+            models = await access.client.list_models()
+        except (OpenRouterSidecarUnavailableError, OrcaRouterSidecarUnavailableError) as exc:
+            return FreeModelProviderPlan(provider=provider, status="unreachable", message=_sanitize(exc.message))
+        except (OpenRouterSidecarError, OrcaRouterSidecarError) as exc:
+            return FreeModelProviderPlan(provider=provider, status="error", message=_sanitize(exc.message))
+        split = split_candidates(models, pinned)
+        states = await self._repository.states_for_provider(provider)
+        unresolved = await self._repository.unresolved_keys_for_provider(provider, run=last_finished)
+        candidates = build_candidates(
+            provider=provider,
+            models=split.candidates,
+            states=states,
+            unresolved_keys=unresolved,
+            now=now,
+        )
+        candidates.sort(key=lambda candidate: (_GROUP_ORDER[candidate.group], candidate.model_id.lower()))
+        return FreeModelProviderPlan(
+            provider=provider,
+            status="ok",
+            discovered_count=split.discovered_count,
+            free_count=split.free_count,
+            already_pinned_count=split.already_pinned_count,
+            skipped_selector_count=split.skipped_selector_count,
+            candidates=candidates,
+        )
+
+    # --- run lifecycle ----------------------------------------------------
+
+    async def start_run(self, payload: FreeModelDiscoveryStartRequest) -> FreeModelDiscoveryRunResponse:
+        """Freeze the confirmed selection into a run.
+
+        The selection is re-validated against a fresh plan so a stale dialog
+        cannot enqueue an id that is now pinned, or that no longer exists.
+        """
+
+        if await self._repository.get_active_run() is not None:
+            raise DashboardConflictError("A discovery run is already in progress", code="discovery_run_active")
+        plan = await self.build_plan()
+        by_key: dict[tuple[str, str], FreeModelCandidate] = {}
+        for provider_plan in plan.providers:
+            for candidate in provider_plan.candidates:
+                by_key[(candidate.provider, normalize_model_key(candidate.model_id))] = candidate
+        chosen: list[FreeModelCandidate] = []
+        for selection in payload.selections:
+            candidate = by_key.get((selection.provider, normalize_model_key(selection.model_id)))
+            if candidate is None:
+                raise DashboardBadRequestError(
+                    f"{selection.provider}/{selection.model_id} is not a current candidate; reload the plan",
+                    code="discovery_selection_stale",
+                )
+            chosen.append(candidate)
+        chosen.sort(key=lambda candidate: (_GROUP_ORDER[candidate.group], candidate.model_id.lower()))
+        now = utcnow()
+        run = await self._repository.create_run(
+            started_at=now,
+            deadline_at=now + DEFAULT_RUN_WALL_CLOCK,
+            pacing_floor_seconds=DEFAULT_PACING_FLOOR_SECONDS,
+            pacing_cap_seconds=DEFAULT_PACING_CAP_SECONDS,
+            max_attempts_per_item=DEFAULT_MAX_ATTEMPTS_PER_ITEM,
+            items=((candidate.provider, candidate.model_id, candidate.group) for candidate in chosen),
+        )
+        return await self.get_run(run.id)
+
+    async def get_run(self, run_id: str) -> FreeModelDiscoveryRunResponse:
+        run = await self._repository.get_run(run_id)
+        if run is None:
+            raise DashboardNotFoundError("Discovery run not found", code="discovery_run_not_found")
+        items = await self._repository.list_items(run_id)
+        return _run_response(run, items)
+
+    async def get_active_or_latest_run(self) -> FreeModelDiscoveryRunResponse | None:
+        run = await self._repository.get_active_run()
+        if run is None:
+            run = await self._repository.get_latest_run()
+        if run is None:
+            return None
+        items = await self._repository.list_items(run.id)
+        return _run_response(run, items)
+
+    async def list_runs(self) -> FreeModelDiscoveryRunsResponse:
+        active = await self._repository.get_active_run()
+        runs = await self._repository.list_runs()
+        summaries: list[FreeModelDiscoveryRunSummary] = []
+        for run in runs:
+            items = await self._repository.list_items(run.id)
+            summaries.append(
+                FreeModelDiscoveryRunSummary(
+                    id=run.id,
+                    status=_run_status(run.status),
+                    started_at=run.started_at,
+                    finished_at=run.finished_at,
+                    counts=_counts(items),
+                )
+            )
+        return FreeModelDiscoveryRunsResponse(active_run_id=active.id if active is not None else None, runs=summaries)
+
+    async def cancel_run(self, run_id: str) -> FreeModelDiscoveryRunResponse:
+        run = await self._repository.get_run(run_id)
+        if run is None:
+            raise DashboardNotFoundError("Discovery run not found", code="discovery_run_not_found")
+        if run.status != "running":
+            raise DashboardConflictError("Discovery run is not running", code="discovery_run_not_running")
+        await self._repository.request_cancel(run_id)
+        return await self.get_run(run_id)
+
+    # --- pin write --------------------------------------------------------
+
+    async def pin_full_model(self, provider: FreeModelProvider, model_id: str) -> bool:
+        """Append a passed id to the provider's full-model list.
+
+        Uses a version-lock-free UPDATE (same contract as
+        ``SettingsRepository.update_operational``) so a multi-hour run never
+        makes an open Settings form's CAS stale. Returns False when the id is
+        already pinned anywhere, which is not an error.
+        """
+
+        settings = await self._settings_repository.get_or_create()
+        if normalize_model_key(model_id) in all_pinned_keys(settings):
+            return False
+        column = _FULL_MODELS_COLUMN[provider]
+        current = list(parse_sidecar_full_models(getattr(settings, column)))
+        current.append(model_id.strip())
+        await self._settings_repository.update_operational_json_column(
+            column, json.dumps(current, separators=(",", ":"))
+        )
+        await get_settings_cache().invalidate()
+        return True
+
+
+def _sanitize(message: str) -> str:
+    return message.replace("Bearer ", "Bearer [redacted]")
+
+
+def _run_status(value: str) -> FreeModelRunStatus:
+    if value not in ("running", "completed", "cancelled", "expired", "failed"):
+        raise RuntimeError(f"Unexpected discovery run status: {value}")
+    return value
+
+
+def _counts(items: Sequence[FreeModelDiscoveryRunItem]) -> FreeModelDiscoveryRunCounts:
+    counts = FreeModelDiscoveryRunCounts(total=len(items))
+    for item in items:
+        if item.state == "queued":
+            counts.queued += 1
+        elif item.state == "passed":
+            counts.passed += 1
+        elif item.state == "failed":
+            counts.failed += 1
+        elif item.state == "unresolved":
+            counts.unresolved += 1
+        if item.added_to_full_models:
+            counts.added += 1
+    return counts
+
+
+def _run_response(
+    run: FreeModelDiscoveryRun, items: Sequence[FreeModelDiscoveryRunItem]
+) -> FreeModelDiscoveryRunResponse:
+    from app.modules.free_model_discovery.runner import get_runner_progress
+
+    progress = get_runner_progress(run.id)
+    providers: list[FreeModelDiscoveryProviderProgress] = []
+    for provider in FREE_MODEL_PROVIDERS:
+        provider_items = [item for item in items if item.provider == provider]
+        if not provider_items:
+            continue
+        live = progress.get(provider)
+        providers.append(
+            FreeModelDiscoveryProviderProgress(
+                provider=provider,
+                counts=_counts(provider_items),
+                current_interval_seconds=live.current_interval_seconds if live is not None else None,
+                next_probe_at=live.next_probe_at if live is not None else None,
+            )
+        )
+    return FreeModelDiscoveryRunResponse(
+        id=run.id,
+        status=_run_status(run.status),
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        deadline_at=run.deadline_at,
+        cancel_requested=bool(run.cancel_requested),
+        pacing_floor_seconds=run.pacing_floor_seconds,
+        pacing_cap_seconds=run.pacing_cap_seconds,
+        max_attempts_per_item=run.max_attempts_per_item,
+        error_message=run.error_message,
+        counts=_counts(items),
+        providers=providers,
+        items=[
+            FreeModelDiscoveryRunItemResponse(
+                provider=cast(FreeModelProvider, item.provider),
+                model_id=item.model_id,
+                group=cast(FreeModelCandidateGroup, item.candidate_group),
+                state=cast(FreeModelItemState, item.state),
+                attempts=item.attempts,
+                next_attempt_at=item.next_attempt_at,
+                last_attempt_at=item.last_attempt_at,
+                last_http_status=item.last_http_status,
+                last_outcome=item.last_outcome,
+                content_chars=item.content_chars,
+                content_ok_match=item.content_ok_match,
+                reasoning_chars=item.reasoning_chars,
+                added_to_full_models=bool(item.added_to_full_models),
+                resolved_at=item.resolved_at,
+            )
+            for item in items
+        ],
+    )

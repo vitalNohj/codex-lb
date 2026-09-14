@@ -83,6 +83,8 @@ from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
 from app.modules.firewall import api as firewall_api
 from app.modules.fleet import api as fleet_api
+from app.modules.free_model_discovery import api as free_model_discovery_api
+from app.modules.free_model_discovery.runner import build_free_model_discovery_runner
 from app.modules.health import api as health_api
 from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
@@ -512,6 +514,7 @@ async def lifespan(app: FastAPI):
     account_deletion_scheduler = build_account_deletion_scheduler()
     data_retention_scheduler = build_data_retention_scheduler()
     telemetry_scheduler = build_telemetry_scheduler()
+    free_model_discovery_runner = build_free_model_discovery_runner()
     # Hold the instance: this lifespan owns it (and keeps it strongly rooted)
     # even if a nested lifespan on another loop replaces the module-global
     # singleton in the meantime; shutdown below stops exactly this instance.
@@ -531,6 +534,7 @@ async def lifespan(app: FastAPI):
     await account_deletion_scheduler.start()
     await data_retention_scheduler.start()
     await telemetry_scheduler.start()
+    await free_model_discovery_runner.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
         import uvicorn
 
@@ -779,6 +783,7 @@ async def lifespan(app: FastAPI):
         await account_deletion_scheduler.stop()
         await data_retention_scheduler.stop()
         await telemetry_scheduler.stop()
+        await free_model_discovery_runner.stop()
         # Release the scheduler leader lease only after every leader-gated
         # scheduler has stopped so no local tick re-acquires it; followers can
         # then take over immediately instead of waiting out the lease TTL.
@@ -871,6 +876,7 @@ def create_app() -> FastAPI:
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
     app.include_router(orcarouter_sidecar_api.router)
+    app.include_router(free_model_discovery_api.router)
     if omniroute_enabled():
         # Dormant while the OmniRoute capability is disabled: the module stays
         # importable for a future re-enable, but its status/test/models routes

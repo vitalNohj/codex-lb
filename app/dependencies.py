@@ -30,6 +30,7 @@ from app.modules.dashboard_auth.service import (
 )
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
+from app.modules.free_model_discovery.service import FreeModelDiscoveryService
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.model_sources.service import ModelSourcesService
@@ -145,6 +146,12 @@ class OrcaRouterSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OrcaRouterSidecarService
+
+
+@dataclass(slots=True)
+class FreeModelDiscoveryContext:
+    session: AsyncSession
+    service: FreeModelDiscoveryService
 
 
 @dataclass(slots=True)
@@ -367,6 +374,12 @@ def get_orcarouter_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OrcaRouterSidecarService(settings_repository)
     return OrcaRouterSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_free_model_discovery_context(
+    session: AsyncSession = Depends(get_session),
+) -> FreeModelDiscoveryContext:
+    return FreeModelDiscoveryContext(session=session, service=FreeModelDiscoveryService(session))
 
 
 def get_omniroute_sidecar_context(

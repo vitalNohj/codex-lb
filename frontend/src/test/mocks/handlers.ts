@@ -2279,6 +2279,31 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/free-model-discovery/plan", () => {
+    return HttpResponse.json({
+      generatedAt: "2026-01-01T00:00:00Z",
+      activeRunId: null,
+      providers: [
+        {
+          provider: "openrouter",
+          status: "ok",
+          discoveredCount: 3,
+          freeCount: 2,
+          alreadyPinnedCount: 1,
+          skippedSelectorCount: 0,
+          candidates: [
+            { provider: "openrouter", modelId: "deepseek/deepseek-r1:free", group: "new", ownedBy: "deepseek" },
+          ],
+        },
+        { provider: "orcarouter", status: "disabled", message: "OrcaRouter sidecar is disabled", candidates: [] },
+      ],
+    });
+  }),
+
+  http.get("*/api/free-model-discovery/runs/current", () => {
+    return HttpResponse.json(null);
+  }),
+
   http.get("*/api/openrouter-sidecar/status", () => {
     return HttpResponse.json({
       enabled: true,
