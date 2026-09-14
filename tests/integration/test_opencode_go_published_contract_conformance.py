@@ -129,20 +129,30 @@ def test_the_model_protocol_map_classifies_every_id_and_advertises_only_chat():
 
     protocols = models.OPENCODE_GO_MODEL_PROTOCOLS
     allowed = {"chat_completions", "messages", "responses", "unknown"}
-    for model_id, entry in protocols.items():
-        protocol = entry if isinstance(entry, str) else entry.get("protocol")
+    for model_id, profile in protocols.items():
+        protocol = getattr(profile.protocol, "value", profile.protocol)
         assert protocol in allowed, f"{model_id} carries an unrecognized protocol {protocol!r}"
 
     # contract.md section 4: exactly the /chat/completions ids are dispatchable
-    # at this milestone. A /messages or /responses id marked supported would be
+    # at this milestone. A /messages or /responses id reported supported would be
     # advertising a combination nobody has tested.
-    for model_id, entry in protocols.items():
-        if isinstance(entry, dict) and "supported" in entry:
-            if entry["supported"]:
-                assert entry.get("protocol") == "chat_completions", (
-                    f"{model_id} is advertised as supported on {entry.get('protocol')!r}; "
-                    "only chat_completions is dispatchable at this milestone"
-                )
+    for model_id, profile in protocols.items():
+        protocol = getattr(profile.protocol, "value", profile.protocol)
+        if models.is_opencode_go_model_supported(model_id):
+            assert protocol == "chat_completions", (
+                f"{model_id} is advertised as supported on {protocol!r}; "
+                "only chat_completions is dispatchable at this milestone"
+            )
+
+    # And the supported set is exactly the chat_completions set - no id is
+    # quietly dispatchable without being in the map.
+    supported = set(models.supported_opencode_go_model_ids())
+    chat_ids = {
+        model_id
+        for model_id, profile in protocols.items()
+        if getattr(profile.protocol, "value", profile.protocol) == "chat_completions"
+    }
+    assert supported == chat_ids
 
 
 def test_the_privacy_sensitive_models_are_flagged_and_not_dispatchable():
@@ -153,12 +163,13 @@ def test_the_privacy_sensitive_models_are_flagged_and_not_dispatchable():
 
     protocols = models.OPENCODE_GO_MODEL_PROTOCOLS
     for model_id in ("muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
-        entry = protocols.get(model_id)
-        if entry is None or not isinstance(entry, dict):
-            continue
-        assert entry.get("supported") is not True, f"{model_id} must not be dispatchable"
-        if "privacy_sensitive" in entry:
-            assert entry["privacy_sensitive"] is True
+        profile = protocols.get(model_id)
+        assert profile is not None, f"{model_id} is absent from the pinned map"
+        assert models.is_opencode_go_model_supported(model_id) is False, (
+            f"{model_id} must not be dispatchable: the Go docs mark it as training "
+            "on prompts and not zero-data-retention"
+        )
+        assert profile.privacy_sensitive is True
 
 
 def test_an_unknown_model_id_is_not_treated_as_chat_completions_by_default():
@@ -168,11 +179,11 @@ def test_an_unknown_model_id_is_not_treated_as_chat_completions_by_default():
     unclassified id falling through to a default endpoint the provider does not
     serve it on.
     """
-    models = _try_import("app.modules.proxy.opencode_go_models")
-    if models is None or not hasattr(models, "protocol_for_model"):
-        pytest.skip("not implemented yet: protocol_for_model")
+    models = _require("app.modules.proxy.opencode_go_models")
 
-    assert models.protocol_for_model("definitely-not-a-real-go-model") in {"unknown", None}
+    protocol = models.opencode_go_model_protocol("definitely-not-a-real-go-model")
+    assert getattr(protocol, "value", protocol) in {"unknown", None}
+    assert models.is_opencode_go_model_supported("definitely-not-a-real-go-model") is False
 
 
 # ---------------------------------------------------------------------------
@@ -383,21 +394,14 @@ def test_the_quota_endpoint_never_carries_windows_for_a_no_data_status():
     and not full. This is the single rule that keeps an operator from reading a
     failed usage fetch as an exhausted subscription.
     """
-    schemas = _try_import("app.modules.opencode_go_quota.schemas")
-    if schemas is None:
-        schemas = _try_import("app.modules.opencode_go.quota_schemas")
-    if schemas is None:
-        pytest.skip("not implemented yet: opencode go quota schemas")
-
-    builder = getattr(schemas, "quota_response_for_status", None)
-    if builder is None:
-        pytest.skip("not implemented yet: quota_response_for_status")
+    schemas = _require("app.modules.opencode_go.schemas")
 
     for status in ("disabled", "not_configured", "unauthorized", "rate_limited", "unavailable"):
-        response = builder(status)
+        response = schemas.OpenCodeGoQuotaResponse(status=status)
         assert response.windows == [], f"status={status} must carry no windows"
         assert response.models == []
         assert response.model_breakdown_available is False
+        assert response.scope == "unknown"
 
 
 def test_the_quota_scope_is_reported_as_unknown_rather_than_guessed():
@@ -406,20 +410,14 @@ def test_the_quota_scope_is_reported_as_unknown_rather_than_guessed():
     Nobody has established whether the usage windows are per-model or
     account-wide, so neither label may be emitted from the current parser.
     """
-    service = _try_import("app.modules.opencode_go_quota.service")
-    if service is None:
-        pytest.skip("not implemented yet: opencode go quota service")
+    quota = _require("app.core.usage.opencode_go_quota")
 
-    parser = getattr(service, "parse_usage_payload", None)
-    if parser is None:
-        pytest.skip("not implemented yet: parse_usage_payload")
-
-    parsed = parser(
+    parsed = quota.parse_opencode_go_usage(
         {
             "usage": {
-                "rolling": {"status": "ok", "percent": 42, "resetsAt": 1789360000000},
-                "weekly": {"status": "ok", "percent": 13, "resetsAt": 1789900000000},
-                "monthly": {"status": "ok", "percent": 4, "resetsAt": 1792000000000},
+                "rolling": {"status": "ok", "percent": 42, "resetsAt": "2026-09-14T17:00:00Z"},
+                "weekly": {"status": "ok", "percent": 13, "resetsAt": "2026-09-20T00:00:00Z"},
+                "monthly": {"status": "ok", "percent": 4, "resetsAt": "2026-10-01T00:00:00Z"},
             }
         }
     )
@@ -427,7 +425,20 @@ def test_the_quota_scope_is_reported_as_unknown_rather_than_guessed():
         "the upstream payload carries three unlabelled windows and no model "
         "dimension; labelling it account-wide or per-model manufactures a fact"
     )
-    assert parsed.model_breakdown_available is False
+    # A good payload really does yield windows, so the rule above is pinned in
+    # both directions rather than satisfied by an always-empty result.
+    assert len(parsed.windows) == 3
+
+    # Percent is carried in the used direction only. There is deliberately no
+    # derived "remaining", which would dress a single-source directional
+    # inference up as a second confirmation.
+    window = parsed.windows[0]
+    assert window.percent_used == 42
+    assert not hasattr(window, "percent_remaining")
+    # The verbatim upstream key is preserved alongside our stable name, so a
+    # future live capture can be diffed against the mapping without ambiguity.
+    assert window.upstream_key == "rolling"
+    assert window.key == "five_hour"
 
 
 def test_contract_coverage_is_reported_honestly(capsys):
@@ -440,7 +451,9 @@ def test_contract_coverage_is_reported_honestly(capsys):
         "backend client": "app.core.clients.opencode_go_sidecar",
         "backend dispatch": "app.modules.proxy.opencode_go_sidecar_dispatch",
         "model protocol map": "app.modules.proxy.opencode_go_models",
-        "session resolution": "app.modules.proxy.opencode_go_session",
+        "session resolution": "app.core.conversation.opencode_go_session",
+        "quota parser": "app.core.usage.opencode_go_quota",
+        "quota service": "app.modules.opencode_go.service",
         "dashboard api": "app.modules.opencode_go_sidecar.api",
         "accounts summary": "app.modules.accounts.opencode_go_sidecar_summary",
     }
