@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import { OllamaSidecarSettings } from "@/features/settings/components/ollama-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
+import { OpenCodeGoSidecarSettings } from "@/features/settings/components/opencode-go-sidecar-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -60,6 +61,12 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
       enabled: settings.ollamaSidecarEnabled ?? false,
       render: () => <OllamaSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
+    {
+      value: "opencode-go",
+      label: "OpenCode Go",
+      enabled: settings.opencodeGoSidecarEnabled ?? false,
+      render: () => <OpenCodeGoSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
+    },
   ];
 
   const [activeTab] = useState(() => (tabs.find((tab) => tab.enabled) ?? tabs[0]).value);
@@ -80,7 +87,12 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
         </div>
 
         <Tabs defaultValue={activeTab}>
-          <TabsList className="w-full">
+          {/*
+            Tab labels never wrap, so past a handful of integrations the row is
+            wider than a phone viewport. Scrolling the row keeps every label
+            readable and stops the card from forcing a horizontal page scroll.
+          */}
+          <TabsList className="w-full justify-start overflow-x-auto">
             {tabs.map((tab) => (
               <TabsTrigger
                 key={tab.value}

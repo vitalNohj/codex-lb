@@ -370,4 +370,55 @@ describe("buildSettingsUpdateRequest", () => {
       proxyApiKeyFairShareCongestionThresholdPct: 80,
     });
   });
+
+  describe("OpenCode Go secrets", () => {
+    const settings = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      opencodeGoSidecarEnabled: true,
+      opencodeGoSidecarApiKeyConfigured: true,
+      opencodeGoSidecarFullModels: ["kimi-k3"],
+    });
+
+    it("never reconstructs a key field from loaded settings", () => {
+      const payload = buildSettingsUpdateRequest(settings, {
+        opencodeGoSidecarFullModels: ["kimi-k3", "glm-5.3"],
+      });
+
+      expect("opencodeGoSidecarApiKey" in payload).toBe(false);
+      expect("opencodeGoSidecarClearApiKey" in payload).toBe(false);
+      expect(payload.opencodeGoSidecarFullModels).toEqual(["kimi-k3", "glm-5.3"]);
+    });
+
+    it("carries the key only when the patch supplies one", () => {
+      const payload = buildSettingsUpdateRequest(settings, {
+        opencodeGoSidecarApiKey: "sk-go-new",
+      });
+
+      expect(payload.opencodeGoSidecarApiKey).toBe("sk-go-new");
+      expect("opencodeGoSidecarClearApiKey" in payload).toBe(false);
+    });
+
+    it("carries the clear flag only when the patch asks to clear", () => {
+      const payload = buildSettingsUpdateRequest(settings, {
+        opencodeGoSidecarClearApiKey: true,
+      });
+
+      expect(payload.opencodeGoSidecarClearApiKey).toBe(true);
+      expect("opencodeGoSidecarApiKey" in payload).toBe(false);
+    });
+
+    it("round-trips the configured flag without exposing the key itself", () => {
+      expect(settings.opencodeGoSidecarApiKeyConfigured).toBe(true);
+      expect("opencodeGoSidecarApiKey" in settings).toBe(false);
+    });
+  });
 });

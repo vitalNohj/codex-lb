@@ -400,6 +400,63 @@ const orcarouterSidecarModels = [
   { id: "deepseek/deepseek-chat", created: 425, ownedBy: "deepseek" },
 ];
 
+// OpenCode Go advertises routability and privacy per model, so the fixture
+// covers each state the settings UI has to render honestly: a plain routable
+// model, a routable-but-privacy-sensitive one, a known protocol codex-lb does
+// not route yet, and a model whose protocol the backend cannot determine.
+const opencodeGoSidecarModels = [
+  {
+    id: "kimi-k3",
+    created: 523,
+    ownedBy: "moonshotai",
+    protocol: "chat_completions",
+    routable: true,
+    unavailableReason: null,
+    privacySensitive: false,
+    privacyNote: null,
+  },
+  {
+    id: "glm-5.3",
+    created: 524,
+    ownedBy: "zai",
+    protocol: "chat_completions",
+    routable: true,
+    unavailableReason: null,
+    privacySensitive: false,
+    privacyNote: null,
+  },
+  {
+    id: "muse-spark-1.3-contributor",
+    created: 525,
+    ownedBy: "meta",
+    protocol: "responses",
+    routable: true,
+    unavailableReason: null,
+    privacySensitive: true,
+    privacyNote: "Trains on prompts, not ZDR",
+  },
+  {
+    id: "qwen3.8-max",
+    created: 526,
+    ownedBy: "alibaba",
+    protocol: "messages",
+    routable: false,
+    unavailableReason: "Messages protocol not implemented",
+    privacySensitive: false,
+    privacyNote: null,
+  },
+  {
+    id: "hy4-preview",
+    created: 527,
+    ownedBy: "opencode",
+    protocol: null,
+    routable: false,
+    unavailableReason: "Protocol unknown",
+    privacySensitive: false,
+    privacyNote: null,
+  },
+];
+
 function parseDateValue(value: string | null): number | null {
   if (!value) {
     return null;
@@ -2334,6 +2391,35 @@ export const handlers = [
       modelCount: orcarouterSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
       models: orcarouterSidecarModels,
+    });
+  }),
+
+  http.get("*/api/opencode-go-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenCode Go reachable",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      modelCount: opencodeGoSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/opencode-go-sidecar/models", () => {
+    return HttpResponse.json({ models: opencodeGoSidecarModels });
+  }),
+
+  http.post("*/api/opencode-go-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenCode Go reachable",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      modelCount: opencodeGoSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: opencodeGoSidecarModels,
     });
   }),
 
