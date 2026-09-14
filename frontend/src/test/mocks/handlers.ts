@@ -400,6 +400,21 @@ const orcarouterSidecarModels = [
   { id: "deepseek/deepseek-chat", created: 425, ownedBy: "deepseek" },
 ];
 
+// Shape and field names come from OpenCodeGoSidecarModelSummary in the backend
+// contract (data/codexlb-opencode-go-integration/contract.md section 3): the
+// `glm-5.3` row is that document's literal example. The fixture covers every
+// state the settings UI must render: a supported chat model, an already-mapped
+// /messages and /responses model that this milestone cannot dispatch, and an id
+// the pinned docs map does not classify at all.
+const opencodeGoSidecarModels = [
+  { id: "glm-5.3", created: 1789353162, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "kimi-k3", created: 1789353163, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "deepseek-v4-flash", created: 1789353164, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "qwen3.8-max", created: 1789353165, ownedBy: "opencode", protocol: "messages", supported: false },
+  { id: "muse-spark-1.3-contributor", created: 1789353166, ownedBy: "opencode", protocol: "responses", supported: false },
+  { id: "some-unlisted-preview", created: 1789353167, ownedBy: "opencode", protocol: "unknown", supported: false },
+];
+
 function parseDateValue(value: string | null): number | null {
   if (!value) {
     return null;
@@ -2334,6 +2349,35 @@ export const handlers = [
       modelCount: orcarouterSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
       models: orcarouterSidecarModels,
+    });
+  }),
+
+  http.get("*/api/opencode-go-sidecar/status", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenCode Go reachable",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      modelCount: opencodeGoSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/opencode-go-sidecar/models", () => {
+    return HttpResponse.json({ models: opencodeGoSidecarModels });
+  }),
+
+  http.post("*/api/opencode-go-sidecar/test", () => {
+    return HttpResponse.json({
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenCode Go reachable",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      modelCount: opencodeGoSidecarModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: opencodeGoSidecarModels,
     });
   }),
 

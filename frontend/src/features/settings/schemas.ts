@@ -251,6 +251,32 @@ export const DashboardSettingsSchema = z
     ollamaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     ollamaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     ollamaSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
+    opencodeGoSidecarEnabled: z.boolean().optional().default(false),
+    opencodeGoSidecarBaseUrl: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .default("https://opencode.ai/zen/go/v1"),
+    opencodeGoSidecarApiKeyConfigured: z.boolean().optional().default(false),
+    // The server seeds `opencode-go/` on a fresh install only; existing
+    // deployments get an empty list so the operator opts in and a prefix
+    // collision can be reported before anything is persisted. The dashboard
+    // therefore renders whatever the server sends and seeds nothing itself.
+    opencodeGoSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
+    opencodeGoSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
+    opencodeGoSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
+    opencodeGoSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
+    opencodeGoSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+    opencodeGoSidecarLastHealthStatus: z.string().nullable().optional().default(null),
+    opencodeGoSidecarLastHealthMessage: z.string().nullable().optional().default(null),
+    opencodeGoSidecarLastCheckedAt: z
+      .string()
+      .datetime({ offset: true })
+      .nullable()
+      .optional()
+      .default(null),
+    opencodeGoSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     guestAccessEnabled: z.boolean().optional().default(false),
     guestPasswordConfigured: z.boolean().optional().default(false),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional().default(false),
@@ -397,6 +423,15 @@ export const SettingsUpdateRequestSchema = z
     ollamaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
     ollamaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
     ollamaSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    opencodeGoSidecarEnabled: z.boolean().optional(),
+    opencodeGoSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
+    opencodeGoSidecarApiKey: z.string().trim().max(4096).optional(),
+    opencodeGoSidecarClearApiKey: z.boolean().optional(),
+    opencodeGoSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
+    opencodeGoSidecarFullModels: SidecarFullModelsSchema.optional(),
+    opencodeGoSidecarConnectTimeoutSeconds: z.number().positive().optional(),
+    opencodeGoSidecarRequestTimeoutSeconds: z.number().positive().optional(),
+    opencodeGoSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
     guestAccessEnabled: z.boolean().optional(),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional(),
     // Tri-state overrides: absent = unchanged, null = clear (inherit env
@@ -547,6 +582,58 @@ export const OllamaSidecarModelSummarySchema = z.object({
   id: z.string(),
   created: z.number().int().nullable().optional(),
   ownedBy: z.string().nullable().optional(),
+});
+
+/**
+ * Wire protocol the backend advertises for a discovered OpenCode Go model.
+ *
+ * OpenCode Go serves models on `/chat/completions`, `/messages`, and
+ * `/responses`. `"unknown"` is a real value the backend sends for an id the
+ * live listing returned but the pinned docs map does not classify - it is not
+ * an absence, and it is never treated as a usable default.
+ *
+ * Mirrors `OpenCodeGoSidecarModelSummary.protocol` in the backend contract.
+ */
+export const OpenCodeGoSidecarProtocolSchema = z.enum([
+  "chat_completions",
+  "messages",
+  "responses",
+  "unknown",
+]);
+
+export const OpenCodeGoSidecarModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+  /** Upstream endpoint this model id is served on. */
+  protocol: OpenCodeGoSidecarProtocolSchema.optional().default("unknown"),
+  /**
+   * Whether this build can dispatch the model. True only for
+   * `chat_completions` at the current milestone; `protocol: "unknown"` is
+   * always false.
+   *
+   * Defaulting to false keeps an older backend that omits the field from
+   * silently offering models it cannot route.
+   */
+  supported: z.boolean().optional().default(false),
+});
+
+export const OpenCodeGoSidecarStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: ThirdPartySidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+export const OpenCodeGoSidecarTestResponseSchema = OpenCodeGoSidecarStatusResponseSchema.extend({
+  models: z.array(OpenCodeGoSidecarModelSummarySchema).default([]),
+});
+
+export const OpenCodeGoSidecarModelsResponseSchema = z.object({
+  models: z.array(OpenCodeGoSidecarModelSummarySchema).default([]),
 });
 
 export const OllamaSidecarStatusResponseSchema = z.object({
@@ -721,6 +808,22 @@ type OllamaSidecarSettingsFields = Pick<
   | "ollamaSidecarDefaultReasoningEffort"
 >;
 
+type OpenCodeGoSidecarSettingsFields = Pick<
+  ParsedDashboardSettings,
+  | "opencodeGoSidecarEnabled"
+  | "opencodeGoSidecarBaseUrl"
+  | "opencodeGoSidecarApiKeyConfigured"
+  | "opencodeGoSidecarModelPrefixes"
+  | "opencodeGoSidecarFullModels"
+  | "opencodeGoSidecarConnectTimeoutSeconds"
+  | "opencodeGoSidecarRequestTimeoutSeconds"
+  | "opencodeGoSidecarModelsCacheTtlSeconds"
+  | "opencodeGoSidecarLastHealthStatus"
+  | "opencodeGoSidecarLastHealthMessage"
+  | "opencodeGoSidecarLastCheckedAt"
+  | "opencodeGoSidecarLastModelCount"
+>;
+
 type ClaudeSidecarSettingsFields = Pick<
   ParsedDashboardSettings,
   | "claudeSidecarEnabled"
@@ -753,6 +856,7 @@ export type DashboardSettings = Omit<
   | keyof OrcaRouterSidecarSettingsFields
   | keyof OmniRouteSidecarSettingsFields
   | keyof OllamaSidecarSettingsFields
+  | keyof OpenCodeGoSidecarSettingsFields
 > &
   Partial<StickyThresholdPresenceFlags> &
   Partial<StickyThresholdValues> &
@@ -760,7 +864,8 @@ export type DashboardSettings = Omit<
   Partial<OpenRouterSidecarSettingsFields> &
   Partial<OrcaRouterSidecarSettingsFields> &
   Partial<OmniRouteSidecarSettingsFields> &
-  Partial<OllamaSidecarSettingsFields>;
+  Partial<OllamaSidecarSettingsFields> &
+  Partial<OpenCodeGoSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 export type SidecarModelPrefix = z.infer<typeof SidecarModelPrefixSchema>;
 export type SidecarReasoningEffort = z.infer<typeof SidecarReasoningEffortSchema>;
@@ -791,6 +896,11 @@ export type OllamaSidecarModelSummary = z.infer<typeof OllamaSidecarModelSummary
 export type OllamaSidecarStatusResponse = z.infer<typeof OllamaSidecarStatusResponseSchema>;
 export type OllamaSidecarTestResponse = z.infer<typeof OllamaSidecarTestResponseSchema>;
 export type OllamaSidecarModelsResponse = z.infer<typeof OllamaSidecarModelsResponseSchema>;
+export type OpenCodeGoSidecarProtocol = z.infer<typeof OpenCodeGoSidecarProtocolSchema>;
+export type OpenCodeGoSidecarModelSummary = z.infer<typeof OpenCodeGoSidecarModelSummarySchema>;
+export type OpenCodeGoSidecarStatusResponse = z.infer<typeof OpenCodeGoSidecarStatusResponseSchema>;
+export type OpenCodeGoSidecarTestResponse = z.infer<typeof OpenCodeGoSidecarTestResponseSchema>;
+export type OpenCodeGoSidecarModelsResponse = z.infer<typeof OpenCodeGoSidecarModelsResponseSchema>;
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 export type CustomAliasCatalogEntry = z.infer<typeof CustomAliasCatalogEntrySchema>;
 

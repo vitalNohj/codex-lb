@@ -559,6 +559,16 @@ export function createDashboardSettings(
 		orcarouterSidecarConnectTimeoutSeconds: 8,
 		orcarouterSidecarRequestTimeoutSeconds: 600,
 		orcarouterSidecarModelsCacheTtlSeconds: 60,
+		opencodeGoSidecarEnabled: false,
+		opencodeGoSidecarBaseUrl: "https://opencode.ai/zen/go/v1",
+		opencodeGoSidecarApiKeyConfigured: false,
+		// Empty like an upgraded deployment; the server seeds the prefix only on
+		// a fresh install (backend contract section 2.1).
+		opencodeGoSidecarModelPrefixes: [],
+		opencodeGoSidecarFullModels: [],
+		opencodeGoSidecarConnectTimeoutSeconds: 8,
+		opencodeGoSidecarRequestTimeoutSeconds: 600,
+		opencodeGoSidecarModelsCacheTtlSeconds: 60,
 		guestAccessEnabled: false,
 		guestPasswordConfigured: false,
 		limitWarmupStaggeredIdleEnabled: false,

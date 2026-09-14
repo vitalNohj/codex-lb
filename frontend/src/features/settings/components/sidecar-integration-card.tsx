@@ -30,7 +30,26 @@ import type {
 import { ApiError } from "@/lib/api-client";
 import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 
-export type SidecarIntegrationId = "claude" | "openrouter" | "orcarouter" | "omniroute" | "ollama";
+export type SidecarIntegrationId =
+  | "claude"
+  | "openrouter"
+  | "orcarouter"
+  | "omniroute"
+  | "ollama"
+  | "opencodeGo";
+
+/**
+ * Render props handed to a provider-specific discovered-models browser.
+ *
+ * Most integrations use the shared {@link DiscoveredModelsBrowser}. A provider
+ * whose catalog carries extra routability or privacy semantics supplies its own
+ * renderer instead of widening the shared summary type.
+ */
+export type DiscoveredModelsRenderProps = {
+  selectedModels: string[];
+  isLoading: boolean;
+  onAddModel: (modelId: string) => void;
+};
 
 type SidecarIntegrationMeta = {
   id: SidecarIntegrationId;
@@ -101,6 +120,7 @@ type SidecarIntegrationContextValue = {
   models: {
     rows: DiscoveredModelSummary[];
     isLoading: boolean;
+    render?: (props: DiscoveredModelsRenderProps) => ReactNode;
   };
   form: {
     isValid: boolean;
@@ -128,6 +148,7 @@ type SidecarIntegrationCardProviderProps = {
   models: {
     rows: DiscoveredModelSummary[];
     isLoading: boolean;
+    render?: (props: DiscoveredModelsRenderProps) => ReactNode;
   };
   onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   onTestConnection: () => Promise<unknown>;
@@ -143,7 +164,11 @@ type SidecarIntegrationCardProviderProps = {
     pollInterval: number | null;
   }) => Partial<SettingsUpdateRequest>;
   buildEnablePatch: (enabled: boolean) => Partial<SettingsUpdateRequest>;
-  buildEffortPatch: (
+  /**
+   * Optional: integrations whose backend exposes no reasoning-effort field omit
+   * this and do not render {@link ReasoningEffort}.
+   */
+  buildEffortPatch?: (
     effort: SidecarReasoningEffort | null,
   ) => Partial<SettingsUpdateRequest>;
   children: ReactNode;
@@ -155,6 +180,7 @@ const INTEGRATION_NAMES: Record<SidecarIntegrationId, string> = {
   orcarouter: "OrcaRouter",
   omniroute: "OmniRoute",
   ollama: "Ollama",
+  opencodeGo: "OpenCode Go",
 };
 
 const SidecarIntegrationContext = createContext<SidecarIntegrationContextValue | null>(null);
@@ -240,6 +266,12 @@ function integrationValues(settings: DashboardSettings, current?: IntegrationVal
       name: INTEGRATION_NAMES.ollama,
       prefixes: settings.ollamaSidecarModelPrefixes ?? [],
       fullModels: settings.ollamaSidecarFullModels ?? [],
+    },
+    {
+      id: "opencodeGo",
+      name: INTEGRATION_NAMES.opencodeGo,
+      prefixes: settings.opencodeGoSidecarModelPrefixes ?? [],
+      fullModels: settings.opencodeGoSidecarFullModels ?? [],
     },
   ];
   if (!current) {
@@ -462,6 +494,9 @@ function SidecarIntegrationCardProvider({
   };
 
   const setDefaultReasoningEffort = (effort: SidecarReasoningEffort | null) => {
+    if (!buildEffortPatch) {
+      return;
+    }
     setDefaultReasoningEffortState(effort);
     void onSave(buildEffortPatch(effort));
   };
@@ -913,6 +948,13 @@ function FullModels() {
 
 function DiscoveredModels() {
   const { actions, models, state } = useSidecarIntegration();
+  if (models.render) {
+    return models.render({
+      selectedModels: state.fullModels,
+      isLoading: models.isLoading,
+      onAddModel: actions.addFullModel,
+    });
+  }
   return (
     <DiscoveredModelsBrowser
       models={models.rows}

@@ -14,12 +14,14 @@ import {
   getClaudeSidecarStatus,
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
+  getOpenCodeGoSidecarStatus,
   getOpenRouterSidecarStatus,
   getOrcaRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
   listOllamaSidecarModels,
   listOmniRouteSidecarModels,
+  listOpenCodeGoSidecarModels,
   listOpenRouterSidecarModels,
   listOrcaRouterSidecarModels,
   getTelemetryConsent,
@@ -32,6 +34,7 @@ import {
   testClaudeSidecarConnection,
   testOllamaSidecarConnection,
   testOmniRouteSidecarConnection,
+  testOpenCodeGoSidecarConnection,
   testOpenRouterSidecarConnection,
   testOrcaRouterSidecarConnection,
   testUpstreamProxyEndpoint,
@@ -86,6 +89,8 @@ const SETTINGS_COLLECTION_FIELDS = [
   "omnirouteSidecarSelectedModels",
   "ollamaSidecarModelPrefixes",
   "ollamaSidecarFullModels",
+  "opencodeGoSidecarModelPrefixes",
+  "opencodeGoSidecarFullModels",
   "weeklyPaceWorkingDays",
 ] as const satisfies ReadonlyArray<keyof SettingsUpdateRequest>;
 
@@ -342,7 +347,13 @@ export function useUpstreamProxyAdmin() {
   };
 }
 
-export type SidecarConnectionProvider = "claude" | "openrouter" | "orcarouter" | "omniroute" | "ollama";
+export type SidecarConnectionProvider =
+  | "claude"
+  | "openrouter"
+  | "orcarouter"
+  | "omniroute"
+  | "ollama"
+  | "opencodeGo";
 
 const SIDECAR_TEST_CONFIG: Record<
   SidecarConnectionProvider,
@@ -382,6 +393,12 @@ const SIDECAR_TEST_CONFIG: Record<
     testConnection: testOllamaSidecarConnection,
     successMessage: "Ollama sidecar tested",
     errorMessage: "Ollama sidecar test failed",
+  },
+  opencodeGo: {
+    queryKey: "opencode-go-sidecar",
+    testConnection: testOpenCodeGoSidecarConnection,
+    successMessage: "OpenCode Go tested",
+    errorMessage: "OpenCode Go test failed",
   },
 };
 
@@ -600,5 +617,19 @@ export function useOllamaSidecar(options?: { modelsEnabled?: boolean }) {
     enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useSidecarConnectionTest("ollama");
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useOpenCodeGoSidecar(options?: { modelsEnabled?: boolean }) {
+  const statusQuery = useQuery({
+    queryKey: ["settings", "opencode-go-sidecar", "status"],
+    queryFn: getOpenCodeGoSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "opencode-go-sidecar", "models"],
+    queryFn: listOpenCodeGoSidecarModels,
+    enabled: options?.modelsEnabled ?? true,
+  });
+  const testMutation = useSidecarConnectionTest("opencodeGo");
   return { statusQuery, modelsQuery, testMutation };
 }
