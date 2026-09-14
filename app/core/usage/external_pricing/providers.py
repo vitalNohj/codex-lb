@@ -25,6 +25,30 @@ EXTERNAL_PRICED_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+# Providers that bill per request and report that debit on the response. For
+# them a reported ``0`` is a real billed amount -- an OpenRouter ``:free`` model
+# is debited exactly nothing -- and must be stored as authoritative spend.
+#
+# A provider absent from this set does not bill per request. A flat-rate
+# subscription upstream still emits a ``usage.cost`` field, and it is ``0``
+# because there is no per-request debit to report, not because this request was
+# free. Recording that as ``upstream_billed`` states, with the highest available
+# provenance, that the request is known to have cost nothing -- which outranks the
+# calculated list price, blocks the resolver's answer from ever being shown, and
+# reports a subscription's usage as free traffic. Two other projects shipped that
+# exact conflation and had to fix it.
+#
+# Membership is about billing identity, not about whether the number parses, so
+# it is declared here beside the provider keys rather than inferred at the call
+# site from a value that looks plausible.
+PER_REQUEST_BILLED_PROVIDERS: frozenset[str] = frozenset(
+    {
+        PROVIDER_OPENROUTER,
+        PROVIDER_ORCAROUTER,
+    }
+)
+
+
 # ``RequestLog.source`` values written by the dispatchers that participate. The
 # request log records the serving integration, not the pricing provider key, so a
 # reader that needs to know whether the resolver owns a row's cost matches on
@@ -46,6 +70,17 @@ _LOG_SOURCE_PROVIDERS: dict[str, str] = {
 
 def is_external_priced_provider(provider: str | None) -> bool:
     return bool(provider) and provider.strip().lower() in EXTERNAL_PRICED_PROVIDERS
+
+
+def reports_per_request_billed_cost(provider: str | None) -> bool:
+    """Whether an amount this provider reports is an actual per-request debit.
+
+    ``False`` means any cost field on its responses describes something other
+    than what this request was charged, so it must not be recorded as billed
+    spend at any value -- including zero.
+    """
+
+    return bool(provider) and provider.strip().lower() in PER_REQUEST_BILLED_PROVIDERS
 
 
 def is_external_priced_log_source(source: str | None) -> bool:
