@@ -46,6 +46,23 @@ function unsupportedReason(protocol: OpenCodeGoSidecarProtocol): string {
 }
 
 /**
+ * Why the integration as a whole cannot route right now.
+ *
+ * Distinct from {@link unsupportedReason}: the model may be perfectly
+ * dispatchable while the integration is switched off or has no key. Saying the
+ * model is unsupported in that case would be wrong.
+ */
+function integrationUnusableReason(configured: boolean, enabled: boolean): string | null {
+  if (!configured) {
+    return "No API key stored";
+  }
+  if (!enabled) {
+    return "Integration disabled";
+  }
+  return null;
+}
+
+/**
  * Discovered-model browser for OpenCode Go.
  *
  * Differs from the shared browser because OpenCode Go serves models across
@@ -68,6 +85,11 @@ export function OpenCodeGoModelsBrowser({
     () => new Set(selectedModels.map((model) => model.toLowerCase())),
     [selectedModels],
   );
+  // React Query retains the last successful catalogue, so rows stay on screen
+  // after the operator disables the integration or clears the key. Nothing is
+  // selectable in that state: adding a full model for an integration that
+  // cannot route it would silently configure a dead route.
+  const unusableReason = integrationUnusableReason(configured, enabled);
   const supportedCount = useMemo(
     () => models.filter((model) => model.supported).length,
     [models],
@@ -100,9 +122,14 @@ export function OpenCodeGoModelsBrowser({
       >
         <span>
           Discovered models ({models.length})
-          {models.length > 0 ? (
+          {models.length > 0 && !unusableReason ? (
             <span className="ml-1 font-normal text-muted-foreground">
               - {supportedCount} supported
+            </span>
+          ) : null}
+          {models.length > 0 && unusableReason ? (
+            <span className="ml-1 font-normal text-amber-600 dark:text-amber-400">
+              - {unusableReason}
             </span>
           ) : null}
         </span>
@@ -118,9 +145,9 @@ export function OpenCodeGoModelsBrowser({
           ) : (
             <>
               <p className="text-xs text-muted-foreground">
-                Only models codex-lb can route today are selectable. The rest are listed so an
-                unsupported model is visibly unavailable rather than silently sent to a guessed
-                endpoint.
+                {unusableReason
+                  ? `These models were discovered earlier. None can be selected right now: ${unusableReason.toLowerCase()}.`
+                  : "Only models codex-lb can route today are selectable. The rest are listed so an unsupported model is visibly unavailable rather than silently sent to a guessed endpoint."}
               </p>
               <Input
                 value={search}
@@ -132,6 +159,11 @@ export function OpenCodeGoModelsBrowser({
               <ul className="max-h-64 divide-y overflow-y-auto rounded-md border">
                 {filtered.map((model) => {
                   const isSelected = selected.has(model.id.toLowerCase());
+                  // The integration being unusable outranks the model's own
+                  // support state, and carries its own reason so the row never
+                  // implies the model itself changed.
+                  const rowReason = unusableReason ?? (model.supported ? null : unsupportedReason(model.protocol));
+                  const selectable = !rowReason && !isSelected;
                   return (
                     <li key={model.id} className="flex items-center justify-between gap-2 px-2 py-1.5">
                       <div className="min-w-0">
@@ -139,11 +171,11 @@ export function OpenCodeGoModelsBrowser({
                         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
                           <span>{PROTOCOL_LABELS[model.protocol]}</span>
                           {model.ownedBy ? <span>- {model.ownedBy}</span> : null}
-                          {model.supported ? null : (
+                          {rowReason ? (
                             <span className="font-medium text-amber-600 dark:text-amber-400">
-                              - Unavailable: {unsupportedReason(model.protocol)}
+                              - Unavailable: {rowReason}
                             </span>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                       <Button
@@ -152,21 +184,21 @@ export function OpenCodeGoModelsBrowser({
                         variant="ghost"
                         className="h-6 shrink-0 gap-1 px-2 text-[11px]"
                         aria-label={
-                          !model.supported
+                          rowReason
                             ? `Unavailable ${model.id}`
                             : isSelected
                               ? `Added ${model.id}`
                               : `Add full model ${model.id}`
                         }
-                        disabled={isSelected || !model.supported}
+                        disabled={!selectable}
                         onClick={() => onAddModel(model.id)}
                       >
-                        {isSelected ? (
+                        {rowReason ? null : isSelected ? (
                           <Check className="size-3" aria-hidden="true" />
-                        ) : model.supported ? (
+                        ) : (
                           <Plus className="size-3" aria-hidden="true" />
-                        ) : null}
-                        {!model.supported ? "Unavailable" : isSelected ? "Added" : "Add full model"}
+                        )}
+                        {rowReason ? "Unavailable" : isSelected ? "Added" : "Add full model"}
                       </Button>
                     </li>
                   );

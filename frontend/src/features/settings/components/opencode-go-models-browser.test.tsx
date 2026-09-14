@@ -187,6 +187,115 @@ describe("OpenCodeGoModelsBrowser", () => {
     expect(screen.getByText("No models returned by OpenCode Go.")).toBeInTheDocument();
   });
 
+  // React Query retains the last successful result, so rows stay mounted after
+  // the operator disables the integration or clears the key. Those cached rows
+  // must stop being selectable: adding one would configure a full model for an
+  // integration that cannot route it.
+  describe("cached rows after the integration stops being usable", () => {
+    it("stops offering retained rows once the integration is disabled", async () => {
+      const user = userEvent.setup();
+      const { rerender, onAddModel } = renderBrowser();
+
+      await expand(user);
+      expect(screen.getByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+      rerender(
+        <OpenCodeGoModelsBrowser
+          models={MODELS}
+          selectedModels={[]}
+          isLoading={false}
+          configured
+          enabled={false}
+          onAddModel={onAddModel}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(onAddModel).not.toHaveBeenCalled();
+    });
+
+    it("stops offering retained rows once the stored key is cleared", async () => {
+      const user = userEvent.setup();
+      const { rerender, onAddModel } = renderBrowser();
+
+      await expand(user);
+      expect(screen.getByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+      rerender(
+        <OpenCodeGoModelsBrowser
+          models={MODELS}
+          selectedModels={[]}
+          isLoading={false}
+          configured={false}
+          enabled
+          onAddModel={onAddModel}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(onAddModel).not.toHaveBeenCalled();
+    });
+
+    it("explains why retained rows are unavailable rather than implying the model changed", async () => {
+      const user = userEvent.setup();
+      renderBrowser({ enabled: false });
+
+      await expand(user);
+      const row = screen.getByText("glm-5.3").closest("li") as HTMLElement;
+
+      // The model itself is still supported; the integration is what is off.
+      expect(within(row).getByText("Chat Completions")).toBeInTheDocument();
+      expect(within(row).getByText(/Integration disabled/)).toBeInTheDocument();
+    });
+
+    it("does not count retained rows as currently supported", () => {
+      renderBrowser({ enabled: false });
+
+      // 1 of these models is dispatchable, but none is usable right now, so the
+      // header must not advertise a supported count.
+      expect(screen.getByRole("button", { name: /Discovered models \(4\)/ })).toBeInTheDocument();
+      expect(screen.queryByText(/supported/)).not.toBeInTheDocument();
+    });
+
+    it("keeps counting supported rows while the integration is usable", () => {
+      renderBrowser();
+
+      expect(
+        screen.getByRole("button", { name: /Discovered models \(4\).*1 supported/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("names the reason in the header so the state is not silent", () => {
+      renderBrowser({ enabled: false });
+
+      expect(
+        screen.getByRole("button", { name: /Discovered models \(4\).*Integration disabled/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("reports a cleared key distinctly from a disabled integration", async () => {
+      const user = userEvent.setup();
+      renderBrowser({ configured: false });
+
+      await expand(user);
+      const row = screen.getByText("glm-5.3").closest("li") as HTMLElement;
+
+      expect(within(row).getByText(/No API key stored/)).toBeInTheDocument();
+      expect(screen.queryByText(/Integration disabled/)).not.toBeInTheDocument();
+    });
+
+    it("shows an already-added model as unavailable rather than removable-looking", async () => {
+      const user = userEvent.setup();
+      renderBrowser({ enabled: false, selectedModels: ["glm-5.3"] });
+
+      await expand(user);
+
+      // It stays configured in the Full models list above; here it simply
+      // cannot be acted on, and "Added" would imply it is live.
+      expect(screen.getByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+    });
+  });
+
   it("is operable by keyboard alone", async () => {
     const user = userEvent.setup();
     const { onAddModel } = renderBrowser({ models: [MODELS[0]] });
