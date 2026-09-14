@@ -50,12 +50,23 @@ DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 #: library-default agent.
 OPENCODE_GO_USER_AGENT = f"codex-lb/{__version__}"
 
+#: Hard ceiling on the usage response body. A real ``/usage`` document is a few
+#: hundred bytes; this is orders of magnitude of headroom while still bounding
+#: what a remote party can make this process allocate. Enforced by counting
+#: bytes as they stream, because a chunked or compressed response has no
+#: trustworthy ``Content-Length`` - so a length header alone cannot be the
+#: defence, only an early short-circuit when it is present and already too big.
+MAX_USAGE_RESPONSE_BYTES = 1024 * 1024
+
 # Where a non-JSON response body is parked. Deliberately not ``message``, so a
 # raw HTML page is never promoted into an operator-visible error string.
 NON_JSON_BODY_KEY = "__non_json_body__"
 # A body we could not parse is diagnostic only, and an upstream error page can be
 # megabytes; keep just enough to recognize it.
 _NON_JSON_SNIPPET_LENGTH = 120
+#: Read granularity for the bounded body read. Small enough that the overshoot
+#: past the cap before detection stays negligible.
+_USAGE_READ_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,12 +179,72 @@ class OpenCodeGoClient:
             ) from exc
 
 
-async def _read_response_json(response: aiohttp.ClientResponse) -> JsonValue:
+class OpenCodeGoResponseTooLargeError(OpenCodeGoUnavailableError):
+    """The upstream body exceeded ``MAX_USAGE_RESPONSE_BYTES``.
+
+    A subclass of the transport error so callers already handling "we could not
+    read usage" treat it the same way: unavailable, never zero or full quota.
+    """
+
+
+def _declared_length_over_cap(response: aiohttp.ClientResponse) -> bool:
+    """Does upstream declare a length we already know is too large?
+
+    An advisory fast path only. A chunked or compressed response carries no
+    usable length, and a hostile one can lie, so this never substitutes for
+    counting the bytes actually read.
+    """
+    raw = response.headers.get("Content-Length")
+    if raw is None:
+        return False
     try:
-        text = await response.text()
+        return int(raw) > MAX_USAGE_RESPONSE_BYTES
+    except (TypeError, ValueError):
+        return False
+
+
+async def _read_response_json(response: aiohttp.ClientResponse) -> JsonValue:
+    """Read the usage body under a hard byte cap.
+
+    Streams and counts rather than calling ``response.text()``: that buffers the
+    entire body before anything can inspect its size, so an upstream that is
+    hostile, misconfigured, or actually a captive portal could decide how much
+    memory this process allocates. Counting decoded chunks bounds the real
+    in-memory cost, including chunked and decompressed transfers where
+    ``Content-Length`` is absent or misleading.
+    """
+    if _declared_length_over_cap(response):
+        raise OpenCodeGoResponseTooLargeError(
+            f"OpenCode Go usage response is too large (declared over {MAX_USAGE_RESPONSE_BYTES} bytes)"
+        )
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        async for chunk in response.content.iter_chunked(_USAGE_READ_CHUNK_BYTES):
+            total += len(chunk)
+            if total > MAX_USAGE_RESPONSE_BYTES:
+                # Stop pulling immediately: the point is to not allocate the
+                # rest. The partial body is dropped rather than reported, since
+                # it is attacker-influenced and cannot be a usage document.
+                raise OpenCodeGoResponseTooLargeError(
+                    f"OpenCode Go usage response is too large (exceeded {MAX_USAGE_RESPONSE_BYTES} bytes)"
+                )
+            chunks.append(chunk)
+    except OpenCodeGoError:
+        raise
     except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
         raise OpenCodeGoUnavailableError(
             f"Failed to read OpenCode Go usage response: {exc.__class__.__name__}"
+        ) from exc
+
+    if not chunks:
+        return {}
+    try:
+        text = b"".join(chunks).decode("utf-8", errors="replace")
+    except (UnicodeDecodeError, MemoryError) as exc:
+        raise OpenCodeGoUnavailableError(
+            f"Failed to decode OpenCode Go usage response: {exc.__class__.__name__}"
         ) from exc
     if not text:
         return {}
