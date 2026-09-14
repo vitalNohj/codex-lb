@@ -359,6 +359,88 @@ describe("OpenCodeGoSidecarSettings", () => {
       expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
     });
 
+    // The enable switch updates the card's local state immediately while the
+    // settings save is still in flight. During that window the props still say
+    // enabled, so usability must follow the live switch, not the server value.
+    it("stops offering models the moment the switch is turned off, before the save resolves", async () => {
+      const user = userEvent.setup();
+      let resolveSave: (() => void) | undefined;
+      // Never resolves until we say so: this is the pending-disable window.
+      const onSave = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveSave = () => resolve(); }),
+      );
+      renderSettings(ENABLED_SETTINGS, onSave);
+
+      await openDiscoveredModels(user);
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+      await user.click(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }));
+
+      // Props are unchanged - the server has not confirmed anything yet.
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Add full model glm-5.3" })).not.toBeInTheDocument();
+
+      // Exactly one save (the disable); no add/save fired during the window.
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(onSave).toHaveBeenCalledWith({ opencodeGoSidecarEnabled: false });
+      expect(onSave).not.toHaveBeenCalledWith(
+        expect.objectContaining({ opencodeGoSidecarFullModels: expect.anything() }),
+      );
+
+      resolveSave?.();
+    });
+
+    it("treats a server-side disable as unusable even though the local switch is untouched", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={vi.fn()} />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(ENABLED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+      // A refetch (or another tab) reports the integration off. The card's own
+      // switch state was never touched, so only the settings prop changes.
+      rerender(view({ ...ENABLED_SETTINGS, opencodeGoSidecarEnabled: false }));
+
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+    });
+
+    it("restores selectability when the operator switches it back on", async () => {
+      const user = userEvent.setup();
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      renderSettings(ENABLED_SETTINGS, onSave);
+
+      await openDiscoveredModels(user);
+      const toggle = screen.getByRole("switch", { name: "Enable OpenCode Go Integration" });
+
+      await user.click(toggle);
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+
+      await user.click(toggle);
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+    });
+
+    it("keeps models unavailable when the disable save fails and the switch stays off", async () => {
+      const user = userEvent.setup();
+      const onSave = vi.fn().mockRejectedValue(new Error("save rejected"));
+      renderSettings(ENABLED_SETTINGS, onSave);
+
+      await openDiscoveredModels(user);
+      await user.click(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }));
+
+      // The card keeps the switch off after a failed save, so the catalogue
+      // must stay unavailable rather than silently becoming addable again.
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" })).not.toBeChecked();
+    });
+
     it("explains an empty catalog differently before a key is stored", async () => {
       const user = userEvent.setup();
       server.use(

@@ -86,13 +86,19 @@ export function OpenCodeGoSidecarSettings({
       models={{
         rows: models,
         isLoading: modelsQuery.isLoading,
-        render: ({ selectedModels, isLoading, onAddModel }) => (
+        // Usable only while BOTH signals agree it is on. `enabled` is the
+        // card's live switch, which flips the instant the operator moves it and
+        // before the save resolves; `sidecarEnabled` is the server-confirmed
+        // value, which also covers a disable that arrived from a refetch or
+        // another tab. Either one being off makes the catalogue unusable, which
+        // is the conservative reading in every intermediate state.
+        render: ({ selectedModels, isLoading, enabled, onAddModel }) => (
           <OpenCodeGoModelsBrowser
             models={models}
             selectedModels={selectedModels}
             isLoading={isLoading}
             configured={sidecarApiKeyConfigured}
-            enabled={sidecarEnabled}
+            enabled={enabled && sidecarEnabled}
             onAddModel={onAddModel}
           />
         ),

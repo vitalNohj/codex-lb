@@ -48,6 +48,14 @@ export type SidecarIntegrationId =
 export type DiscoveredModelsRenderProps = {
   selectedModels: string[];
   isLoading: boolean;
+  /**
+   * The card's live enable state, which flips as soon as the operator moves the
+   * switch - before the settings save resolves and the server-backed prop
+   * catches up. A renderer that gates selectability on enablement must use this
+   * rather than the settings prop, or it stays addable through the whole
+   * pending-disable window.
+   */
+  enabled: boolean;
   onAddModel: (modelId: string) => void;
 };
 
@@ -952,6 +960,7 @@ function DiscoveredModels() {
     return models.render({
       selectedModels: state.fullModels,
       isLoading: models.isLoading,
+      enabled: state.enabled,
       onAddModel: actions.addFullModel,
     });
   }
