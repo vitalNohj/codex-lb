@@ -36,8 +36,9 @@ from app.modules.model_sources.service import ModelSourcesService
 from app.modules.oauth.service import OauthService
 from app.modules.ollama_sidecar.service import OllamaSidecarService
 from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
-from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
+from app.modules.opencode_go.service import OpenCodeGoQuotaService
 from app.modules.opencode_go_sidecar.service import OpenCodeGoSidecarService
+from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
 from app.modules.orcarouter_sidecar.service import OrcaRouterSidecarService
 from app.modules.proxy.capability_lineage_repository import CapabilityLineageRepository
 from app.modules.proxy.repo_bundle import ProxyRepositories
@@ -153,6 +154,21 @@ class OpenCodeGoSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OpenCodeGoSidecarService
+
+
+@dataclass(slots=True)
+class OpenCodeGoContext:
+    """Context for the OpenCode Go *quota* read.
+
+    Distinct from ``OpenCodeGoSidecarContext``, which serves inference. They read
+    the same subscription credential through the same settings row but answer
+    different questions, and keeping them apart is what stops a quota poll from
+    acquiring an inference transport.
+    """
+
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: OpenCodeGoQuotaService
 
 
 @dataclass(slots=True)
@@ -383,6 +399,16 @@ def get_opencode_go_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OpenCodeGoSidecarService(settings_repository)
     return OpenCodeGoSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_opencode_go_context(
+    session: AsyncSession = Depends(get_session),
+) -> OpenCodeGoContext:
+    settings_repository = SettingsRepository(session)
+    # The service resolves its own cache and client factory when not supplied,
+    # so tests can substitute a fake client without a network call.
+    service = OpenCodeGoQuotaService(settings_repository)
+    return OpenCodeGoContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_omniroute_sidecar_context(
