@@ -459,23 +459,19 @@ async def test_the_go_key_is_never_returned_by_the_settings_api(async_client, op
     assert response.json()["opencodeGoSidecarApiKeyConfigured"] is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect at checkpoint 21e69ae6: an unconfigured Go model on "
-        "/v1/responses still falls through to Codex account selection and "
-        "returns a generic 'No available accounts ... degraded mode' 503 that "
-        "names neither OpenCode Go nor the missing credential. No prompt "
-        "reaches the Go upstream, but the request is routed Codex-ward and the "
-        "operator is pointed at the wrong subsystem. Owner is adding "
-        "other-provider traps; remove this marker on the corrected head."
-    ),
-)
 @pytest.mark.asyncio
 async def test_an_unconfigured_integration_never_puts_the_prompt_on_the_wire(
     async_client, opencode_go_enabled, go_upstream, monkeypatch
 ):
     """After a key clear, no prompt egress and no fallthrough to any provider.
+
+    **The `xfail(strict=True)` marker is removed here, as its own reason
+    instructed.** At checkpoint `21e69ae6` an unconfigured Go model on
+    `/v1/responses` fell through to Codex account selection and returned a
+    generic "No available accounts ... degraded mode" 503 naming neither
+    OpenCode Go nor the missing credential. On the composed backend head
+    `de16ef20` this test XPASSed strictly - the body below is unchanged, so the
+    pass reflects corrected product behavior, not a weakened assertion.
 
     No Go egress is necessary but **not sufficient**: a Go-resolved request that
     is refused by the Go dispatcher can still fall through into Codex account
