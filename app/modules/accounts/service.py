@@ -44,8 +44,8 @@ from app.modules.accounts.deletion import request_account_deletion_run
 from app.modules.accounts.mappers import build_account_summaries, build_account_usage_trends
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
-from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 from app.modules.accounts.opencode_go_sidecar_summary import build_opencode_go_sidecar_summary
+from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.schemas import (
