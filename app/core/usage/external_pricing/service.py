@@ -529,10 +529,10 @@ def preservation_reason(
 def _is_exactly_settled(resolution: Resolution) -> bool:
     """Whether a further catalog could not change this resolution.
 
-    True only for an outcome an ``exact`` match produced. ``exact`` consults the
-    catalogs in precedence order and returns the first that lists the id, so
-    appending a lower-precedence catalog cannot alter it - which is what makes
-    skipping the secondary reference safe rather than merely cheaper.
+    True only for an outcome a direct ``exact`` match produced. ``exact``
+    consults the catalogs in precedence order and returns the first that lists
+    the id, so appending a lower-precedence catalog cannot alter it - which is
+    what makes skipping the secondary reference safe rather than merely cheaper.
 
     Deliberately false for every other step. ``normalized`` and
     ``vendor-qualified`` collect candidates from *all* catalogs and abstain when
@@ -540,14 +540,29 @@ def _is_exactly_settled(resolution: Resolution) -> bool:
     never detected. It is also false for an unresolved or ambiguous outcome,
     which is precisely when the fallback has something to contribute.
 
-    The step is matched on its final component because alias, prefix, and
-    dated-release rewrites accumulate a prefix on it (``prefix+exact``). Those
-    rewrites change which id was asked about, not how the catalogs were
-    searched, so the argument above still holds for them.
+    Accumulated rewrites divide on *when they run*, and only that distinction
+    makes this safe:
+
+    ``alias`` and ``prefix`` run **before** any catalog is searched. They change
+    which id is asked about, not how the catalogs are consulted, so the
+    first-listing argument still holds and the skip stays safe.
+
+    ``dated-release`` runs **after** a search has already failed. It is a
+    fallback to a *less* specific id, so a trailing ``exact`` there means "the
+    undated form matched", not "the requested id matched". A catalog that was
+    never loaded may list the requested dated release exactly, and that entry
+    outranks any undated match: the date names a release of one model, and a
+    vendor that prices releases separately would otherwise be billed at the
+    wrong release's rate. So a dated rewrite never settles the question here.
     """
 
     step = resolution.step
-    if step is None or step.rsplit("+", 1)[-1] != "exact":
+    if step is None:
+        return False
+    components = step.split("+")
+    if components[-1] != "exact":
+        return False
+    if "dated-release" in components[:-1]:
         return False
     return resolution.outcome in (
         ResolutionOutcome.RESOLVED,
