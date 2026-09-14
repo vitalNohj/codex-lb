@@ -369,3 +369,65 @@ async def test_upstream_credential_echo_never_reaches_the_dashboard(
 
     assert _SYNTHETIC_KEY not in response.text
     assert "[redacted]" in response.text
+
+
+@requires_registration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [500, 404])
+async def test_an_http_failure_retains_values_and_then_recovers_on_reconnect(
+    async_client,
+    fake_upstream,
+    configured_settings,
+    monkeypatch,
+    status_code,
+):
+    """HTTP-status failures retain last-good values, then clear on reconnect.
+
+    The existing stale test covers a transport-level
+    ``OpenCodeGoUnavailableError``. A 500 or a 404 is a *different* branch - the
+    upstream answered - and a 404 in particular is the shape most likely to be
+    mistaken for "this account has no quota" and rendered as a real zero.
+
+    Observed on the live composed stack (backend 3c72438a in front of the local
+    fake upstream) before being pinned here: scripting ``/v1/usage`` to 500 and
+    then to 404, and waiting past the real 60s success TTL each time, produced
+    ``status=stale`` with the previous percentages intact and ``staleReason``
+    naming the synthetic failure; restoring the upstream returned ``status=ok``
+    with ``stale=false``. This test pins that behavior with the TTLs collapsed so
+    it is deterministic rather than a 60-second wait.
+
+    The reconnect leg matters on its own: a cache that never clears ``stale``
+    would satisfy the failure assertions forever while permanently mislabelling
+    a healthy integration.
+    """
+    await configured_settings()
+    from app.modules.opencode_go.service import OpenCodeGoQuotaCache
+
+    cache = OpenCodeGoQuotaCache(ttl_seconds=0.0, failure_ttl_seconds=0.0)
+    monkeypatch.setattr("app.modules.opencode_go.service.get_opencode_go_quota_cache", lambda: cache)
+
+    fresh = await async_client.get(QUOTA_URL)
+    assert fresh.json()["status"] == "ok"
+    good_percent = fresh.json()["windows"][0]["percentUsed"]
+    assert good_percent == 12.5
+
+    _FakeClient.result = OpenCodeGoError(status_code, f"synthetic {status_code}")
+    degraded = await async_client.get(QUOTA_URL)
+    payload = degraded.json()
+
+    # Still a 200 carrying an honest status: the dashboard renders a marker, not
+    # an error page and not an invented number.
+    assert degraded.status_code == 200
+    assert payload["status"] == "stale"
+    assert payload["stale"] is True
+    # The exact value is retained. Asserting equality with the known-good number
+    # is what catches a fabricated zero; "is not None" would pass on 0.0.
+    assert payload["windows"][0]["percentUsed"] == good_percent
+
+    # Reconnect: the upstream answers again and the marker must clear.
+    _FakeClient.result = None
+    recovered = await async_client.get(QUOTA_URL)
+    recovered_payload = recovered.json()
+    assert recovered_payload["status"] == "ok"
+    assert recovered_payload["stale"] is False
+    assert recovered_payload["staleReason"] is None
