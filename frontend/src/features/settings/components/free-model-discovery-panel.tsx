@@ -84,6 +84,22 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
 
   const run = runQuery.data ?? null;
   const running = run?.status === "running";
+  // One run at a time. The server is the authority (it answers 409
+  // `discovery_run_active`, and a partial unique index backs that up), so the
+  // button reflects that rule rather than trying to enforce it: a run started
+  // from another tab disables this one as soon as the query refreshes.
+  const startDisabledReason = !anyProviderUsable
+    ? "Enable OpenRouter or OrcaRouter with an API key first"
+    : startMutation.isPending
+      ? "Starting a run..."
+      : running
+        ? "A discovery run is already in progress"
+        : null;
+  const startButtonLabel = startMutation.isPending
+    ? "Starting..."
+    : running
+      ? "Run in progress"
+      : "Discover free models";
 
   return (
     <section aria-label="Free model discovery" className="space-y-3 rounded-md border bg-background/50 p-3">
@@ -115,10 +131,15 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
           <Button
             type="button"
             size="sm"
-            disabled={!anyProviderUsable || running || startMutation.isPending}
+            disabled={startDisabledReason !== null}
+            // A disabled control with an unchanged label reads as broken, which
+            // is exactly how "nothing happens when I click it" starts. The
+            // label names the blocking state, and the tooltip/title carries the
+            // same reason for a pointer user.
+            title={startDisabledReason ?? undefined}
             onClick={() => setDialogOpen(true)}
           >
-            Discover free models
+            {startButtonLabel}
           </Button>
         </div>
       </div>

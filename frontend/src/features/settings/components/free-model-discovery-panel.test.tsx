@@ -149,8 +149,33 @@ describe("FreeModelDiscoveryPanel", () => {
     expect(within(run).getByText(/HTTP 429/)).toBeInTheDocument();
     expect(within(run).getByText(/http 429: slow down/)).toBeInTheDocument();
 
-    expect(screen.getByRole("button", { name: "Discover free models" })).toBeDisabled();
+    // While a run is active the start control both blocks and says why, so a
+    // repeated click cannot start a second sweep and does not look broken.
+    const startButton = screen.getByRole("button", { name: "Run in progress" });
+    expect(startButton).toBeDisabled();
+    expect(startButton).toHaveAttribute("title", "A discovery run is already in progress");
+    expect(screen.queryByRole("button", { name: "Discover free models" })).toBeNull();
     expect(screen.getByRole("button", { name: "Cancel run" })).toBeEnabled();
+  });
+
+  it("keeps the start control blocked across repeated clicks while a run is active", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/free-model-discovery/runs/current", () => HttpResponse.json(runFixture())),
+      http.post("*/api/free-model-discovery/runs", () =>
+        HttpResponse.json({ error: { code: "discovery_run_active" } }, { status: 409 }),
+      ),
+    );
+    renderPanel();
+
+    const startButton = await screen.findByRole("button", { name: "Run in progress" });
+    await user.click(startButton);
+    await user.click(startButton);
+    await user.click(startButton);
+
+    // No dialog opens, so no second run can be confirmed from this panel.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(startButton).toBeDisabled();
   });
 
   it("requests cancellation of the running run", async () => {

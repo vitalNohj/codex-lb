@@ -330,3 +330,56 @@ async def test_unknown_run_is_404(async_client):
     response = await async_client.get("/api/free-model-discovery/runs/current")
     assert response.status_code == 200
     assert response.json() is None
+
+
+@pytest.mark.asyncio
+async def test_second_concurrent_run_insert_is_rejected_by_the_database(async_client):
+    """The single-active guard must not depend on the service's pre-check.
+
+    ``start_run`` checks for an active run, then rebuilds the plan - which calls
+    the provider APIs - before inserting. Two rapid clicks can both pass that
+    check inside the network window, so the database has to be the arbiter.
+    This drives the repository directly to reproduce exactly that interleaving.
+    """
+
+    from app.modules.free_model_discovery.repository import (
+        ActiveRunExistsError,
+        FreeModelDiscoveryRepository,
+    )
+
+    now = utcnow()
+    common = {
+        "started_at": now,
+        "deadline_at": now + timedelta(hours=1),
+        "pacing_floor_seconds": 1.0,
+        "pacing_cap_seconds": 2.0,
+        "max_attempts_per_item": 1,
+    }
+
+    async with SessionLocal() as session:
+        first = await FreeModelDiscoveryRepository(session).create_run(
+            items=[("openrouter", "a/b:free", "new")], **common
+        )
+        assert first.status == "running"
+
+    # A second insert, as a racing request would attempt after its own plan
+    # rebuild, is refused rather than creating a parallel sweep.
+    async with SessionLocal() as session:
+        with pytest.raises(ActiveRunExistsError):
+            await FreeModelDiscoveryRepository(session).create_run(
+                items=[("openrouter", "c/d:free", "new")], **common
+            )
+
+    # Exactly one run is live, and the session survived the rejection.
+    async with SessionLocal() as session:
+        running = (
+            (
+                await session.execute(
+                    select(FreeModelDiscoveryRun).where(FreeModelDiscoveryRun.status == "running")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(running) == 1
+        assert running[0].id == first.id

@@ -637,7 +637,24 @@ class FreeModelDiscoveryRun(Base):
     """
 
     __tablename__ = "free_model_discovery_runs"
-    __table_args__ = (Index("idx_free_model_discovery_runs_status_started", "status", "started_at"),)
+    __table_args__ = (
+        Index("idx_free_model_discovery_runs_status_started", "status", "started_at"),
+        # At most one run may be ``running`` at a time. The service checks this
+        # before starting, but that check and the insert are separated by the
+        # plan rebuild, which performs provider HTTP calls - a wide enough
+        # window for two rapid clicks to both pass the check. A partial unique
+        # index makes the database the arbiter, so the loser gets an integrity
+        # error instead of a second concurrent sweep. Partial (not a plain
+        # unique constraint) because finished runs are retained as history and
+        # must be allowed to share their terminal statuses.
+        Index(
+            "uq_free_model_discovery_runs_single_active",
+            "status",
+            unique=True,
+            sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     # ``running`` | ``completed`` | ``cancelled`` | ``expired`` | ``failed``

@@ -5,6 +5,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import FreeModelDiscoveryRun, FreeModelDiscoveryRunItem, FreeModelProbeState
@@ -12,6 +13,15 @@ from app.modules.free_model_discovery.candidates import normalize_model_key
 from app.modules.free_model_discovery.pacing import cooldown_for_failure_streak
 
 ACTIVE_RUN_STATUS = "running"
+
+
+class ActiveRunExistsError(Exception):
+    """A second run lost the race to start while one was already ``running``.
+
+    Raised when the database's partial unique index rejects the insert, which
+    is the authoritative answer: the service's pre-check cannot be, because the
+    plan rebuild between check and insert performs provider HTTP calls.
+    """
 
 
 def new_run_id() -> str:
@@ -80,7 +90,15 @@ class FreeModelDiscoveryRepository:
                     next_attempt_at=started_at,
                 )
             )
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError as exc:
+            # The partial unique index on ``status = 'running'`` fired: another
+            # request created a run while this one was rebuilding its plan.
+            # Roll back so the session stays usable and report it as a lost
+            # race rather than a server error.
+            await self._session.rollback()
+            raise ActiveRunExistsError from exc
         await self._session.refresh(run)
         return run
 

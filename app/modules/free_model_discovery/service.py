@@ -35,7 +35,7 @@ from app.modules.free_model_discovery.pacing import (
     DEFAULT_RUN_WALL_CLOCK,
 )
 from app.modules.free_model_discovery.probe import SidecarProbeClient
-from app.modules.free_model_discovery.repository import FreeModelDiscoveryRepository
+from app.modules.free_model_discovery.repository import ActiveRunExistsError, FreeModelDiscoveryRepository
 from app.modules.free_model_discovery.schemas import (
     FREE_MODEL_PROVIDERS,
     FreeModelCandidate,
@@ -206,14 +206,23 @@ class FreeModelDiscoveryService:
             chosen.append(candidate)
         chosen.sort(key=lambda candidate: (_GROUP_ORDER[candidate.group], candidate.model_id.lower()))
         now = utcnow()
-        run = await self._repository.create_run(
-            started_at=now,
-            deadline_at=now + DEFAULT_RUN_WALL_CLOCK,
-            pacing_floor_seconds=DEFAULT_PACING_FLOOR_SECONDS,
-            pacing_cap_seconds=DEFAULT_PACING_CAP_SECONDS,
-            max_attempts_per_item=DEFAULT_MAX_ATTEMPTS_PER_ITEM,
-            items=((candidate.provider, candidate.model_id, candidate.group) for candidate in chosen),
-        )
+        try:
+            run = await self._repository.create_run(
+                started_at=now,
+                deadline_at=now + DEFAULT_RUN_WALL_CLOCK,
+                pacing_floor_seconds=DEFAULT_PACING_FLOOR_SECONDS,
+                pacing_cap_seconds=DEFAULT_PACING_CAP_SECONDS,
+                max_attempts_per_item=DEFAULT_MAX_ATTEMPTS_PER_ITEM,
+                items=((candidate.provider, candidate.model_id, candidate.group) for candidate in chosen),
+            )
+        except ActiveRunExistsError as exc:
+            # Lost the race against a concurrent start: the check above passed,
+            # but ``build_plan`` calls provider APIs, so a second click can
+            # arrive in between. Same answer as the pre-check, so a double
+            # click is indistinguishable from a slow one to the caller.
+            raise DashboardConflictError(
+                "A discovery run is already in progress", code="discovery_run_active"
+            ) from exc
         return await self.get_run(run.id)
 
     async def get_run(self, run_id: str) -> FreeModelDiscoveryRunResponse:
