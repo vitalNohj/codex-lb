@@ -58,18 +58,29 @@ async def go_upstream(monkeypatch):
     await upstream.start()
 
     import app.modules.opencode_go.service as quota_service
+    from app.core.clients.opencode_go import OpenCodeGoClient
 
-    original = quota_service.OpenCodeGoClient
+    class _RedirectedClient(OpenCodeGoClient):
+        """The production client with only its resolved host redirected."""
 
-    class _RedirectedClient(original):  # type: ignore[misc, valid-type]
         @property
         def base_url(self) -> str:
             return upstream.base_url
 
-    monkeypatch.setattr(quota_service, "OpenCodeGoClient", _RedirectedClient)
+    # The service reads this module global in ``__init__``, so patching the name
+    # is enough provided the service is constructed after this point - which it
+    # is, per request, by ``app/dependencies.py``.
+    monkeypatch.setattr(quota_service, "OpenCodeGoClient", _RedirectedClient, raising=False)
+
+    # The quota cache is a module-level singleton keyed by config. Without a
+    # reset, a value cached by an earlier test in the same process is returned
+    # without any upstream call, which silently turns an end-to-end assertion
+    # into an assertion about leftover state.
+    quota_service.reset_opencode_go_quota_cache()
     try:
         yield upstream
     finally:
+        quota_service.reset_opencode_go_quota_cache()
         await upstream.stop()
 
 
