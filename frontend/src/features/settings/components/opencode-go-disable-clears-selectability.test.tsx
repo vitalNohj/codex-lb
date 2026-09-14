@@ -36,12 +36,15 @@
  * the row must exist for the assertion to mean anything, so its presence is
  * asserted first.
  *
- * Owner: codexlb-opencode-go-settings-r1. This file is evidence, not a fix.
+ * **Status: fixed as of Settings `2ae060e3`.** `integrationUnusableReason`
+ * outranks the model's own support state, so a retained row becomes
+ * unselectable and carries its own reason ("Integration disabled" / "No API key
+ * stored") rather than implying the model itself changed. All five cases were
+ * investigative `it.fails` against the checkpoint; every one is now a plain
+ * assertion. No expected-failure scaffolding remains.
  *
- * All five `it.fails` markers are investigative evidence against one open
- * defect. Every one of them must be converted to a plain `it(...)` once the
- * owner's corrected head is composed, before any readiness claim. They must not
- * survive into the final delivered suite.
+ * Owner: codexlb-opencode-go-settings-r1. This file is evidence, not a fix, and
+ * is kept as permanent regression coverage of the guard.
  */
 
 import { act, render, screen, within } from "@testing-library/react";
@@ -118,7 +121,7 @@ describe("OpenCode Go discovered models, after a successful discovery", () => {
     expect(enabledControlsIn(rowFor("grok-4.6"))).toHaveLength(0);
   });
 
-  it.fails("offers no usable control for a cached model once disabled", () => {
+  it("offers no usable control for a cached model once disabled", () => {
     renderBrowser({ enabled: false });
     openThePanel();
 
@@ -128,14 +131,14 @@ describe("OpenCode Go discovered models, after a successful discovery", () => {
     expect(enabledControlsIn(rowFor("kimi-k3"))).toHaveLength(0);
   });
 
-  it.fails("offers no usable control once the API key is cleared", () => {
+  it("offers no usable control once the API key is cleared", () => {
     renderBrowser({ configured: false });
     openThePanel();
 
     expect(enabledControlsIn(rowFor("glm-5.3"))).toHaveLength(0);
   });
 
-  it.fails("invokes no callback when a disabled row's controls are activated", () => {
+  it("invokes no callback when a disabled row's controls are activated", () => {
     // The stronger form, and the one a purely visual fix would not satisfy:
     // click every control in the row, whatever it is now called, and require
     // that nothing reaches the handler.
@@ -154,24 +157,38 @@ describe("OpenCode Go discovered models, after a successful discovery", () => {
     expect(onAddModel).not.toHaveBeenCalled();
   });
 
-  it.fails("explains why a populated catalogue is inert rather than looking operable", () => {
-    // The empty-state copy already distinguishes disabled from unconfigured;
-    // the populated state should be equally honest instead of silently
-    // presenting a stale, unusable catalogue.
+  it("explains on each row why a populated catalogue is inert", () => {
+    // The shipped fix states the reason per row ("Unavailable: Integration
+    // disabled") rather than once above the list, which is stronger: the
+    // explanation travels with the control it applies to.
     //
-    // Scope note. This case is part of the SAME open defect as the four above,
-    // not a separate finding. An earlier note of mine called it a "second gap"
-    // because it did not flip when I simulated a partial fix (rename + gate
-    // only). That simulation was my own construction, not the owner's revision,
-    // so its silence says nothing about the real fix - which is finalizing
-    // availability gating AND explanatory copy together. Retracted accordingly.
+    // This case belongs to the SAME defect as the four above. An earlier note
+    // of mine called it a separate second gap because it did not flip when I
+    // simulated a partial fix of my own construction (rename + gate only). That
+    // simulation was never the owner's revision, so its silence said nothing
+    // about the real fix. Retracted.
     renderBrowser({ enabled: false });
     openThePanel();
 
-    expect(screen.getByText(/disabled|not discovered|enable it/i)).toBeInTheDocument();
+    const row = rowFor("glm-5.3");
+    expect(within(row).getByText(/Integration disabled/i)).toBeInTheDocument();
+    // The reason must not claim the model itself is unsupported: it is
+    // dispatchable, the integration is off.
+    expect(within(row).queryByText(/not supported|unsupported/i)).not.toBeInTheDocument();
   });
 
-  it.fails("drops usability across an actual success -> disable transition", () => {
+  it("distinguishes a cleared key from a disabled integration", () => {
+    // Two different operator actions with two different remedies; collapsing
+    // them into one message would send the user to the wrong control.
+    renderBrowser({ configured: false });
+    openThePanel();
+
+    const row = rowFor("glm-5.3");
+    expect(within(row).getByText(/No API key stored/i)).toBeInTheDocument();
+    expect(within(row).queryByText(/Integration disabled/i)).not.toBeInTheDocument();
+  });
+
+  it("drops usability across an actual success -> disable transition", () => {
     // Props alone could be satisfied by a component that never re-evaluates.
     // This performs the real transition: discover successfully, then disable,
     // and require the previously-offered control to become unusable.
