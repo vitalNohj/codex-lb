@@ -283,9 +283,14 @@ function QuotaContent({
               {t(`accounts.opencodeGo.scope.${state.scope}`)}
             </p>
           </div>
+          {/*
+            Subgrid keeps the label, bar and footer of every window on shared
+            rows, so a wrapping label ("Weekly used" beside a wide "Unknown")
+            cannot push its progress bar out of line with its neighbour's.
+          */}
           <div
             className={cn(
-              "grid gap-4",
+              "grid gap-x-4 gap-y-4 [grid-template-rows:auto_auto_auto]",
               state.windows.length > 1 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1",
             )}
           >
@@ -326,8 +331,20 @@ function QuotaContent({
                       {t("accounts.opencodeGo.allModels", { count: state.models.length })}
                     </SelectItem>
                     {state.models.map((model) => (
-                      <SelectItem key={model.modelId} value={model.modelId}>
-                        <span className="block truncate">
+                      <SelectItem
+                        key={model.modelId}
+                        value={model.modelId}
+                        // Radix wraps children in its own ItemText span, which
+                        // defaults to min-width:auto and so refuses to shrink.
+                        // Without min-w-0 on that wrapper a long upstream model
+                        // id is hard-clipped at the popover edge with no
+                        // ellipsis to show the text was cut.
+                        className="min-w-0 [&>span]:min-w-0"
+                      >
+                        <span
+                          className="block min-w-0 flex-1 truncate"
+                          title={model.displayName ?? model.modelId}
+                        >
                           {model.displayName ?? model.modelId}
                         </span>
                       </SelectItem>
@@ -362,7 +379,7 @@ function QuotaContent({
                 </div>
                 <div
                   className={cn(
-                    "grid gap-3",
+                    "grid gap-x-3 gap-y-3 [grid-template-rows:auto_auto_auto]",
                     model.windows.length > 1 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1",
                   )}
                 >
@@ -412,7 +429,11 @@ function QuotaWindowRow({
     : t("accounts.opencodeGo.window.unknownValue");
 
   return (
-    <div className="min-w-0 space-y-1.5" data-testid="opencode-go-window" data-window-key={window.key}>
+    <div
+      className="row-span-3 grid min-w-0 gap-1.5 [grid-template-rows:subgrid]"
+      data-testid="opencode-go-window"
+      data-window-key={window.key}
+    >
       <div className="flex items-start justify-between gap-2 text-xs">
         <span className="min-w-0 font-medium">{label}</span>
         <span
