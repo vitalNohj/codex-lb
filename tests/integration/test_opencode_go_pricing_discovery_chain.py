@@ -380,7 +380,7 @@ async def test_an_id_no_source_lists_stays_unknown_and_never_becomes_zero(
 async def test_a_listed_model_with_no_token_rate_is_settled_rather_than_retried_forever(
     async_client, sidecar_capability_enabled, fake_sidecar, reference_catalog
 ):
-    """"Listed, but not priced per token" is an answer, not a failure."""
+    """ "Listed, but not priced per token" is an answer, not a failure."""
     _install_serving_catalog({})
     reference_catalog.list_model_without_rates(MODEL)
     await _enable_sidecar(async_client)
@@ -431,8 +431,7 @@ async def test_an_unreachable_reference_does_not_record_a_false_absence(
     # Not settled: the question is still open, so a later pass will ask again.
     assert record.is_settled is False
     assert record.next_retry_at is not None, (
-        "an unanswered lookup must keep a retry deadline; a record closed during "
-        "an outage would never be corrected"
+        "an unanswered lookup must keep a retry deadline; a record closed during an outage would never be corrected"
     )
 
     # Recovery: once the catalog answers, the price is picked up.
@@ -448,8 +447,7 @@ async def test_an_unreachable_reference_does_not_record_a_false_absence(
     recovered = (await _sidecar_logs())[-1]
     expected = (INPUT_TOKENS / 1_000_000 * 3.0) + (OUTPUT_TOKENS / 1_000_000 * 6.0)
     assert recovered.cost_usd == pytest.approx(expected), (
-        "a recovered catalog must correct the unpriced record rather than leaving "
-        "the outage's answer in place"
+        "a recovered catalog must correct the unpriced record rather than leaving the outage's answer in place"
     )
 
 
@@ -517,7 +515,9 @@ async def test_a_prefixed_id_resolves_through_the_configured_prefix_not_by_subst
     from app.core.usage.external_pricing.service import ServingContext, register_serving_context_loader
 
     async def _loader(_provider: str) -> ServingContext:
-        return ServingContext(catalog=None, aliases={}, prefixes=(("orcarouter/", True),), publishes_price_catalog=False)
+        return ServingContext(
+            catalog=None, aliases={}, prefixes=(("orcarouter/", True),), publishes_price_catalog=False
+        )
 
     register_serving_context_loader("orcarouter", _loader)
 
@@ -535,9 +535,7 @@ async def test_a_prefixed_id_resolves_through_the_configured_prefix_not_by_subst
 
 
 @pytest.mark.asyncio
-async def test_the_real_openrouter_shaped_parser_reads_per_token_decimal_strings(
-    async_client, reference_catalog
-):
+async def test_the_real_openrouter_shaped_parser_reads_per_token_decimal_strings(async_client, reference_catalog):
     """A direct check on the parser, over the socket, without the request path.
 
     Rate conversion is where an off-by-1e6 hides. Asserting it separately keeps
@@ -564,9 +562,7 @@ async def test_the_real_openrouter_shaped_parser_reads_per_token_decimal_strings
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_catalog_response_raises_rather_than_parsing_to_empty(
-    async_client, reference_catalog
-):
+async def test_a_malformed_catalog_response_raises_rather_than_parsing_to_empty(async_client, reference_catalog):
     """An unreadable catalog must be a failure, not an empty catalog.
 
     An empty catalog is indistinguishable from "lists nothing", which would

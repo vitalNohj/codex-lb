@@ -139,9 +139,7 @@ async def test_streaming_frames_arrive_in_order_and_terminate_with_done():
     # with an empty choices list. Any other order breaks OpenAI-protocol
     # clients, so order is asserted rather than membership.
     assert frames[0]["choices"][0]["delta"] == {"role": "assistant", "content": ""}
-    content = "".join(
-        frame["choices"][0]["delta"].get("content", "") for frame in frames if frame.get("choices")
-    )
+    content = "".join(frame["choices"][0]["delta"].get("content", "") for frame in frames if frame.get("choices"))
     assert content.strip() == "one two three"
     finish_frames = [f for f in frames if f.get("choices") and f["choices"][0].get("finish_reason")]
     assert [f["choices"][0]["finish_reason"] for f in finish_frames] == ["stop"]

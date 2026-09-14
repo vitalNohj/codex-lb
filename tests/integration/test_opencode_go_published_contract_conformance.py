@@ -42,6 +42,17 @@ def _require(module: str) -> Any:
     return loaded
 
 
+def _camel(snake: str) -> str:
+    """``opencode_go_sidecar_enabled`` -> ``opencodeGoSidecarEnabled``.
+
+    Mirrors the project's ``DashboardModel`` alias generator, so the reproducer
+    drives whichever column spelling actually shipped rather than a hardcoded
+    guess at one of the two contested ones.
+    """
+    head, *tail = snake.split("_")
+    return head + "".join(part.title() for part in tail)
+
+
 # ---------------------------------------------------------------------------
 # contract.md section 1: exact identifier strings
 # ---------------------------------------------------------------------------
@@ -287,38 +298,81 @@ def test_the_integration_defaults_to_disabled_and_unconfigured():
 # ---------------------------------------------------------------------------
 
 
-def test_the_two_contracts_agree_on_the_settings_column_names():
-    """A real, currently-open conflict between the two published contracts.
+@pytest.mark.asyncio
+async def test_a_configured_integration_is_not_reported_as_not_configured(async_client):
+    """End-user reproducer for the column-name mismatch between the two contracts.
 
-    ``contract.md`` section 1 declares the settings column prefix
-    ``opencode_go_sidecar_`` and lists ``opencode_go_sidecar_enabled`` /
-    ``opencode_go_sidecar_api_key_encrypted``. ``quota-contract.md`` section 6
-    asks the backend for ``opencode_go_enabled`` /
-    ``opencode_go_api_key_encrypted`` - the same two fields without ``sidecar``.
-    The quota lane's own adapter says it reports ``not_configured`` until "the
-    backend columns exist", so on the current spellings it would report
-    not-configured against a fully configured integration.
+    The user-visible bug: an operator enables OpenCode Go in Settings and saves a
+    key, sees "configured" on that page, then opens Accounts and is told the
+    integration is not configured.
 
-    The column names are the backend lane's to choose. This test does not pick a
-    winner; it fails if the shipped schema satisfies neither shape, and passes as
-    soon as one consistent set exists, so the conflict cannot reach an operator
-    as a permanently empty quota card.
+    A test that merely accepts either published column shape would **not** catch
+    this, because both lanes can independently satisfy their own shape and still
+    disagree with each other. So this drives the real seam instead: it configures
+    the integration through the actual settings API, then asks the actual quota
+    adapter what it sees. If the adapter reads a column spelling the backend did
+    not ship, it silently answers ``not_configured`` against a fully configured
+    integration, and that is what fails here.
+
+    ``contract.md`` section 1 declares ``opencode_go_sidecar_*``;
+    ``quota-contract.md`` section 6 asks for ``opencode_go_*`` and documents the
+    ``not_configured`` fallback. Resolution belongs to those two lanes; detection
+    belongs here.
     """
     from app.db.models import DashboardSettings
 
-    columns = set(DashboardSettings.__table__.columns.keys())
-    go_columns = {c for c in columns if "opencode_go" in c}
+    go_columns = {c for c in DashboardSettings.__table__.columns.keys() if "opencode_go" in c}
     if not go_columns:
         pytest.skip("not implemented yet: no opencode_go columns")
 
-    sidecar_shape = {"opencode_go_sidecar_enabled", "opencode_go_sidecar_api_key_encrypted"}
-    bare_shape = {"opencode_go_enabled", "opencode_go_api_key_encrypted"}
-    assert sidecar_shape <= go_columns or bare_shape <= go_columns, (
-        "neither published column shape is present. contract.md expects "
-        f"{sorted(sidecar_shape)}; quota-contract.md expects {sorted(bare_shape)}; "
-        f"the schema has {sorted(go_columns)}. The quota lane's adapter reads the "
-        "second shape and will report not_configured against a configured "
-        "integration until the two lanes agree."
+    enabled_column = next((c for c in go_columns if c.endswith("_enabled")), None)
+    key_column = next((c for c in go_columns if c.endswith("_api_key_encrypted")), None)
+    assert enabled_column and key_column, (
+        f"the schema carries opencode_go columns {sorted(go_columns)} but not the "
+        "enabled/api_key_encrypted pair both contracts depend on"
+    )
+
+    # Configure through the real settings API, exactly as the Settings page does.
+    enabled_field = _camel(enabled_column)
+    key_field = _camel(key_column.removesuffix("_encrypted"))
+    saved = await async_client.put(
+        "/api/settings",
+        json={enabled_field: True, key_field: "sk-go-reproducer-Zq7SvT2pLm9K"},
+    )
+    assert saved.status_code == 200, (
+        f"could not configure OpenCode Go through PUT /api/settings using the "
+        f"shipped column spellings ({enabled_field}, {key_field}): {saved.text}"
+    )
+
+    # Now ask the quota adapter. It must not claim the integration is unconfigured.
+    service = _try_import("app.modules.opencode_go_quota.service")
+    reader = getattr(service, "read_quota", None) if service else None
+    if reader is None:
+        # The adapter does not exist yet, so the mismatch cannot be observed
+        # through it. Fall back to the seam the backend lane published, which is
+        # the same read the adapter is required to use.
+        dispatch = _try_import("app.modules.proxy.opencode_go_sidecar_dispatch")
+        loader = getattr(dispatch, "load_opencode_go_sidecar_config", None) if dispatch else None
+        if loader is None:
+            pytest.skip("not implemented yet: neither the quota adapter nor the config loader exists")
+        config = await loader()
+        assert config is not None and config.enabled and config.api_key, (
+            "the backend config loader reports the integration as disabled or "
+            "unconfigured immediately after a successful settings save"
+        )
+        return
+
+    quota = await reader()
+    status = getattr(quota, "status", None)
+    assert status != "not_configured", (
+        "the quota adapter reports 'not_configured' for an integration that was "
+        "just enabled and given a key through the settings API. This is the "
+        "column-name mismatch between contract.md (opencode_go_sidecar_*) and "
+        "quota-contract.md section 6 (opencode_go_*); the adapter is reading a "
+        "spelling the backend did not ship."
+    )
+    assert status != "disabled", (
+        "the quota adapter reports 'disabled' immediately after the integration was enabled through the settings API"
     )
 
 

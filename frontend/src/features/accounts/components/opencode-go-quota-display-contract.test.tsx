@@ -23,7 +23,7 @@
  * pretending coverage.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountSummarySchema, type AccountSummary } from "@/features/accounts/schemas";

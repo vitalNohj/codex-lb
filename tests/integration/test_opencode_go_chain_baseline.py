@@ -141,9 +141,7 @@ async def _request_logs() -> list[RequestLog]:
 
 
 @pytest.mark.asyncio
-async def test_client_auth_is_independent_of_upstream_auth(
-    async_client, sidecar_capability_enabled, go_upstream
-):
+async def test_client_auth_is_independent_of_upstream_auth(async_client, sidecar_capability_enabled, go_upstream):
     """The caller's API key authenticates to codex-lb and never leaves it.
 
     The two credentials are different secrets with different lifetimes. A chain
@@ -180,9 +178,7 @@ async def test_client_auth_is_independent_of_upstream_auth(
 
 
 @pytest.mark.asyncio
-async def test_a_caller_without_a_key_never_reaches_the_upstream(
-    async_client, sidecar_capability_enabled, go_upstream
-):
+async def test_a_caller_without_a_key_never_reaches_the_upstream(async_client, sidecar_capability_enabled, go_upstream):
     await _configure_chain(async_client, go_upstream)
 
     response = await async_client.post(
@@ -248,9 +244,7 @@ async def test_a_model_outside_this_integration_never_reaches_its_upstream(
 
 
 @pytest.mark.asyncio
-async def test_a_disabled_integration_is_not_reachable_at_all(
-    async_client, sidecar_capability_enabled, go_upstream
-):
+async def test_a_disabled_integration_is_not_reachable_at_all(async_client, sidecar_capability_enabled, go_upstream):
     """Configured but switched off must mean no traffic, not degraded traffic."""
     await _configure_chain(async_client, go_upstream)
     disable = await async_client.put("/api/settings", json={"orcarouterSidecarEnabled": False})
@@ -298,9 +292,7 @@ async def test_sse_frames_keep_their_order_and_terminate_through_the_whole_chain
     assert body.rstrip().endswith("data: [DONE]")
 
     frames = parse_sse(body)
-    content = "".join(
-        frame["choices"][0]["delta"].get("content", "") for frame in frames if frame.get("choices")
-    )
+    content = "".join(frame["choices"][0]["delta"].get("content", "") for frame in frames if frame.get("choices"))
     assert content.strip() == "alpha beta gamma"
 
     finishes = [
