@@ -161,7 +161,13 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
         onOpenChange={setDialogOpen}
         plan={planQuery.data}
         isLoading={planQuery.isLoading}
-        error={getErrorMessageOrNull(planQuery.error, "Failed to build discovery plan")}
+        // A rejected start (e.g. background automations disabled) must be as
+        // visible as a failed plan, otherwise confirming the dialog silently
+        // does nothing.
+        error={
+          getErrorMessageOrNull(startMutation.error, "Failed to start discovery run") ??
+          getErrorMessageOrNull(planQuery.error, "Failed to build discovery plan")
+        }
         busy={startMutation.isPending}
         onStart={async (payload) => {
           await startMutation.mutateAsync(payload);

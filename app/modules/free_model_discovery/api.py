@@ -4,7 +4,11 @@ from fastapi import APIRouter, Depends
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.dependencies import FreeModelDiscoveryContext, get_free_model_discovery_context
-from app.modules.free_model_discovery.runner import wake_free_model_discovery_runner
+from app.core.exceptions import DashboardConflictError
+from app.modules.free_model_discovery.runner import (
+    discovery_execution_enabled,
+    wake_free_model_discovery_runner,
+)
 from app.modules.free_model_discovery.schemas import (
     FreeModelDiscoveryPlanResponse,
     FreeModelDiscoveryRunResponse,
@@ -31,6 +35,16 @@ async def start_run(
     payload: FreeModelDiscoveryStartRequest,
     context: FreeModelDiscoveryContext = Depends(get_free_model_discovery_context),
 ) -> FreeModelDiscoveryRunResponse:
+    # Refuse before creating the row. Accepting a run nothing will drive leaves
+    # a permanently ``running`` record which, under the single-active index,
+    # blocks every later run. Checked here rather than in the service because
+    # the runner module imports the service.
+    if not discovery_execution_enabled():
+        raise DashboardConflictError(
+            "Free model discovery cannot start because background automations are disabled. "
+            "Enable the automations scheduler and try again.",
+            code="discovery_execution_disabled",
+        )
     run = await context.service.start_run(payload)
     wake_free_model_discovery_runner()
     return run

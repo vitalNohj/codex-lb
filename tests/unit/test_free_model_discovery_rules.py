@@ -274,3 +274,41 @@ def test_pacer_decays_after_clean_streak_and_holds_on_inconclusive() -> None:
     assert pacer.on_verdict() == 20
     assert pacer.on_verdict() == 20
     assert pacer.on_verdict() == 20  # never below floor
+
+
+@pytest.mark.asyncio
+async def test_probe_redacts_the_configured_credential_from_upstream_error_text():
+    """Upstream error text is persisted to ``last_outcome`` and shown in the
+    dashboard, so a provider that echoes the Authorization header must not
+    leak the key there. Uses a synthetic sentinel credential."""
+
+    from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarError
+    from app.modules.free_model_discovery.probe import probe_model
+
+    sentinel = "sk-orca-TESTSENTINEL0123456789"
+
+    class _EchoingClient:
+        async def chat_completion(self, payload):
+            raise OrcaRouterSidecarError(401, f"rejected token {sentinel} for Bearer {sentinel}")
+
+    result = await probe_model(_EchoingClient(), "a/b:free", api_key=sentinel)
+
+    assert sentinel not in result.outcome
+    assert "[redacted]" in result.outcome
+    # The diagnostic is still useful: status and shape survive redaction.
+    assert result.http_status == 401
+    assert result.verdict == "inconclusive"
+
+
+def test_plan_sanitizer_redacts_the_token_not_just_the_bearer_prefix():
+    """``_sanitize`` used to insert ``[redacted]`` *after* ``"Bearer "`` and
+    leave the token itself intact, so it redacted nothing."""
+
+    from app.modules.free_model_discovery.service import _sanitize
+
+    sentinel = "sk-orca-TESTSENTINEL0123456789"
+
+    sanitized = _sanitize(f"Bearer {sentinel} was rejected", api_key=sentinel)
+
+    assert sentinel not in sanitized
+    assert "[redacted]" in sanitized

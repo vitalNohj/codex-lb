@@ -128,6 +128,35 @@ describe("FreeModelDiscoveryPanel", () => {
     });
   });
 
+  it("keeps the dialog open and shows why when the server rejects the start", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("*/api/free-model-discovery/runs", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "discovery_execution_disabled",
+              message:
+                "Free model discovery cannot start because background automations are disabled. Enable the automations scheduler and try again.",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Discover free models" }));
+    const dialog = await screen.findByRole("dialog", { name: "Discover free models" });
+    const openrouter = await within(dialog).findByRole("region", { name: "OpenRouter candidates" });
+    await user.click(within(openrouter).getByRole("checkbox", { name: "Probe deepseek/deepseek-r1:free" }));
+    await user.click(within(dialog).getByRole("button", { name: /^Start run/ }));
+
+    // The rejection is actionable and the dialog does not silently close.
+    expect(await within(dialog).findByText(/background automations are disabled/i)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
   it("renders the current run with progress, provider pacing and per-model outcomes", async () => {
     server.use(
       http.get("*/api/free-model-discovery/runs/current", () => HttpResponse.json(runFixture())),

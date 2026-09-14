@@ -68,6 +68,42 @@ class ProviderProgress:
 _progress: dict[str, dict[str, ProviderProgress]] = {}
 
 
+async def _gather_owned(tasks: list[asyncio.Task[None]]) -> None:
+    """Await provider tasks, leaving none running when this returns or raises.
+
+    A bare ``gather`` propagates the first exception while its siblings keep
+    running. The driver's caller then releases the leader lock, so those
+    detached tasks keep probing while the next tick can start a second driver
+    for the same run - duplicate load on rate-limited providers. The
+    single-active index guards run *creation* and does not cover this.
+
+    So: wait for the first failure, then cancel and await the rest before
+    returning. Cancellation of this coroutine propagates the same way, which is
+    what makes shutdown leave nothing behind. The first exception is re-raised
+    so the existing error handling is unchanged; waiting for a possibly
+    multi-hour sibling instead would defeat the point.
+    """
+
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    except asyncio.CancelledError:
+        await _cancel_and_await(tasks)
+        raise
+    if pending:
+        await _cancel_and_await(list(pending))
+    for task in done:
+        if not task.cancelled() and task.exception() is not None:
+            raise cast(BaseException, task.exception())
+
+
+async def _cancel_and_await(tasks: list[asyncio.Task[None]]) -> None:
+    for task in tasks:
+        task.cancel()
+    # ``return_exceptions`` so one task's failure cannot abandon the others
+    # mid-cleanup; this is the drain, not the place to surface errors.
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def get_runner_progress(run_id: str) -> dict[str, ProviderProgress]:
     return dict(_progress.get(run_id, {}))
 
@@ -157,12 +193,20 @@ class FreeModelDiscoveryRunner:
                 pacer = ProviderPacer(floor_seconds=floor, cap_seconds=cap)
                 tasks.append(
                     asyncio.create_task(
-                        self._drive_provider(run_id, provider, access.client, pacer, max_attempts, deadline),
+                        self._drive_provider(
+                            run_id,
+                            provider,
+                            access.client,
+                            pacer,
+                            max_attempts,
+                            deadline,
+                            api_key=access.api_key,
+                        ),
                         name=f"free-model-discovery-{provider}",
                     )
                 )
             if tasks:
-                await asyncio.gather(*tasks)
+                await _gather_owned(tasks)
             await self._finalize(run_id)
         finally:
             _progress.pop(run_id, None)
@@ -188,6 +232,7 @@ class FreeModelDiscoveryRunner:
         pacer: ProviderPacer,
         max_attempts: int,
         deadline: datetime,
+        api_key: str | None = None,
     ) -> None:
         wait_seconds = 0.0
         while not self._stop.is_set():
@@ -213,7 +258,7 @@ class FreeModelDiscoveryRunner:
                 _progress.setdefault(run_id, {})[provider] = ProviderProgress(
                     current_interval_seconds=pacer.current_seconds, next_probe_at=None
                 )
-                result = await probe_model(client, item.model_id)
+                result = await probe_model(client, item.model_id, api_key=api_key)
                 wait_seconds = await self._apply_result(session, repository, item, result, pacer, max_attempts)
 
     async def _apply_result(
@@ -316,10 +361,25 @@ class FreeModelDiscoveryRunner:
 _runner: FreeModelDiscoveryRunner | None = None
 
 
+def discovery_execution_enabled() -> bool:
+    """Whether anything will actually drive a discovery run.
+
+    The single authority for both the runner lifecycle and the start API, so
+    the two cannot disagree. Without it the API could accept a run (201) that
+    no loop ever drives, leaving a permanently ``running`` row - which, with the
+    single-active index, then blocks every later run.
+
+    Deliberately the same global scheduler switch the runner already uses, not
+    a new setting: discovery is an automation, and an operator who turned
+    automations off should not get a new knob to discover.
+    """
+
+    return bool(get_settings().automations_scheduler_enabled)
+
+
 def build_free_model_discovery_runner() -> FreeModelDiscoveryRunner:
     global _runner
-    settings = get_settings()
-    _runner = FreeModelDiscoveryRunner(enabled=settings.automations_scheduler_enabled)
+    _runner = FreeModelDiscoveryRunner(enabled=discovery_execution_enabled())
     return _runner
 
 

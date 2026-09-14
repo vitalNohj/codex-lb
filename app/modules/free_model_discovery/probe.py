@@ -19,7 +19,11 @@ from typing import Literal, Protocol
 
 from app.core.clients.claude_sidecar import SidecarModel
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarError, OpenRouterSidecarUnavailableError
-from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarError, OrcaRouterSidecarUnavailableError
+from app.core.clients.orcarouter_sidecar import (
+    OrcaRouterSidecarError,
+    OrcaRouterSidecarUnavailableError,
+    sanitize_orcarouter_message,
+)
 from app.core.utils.json_guards import JsonValue, is_json_mapping
 
 PROBE_PROMPT = "Reply with exactly: ok"
@@ -64,16 +68,47 @@ def build_probe_payload(model_id: str) -> dict[str, JsonValue]:
     }
 
 
-async def probe_model(client: ChatCompletionClient, model_id: str) -> ProbeResult:
+def redact_provider_text(message: str, *, api_key: str | None) -> str:
+    """Strip provider credentials out of upstream-controlled diagnostic text.
+
+    Discovery persists this text to ``last_outcome`` and serves it from the run
+    API, so it lands in the dashboard exactly like the surfaces the provider
+    clients already guard. An upstream that echoes the ``Authorization`` header
+    must not leak the key on any of them.
+
+    Reuses the OrcaRouter sanitizer for both providers deliberately: it is the
+    project's existing credential-aware contract, it redacts the configured key
+    as a whole token whatever its shape, and its unconditional ``Bearer``/
+    ``sk-`` patterns also catch a key that is no longer the configured one.
+    OpenRouter ships no sanitizer of its own, so the alternative would be a
+    second copy that can drift.
+    """
+
+    return sanitize_orcarouter_message(message, api_key=api_key)
+
+
+async def probe_model(
+    client: ChatCompletionClient, model_id: str, *, api_key: str | None = None
+) -> ProbeResult:
+    """Probe one model. ``api_key`` is the provider credential whose appearance
+    in upstream error text must be redacted before it is persisted."""
+
     try:
         body = await client.chat_completion(build_probe_payload(model_id))
     except (OpenRouterSidecarUnavailableError, OrcaRouterSidecarUnavailableError) as exc:
-        return ProbeResult(verdict="inconclusive", http_status=None, outcome=_clip(f"transport: {exc.message}"))
+        return ProbeResult(
+            verdict="inconclusive",
+            http_status=None,
+            # Redact before clipping: clipping a secret still persists its prefix.
+            outcome=_clip(redact_provider_text(f"transport: {exc.message}", api_key=api_key)),
+        )
     except (OpenRouterSidecarError, OrcaRouterSidecarError) as exc:
         return ProbeResult(
             verdict="inconclusive",
             http_status=exc.status_code,
-            outcome=_clip(f"http {exc.status_code}: {exc.message}"),
+            outcome=_clip(
+                redact_provider_text(f"http {exc.status_code}: {exc.message}", api_key=api_key)
+            ),
             retry_after_seconds=_retry_after_from_body(exc.body),
         )
     return classify_completion(body)

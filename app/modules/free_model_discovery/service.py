@@ -20,7 +20,12 @@ from app.core.clients.orcarouter_sidecar import (
     get_orcarouter_sidecar_client,
 )
 from app.core.config.settings_cache import get_settings_cache
-from app.core.exceptions import DashboardBadRequestError, DashboardConflictError, DashboardNotFoundError
+from app.core.exceptions import (
+    DashboardBadRequestError,
+    DashboardConflictError,
+    DashboardNotFoundError,
+    DashboardSettingsConflictError,
+)
 from app.core.utils.time import utcnow
 from app.db.models import DashboardSettings, FreeModelDiscoveryRun, FreeModelDiscoveryRunItem
 from app.modules.free_model_discovery.candidates import (
@@ -34,7 +39,7 @@ from app.modules.free_model_discovery.pacing import (
     DEFAULT_PACING_FLOOR_SECONDS,
     DEFAULT_RUN_WALL_CLOCK,
 )
-from app.modules.free_model_discovery.probe import SidecarProbeClient
+from app.modules.free_model_discovery.probe import SidecarProbeClient, redact_provider_text
 from app.modules.free_model_discovery.repository import ActiveRunExistsError, FreeModelDiscoveryRepository
 from app.modules.free_model_discovery.schemas import (
     FREE_MODEL_PROVIDERS,
@@ -61,6 +66,11 @@ from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
 
+# Bounded retry for the pin write's compare-and-set. Contention is between one
+# paced background append and an occasional operator save, so a couple of
+# re-reads is ample; an unbounded loop would let a busy form starve the run.
+_ADD_MODEL_MAX_ATTEMPTS = 3
+
 # Frozen queue order inside a run: operator-facing priority.
 _GROUP_ORDER = {"new": 0, "unresolved": 1, "due": 2, "cooldown": 3}
 
@@ -75,6 +85,9 @@ class ProviderAccess:
     status: FreeModelProviderPlanStatus
     message: str | None
     client: SidecarProbeClient | None
+    # The resolved credential, carried so upstream-controlled error text can be
+    # redacted before discovery persists it. ``None`` whenever ``client`` is.
+    api_key: str | None = None
 
 
 def provider_access(settings: DashboardSettings, provider: FreeModelProvider) -> ProviderAccess:
@@ -85,12 +98,18 @@ def provider_access(settings: DashboardSettings, provider: FreeModelProvider) ->
             return ProviderAccess("disabled", "OpenRouter sidecar is disabled", None)
         if settings.openrouter_sidecar_api_key_encrypted is None:
             return ProviderAccess("missing_api_key", "OpenRouter sidecar API key is not configured", None)
-        return ProviderAccess("ok", None, OpenRouterSidecarClient(openrouter_sidecar_config_from_settings(settings)))
+        openrouter_config = openrouter_sidecar_config_from_settings(settings)
+        return ProviderAccess(
+            "ok", None, OpenRouterSidecarClient(openrouter_config), api_key=openrouter_config.api_key
+        )
     if not settings.orcarouter_sidecar_enabled:
         return ProviderAccess("disabled", "OrcaRouter sidecar is disabled", None)
     if settings.orcarouter_sidecar_api_key_encrypted is None:
         return ProviderAccess("missing_api_key", "OrcaRouter sidecar API key is not configured", None)
-    return ProviderAccess("ok", None, get_orcarouter_sidecar_client(orcarouter_sidecar_config_from_settings(settings)))
+    orcarouter_config = orcarouter_sidecar_config_from_settings(settings)
+    return ProviderAccess(
+        "ok", None, get_orcarouter_sidecar_client(orcarouter_config), api_key=orcarouter_config.api_key
+    )
 
 
 def all_pinned_keys(settings: DashboardSettings) -> set[str]:
@@ -155,9 +174,15 @@ class FreeModelDiscoveryService:
             # surfaces as a plan status instead of an empty candidate list.
             models = await access.client.list_models()
         except (OpenRouterSidecarUnavailableError, OrcaRouterSidecarUnavailableError) as exc:
-            return FreeModelProviderPlan(provider=provider, status="unreachable", message=_sanitize(exc.message))
+            return FreeModelProviderPlan(
+                provider=provider,
+                status="unreachable",
+                message=_sanitize(exc.message, api_key=access.api_key),
+            )
         except (OpenRouterSidecarError, OrcaRouterSidecarError) as exc:
-            return FreeModelProviderPlan(provider=provider, status="error", message=_sanitize(exc.message))
+            return FreeModelProviderPlan(
+                provider=provider, status="error", message=_sanitize(exc.message, api_key=access.api_key)
+            )
         split = split_candidates(models, pinned)
         states = await self._repository.states_for_provider(provider)
         unresolved = await self._repository.unresolved_keys_for_provider(provider, run=last_finished)
@@ -272,27 +297,57 @@ class FreeModelDiscoveryService:
     async def pin_full_model(self, provider: FreeModelProvider, model_id: str) -> bool:
         """Append a passed id to the provider's full-model list.
 
-        Uses a version-lock-free UPDATE (same contract as
-        ``SettingsRepository.update_operational``) so a multi-hour run never
-        makes an open Settings form's CAS stale. Returns False when the id is
-        already pinned anywhere, which is not an error.
+        Writes under the settings version CAS and re-reads/merges on conflict,
+        so a concurrent operator save and this append cannot silently overwrite
+        each other. An earlier revision used a version-lock-free UPDATE to avoid
+        staling an open Settings form; that traded a form refresh for real data
+        loss on a shared JSON column.
+
+        Returns False when the id is already pinned anywhere, which is not an
+        error, or when the write kept losing the CAS within its bounded retries.
         """
 
-        settings = await self._settings_repository.get_or_create()
-        if normalize_model_key(model_id) in all_pinned_keys(settings):
-            return False
         column = _FULL_MODELS_COLUMN[provider]
-        current = list(parse_sidecar_full_models(getattr(settings, column)))
-        current.append(model_id.strip())
-        await self._settings_repository.update_operational_json_column(
-            column, json.dumps(current, separators=(",", ":"))
-        )
-        await get_settings_cache().invalidate()
-        return True
+        for attempt in range(_ADD_MODEL_MAX_ATTEMPTS):
+            # Re-read inside the loop: on a conflict the other writer's version
+            # of this column is what we must merge into, not the stale copy.
+            self._session.expire_all()
+            settings = await self._settings_repository.get_or_create()
+            if normalize_model_key(model_id) in all_pinned_keys(settings):
+                return False
+            current = list(parse_sidecar_full_models(getattr(settings, column)))
+            current.append(model_id.strip())
+            try:
+                await self._settings_repository.update_operational_json_column(
+                    column, json.dumps(current, separators=(",", ":"))
+                )
+            except DashboardSettingsConflictError:
+                # An operator (or another append) committed first. Their edit
+                # stands; re-read and re-apply this id on top of it rather than
+                # overwriting, which is what used to lose one side silently.
+                if attempt == _ADD_MODEL_MAX_ATTEMPTS - 1:
+                    logger.warning(
+                        "Gave up pinning discovered model after %s version conflicts provider=%s",
+                        _ADD_MODEL_MAX_ATTEMPTS,
+                        provider,
+                    )
+                    raise
+                continue
+            await get_settings_cache().invalidate()
+            return True
+        return False
 
 
-def _sanitize(message: str) -> str:
-    return message.replace("Bearer ", "Bearer [redacted]")
+def _sanitize(message: str, *, api_key: str | None = None) -> str:
+    """Redact provider credentials from upstream text shown in the plan.
+
+    Previously this inserted ``[redacted]`` *after* the literal ``"Bearer "``
+    and left the token itself in place, so it did not actually redact anything,
+    and it never matched a bare key echoed without the prefix. Delegates to the
+    same credential-aware contract the probe path uses.
+    """
+
+    return redact_provider_text(message, api_key=api_key)
 
 
 def _run_status(value: str) -> FreeModelRunStatus:

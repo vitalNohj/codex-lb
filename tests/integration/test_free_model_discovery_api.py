@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from collections import deque
 from collections.abc import Mapping
 from datetime import timedelta
@@ -383,3 +384,70 @@ async def test_second_concurrent_run_insert_is_rejected_by_the_database(async_cl
         )
         assert len(running) == 1
         assert running[0].id == first.id
+
+
+@pytest.mark.asyncio
+async def test_start_is_rejected_when_discovery_execution_is_disabled(async_client, fake_clients, monkeypatch):
+    """Accepting a run nothing will drive leaves a permanently ``running`` row
+    which, under the single-active index, blocks every later run."""
+
+    from app.modules.free_model_discovery import api as api_module
+
+    monkeypatch.setattr(api_module, "discovery_execution_enabled", lambda: False)
+
+    response = await async_client.post(
+        "/api/free-model-discovery/runs",
+        json={"selections": [{"provider": "openrouter", "modelId": "deepseek/deepseek-r1:free"}]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "discovery_execution_disabled"
+    # No row was created, so a later start is still possible.
+    async with SessionLocal() as session:
+        runs = (await session.execute(select(FreeModelDiscoveryRun))).scalars().all()
+        assert runs == []
+    assert fake_clients.calls == []
+
+
+@pytest.mark.asyncio
+async def test_migration_refuses_duplicate_running_rows_without_changing_them():
+    """The single-active migration must surface duplicates for an operator
+    decision, never rewrite run rows to make room for its index."""
+
+    migration_path = (
+        Path(__file__).resolve().parents[2]
+        / "app/db/alembic/versions/20260914_020000_single_active_free_model_discovery_run.py"
+    )
+    source = migration_path.read_text()
+    assert "UPDATE" not in source.upper().replace("UPDATED_AT", ""), (
+        "migration must not rewrite run rows"
+    )
+    assert "raise RuntimeError" in source
+    assert "op.create_index" in source
+
+
+@pytest.mark.asyncio
+async def test_concurrent_operator_save_does_not_lose_a_discovered_pin(async_client):
+    """A discovery append and an operator save of the same column must not
+    silently overwrite each other; the append re-reads and merges on conflict."""
+
+    from app.modules.free_model_discovery.service import FreeModelDiscoveryService
+
+    async with SessionLocal() as session:
+        service = FreeModelDiscoveryService(session)
+        # Simulate the interleaving: another writer commits a different pin
+        # after this service last read settings.
+        async with SessionLocal() as other:
+            other_settings = (await other.execute(select(DashboardSettings))).scalar_one()
+            other_settings.openrouter_sidecar_full_models_json = json.dumps(["operator/manual:free"])
+            await other.commit()
+
+        added = await service.pin_full_model("openrouter", "discovered/model:free")
+        assert added is True
+
+    async with SessionLocal() as session:
+        settings = (await session.execute(select(DashboardSettings))).scalar_one()
+        pinned = json.loads(settings.openrouter_sidecar_full_models_json or "[]")
+        # Both survive: the operator's edit and the discovered id.
+        assert "operator/manual:free" in pinned
+        assert "discovered/model:free" in pinned

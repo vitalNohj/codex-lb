@@ -13,10 +13,22 @@ A partial unique index makes the database the arbiter. Partial rather than a
 plain unique constraint because finished runs are retained as history and must
 be free to share their terminal statuses; only ``running`` is restricted.
 
-Any pre-existing duplicates are reconciled first - keeping the newest running
-run and marking older ones ``failed`` - because the index cannot be created
-while duplicates exist. That is a status correction on already-abandoned rows,
-not a deletion: no run row and no item row is removed.
+If duplicate ``running`` rows already exist the index cannot be created. This
+migration then **fails with a concrete error and changes nothing**. An earlier
+draft rewrote the older rows to ``failed`` automatically; that was wrong,
+because a second ``running`` row is not proven abandoned and ``downgrade()``
+could not restore the rewritten statuses. Which run to keep is an operator
+decision about live work, so it is surfaced rather than guessed.
+
+Refusal is only useful if the rollout actually stops on it. **On default
+configuration** ``app/db/session.py`` runs startup migrations
+(``database_migrate_on_startup``, default ``True``) and re-raises on failure
+(``database_migrations_fail_fast``, default ``True``), so startup aborts rather
+than continuing into the new service. That is the default-config path read from
+source only; it does **not** establish the effective settings of any particular
+deployment. Confirming that the target deployment stops on migration failure -
+rather than proceeding with the old or a partially updated service - remains a
+pre-deployment requirement, not something this migration can guarantee.
 """
 
 from __future__ import annotations
@@ -48,28 +60,26 @@ def upgrade() -> None:
     if _has_index(bind, _RUNS_TABLE, _INDEX_NAME):
         return
 
-    # Demote any stale extra running rows so the unique index can be built.
-    # Keeps the most recently started one, which is the run an operator would
-    # still expect to be live.
-    bind.execute(
-        sa.text(
-            f"""
-            UPDATE {_RUNS_TABLE}
-               SET status = 'failed',
-                   error_message = COALESCE(
-                       error_message,
-                       'Superseded: multiple concurrent runs existed before the single-active guard'
-                   )
-             WHERE status = 'running'
-               AND id NOT IN (
-                   SELECT id FROM {_RUNS_TABLE}
-                    WHERE status = 'running'
-                    ORDER BY started_at DESC
-                    LIMIT 1
-               )
-            """
+    # Refuse rather than repair. Creating the index is mandatory - it is the
+    # only thing that actually closes the start race - but no run row is
+    # rewritten to make room for it.
+    duplicate_ids = [
+        row[0]
+        for row in bind.execute(
+            sa.text(
+                f"SELECT id FROM {_RUNS_TABLE} WHERE status = 'running' ORDER BY started_at DESC"
+            )
+        ).fetchall()
+    ]
+    if len(duplicate_ids) > 1:
+        raise RuntimeError(
+            "Cannot enforce a single active free-model discovery run: "
+            f"{len(duplicate_ids)} runs are currently 'running' "
+            f"(ids: {', '.join(duplicate_ids)}). "
+            "Decide which run should remain active and finish or cancel the others "
+            "through the dashboard, then re-run this migration. "
+            "No rows were changed."
         )
-    )
 
     op.create_index(
         _INDEX_NAME,
