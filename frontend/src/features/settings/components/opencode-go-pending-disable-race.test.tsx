@@ -201,21 +201,28 @@ describe("OpenCode Go models during a pending disable", () => {
     });
   });
 
-  // OPEN DEFECT, routed to codexlb-opencode-go-settings-r1. `it.fails` is
-  // investigative: it fails now for the right reason and becomes a hard failure
-  // the moment the local switch follows the server value, at which point this
-  // must be converted to a plain `it(...)`. It must not ship as `it.fails`.
-  it.fails("becomes usable when the server enables it without a remount", async () => {
+  it("becomes usable when the server enables it without a remount", async () => {
     // The mirror image of the pending-disable race, and the reason an AND guard
     // needs both directions tested. The card seeds its local switch from
-    // `initial.enabled` via `useState`, which never re-syncs from props, so a
-    // card mounted while disabled keeps `enabled === false` forever. If the
-    // server then reports the integration enabled - a refetch, another tab, or
-    // a save completing - `enabled && sidecarEnabled` stays false and the
-    // catalogue is permanently unusable without a full remount.
+    // `initial.enabled` via `useState`, which does not re-seed on its own, so a
+    // card mounted while disabled could keep `enabled === false` forever. If
+    // the server then reported the integration enabled - a refetch, another
+    // tab, or a save completing - `enabled && sidecarEnabled` would stay false
+    // and the catalogue would be permanently unusable without a full remount.
     //
-    // Asserted as the accepted behavior. It is expected to fail while the local
-    // state does not follow the server value.
+    // Fixed by Settings `7aae111c`, which retires a completed enable intent so
+    // the local value follows the server again rather than pinning a stale one.
+    // This was an investigative `it.fails` while the defect was open; it XPASSed
+    // on composing that head and is now a plain assertion.
+    //
+    // **Binding limit, stated honestly.** This case covers the *mount-disabled
+    // then server-enables* path, which is what it was written for. It does NOT
+    // discriminate the ABA intent-retirement logic: mutating the retirement
+    // branch, or widening the derived value to ignore `intentPending`, leaves
+    // all six tests here green. The ABA cycles (enable -> disable -> enable
+    // against a stale server value) are covered by the owner's own 8-case
+    // transition table in `opencode-go-sidecar-settings.test.tsx`, which its
+    // mutation run exercises. Do not read this file as evidence for ABA.
     const user = userEvent.setup();
     serveModels();
     const { updateServerSettings } = renderSettings(

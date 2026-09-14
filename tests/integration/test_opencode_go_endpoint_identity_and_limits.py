@@ -156,15 +156,6 @@ class _FakeResponse:
         raise AssertionError("the client read an oversized body instead of refusing it on its declared length")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect: _read_response_json calls response.text() with no size "
-        "bound, so a hostile or broken upstream drives unbounded allocation from "
-        "a dashboard request. Owner: codexlb-opencode-go-quota-r1. Remove this "
-        "marker when the reader caps the body."
-    ),
-)
 @pytest.mark.asyncio
 async def test_an_oversized_usage_body_is_refused_rather_than_read():
     """Accepted behavior: refuse on the declared length, before allocating.
@@ -188,27 +179,27 @@ async def test_an_ordinary_usage_body_is_still_read():
     """The bound must not break the normal case."""
     from app.core.clients.opencode_go import _read_response_json
 
+    body = b'{"usage": {"rolling": {"status": "ok", "percent": 1}}}'
+
+    class _Content:
+        """Streams the body, matching how the hardened reader consumes it."""
+
+        async def iter_chunked(self, _size: int):
+            yield body
+
     class _Ordinary:
         status = 200
-        content_length = 64
-        headers = {"Content-Length": "64"}
+        content_length = len(body)
+        headers = {"Content-Length": str(len(body))}
+        content = _Content()
 
         async def text(self) -> str:
-            return '{"usage": {"rolling": {"status": "ok", "percent": 1}}}'
+            return body.decode()
 
     parsed = await _read_response_json(_Ordinary())  # type: ignore[arg-type]
     assert parsed["usage"]["rolling"]["percent"] == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect: the reader has no streamed bound, so an upstream that "
-        "declares a small or absent Content-Length and then sends more is read "
-        "in full. Owner: codexlb-opencode-go-quota-r1. Remove this marker when "
-        "the body is capped as it is consumed, not only on its declared size."
-    ),
-)
 @pytest.mark.asyncio
 async def test_a_body_larger_than_its_declared_length_is_refused_while_streaming():
     """Declared-size refusal is not enough; the wire can disagree with the header.
@@ -273,16 +264,6 @@ def _quota_config(api_key: str = "sk-go-single-flight-Zq7SvT2pLm9K"):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect, now genuinely reproduced: cancelling the INITIATING caller "
-        "of OpenCodeGoQuotaCache.fetch_single_flight tears down the shared fetch, "
-        "so callers that joined it are never answered. Owner: "
-        "codexlb-opencode-go-quota-r1. Remove this marker when the initiator's "
-        "cancellation stops propagating into the shared request."
-    ),
-)
 @pytest.mark.asyncio
 async def test_cancelling_the_initiating_quota_caller_still_answers_the_survivor():
     """The reported defect, driven through the real cache rather than a helper.
