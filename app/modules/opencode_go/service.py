@@ -99,12 +99,34 @@ class OpenCodeGoQuotaCache:
         self._failure_ttl_seconds = failure_ttl_seconds
         self._success: _CachedQuota | None = None
         self._failure: _CachedFailure | None = None
-        self._inflight: asyncio.Future[_CachedQuota] | None = None
+        # A cache-owned task, so no individual caller's cancellation can kill
+        # the request the other waiters are still depending on.
+        self._inflight: asyncio.Task[_CachedQuota] | None = None
+        # Bumped by every ``reset()``. A producer captures the generation it
+        # started in; a write carrying a stale generation is discarded. Without
+        # this, a fetch still in flight across a settings change would later
+        # repopulate the cache with state derived from the *old* credential,
+        # resurrecting exactly what the operator just invalidated.
+        self._generation = 0
+        # Producer task id -> the generation it started in.
+        self._producer_generations: dict[int, int] = {}
         self._inflight_config: OpenCodeGoConfig | None = None
         self._lock = asyncio.Lock()
 
     def reset(self) -> None:
-        """Drop all cached state (settings change, test isolation)."""
+        """Drop all cached state (settings change, test isolation).
+
+        Bumping the generation is what makes the invalidation *permanent*:
+        detaching the in-flight task alone would not stop its closure from
+        calling ``record_success``/``record_failure`` later and repopulating
+        credential-derived state that was just dropped.
+
+        The task is deliberately not cancelled here. Cancelling it would also
+        cancel callers still legitimately waiting on it; they are allowed to
+        receive the in-flight answer they asked for, while the *cache* refuses
+        to retain anything derived from it.
+        """
+        self._generation += 1
         self._success = None
         self._failure = None
         self._inflight = None
@@ -137,7 +159,25 @@ class OpenCodeGoQuotaCache:
             return None
         return failure
 
-    def record_failure(self, config: OpenCodeGoConfig, status: OpenCodeGoQuotaStatus, message: str) -> None:
+    def record_failure(
+        self,
+        config: OpenCodeGoConfig,
+        status: OpenCodeGoQuotaStatus,
+        message: str,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Remember a failure, unless it belongs to an invalidated generation.
+
+        ``generation`` defaults to the generation of the producer running in the
+        current task, so a write from a stale producer is rejected even when the
+        caller does not pass one explicitly. Guarding by default rather than
+        opt-in matters: a future call site that forgets the argument would
+        otherwise silently reintroduce the defect.
+        """
+        effective = generation if generation is not None else self.producer_generation()
+        if effective is not None and effective != self._generation:
+            return
         self._failure = _CachedFailure(
             config=config,
             status=status,
@@ -145,16 +185,40 @@ class OpenCodeGoQuotaCache:
             failed_monotonic=time.monotonic(),
         )
 
-    def record_success(self, config: OpenCodeGoConfig, quota: OpenCodeGoQuota) -> _CachedQuota:
+    def record_success(
+        self,
+        config: OpenCodeGoConfig,
+        quota: OpenCodeGoQuota,
+        *,
+        generation: int | None = None,
+    ) -> _CachedQuota:
+        """Remember a successful read.
+
+        A generation older than the current one means a ``reset()`` happened
+        while this fetch was in flight: the entry is still returned to the
+        callers who were waiting for it, but it is **not** stored, so the
+        invalidated credential's data cannot come back.
+
+        Defaults to the current task's producer generation, so the guard applies
+        even when a caller omits the argument.
+        """
         entry = _CachedQuota(
             config=config,
             quota=quota,
             checked_at=datetime.now(timezone.utc),
             fetched_monotonic=time.monotonic(),
         )
+        effective = generation if generation is not None else self.producer_generation()
+        if effective is not None and effective != self._generation:
+            return entry
         self._success = entry
         self._failure = None
         return entry
+
+    @property
+    def generation(self) -> int:
+        """Current cache generation; captured by a producer before it starts."""
+        return self._generation
 
     async def fetch_single_flight(
         self,
@@ -163,44 +227,67 @@ class OpenCodeGoQuotaCache:
     ) -> _CachedQuota:
         """Run ``fetch`` once for concurrent callers sharing the same config.
 
-        The first caller owns the request; the rest attach through
-        ``wait_on_shared_future``, so a waiter that times out or is cancelled
-        detaches in O(1) and never cancels the shared request the others still
-        need. A caller whose config differs starts its own request rather than
-        joining - that is what stops a re-keyed subscription from receiving the
-        previous key's in-flight answer.
+        The request runs in a **cache-owned task**, not in the first caller's
+        task, and every caller - including the one that started it - waits
+        through ``wait_on_shared_future``. This is the difference that matters:
+        when the producer ran inline, the first caller being cancelled (a closed
+        dashboard tab, a client disconnect) killed the in-flight request and
+        cancelled every other waiter with it, even though they were healthy and
+        still waiting. Now a cancelled caller detaches in O(1) and the request
+        continues serving the others.
+
+        A caller whose config differs starts its own request rather than joining
+        - that is what stops a re-keyed subscription from receiving the previous
+        key's in-flight answer.
         """
         async with self._lock:
             shared = self._inflight
-            if shared is not None and not shared.done() and self._inflight_config == config:
-                joined = shared
-                owned = None
-            else:
-                owned = asyncio.get_running_loop().create_future()
-                self._inflight = owned
+            if shared is None or shared.done() or self._inflight_config != config:
+                shared = asyncio.ensure_future(self._run_producer(fetch, config, self._generation))
+                self._inflight = shared
                 self._inflight_config = config
-                joined = None
 
-        if owned is None:
-            assert joined is not None
-            return await wait_on_shared_future(joined)
+        # Never awaited directly: ``wait_on_shared_future`` hands each caller a
+        # single-use proxy, so cancelling this await cannot cancel the producer.
+        return await wait_on_shared_future(shared)
 
+    async def _run_producer(
+        self,
+        fetch: Callable[[], Awaitable[_CachedQuota]],
+        config: OpenCodeGoConfig,
+        generation: int,
+    ) -> _CachedQuota:
+        """Run the upstream fetch and retire this producer's in-flight slot.
+
+        The slot is cleared on **identity**, so a producer that is finishing can
+        never evict a newer one that replaced it after a config change. Clearing
+        in ``finally`` also means a failed or cancelled producer cannot wedge
+        the cache: the next caller starts a fresh request rather than joining a
+        dead future.
+
+        ``generation`` is captured before the fetch starts and exposed through
+        ``producer_generation`` so the fetch closure can tag its cache writes.
+        A ``reset()`` during the fetch bumps the cache generation, and those
+        writes are then discarded rather than resurrecting invalidated state.
+        """
+        current = asyncio.current_task()
+        self._producer_generations[id(current)] = generation
         try:
-            entry = await fetch()
-        except BaseException as exc:
-            owned.set_exception(exc)
-            # Consume eagerly: with no waiter attached, the future's destructor
-            # would otherwise log "exception was never retrieved".
-            owned.exception()
-            raise
-        else:
-            owned.set_result(entry)
-            return entry
+            return await fetch()
         finally:
+            self._producer_generations.pop(id(current), None)
             async with self._lock:
-                if self._inflight is owned:
+                if self._inflight is current:
                     self._inflight = None
                     self._inflight_config = None
+
+    def producer_generation(self) -> int | None:
+        """Generation of the producer running in the current task, if any.
+
+        Lets the fetch closure tag its writes without threading the value
+        through every call site.
+        """
+        return self._producer_generations.get(id(asyncio.current_task()))
 
 
 _quota_cache = OpenCodeGoQuotaCache()
@@ -262,6 +349,11 @@ class OpenCodeGoQuotaService:
             # last-good values marked stale over an empty answer.
             return self._degraded_response(config, failure.status, failure.message)
 
+        # Captured before the fetch: these handlers run in the *caller's* task
+        # after the producer finished, so they cannot read the producer's
+        # generation. A ``reset()`` during the request makes this stale and the
+        # failure is then not retained.
+        generation = self._cache.generation
         try:
             entry = await self._cache.fetch_single_flight(config, lambda: self._fetch(config))
         except OpenCodeGoError as exc:
@@ -270,18 +362,18 @@ class OpenCodeGoQuotaService:
             # the boundary where upstream text becomes dashboard-visible, and it
             # must hold for any raiser, not only the one client we ship today.
             message = sanitize_opencode_go_message(exc.message, api_key=config.api_key)
-            self._cache.record_failure(config, status, message)
+            self._cache.record_failure(config, status, message, generation=generation)
             return self._degraded_response(config, status, message)
         except OpenCodeGoQuotaParseError as exc:
             message = sanitize_opencode_go_message(str(exc), api_key=config.api_key)
-            self._cache.record_failure(config, "unavailable", message)
+            self._cache.record_failure(config, "unavailable", message, generation=generation)
             return self._degraded_response(config, "unavailable", message)
         except (asyncio.TimeoutError, OSError) as exc:
             message = sanitize_opencode_go_message(
                 f"OpenCode Go usage request failed: {exc.__class__.__name__}",
                 api_key=config.api_key,
             )
-            self._cache.record_failure(config, "unavailable", message)
+            self._cache.record_failure(config, "unavailable", message, generation=generation)
             return self._degraded_response(config, "unavailable", message)
 
         return _quota_response(entry.quota, checked_at=entry.checked_at)
@@ -290,7 +382,10 @@ class OpenCodeGoQuotaService:
         client = self._client_factory(config, header_builder=build_request_headers)
         payload = await client.fetch_usage()
         quota = parse_opencode_go_usage(payload)
-        return self._cache.record_success(config, quota)
+        # Tagged with the generation this producer started in: if a settings
+        # change reset the cache mid-fetch, the waiting callers still get this
+        # answer but it is not retained as invalidated credential-derived state.
+        return self._cache.record_success(config, quota, generation=self._cache.producer_generation())
 
     def _degraded_response(
         self,
