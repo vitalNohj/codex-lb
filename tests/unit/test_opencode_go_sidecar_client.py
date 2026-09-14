@@ -123,16 +123,13 @@ def _patch(monkeypatch, session: _FakeSession) -> None:
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        # Canonical Go endpoint, plus spellings that resolve to exactly it.
+        # The documented endpoint, plus transcription noise that provably cannot
+        # change the transmitted path (callers rstrip("/") before concatenating).
         ("https://opencode.ai/zen/go/v1", True),
         ("https://opencode.ai/zen/go/v1/", True),
-        ("HTTPS://OPENCODE.AI/zen/go/v1", True),
-        ("https://opencode.ai/zen/./go/v1", True),
-        # Percent-encoded segment characters decode to the same segments.
-        ("https://opencode.ai/zen/%67%6f/v1", True),
+        ("  https://opencode.ai/zen/go/v1  ", True),
         # Zen is a different product with different billing.
         ("https://opencode.ai/zen/v1", False),
-        # A "go" that is not its own path segment must not pass.
         ("https://opencode.ai/zen/v1/gold", False),
         ("https://opencode.ai/zen/going/v1", False),
         ("https://opencode.ai/zen/go/v1/extra", False),
@@ -149,29 +146,29 @@ def test_is_opencode_go_base_url_distinguishes_go_from_zen(url: str, expected: b
     assert is_opencode_go_base_url(url) is expected
 
 
-class TestGoEndpointIsJudgedByTheTransmittedRequest:
-    """Fragment/query/dot shapes that look like Go but reach Zen on the wire.
+class TestOnlyTheDocumentedEndpointIsAccepted:
+    """Accepted bases must stay safe under the concatenation callers perform.
 
-    A substring scan for ``/go/`` accepted every URL below while the request
-    still targeted ``/zen/v1``, sending the Go subscription key to the
-    pay-as-you-go endpoint with nothing reporting it. The validator now parses
-    structurally and compares the *resolved* path.
+    Every caller builds requests as ``f"{base_url}/chat/completions"`` (also
+    ``/models`` and ``/usage``), so the question is not whether a string *looks*
+    like Go but whether ``<base>/<suffix>`` reaches Go. Successive reviews found
+    that gap in progressively subtler places, so the validator now accepts only
+    the one documented spelling. Each case below is a shape an earlier version
+    accepted while the resulting request went elsewhere.
     """
 
     @pytest.mark.parametrize(
         "url",
         [
-            # A fragment is never transmitted at all.
+            # Fragment/query: never transmitted as path, so a substring scan for
+            # "/go/" passed while the request path stayed /zen/v1.
             "https://opencode.ai/zen/v1#/go/v1",
-            "https://opencode.ai/zen/v1#/go/",
-            # A query string is not the path.
             "https://opencode.ai/zen/v1?x=/go/v1",
-            "https://opencode.ai/zen/v1?path=/go/v1&y=1",
             # Dot segments resolve away before the request is sent.
             "https://opencode.ai/zen/go/../v1",
             "https://opencode.ai/zen/go/v1/../../v1",
         ],
-        ids=["fragment", "fragment-short", "query", "query-multi", "dotdot", "dotdot-deep"],
+        ids=["fragment", "query", "dotdot", "dotdot-deep"],
     )
     def test_a_url_whose_wire_path_is_zen_is_rejected(self, url: str) -> None:
         assert is_opencode_go_base_url(url) is False
@@ -179,83 +176,123 @@ class TestGoEndpointIsJudgedByTheTransmittedRequest:
     @pytest.mark.parametrize(
         "url",
         [
-            "https://user:pw@opencode.ai/zen/go/v1",
-            "https://user@opencode.ai/zen/go/v1",
-            "https://opencode.ai:8443/zen/go/v1",
+            # EMPTY delimiters: structural parsing saw a falsy fragment/query and
+            # allowed these, but the appended suffix lands *inside* the fragment
+            # or query, so /chat/completions is never requested at all.
+            "https://opencode.ai/zen/go/v1#",
+            "https://opencode.ai/zen/go/v1?",
+            # Empty userinfo - a delimiter with nothing in it.
+            "https://@opencode.ai/zen/go/v1",
         ],
-        ids=["userinfo", "username-only", "port"],
+        ids=["empty-fragment", "empty-query", "empty-userinfo"],
     )
-    def test_components_that_cannot_appear_in_a_go_base_url_are_rejected(self, url: str) -> None:
-        """Rejected outright rather than stripped.
+    def test_empty_component_delimiters_are_rejected(self, url: str) -> None:
+        """An empty delimiter is still a delimiter.
 
-        There is no legitimate reason for any of these on this endpoint, and each
-        is a way to make the string disagree with the request.
+        Truthiness checks miss these precisely because the component is empty,
+        which is what made them survive a structural rewrite.
         """
 
         assert is_opencode_go_base_url(url) is False
 
-    def test_an_encoded_separator_is_not_treated_as_a_segment_boundary(self) -> None:
-        """``%2F`` is a literal slash inside one segment, and stays encoded.
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Case-folding and empty-segment removal made these compare equal to
+            # the canonical path, yet they are transmitted verbatim as different
+            # paths.
+            "https://opencode.ai/ZEN/GO/v1",
+            "https://opencode.ai/zen//go/v1",
+            "https://opencode.ai/zen/./go/v1",
+            "https://opencode.ai/zen/%67%6f/v1",
+            "https://opencode.ai/zen/go%2Fv1",
+        ],
+        ids=["uppercase", "double-slash", "dot-segment", "percent-encoded", "encoded-separator"],
+    )
+    def test_noncanonical_path_spellings_are_rejected(self, url: str) -> None:
+        """Normalizing these would require proving equivalence to the sent path.
 
-        aiohttp transmits ``/zen/go%2Fv1`` unchanged, so the upstream sees a
-        single segment named ``go/v1`` that Go does not serve. Decoding before
-        splitting would have accepted it as Go.
+        Some do reach Go and some do not; rather than maintain a second URL
+        resolver to tell them apart, only the canonical spelling is accepted.
         """
 
-        assert is_opencode_go_base_url("https://opencode.ai/zen/go%2Fv1") is False
+        assert is_opencode_go_base_url(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:pw@opencode.ai/zen/go/v1",
+            "https://opencode.ai:8443/zen/go/v1",
+        ],
+        ids=["userinfo", "port"],
+    )
+    def test_components_with_no_legitimate_use_here_are_rejected(self, url: str) -> None:
+        assert is_opencode_go_base_url(url) is False
 
     @pytest.mark.parametrize(
         "url",
         [
             "https://opencode.ai/zen/go/v1",
+            "https://opencode.ai/zen/go/v1/",
+            "https://opencode.ai/zen/go/v1#",
+            "https://opencode.ai/zen/go/v1?",
+            "https://opencode.ai/ZEN/GO/v1",
+            "https://opencode.ai/zen//go/v1",
             "https://opencode.ai/zen/%67%6f/v1",
-            "https://opencode.ai/zen/./go/v1",
             "https://opencode.ai/zen/go%2Fv1",
+            "https://opencode.ai/zen/./go/v1",
             "https://opencode.ai/zen/v1#/go/v1",
             "https://opencode.ai/zen/v1?x=/go/v1",
             "https://opencode.ai/zen/go/../v1",
             "https://opencode.ai/zen/v1",
         ],
     )
-    def test_the_verdict_matches_the_path_that_would_actually_be_requested(self, url: str) -> None:
-        """The property that matters, asserted directly against URL construction.
+    def test_anything_accepted_actually_reaches_go_when_a_suffix_is_appended(self, url: str) -> None:
+        """The safety property itself, derived rather than hand-asserted.
 
-        Rather than trusting a hand-written expectation per case, this derives
-        the truth from the URL the client would build and requires the validator
-        to agree. No request is made and no credential is involved.
+        Builds the URL exactly as the client does and requires that an accepted
+        base always produces a Go request path. Rejecting a URL that would have
+        worked is merely strict; accepting one that would not is the bug this
+        guards. No request is made and no credential is involved.
         """
 
         from yarl import URL
 
-        wire_path = URL(f"{url.rstrip('/')}/chat/completions").raw_path
-        reaches_go = wire_path.startswith("/zen/go/v1/")
+        if not is_opencode_go_base_url(url):
+            return
 
-        assert is_opencode_go_base_url(url) is reaches_go
+        wire_path = URL(f"{url.strip().rstrip('/')}/chat/completions").raw_path
+
+        assert wire_path.startswith("/zen/go/v1/"), f"accepted base does not reach Go: {wire_path}"
 
 
 def test_all_three_validation_seams_reject_a_wire_path_bypass() -> None:
     """Static config, dashboard schema and the client must agree.
 
     Pinning all three together is the point: one permissive entry point is
-    enough to route a Go key to Zen, and this is the second time a gap here has
-    been found only after the string-level check looked correct.
+    enough to route a Go key to Zen, and the gap here survived two earlier
+    fixes that each looked correct in isolation.
     """
 
     from app.core.config.settings import Settings
     from app.modules.settings.schemas import _normalize_opencode_go_sidecar_base_url
 
-    bypass = "https://opencode.ai/zen/v1#/go/v1"
-
-    assert is_opencode_go_base_url(bypass) is False
-    with pytest.raises(ValueError, match="OpenCode Go endpoint"):
-        Settings(opencode_go_sidecar_base_url=bypass)
-    with pytest.raises(ValueError, match="OpenCode Go endpoint"):
-        _normalize_opencode_go_sidecar_base_url(bypass)
+    for bypass in (
+        "https://opencode.ai/zen/v1#/go/v1",
+        "https://opencode.ai/zen/go/v1#",
+        "https://opencode.ai/ZEN/GO/v1",
+    ):
+        assert is_opencode_go_base_url(bypass) is False
+        with pytest.raises(ValueError, match="OpenCode Go endpoint"):
+            Settings(opencode_go_sidecar_base_url=bypass)
+        with pytest.raises(ValueError, match="OpenCode Go endpoint"):
+            _normalize_opencode_go_sidecar_base_url(bypass)
 
     # The canonical endpoint still passes every seam.
-    assert is_opencode_go_base_url("https://opencode.ai/zen/go/v1") is True
-    assert Settings(opencode_go_sidecar_base_url="https://opencode.ai/zen/go/v1")
-    assert _normalize_opencode_go_sidecar_base_url("https://opencode.ai/zen/go/v1")
+    canonical = "https://opencode.ai/zen/go/v1"
+    assert is_opencode_go_base_url(canonical) is True
+    assert Settings(opencode_go_sidecar_base_url=canonical).opencode_go_sidecar_base_url == canonical
+    assert _normalize_opencode_go_sidecar_base_url(canonical) == canonical
 
 
 # --------------------------------------------------------------------------
