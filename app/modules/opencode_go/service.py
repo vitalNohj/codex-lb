@@ -41,7 +41,10 @@ from app.core.usage.opencode_go_quota import (
     parse_opencode_go_usage,
 )
 from app.core.utils.shared_future import wait_on_shared_future
-from app.modules.opencode_go.config import opencode_go_config_from_settings
+from app.modules.opencode_go.backend_seam import (
+    build_request_headers,
+    quota_config_from_settings,
+)
 from app.modules.opencode_go.schemas import (
     OpenCodeGoQuotaResponse,
     OpenCodeGoQuotaStatus,
@@ -50,6 +53,10 @@ from app.modules.opencode_go.schemas import (
 from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
+
+#: Builds the upstream client. Keyword-only ``header_builder`` so a test double
+#: can accept it without depending on the backend header helper.
+_ClientFactory = Callable[..., OpenCodeGoClient]
 
 DEFAULT_QUOTA_TTL_SECONDS = 60.0
 # A failed refresh is remembered briefly so a dead endpoint cannot make every
@@ -220,7 +227,7 @@ class OpenCodeGoQuotaService:
         settings_repository: SettingsRepository,
         *,
         cache: OpenCodeGoQuotaCache | None = None,
-        client_factory: Callable[[OpenCodeGoConfig], OpenCodeGoClient] | None = None,
+        client_factory: _ClientFactory | None = None,
     ) -> None:
         self._settings_repository = settings_repository
         self._cache = cache if cache is not None else get_opencode_go_quota_cache()
@@ -231,14 +238,10 @@ class OpenCodeGoQuotaService:
 
     async def get_quota(self) -> OpenCodeGoQuotaResponse:
         settings = await self._settings_repository.get_or_create()
-        config = opencode_go_config_from_settings(settings)
+        # Resolved through the backend lane's loader, which is the single
+        # audited place the Go credential is decrypted.
+        config = quota_config_from_settings(settings)
 
-        if config is None:
-            # The backend integration's settings columns are not present yet.
-            return _static_response(
-                "not_configured",
-                "OpenCode Go is not configured",
-            )
         if not config.enabled:
             # Gate before any network work: a disabled integration must not poll.
             return _static_response("disabled", "OpenCode Go is disabled")
@@ -284,7 +287,7 @@ class OpenCodeGoQuotaService:
         return _quota_response(entry.quota, checked_at=entry.checked_at)
 
     async def _fetch(self, config: OpenCodeGoConfig) -> _CachedQuota:
-        client = self._client_factory(config)
+        client = self._client_factory(config, header_builder=build_request_headers)
         payload = await client.fetch_usage()
         quota = parse_opencode_go_usage(payload)
         return self._cache.record_success(config, quota)

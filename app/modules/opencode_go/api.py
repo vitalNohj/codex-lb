@@ -8,6 +8,13 @@ and is operator data.
 The route deliberately does not appear in health or status checks. A health
 probe that reached upstream would be a hidden inference-adjacent call against a
 metered subscription, and would let an upstream outage mark codex-lb unhealthy.
+
+Pending dependency: ``OpenCodeGoContext`` / ``get_opencode_go_context`` in
+``app/dependencies.py`` and the ``include_router`` call in ``app/main.py`` are
+owned by the OpenCode Go backend lane and have not landed yet, so this router is
+not mounted and the imports below do not resolve. The exact registration delta is
+preserved as evidence (recovery ``tracked-deltas/``); the integration tests for
+this route skip with that precise reason rather than reporting a bare 404.
 """
 
 from __future__ import annotations

@@ -12,6 +12,12 @@ dodge a Cloudflare challenge; that is not reused. If OpenCode challenges an
 honest agent, the correct answer is an honest failure the operator can see, not a
 fake browser identity.
 
+Headers are **not** built here. They come from the backend lane's
+``opencode_go_request_headers`` via ``app.modules.opencode_go.backend_seam``, so
+this background poll and the foreground chat path cannot drift apart on the user
+agent or the auth scheme. The header builder is injected rather than imported
+directly to keep this module free of a dependency on a ``modules`` package.
+
 ``x-opencode-session`` is not sent. The docs ask for a stable session ID "for
 each conversation so we can optimize routing and prompt caching"; a usage read is
 not a conversation, and no reviewed source establishes that ``/usage`` requires
@@ -22,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -30,10 +36,19 @@ import aiohttp
 
 from app import __version__
 from app.core.clients.http import lease_http_session
+from app.core.clients.opencode_go_sidecar import (
+    sanitize_opencode_go_message as _backend_sanitize,
+)
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 
 DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+
+#: Fallback identity used only when no header builder is injected. The real
+#: outbound identity is the backend lane's ``OPENCODE_GO_USER_AGENT``; this
+#: exists so the client is constructible in isolation without silently sending a
+#: library-default agent.
+OPENCODE_GO_USER_AGENT = f"codex-lb/{__version__}"
 
 # Where a non-JSON response body is parked. Deliberately not ``message``, so a
 # raw HTML page is never promoted into an operator-visible error string.
@@ -41,9 +56,6 @@ NON_JSON_BODY_KEY = "__non_json_body__"
 # A body we could not parse is diagnostic only, and an upstream error page can be
 # megabytes; keep just enough to recognize it.
 _NON_JSON_SNIPPET_LENGTH = 120
-
-# Honest, client-specific identity per the Go docs' obligation.
-OPENCODE_GO_USER_AGENT = f"codex-lb/{__version__} (+https://github.com/vitalNohj/codex-lb)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +98,16 @@ class OpenCodeGoClient:
     behavior.
     """
 
-    def __init__(self, config: OpenCodeGoConfig) -> None:
+    def __init__(
+        self,
+        config: OpenCodeGoConfig,
+        *,
+        header_builder: Callable[[OpenCodeGoConfig], Mapping[str, str]] | None = None,
+    ) -> None:
         self._config = config
+        # Injected so this module does not import from ``app.modules``; the
+        # service wires in the backend lane's builder.
+        self._header_builder = header_builder
 
     @property
     def config(self) -> OpenCodeGoConfig:
@@ -104,6 +124,11 @@ class OpenCodeGoClient:
             # Guarded anyway so no future caller can send an unauthenticated
             # probe that upstream would see as a malformed client.
             raise OpenCodeGoError(401, "OpenCode Go API key is not configured")
+        if self._header_builder is not None:
+            headers = dict(self._header_builder(self._config))
+            if "Authorization" not in headers:
+                raise OpenCodeGoError(401, "OpenCode Go request headers are missing authorization")
+            return headers
         return {
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json",
@@ -185,62 +210,16 @@ def _error_from_status(status_code: int, body: JsonValue, *, api_key: str | None
     return OpenCodeGoError(status_code, sanitize_opencode_go_message(message, api_key=api_key))
 
 
-_REDACTION = "[redacted]"
-# Mirrors the shape used by the OrcaRouter sanitizer: the character class that
-# may appear *inside* a credential is wider than the one that may terminate it,
-# so an echoed header's closing quote or brace survives while the token does not.
-_TOKEN_CHARS = r"A-Za-z0-9._~+/=-"
-_CREDENTIAL_VALUE = rf"[{_TOKEN_CHARS}]+(?::[{_TOKEN_CHARS}]+)*"
-_BEARER_TOKEN_RE = re.compile(rf"(?i)(bearer[\s:=]+){_CREDENTIAL_VALUE}")
-_WHITESPACE_RE = re.compile(r"\s")
-_ALPHABETIC_WORD_RE = re.compile(r"^[A-Za-z]+$")
-_MIN_ALPHABETIC_CREDENTIAL_LENGTH = 16
-_CREDENTIAL_LABEL_RE = r"(?i)((?:bearer|authorization|api[-_ ]?key)[\s:=\"']+)"
-_NOT_AFTER_TOKEN_CHAR = r"(?<![A-Za-z0-9])"
-_NOT_BEFORE_TOKEN_CHAR = r"(?![A-Za-z0-9])"
-
-
-def _looks_credential_bearing(value: str) -> bool:
-    """Is this configured value shaped like a secret rather than ordinary prose?
-
-    Nothing constrains the shape of an OpenCode Go key, so any value carrying a
-    digit or punctuation is treated as a secret at any length. Only a purely
-    alphabetic value is ambiguous with a word an upstream might echo ("key" in
-    "Invalid API key"), and there length decides: short stays label-gated so the
-    upstream message is returned intact, long is redacted wherever it appears.
-    """
-    if not value or _WHITESPACE_RE.search(value):
-        return False
-    if _ALPHABETIC_WORD_RE.match(value):
-        return len(value) >= _MIN_ALPHABETIC_CREDENTIAL_LENGTH
-    return True
-
-
 def sanitize_opencode_go_message(message: str, *, api_key: str | None = None) -> str:
     """Strip the OpenCode Go credential out of an operator-visible string.
 
-    Every path that surfaces upstream text - the quota response's ``message`` and
-    ``staleReason``, and any log line - goes through here, so an upstream that
-    echoes the Authorization header cannot leak the key to the dashboard.
+    Delegates to the backend lane's sanitizer so both lanes redact identically.
+    A second local implementation drifted from it in a way that mattered: the
+    backend's also removes a bare ``sk-`` key echoed without a ``Bearer`` prefix
+    ("Invalid API key: sk-..."), which this module previously missed.
 
-    The configured key is matched exactly but only as a whole token, so a short
-    configured value cannot garble unrelated words; the ``Bearer`` pattern runs
-    unconditionally and also covers a key that is no longer the configured one.
+    Every path that surfaces upstream text - the quota response's ``message``
+    and ``staleReason``, and any log line - goes through here, so an upstream
+    that echoes the Authorization header cannot leak the key to the dashboard.
     """
-    sanitized = message
-    configured_key = (api_key or "").strip()
-    if configured_key:
-        token = re.escape(configured_key)
-        if _looks_credential_bearing(configured_key):
-            sanitized = re.sub(
-                rf"{_NOT_AFTER_TOKEN_CHAR}{token}{_NOT_BEFORE_TOKEN_CHAR}",
-                _REDACTION,
-                sanitized,
-            )
-        else:
-            sanitized = re.sub(
-                rf"{_CREDENTIAL_LABEL_RE}{token}{_NOT_BEFORE_TOKEN_CHAR}",
-                rf"\g<1>{_REDACTION}",
-                sanitized,
-            )
-    return _BEARER_TOKEN_RE.sub(rf"\g<1>{_REDACTION}", sanitized)
+    return _backend_sanitize(message, api_key=api_key)

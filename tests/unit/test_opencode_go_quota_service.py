@@ -37,14 +37,25 @@ def _usage_body(rolling_percent: float = 10.0) -> dict:
 
 
 class _FakeSettings:
-    """Stands in for the backend owner's settings row."""
+    """A settings row carrying the backend lane's real column names.
 
-    def __init__(self, *, enabled: bool = True, key: str | None = _KEY_A, has_columns: bool = True) -> None:
-        if has_columns:
-            self.opencode_go_enabled = enabled
-            # The config adapter decrypts; the fake encryptor below is the identity.
-            self.opencode_go_api_key_encrypted = key.encode() if key else None
-            self.opencode_go_base_url = "https://opencode.ai/zen/go/v1"
+    Deliberately spelled ``opencode_go_sidecar_*``: these tests exercise the
+    backend's actual ``opencode_go_sidecar_config_from_settings`` loader, so a
+    wrong spelling here would fail loudly rather than silently reporting
+    ``not_configured`` against a configured integration.
+    """
+
+    def __init__(self, *, enabled: bool = True, key: str | None = _KEY_A) -> None:
+        self.opencode_go_sidecar_enabled = enabled
+        # Decryption happens inside the backend loader; the fake encryptor below
+        # is the identity, so no real credential is involved.
+        self.opencode_go_sidecar_api_key_encrypted = key.encode() if key else None
+        self.opencode_go_sidecar_base_url = "https://opencode.ai/zen/go/v1"
+        self.opencode_go_sidecar_model_prefixes_json = "[]"
+        self.opencode_go_sidecar_full_models_json = "[]"
+        self.opencode_go_sidecar_connect_timeout_seconds = 5.0
+        self.opencode_go_sidecar_request_timeout_seconds = 10.0
+        self.opencode_go_sidecar_models_cache_ttl_seconds = 60.0
 
 
 class _FakeSettingsRepository:
@@ -58,8 +69,11 @@ class _FakeSettingsRepository:
 class _FakeClient:
     """Records calls and replays a scripted result per call."""
 
-    def __init__(self, config: OpenCodeGoConfig) -> None:
+    def __init__(self, config: OpenCodeGoConfig, *, header_builder=None) -> None:
         self.config = config
+        # Captured so a test can assert the service wires in the backend's
+        # header builder rather than inventing its own.
+        self.header_builder = header_builder
         _FakeClient.instances.append(self)
 
     instances: list["_FakeClient"] = []
@@ -93,13 +107,16 @@ def _reset_fake_client():
 
 @pytest.fixture(autouse=True)
 def _identity_encryptor(monkeypatch):
-    """Decryption is the backend owner's concern; here it is the identity."""
+    """Patch the decryptor the *backend loader* uses, not a local one."""
 
     class _Encryptor:
         def decrypt(self, blob: bytes) -> str:
             return blob.decode()
 
-    monkeypatch.setattr("app.modules.opencode_go.config.TokenEncryptor", _Encryptor)
+    monkeypatch.setattr(
+        "app.modules.proxy.opencode_go_sidecar_dispatch.TokenEncryptor",
+        _Encryptor,
+    )
 
 
 def _service(settings: _FakeSettings, *, cache: OpenCodeGoQuotaCache | None = None) -> OpenCodeGoQuotaService:
@@ -145,12 +162,36 @@ async def test_unconfigured_key_never_contacts_upstream():
 
 
 @pytest.mark.asyncio
-async def test_absent_backend_columns_report_not_configured_without_a_request():
-    """The backend owner's schema has not landed yet; degrade, do not crash."""
-    response = await _service(_FakeSettings(has_columns=False)).get_quota()
+async def test_config_is_read_through_the_backends_published_loader():
+    """The credential comes from the backend's loader, not a second spelling.
 
-    assert response.status == "not_configured"
-    assert _FakeClient.calls == []
+    Guards the exact defect that would otherwise ship silently: reading
+    un-prefixed ``opencode_go_*`` columns while the backend stores
+    ``opencode_go_sidecar_*`` reports ``not_configured`` for a fully configured
+    integration, contradicting the Settings screen the operator is looking at.
+    """
+    settings = _FakeSettings()
+    assert not hasattr(settings, "opencode_go_api_key_encrypted")
+
+    response = await _service(settings).get_quota()
+
+    assert response.status == "ok"
+    assert _FakeClient.calls == [_KEY_A]
+
+
+@pytest.mark.asyncio
+async def test_upstream_headers_come_from_the_backends_builder():
+    """One header builder for chat and this poll, so identity cannot drift."""
+    from app.core.clients.opencode_go_sidecar import OPENCODE_GO_USER_AGENT
+
+    service = _service(_FakeSettings())
+    await service.get_quota()
+
+    client = _FakeClient.instances[-1]
+    headers = client.header_builder(client.config)
+    assert headers["User-Agent"] == OPENCODE_GO_USER_AGENT
+    assert headers["Authorization"] == f"Bearer {_KEY_A}"
+    assert "Mozilla" not in headers["User-Agent"]
 
 
 @pytest.mark.asyncio
@@ -159,7 +200,10 @@ async def test_undecryptable_key_is_not_sent_upstream(monkeypatch):
         def decrypt(self, blob: bytes) -> str:
             raise ValueError("bad ciphertext")
 
-    monkeypatch.setattr("app.modules.opencode_go.config.TokenEncryptor", _BrokenEncryptor)
+    monkeypatch.setattr(
+        "app.modules.proxy.opencode_go_sidecar_dispatch.TokenEncryptor",
+        _BrokenEncryptor,
+    )
 
     response = await _service(_FakeSettings()).get_quota()
 
@@ -328,7 +372,7 @@ async def test_a_changed_key_never_sees_the_previous_subscriptions_quota():
 
     # Operator swaps the subscription key. The TTL has not expired, so only
     # config-keyed isolation can prevent a cross-subscription read.
-    settings.opencode_go_api_key_encrypted = _KEY_B.encode()
+    settings.opencode_go_sidecar_api_key_encrypted = _KEY_B.encode()
     second = await service.get_quota()
 
     assert second.windows[0].percent_used == 77.0
@@ -343,7 +387,7 @@ async def test_a_changed_key_does_not_inherit_the_old_key_as_stale():
     _FakeClient.reset([_usage_body(11.0), OpenCodeGoUnavailableError("down")])
 
     await service.get_quota()
-    settings.opencode_go_api_key_encrypted = _KEY_B.encode()
+    settings.opencode_go_sidecar_api_key_encrypted = _KEY_B.encode()
     response = await service.get_quota()
 
     # The new key has no last-good value of its own, so there is nothing
@@ -359,7 +403,7 @@ async def test_disabling_after_a_successful_read_stops_all_upstream_traffic():
     service = _service(settings, cache=cache)
 
     await service.get_quota()
-    settings.opencode_go_enabled = False
+    settings.opencode_go_sidecar_enabled = False
     response = await service.get_quota()
 
     assert response.status == "disabled"
