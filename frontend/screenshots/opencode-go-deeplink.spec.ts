@@ -145,3 +145,49 @@ test("without a hash the default tab selection is unchanged", async ({ page }) =
     "active",
   );
 });
+
+test("a retained catalogue stops being selectable once the integration is disabled", async ({ page }) => {
+  const evidence = process.env.OPENCODE_GO_EVIDENCE_DIR;
+  // Same page/session: discover successfully, then flip the integration off and
+  // re-render from the retained React Query data, as a real operator would.
+  let enabled = true;
+  await page.route("**/api/**", async (route) => {
+    const p = new URL(route.request().url()).pathname.replace(/^\/codex/, "");
+    let body: unknown = {};
+    if (p === "/api/dashboard-auth/session") body = authSession;
+    else if (p === "/api/settings") body = { ...GO_SETTINGS, opencodeGoSidecarEnabled: enabled };
+    else if (p === "/api/settings/upstream-proxy") body = upstreamProxyAdmin;
+    else if (p === "/api/opencode-go-sidecar/status") body = goStatus;
+    else if (p === "/api/opencode-go-sidecar/models") body = { models: OPENCODE_GO_MODELS };
+    else if (p.endsWith("/status")) body = emptySidecar("https://example.invalid");
+    else if (p.endsWith("/models")) body = { models: [] };
+    else if (p === "/api/accounts") body = { accounts: [] };
+    else if (p === "/api/api-keys" || p === "/api/api-keys/") body = { apiKeys: [] };
+    await route.fulfill({ json: body });
+  });
+  await page.route("http://localhost:4174/codex/settings", async (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: await readFile(new URL("../.opencode-go-build/codex/index.html", import.meta.url), "utf8"),
+    }),
+  );
+
+  await page.goto("http://localhost:4174/codex/settings#opencode-go-sidecar");
+  await page.getByRole("button", { name: /Discovered models/ }).click();
+  await expect(page.getByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+  // Operator switches the integration off.
+  enabled = false;
+  await page.getByRole("switch", { name: "Enable OpenCode Go Integration" }).click();
+
+  const unavailable = page.getByRole("button", { name: "Unavailable glm-5.3" });
+  await expect(unavailable).toBeVisible();
+  await expect(unavailable).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add full model glm-5.3" })).toHaveCount(0);
+  // The header names the reason, so the state is not silent.
+  await expect(page.getByRole("button", { name: /Discovered models.*Integration disabled/ })).toBeVisible();
+  if (evidence) {
+    await unavailable.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${evidence}/09-retained-rows-disabled.png` });
+  }
+});

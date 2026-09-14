@@ -314,6 +314,51 @@ describe("OpenCodeGoSidecarSettings", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("stops offering a discovered model after the integration is disabled", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={vi.fn()} />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(ENABLED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+      // Same QueryClient, so the successful catalogue is retained across the
+      // settings change exactly as it is for a real operator.
+      rerender(view({ ...ENABLED_SETTINGS, opencodeGoSidecarEnabled: false }));
+
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: "Add full model glm-5.3" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("stops offering a discovered model after the stored key is cleared", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={vi.fn()} />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(ENABLED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+
+      rerender(view({ ...ENABLED_SETTINGS, opencodeGoSidecarApiKeyConfigured: false }));
+
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+    });
+
     it("explains an empty catalog differently before a key is stored", async () => {
       const user = userEvent.setup();
       server.use(
