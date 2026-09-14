@@ -46,21 +46,39 @@ def _config(**overrides) -> OpenCodeGoConfig:
     return OpenCodeGoConfig(**values)
 
 
+class _FakeContent:
+    """Streams the body in chunks, like a real ``aiohttp`` payload.
+
+    ``text()`` is deliberately absent from the response below: the client must
+    consume the body through this bounded streaming interface, never by
+    buffering it whole.
+    """
+
+    def __init__(self, body: str | Exception) -> None:
+        self._body = body
+        self.bytes_yielded = 0
+
+    async def iter_chunked(self, size: int):
+        if isinstance(self._body, Exception):
+            raise self._body
+        raw = self._body.encode()
+        for start in range(0, len(raw), size):
+            chunk = raw[start : start + size]
+            self.bytes_yielded += len(chunk)
+            yield chunk
+
+
 class _FakeResponse:
-    def __init__(self, status: int, text: str | Exception) -> None:
+    def __init__(self, status: int, text: str | Exception, headers: dict | None = None) -> None:
         self.status = status
-        self._text = text
+        self.content = _FakeContent(text)
+        self.headers = headers or {}
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         return None
-
-    async def text(self) -> str:
-        if isinstance(self._text, Exception):
-            raise self._text
-        return self._text
 
 
 class _FakeSession:

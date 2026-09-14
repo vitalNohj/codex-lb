@@ -99,7 +99,9 @@ class OpenCodeGoQuotaCache:
         self._failure_ttl_seconds = failure_ttl_seconds
         self._success: _CachedQuota | None = None
         self._failure: _CachedFailure | None = None
-        self._inflight: asyncio.Future[_CachedQuota] | None = None
+        # A cache-owned task, so no individual caller's cancellation can kill
+        # the request the other waiters are still depending on.
+        self._inflight: asyncio.Task[_CachedQuota] | None = None
         self._inflight_config: OpenCodeGoConfig | None = None
         self._lock = asyncio.Lock()
 
@@ -163,42 +165,49 @@ class OpenCodeGoQuotaCache:
     ) -> _CachedQuota:
         """Run ``fetch`` once for concurrent callers sharing the same config.
 
-        The first caller owns the request; the rest attach through
-        ``wait_on_shared_future``, so a waiter that times out or is cancelled
-        detaches in O(1) and never cancels the shared request the others still
-        need. A caller whose config differs starts its own request rather than
-        joining - that is what stops a re-keyed subscription from receiving the
-        previous key's in-flight answer.
+        The request runs in a **cache-owned task**, not in the first caller's
+        task, and every caller - including the one that started it - waits
+        through ``wait_on_shared_future``. This is the difference that matters:
+        when the producer ran inline, the first caller being cancelled (a closed
+        dashboard tab, a client disconnect) killed the in-flight request and
+        cancelled every other waiter with it, even though they were healthy and
+        still waiting. Now a cancelled caller detaches in O(1) and the request
+        continues serving the others.
+
+        A caller whose config differs starts its own request rather than joining
+        - that is what stops a re-keyed subscription from receiving the previous
+        key's in-flight answer.
         """
         async with self._lock:
             shared = self._inflight
-            if shared is not None and not shared.done() and self._inflight_config == config:
-                joined = shared
-                owned = None
-            else:
-                owned = asyncio.get_running_loop().create_future()
-                self._inflight = owned
+            if shared is None or shared.done() or self._inflight_config != config:
+                shared = asyncio.ensure_future(self._run_producer(fetch, config))
+                self._inflight = shared
                 self._inflight_config = config
-                joined = None
 
-        if owned is None:
-            assert joined is not None
-            return await wait_on_shared_future(joined)
+        # Never awaited directly: ``wait_on_shared_future`` hands each caller a
+        # single-use proxy, so cancelling this await cannot cancel the producer.
+        return await wait_on_shared_future(shared)
 
+    async def _run_producer(
+        self,
+        fetch: Callable[[], Awaitable[_CachedQuota]],
+        config: OpenCodeGoConfig,
+    ) -> _CachedQuota:
+        """Run the upstream fetch and retire this producer's in-flight slot.
+
+        The slot is cleared on **identity**, so a producer that is finishing can
+        never evict a newer one that replaced it after a config change. Clearing
+        in ``finally`` also means a failed or cancelled producer cannot wedge
+        the cache: the next caller starts a fresh request rather than joining a
+        dead future.
+        """
+        current = asyncio.current_task()
         try:
-            entry = await fetch()
-        except BaseException as exc:
-            owned.set_exception(exc)
-            # Consume eagerly: with no waiter attached, the future's destructor
-            # would otherwise log "exception was never retrieved".
-            owned.exception()
-            raise
-        else:
-            owned.set_result(entry)
-            return entry
+            return await fetch()
         finally:
             async with self._lock:
-                if self._inflight is owned:
+                if self._inflight is current:
                     self._inflight = None
                     self._inflight_config = None
 
