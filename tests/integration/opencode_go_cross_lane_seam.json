@@ -1,0 +1,19 @@
+{
+  "backend_model_fields": [
+    "created",
+    "id",
+    "owned_by",
+    "protocol",
+    "supported"
+  ],
+  "frontend_model_fields": [
+    "created",
+    "id",
+    "ownedBy",
+    "privacyNote",
+    "privacySensitive",
+    "protocol",
+    "routable",
+    "unavailableReason"
+  ]
+}
