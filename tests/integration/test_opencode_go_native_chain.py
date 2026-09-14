@@ -460,6 +460,73 @@ async def test_the_go_key_is_never_returned_by_the_settings_api(async_client, op
 
 
 @pytest.mark.asyncio
+async def test_an_unconfigured_integration_never_puts_the_prompt_on_the_wire(
+    async_client, opencode_go_enabled, go_upstream, monkeypatch
+):
+    """After a key clear, no prompt egress and no fallthrough to any provider.
+
+    The load-bearing assertion is **no Go egress**: after a key clear, nothing
+    reaches the upstream at all, so the user's prompt never leaves the process.
+    That is asserted on the fake upstream's recorded requests, which is direct
+    evidence.
+
+    **Limit on the fallthrough traps, stated rather than implied.** The
+    other-provider traps below are a weak signal in this environment: a control
+    probe sending a genuine Codex model (`gpt-5.4`) to `/v1/responses` also
+    fails with 503 *without* tripping the `ProxyService` trap, because the Codex
+    path errors earlier on absent upstream configuration. So a silent trap here
+    does **not** prove the request was never routed Codex-ward - it only proves
+    it did not reach these specific constructors. Read the Go-egress assertion
+    as the real evidence and the traps as a supplementary guard that would catch
+    a sidecar reroute.
+
+    Covers `/v1/responses` as well as `/v1/chat/completions`, since the
+    Responses path has its own dispatch branch and its own Codex fallthrough.
+    """
+    import app.modules.proxy.api as proxy_api
+
+    diverted: list[str] = []
+
+    def _trap(name: str):
+        def _refuse(*args, **kwargs):
+            del args, kwargs
+            diverted.append(name)
+            raise AssertionError(f"an unconfigured Go request reached {name}")
+
+        return _refuse
+
+    for name in (
+        "ProxyService",
+        "OmniRouteSidecarClient",
+        "OrcaRouterSidecarClient",
+        "OpenRouterSidecarClient",
+        "ClaudeSidecarClient",
+        "OllamaSidecarClient",
+    ):
+        if hasattr(proxy_api, name):
+            monkeypatch.setattr(proxy_api, name, _trap(name), raising=False)
+
+    await _configure(async_client)
+    client_key = await _create_key("native-no-egress")
+    cleared = await async_client.put("/api/settings", json={"opencodeGoSidecarClearApiKey": True})
+    assert cleared.status_code == 200, cleared.text
+
+    secret = "SECRET_PROMPT_MUST_NOT_EGRESS"
+    before = len(go_upstream.requests)
+
+    for path, payload in (
+        ("/v1/chat/completions", {"model": GO_MODEL, "messages": [{"role": "user", "content": secret}]}),
+        ("/v1/responses", {"model": GO_MODEL, "input": secret, "stream": False}),
+    ):
+        response = await async_client.post(path, json=payload, headers={"Authorization": f"Bearer {client_key}"})
+        assert response.status_code != 200, f"{path} served without a credential"
+
+    sent = go_upstream.requests[before:]
+    assert sent == [], f"an unconfigured integration sent {[r.path for r in sent]} upstream"
+    assert diverted == [], f"an unconfigured Go request fell through to {diverted}"
+
+
+@pytest.mark.asyncio
 async def test_clearing_the_key_stops_the_integration_serving(async_client, opencode_go_enabled, go_upstream):
     """The confirmed-clear path, end to end."""
     await _configure(async_client)

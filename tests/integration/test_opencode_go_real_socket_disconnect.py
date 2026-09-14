@@ -17,14 +17,24 @@ and they are kept, but it is **not** disconnect coverage and is no longer
 labelled as such.
 
 This file runs the real app under uvicorn on a real loopback port, connects with
-a raw socket, and closes the connection *while the upstream producer is still
-being held*. The upstream is held open by an unresolved future rather than by a
-timing gamble, so "the client went away before EOF" is a fact the test
-establishes rather than hopes for.
+a raw socket, and aborts the connection while the upstream producer is still
+mid-body.
+
+**How the producer is held, stated accurately.** An earlier docstring here
+claimed an unresolved future held the stream open. That was wrong - the fixture
+uses a long body (400 frames) with a real per-frame delay. That is a timing
+margin, not a hard gate, so every test that depends on it **asserts the
+condition it needs**: frames had started (`> 0`) and the producer had not
+finished (`< 400`) at the moment of the abort. If the margin ever stops holding,
+those assertions fail rather than the test silently degrading into the buffered
+false positive this file exists to replace.
 
 Reservation settlement is asserted against a **non-empty** reservation - a key
 with a real limit - because `limits=[]` can leave no reservation row at all and
 make "nothing is pending" vacuously true.
+
+The live status a stranded reservation actually holds is **`reserved`**, not
+`pending`; asserting the wrong literal would pass for the wrong reason.
 
 No authenticated request to opencode.ai is made.
 """
@@ -109,7 +119,11 @@ async def live_server(app_instance):
         yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True
-        thread.join(timeout=10)
+        thread.join(timeout=30)
+        # Loop ownership is unambiguous: uvicorn runs its own event loop inside
+        # this thread, so a thread that is still alive here means the server did
+        # not shut down and a later test could bind a port it still holds.
+        assert not thread.is_alive(), "the uvicorn server thread did not exit"
 
 
 async def _configure(base_url: str) -> None:
@@ -253,11 +267,13 @@ async def test_a_raw_socket_close_mid_body_is_observed_by_the_upstream(live_serv
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "open defect, found only once a REAL socket disconnect was possible: a "
-        "client that aborts mid-body leaves its reservation in 'reserved' "
-        "forever and writes no request-log row at all. The quota is consumed "
-        "and nothing records why. The ASGITransport tests could not see this "
-        "because they only ever abandoned already-completed responses. Owner: "
+        "open defect, visible only over a real socket: a client that aborts "
+        "mid-body leaves its reservation in 'reserved' and writes no "
+        "request-log row, so quota is consumed with nothing recording why. "
+        "Measured for 30s, which is persistence rather than proof it never "
+        "clears - a stale-release path exists elsewhere and may reclaim it "
+        "later. The ASGITransport tests could not see this because they only "
+        "abandoned already-completed responses. Owner: "
         "codexlb-opencode-go-integration."
     ),
 )
@@ -269,9 +285,17 @@ async def test_a_disconnected_stream_settles_its_reservation_exactly_once(
 
     Measured on the composed tree: `go_logs=0, all_logs=0,
     reservations=['reserved']` after the upstream confirmed the disconnect and
-    300 poll attempts over 30s. The completed-stream control on the same
-    transport writes its row and settles, so this is specific to the abort path
+    300 polls over 30s. The completed-stream control on the same transport and
+    fixture writes its row and settles, so this is specific to the abort path
     rather than a database or timing artifact.
+
+    Two precision points, both of which a looser assertion would get wrong:
+
+    * The stranded status is **`reserved`**. Asserting "not pending" would pass
+      today for the wrong reason, since nothing is ever in `pending` here.
+    * 30 seconds is **measured persistence, not permanence.** A stale-release
+      path exists in this codebase and may reclaim the row on a longer horizon.
+      The claim made here is bounded to what was observed.
     """
     await _configure(live_server)
     client_key = await _create_key_with_a_real_limit("socket-settlement")
@@ -298,10 +322,24 @@ async def test_a_disconnected_stream_settles_its_reservation_exactly_once(
     writer.write(request)
     await writer.drain()
     await _read_until_body_started(reader, held_upstream)
+
+    # Explicit producer-state evidence at the moment of the abort, so this
+    # accounting case cannot silently become the buffered false positive it
+    # replaced. Recorded before the close, asserted after.
+    frames_at_abort = held_upstream.stream_frames_sent
+    assert frames_at_abort > 0, "the upstream stream never started"
+    assert not held_upstream.stream_disconnected.is_set()
+
     writer.transport.abort()
     writer.close()
 
     await asyncio.wait_for(held_upstream.stream_disconnected.wait(), timeout=20)
+    assert frames_at_abort < 400, (
+        f"the producer had already sent {frames_at_abort} of 400 frames before "
+        "the abort, so the body was buffered and this is not a mid-body "
+        "disconnect"
+    )
+    assert held_upstream.streams_started == 1
 
     for _ in range(100):
         if await _go_logs():
@@ -315,7 +353,14 @@ async def test_a_disconnected_stream_settles_its_reservation_exactly_once(
     # Non-vacuous: a reservation really was created for this key.
     assert reservations, "no reservation row exists, so the settlement assertion would be vacuous"
     statuses = [row.status for row in reservations]
-    assert "pending" not in statuses, f"a reservation was left pending after a disconnect: {statuses}"
+    # The live stranded status is `reserved`. Assert the positive requirement -
+    # every row reached a terminal state - rather than the absence of a status
+    # that never occurs on this path anyway.
+    terminal = {"settled", "finalized", "released", "cancelled", "expired"}
+    assert all(status in terminal for status in statuses), (
+        f"a reservation did not reach a terminal status after a disconnect: {statuses}"
+    )
+    assert "reserved" not in statuses, f"a reservation is still held as 'reserved' after the client aborted: {statuses}"
 
 
 @pytest.mark.asyncio
