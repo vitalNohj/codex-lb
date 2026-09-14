@@ -140,21 +140,32 @@ def _settle_detached(coro: Coroutine[object, object, None]) -> None:
     task.add_done_callback(_SETTLEMENT_TASKS.discard)
 
 
-async def drain_opencode_go_settlement_tasks(timeout_seconds: float = 5.0) -> None:
-    """Await in-flight detached settlements.
+async def drain_opencode_go_settlement_tasks(timeout_seconds: float = 5.0) -> bool:
+    """Await in-flight detached settlements. Returns whether all of them finished.
 
-    Settlement is intentionally off the request's call stack, so it is not
-    complete when the response finishes. Production does not care - the row and
-    the reservation land a moment later either way - but a caller that needs to
-    observe the terminal state deterministically (tests, graceful shutdown)
-    needs a join point rather than a sleep.
+    Settlement runs off the request's call stack, so it is not complete when the
+    response returns. Any caller that must observe the terminal state - graceful
+    shutdown, and tests asserting on a log row - needs this join point rather
+    than a sleep.
+
+    ``timeout_seconds`` is a **total** deadline, not per iteration. A settlement
+    that schedules further work would otherwise let a loop that restarted the
+    timer each pass exceed the caller's committed shutdown budget, which is the
+    one thing a drain must never do.
+
+    Returns ``False`` when the deadline expired with work still pending, so the
+    caller can log honestly rather than assume a clean drain.
     """
 
+    deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
     while _SETTLEMENT_TASKS:
-        pending = tuple(_SETTLEMENT_TASKS)
-        done, _ = await asyncio.wait(pending, timeout=timeout_seconds)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        done, _ = await asyncio.wait(tuple(_SETTLEMENT_TASKS), timeout=remaining)
         if not done:
-            return
+            return False
+    return True
 
 
 async def _settle_stream_terminal_state(
