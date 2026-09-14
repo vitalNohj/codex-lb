@@ -37,8 +37,11 @@
  * asserted first.
  *
  * Owner: codexlb-opencode-go-settings-r1. This file is evidence, not a fix.
- * The `it.fails` markers are investigative and must be converted to plain
- * `it(...)` on the corrected head before any green claim.
+ *
+ * All five `it.fails` markers are investigative evidence against one open
+ * defect. Every one of them must be converted to a plain `it(...)` once the
+ * owner's corrected head is composed, before any readiness claim. They must not
+ * survive into the final delivered suite.
  */
 
 import { act, render, screen, within } from "@testing-library/react";
@@ -155,6 +158,13 @@ describe("OpenCode Go discovered models, after a successful discovery", () => {
     // The empty-state copy already distinguishes disabled from unconfigured;
     // the populated state should be equally honest instead of silently
     // presenting a stale, unusable catalogue.
+    //
+    // Scope note. This case is part of the SAME open defect as the four above,
+    // not a separate finding. An earlier note of mine called it a "second gap"
+    // because it did not flip when I simulated a partial fix (rename + gate
+    // only). That simulation was my own construction, not the owner's revision,
+    // so its silence says nothing about the real fix - which is finalizing
+    // availability gating AND explanatory copy together. Retracted accordingly.
     renderBrowser({ enabled: false });
     openThePanel();
 
