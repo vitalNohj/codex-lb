@@ -80,6 +80,53 @@ class _RecordingSink:
 
 
 @pytest.fixture
+def trap_other_providers(monkeypatch):
+    """Fail loudly if an unconfigured Go request reaches any other provider.
+
+    The sink alone cannot prove this. On a test database with no Codex accounts
+    a fall-through also yields 503, so "sink empty + 503" is satisfied both by a
+    correct local refusal and by the prompt being rerouted to Codex - the very
+    outcome this boundary exists to prevent. These traps make the two
+    distinguishable.
+    """
+
+    import app.modules.proxy.api as proxy_api
+    from app.modules.proxy.service import ProxyService
+
+    tripped: list[str] = []
+
+    def _trap(name: str):
+        def _fail(*_args: object, **_kwargs: object):
+            tripped.append(name)
+            raise AssertionError(f"unconfigured OpenCode Go request reached {name}")
+
+        return _fail
+
+    for name in (
+        "proxy_chat_to_sidecar",
+        "proxy_chat_to_openrouter",
+        "proxy_chat_to_orcarouter",
+        "proxy_chat_to_ollama",
+        "proxy_chat_to_omniroute",
+        "_select_chat_model_source",
+        "_select_responses_model_source",
+    ):
+        if hasattr(proxy_api, name):
+            monkeypatch.setattr(proxy_api, name, _trap(name), raising=True)
+    monkeypatch.setattr(ProxyService, "stream_responses", _trap("ProxyService.stream_responses"), raising=True)
+    return tripped
+
+
+def _assert_not_configured(response) -> None:
+    """The refusal must be Go's own, with the documented shape."""
+
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["error"]["code"] == "opencode_go_not_configured", body
+    assert response.headers.get("retry-after") == "60"
+
+
+@pytest.fixture
 def sink():
     with _RecordingSink() as recording_sink:
         yield recording_sink
@@ -153,7 +200,7 @@ def _responses_body() -> dict:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route,body", [("/v1/chat/completions", _chat_body), ("/v1/responses", _responses_body)])
 async def test_cleared_key_stops_the_prompt_leaving_the_process(
-    async_client, sink, allow_loopback_base_url, route: str, body
+    async_client, sink, allow_loopback_base_url, trap_other_providers, route: str, body
 ):
     """The reported boundary, on both inbound protocols.
 
@@ -174,13 +221,14 @@ async def test_cleared_key_stops_the_prompt_leaving_the_process(
 
     assert sink.requests == [], f"unconfigured integration contacted the upstream: {sink.requests}"
     assert not sink.leaked_prompt
-    assert response.status_code == 503
+    assert trap_other_providers == [], f"prompt was rerouted to {trap_other_providers}"
+    _assert_not_configured(response)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route,body", [("/v1/chat/completions", _chat_body), ("/v1/responses", _responses_body)])
 async def test_never_configured_key_stops_the_prompt_leaving_the_process(
-    async_client, sink, allow_loopback_base_url, route: str, body
+    async_client, sink, allow_loopback_base_url, trap_other_providers, route: str, body
 ):
     """Same boundary from the initial-missing-key direction, never having held one."""
 
@@ -196,11 +244,14 @@ async def test_never_configured_key_stops_the_prompt_leaving_the_process(
 
     assert sink.requests == []
     assert not sink.leaked_prompt
-    assert response.status_code == 503
+    assert trap_other_providers == [], f"prompt was rerouted to {trap_other_providers}"
+    _assert_not_configured(response)
 
 
 @pytest.mark.asyncio
-async def test_an_undecryptable_key_is_treated_as_absent(async_client, sink, allow_loopback_base_url, monkeypatch):
+async def test_an_undecryptable_key_is_treated_as_absent(
+    async_client, sink, allow_loopback_base_url, trap_other_providers, monkeypatch
+):
     """A key we cannot read is not a key we may send a prompt alongside.
 
     Decryption failure yields ``api_key=None``; the request must fail closed the
@@ -223,7 +274,8 @@ async def test_an_undecryptable_key_is_treated_as_absent(async_client, sink, all
 
     assert sink.requests == []
     assert not sink.leaked_prompt
-    assert response.status_code == 503
+    assert trap_other_providers == [], f"prompt was rerouted to {trap_other_providers}"
+    _assert_not_configured(response)
 
 
 @pytest.mark.asyncio

@@ -22,12 +22,13 @@ serves there stay unsupported.
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -97,6 +98,108 @@ OPENCODE_GO_SIDECAR_SOURCE = "opencode_go_sidecar"
 _UNSUPPORTED_MODEL_CODE = "opencode_go_model_unsupported"
 _NOT_CONFIGURED_CODE = "opencode_go_not_configured"
 _NOT_CONFIGURED_MESSAGE = "OpenCode Go is enabled but no API key is configured."
+
+#: Strong references to in-flight settlement tasks.
+#:
+#: ``asyncio`` only holds a weak reference to a bare task, so a settlement
+#: scheduled while a request is being torn down can be garbage collected before
+#: it runs - which would reintroduce exactly the stranded reservation this
+#: machinery exists to prevent.
+_SETTLEMENT_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _settle_detached(coro: Coroutine[object, object, None]) -> None:
+    """Run terminal settlement to completion even if the caller is cancelled.
+
+    A client disconnect closes the streaming generator, and every ``await`` in
+    that generator's ``finally`` is then immediately re-cancelled - so
+    settlement and logging never actually ran, leaving the reservation
+    ``reserved`` forever and writing no request-log row at all. The operator
+    sees quota consumed with no record of why.
+
+    Detaching onto its own task moves the work off the dying call stack. The
+    task is registered while it runs so it cannot be collected early, and
+    failures are logged rather than raised, because nothing is left to receive
+    them by then.
+    """
+
+    async def _runner() -> None:
+        try:
+            await coro
+        except Exception:
+            logger.warning("OpenCode Go settlement task failed request_id=%s", get_request_id(), exc_info=True)
+
+    try:
+        task = asyncio.get_running_loop().create_task(_runner())
+    except RuntimeError:
+        # No running loop (interpreter shutdown). Close the coroutine rather
+        # than leaking an un-awaited one; there is nothing left to run it.
+        coro.close()
+        return
+    _SETTLEMENT_TASKS.add(task)
+    task.add_done_callback(_SETTLEMENT_TASKS.discard)
+
+
+async def drain_opencode_go_settlement_tasks(timeout_seconds: float = 5.0) -> None:
+    """Await in-flight detached settlements.
+
+    Settlement is intentionally off the request's call stack, so it is not
+    complete when the response finishes. Production does not care - the row and
+    the reservation land a moment later either way - but a caller that needs to
+    observe the terminal state deterministically (tests, graceful shutdown)
+    needs a join point rather than a sleep.
+    """
+
+    while _SETTLEMENT_TASKS:
+        pending = tuple(_SETTLEMENT_TASKS)
+        done, _ = await asyncio.wait(pending, timeout=timeout_seconds)
+        if not done:
+            return
+
+
+async def _settle_stream_terminal_state(
+    *,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    model: str,
+    started_at: float,
+    usage: SidecarUsage | None,
+    billed_cost_usd: float | None,
+    completed: bool,
+    error_code: str | None,
+    error_message: str | None,
+) -> None:
+    """Settle the reservation and write exactly one request-log row.
+
+    Shared by both stream iterators so a disconnect on either inbound protocol
+    reaches the same terminal state.
+    """
+
+    settlement = await external_response_settlement(
+        provider=OPENCODE_GO_PRICING_PROVIDER,
+        model=model,
+        usage=usage,
+        billed_cost_usd=billed_cost_usd,
+        completed=completed,
+    )
+    await _finalize_or_release_opencode_go_reservation(
+        reservation,
+        api_key=api_key,
+        model=model,
+        usage=settlement.usage,
+        cost=settlement.cost,
+    )
+    await _log_opencode_go_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status="success" if completed else "error",
+        error_code=None if completed else error_code,
+        error_message=None if completed else error_message,
+        usage=settlement.usage,
+        cost=settlement.cost,
+    )
+
 
 #: An SSE event ends at two consecutive line endings, in any combination of the
 #: three the spec permits. Mirrors ``_SSE_LINE_BOUNDARY`` in
@@ -610,29 +713,24 @@ async def _opencode_go_responses_stream_iterator(
         )
         raise
     finally:
-        settlement = await external_response_settlement(
-            provider=OPENCODE_GO_PRICING_PROVIDER,
-            model=model,
-            usage=usage,
-            billed_cost_usd=billed_cost.value,
-            completed=completed,
-        )
-        await _finalize_or_release_opencode_go_reservation(
-            reservation,
-            api_key=api_key,
-            model=model,
-            usage=settlement.usage,
-            cost=settlement.cost,
-        )
-        await _log_opencode_go_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="success" if completed else "error",
-            error_code=None if completed else error_code,
-            error_message=None if completed else error_message,
-            usage=settlement.usage,
-            cost=settlement.cost,
+        # Detached on purpose. When a client disconnects, this generator is
+        # closed and any ``await`` here is immediately re-cancelled, so inline
+        # settlement silently never runs - stranding the reservation as
+        # ``reserved`` and writing no log row. Scheduling it onto its own task
+        # moves it off the dying call stack so the terminal state is always
+        # reached exactly once.
+        _settle_detached(
+            _settle_stream_terminal_state(
+                api_key=api_key,
+                reservation=reservation,
+                model=model,
+                started_at=started_at,
+                usage=usage,
+                billed_cost_usd=billed_cost.value,
+                completed=completed,
+                error_code=error_code,
+                error_message=error_message,
+            )
         )
 
 
@@ -733,29 +831,24 @@ async def _opencode_go_stream_iterator(
         )
         raise
     finally:
-        settlement = await external_response_settlement(
-            provider=OPENCODE_GO_PRICING_PROVIDER,
-            model=model,
-            usage=usage,
-            billed_cost_usd=billed_cost.value,
-            completed=completed,
-        )
-        await _finalize_or_release_opencode_go_reservation(
-            reservation,
-            api_key=api_key,
-            model=model,
-            usage=settlement.usage,
-            cost=settlement.cost,
-        )
-        await _log_opencode_go_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="success" if completed else "error",
-            error_code=None if completed else error_code,
-            error_message=None if completed else error_message,
-            usage=settlement.usage,
-            cost=settlement.cost,
+        # Detached on purpose. When a client disconnects, this generator is
+        # closed and any ``await`` here is immediately re-cancelled, so inline
+        # settlement silently never runs - stranding the reservation as
+        # ``reserved`` and writing no log row. Scheduling it onto its own task
+        # moves it off the dying call stack so the terminal state is always
+        # reached exactly once.
+        _settle_detached(
+            _settle_stream_terminal_state(
+                api_key=api_key,
+                reservation=reservation,
+                model=model,
+                started_at=started_at,
+                usage=usage,
+                billed_cost_usd=billed_cost.value,
+                completed=completed,
+                error_code=error_code,
+                error_message=error_message,
+            )
         )
 
 
