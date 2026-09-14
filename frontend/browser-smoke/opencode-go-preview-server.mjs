@@ -11,12 +11,57 @@
  *
  * Usage: node browser-smoke/opencode-go-preview-server.mjs <port> <dist-dir>
  */
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, realpathSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 
 const port = Number(process.argv[2] ?? 4599);
 const distDir = process.argv[3] ?? "../app/static";
+
+/**
+ * Real path of the served root, resolved once. Every static response must live
+ * under it. See `resolveStaticFile` for why this is checked after realpath
+ * rather than only after normalize.
+ */
+const DIST_ROOT = realpathSync(resolve(distDir));
+
+/**
+ * Resolve a request path to a file, or null if it would escape the served root.
+ *
+ * Two distinct escapes are possible and only one of them is closed by string
+ * normalization:
+ *
+ * 1. **Dot segments** (`/../../etc/passwd`, `%2e%2e`, backslashes). These do not
+ *    actually reach the filesystem here: `new URL()` resolves and collapses dot
+ *    segments while parsing, so `url.pathname` is already normalized before it
+ *    is joined. Verified empirically against a synthetic canary outside the
+ *    root - 14 encoded/raw variants all fell through to the SPA fallback.
+ * 2. **Symlinks inside the root pointing out of it.** Pure path arithmetic
+ *    cannot see these: the joined path is textually inside the root, and only
+ *    resolving the link reveals it is not. This one is real, so the containment
+ *    check below is done on the *realpath* of the candidate.
+ *
+ * The check is belt-and-braces on purpose. This harness only ever serves a
+ * build directory on a loopback port, but "it is only local" is not a
+ * containment argument, and a fixture server should not be the thing that
+ * makes an arbitrary file readable.
+ */
+function resolveStaticFile(requestPath) {
+  const candidate = resolve(DIST_ROOT, `.${requestPath === "/" ? "/index.html" : requestPath}`);
+  if (!existsSync(candidate)) {
+    return null;
+  }
+  let real;
+  try {
+    real = realpathSync(candidate);
+  } catch {
+    return null;
+  }
+  if (real !== DIST_ROOT && !real.startsWith(DIST_ROOT + sep)) {
+    return null;
+  }
+  return statSync(real).isFile() ? real : null;
+}
 
 const iso = (minutesFromNow) =>
   new Date(Date.now() + minutesFromNow * 60_000).toISOString();
@@ -339,11 +384,10 @@ const server = createServer(async (req, res) => {
     return sendJson(res, {});
   }
 
-  const candidate = normalize(join(distDir, path === "/" ? "index.html" : path));
-  const file =
-    existsSync(candidate) && statSync(candidate).isFile()
-      ? candidate
-      : join(distDir, "index.html");
+  // Anything that does not resolve to a real file inside the served root falls
+  // back to the SPA entry point, which is also what an unknown client-side
+  // route needs.
+  const file = resolveStaticFile(path) ?? join(DIST_ROOT, "index.html");
   res.writeHead(200, {
     "content-type": MIME[extname(file)] ?? "application/octet-stream",
     "cache-control": "no-store",
