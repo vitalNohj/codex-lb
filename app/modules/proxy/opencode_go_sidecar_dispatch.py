@@ -22,8 +22,10 @@ serves there stay unsupported.
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -93,6 +95,11 @@ logger = logging.getLogger(__name__)
 OPENCODE_GO_SIDECAR_SOURCE = "opencode_go_sidecar"
 
 _UNSUPPORTED_MODEL_CODE = "opencode_go_model_unsupported"
+
+#: An SSE event ends at two consecutive line endings, in any combination of the
+#: three the spec permits. Mirrors ``_SSE_LINE_BOUNDARY`` in
+#: ``app/core/utils/sse.py``, applied twice.
+_SSE_EVENT_BOUNDARY = re.compile(r"(?:\r\n|\r|\n){2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,7 +490,7 @@ async def _opencode_go_responses_stream_iterator(
         async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
             decoder = _SseUsageDecoder()
             async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                for event in decoder.feed(raw_chunk):
                     if event == "[DONE]":
                         completed = True
                     else:
@@ -608,7 +615,7 @@ async def _opencode_go_stream_iterator(
         async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
             decoder = _SseUsageDecoder()
             async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                for event in decoder.feed(raw_chunk):
                     if event == "[DONE]":
                         completed = True
                         continue
@@ -687,25 +694,67 @@ async def _opencode_go_stream_iterator(
 
 
 class _SseUsageDecoder:
+    """Split an SSE byte stream into events, tolerant of real-world framing.
+
+    Two properties matter and neither is theoretical:
+
+    * **Event delimiters.** The SSE spec allows ``\\r\\n``, ``\\n`` and bare
+      ``\\r`` line endings, so an event boundary is any two consecutive ones.
+      Matching only ``\\n\\n`` buffers a CRLF stream to EOF and then parses the
+      whole thing as one malformed event - losing the content, the usage object
+      and the ``[DONE]`` sentinel, which in turn makes a completed stream log as
+      an error. The boundary pattern mirrors ``_SSE_LINE_BOUNDARY`` in
+      ``app/core/utils/sse.py`` rather than inventing a second dialect.
+
+    * **Chunk boundaries are arbitrary byte offsets.** aiohttp splits on the
+      network, not on character boundaries, so a multi-byte character can land
+      half in one chunk and half in the next. Decoding each chunk independently
+      with ``errors=\"ignore\"`` silently deletes those bytes: ``café`` arrives
+      as ``caf``. An incremental decoder holds the partial sequence until the
+      rest arrives, so the text is reassembled exactly.
+
+    Callers therefore feed **bytes**, and this class owns the decoding.
+    """
+
     def __init__(self) -> None:
         self._buffer = ""
+        # One decoder for the whole stream: it is what carries a split
+        # multi-byte sequence across the chunk boundary. ``replace`` rather than
+        # ``ignore`` so genuinely invalid bytes stay visible as U+FFFD instead of
+        # vanishing and silently shortening the text.
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-    def feed(self, chunk: str) -> list[JsonObject | str]:
-        self._buffer += chunk
+    def feed(self, chunk: bytes) -> list[JsonObject | str]:
+        self._buffer += self._decoder.decode(chunk)
         return self._drain_complete_events()
 
     def flush(self) -> list[JsonObject | str]:
-        if not self._buffer:
-            return []
+        """Drain the tail at EOF, including any undelimited final event.
+
+        Flushing the UTF-8 decoder first matters: a stream truncated mid
+        character would otherwise leave those bytes unaccounted for.
+        """
+
+        self._buffer += self._decoder.decode(b"", final=True)
+        # A well-formed final event may still be followed by a delimiter, so
+        # drain complete events before treating the remainder as a partial one.
+        events = self._drain_complete_events()
         pending = self._buffer
         self._buffer = ""
-        event = _parse_sse_event(pending)
-        return [event] if event is not None else []
+        if pending.strip():
+            event = _parse_sse_event(pending)
+            if event is not None:
+                events.append(event)
+        return events
 
     def _drain_complete_events(self) -> list[JsonObject | str]:
         events: list[JsonObject | str] = []
-        while "\n\n" in self._buffer:
-            raw_event, self._buffer = self._buffer.split("\n\n", 1)
+        while True:
+            match = _SSE_EVENT_BOUNDARY.search(self._buffer)
+            if match is None:
+                break
+            raw_event = self._buffer[: match.start()]
+            self._buffer = self._buffer[match.end() :]
             event = _parse_sse_event(raw_event)
             if event is not None:
                 events.append(event)
@@ -714,6 +763,8 @@ class _SseUsageDecoder:
 
 def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
     data_lines: list[str] = []
+    # ``str.splitlines`` already treats CR, LF and CRLF as line breaks, so a
+    # single-line-ending dialect never leaks into field parsing.
     for raw_line in raw_event.splitlines():
         if not raw_line or raw_line.startswith(":"):
             continue

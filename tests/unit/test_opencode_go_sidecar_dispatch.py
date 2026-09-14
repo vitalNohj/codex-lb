@@ -15,6 +15,7 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     OPENCODE_GO_SIDECAR_SOURCE,
     _headers_with_retry_after,
+    _SseUsageDecoder,
     build_opencode_go_chat_payload,
     opencode_go_routing_entry,
     proxy_chat_to_opencode_go,
@@ -381,8 +382,7 @@ def test_headers_with_retry_after_omits_the_header_when_upstream_sent_none() -> 
 async def test_stream_relays_chunks_and_marks_success_on_done(_isolate_side_effects) -> None:
     chunks = [
         b'data: {"choices":[{"delta":{"content":"he"}}]}\n\n',
-        b'data: {"choices":[{"delta":{"content":"llo"}}],'
-        b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
+        b'data: {"choices":[{"delta":{"content":"llo"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
         b"data: [DONE]\n\n",
     ]
     response = await _dispatch(_FakeClient(chunks=chunks), "glm-5.3", stream=True)
@@ -492,3 +492,109 @@ def test_log_source_matches_the_published_pricing_contract() -> None:
     assert OPENCODE_GO_SIDECAR_SOURCE == "opencode_go_sidecar"
     assert is_external_priced_log_source(OPENCODE_GO_SIDECAR_SOURCE)
     assert external_priced_provider_for_log_source(OPENCODE_GO_SIDECAR_SOURCE) == PROVIDER_OPENCODE_GO
+
+
+# --------------------------------------------------------------------------
+# Wire-correctness regressions (PR 43 review findings)
+# --------------------------------------------------------------------------
+
+
+class TestSseFraming:
+    """Delimiter and byte-boundary handling in the SSE decoder.
+
+    Reproduced from PR 43 review findings before fixing. The decoder previously
+    recognised only ``\\n\\n`` and decoded each network chunk independently with
+    ``errors="ignore"``.
+    """
+
+    @staticmethod
+    def _events(*chunks: bytes) -> list:
+        decoder = _SseUsageDecoder()
+        out: list = []
+        for chunk in chunks:
+            out.extend(decoder.feed(chunk))
+        out.extend(decoder.flush())
+        return out
+
+    @pytest.mark.parametrize("eol", [b"\n", b"\r\n", b"\r"], ids=["lf", "crlf", "cr"])
+    def test_every_spec_permitted_line_ending_delimits_events(self, eol: bytes) -> None:
+        """CRLF and bare CR are as valid as LF, and Go's framing is not ours to assume.
+
+        Before the fix a CRLF stream produced no events at all: everything
+        buffered to EOF and parsed as one malformed event, so the content, the
+        usage object and ``[DONE]`` were all lost - which also made a completed
+        stream log as an error.
+        """
+
+        stream = (
+            b'data: {"choices":[{"delta":{"content":"hi"}}],'
+            b'"usage":{"prompt_tokens":10,"completion_tokens":5}}' + eol + eol + b"data: [DONE]" + eol + eol
+        )
+
+        events = self._events(stream)
+
+        assert events[0]["choices"][0]["delta"]["content"] == "hi"
+        assert events[0]["usage"]["prompt_tokens"] == 10
+        assert events[-1] == "[DONE]"
+
+    def test_events_are_emitted_during_the_stream_not_only_at_eof(self) -> None:
+        """A streamed event must surface when it arrives, not be buffered to EOF."""
+
+        decoder = _SseUsageDecoder()
+
+        first = decoder.feed(b'data: {"choices":[{"delta":{"content":"hi"}}]}\r\n\r\n')
+
+        assert first and first[0]["choices"][0]["delta"]["content"] == "hi"
+
+    @pytest.mark.parametrize("split_marker", [b"\xc3", b"\xe6"], ids=["two-byte", "three-byte"])
+    def test_a_character_split_across_chunks_is_reassembled(self, split_marker: bytes) -> None:
+        """aiohttp splits on byte offsets, not character boundaries.
+
+        Decoding each chunk independently silently deleted the partial sequence,
+        so ``café`` reached the client as ``caf``. Corrupting a user's text is
+        worse than failing loudly, because nothing reports it.
+        """
+
+        payload = 'data: {"choices":[{"delta":{"content":"café 日本"}}]}\n\n'.encode("utf-8")
+        cut = payload.index(split_marker) + 1
+
+        events = self._events(payload[:cut], payload[cut:])
+
+        assert events[0]["choices"][0]["delta"]["content"] == "café 日本"
+
+    def test_a_delimiter_split_across_chunks_still_closes_the_event(self) -> None:
+        """The two-character CRLF delimiter can itself straddle a chunk boundary."""
+
+        payload = b'data: {"choices":[{"delta":{"content":"hi"}}]}\r\n\r\ndata: [DONE]\r\n\r\n'
+        cut = payload.index(b"\r\n\r\n") + 2
+
+        events = self._events(payload[:cut], payload[cut:])
+
+        assert events[0]["choices"][0]["delta"]["content"] == "hi"
+        assert events[-1] == "[DONE]"
+
+    def test_byte_at_a_time_delivery_yields_the_same_events(self) -> None:
+        """The worst-case framing: every boundary is a split boundary."""
+
+        payload = 'data: {"choices":[{"delta":{"content":"café"}}]}\r\n\r\ndata: [DONE]\r\n\r\n'.encode("utf-8")
+
+        events = self._events(*(payload[i : i + 1] for i in range(len(payload))))
+
+        assert events[0]["choices"][0]["delta"]["content"] == "café"
+        assert events[-1] == "[DONE]"
+
+    def test_a_final_event_without_a_trailing_delimiter_is_not_lost(self) -> None:
+        """An upstream that ends without a final blank line still reported usage."""
+
+        events = self._events(b'data: {"usage":{"prompt_tokens":7,"completion_tokens":3}}')
+
+        assert events[0]["usage"]["prompt_tokens"] == 7
+
+    def test_invalid_bytes_are_replaced_rather_than_silently_dropped(self) -> None:
+        """Genuinely invalid bytes stay visible instead of shortening the text."""
+
+        payload = b'data: {"choices":[{"delta":{"content":"a\xffb"}}]}\n\n'
+
+        events = self._events(payload)
+
+        assert events[0]["choices"][0]["delta"]["content"] == "a\ufffdb"

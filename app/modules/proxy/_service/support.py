@@ -17,9 +17,9 @@ import anyio
 from app.core.auth.refresh import RefreshError, is_transient_refresh_contention, refresh_contention_kind
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import CodexControlRequestPrivacyPolicy, ProxyResponseError
-from app.core.conversation.headers import extract_conversation_id
 from app.core.clients.proxy_websocket import UpstreamWebSocket
 from app.core.config.settings import get_settings
+from app.core.conversation.headers import extract_conversation_id
 from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, openai_error
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.models import OpenAIEvent

@@ -841,3 +841,108 @@ async def test_responses_for_non_go_model_still_uses_the_existing_path(
     assert fake_opencode_go.chat_payloads == []
     assert fake_opencode_go.stream_payloads == []
     assert await _go_logs() == []
+
+
+# --------------------------------------------------------------------------
+# Streamed wire correctness end to end (PR 43 review findings)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eol", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+async def test_crlf_framed_upstream_stream_reaches_the_client(
+    async_client, opencode_go_enabled, fake_opencode_go, eol: str
+):
+    """A CRLF-framed upstream must stream and account exactly like an LF one.
+
+    Before the decoder fix a CRLF stream produced no events at all: everything
+    buffered to EOF, so the content never reached the client, usage was never
+    recorded, and the missing ``[DONE]`` made a completed stream log as an
+    error.
+    """
+
+    fake_opencode_go.stream_chunks = [
+        (
+            'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}' + eol + eol
+        ).encode("utf-8"),
+        (
+            'data: {"id":"c2","object":"chat.completion.chunk","choices":[],'
+            '"usage":{"prompt_tokens":10,"completion_tokens":5}}' + eol + eol
+        ).encode("utf-8"),
+        ("data: [DONE]" + eol + eol).encode("utf-8"),
+    ]
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert '"content":"hi"' in response.text
+
+    log = (await _go_logs())[0]
+    assert log.status == "success"
+    assert log.input_tokens == 10
+    assert log.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_multibyte_content_split_across_upstream_chunks_is_not_corrupted(
+    async_client, opencode_go_enabled, fake_opencode_go
+):
+    """Chunk boundaries fall on byte offsets, not character boundaries.
+
+    Decoding each chunk independently deleted the partial sequence, so the
+    client received ``caf`` instead of ``café`` with nothing reporting it.
+    """
+
+    payload = 'data: {"choices":[{"delta":{"content":"café 日本"}}]}\n\n'.encode("utf-8")
+    cut = payload.index(b"\xc3") + 1
+    fake_opencode_go.stream_chunks = [payload[:cut], payload[cut:], b"data: [DONE]\n\n"]
+
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+
+    assert response.status_code == 200
+    # Relayed verbatim to the client, so the bytes must survive the hop intact.
+    assert "café 日本" in response.text
+    assert (await _go_logs())[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_survives_crlf_and_split_multibyte(async_client, opencode_go_enabled, fake_opencode_go):
+    """The Responses path re-encodes rather than relaying, so it must decode correctly.
+
+    Here the decoder's output is the text the client actually receives: a
+    dropped byte would be visible in the synthesized ``output_text`` delta.
+    """
+
+    payload = ('data: {"choices":[{"delta":{"content":"café 日本"}}]}\r\n\r\n').encode("utf-8")
+    cut = payload.index(b"\xe6") + 2
+    fake_opencode_go.stream_chunks = [payload[:cut], payload[cut:], b"data: [DONE]\r\n\r\n"]
+
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("go-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert "response.output_text.delta" in response.text
+    assert "caf\\u00e9" in response.text or "café" in response.text
+    assert "response.completed" in response.text
