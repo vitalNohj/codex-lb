@@ -11,6 +11,7 @@ import { AccountDetail } from "@/features/accounts/components/account-detail";
 import { AccountList } from "@/features/accounts/components/account-list";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
 import { ImportDialog } from "@/features/accounts/components/import-dialog";
+import { OpenCodeGoQuotaCard } from "@/features/accounts/components/opencode-go-quota-card";
 import { ResetCreditConfirmDialog } from "@/features/accounts/components/reset-credit-confirm-dialog";
 import { AuthExportDialog } from "@/features/accounts/components/auth-export-dialog";
 import {
@@ -172,7 +173,7 @@ export function AccountsPage() {
         >
           <div
             data-testid="accounts-list-panel"
-            className="min-w-0 min-h-0 self-start"
+            className="min-w-0 min-h-0 self-start space-y-4"
           >
             <div
               data-testid="accounts-list-card"
@@ -193,6 +194,12 @@ export function AccountsPage() {
                 readOnly={!canWrite}
               />
             </div>
+            {/*
+              OpenCode Go is an external flat-rate subscription, not a Codex
+              account, so it sits beside the account list instead of inside it.
+              The card renders nothing when the integration is absent.
+            */}
+            <OpenCodeGoQuotaCard />
           </div>
 
           <AccountDetail

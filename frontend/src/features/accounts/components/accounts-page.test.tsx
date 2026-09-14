@@ -17,6 +17,15 @@ vi.mock("@/features/accounts/hooks/use-accounts", () => ({
   })),
 }));
 
+// This suite renders AccountsPage without a QueryClientProvider and mocks every
+// data hook it reaches. The OpenCode Go card owns its own query, so it is mocked
+// here too; its own suite covers the real query behaviour end to end.
+vi.mock("@/features/accounts/hooks/use-opencode-go-quota", () => ({
+  useOpenCodeGoQuota: vi.fn(() => ({
+    quotaQuery: { data: undefined, isPending: false, error: null },
+  })),
+}));
+
 vi.mock("@/features/accounts/hooks/use-oauth", () => ({
   useOauth: vi.fn(() => ({
     state: {

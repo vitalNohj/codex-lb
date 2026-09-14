@@ -32,6 +32,7 @@ import {
   createOauthCompleteResponse,
   createOauthStartResponse,
   createOauthStatusResponse,
+  createOpenCodeGoQuota,
   createQuotaPlannerDecision,
   createQuotaPlannerForecast,
   createQuotaPlannerSettings,
@@ -2190,6 +2191,13 @@ export const handlers = [
         },
       ],
     });
+  }),
+
+  // OpenCode Go quota snapshot. A UI fixture, not an assertion that the
+  // provider supports these fields: the default reports account-wide windows
+  // only, which is the conservative shape until the real endpoint is verified.
+  http.get("*/api/opencode-go/quota", () => {
+    return HttpResponse.json(createOpenCodeGoQuota());
   }),
 
   http.get("*/api/claude-sidecar/routing", () => {
