@@ -17,15 +17,16 @@ the two paths fail differently and only measuring the decoder hides that:
     accounting. This is the more severe path and it is exactly why the decoder
     alone is not sufficient evidence.
 
-Assertion policy, per MAIN's ruling: a test must not pass *because* the behavior
-is broken, or it reads as correctness evidence later. Every defect below is
-therefore asserted as the **accepted** behavior and is expected to fail while the
-defect stands - marked ``xfail(strict=True)`` so it flips to a hard failure the
-moment it is fixed and the marker must be removed deliberately. Nothing is
-skipped, and no assertion is softened to obtain green.
+**Status: both defects are fixed as of backend ``d4ea9d64``.** The decoder now
+treats any two consecutive line endings as an event boundary and holds an
+incremental UTF-8 decoder across chunks, so every test here asserts the accepted
+behavior directly and passes. No expected-failure marker, skip, or
+defect-passing characterization remains - per MAIN's rule that a final suite
+must never be green *because* a bug exists.
 
-Fixes are owned by codexlb-opencode-go-integration. This file is evidence, not a
-duplicate fix.
+The coverage is kept as permanent regression evidence rather than retired:
+reverting the event-boundary pattern to ``\n\n`` fails all 15 tests, which is
+what makes this a real guard on the fix rather than a record of it.
 """
 
 from __future__ import annotations
@@ -50,15 +51,13 @@ UPSTREAM_KEY = "sk-go-sse-Zq7SvT2pLm9KdR4xHn8B"
 GO_MODEL = "opencode-go/glm-5.3"
 NON_ASCII = "café naïve 日本語 🚀"
 
-_CR_FRAMING_DEFECT = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "open defect: _SseUsageDecoder splits on '\\n\\n' only, so CRLF/bare-CR "
-        "framed events are never decoded. Owner: codexlb-opencode-go-integration. "
-        "Remove this marker when the decoder normalizes CR separators."
-    ),
-)
-
+# The CR-framing and split-UTF-8 defects this file first recorded are FIXED as of
+# backend ``d4ea9d64``, which replaced the decoder with one that treats any two
+# consecutive line endings as an event boundary and holds an incremental UTF-8
+# decoder across chunks. Every expected-failure marker has been removed and each
+# test below now asserts the accepted behavior directly, per MAIN's rule that
+# final tests carry no defect-passing characterizations.
+#
 # NOTE, measured rather than assumed. The per-chunk
 # ``decode("utf-8", errors="ignore")`` is a real latent defect in the decoder,
 # but it does **not** reproduce over real HTTP here, so these tests are NOT
@@ -310,7 +309,6 @@ async def test_a_frame_larger_than_the_read_size_keeps_its_multi_byte_text(
 # ---------------------------------------------------------------------------
 
 
-@_CR_FRAMING_DEFECT
 @pytest.mark.parametrize("separator", ["\r\n\r\n", "\r\r"], ids=["crlf", "bare_cr"])
 @pytest.mark.asyncio
 async def test_chat_stream_settles_usage_under_cr_framing(async_client, opencode_go_enabled, go_upstream, separator):
@@ -337,7 +335,6 @@ async def test_chat_stream_settles_usage_under_cr_framing(async_client, opencode
     assert logs[0].output_tokens == 7, "usage was never decoded from CR-framed events"
 
 
-@_CR_FRAMING_DEFECT
 @pytest.mark.parametrize("separator", ["\r\n\r\n", "\r\r"], ids=["crlf", "bare_cr"])
 @pytest.mark.asyncio
 async def test_responses_stream_emits_visible_text_under_cr_framing(
@@ -366,42 +363,56 @@ async def test_responses_stream_emits_visible_text_under_cr_framing(
 # ---------------------------------------------------------------------------
 
 
-@_CR_FRAMING_DEFECT
-def test_flush_recovers_every_cr_framed_event_not_merely_the_first():
-    """Corrects an earlier claim of mine: flush does **not** rescue the stream.
+@pytest.mark.parametrize("separator", ["\r\n\r\n", "\r\r", "\n\n"], ids=["crlf", "bare_cr", "lf"])
+def test_every_event_of_a_multi_event_stream_is_decoded(separator):
+    """Each separator must yield every event, not merely the first.
 
-    An earlier version of this evidence said the buffered data was recovered by
-    ``flush()`` at end-of-stream, making CR framing an accounting bug only. That
-    was measured on a single event and is wrong for a real stream.
+    This is the case that corrected an earlier claim of mine. I had reported CR
+    framing as an accounting bug only, on the grounds that ``flush()`` recovered
+    the buffered data - but that was measured on a *single* event. With several
+    events buffered together the old parser concatenated every ``data:`` line
+    into ``{"n":1}{"n":2}[DONE]``, which is neither valid JSON nor the sentinel,
+    so ``flush()`` returned nothing and the events were lost outright.
 
-    With several CR-framed events buffered together, ``_parse_sse_event`` runs
-    ``splitlines()`` over the whole buffer - which splits on bare ``\\r`` too -
-    so every ``data:`` line is concatenated into one string
-    (``{"n":1}{"n":2}[DONE]``), which is not valid JSON and is not the sentinel.
-    ``flush()`` therefore returns **nothing at all**: the events are lost, not
-    merely deferred.
+    The decoder now takes bytes, so the whole stream is fed as the transport
+    delivers it.
     """
     decoder = _SseUsageDecoder()
-    buffered = 'data: {"n":1}\r\n\r\ndata: {"n":2}\r\n\r\ndata: [DONE]\r\n\r\n'
+    stream = f'data: {{"n":1}}{separator}data: {{"n":2}}{separator}data: [DONE]{separator}'
 
-    assert decoder.feed(buffered) == []
-    assert decoder.flush() == [{"n": 1}, {"n": 2}, "[DONE]"]
+    events = list(decoder.feed(stream.encode()))
+    events.extend(decoder.flush())
 
-
-def test_lf_framing_decodes_each_event_as_the_control():
-    decoder = _SseUsageDecoder()
-    events = decoder.feed('data: {"n":1}\n\ndata: {"n":2}\n\ndata: [DONE]\n\n')
     assert events == [{"n": 1}, {"n": 2}, "[DONE]"]
+
+
+def test_a_multi_byte_character_split_across_chunks_is_held_not_dropped():
+    """The incremental decoder must buffer a partial sequence across chunks.
+
+    Driven at the decoder because the transport re-buffers (see the note above),
+    so this is the only place the byte-level split can be exercised directly.
+    """
+    payload = 'data: {"t":"caf\u00e9"}\n\n'.encode()
+    split_at = payload.index(b"\xc3") + 1  # inside the two-byte 'e-acute'
+
+    decoder = _SseUsageDecoder()
+    events = list(decoder.feed(payload[:split_at]))
+    events.extend(decoder.feed(payload[split_at:]))
+    events.extend(decoder.flush())
+
+    assert events == [{"t": "caf\u00e9"}], "a split multi-byte character was dropped"
 
 
 def test_an_event_split_across_many_chunks_reassembles():
     decoder = _SseUsageDecoder()
+    payload = 'data: {"usage":{"total_tokens":18}}\n\n'.encode()
     collected: list[object] = []
-    for character in 'data: {"usage":{"total_tokens":18}}\n\n':
-        collected.extend(decoder.feed(character))
+    for index in range(len(payload)):
+        collected.extend(decoder.feed(payload[index : index + 1]))
+    collected.extend(decoder.flush())
     assert collected == [{"usage": {"total_tokens": 18}}]
 
 
 def test_comment_lines_are_ignored_within_an_event():
     decoder = _SseUsageDecoder()
-    assert decoder.feed(': keepalive\ndata: {"ok":true}\n\n') == [{"ok": True}]
+    assert list(decoder.feed(b': keepalive\ndata: {"ok":true}\n\n')) == [{"ok": True}]
