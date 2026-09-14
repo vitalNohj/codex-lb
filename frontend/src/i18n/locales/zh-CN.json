@@ -101,6 +101,7 @@
   "accounts.opencodeGo.modelWindowsHelp": "仅列出 OpenCode 单独上报 window 的模型。",
   "accounts.opencodeGo.modelWindowsTitle": "按模型额度",
   "accounts.opencodeGo.noModelDetail": "OpenCode 未按模型细分用量，因此无法显示按模型的数值。其公布的限额是按模型的美元上限，但对应的消耗并未上报。",
+  "accounts.opencodeGo.noticeStale": "这是最近一次成功读取的结果，可能已不是当前状态。",
   "accounts.opencodeGo.notices.disabled.description": "在设置中开启该集成即可查看其 5 小时与每周用量。",
   "accounts.opencodeGo.notices.disabled.title": "OpenCode Go 已关闭",
   "accounts.opencodeGo.notices.malformed.description": "用量响应与本面板期望的格式不符，因此不做猜测，不展示任何数值。",

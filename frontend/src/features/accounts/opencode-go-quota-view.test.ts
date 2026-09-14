@@ -587,3 +587,79 @@ describe("resolveOpenCodeGoCardState cached-data retention", () => {
     expect(state.stale).toBe(false);
   });
 });
+
+/**
+ * A notice is a claim about the integration's *current* state, so a notice built
+ * from a cached response whose refetch failed must say it is cached. Otherwise a
+ * stale "Go is off" or "usage unavailable" reads as though it had just been
+ * confirmed - the same misrepresentation the quota path already guards against.
+ */
+describe("resolveOpenCodeGoCardState stale notices", () => {
+  const boom = new ApiError({ message: "boom", status: 500, code: "request_failed" });
+
+  function notice(state: ReturnType<typeof resolveOpenCodeGoCardState>) {
+    if (state.kind !== "notice") {
+      throw new Error(`expected notice state, got ${state.kind}`);
+    }
+    return state;
+  }
+
+  it("marks a cached configuration state as stale when the refetch failed", () => {
+    for (const status of ["disabled", "not_configured"] as const) {
+      const state = notice(
+        resolveOpenCodeGoCardState({
+          data: createOpenCodeGoQuota({ status, windows: [] }),
+          isPending: false,
+          error: boom,
+        }),
+      );
+
+      expect(state.notice).toBe(status);
+      expect(state.stale).toBe(true);
+    }
+  });
+
+  it("marks a cached availability notice as stale when the refetch failed", () => {
+    const state = notice(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota({ status: "unauthorized", windows: [] }),
+        isPending: false,
+        error: boom,
+      }),
+    );
+
+    expect(state.notice).toBe("unauthorized");
+    expect(state.stale).toBe(true);
+  });
+
+  it("leaves a freshly confirmed notice unmarked", () => {
+    const state = notice(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota({ status: "disabled", windows: [] }),
+        isPending: false,
+        error: null,
+      }),
+    );
+
+    expect(state.stale).toBe(false);
+  });
+
+  it("does not mark a live failure with nothing cached behind it", () => {
+    // No snapshot was ever read, so there is nothing stale to disclose.
+    expect(
+      notice(resolveOpenCodeGoCardState({ data: undefined, isPending: false, error: boom })).stale,
+    ).toBe(false);
+  });
+
+  it("carries the server's own stale flag into an empty-window notice", () => {
+    const state = notice(
+      resolveOpenCodeGoCardState({
+        data: createOpenCodeGoQuota({ status: "stale", stale: true, windows: [] }),
+        isPending: false,
+        error: null,
+      }),
+    );
+
+    expect(state.stale).toBe(true);
+  });
+});

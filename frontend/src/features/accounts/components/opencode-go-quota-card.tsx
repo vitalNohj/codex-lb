@@ -124,7 +124,12 @@ function CardBody({ state }: { state: OpenCodeGoCardState }) {
   }
   if (state.kind === "notice") {
     return (
-      <Notice notice={state.notice} message={state.message} actionable={state.actionable} />
+      <Notice
+        notice={state.notice}
+        message={state.message}
+        actionable={state.actionable}
+        stale={state.stale}
+      />
     );
   }
   return <QuotaContent state={state} />;
@@ -169,20 +174,40 @@ function Notice({
   notice,
   message,
   actionable,
+  stale = false,
 }: {
   notice: OpenCodeGoNoticeKind;
   message: string | null;
   actionable: boolean;
+  stale?: boolean;
 }) {
   const { t } = useTranslation();
   return (
     <div
       data-testid="opencode-go-quota-notice"
       data-notice={notice}
+      data-stale={stale ? "true" : undefined}
       className={cn("space-y-1.5 rounded-lg border p-4 text-xs", NOTICE_TONE[notice])}
     >
-      <p className="text-sm font-medium">{t(`accounts.opencodeGo.notices.${notice}.title`)}</p>
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium">
+        {t(`accounts.opencodeGo.notices.${notice}.title`)}
+        {/*
+          A notice is a claim about the integration's current state, so a cached
+          one must say it is cached. Without this, an old "Go is off" reads as
+          though it had just been confirmed.
+        */}
+        {stale ? (
+          <Badge
+            data-testid="opencode-go-notice-stale-badge"
+            variant="outline"
+            className="border-amber-500/20 bg-amber-500/10 font-normal text-amber-700 dark:text-amber-300"
+          >
+            {t("accounts.opencodeGo.staleBadge")}
+          </Badge>
+        ) : null}
+      </p>
       <p>{t(`accounts.opencodeGo.notices.${notice}.description`)}</p>
+      {stale ? <p>{t("accounts.opencodeGo.noticeStale")}</p> : null}
       {message ? (
         <p className="break-words font-mono text-[11px] opacity-80">{message}</p>
       ) : null}

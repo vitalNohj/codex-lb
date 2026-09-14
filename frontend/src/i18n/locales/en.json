@@ -101,6 +101,7 @@
   "accounts.opencodeGo.modelWindowsHelp": "Only models for which OpenCode reports its own windows are listed.",
   "accounts.opencodeGo.modelWindowsTitle": "Per-model limits",
   "accounts.opencodeGo.noModelDetail": "OpenCode does not break usage down by model, so no per-model figures can be shown. Its published limits are per-model dollar caps, but spend against them is not reported.",
+  "accounts.opencodeGo.noticeStale": "This is the last answer that was read successfully; it may no longer be current.",
   "accounts.opencodeGo.notices.disabled.description": "Turn the integration on in Settings to see its five-hour and weekly usage.",
   "accounts.opencodeGo.notices.disabled.title": "OpenCode Go is off",
   "accounts.opencodeGo.notices.malformed.description": "The usage response did not match what this dashboard expects, so nothing is shown rather than a guess.",
