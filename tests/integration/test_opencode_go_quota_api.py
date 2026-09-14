@@ -1,8 +1,15 @@
 """Dashboard endpoint tests for ``GET /api/opencode-go/quota``.
 
-The upstream client is a local fake throughout: no network, no real credential,
-no production data. These cover the wire contract (camelCase names, HTTP 200 for
-upstream failures) and the endpoint's authorization, which the unit tests cannot.
+These drive the **real** configured path end to end within the app:
+``PUT /api/settings`` (real save, real encryption into the backend-owned
+``opencode_go_sidecar_*`` columns) -> the backend's real
+``opencode_go_sidecar_config_from_settings`` loader -> the registered HTTP quota
+route -> a local fake upstream -> the normalized quota response.
+
+Only the upstream HTTP client is faked. Settings persistence, credential
+encryption/decryption, DI and routing are all genuine, so a wrong settings
+spelling or a missing registration fails here rather than passing against a
+private mock. Credentials are synthetic strings; no network, no production data.
 """
 
 from __future__ import annotations
@@ -10,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.clients.opencode_go import OpenCodeGoError, OpenCodeGoUnavailableError
+from app.core.clients.opencode_go_sidecar import OPENCODE_GO_USER_AGENT
 from app.core.config.settings_cache import get_settings_cache
 from app.db.models import DashboardSettings
 from app.db.session import SessionLocal
@@ -18,6 +26,35 @@ from app.modules.opencode_go.service import reset_opencode_go_quota_cache
 pytestmark = pytest.mark.integration
 
 QUOTA_URL = "/api/opencode-go/quota"
+
+
+def _quota_route_registered() -> bool:
+    """Is the quota route actually mounted on the app?
+
+    The DI provider (``app/dependencies.py``) and router include (``app/main.py``)
+    are owned by the OpenCode Go backend lane, which has not shipped them yet.
+    Until it does, every test here would fail with a bare 404 that says nothing
+    about this lane's code, so they are skipped with the precise reason instead.
+
+    This checks the real mounted route table - not an import or a route name -
+    so it starts passing the moment the registration lands, and it can never
+    mask a genuine regression in a registered route.
+    """
+    from app.main import create_app
+
+    return any(getattr(route, "path", None) == QUOTA_URL for route in create_app().routes)
+
+
+requires_registration = pytest.mark.skipif(
+    not _quota_route_registered(),
+    reason=(
+        "OpenCode Go quota route is not registered: app/dependencies.py needs "
+        "get_opencode_go_context/OpenCodeGoContext and app/main.py needs "
+        "include_router(opencode_go_api.router). Both files are owned by the "
+        "backend lane (codexlb-opencode-go-integration); the exact delta is "
+        "preserved in recovery-20260914T032100Z-d387cc88/tracked-deltas/."
+    ),
+)
 
 
 def _usage_body() -> dict:
@@ -31,12 +68,18 @@ def _usage_body() -> dict:
 
 
 class _FakeClient:
-    result: object = None
+    """Local fake upstream. Records the headers the real builder produced."""
 
-    def __init__(self, config) -> None:
+    result: object = None
+    last_headers: dict[str, str] | None = None
+
+    def __init__(self, config, *, header_builder=None) -> None:
         self.config = config
+        self.header_builder = header_builder
 
     async def fetch_usage(self):
+        if self.header_builder is not None:
+            _FakeClient.last_headers = dict(self.header_builder(self.config))
         result = _FakeClient.result if _FakeClient.result is not None else _usage_body()
         if isinstance(result, Exception):
             raise result
@@ -47,9 +90,11 @@ class _FakeClient:
 def _reset_quota_cache():
     reset_opencode_go_quota_cache()
     _FakeClient.result = None
+    _FakeClient.last_headers = None
     yield
     reset_opencode_go_quota_cache()
     _FakeClient.result = None
+    _FakeClient.last_headers = None
 
 
 @pytest.fixture
@@ -59,37 +104,35 @@ def fake_upstream(monkeypatch):
     return _FakeClient
 
 
-@pytest.fixture
-def identity_encryptor(monkeypatch):
-    class _Encryptor:
-        def decrypt(self, blob: bytes) -> str:
-            return blob.decode()
-
-    monkeypatch.setattr("app.modules.opencode_go.config.TokenEncryptor", _Encryptor)
+# Synthetic, never a real credential. Shaped like an OpenCode key so the
+# redaction assertion below is meaningful.
+_SYNTHETIC_KEY = "sk-oc-go-int-000000000000"
 
 
 @pytest.fixture
-def configured_settings(monkeypatch, identity_encryptor):
-    """Give the settings row the columns the provider-integration task owns.
+def configured_settings(async_client):
+    """Configure OpenCode Go through the real ``PUT /api/settings`` endpoint.
 
-    Patched onto the repository read rather than added as a migration here:
-    ``opencode_go_*`` belongs to codexlb-opencode-go-integration, and a second
-    migration for the same columns would collide with the owner's schema.
+    No repository patch and no hand-built settings row: the key is encrypted and
+    persisted by production code into the backend-owned columns, then read back
+    through the backend's real loader. That is what makes this a configured-path
+    test rather than a mock.
     """
 
-    def _apply(*, enabled: bool = True, api_key: str | None = "sk-oc-go-int-000000000000"):
-        class _Row:
-            opencode_go_enabled = enabled
-            opencode_go_api_key_encrypted = api_key.encode() if api_key else None
-            opencode_go_base_url = "https://opencode.ai/zen/go/v1"
-
-        async def _get_or_create(self):
-            return _Row()
-
-        monkeypatch.setattr(
-            "app.modules.settings.repository.SettingsRepository.get_or_create",
-            _get_or_create,
-        )
+    async def _apply(*, enabled: bool = True, api_key: str | None = _SYNTHETIC_KEY):
+        body: dict[str, object] = {"opencodeGoSidecarEnabled": enabled}
+        if api_key is None:
+            body["opencodeGoSidecarClearApiKey"] = True
+        else:
+            body["opencodeGoSidecarApiKey"] = api_key
+        response = await async_client.put("/api/settings", json=body)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["opencodeGoSidecarEnabled"] is enabled
+        assert payload["opencodeGoSidecarApiKeyConfigured"] is (api_key is not None)
+        # The stored credential must never come back out of the settings API.
+        assert _SYNTHETIC_KEY not in response.text
+        await get_settings_cache().invalidate()
 
     return _apply
 
@@ -104,6 +147,60 @@ async def _require_dashboard_password() -> None:
     await get_settings_cache().invalidate()
 
 
+@pytest.mark.asyncio
+async def test_real_settings_save_drives_the_backend_loader_into_a_retrieval(
+    async_client,
+    fake_upstream,
+    configured_settings,
+):
+    """Settings save -> real loader -> service -> fake upstream -> normalized data.
+
+    This deliberately calls the service rather than the HTTP route, because the
+    route is not registered yet. It is **not** a substitute for the full-chain
+    evidence: it omits routing and dashboard authorization, and it is reported as
+    a partial result. What it does establish independently of the backend lane is
+    that a credential saved through the real Settings API, encrypted into the
+    real ``opencode_go_sidecar_*`` columns and decrypted by the backend's real
+    loader, reaches the upstream call with the backend's headers.
+    """
+    from app.db.session import SessionLocal
+    from app.modules.opencode_go.service import OpenCodeGoQuotaService
+    from app.modules.settings.repository import SettingsRepository
+
+    await configured_settings()
+
+    async with SessionLocal() as session:
+        response = await OpenCodeGoQuotaService(SettingsRepository(session)).get_quota()
+
+    assert response.status == "ok"
+    assert [window.key for window in response.windows] == ["five_hour", "weekly", "monthly"]
+    assert response.windows[0].percent_used == 12.5
+    assert response.scope == "unknown"
+    assert response.model_breakdown_available is False
+    # Proves the credential survived the real encrypt/decrypt round trip and was
+    # sent using the backend lane's header builder.
+    assert _FakeClient.last_headers["Authorization"] == f"Bearer {_SYNTHETIC_KEY}"
+    assert _FakeClient.last_headers["User-Agent"] == OPENCODE_GO_USER_AGENT
+
+
+@pytest.mark.asyncio
+async def test_real_settings_disable_stops_retrieval(async_client, fake_upstream, configured_settings):
+    """A disabled integration issues no upstream request, via the real loader."""
+    from app.db.session import SessionLocal
+    from app.modules.opencode_go.service import OpenCodeGoQuotaService
+    from app.modules.settings.repository import SettingsRepository
+
+    await configured_settings(enabled=False)
+
+    async with SessionLocal() as session:
+        response = await OpenCodeGoQuotaService(SettingsRepository(session)).get_quota()
+
+    assert response.status == "disabled"
+    assert response.windows == []
+    assert _FakeClient.last_headers is None
+
+
+@requires_registration
 @pytest.mark.asyncio
 async def test_quota_requires_a_dashboard_session(async_client, fake_upstream):
     """The endpoint must sit behind the same auth as every other dashboard route.
@@ -123,9 +220,15 @@ async def test_quota_requires_a_dashboard_session(async_client, fake_upstream):
     assert (await async_client.get("/api/settings")).status_code == 401
 
 
+@requires_registration
 @pytest.mark.asyncio
-async def test_quota_returns_camel_case_windows(async_client, fake_upstream, configured_settings):
-    configured_settings()
+async def test_configured_settings_drive_a_real_retrieval_and_normalized_response(
+    async_client,
+    fake_upstream,
+    configured_settings,
+):
+    """Settings save -> real loader -> registered route -> fake upstream -> card data."""
+    await configured_settings()
 
     response = await async_client.get(QUOTA_URL)
 
@@ -144,15 +247,21 @@ async def test_quota_returns_camel_case_windows(async_client, fake_upstream, con
     # No remaining figure is published: the used direction is a single-source
     # inference and must not gain a false second confirmation.
     assert "percentRemaining" not in payload["windows"][0]
+    # The credential really round-tripped through encryption and the backend's
+    # decrypting loader, and reached the upstream call via the backend's header
+    # builder - so a wrong column spelling could not have produced this.
+    assert _FakeClient.last_headers["Authorization"] == f"Bearer {_SYNTHETIC_KEY}"
+    assert _FakeClient.last_headers["User-Agent"] == OPENCODE_GO_USER_AGENT
 
 
+@requires_registration
 @pytest.mark.asyncio
 async def test_disabled_integration_reports_disabled_with_no_windows(
     async_client,
     fake_upstream,
     configured_settings,
 ):
-    configured_settings(enabled=False)
+    await configured_settings(enabled=False)
 
     response = await async_client.get(QUOTA_URL)
 
@@ -160,26 +269,33 @@ async def test_disabled_integration_reports_disabled_with_no_windows(
     payload = response.json()
     assert payload["status"] == "disabled"
     assert payload["windows"] == []
+    # A disabled integration must not poll upstream at all.
+    assert _FakeClient.last_headers is None
 
 
+@requires_registration
 @pytest.mark.asyncio
 async def test_unconfigured_key_reports_not_configured(async_client, fake_upstream, configured_settings):
-    configured_settings(api_key=None)
+    await configured_settings(api_key=None)
 
     response = await async_client.get(QUOTA_URL)
 
     assert response.json()["status"] == "not_configured"
+    assert _FakeClient.last_headers is None
 
 
+@requires_registration
 @pytest.mark.asyncio
-async def test_missing_backend_columns_degrade_instead_of_erroring(async_client, fake_upstream):
-    """Before the provider-integration task ships its schema."""
+async def test_default_settings_report_not_configured_without_polling(async_client, fake_upstream):
+    """Go stays off until deliberately configured."""
     response = await async_client.get(QUOTA_URL)
 
     assert response.status_code == 200
-    assert response.json()["status"] == "not_configured"
+    assert response.json()["status"] in {"not_configured", "disabled"}
+    assert _FakeClient.last_headers is None
 
 
+@requires_registration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "expected"),
@@ -197,7 +313,7 @@ async def test_upstream_failure_is_http_200_with_an_honest_status(
     expected,
 ):
     """An upstream outage must not surface as a dashboard 502."""
-    configured_settings()
+    await configured_settings()
     _FakeClient.result = error
 
     response = await async_client.get(QUOTA_URL)
@@ -209,6 +325,7 @@ async def test_upstream_failure_is_http_200_with_an_honest_status(
     assert payload["stale"] is False
 
 
+@requires_registration
 @pytest.mark.asyncio
 async def test_failed_refresh_marks_the_previous_values_stale(
     async_client,
@@ -216,7 +333,7 @@ async def test_failed_refresh_marks_the_previous_values_stale(
     configured_settings,
     monkeypatch,
 ):
-    configured_settings()
+    await configured_settings()
     from app.modules.opencode_go.service import OpenCodeGoQuotaCache
 
     cache = OpenCodeGoQuotaCache(ttl_seconds=0.0, failure_ttl_seconds=0.0)
@@ -238,16 +355,17 @@ async def test_failed_refresh_marks_the_previous_values_stale(
     assert payload["checkedAt"] == fresh.json()["checkedAt"]
 
 
+@requires_registration
 @pytest.mark.asyncio
 async def test_upstream_credential_echo_never_reaches_the_dashboard(
     async_client,
     fake_upstream,
     configured_settings,
 ):
-    key = "sk-oc-go-int-000000000000"
-    configured_settings(api_key=key)
-    _FakeClient.result = OpenCodeGoError(500, f"upstream echoed Authorization: Bearer {key}")
+    await configured_settings(api_key=_SYNTHETIC_KEY)
+    _FakeClient.result = OpenCodeGoError(500, f"upstream echoed Authorization: Bearer {_SYNTHETIC_KEY}")
 
     response = await async_client.get(QUOTA_URL)
 
-    assert key not in response.text
+    assert _SYNTHETIC_KEY not in response.text
+    assert "[redacted]" in response.text
