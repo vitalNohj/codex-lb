@@ -526,6 +526,36 @@ def preservation_reason(
     return None
 
 
+def _is_exactly_settled(resolution: Resolution) -> bool:
+    """Whether a further catalog could not change this resolution.
+
+    True only for an outcome an ``exact`` match produced. ``exact`` consults the
+    catalogs in precedence order and returns the first that lists the id, so
+    appending a lower-precedence catalog cannot alter it - which is what makes
+    skipping the secondary reference safe rather than merely cheaper.
+
+    Deliberately false for every other step. ``normalized`` and
+    ``vendor-qualified`` collect candidates from *all* catalogs and abstain when
+    they disagree, so a catalog that was never loaded is a collision that was
+    never detected. It is also false for an unresolved or ambiguous outcome,
+    which is precisely when the fallback has something to contribute.
+
+    The step is matched on its final component because alias, prefix, and
+    dated-release rewrites accumulate a prefix on it (``prefix+exact``). Those
+    rewrites change which id was asked about, not how the catalogs were
+    searched, so the argument above still holds for them.
+    """
+
+    step = resolution.step
+    if step is None or step.rsplit("+", 1)[-1] != "exact":
+        return False
+    return resolution.outcome in (
+        ResolutionOutcome.RESOLVED,
+        ResolutionOutcome.NOT_TOKEN_PRICED,
+        ResolutionOutcome.PRICE_UNPARSEABLE,
+    )
+
+
 async def _run_lookup(
     provider_key: str,
     model_key: str,
@@ -548,9 +578,34 @@ async def _run_lookup(
         async with asyncio.timeout(LOOKUP_WORK_TIMEOUT_SECONDS):
             serving = await load_serving_context(provider_key)
             reference = await _load_reference_catalog()
-            # Asked only when the primary reference did not settle the question,
-            # so the common case still costs exactly one reference consultation.
-            orcarouter = await load_orcarouter_reference(provider_key)
+
+            aliases = serving.aliases if serving is not None else None
+            prefixes = serving.prefixes if serving is not None else ()
+            serving_catalog = serving.catalog if serving is not None else None
+
+            resolution = resolve_model_price(
+                model_key,
+                catalogs=order_catalogs(serving_catalog, reference),
+                aliases=aliases,
+                prefixes=prefixes,
+            )
+            # The secondary reference is a fallback, so it is fetched only when
+            # the primary sources did not already settle the id by exact match.
+            # Exact is the one step a further catalog cannot change: it returns
+            # the first catalog that lists the id, and appending a third leaves
+            # that untouched. Every weaker step gathers candidates across all
+            # catalogs to detect collisions, so skipping OrcaRouter there could
+            # record a price that a second source contradicts.
+            orcarouter = OrcaRouterReference.not_configured()
+            if not _is_exactly_settled(resolution):
+                orcarouter = await load_orcarouter_reference(provider_key)
+                if orcarouter.catalog is not None:
+                    resolution = resolve_model_price(
+                        model_key,
+                        catalogs=order_catalogs(serving_catalog, reference, orcarouter.catalog),
+                        aliases=aliases,
+                        prefixes=prefixes,
+                    )
     except TimeoutError:
         await preserve_record_for_retry(
             provider_key,
@@ -560,15 +615,6 @@ async def _run_lookup(
             claim_token=claim.token,
         )
         return _StorageResult.AVAILABLE
-
-    serving_catalog = serving.catalog if serving is not None else None
-    catalogs = order_catalogs(serving_catalog, reference, orcarouter.catalog)
-    resolution = resolve_model_price(
-        model_key,
-        catalogs=catalogs,
-        aliases=serving.aliases if serving is not None else None,
-        prefixes=serving.prefixes if serving is not None else (),
-    )
 
     reason = preservation_reason(
         previous,

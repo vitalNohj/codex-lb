@@ -596,6 +596,55 @@ async def test_concurrent_first_sightings_collapse_onto_one_lookup(db_setup, mon
 
 
 @pytest.mark.asyncio
+async def test_an_exact_match_does_not_fetch_the_secondary_reference(db_setup, monkeypatch) -> None:
+    """The fallback is a fallback, not a toll on every lookup.
+
+    An id OpenRouter lists exactly is already settled: ``exact`` returns the
+    first catalog in precedence order that lists it, so a lower-precedence
+    catalog cannot change the answer. Fetching OrcaRouter anyway would add a
+    catalog request and its latency to every uncached lookup.
+    """
+
+    del db_setup
+    _install_reference(monkeypatch, _catalog(OPENROUTER_REFERENCE_SOURCE, {"z-ai/glm-5.3": ModelPrice(0.6, 2.2)}))
+    orca_calls = _install_serving("orcarouter", catalog=_catalog("orcarouter", {"z-ai/glm-5.3": ModelPrice(9.0, 90.0)}))
+    _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False, prefixes=(("go/", True),))
+
+    cost, status = await _settle(CATALOGLESS_PROVIDER, "go/z-ai/glm-5.3")
+
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    assert cost.catalog_source == OPENROUTER_REFERENCE_SOURCE
+    assert orca_calls["count"] == 0, "the secondary reference must not be consulted for an exact primary match"
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_secondary_reference_never_hides_a_collision(db_setup, monkeypatch) -> None:
+    """The skip is safe only for ``exact``; weaker steps must still see everything.
+
+    ``normalized`` and ``vendor-qualified`` gather candidates across every
+    catalog and abstain when they disagree. A catalog that was never loaded is a
+    collision that was never detected, which would turn an honest abstention into
+    a confidently wrong price - so a non-exact match must still fetch the
+    fallback and must still abstain.
+    """
+
+    del db_setup
+    # Neither source lists the bare name exactly; each qualifies it differently.
+    _install_reference(monkeypatch, _catalog(OPENROUTER_REFERENCE_SOURCE, {"alpha/shared-name": ModelPrice(1.0, 2.0)}))
+    orca_calls = _install_serving(
+        "orcarouter", catalog=_catalog("orcarouter", {"beta/shared-name": ModelPrice(30.0, 60.0)})
+    )
+    _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False, prefixes=(("go/", True),))
+
+    cost, status = await _settle(CATALOGLESS_PROVIDER, "go/shared-name")
+
+    assert orca_calls["count"] >= 1, "a non-exact match must still consult the fallback"
+    assert cost is None
+    assert status is ExternalPriceStatus.AMBIGUOUS
+
+
+@pytest.mark.asyncio
 async def test_a_retry_after_an_outage_picks_up_the_now_available_rate(db_setup, monkeypatch) -> None:
     """Preserved-unknown is retryable, so recovery actually resolves the id."""
 
