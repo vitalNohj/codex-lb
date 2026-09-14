@@ -20,6 +20,7 @@ from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
 _UNSET = object()
+_OPERATIONAL_JSON_COLUMNS = frozenset({"openrouter_sidecar_full_models_json", "orcarouter_sidecar_full_models_json"})
 
 
 class SettingsRepository:
@@ -324,6 +325,32 @@ class SettingsRepository:
         )
         await self._session.commit()
         await self._session.refresh(settings)
+        return settings
+
+    async def update_operational_json_column(self, column: str, value: str) -> DashboardSettings:
+        """Persist one sidecar full-model JSON column under the version CAS.
+
+        An earlier revision wrote this column with an unconditional UPDATE so a
+        multi-hour discovery run would not stale an open Settings form. That
+        traded a form refresh for **silent data loss**: the column is a JSON
+        blob, so a read-modify-write here and a concurrent operator save of the
+        same column each overwrite the other's edit, losing either a discovered
+        pin or the operator's change.
+
+        The write now goes through the same optimistic ``version`` column as
+        every other settings write. Callers that append (discovery) re-read and
+        merge on conflict rather than overwriting; an operator's stale form
+        still receives the explicit 409 it already handles.
+        """
+        if column not in _OPERATIONAL_JSON_COLUMNS:
+            raise ValueError(f"column {column!r} is not an operational JSON column")
+        settings = await self.get_or_create()
+        setattr(settings, column, value)
+        settings.updated_at = func.now()
+        # commit_refresh emits `UPDATE ... WHERE version = :loaded`, so a writer
+        # that committed in between surfaces as StaleDataError -> 409 instead of
+        # silently clobbering the other side.
+        await self.commit_refresh(settings)
         return settings
 
     async def update(

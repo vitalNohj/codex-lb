@@ -775,14 +775,14 @@ async def test_v1_reset_credit_post_force_refreshes_usage_and_invalidates_select
             }
         )
     )
-    force_refresh_calls: list[tuple[str, str]] = []
+    force_refresh_calls: list[tuple[str, str, object]] = []
 
     class StubUsageUpdater:
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
-        async def force_refresh(self, account) -> bool:
-            force_refresh_calls.append((account.id, account.status.value))
+        async def force_refresh(self, account, **kwargs) -> bool:
+            force_refresh_calls.append((account.id, account.status.value, kwargs))
             return True
 
     class SelectionCache:
@@ -824,7 +824,7 @@ async def test_v1_reset_credit_post_force_refreshes_usage_and_invalidates_select
         "windows_reset": 1,
         "redeemed_at": "2031-05-02T01:30:00Z",
     }
-    assert force_refresh_calls == [(account_id, "active")]
+    assert force_refresh_calls == [(account_id, "active", {"ignore_persisted_cooldown": True})]
     assert selection_cache.invalidations == 1
     assert get_rate_limit_reset_credits_store().get(account_id) is None
 

@@ -626,6 +626,116 @@ class ExternalModelPrice(Base):
     lookup_token: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class FreeModelDiscoveryRun(Base):
+    """One operator-started free-model discovery run.
+
+    A run is the unit of operator intent: the confirmed candidate set is
+    frozen into ``FreeModelDiscoveryRunItem`` rows at start, and the runner
+    then paces probes per provider until every item reaches a verdict, the
+    run is cancelled, or the wall-clock cap expires. Rows are durable so a
+    service restart resumes an in-flight run instead of losing it.
+    """
+
+    __tablename__ = "free_model_discovery_runs"
+    __table_args__ = (
+        Index("idx_free_model_discovery_runs_status_started", "status", "started_at"),
+        # At most one run may be ``running`` at a time. The service checks this
+        # before starting, but that check and the insert are separated by the
+        # plan rebuild, which performs provider HTTP calls - a wide enough
+        # window for two rapid clicks to both pass the check. A partial unique
+        # index makes the database the arbiter, so the loser gets an integrity
+        # error instead of a second concurrent sweep. Partial (not a plain
+        # unique constraint) because finished runs are retained as history and
+        # must be allowed to share their terminal statuses.
+        Index(
+            "uq_free_model_discovery_runs_single_active",
+            "status",
+            unique=True,
+            sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # ``running`` | ``completed`` | ``cancelled`` | ``expired`` | ``failed``
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Wall-clock cap: the runner marks the run ``expired`` once this passes.
+    deadline_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    pacing_floor_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    pacing_cap_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    max_attempts_per_item: Mapped[int] = mapped_column(Integer, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FreeModelDiscoveryRunItem(Base):
+    """One candidate model inside a run.
+
+    ``state`` is ``queued`` until a clean 200 with a well-formed message
+    yields ``passed`` or ``failed``. Anything else (429, 5xx, transport
+    error, malformed 200) leaves the item ``queued`` with ``attempts``
+    incremented and ``next_attempt_at`` pushed out. Items still queued when
+    the run ends are marked ``unresolved``. ``added_to_full_models`` records
+    whether a pass actually landed in the provider pin list.
+    """
+
+    __tablename__ = "free_model_discovery_run_items"
+    __table_args__ = (
+        UniqueConstraint("run_id", "provider", "model_id", name="uq_free_model_discovery_run_items_identity"),
+        Index("idx_free_model_discovery_run_items_run_state", "run_id", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("free_model_discovery_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String, nullable=False)
+    # Why the operator saw this item: ``new`` | ``unresolved`` | ``due`` | ``cooldown``
+    candidate_group: Mapped[str] = mapped_column(String(16), nullable=False)
+    # ``queued`` | ``passed`` | ``failed`` | ``unresolved``
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Short sanitized description of the last inconclusive outcome.
+    last_outcome: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_ok_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    reasoning_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    added_to_full_models: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class FreeModelProbeState(Base):
+    """Cross-run verdict memory for one ``(provider, model_id)``.
+
+    Only real verdicts are written here. A pass resets ``failure_streak`` and
+    clears the cooldown. A fail escalates ``failure_streak`` and sets
+    ``cooldown_until`` on a coarse schedule so known-dead ids stop consuming
+    probes on every run. Inconclusive outcomes never touch this table.
+    """
+
+    __tablename__ = "free_model_probe_state"
+    __table_args__ = (UniqueConstraint("provider", "model_id", name="uq_free_model_probe_state_identity"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String, nullable=False)
+    # ``passed`` | ``failed``
+    last_verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    last_verdict_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class ClaudeSidecarUsageEvent(Base):
     __tablename__ = "claude_sidecar_usage_events"
     __table_args__ = (
