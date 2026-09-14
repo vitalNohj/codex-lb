@@ -614,9 +614,20 @@ class TestRealTransportCompression:
     """Real loopback HTTP, real aiohttp transport, real gzip decompression.
 
     The fake-based test above proves only that the *consumer* counts decoded
-    bytes. It cannot say whether aiohttp's decompressor inflates the whole body
-    before ``iter_chunked`` yields anything - and if it did, the byte cap would
-    be enforced too late to bound peak memory.
+    bytes. These add real transport: an oversize gzip body and an oversize
+    chunked body are rejected end to end, and a small gzip body still parses.
+
+    **Scope limit.** Rejecting at the endpoint says nothing about peak
+    allocation *inside* the decompressor; those are independent properties. On
+    the pinned ``aiohttp 3.14.3``, ``DeflateBuffer.feed_data`` passes
+    ``max_length = max(self._max_decompress_size, low_water)`` (default
+    ``max_decompress_size = 262144``) to ``decompress_sync``, so it yields
+    bounded slices and leaves the rest behind ``data_available`` - 1 MiB of
+    ``b"z"`` gzips to 1051 bytes and produces one 262144-byte chunk. That is a
+    property of this pinned version, established by reading and exercising the
+    parser, not something these tests prove; another version or a ``low_water``
+    at/above ``sys.maxsize`` (which makes ``max_length`` 0, i.e. unbounded)
+    could differ.
 
     Fixtures are modest (a few multiples of a deliberately small cap, patched
     for the test) so nothing here is resource exhausting.
