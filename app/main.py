@@ -840,7 +840,16 @@ async def lifespan(app: FastAPI):
                     shutdown_state.mark_lifespan_completed()
 
 
-def create_app() -> FastAPI:
+def create_app(*, static_dir: Path | None = None) -> FastAPI:
+    """Build the application.
+
+    ``static_dir`` is keyword-only and defaults to ``None``, which keeps the
+    production layout (``app/static``) byte-for-byte unchanged: the module-level
+    construction below passes nothing and consults no new configuration. It
+    exists so a verification harness can serve an explicitly named build
+    directory and prove which exact build was served, without overwriting the
+    retained ``app/static`` evidence.
+    """
     settings = get_settings()
     configure_memory_monitor(reject_threshold_mb=settings.memory_reject_threshold_mb)
     app = FastAPI(
@@ -932,7 +941,7 @@ def create_app() -> FastAPI:
     app.include_router(model_sources_api.router)
     app.include_router(health_api.router)
 
-    static_dir = Path(__file__).parent / "static"
+    static_dir = static_dir if static_dir is not None else Path(__file__).parent / "static"
     index_html = static_dir / "index.html"
     static_root = static_dir.resolve()
     frontend_build_hint = "Frontend assets are missing. Run `cd frontend && bun run build`."
