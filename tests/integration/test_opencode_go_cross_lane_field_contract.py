@@ -77,6 +77,13 @@ _OPEN_MISMATCH = pytest.mark.xfail(
     ),
 )
 
+# Scope note, because these checks are easy to over-read. Everything in this
+# file compares two lanes' **schema declarations**, parsed from their own
+# commits. Passing says the declared shapes agree. It does NOT execute the two
+# lanes' code together and is NOT evidence of an integrated working feature;
+# that requires composition from supplied committed revisions, which is MAIN's
+# to release. No integrated-readiness claim may cite this file.
+
 BACKEND_REF = "fm/codexlb-opencode-go-integration"
 SETTINGS_REF = "fm/codexlb-opencode-go-settings-r1"
 
@@ -200,13 +207,36 @@ def test_the_protocol_enum_accepts_every_value_the_backend_can_emit():
     )
 
 
-@_OPEN_MISMATCH
-def test_the_backend_publishes_every_settings_field_the_ui_reads():
-    """The third gap: ``defaultReasoningEffort`` is read but never sent.
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the Settings UI still declares opencodeGoSidecarDefaultReasoningEffort, a "
+        "speculative control the Settings lane has been instructed to remove or "
+        "hide. Resolution is UI-side removal, NOT a new backend field. Remove this "
+        "marker when the removal lands."
+    ),
+)
+def test_the_ui_does_not_read_settings_fields_the_backend_never_published():
+    """The UI must not invent settings fields; the backend owns that surface.
 
-    Every sibling integration defines a ``*_default_reasoning_effort`` field on
-    the settings document. The OpenCode Go backend does not, so a UI control
-    bound to it has no value to render or persist.
+    **Direction corrected.** An earlier version of this test asserted the
+    *backend* should publish every field the UI reads, and named
+    ``defaultReasoningEffort`` as a backend gap. That was wrong, and it is the
+    kind of wrong worth stating plainly: a field appearing in a UI schema is not
+    evidence that the backend owes it. Reviewed, ``defaultReasoningEffort`` is
+    **not an accepted backend requirement** - it is a speculative control the UI
+    added, and the Settings lane has been instructed to remove or hide it. A
+    verification lane must not manufacture a product requirement for one owner
+    out of another owner's unreviewed draft.
+
+    So the assertion now runs the other way: the UI's OpenCode Go settings
+    fields must be a subset of what the backend publishes. The agreed UI removal
+    satisfies it, and it would still catch any future invented field, without
+    ever obliging the backend to grow one.
+
+    Unlike the two protocol/availability checks, this is deliberately **not**
+    xfail-marked: the agreed resolution is a UI-side change, so it should simply
+    pass once that lands, and it fails now for the correct reason.
     """
     frontend_source = _require(SETTINGS_REF, SETTINGS_SCHEMA_PATH)
     backend_source = _require(BACKEND_REF, BACKEND_SETTINGS_SCHEMA_PATH)
@@ -220,15 +250,16 @@ def test_the_backend_publishes_every_settings_field_the_ui_reads():
     def to_snake(camel: str) -> str:
         return re.sub(r"(?<!^)(?=[A-Z])", "_", camel).lower()
 
-    # Write-only controls exist on the update model, never on the response.
+    # Write-only controls legitimately exist only on the update model.
     write_only = {"opencodeGoSidecarApiKey", "opencodeGoSidecarClearApiKey"}
-    missing = {field for field in ui_fields - write_only if to_snake(field) not in backend_fields}
+    invented = {field for field in ui_fields - write_only if to_snake(field) not in backend_fields}
 
-    assert not missing, (
-        "the Settings UI reads settings fields the backend never publishes: "
-        f"{sorted(missing)}. A control bound to an absent field has no value to "
-        "render or persist. Every sibling integration defines its own "
-        "*_default_reasoning_effort; OpenCode Go does not."
+    assert not invented, (
+        "the Settings UI declares OpenCode Go settings fields the backend does "
+        f"not publish: {sorted(invented)}. The backend owns the settings surface, "
+        "so the resolution is to remove or hide the speculative control - NOT to "
+        "add a backend field. defaultReasoningEffort specifically was reviewed "
+        "and is not an accepted backend requirement."
     )
 
 
