@@ -23,7 +23,10 @@ from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
-from app.modules.proxy.opencode_go_sidecar_dispatch import load_opencode_go_sidecar_config
+from app.modules.proxy.opencode_go_sidecar_dispatch import (
+    load_opencode_go_sidecar_config,
+    opencode_go_is_usable,
+)
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
 from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
 
@@ -122,7 +125,9 @@ async def list_models() -> dict:
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"OrcaRouter: {sidecar_model.id}", "sourceOnly": False})
     opencode_go_config = await load_opencode_go_sidecar_config()
-    if opencode_go_config is not None and opencode_go_config.enabled:
+    # Usable credential required: opening the dashboard model picker must not
+    # poll a subscription the deployment has no key for.
+    if opencode_go_is_usable(opencode_go_config):
         try:
             opencode_go_models = await get_opencode_go_sidecar_client(opencode_go_config).list_models_cached()
         except Exception:
