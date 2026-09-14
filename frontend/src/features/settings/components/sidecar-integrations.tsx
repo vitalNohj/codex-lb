@@ -3,6 +3,7 @@ import { Boxes } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
+import { FreeModelDiscoveryPanel } from "@/features/settings/components/free-model-discovery-panel";
 import { OllamaSidecarSettings } from "@/features/settings/components/ollama-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { OpenCodeGoSidecarSettings } from "@/features/settings/components/opencode-go-sidecar-settings";
@@ -142,6 +143,8 @@ export function SidecarIntegrationsCard({
             </p>
           </div>
         </div>
+
+        <FreeModelDiscoveryPanel settings={settings} />
 
         <Tabs
           value={activeTab}

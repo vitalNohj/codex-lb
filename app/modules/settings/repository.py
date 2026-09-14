@@ -20,6 +20,7 @@ from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
 _UNSET = object()
+_OPERATIONAL_JSON_COLUMNS = frozenset({"openrouter_sidecar_full_models_json", "orcarouter_sidecar_full_models_json"})
 
 
 class SettingsRepository:
@@ -321,6 +322,27 @@ class SettingsRepository:
         values["updated_at"] = func.now()
         await self._session.execute(
             update(DashboardSettings).where(DashboardSettings.id == _SETTINGS_ID).values(**values)
+        )
+        await self._session.commit()
+        await self._session.refresh(settings)
+        return settings
+
+    async def update_operational_json_column(self, column: str, value: str) -> DashboardSettings:
+        """Persist one sidecar full-model JSON column without bumping ``version``.
+
+        Free-model discovery appends verified ids over a multi-hour run. Routing
+        those writes through ``version_id_col`` would make an open Settings
+        form's ``expectedVersion`` stale on every pass, the same problem
+        ``update_operational`` solves for health writes. Restricted to the
+        full-model columns so it cannot bypass the operator CAS for anything else.
+        """
+        if column not in _OPERATIONAL_JSON_COLUMNS:
+            raise ValueError(f"column {column!r} is not an operational JSON column")
+        settings = await self.get_or_create()
+        await self._session.execute(
+            update(DashboardSettings)
+            .where(DashboardSettings.id == _SETTINGS_ID)
+            .values({column: value, "updated_at": func.now()})
         )
         await self._session.commit()
         await self._session.refresh(settings)
