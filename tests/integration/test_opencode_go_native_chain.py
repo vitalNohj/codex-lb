@@ -339,7 +339,16 @@ async def test_a_native_stream_settles_usage_exactly_once(async_client, opencode
 
 @pytest.mark.asyncio
 async def test_abandoning_a_native_stream_settles_exactly_once(async_client, opencode_go_enabled, go_upstream):
-    """Cancellation on the native path, driven by a real mid-body disconnect."""
+    """Settlement on the native path when the caller abandons the response.
+
+    NOTE (corrected): this does **not** exercise a mid-body disconnect. The test
+    client uses httpx ``ASGITransport``, which awaits the whole app and joins
+    every response chunk before ``client.stream`` yields - measured at 64 frames
+    already sent before the consumer read its first line. What it actually pins
+    is that a COMPLETED stream settles exactly once, which is worth having.
+    Genuine disconnect coverage lives in
+    ``test_opencode_go_real_socket_disconnect.py``, over a real TCP socket.
+    """
     await _configure(async_client)
     go_upstream.completion_text = " ".join(f"token{i}" for i in range(60))
     go_upstream.stream_frame_delay_seconds = 0.02

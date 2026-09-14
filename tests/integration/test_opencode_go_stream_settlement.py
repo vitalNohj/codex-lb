@@ -263,13 +263,22 @@ async def test_a_stream_truncated_before_done_is_recorded_as_an_error_not_a_succ
 
 
 @pytest.mark.asyncio
-async def test_client_disconnect_mid_stream_settles_exactly_once(async_client, sidecar_capability_enabled, go_upstream):
+async def test_an_abandoned_but_buffered_stream_settles_exactly_once(
+    async_client, sidecar_capability_enabled, go_upstream
+):
     """Cancellation must not skip settlement, and must not double-settle.
 
     This is the promise that protects quota accounting: a user who abandons a
     long generation still consumed upstream work, so the reservation has to be
     resolved. The dispatcher's ``finally`` block is the only thing standing
     between that and a leaked reservation.
+
+    **CORRECTED: this does not perform a mid-body disconnect.** httpx's
+    ``ASGITransport`` awaits the whole app and joins every response chunk before
+    ``client.stream`` yields, so the body is already complete when it is
+    abandoned. What this pins is that a COMPLETED stream settles exactly once.
+    Real disconnect coverage is in
+    ``test_opencode_go_real_socket_disconnect.py`` over a real TCP socket.
 
     **Why the disconnect is driven at the stream and not at the request task.**
     An earlier version of this test cancelled the ``client.post(...)`` future.
