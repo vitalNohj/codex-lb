@@ -386,8 +386,19 @@ const server = createServer(async (req, res) => {
 
   // Anything that does not resolve to a real file inside the served root falls
   // back to the SPA entry point, which is also what an unknown client-side
-  // route needs.
-  const file = resolveStaticFile(path) ?? join(DIST_ROOT, "index.html");
+  // route needs. The fallback goes through the *same* containment check: an
+  // index.html that is itself a symlink pointing outside the root would
+  // otherwise be rejected as a direct request and then served anyway here, for
+  // `/`, `/index.html` and every unknown route.
+  const file = resolveStaticFile(path) ?? resolveStaticFile("/index.html");
+  if (file === null) {
+    // Fail closed. No safe index exists, so serve nothing rather than reaching
+    // outside the root - and answer rather than throwing, so a missing index
+    // cannot crash the harness mid-review.
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+    res.end("no safe index.html inside the served root\n");
+    return;
+  }
   res.writeHead(200, {
     "content-type": MIME[extname(file)] ?? "application/octet-stream",
     "cache-control": "no-store",
