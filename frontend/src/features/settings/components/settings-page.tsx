@@ -115,7 +115,12 @@ export function SettingsPage() {
 
           <div className="space-y-4">
             <AppearanceSettings />
-            <SidecarIntegrationsCard settings={settings} busy={busy} onSave={handleSave} />
+            <SidecarIntegrationsCard
+              settings={settings}
+              busy={busy}
+              onSave={handleSave}
+              locationHash={location.hash}
+            />
             <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             <ResetCreditSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             {canWrite ? (

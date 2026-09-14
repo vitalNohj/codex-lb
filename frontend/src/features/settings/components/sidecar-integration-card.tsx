@@ -2,7 +2,6 @@ import { createContext, type ReactNode, use, useEffect, useMemo, useRef, useStat
 import { ExternalLink, Pause, Play, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
-import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -66,8 +65,6 @@ type SidecarIntegrationMeta = {
   apiKeyPlaceholder: string;
   apiKeyConfigured: boolean;
   managementKeyConfigured?: boolean;
-  /** Copy for the deliberate key-removal confirmation, when the card offers it. */
-  clearApiKeyDescription?: string;
   externalLink?: {
     href: string;
     label: string;
@@ -112,7 +109,6 @@ type SidecarIntegrationActions = {
   persistField: () => void;
   addApiKey: () => void;
   addManagementKey: () => void;
-  clearApiKey: () => void;
 };
 
 type SidecarIntegrationContextValue = {
@@ -169,13 +165,10 @@ type SidecarIntegrationCardProviderProps = {
   }) => Partial<SettingsUpdateRequest>;
   buildEnablePatch: (enabled: boolean) => Partial<SettingsUpdateRequest>;
   /**
-   * Builds the patch that deliberately removes the stored key.
-   *
-   * Only integrations that opt in render {@link ClearApiKey}; omitting this
-   * keeps the existing "overwrite only" behaviour unchanged.
+   * Optional: integrations whose backend exposes no reasoning-effort field omit
+   * this and do not render {@link ReasoningEffort}.
    */
-  buildClearApiKeyPatch?: () => Partial<SettingsUpdateRequest>;
-  buildEffortPatch: (
+  buildEffortPatch?: (
     effort: SidecarReasoningEffort | null,
   ) => Partial<SettingsUpdateRequest>;
   children: ReactNode;
@@ -399,7 +392,6 @@ function SidecarIntegrationCardProvider({
   onTestConnection,
   buildPatch,
   buildEnablePatch,
-  buildClearApiKeyPatch,
   buildEffortPatch,
   children,
 }: SidecarIntegrationCardProviderProps) {
@@ -502,6 +494,9 @@ function SidecarIntegrationCardProvider({
   };
 
   const setDefaultReasoningEffort = (effort: SidecarReasoningEffort | null) => {
+    if (!buildEffortPatch) {
+      return;
+    }
     setDefaultReasoningEffortState(effort);
     void onSave(buildEffortPatch(effort));
   };
@@ -596,31 +591,6 @@ function SidecarIntegrationCardProvider({
     void persistConfig({ managementKey: key });
   };
 
-  /**
-   * Deliberately removes the stored key.
-   *
-   * This is the only path that clears a secret. Saving an unchanged form never
-   * sends a key field at all, so an ordinary save cannot wipe a configured key
-   * by omission.
-   */
-  const clearApiKey = () => {
-    if (!buildClearApiKeyPatch) {
-      return;
-    }
-    setApiKey("");
-    setSaveError(null);
-    setSavePending(true);
-    void (async () => {
-      try {
-        await onSave(buildClearApiKeyPatch());
-      } catch (error) {
-        setSaveError(error instanceof Error ? error.message : "Failed to remove the stored key");
-      } finally {
-        setSavePending(false);
-      }
-    })();
-  };
-
   const value: SidecarIntegrationContextValue = {
     settings,
     busy,
@@ -662,7 +632,6 @@ function SidecarIntegrationCardProvider({
       persistField,
       addApiKey,
       addManagementKey,
-      clearApiKey,
     },
     models,
     form: {
@@ -996,52 +965,6 @@ function DiscoveredModels() {
   );
 }
 
-/**
- * Deliberate, confirmed removal of the stored key.
- *
- * Secrets are write-only: the server never returns a key, so the only honest
- * controls are "replace it" and "remove it". Removal is behind a confirmation
- * because it disables routing until a new key is supplied.
- */
-function ClearApiKey() {
-  const { busy, meta, actions, form } = useSidecarIntegration();
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  if (!meta.apiKeyConfigured) {
-    return null;
-  }
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2">
-      <p className="text-xs text-muted-foreground">
-        A key is stored for this integration. Removing it stops all routing until a new key is added.
-      </p>
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="h-8 shrink-0 text-xs text-destructive"
-        disabled={busy || form.savePending}
-        onClick={() => setConfirmOpen(true)}
-      >
-        Remove stored key
-      </Button>
-      <ConfirmDialog
-        open={confirmOpen}
-        title={`Remove the stored ${meta.conflictName} key?`}
-        description={
-          meta.clearApiKeyDescription ??
-          "The stored key is deleted immediately. Requests to this integration fail until a new key is added."
-        }
-        confirmLabel="Remove key"
-        onConfirm={() => {
-          setConfirmOpen(false);
-          actions.clearApiKey();
-        }}
-        onOpenChange={setConfirmOpen}
-      />
-    </div>
-  );
-}
-
 function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) {
   const { busy, meta, state, actions } = useSidecarIntegration();
   const persistOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1318,7 +1241,6 @@ export const SidecarIntegrationCard = {
   Fields,
   BaseUrl,
   Secrets,
-  ClearApiKey,
   Prefixes,
   FullModels,
   DiscoveredModels,

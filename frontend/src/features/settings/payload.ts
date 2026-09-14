@@ -118,7 +118,6 @@ export function buildSettingsUpdateRequest(
     opencodeGoSidecarConnectTimeoutSeconds: settings.opencodeGoSidecarConnectTimeoutSeconds,
     opencodeGoSidecarRequestTimeoutSeconds: settings.opencodeGoSidecarRequestTimeoutSeconds,
     opencodeGoSidecarModelsCacheTtlSeconds: settings.opencodeGoSidecarModelsCacheTtlSeconds,
-    opencodeGoSidecarDefaultReasoningEffort: settings.opencodeGoSidecarDefaultReasoningEffort ?? null,
     guestAccessEnabled: settings.guestAccessEnabled,
     hideUpstreamQuotaFromApiKeys: settings.hideUpstreamQuotaFromApiKeys,
     ...patch,

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, ChevronDown, Plus, ShieldAlert } from "lucide-react";
+import { Check, ChevronDown, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,14 @@ export type OpenCodeGoModelsBrowserProps = {
   isLoading: boolean;
   /** False while the integration has no key, so discovery cannot run at all. */
   configured: boolean;
+  /**
+   * False while the integration is switched off.
+   *
+   * The backend returns an empty catalogue without any upstream call when the
+   * integration is disabled or unconfigured, so an empty list in that state
+   * means "not asked", not "the provider has no models".
+   */
+  enabled: boolean;
   onAddModel: (modelId: string) => void;
 };
 
@@ -21,25 +29,37 @@ const PROTOCOL_LABELS: Record<OpenCodeGoSidecarProtocol, string> = {
   chat_completions: "Chat Completions",
   messages: "Messages",
   responses: "Responses",
+  unknown: "Protocol unknown",
 };
+
+/**
+ * Why an advertised model cannot be selected.
+ *
+ * The backend sends `supported` and `protocol` but no prose reason, so the
+ * wording is derived here from the protocol it did send. `unknown` means the
+ * live listing returned an id the pinned docs map does not classify.
+ */
+function unsupportedReason(protocol: OpenCodeGoSidecarProtocol): string {
+  return protocol === "unknown"
+    ? "Not classified by the pinned model map"
+    : `${PROTOCOL_LABELS[protocol]} routing not supported yet`;
+}
 
 /**
  * Discovered-model browser for OpenCode Go.
  *
- * Differs from the shared browser in exactly the ways the provider forces:
- *
- * - OpenCode Go serves models on three different wire protocols and the
- *   published mapping is known to drift, so a model the backend has not marked
- *   routable is shown as unavailable rather than silently offered. An unknown
- *   protocol is never treated as a working default.
- * - Some models are documented as training on prompts and lacking zero data
- *   retention. Those are labelled and still selectable, but never preselected.
+ * Differs from the shared browser because OpenCode Go serves models across
+ * three wire protocols and only `chat_completions` is dispatchable at this
+ * milestone. A model the backend did not mark `supported` is listed and
+ * visibly unavailable rather than hidden or offered, so an unsupported model is
+ * never silently sent to a guessed endpoint.
  */
 export function OpenCodeGoModelsBrowser({
   models,
   selectedModels,
   isLoading,
   configured,
+  enabled,
   onAddModel,
 }: OpenCodeGoModelsBrowserProps) {
   const [search, setSearch] = useState("");
@@ -48,7 +68,10 @@ export function OpenCodeGoModelsBrowser({
     () => new Set(selectedModels.map((model) => model.toLowerCase())),
     [selectedModels],
   );
-  const routableCount = useMemo(() => models.filter((model) => model.routable).length, [models]);
+  const supportedCount = useMemo(
+    () => models.filter((model) => model.supported).length,
+    [models],
+  );
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) {
@@ -57,11 +80,15 @@ export function OpenCodeGoModelsBrowser({
     return models.filter((model) => model.id.toLowerCase().includes(query));
   }, [models, search]);
 
+  // Each empty state has a distinct cause, and saying "no models" when nothing
+  // was ever requested would be untrue.
   const emptyMessage = isLoading
     ? "Loading models..."
-    : configured
-      ? "No models returned by OpenCode Go."
-      : "No models loaded - add an API key to discover models";
+    : !configured
+      ? "No models loaded - add an API key to discover models"
+      : !enabled
+        ? "Models are not discovered while the integration is disabled. Enable it to load the catalogue."
+        : "No models returned by OpenCode Go.";
 
   return (
     <div className="rounded-md border bg-background/50">
@@ -75,7 +102,7 @@ export function OpenCodeGoModelsBrowser({
           Discovered models ({models.length})
           {models.length > 0 ? (
             <span className="ml-1 font-normal text-muted-foreground">
-              - {routableCount} routable
+              - {supportedCount} supported
             </span>
           ) : null}
         </span>
@@ -105,28 +132,18 @@ export function OpenCodeGoModelsBrowser({
               <ul className="max-h-64 divide-y overflow-y-auto rounded-md border">
                 {filtered.map((model) => {
                   const isSelected = selected.has(model.id.toLowerCase());
-                  const protocolLabel = model.protocol
-                    ? PROTOCOL_LABELS[model.protocol]
-                    : "Protocol unknown";
                   return (
                     <li key={model.id} className="flex items-center justify-between gap-2 px-2 py-1.5">
                       <div className="min-w-0">
                         <div className="truncate font-mono text-xs">{model.id}</div>
                         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
-                          <span>{protocolLabel}</span>
+                          <span>{PROTOCOL_LABELS[model.protocol]}</span>
                           {model.ownedBy ? <span>- {model.ownedBy}</span> : null}
-                          {model.routable ? null : (
+                          {model.supported ? null : (
                             <span className="font-medium text-amber-600 dark:text-amber-400">
-                              - Unavailable
-                              {model.unavailableReason ? `: ${model.unavailableReason}` : ""}
+                              - Unavailable: {unsupportedReason(model.protocol)}
                             </span>
                           )}
-                          {model.privacySensitive ? (
-                            <span className="inline-flex items-center gap-0.5 font-medium text-amber-600 dark:text-amber-400">
-                              <ShieldAlert className="size-2.5" aria-hidden="true" />
-                              {model.privacyNote ?? "Prompts may be used for training"}
-                            </span>
-                          ) : null}
                         </div>
                       </div>
                       <Button
@@ -135,21 +152,21 @@ export function OpenCodeGoModelsBrowser({
                         variant="ghost"
                         className="h-6 shrink-0 gap-1 px-2 text-[11px]"
                         aria-label={
-                          !model.routable
+                          !model.supported
                             ? `Unavailable ${model.id}`
                             : isSelected
                               ? `Added ${model.id}`
                               : `Add full model ${model.id}`
                         }
-                        disabled={isSelected || !model.routable}
+                        disabled={isSelected || !model.supported}
                         onClick={() => onAddModel(model.id)}
                       >
                         {isSelected ? (
                           <Check className="size-3" aria-hidden="true" />
-                        ) : model.routable ? (
+                        ) : model.supported ? (
                           <Plus className="size-3" aria-hidden="true" />
                         ) : null}
-                        {!model.routable ? "Unavailable" : isSelected ? "Added" : "Add full model"}
+                        {!model.supported ? "Unavailable" : isSelected ? "Added" : "Add full model"}
                       </Button>
                     </li>
                   );

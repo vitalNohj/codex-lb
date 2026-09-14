@@ -562,7 +562,9 @@ export function createDashboardSettings(
 		opencodeGoSidecarEnabled: false,
 		opencodeGoSidecarBaseUrl: "https://opencode.ai/zen/go/v1",
 		opencodeGoSidecarApiKeyConfigured: false,
-		opencodeGoSidecarModelPrefixes: [{ prefix: "opencode-go/", strip: true }],
+		// Empty like an upgraded deployment; the server seeds the prefix only on
+		// a fresh install (backend contract section 2.1).
+		opencodeGoSidecarModelPrefixes: [],
 		opencodeGoSidecarFullModels: [],
 		opencodeGoSidecarConnectTimeoutSeconds: 8,
 		opencodeGoSidecarRequestTimeoutSeconds: 600,

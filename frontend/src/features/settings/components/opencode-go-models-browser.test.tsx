@@ -9,30 +9,18 @@ import {
 } from "@/features/settings/schemas";
 
 /**
- * Local typed fixture. Parsing through the schema keeps this honest: if the
- * published backend contract changes shape, this fixture fails to build rather
- * than quietly testing a shape the server never sends.
+ * Local typed fixture parsed through the schema, so a drift between the
+ * published backend contract and this file fails here rather than in the UI.
  */
 function model(overrides: Partial<OpenCodeGoSidecarModelSummary> & { id: string }) {
   return OpenCodeGoSidecarModelSummarySchema.parse(overrides);
 }
 
 const MODELS = [
-  model({ id: "kimi-k3", protocol: "chat_completions", routable: true, ownedBy: "moonshotai" }),
-  model({
-    id: "qwen3.8-max",
-    protocol: "messages",
-    routable: false,
-    unavailableReason: "Messages protocol not implemented",
-  }),
-  model({ id: "hy4-preview", routable: false, unavailableReason: "Protocol unknown" }),
-  model({
-    id: "muse-spark-1.3-contributor",
-    protocol: "responses",
-    routable: true,
-    privacySensitive: true,
-    privacyNote: "Trains on prompts, not ZDR",
-  }),
+  model({ id: "glm-5.3", protocol: "chat_completions", supported: true, ownedBy: "opencode" }),
+  model({ id: "qwen3.8-max", protocol: "messages", supported: false }),
+  model({ id: "muse-spark-1.3-contributor", protocol: "responses", supported: false }),
+  model({ id: "some-unlisted-preview", protocol: "unknown", supported: false }),
 ];
 
 function renderBrowser(props: Partial<React.ComponentProps<typeof OpenCodeGoModelsBrowser>> = {}) {
@@ -43,6 +31,7 @@ function renderBrowser(props: Partial<React.ComponentProps<typeof OpenCodeGoMode
       selectedModels={[]}
       isLoading={false}
       configured
+      enabled
       onAddModel={onAddModel}
       {...props}
     />,
@@ -65,27 +54,28 @@ describe("OpenCodeGoModelsBrowser", () => {
     expect(screen.queryByLabelText("Search OpenCode Go models")).not.toBeInTheDocument();
   });
 
-  it("summarises how many discovered models are actually routable", () => {
+  it("summarises how many discovered models are actually supported", () => {
     renderBrowser();
 
     expect(
-      screen.getByRole("button", { name: /Discovered models \(4\).*2 routable/ }),
+      screen.getByRole("button", { name: /Discovered models \(4\).*1 supported/ }),
     ).toBeInTheDocument();
   });
 
-  it("does not claim an unknown protocol is a working default", async () => {
+  it("does not treat an unknown protocol as a usable default", async () => {
     const user = userEvent.setup();
     const { onAddModel } = renderBrowser();
 
     await expand(user);
-    const row = screen.getByText("hy4-preview").closest("li") as HTMLElement;
+    const row = screen.getByText("some-unlisted-preview").closest("li") as HTMLElement;
 
     expect(within(row).getByText("Protocol unknown")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Unavailable hy4-preview" })).toBeDisabled();
+    expect(within(row).getByText(/Not classified by the pinned model map/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unavailable some-unlisted-preview" })).toBeDisabled();
     expect(onAddModel).not.toHaveBeenCalled();
   });
 
-  it("marks a known-but-unrouted protocol unavailable with its reason", async () => {
+  it("keeps a mapped but undispatchable /messages model non-selectable", async () => {
     const user = userEvent.setup();
     renderBrowser();
 
@@ -93,40 +83,51 @@ describe("OpenCodeGoModelsBrowser", () => {
     const row = screen.getByText("qwen3.8-max").closest("li") as HTMLElement;
 
     expect(within(row).getByText("Messages")).toBeInTheDocument();
-    expect(within(row).getByText(/Messages protocol not implemented/)).toBeInTheDocument();
+    expect(within(row).getByText(/Messages routing not supported yet/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Unavailable qwen3.8-max" })).toBeDisabled();
   });
 
-  it("adds a routable model on request", async () => {
-    const user = userEvent.setup();
-    const { onAddModel } = renderBrowser();
-
-    await expand(user);
-    await user.click(screen.getByRole("button", { name: "Add full model kimi-k3" }));
-
-    expect(onAddModel).toHaveBeenCalledWith("kimi-k3");
-  });
-
-  it("labels a privacy-sensitive model but keeps it selectable", async () => {
+  it("keeps a /responses model non-selectable", async () => {
     const user = userEvent.setup();
     renderBrowser();
 
     await expand(user);
     const row = screen.getByText("muse-spark-1.3-contributor").closest("li") as HTMLElement;
 
-    expect(within(row).getByText("Trains on prompts, not ZDR")).toBeInTheDocument();
+    expect(within(row).getByText(/Responses routing not supported yet/)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Add full model muse-spark-1.3-contributor" }),
-    ).toBeEnabled();
+      screen.getByRole("button", { name: "Unavailable muse-spark-1.3-contributor" }),
+    ).toBeDisabled();
+  });
+
+  it("lists unsupported models rather than hiding them", async () => {
+    const user = userEvent.setup();
+    renderBrowser();
+
+    await expand(user);
+
+    for (const id of ["qwen3.8-max", "muse-spark-1.3-contributor", "some-unlisted-preview"]) {
+      expect(screen.getByText(id)).toBeInTheDocument();
+    }
+  });
+
+  it("adds a supported model on request", async () => {
+    const user = userEvent.setup();
+    const { onAddModel } = renderBrowser();
+
+    await expand(user);
+    await user.click(screen.getByRole("button", { name: "Add full model glm-5.3" }));
+
+    expect(onAddModel).toHaveBeenCalledWith("glm-5.3");
   });
 
   it("shows an already-selected model as added rather than addable", async () => {
     const user = userEvent.setup();
-    renderBrowser({ selectedModels: ["KIMI-K3"] });
+    renderBrowser({ selectedModels: ["GLM-5.3"] });
 
     await expand(user);
 
-    expect(screen.getByRole("button", { name: "Added kimi-k3" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Added glm-5.3" })).toBeDisabled();
   });
 
   it("filters by search and reports an empty result honestly", async () => {
@@ -139,7 +140,7 @@ describe("OpenCodeGoModelsBrowser", () => {
     expect(screen.getByText("No models match your search")).toBeInTheDocument();
   });
 
-  it("distinguishes loading, unconfigured, and empty catalogs", async () => {
+  it("distinguishes loading, unconfigured, disabled, and genuinely empty catalogs", async () => {
     const user = userEvent.setup();
     const { rerender } = renderBrowser({ models: [], isLoading: true });
 
@@ -152,10 +153,26 @@ describe("OpenCodeGoModelsBrowser", () => {
         selectedModels={[]}
         isLoading={false}
         configured={false}
+        enabled={false}
         onAddModel={vi.fn()}
       />,
     );
     expect(screen.getByText(/add an API key to discover models/i)).toBeInTheDocument();
+
+    // Key stored but switched off: the backend returns an empty list without
+    // calling upstream, so claiming the provider has no models would be false.
+    rerender(
+      <OpenCodeGoModelsBrowser
+        models={[]}
+        selectedModels={[]}
+        isLoading={false}
+        configured
+        enabled={false}
+        onAddModel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/not discovered while the integration is disabled/i)).toBeInTheDocument();
+    expect(screen.queryByText("No models returned by OpenCode Go.")).not.toBeInTheDocument();
 
     rerender(
       <OpenCodeGoModelsBrowser
@@ -163,6 +180,7 @@ describe("OpenCodeGoModelsBrowser", () => {
         selectedModels={[]}
         isLoading={false}
         configured
+        enabled
         onAddModel={vi.fn()}
       />,
     );
@@ -180,9 +198,9 @@ describe("OpenCodeGoModelsBrowser", () => {
     await user.tab();
     expect(screen.getByLabelText("Search OpenCode Go models")).toHaveFocus();
     await user.tab();
-    expect(screen.getByRole("button", { name: "Add full model kimi-k3" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Add full model glm-5.3" })).toHaveFocus();
     await user.keyboard("{Enter}");
 
-    expect(onAddModel).toHaveBeenCalledWith("kimi-k3");
+    expect(onAddModel).toHaveBeenCalledWith("glm-5.3");
   });
 });

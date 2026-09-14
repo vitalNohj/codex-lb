@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Boxes } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,32 +16,64 @@ export type SidecarIntegrationsCardProps = {
   settings: DashboardSettings;
   busy: boolean;
   onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
+  /**
+   * Location hash from the owning page, e.g. `#opencode-go-sidecar`.
+   *
+   * Supplied by the page rather than read from router context here, so this
+   * card stays usable outside a Router.
+   */
+  locationHash?: string;
 };
 
 type IntegrationTab = {
   value: string;
   label: string;
+  /** Anchor id this integration's card renders, used for deep links. */
+  sectionId: string;
   enabled: boolean;
   render: () => ReactNode;
 };
 
-export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarIntegrationsCardProps) {
+/**
+ * Resolves a `/settings#<section-id>` hash to the tab that owns it.
+ *
+ * Inactive tab panels are unmounted, so an integration's anchor does not exist
+ * in the DOM until its tab is selected. Without this, the Accounts page's
+ * "Configure" link lands on the Settings page with nothing revealed.
+ */
+function tabValueForHash(hash: string, tabs: IntegrationTab[]): string | null {
+  const sectionId = hash.replace(/^#/, "");
+  if (!sectionId) {
+    return null;
+  }
+  return tabs.find((tab) => tab.sectionId === sectionId)?.value ?? null;
+}
+
+export function SidecarIntegrationsCard({
+  settings,
+  busy,
+  onSave,
+  locationHash = "",
+}: SidecarIntegrationsCardProps) {
   const tabs: IntegrationTab[] = [
     {
       value: "claude",
       label: "CLIProxyAPI",
+      sectionId: "claude-sidecar",
       enabled: settings.claudeSidecarEnabled ?? false,
       render: () => <ClaudeSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
     {
       value: "openrouter",
       label: "OpenRouter",
+      sectionId: "openrouter-sidecar",
       enabled: settings.openrouterSidecarEnabled ?? false,
       render: () => <OpenRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
     {
       value: "orcarouter",
       label: "OrcaRouter",
+      sectionId: "orcarouter-sidecar",
       enabled: settings.orcarouterSidecarEnabled ?? false,
       render: () => <OrcaRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
@@ -50,6 +82,7 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
           {
             value: "omniroute",
             label: "OmniRoute",
+            sectionId: "omniroute-sidecar",
             enabled: settings.omnirouteSidecarEnabled ?? false,
             render: () => <OmniRouteSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
           },
@@ -58,18 +91,42 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
     {
       value: "ollama",
       label: "Ollama",
+      sectionId: "ollama-sidecar",
       enabled: settings.ollamaSidecarEnabled ?? false,
       render: () => <OllamaSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
     {
       value: "opencode-go",
       label: "OpenCode Go",
+      sectionId: "opencode-go-sidecar",
       enabled: settings.opencodeGoSidecarEnabled ?? false,
       render: () => <OpenCodeGoSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
   ];
 
-  const [activeTab] = useState(() => (tabs.find((tab) => tab.enabled) ?? tabs[0]).value);
+  const hashTab = tabValueForHash(locationHash, tabs);
+  // A manual click wins, but only until the hash changes again - otherwise
+  // clicking a tab would permanently deafen the page to later Configure links.
+  // Recording the hash the click happened under keeps this derived, with no
+  // state-syncing effect.
+  const [selection, setSelection] = useState<{ tab: string; hash: string } | null>(null);
+  const activeTab =
+    (selection?.hash === locationHash ? selection.tab : null) ??
+    hashTab ??
+    (tabs.find((tab) => tab.enabled) ?? tabs[0]).value;
+
+  // The anchor only exists once its panel is mounted, so scroll after selection
+  // rather than relying on the browser's initial hash jump.
+  useEffect(() => {
+    if (!hashTab) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(hashTab === activeTab ? locationHash.replace(/^#/, "") : "")
+        ?.scrollIntoView({ block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, locationHash, hashTab]);
 
   return (
     <section id="external-integrations" className="rounded-xl border bg-card p-5">
@@ -86,7 +143,10 @@ export function SidecarIntegrationsCard({ settings, busy, onSave }: SidecarInteg
           </div>
         </div>
 
-        <Tabs defaultValue={activeTab}>
+        <Tabs
+          value={activeTab}
+          onValueChange={(tab) => setSelection({ tab, hash: locationHash })}
+        >
           {/*
             Tab labels never wrap, so past a handful of integrations the row is
             wider than a phone viewport. Scrolling the row keeps every label

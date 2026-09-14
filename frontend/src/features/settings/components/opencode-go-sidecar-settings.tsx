@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Rocket } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
 import { OpenCodeGoModelsBrowser } from "@/features/settings/components/opencode-go-models-browser";
+import { ClearStoredApiKey } from "@/features/settings/components/sidecar-clear-api-key";
 import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
 import { useOpenCodeGoSidecar } from "@/features/settings/hooks/use-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -29,6 +31,7 @@ export function OpenCodeGoSidecarSettings({
   const { statusQuery, modelsQuery, testMutation } = useOpenCodeGoSidecar({
     modelsEnabled: sidecarEnabled && sidecarApiKeyConfigured,
   });
+  const [clearError, setClearError] = useState<string | null>(null);
 
   const status = statusQuery.data;
   const models = modelsQuery.data?.models ?? [];
@@ -58,16 +61,15 @@ export function OpenCodeGoSidecarSettings({
             >
               OpenCode console
             </a>
-            . Seeded prefix <code>opencode-go/</code> is stripped before forwarding, so{" "}
-            <code>opencode-go/kimi-k3</code> reaches the provider as <code>kimi-k3</code>. Go is a
-            separate base path from OpenCode Zen; a Go key on a Zen URL bills Zen credits instead.
+            . Add the prefix <code>opencode-go/</code> with stripping on, so{" "}
+            <code>opencode-go/kimi-k3</code> reaches the provider as <code>kimi-k3</code>. Spell it
+            with a hyphen: <code>opencode_go/</code> does not route. Go is a separate base path from
+            OpenCode Zen, and a Zen base URL is rejected on save.
           </>
         ),
         baseUrlPlaceholder: DEFAULT_BASE_URL,
         apiKeyPlaceholder: "OpenCode Go API key",
         apiKeyConfigured: sidecarApiKeyConfigured,
-        clearApiKeyDescription:
-          "The stored OpenCode Go key is deleted immediately. Model discovery and routing fail until a new key is added. The key is never displayed, so it cannot be recovered from this page.",
         externalLink: { href: "https://opencode.ai/docs/go", label: "OpenCode Go docs" },
       }}
       initial={{
@@ -80,7 +82,6 @@ export function OpenCodeGoSidecarSettings({
         requestTimeout:
           settings.opencodeGoSidecarRequestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
         cacheTtl: settings.opencodeGoSidecarModelsCacheTtlSeconds ?? DEFAULT_MODELS_CACHE_TTL_SECONDS,
-        defaultReasoningEffort: settings.opencodeGoSidecarDefaultReasoningEffort ?? null,
       }}
       models={{
         rows: models,
@@ -91,6 +92,7 @@ export function OpenCodeGoSidecarSettings({
             selectedModels={selectedModels}
             isLoading={isLoading}
             configured={sidecarApiKeyConfigured}
+            enabled={sidecarEnabled}
             onAddModel={onAddModel}
           />
         ),
@@ -98,8 +100,6 @@ export function OpenCodeGoSidecarSettings({
       onSave={onSave}
       onTestConnection={() => testMutation.mutateAsync()}
       buildEnablePatch={(enabled) => ({ opencodeGoSidecarEnabled: enabled })}
-      buildClearApiKeyPatch={() => ({ opencodeGoSidecarClearApiKey: true })}
-      buildEffortPatch={(effort) => ({ opencodeGoSidecarDefaultReasoningEffort: effort })}
       buildPatch={(state) => ({
         opencodeGoSidecarBaseUrl: state.baseUrl,
         opencodeGoSidecarModelPrefixes: state.prefixes,
@@ -126,11 +126,32 @@ export function OpenCodeGoSidecarSettings({
         <SidecarIntegrationCard.Fields>
           <SidecarIntegrationCard.BaseUrl />
           <SidecarIntegrationCard.Secrets />
-          <SidecarIntegrationCard.ClearApiKey />
+          {/*
+            Clearing is the only path that removes a secret, and it is separate
+            from the ordinary save so an unchanged form can never wipe a stored
+            key by omission.
+          */}
+          <ClearStoredApiKey
+            apiKeyConfigured={sidecarApiKeyConfigured}
+            integrationName="OpenCode Go"
+            description="The stored OpenCode Go key is deleted immediately. Model discovery and routing fail until a new key is added. The key is never displayed, so it cannot be recovered from this page."
+            disabled={busy}
+            onClear={async () => {
+              setClearError(null);
+              await onSave({ opencodeGoSidecarClearApiKey: true });
+            }}
+            onError={setClearError}
+          />
+          {clearError ? <AlertMessage variant="error">{clearError}</AlertMessage> : null}
           <SidecarIntegrationCard.Prefixes />
           <SidecarIntegrationCard.FullModels />
+          {/*
+            No reasoning-effort override: the backend contract exposes no
+            `...DefaultReasoningEffort` field for OpenCode Go, and a control that
+            cannot be persisted would be a lie. If the backend adds one later,
+            drop `SidecarIntegrationCard.ReasoningEffort` in here.
+          */}
           <SidecarIntegrationCard.DiscoveredModels />
-          <SidecarIntegrationCard.ReasoningEffort />
           <SidecarIntegrationCard.Timeouts />
           <OpenCodeGoBalanceNote />
           <SidecarIntegrationCard.Status />

@@ -54,15 +54,31 @@ describe("OpenCodeGoSidecarSettings", () => {
 
   it("starts disabled and does not enable itself when models are discovered", async () => {
     const user = userEvent.setup();
-    const { onSave } = renderSettings(CONFIGURED_SETTINGS);
+    // Enabled settings so discovery actually runs; enabling must still be a
+    // separate deliberate act, never a consequence of discovering models.
+    const { onSave } = renderSettings(ENABLED_SETTINGS);
 
     await openDiscoveredModels(user);
-    await screen.findAllByText("kimi-k3");
+    await screen.findAllByText("glm-5.3");
+
+    onSave.mockClear();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("does not discover models while the integration is disabled, and says so honestly", async () => {
+    const user = userEvent.setup();
+    renderSettings(CONFIGURED_SETTINGS);
+
+    await openDiscoveredModels(user);
 
     expect(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" })).not.toBeChecked();
-    expect(onSave).not.toHaveBeenCalledWith(
-      expect.objectContaining({ opencodeGoSidecarEnabled: true }),
-    );
+    expect(screen.queryByText("glm-5.3")).not.toBeInTheDocument();
+    // The backend returns an empty catalogue without an upstream call while
+    // disabled, so the UI must not report that as "no models exist".
+    expect(
+      await screen.findByText(/not discovered while the integration is disabled/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No models returned by OpenCode Go.")).not.toBeInTheDocument();
   });
 
   it("enables the integration only from the deliberate toggle", async () => {
@@ -155,11 +171,11 @@ describe("OpenCodeGoSidecarSettings", () => {
 
     it("keeps the key out of every rendered surface", async () => {
       const user = userEvent.setup();
-      const { container } = renderSettings(CONFIGURED_SETTINGS);
+      const { container } = renderSettings(ENABLED_SETTINGS);
 
       await user.type(screen.getByLabelText(/API key/), "sk-go-should-not-leak");
       await openDiscoveredModels(user);
-      await screen.findAllByText("kimi-k3");
+      await screen.findAllByText("glm-5.3");
 
       expect(container.textContent).not.toContain("sk-go-should-not-leak");
     });
@@ -217,12 +233,12 @@ describe("OpenCodeGoSidecarSettings", () => {
   });
 
   describe("discovered models", () => {
-    it("shows the routable count alongside the discovered total", async () => {
+    it("shows the supported count alongside the discovered total", async () => {
       renderSettings(ENABLED_SETTINGS);
 
-      // Five discovered, three of which the backend advertises as routable.
+      // Six advertised, three of which the backend marks supported.
       expect(
-        await screen.findByRole("button", { name: /Discovered models \(5\).*3 routable/ }),
+        await screen.findByRole("button", { name: /Discovered models \(6\).*3 supported/ }),
       ).toBeInTheDocument();
     });
 
@@ -243,22 +259,24 @@ describe("OpenCodeGoSidecarSettings", () => {
 
       await openDiscoveredModels(user);
 
-      const row = (await screen.findByText("hy4-preview")).closest("li");
+      const row = (await screen.findByText("some-unlisted-preview")).closest("li");
       expect(within(row as HTMLElement).getByText("Protocol unknown")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Unavailable hy4-preview" })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Unavailable some-unlisted-preview" }),
+      ).toBeDisabled();
     });
 
-    it("refuses to offer a known protocol the backend does not route", async () => {
+    it("refuses to offer a known protocol the backend does not dispatch", async () => {
       const user = userEvent.setup();
       renderSettings(ENABLED_SETTINGS);
 
       await openDiscoveredModels(user);
 
-      expect(await screen.findByText(/Messages protocol not implemented/)).toBeInTheDocument();
+      expect(await screen.findByText(/Messages routing not supported yet/)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Unavailable qwen3.8-max" })).toBeDisabled();
     });
 
-    it("adds a routable model as a full model and persists it", async () => {
+    it("adds a supported model as a full model and persists it", async () => {
       const user = userEvent.setup();
       const { onSave } = renderSettings(ENABLED_SETTINGS);
 
@@ -277,16 +295,18 @@ describe("OpenCodeGoSidecarSettings", () => {
       );
     });
 
-    it("warns about a privacy-sensitive model without selecting it", async () => {
+    it("keeps a privacy-sensitive /responses model unavailable at this milestone", async () => {
       const user = userEvent.setup();
       renderSettings(ENABLED_SETTINGS);
 
       await openDiscoveredModels(user);
 
-      expect(await screen.findByText("Trains on prompts, not ZDR")).toBeInTheDocument();
+      // muse-spark-1.3-contributor trains on prompts and is not ZDR. It is
+      // /responses-only, so the backend marks it unsupported and it cannot be
+      // selected here at all.
       expect(
-        screen.getByRole("button", { name: "Add full model muse-spark-1.3-contributor" }),
-      ).toBeEnabled();
+        await screen.findByRole("button", { name: "Unavailable muse-spark-1.3-contributor" }),
+      ).toBeDisabled();
       expect(
         within(
           screen.getByLabelText("Configured full models for OpenCode Go Integration"),
@@ -320,10 +340,25 @@ describe("OpenCodeGoSidecarSettings", () => {
   });
 
   describe("routing controls", () => {
-    it("seeds the documented opencode-go/ prefix with stripping on", () => {
+    it("renders the server's prefixes without inventing one on upgrade", () => {
+      // The server seeds `opencode-go/` on fresh install only, so an upgraded
+      // deployment sends an empty list and the UI must not fabricate an entry.
       renderSettings(CONFIGURED_SETTINGS);
 
-      // The callout mentions the prefix too, so assert on the configured entry.
+      expect(screen.getByText("No prefixes configured.")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("checkbox", { name: /Remove prefix .* before forwarding/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders a server-seeded prefix with its strip flag", () => {
+      renderSettings(
+        createDashboardSettings({
+          opencodeGoSidecarApiKeyConfigured: true,
+          opencodeGoSidecarModelPrefixes: [{ prefix: "opencode-go/", strip: true }],
+        }),
+      );
+
       expect(
         screen.getByText("opencode-go/", { selector: "span.font-mono" }),
       ).toBeInTheDocument();
@@ -338,20 +373,25 @@ describe("OpenCodeGoSidecarSettings", () => {
 
       await user.type(
         screen.getByLabelText("New prefix for OpenCode Go Integration"),
-        "ocgo/",
+        "opencode-go/",
       );
       await user.click(screen.getByRole("button", { name: "Add prefix" }));
 
       await waitFor(() =>
         expect(onSave).toHaveBeenLastCalledWith(
           expect.objectContaining({
-            opencodeGoSidecarModelPrefixes: [
-              { prefix: "opencode-go/", strip: true },
-              { prefix: "ocgo/", strip: false },
-            ],
+            opencodeGoSidecarModelPrefixes: [{ prefix: "opencode-go/", strip: false }],
           }),
         ),
       );
+    });
+
+    it("tells the operator the hyphen spelling is the one that routes", () => {
+      renderSettings(CONFIGURED_SETTINGS);
+
+      // Backend contract: prefix_variants' -/_ interchange applies only when the
+      // separator is the final character, so `opencode_go/` does not resolve.
+      expect(screen.getByText(/does not route/)).toBeInTheDocument();
     });
 
     it("rejects a prefix another integration already owns", async () => {

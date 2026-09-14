@@ -400,61 +400,19 @@ const orcarouterSidecarModels = [
   { id: "deepseek/deepseek-chat", created: 425, ownedBy: "deepseek" },
 ];
 
-// OpenCode Go advertises routability and privacy per model, so the fixture
-// covers each state the settings UI has to render honestly: a plain routable
-// model, a routable-but-privacy-sensitive one, a known protocol codex-lb does
-// not route yet, and a model whose protocol the backend cannot determine.
+// Shape and field names come from OpenCodeGoSidecarModelSummary in the backend
+// contract (data/codexlb-opencode-go-integration/contract.md section 3): the
+// `glm-5.3` row is that document's literal example. The fixture covers every
+// state the settings UI must render: a supported chat model, an already-mapped
+// /messages and /responses model that this milestone cannot dispatch, and an id
+// the pinned docs map does not classify at all.
 const opencodeGoSidecarModels = [
-  {
-    id: "kimi-k3",
-    created: 523,
-    ownedBy: "moonshotai",
-    protocol: "chat_completions",
-    routable: true,
-    unavailableReason: null,
-    privacySensitive: false,
-    privacyNote: null,
-  },
-  {
-    id: "glm-5.3",
-    created: 524,
-    ownedBy: "zai",
-    protocol: "chat_completions",
-    routable: true,
-    unavailableReason: null,
-    privacySensitive: false,
-    privacyNote: null,
-  },
-  {
-    id: "muse-spark-1.3-contributor",
-    created: 525,
-    ownedBy: "meta",
-    protocol: "responses",
-    routable: true,
-    unavailableReason: null,
-    privacySensitive: true,
-    privacyNote: "Trains on prompts, not ZDR",
-  },
-  {
-    id: "qwen3.8-max",
-    created: 526,
-    ownedBy: "alibaba",
-    protocol: "messages",
-    routable: false,
-    unavailableReason: "Messages protocol not implemented",
-    privacySensitive: false,
-    privacyNote: null,
-  },
-  {
-    id: "hy4-preview",
-    created: 527,
-    ownedBy: "opencode",
-    protocol: null,
-    routable: false,
-    unavailableReason: "Protocol unknown",
-    privacySensitive: false,
-    privacyNote: null,
-  },
+  { id: "glm-5.3", created: 1789353162, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "kimi-k3", created: 1789353163, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "deepseek-v4-flash", created: 1789353164, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "qwen3.8-max", created: 1789353165, ownedBy: "opencode", protocol: "messages", supported: false },
+  { id: "muse-spark-1.3-contributor", created: 1789353166, ownedBy: "opencode", protocol: "responses", supported: false },
+  { id: "some-unlisted-preview", created: 1789353167, ownedBy: "opencode", protocol: "unknown", supported: false },
 ];
 
 function parseDateValue(value: string | null): number | null {

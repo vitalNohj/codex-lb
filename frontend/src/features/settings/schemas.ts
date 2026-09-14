@@ -259,9 +259,11 @@ export const DashboardSettingsSchema = z
       .optional()
       .default("https://opencode.ai/zen/go/v1"),
     opencodeGoSidecarApiKeyConfigured: z.boolean().optional().default(false),
-    opencodeGoSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([
-      { prefix: "opencode-go/", strip: true },
-    ]),
+    // The server seeds `opencode-go/` on a fresh install only; existing
+    // deployments get an empty list so the operator opts in and a prefix
+    // collision can be reported before anything is persisted. The dashboard
+    // therefore renders whatever the server sends and seeds nothing itself.
+    opencodeGoSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
     opencodeGoSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
     opencodeGoSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
     opencodeGoSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
@@ -275,7 +277,6 @@ export const DashboardSettingsSchema = z
       .optional()
       .default(null),
     opencodeGoSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
-    opencodeGoSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     guestAccessEnabled: z.boolean().optional().default(false),
     guestPasswordConfigured: z.boolean().optional().default(false),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional().default(false),
@@ -431,7 +432,6 @@ export const SettingsUpdateRequestSchema = z
     opencodeGoSidecarConnectTimeoutSeconds: z.number().positive().optional(),
     opencodeGoSidecarRequestTimeoutSeconds: z.number().positive().optional(),
     opencodeGoSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
-    opencodeGoSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
     guestAccessEnabled: z.boolean().optional(),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional(),
     // Tri-state overrides: absent = unchanged, null = clear (inherit env
@@ -587,41 +587,35 @@ export const OllamaSidecarModelSummarySchema = z.object({
 /**
  * Wire protocol the backend advertises for a discovered OpenCode Go model.
  *
- * OpenCode Go serves different models on `/chat/completions`, `/messages`, and
- * `/responses`, and the published mapping drifts. The backend is the only owner
- * of that mapping; the dashboard renders whatever it advertises and treats an
- * absent value as unknown, never as a safe default.
+ * OpenCode Go serves models on `/chat/completions`, `/messages`, and
+ * `/responses`. `"unknown"` is a real value the backend sends for an id the
+ * live listing returned but the pinned docs map does not classify - it is not
+ * an absence, and it is never treated as a usable default.
+ *
+ * Mirrors `OpenCodeGoSidecarModelSummary.protocol` in the backend contract.
  */
 export const OpenCodeGoSidecarProtocolSchema = z.enum([
   "chat_completions",
   "messages",
   "responses",
+  "unknown",
 ]);
 
 export const OpenCodeGoSidecarModelSummarySchema = z.object({
   id: z.string(),
   created: z.number().int().nullable().optional(),
   ownedBy: z.string().nullable().optional(),
-  /** Advertised wire protocol; `null`/absent means the backend does not know. */
-  protocol: OpenCodeGoSidecarProtocolSchema.nullable().optional().default(null),
+  /** Upstream endpoint this model id is served on. */
+  protocol: OpenCodeGoSidecarProtocolSchema.optional().default("unknown"),
   /**
-   * Whether the backend will actually route this model today.
+   * Whether this build can dispatch the model. True only for
+   * `chat_completions` at the current milestone; `protocol: "unknown"` is
+   * always false.
    *
-   * `false` covers both "protocol unknown" and "protocol known but not yet
-   * implemented". A model the backend cannot route must never be presented as
-   * selectable, and an unknown protocol is never treated as routable.
+   * Defaulting to false keeps an older backend that omits the field from
+   * silently offering models it cannot route.
    */
-  routable: z.boolean().optional().default(false),
-  /** Short backend-supplied reason shown when `routable` is false. */
-  unavailableReason: z.string().nullable().optional().default(null),
-  /**
-   * Whether the provider documents this model as training on prompts or as
-   * lacking zero data retention. Used to warn before selection; never to
-   * auto-select or auto-exclude.
-   */
-  privacySensitive: z.boolean().optional().default(false),
-  /** Human-readable privacy qualifier, e.g. "Trains on prompts, not ZDR". */
-  privacyNote: z.string().nullable().optional().default(null),
+  supported: z.boolean().optional().default(false),
 });
 
 export const OpenCodeGoSidecarStatusResponseSchema = z.object({
@@ -828,7 +822,6 @@ type OpenCodeGoSidecarSettingsFields = Pick<
   | "opencodeGoSidecarLastHealthMessage"
   | "opencodeGoSidecarLastCheckedAt"
   | "opencodeGoSidecarLastModelCount"
-  | "opencodeGoSidecarDefaultReasoningEffort"
 >;
 
 type ClaudeSidecarSettingsFields = Pick<

@@ -26,13 +26,14 @@ function arg(name, fallback) {
 const PORT = Number(arg("port", "4188"));
 const SCENARIO = arg("scenario", "configured");
 
+// OpenCodeGoSidecarModelSummary per the backend contract section 3.
 const MODELS = [
-  { id: "kimi-k3", created: 523, ownedBy: "moonshotai", protocol: "chat_completions", routable: true, unavailableReason: null, privacySensitive: false, privacyNote: null },
-  { id: "glm-5.3", created: 524, ownedBy: "zai", protocol: "chat_completions", routable: true, unavailableReason: null, privacySensitive: false, privacyNote: null },
-  { id: "deepseek-v4-flash", created: 525, ownedBy: "deepseek", protocol: "chat_completions", routable: true, unavailableReason: null, privacySensitive: false, privacyNote: null },
-  { id: "muse-spark-1.3-contributor", created: 526, ownedBy: "meta", protocol: "responses", routable: true, unavailableReason: null, privacySensitive: true, privacyNote: "Trains on prompts, not ZDR" },
-  { id: "qwen3.8-max", created: 527, ownedBy: "alibaba", protocol: "messages", routable: false, unavailableReason: "Messages protocol not implemented", privacySensitive: false, privacyNote: null },
-  { id: "hy4-preview", created: 528, ownedBy: "opencode", protocol: null, routable: false, unavailableReason: "Protocol unknown", privacySensitive: false, privacyNote: null },
+  { id: "glm-5.3", created: 1789353162, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "kimi-k3", created: 1789353163, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "deepseek-v4-flash", created: 1789353164, ownedBy: "opencode", protocol: "chat_completions", supported: true },
+  { id: "qwen3.8-max", created: 1789353165, ownedBy: "opencode", protocol: "messages", supported: false },
+  { id: "muse-spark-1.3-contributor", created: 1789353166, ownedBy: "opencode", protocol: "responses", supported: false },
+  { id: "some-unlisted-preview", created: 1789353167, ownedBy: "opencode", protocol: "unknown", supported: false },
 ];
 
 const SCENARIOS = {
@@ -96,8 +97,8 @@ const SETTINGS = {
   opencodeGoSidecarEnabled: scenario.enabled,
   opencodeGoSidecarBaseUrl: "https://opencode.ai/zen/go/v1",
   opencodeGoSidecarApiKeyConfigured: scenario.configured,
-  opencodeGoSidecarModelPrefixes: [{ prefix: "opencode-go/", strip: true }],
-  opencodeGoSidecarFullModels: scenario.enabled ? ["kimi-k3"] : [],
+  opencodeGoSidecarModelPrefixes: scenario.configured ? [{ prefix: "opencode-go/", strip: true }] : [],
+  opencodeGoSidecarFullModels: scenario.enabled ? ["glm-5.3"] : [],
   opencodeGoSidecarConnectTimeoutSeconds: 8,
   opencodeGoSidecarRequestTimeoutSeconds: 600,
   opencodeGoSidecarModelsCacheTtlSeconds: 60,
