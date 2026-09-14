@@ -390,6 +390,65 @@ describe("OpenCodeGoSidecarSettings", () => {
       resolveSave?.();
     });
 
+    it("adopts a server-side enable on a card that mounted disabled", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={vi.fn()} />
+        </QueryClientProvider>
+      );
+      // Mounted disabled: local enable state seeds false.
+      const { rerender } = render(view(CONFIGURED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      expect(
+        await screen.findByText(/not discovered while the integration is disabled/i),
+      ).toBeInTheDocument();
+
+      // A settings refresh reports it enabled - no remount, same QueryClient.
+      // Discovery now loads, so the rows must become genuinely selectable.
+      rerender(view({ ...CONFIGURED_SETTINGS, opencodeGoSidecarEnabled: true }));
+
+      expect(await screen.findByRole("button", { name: "Add full model glm-5.3" })).toBeEnabled();
+      expect(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" })).toBeChecked();
+    });
+
+    it("does not resurrect addability from a refresh that repeats the pre-disable value", async () => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      let resolveSave: (() => void) | undefined;
+      const onSave = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveSave = () => resolve(); }),
+      );
+      const view = (settings: DashboardSettings) => (
+        <QueryClientProvider client={queryClient}>
+          <OpenCodeGoSidecarSettings settings={settings} busy={false} onSave={onSave} />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(ENABLED_SETTINGS));
+
+      await openDiscoveredModels(user);
+      await user.click(screen.getByRole("switch", { name: "Enable OpenCode Go Integration" }));
+      expect(await screen.findByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+
+      // An unrelated re-render lands mid-disable, still carrying the stale
+      // enabled=true the server has not yet been told to change. The operator's
+      // outstanding intent must win, or the rows flicker back to addable.
+      rerender(view(ENABLED_SETTINGS));
+
+      expect(screen.getByRole("button", { name: "Unavailable glm-5.3" })).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: "Add full model glm-5.3" }),
+      ).not.toBeInTheDocument();
+
+      resolveSave?.();
+    });
+
     it("treats a server-side disable as unusable even though the local switch is untouched", async () => {
       const user = userEvent.setup();
       const queryClient = new QueryClient({

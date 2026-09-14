@@ -403,7 +403,21 @@ function SidecarIntegrationCardProvider({
   buildEffortPatch,
   children,
 }: SidecarIntegrationCardProviderProps) {
-  const [enabled, setEnabledState] = useState(initial.enabled);
+  // Enable state has two writers: the operator's switch and the server. The
+  // local value is only meaningful while the operator has an outstanding change
+  // the server has not confirmed yet; otherwise the server value is
+  // authoritative, so a refresh that enables a card which mounted disabled is
+  // adopted instead of being pinned to the seed value forever.
+  //
+  // Recording which server value the local intent was formed against is what
+  // keeps this coherent without an effect: the intent survives re-renders that
+  // still carry the stale pre-change value, and is dropped as soon as the
+  // server reports something new.
+  const [enableIntent, setEnableIntent] = useState<{ value: boolean; against: boolean } | null>(
+    null,
+  );
+  const enabled =
+    enableIntent && enableIntent.against === initial.enabled ? enableIntent.value : initial.enabled;
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
   const [apiKey, setApiKey] = useState("");
   const [managementKey, setManagementKey] = useState("");
@@ -497,7 +511,7 @@ function SidecarIntegrationCardProvider({
   };
 
   const setEnabled = (nextEnabled: boolean) => {
-    setEnabledState(nextEnabled);
+    setEnableIntent({ value: nextEnabled, against: initial.enabled });
     void onSave(buildEnablePatch(nextEnabled));
   };
 

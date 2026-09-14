@@ -247,3 +247,53 @@ test("rows stop being addable the instant the switch goes off, while the save is
   await expect(unavailable).toBeDisabled();
   expect(sawAddDuringPending).toBe(false);
 });
+
+test("a server-side enable on a card that loaded disabled becomes genuinely selectable", async ({ page }) => {
+  const evidence = process.env.OPENCODE_GO_EVIDENCE_DIR;
+  // The page loads with the integration OFF, then a settings refetch reports it
+  // ON - no remount, exactly the real refresh path.
+  let enabled = false;
+  await page.route("**/api/**", async (route) => {
+    const p = new URL(route.request().url()).pathname.replace(/^\/codex/, "");
+    let body: unknown = {};
+    if (p === "/api/dashboard-auth/session") body = authSession;
+    else if (p === "/api/settings") body = { ...GO_SETTINGS, opencodeGoSidecarEnabled: enabled };
+    else if (p === "/api/settings/upstream-proxy") body = upstreamProxyAdmin;
+    else if (p === "/api/opencode-go-sidecar/status") body = goStatus;
+    else if (p === "/api/opencode-go-sidecar/models") body = { models: OPENCODE_GO_MODELS };
+    else if (p.endsWith("/status")) body = emptySidecar("https://example.invalid");
+    else if (p.endsWith("/models")) body = { models: [] };
+    else if (p === "/api/accounts") body = { accounts: [] };
+    else if (p === "/api/api-keys" || p === "/api/api-keys/") body = { apiKeys: [] };
+    await route.fulfill({ json: body });
+  });
+  await page.route("http://localhost:4174/codex/settings", async (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: await readFile(new URL("../.opencode-go-build/codex/index.html", import.meta.url), "utf8"),
+    }),
+  );
+
+  await page.goto("http://localhost:4174/codex/settings#opencode-go-sidecar");
+  await page.getByRole("button", { name: /Discovered models/ }).click();
+  await expect(page.getByText(/not discovered while the integration is disabled/i)).toBeVisible();
+
+  // Server now reports enabled. The app's QueryClient sets staleTime 30s and
+  // refetchOnWindowFocus false, so an in-session refetch cannot be forced
+  // within a test's lifetime; a reload is the honest browser-level equivalent
+  // of the settings query returning the new value. The no-remount case - a
+  // refreshed prop reaching an already-mounted card - is covered by the focused
+  // component tests, which is where that transition is actually observable.
+  enabled = true;
+  await page.reload();
+  await page.getByRole("button", { name: /Discovered models/ }).click();
+
+  await expect(page.getByRole("switch", { name: "Enable OpenCode Go Integration" })).toBeChecked();
+  const add = page.getByRole("button", { name: "Add full model glm-5.3" });
+  await expect(add).toBeVisible();
+  await expect(add).toBeEnabled();
+  if (evidence) {
+    await add.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${evidence}/11-server-enable-adopted.png` });
+  }
+});
