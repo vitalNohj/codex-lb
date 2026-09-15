@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import importlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol, TypeVar, cast
@@ -37,9 +37,33 @@ from app.modules.free_model_discovery.probe import (
 from app.modules.free_model_discovery.repository import FreeModelDiscoveryRepository
 from app.modules.free_model_discovery.schemas import FREE_MODEL_PROVIDERS, FreeModelProvider
 from app.modules.free_model_discovery.service import FreeModelDiscoveryService, provider_access
+from app.modules.proxy.openrouter_sidecar_dispatch import openrouter_sidecar_config_from_settings
+from app.modules.proxy.orcarouter_sidecar_dispatch import orcarouter_sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
+
+
+async def _configured_provider_api_keys(session: AsyncSession) -> tuple[str | None, ...]:
+    """Every provider credential discovery could have used, for redaction only.
+
+    Read on the failure path, where the exception may carry upstream text that
+    echoed a key. Never raises: redacting against no key is a weaker guarantee
+    than redacting against the real ones, but it must not stop the run from
+    being marked failed - leaving the run ``running`` forever is the worse
+    outcome and the bug this path exists to prevent.
+    """
+
+    try:
+        settings = await SettingsRepository(session).get_or_create()
+        return (
+            openrouter_sidecar_config_from_settings(settings).api_key,
+            orcarouter_sidecar_config_from_settings(settings).api_key,
+        )
+    except Exception:
+        logger.warning("Could not resolve provider keys to redact a discovery failure", exc_info=True)
+        return ()
+
 
 # Poll cadence when idle. A ``wake()`` short-circuits it.
 _IDLE_POLL_SECONDS = 30.0
@@ -55,22 +79,31 @@ _RUN_ERROR_MAX_CHARS = 255
 _T = TypeVar("_T")
 
 
-def _run_error_message(exc: BaseException) -> str:
+def _run_error_message(exc: BaseException, *, api_keys: Sequence[str | None] = ()) -> str:
     """Operator-facing text for a run that died of an unexpected internal error.
 
     Deliberately the exception type plus its own message, never a traceback and
-    never settings, headers, prompts or credentials: this string is served by
-    the run API and rendered in the dashboard. It still passes through the same
-    credential-aware redaction the probe path uses, because an exception raised
-    inside a provider client can carry upstream text that echoed the key. The
-    configured key is not available on this path, so only the unconditional
-    ``Bearer``/``sk-`` patterns apply - the reason full diagnostics stay in the
-    logs, where ``logger.exception`` already put them.
+    never settings, headers or prompts: this string is served by the run API and
+    rendered in the dashboard. Full diagnostics stay in the logs, where
+    ``logger.exception`` already put them.
+
+    An exception raised inside a provider client can still carry upstream text
+    that echoed a credential, so the message is redacted against EVERY
+    configured provider key, not just the unconditional ``Bearer``/``sk-orca-``
+    patterns. Those patterns alone would miss a bare OpenRouter ``sk-`` key,
+    which has no distinguishing prefix - matching the configured value exactly
+    is what closes that gap. Redaction is applied per key because the sanitizer
+    takes one credential at a time.
     """
 
     detail = str(exc).strip()
     described = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-    redacted = " ".join(redact_provider_text(f"discovery run failed: {described}", api_key=None).split())
+    redacted = f"discovery run failed: {described}"
+    for api_key in api_keys:
+        redacted = redact_provider_text(redacted, api_key=api_key)
+    # A final unconditional pass, so text is still sanitized when no key could
+    # be resolved (e.g. the settings read itself is what failed).
+    redacted = " ".join(redact_provider_text(redacted, api_key=None).split())
     if len(redacted) <= _RUN_ERROR_MAX_CHARS:
         return redacted
     return redacted[: _RUN_ERROR_MAX_CHARS - 3] + "..."
@@ -216,8 +249,12 @@ class FreeModelDiscoveryRunner:
 
         try:
             async with get_background_session() as session:
+                # Resolve the configured credentials while settings are still
+                # bound, so the failure text can be redacted against the real
+                # keys rather than pattern-guessed.
+                api_keys = await _configured_provider_api_keys(session)
                 await FreeModelDiscoveryRepository(session).fail_run(
-                    run_id, finished_at=utcnow(), error_message=_run_error_message(exc)
+                    run_id, finished_at=utcnow(), error_message=_run_error_message(exc, api_keys=api_keys)
                 )
         except asyncio.CancelledError:
             raise
@@ -428,7 +465,12 @@ class FreeModelDiscoveryRunner:
                 status = "expired"
             else:
                 status = "completed"
-            await repository.finish_run(run_id, status=status, finished_at=now)
+            finished = await repository.finish_run(run_id, status=status, finished_at=now)
+        if not finished:
+            # Another writer ended this run between the read above and the
+            # guarded write; its terminal state is the truthful one.
+            logger.info("Free model discovery run was already finished by another writer run_id=%s", run_id)
+            return
         logger.info("Free model discovery run finished run_id=%s status=%s", run_id, status)
 
 

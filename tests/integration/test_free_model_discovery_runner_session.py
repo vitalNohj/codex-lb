@@ -264,6 +264,33 @@ async def test_failure_text_never_leaks_a_provider_credential(async_client):
 
 
 @pytest.mark.asyncio
+async def test_failure_text_redacts_a_bare_openrouter_key(async_client):
+    """A bare ``sk-`` key has no prefix the unconditional patterns recognise.
+
+    ``Bearer``/``sk-orca-`` matching alone would persist an OpenRouter key an
+    upstream echoed without a label, so the failure text is redacted against
+    the CONFIGURED credentials as well.
+    """
+
+    del async_client
+    await _enable_openrouter_sidecar()
+    run_id = await _create_run(["vendor/model-a:free"])
+
+    runner = _FailingRunner(enabled=True)
+    # No "Bearer", no "sk-orca-": only the configured value identifies it.
+    runner.error = RuntimeError(f"rejected token {_FAKE_OPENROUTER_KEY} upstream")
+
+    await runner._drive_as_leader()
+
+    async with SessionLocal() as session:
+        run = await session.get(FreeModelDiscoveryRun, run_id)
+        assert run is not None
+        assert run.error_message is not None
+        assert _FAKE_OPENROUTER_KEY not in run.error_message
+        assert "[redacted]" in run.error_message
+
+
+@pytest.mark.asyncio
 async def test_cancelled_driver_leaves_the_run_running_for_the_next_boot(async_client):
     """Cancellation is shutdown, not failure.
 
@@ -301,7 +328,7 @@ async def test_failure_never_overwrites_an_already_terminal_run(async_client):
 
     now = utcnow()
     async with SessionLocal() as session:
-        await FreeModelDiscoveryRepository(session).finish_run(run_id, status="cancelled", finished_at=now)
+        assert await FreeModelDiscoveryRepository(session).finish_run(run_id, status="cancelled", finished_at=now)
 
     await FreeModelDiscoveryRunner(enabled=True)._fail_run(run_id, RuntimeError("late error"))
 
@@ -310,6 +337,38 @@ async def test_failure_never_overwrites_an_already_terminal_run(async_client):
         assert run is not None
         assert run.status == "cancelled"
         assert run.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_an_orderly_finalizer_cannot_overwrite_a_recorded_failure(async_client):
+    """The reverse race: a finalizer must not relabel a failed run.
+
+    ``_finalize`` reads the run, decides ``completed``/``cancelled``/``expired``,
+    then writes. If the error path commits ``failed`` inside that window, an
+    unguarded write would overwrite it and discard ``error_message`` - the
+    dashboard would then show a clean ``completed`` for a run that died.
+    Every terminal transition is a compare-and-set, so the first writer wins.
+    """
+
+    del async_client
+    await _enable_openrouter_sidecar()
+    run_id = await _create_run(["vendor/model-a:free"])
+
+    # The error path wins the race.
+    await FreeModelDiscoveryRunner(enabled=True)._fail_run(run_id, RuntimeError("driver died"))
+
+    # A finalizer that had already read ``running`` now tries to end the run.
+    async with SessionLocal() as session:
+        assert not await FreeModelDiscoveryRepository(session).finish_run(
+            run_id, status="completed", finished_at=utcnow()
+        )
+
+    async with SessionLocal() as session:
+        run = await session.get(FreeModelDiscoveryRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_message is not None
+        assert "RuntimeError" in run.error_message
 
 
 @pytest.mark.asyncio
