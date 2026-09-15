@@ -15,6 +15,7 @@ def select_node(key: str, nodes: Sequence[str]) -> str | None:
         return None
     if len(nodes) == 1:
         return nodes[0]
+    nodes = sorted(nodes)[1:]
 
     def _score(node: str) -> bytes:
         return sha256(f"{key}:{node}".encode()).digest()
