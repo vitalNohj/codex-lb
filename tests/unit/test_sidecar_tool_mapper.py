@@ -73,6 +73,22 @@ def test_map_sidecar_chat_tool_names_still_suffixes_distinct_clients_names_shari
     assert result.reverse_tool_names == {"Bash": "Shell", "Bash_1": "bash"}
 
 
+def test_map_sidecar_chat_tool_names_reserves_pass_through_names_against_mapped_suffixes() -> None:
+    body = {
+        "tools": [
+            {"type": "function", "function": {"name": "Bash_1", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "Shell", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}},
+        ],
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["Bash_1", "Bash", "Bash_2"]
+    assert result.reverse_tool_names == {"Bash": "Shell", "Bash_2": "bash"}
+
+
 def test_map_sidecar_chat_tool_names_keeps_valid_cursor_native_tools() -> None:
     body = {
         "tools": [{"type": "function", "function": {"name": "AskQuestion", "parameters": {"type": "object"}}}],

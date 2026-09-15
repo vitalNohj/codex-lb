@@ -905,6 +905,40 @@ def test_sanitize_sidecar_chat_messages_completes_partially_answered_parallel_to
     ]
 
 
+def test_sanitize_sidecar_chat_messages_drops_stale_tool_result_from_earlier_turn() -> None:
+    first_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "search", "arguments": "{}"}}],
+    }
+    second_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "write", "arguments": "{}"}}],
+    }
+    body = {
+        "messages": [
+            {"role": "user", "content": "go"},
+            first_turn,
+            {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+            second_turn,
+            {"role": "tool", "tool_call_id": "call_1", "content": "stale repeat"},
+            {"role": "user", "content": "and?"},
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "go"},
+        first_turn,
+        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+        second_turn,
+        {"role": "tool", "tool_call_id": "call_2", "content": _SIDECAR_UNANSWERED_TOOL_RESULT},
+        {"role": "user", "content": "and?"},
+    ]
+
+
 def test_sanitize_sidecar_chat_messages_leaves_answered_tool_calls_unchanged() -> None:
     messages = [
         {"role": "user", "content": "search weather"},

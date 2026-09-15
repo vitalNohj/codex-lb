@@ -652,13 +652,16 @@ def _filter_sidecar_messages(messages: list[JsonValue]) -> list[JsonValue]:
 
 
 def _repair_sidecar_unanswered_tool_calls(messages: list[JsonValue]) -> list[JsonValue]:
-    """Insert a placeholder ``tool`` message for every assistant ``tool_calls``
-    id that has no ``tool`` reply before the next non-tool message.
+    """Make every assistant ``tool_calls`` turn be answered by exactly its own
+    ``tool`` replies before the next non-tool message.
 
-    Placeholders go directly after the assistant turn's existing ``tool``
-    replies so the forwarded history satisfies Anthropic's tool_use/tool_result
-    adjacency rule. Only ``tool_calls`` ids are repaired; ``tool_use`` content
-    parts were already flattened into ``tool_calls`` by the Cursor normalizer.
+    A ``tool`` message is kept only when its id is still pending for the
+    immediately preceding assistant turn; stale or repeated replies are
+    dropped because Anthropic rejects a ``tool_result`` whose id is not in the
+    previous ``tool_use`` set. Placeholders for unanswered ids go directly
+    after the turn's kept replies. Only ``tool_calls`` ids are repaired;
+    ``tool_use`` content parts were already flattened into ``tool_calls`` by
+    the Cursor normalizer.
     """
     repaired: list[JsonValue] = []
     pending_ids: list[str] = []
@@ -667,8 +670,10 @@ def _repair_sidecar_unanswered_tool_calls(messages: list[JsonValue]) -> list[Jso
         role = message.get("role") if message is not None else None
         if role == "tool" and message is not None:
             answered_id = _sidecar_tool_message_call_id(message)
-            if answered_id is not None and answered_id in pending_ids:
-                pending_ids.remove(answered_id)
+            if answered_id is None or answered_id not in pending_ids:
+                logger.debug("dropped sidecar tool result %s outside its assistant turn", answered_id)
+                continue
+            pending_ids.remove(answered_id)
             repaired.append(raw_message)
             continue
         repaired.extend(_sidecar_placeholder_tool_messages(pending_ids))

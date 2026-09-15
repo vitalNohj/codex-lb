@@ -473,6 +473,9 @@ def _resolve_forward_tool_name(
         return wire_name
 
     if allow_unknown:
+        # Reserve the pass-through name so a later mapped name cannot be
+        # suffixed onto it (e.g. unknown ``Bash_1`` followed by ``bash``).
+        used_names.add(original_name)
         forward_tool_names[original_name] = original_name
         return original_name
     return None
