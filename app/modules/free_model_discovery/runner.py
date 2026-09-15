@@ -52,6 +52,12 @@ async def _configured_provider_api_keys(session: AsyncSession) -> tuple[str | No
     than redacting against the real ones, but it must not stop the run from
     being marked failed - leaving the run ``running`` forever is the worse
     outcome and the bug this path exists to prevent.
+
+    A failed lookup is rolled back before returning. The caller reuses this
+    session immediately to write the failed row, and on PostgreSQL every
+    statement in an aborted transaction is rejected until it is rolled back -
+    so swallowing the error without one would silently defeat the very path
+    this helper serves. The rollback is best-effort for the same reason.
     """
 
     try:
@@ -62,6 +68,8 @@ async def _configured_provider_api_keys(session: AsyncSession) -> tuple[str | No
         )
     except Exception:
         logger.warning("Could not resolve provider keys to redact a discovery failure", exc_info=True)
+        with contextlib.suppress(Exception):
+            await session.rollback()
         return ()
 
 

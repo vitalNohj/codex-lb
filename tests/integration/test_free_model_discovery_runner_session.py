@@ -21,6 +21,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
@@ -337,6 +338,54 @@ async def test_failure_never_overwrites_an_already_terminal_run(async_client):
         assert run is not None
         assert run.status == "cancelled"
         assert run.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_run_is_still_marked_failed_when_key_lookup_errors(async_client, monkeypatch):
+    """The best-effort redaction lookup must not cost us the failure write.
+
+    Its session is reused immediately to mark the run ``failed``. On PostgreSQL
+    a failed statement aborts the transaction and every later statement on it
+    is rejected until rollback, so swallowing the lookup error without rolling
+    back would leave the run ``running`` forever - exactly the bug this path
+    exists to prevent.
+
+    The suite runs on SQLite, which does not abort a transaction on a failed
+    statement, so the outcome assertion alone cannot distinguish the two
+    implementations. The rollback is therefore asserted directly, which is the
+    behaviour that makes the outcome hold on PostgreSQL too.
+    """
+
+    del async_client
+    await _enable_openrouter_sidecar()
+    run_id = await _create_run(["vendor/model-a:free"])
+
+    async def _explode(self):
+        raise RuntimeError("settings read failed")
+
+    monkeypatch.setattr("app.modules.settings.repository.SettingsRepository.get_or_create", _explode)
+
+    rollbacks: list[int] = []
+    original_rollback = AsyncSession.rollback
+
+    async def _counting_rollback(self):
+        rollbacks.append(1)
+        return await original_rollback(self)
+
+    monkeypatch.setattr(AsyncSession, "rollback", _counting_rollback)
+
+    await FreeModelDiscoveryRunner(enabled=True)._fail_run(run_id, RuntimeError("driver died"))
+
+    # The aborted lookup was rolled back, so the session handed to the failure
+    # write is usable on a backend that enforces transaction abort semantics.
+    assert rollbacks, "the failed key lookup must roll back before the failure write reuses the session"
+
+    async with SessionLocal() as session:
+        run = await session.get(FreeModelDiscoveryRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_message is not None
+        assert "RuntimeError" in run.error_message
 
 
 @pytest.mark.asyncio
