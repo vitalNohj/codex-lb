@@ -133,6 +133,35 @@ class FreeModelDiscoveryRepository:
         )
         await self._session.commit()
 
+    async def fail_run(self, run_id: str, *, finished_at: datetime, error_message: str) -> bool:
+        """Terminal ``failed`` transition for a driver error, guarded on ``running``.
+
+        Separate from ``finish_run`` because this is the one terminal transition
+        that is not reached by the driver's own orderly finish: it is written
+        from the error path, which may race a cancel, a deadline finalize, or
+        another replica. Conditioning the UPDATE on the run still being
+        ``running`` makes the database the arbiter, so a run that already
+        reached a truthful terminal state is never rewritten into ``failed``.
+
+        Returns whether this call performed the transition.
+        """
+
+        result = await self._session.execute(
+            update(FreeModelDiscoveryRun)
+            .where(FreeModelDiscoveryRun.id == run_id, FreeModelDiscoveryRun.status == ACTIVE_RUN_STATUS)
+            .values(status="failed", finished_at=finished_at, error_message=error_message)
+        )
+        if int(getattr(result, "rowcount", 0) or 0) <= 0:
+            await self._session.rollback()
+            return False
+        await self._session.execute(
+            update(FreeModelDiscoveryRunItem)
+            .where(FreeModelDiscoveryRunItem.run_id == run_id, FreeModelDiscoveryRunItem.state == "queued")
+            .values(state="unresolved", resolved_at=finished_at)
+        )
+        await self._session.commit()
+        return True
+
     # --- items ----------------------------------------------------------
 
     async def list_items(self, run_id: str) -> list[FreeModelDiscoveryRunItem]:
