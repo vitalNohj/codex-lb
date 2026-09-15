@@ -9,6 +9,7 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
+    _SIDECAR_UNANSWERED_TOOL_RESULT,
     CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
     SidecarUsage,
     _sidecar_request_cost,
@@ -758,7 +759,7 @@ def test_build_sidecar_chat_payload_appends_user_continuation_after_trailing_ass
     }
 
 
-def test_build_sidecar_chat_payload_appends_user_continuation_after_assistant_tool_calls() -> None:
+def test_build_sidecar_chat_payload_answers_trailing_assistant_tool_calls_instead_of_continuing() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "claude-sonnet-4-5",
@@ -782,8 +783,9 @@ def test_build_sidecar_chat_payload_appends_user_continuation_after_assistant_to
     payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
 
     assert payload.body["messages"][-1] == {
-        "role": "user",
-        "content": _SIDECAR_MESSAGE_CONTINUATION,
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": _SIDECAR_UNANSWERED_TOOL_RESULT,
     }
 
 
@@ -845,6 +847,115 @@ def test_sanitize_sidecar_chat_messages_drops_orphan_tool_messages() -> None:
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
     ]
+
+
+def test_sanitize_sidecar_chat_messages_fills_unanswered_tool_call_before_next_user_turn() -> None:
+    assistant_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+        ],
+    }
+    body = {
+        "messages": [
+            {"role": "user", "content": "search weather"},
+            assistant_turn,
+            {"role": "user", "content": "never mind, say hello"},
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "search weather"},
+        assistant_turn,
+        {"role": "tool", "tool_call_id": "call_1", "content": _SIDECAR_UNANSWERED_TOOL_RESULT},
+        {"role": "user", "content": "never mind, say hello"},
+    ]
+
+
+def test_sanitize_sidecar_chat_messages_completes_partially_answered_parallel_tool_calls() -> None:
+    assistant_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+            {"id": "call_2", "type": "function", "function": {"name": "write", "arguments": "{}"}},
+        ],
+    }
+    body = {
+        "messages": [
+            {"role": "user", "content": "do both"},
+            assistant_turn,
+            {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+            {"role": "assistant", "content": "done"},
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "do both"},
+        assistant_turn,
+        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+        {"role": "tool", "tool_call_id": "call_2", "content": _SIDECAR_UNANSWERED_TOOL_RESULT},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": _SIDECAR_MESSAGE_CONTINUATION},
+    ]
+
+
+def test_sanitize_sidecar_chat_messages_drops_stale_tool_result_from_earlier_turn() -> None:
+    first_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "search", "arguments": "{}"}}],
+    }
+    second_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "write", "arguments": "{}"}}],
+    }
+    body = {
+        "messages": [
+            {"role": "user", "content": "go"},
+            first_turn,
+            {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+            second_turn,
+            {"role": "tool", "tool_call_id": "call_1", "content": "stale repeat"},
+            {"role": "user", "content": "and?"},
+        ]
+    }
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "go"},
+        first_turn,
+        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+        second_turn,
+        {"role": "tool", "tool_call_id": "call_2", "content": _SIDECAR_UNANSWERED_TOOL_RESULT},
+        {"role": "user", "content": "and?"},
+    ]
+
+
+def test_sanitize_sidecar_chat_messages_leaves_answered_tool_calls_unchanged() -> None:
+    messages = [
+        {"role": "user", "content": "search weather"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+    ]
+    body = {"messages": list(messages)}
+
+    sanitize_sidecar_chat_messages(body)
+
+    assert body["messages"] == messages
 
 
 def test_build_sidecar_chat_payload_sanitizes_openai_tool_call_ids() -> None:

@@ -39,6 +39,56 @@ def test_map_sidecar_chat_tool_names_maps_cursor_tools_and_passes_through_unknow
     assert result.reverse_tool_names == {"Bash": "Shell", "Grep": "SemanticSearch"}
 
 
+def test_map_sidecar_chat_tool_names_drops_duplicate_tool_definitions_keeping_first() -> None:
+    body = {
+        "tools": [
+            {"type": "function", "function": {"name": "lookup", "description": "first", "parameters": {}}},
+            {"type": "function", "function": {"name": "lookup", "description": "second", "parameters": {}}},
+            {"type": "function", "function": {"name": "other", "description": "other", "parameters": {}}},
+        ],
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert [(tool["function"]["name"], tool["function"]["description"]) for tool in body["tools"]] == [
+        ("lookup", "first"),
+        ("other", "other"),
+    ]
+    assert result.reverse_tool_names == {}
+
+
+def test_map_sidecar_chat_tool_names_still_suffixes_distinct_clients_names_sharing_a_wire_name() -> None:
+    body = {
+        "tools": [
+            {"type": "function", "function": {"name": "Shell", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}},
+        ],
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["Bash", "Bash_1"]
+    assert result.reverse_tool_names == {"Bash": "Shell", "Bash_1": "bash"}
+
+
+def test_map_sidecar_chat_tool_names_reserves_pass_through_names_against_mapped_suffixes() -> None:
+    body = {
+        "tools": [
+            {"type": "function", "function": {"name": "Bash_1", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "Shell", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}},
+        ],
+        "messages": [],
+    }
+
+    result = map_sidecar_chat_tool_names(body)
+
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["Bash_1", "Bash", "Bash_2"]
+    assert result.reverse_tool_names == {"Bash": "Shell", "Bash_2": "bash"}
+
+
 def test_map_sidecar_chat_tool_names_keeps_valid_cursor_native_tools() -> None:
     body = {
         "tools": [{"type": "function", "function": {"name": "AskQuestion", "parameters": {"type": "object"}}}],
