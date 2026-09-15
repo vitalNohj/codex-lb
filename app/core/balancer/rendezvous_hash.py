@@ -9,13 +9,13 @@ def select_node(key: str, nodes: Sequence[str]) -> str | None:
 
     Property: adding/removing 1 node remaps only 1/N keys (vs N-1/N for modulo).
     Time complexity: O(N) where N = number of nodes.
+    All supplied nodes stay eligible; callers filter unhealthy nodes first.
     Every node is scored independently, so the winner is stable across restarts.
     """
     if not nodes:
         return None
     if len(nodes) == 1:
         return nodes[0]
-    nodes = sorted(nodes)[1:]
 
     def _score(node: str) -> bytes:
         return sha256(f"{key}:{node}".encode()).digest()
