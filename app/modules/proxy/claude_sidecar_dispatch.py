@@ -100,6 +100,10 @@ _SIDECAR_TOOL_CONTENT_CALL_ID_TYPES = frozenset(
     {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
 )
 _SIDECAR_MESSAGE_CONTINUATION = "Continue."
+# Anthropic rejects a ``tool_use`` that is not answered by a ``tool_result`` in
+# the next message. Agent frameworks (n8n, Flow, LangChain nodes) replay such
+# histories after an aborted tool loop, so the sidecar path fills the gap.
+_SIDECAR_UNANSWERED_TOOL_RESULT = "[tool call was not completed]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +430,7 @@ def sanitize_sidecar_chat_messages(body: dict[str, JsonValue]) -> None:
     if not isinstance(messages, list):
         return
     filtered = _filter_sidecar_messages(messages)
+    filtered = _repair_sidecar_unanswered_tool_calls(filtered)
     filtered = _ensure_sidecar_trailing_user_message(filtered)
     body["messages"] = filtered
 
@@ -644,6 +649,62 @@ def _filter_sidecar_messages(messages: list[JsonValue]) -> list[JsonValue]:
             continue
         filtered.append(message)
     return filtered
+
+
+def _repair_sidecar_unanswered_tool_calls(messages: list[JsonValue]) -> list[JsonValue]:
+    """Insert a placeholder ``tool`` message for every assistant ``tool_calls``
+    id that has no ``tool`` reply before the next non-tool message.
+
+    Placeholders go directly after the assistant turn's existing ``tool``
+    replies so the forwarded history satisfies Anthropic's tool_use/tool_result
+    adjacency rule. Only ``tool_calls`` ids are repaired; ``tool_use`` content
+    parts were already flattened into ``tool_calls`` by the Cursor normalizer.
+    """
+    repaired: list[JsonValue] = []
+    pending_ids: list[str] = []
+    for raw_message in messages:
+        message = cast(dict[str, JsonValue], raw_message) if is_json_mapping(raw_message) else None
+        role = message.get("role") if message is not None else None
+        if role == "tool" and message is not None:
+            answered_id = _sidecar_tool_message_call_id(message)
+            if answered_id is not None and answered_id in pending_ids:
+                pending_ids.remove(answered_id)
+            repaired.append(raw_message)
+            continue
+        repaired.extend(_sidecar_placeholder_tool_messages(pending_ids))
+        pending_ids = _sidecar_assistant_tool_call_ids(message) if role == "assistant" and message is not None else []
+        repaired.append(raw_message)
+    repaired.extend(_sidecar_placeholder_tool_messages(pending_ids))
+    return repaired
+
+
+def _sidecar_assistant_tool_call_ids(message: dict[str, JsonValue]) -> list[str]:
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return []
+    ids: list[str] = []
+    for tool_call in tool_calls:
+        if not is_json_mapping(tool_call):
+            continue
+        tool_call_id = cast(dict[str, JsonValue], tool_call).get("id")
+        if isinstance(tool_call_id, str) and tool_call_id and tool_call_id not in ids:
+            ids.append(tool_call_id)
+    return ids
+
+
+def _sidecar_tool_message_call_id(message: dict[str, JsonValue]) -> str | None:
+    for field in _SIDECAR_TOOL_CALL_ID_FIELDS:
+        tool_call_id = message.get(field)
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return tool_call_id
+    return None
+
+
+def _sidecar_placeholder_tool_messages(tool_call_ids: list[str]) -> list[JsonValue]:
+    return [
+        {"role": "tool", "tool_call_id": tool_call_id, "content": _SIDECAR_UNANSWERED_TOOL_RESULT}
+        for tool_call_id in tool_call_ids
+    ]
 
 
 def _ensure_sidecar_trailing_user_message(messages: list[JsonValue]) -> list[JsonValue]:

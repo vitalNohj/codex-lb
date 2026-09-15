@@ -266,6 +266,9 @@ def _map_tools_array(
     forward_tool_names: dict[str, str],
 ) -> list[JsonValue]:
     mapped_tools: list[JsonValue] = []
+    # Anthropic rejects a tools array that repeats a name; keep the first
+    # definition a client sends under each wire name and drop the rest.
+    emitted_wire_names: set[str] = set()
     for tool in tools:
         if not is_json_mapping(tool):
             continue
@@ -284,6 +287,10 @@ def _map_tools_array(
         if wire_name is None:
             mapped_tools.append(tool)
             continue
+        if wire_name in emitted_wire_names:
+            logger.debug("dropped duplicate sidecar tool definition %s", original_name)
+            continue
+        emitted_wire_names.add(wire_name)
         mapped_tools.append(_write_tool_definition(tool_dict, wire_name))
     return mapped_tools
 

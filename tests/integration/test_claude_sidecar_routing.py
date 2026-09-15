@@ -443,6 +443,67 @@ async def test_claude_non_stream_routes_to_sidecar_and_finalizes_reservation(
 
 
 @pytest.mark.asyncio
+async def test_claude_sidecar_repairs_unanswered_tool_call_history(async_client, sidecar_enabled, fake_sidecar):
+    # Shape replayed by Flow/n8n after an aborted tool loop; Anthropic rejects
+    # it with "tool_use ids were found without tool_result blocks".
+    assistant_turn = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "call_abc", "type": "function", "function": {"name": "search", "arguments": '{"q":"x"}'}},
+        ],
+    }
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "cc/claude-opus-5",
+            "messages": [
+                {"role": "user", "content": "search weather"},
+                assistant_turn,
+                {"role": "user", "content": "never mind, say hello"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "search", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    forwarded = fake_sidecar.chat_payloads[0]["messages"]
+    assert forwarded[1]["tool_calls"][0]["id"] == "call_abc"
+    assert forwarded[2] == {
+        "role": "tool",
+        "tool_call_id": "call_abc",
+        "content": "[tool call was not completed]",
+    }
+    assert forwarded[3] == {"role": "user", "content": "never mind, say hello"}
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_drops_duplicate_tool_definitions(async_client, sidecar_enabled, fake_sidecar):
+    # Anthropic rejects repeated names with "tools: Tool names must be unique."
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "cc/claude-opus-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"type": "function", "function": {"name": "lookup", "description": "first", "parameters": {}}},
+                {"type": "function", "function": {"name": "lookup", "description": "second", "parameters": {}}},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    forwarded_tools = fake_sidecar.chat_payloads[0]["tools"]
+    assert [tool["function"]["name"] for tool in forwarded_tools] == ["lookup"]
+    assert forwarded_tools[0]["function"]["description"] == "first"
+
+
+@pytest.mark.asyncio
 async def test_custom_prefixed_claude_alias_routes_to_sidecar_with_unprefixed_wire_model(
     async_client,
     sidecar_enabled,
