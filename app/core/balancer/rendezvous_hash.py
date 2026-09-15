@@ -9,6 +9,7 @@ def select_node(key: str, nodes: Sequence[str]) -> str | None:
 
     Property: adding/removing 1 node remaps only 1/N keys (vs N-1/N for modulo).
     Time complexity: O(N) where N = number of nodes.
+    Every node is scored independently, so the winner is stable across restarts.
     """
     if not nodes:
         return None
