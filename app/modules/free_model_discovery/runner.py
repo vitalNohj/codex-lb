@@ -28,6 +28,7 @@ from app.core.utils.time import utcnow
 from app.db.models import FreeModelDiscoveryRunItem
 from app.db.session import get_background_session
 from app.modules.free_model_discovery.limits import (
+    MAX_HONOURED_WAIT_SECONDS,
     cap_wait,
     describe_wait,
     group_wait_seconds,
@@ -438,6 +439,14 @@ class FreeModelDiscoveryRunner:
     ) -> float:
         now = utcnow()
         if result.verdict == "inconclusive":
+            # Persist whatever scope the vendor attributed, whatever the status
+            # carrying it. Gating this on ``rate_limited`` (i.e. HTTP 429)
+            # dropped the documented 200-with-error-body case, which still
+            # sets a scope and can still pause the group - so the pause would
+            # survive in memory while nothing durable explained it.
+            persisted_scope = result.limit_scope if result.limit_scope != "unknown" else None
+            if result.rate_limited and persisted_scope is None:
+                persisted_scope = "unknown"
             if item.attempts + 1 >= max_attempts:
                 # This probe was really issued, so it is counted here. The
                 # give-up branch used to drop it, leaving ``attempts`` one
@@ -449,23 +458,38 @@ class FreeModelDiscoveryRunner:
                     attempted=True,
                     attempted_at=now,
                     http_status=result.http_status,
-                    limit_scope=result.limit_scope if result.rate_limited else None,
+                    limit_scope=persisted_scope,
                 )
             else:
+                # A vendor wait applies to THIS item even when the limit is
+                # model-scoped, so park it until then rather than retrying it
+                # ahead of the provider's own instruction.
+                next_attempt_at = now + _INCONCLUSIVE_REQUEUE
+                if result.retry_after_seconds is not None:
+                    next_attempt_at = max(
+                        next_attempt_at,
+                        now + timedelta(seconds=min(result.retry_after_seconds, MAX_HONOURED_WAIT_SECONDS)),
+                    )
                 await repository.record_inconclusive(
                     item,
                     attempted_at=now,
-                    next_attempt_at=now + _INCONCLUSIVE_REQUEUE,
+                    next_attempt_at=next_attempt_at,
                     http_status=result.http_status,
                     outcome=result.outcome,
-                    limit_scope=result.limit_scope if result.rate_limited else None,
+                    limit_scope=persisted_scope,
                 )
             if result.rate_limited or result.retry_after_seconds is not None:
                 heuristic = pacer.on_rate_limited(result.retry_after_seconds)
-                # A vendor wait longer than the heuristic cap is honoured in
-                # full; retrying earlier than the provider asked is what earns
-                # a harder throttle.
-                return cap_wait(heuristic, result.evidence, cap_seconds=pacer.cap_seconds)
+                if result.shared_limit:
+                    # Only an explicitly shared limit blocks every model behind
+                    # this credential, so only it may hold the provider loop
+                    # past the pacing cap.
+                    return cap_wait(heuristic, result.evidence, cap_seconds=pacer.cap_seconds)
+                # A model-scoped or unknown-scope wait belongs to the offending
+                # ITEM (parked above), not to the whole queue: letting it sleep
+                # the provider loop would stall models that would have passed,
+                # which is the opposite of this change's intent.
+                return min(heuristic, pacer.cap_seconds)
             return pacer.on_inconclusive()
 
         added = False

@@ -84,6 +84,21 @@ class _FakeLease:
         return None
 
 
+async def _stop(task: "asyncio.Task[None]") -> None:
+    """Stop a driver we started mid-run.
+
+    The driver may legitimately have finished already - a run whose queue
+    drained needs no cancelling - so a missing ``CancelledError`` is not a
+    failure. Anything else it raised is still surfaced.
+    """
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 def _ok() -> tuple[int, str, dict[str, str]]:
     return (200, json.dumps({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}), {})
 
@@ -359,9 +374,7 @@ async def test_an_explicit_shared_limit_pauses_the_whole_group_once(async_client
     assert all(item.next_attempt_at is not None for item in queued)
     assert http.posted.count("m/b:free") == 0, "untried models were not pushed through the block"
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _stop(task)
 
 
 @pytest.mark.asyncio
@@ -375,9 +388,7 @@ async def test_a_shared_limit_surfaces_a_truthful_waiting_reason(async_client, s
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
     await asyncio.sleep(0.15)
     body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _stop(task)
 
     provider = body["providers"][0]
     assert provider["providerPaused"] is True
@@ -401,9 +412,7 @@ async def test_a_vendor_wait_longer_than_the_pacing_cap_is_not_shortened(async_c
     before = utcnow()
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
     await asyncio.sleep(0.15)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _stop(task)
 
     items = await _items()
     assert items[0].next_attempt_at is not None
@@ -441,9 +450,7 @@ async def test_a_deferred_wait_survives_a_restart(async_client, scripted):
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
     await asyncio.sleep(0.15)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _stop(task)
 
     # A fresh runner reads the persisted deferral, not in-memory state.
     async with SessionLocal() as session:
@@ -525,10 +532,151 @@ async def test_counts_split_never_attempted_from_retrying(async_client, scripted
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
     await asyncio.sleep(0.1)
     body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _stop(task)
 
     counts = body["counts"]
     assert counts["retrying"] + counts["awaitingFirstAttempt"] == counts["queued"]
     assert counts["retrying"] >= 1, "a probed-and-requeued item is not 'never attempted'"
+
+
+# --- review findings F1/F2 -------------------------------------------------
+
+
+def _upstream_429_with_retry_after(seconds: str = "3600") -> tuple[int, str, dict[str, str]]:
+    """Model-scoped rejection that ALSO publishes a long wait."""
+
+    return (
+        429,
+        json.dumps(
+            {
+                "error": {
+                    "code": 429,
+                    "message": "Provider returned error",
+                    "metadata": {"provider_name": "SomeUpstream", "provider_code": 429},
+                }
+            }
+        ),
+        {"Retry-After": seconds},
+    )
+
+
+def _shared_limit_in_200_body() -> tuple[int, str, dict[str, str]]:
+    """OpenRouter documents a provider failure after headers were sent as a
+    200 whose body holds only an error object."""
+
+    return (
+        200,
+        json.dumps({"error": {"code": 429, "metadata": {"error_type": "rate_limit_exceeded"}}}),
+        {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_model_scoped_wait_does_not_stall_other_models(async_client, scripted):
+    """F1: a long Retry-After on a MODEL-scoped rejection must park that item,
+    not sleep the whole provider queue.
+
+    Honouring it provider-wide would block models that would have passed - the
+    opposite of what this change is for - so the wait is bounded by the pacing
+    cap for the loop while the offending item carries the real delay.
+    """
+
+    http = scripted(
+        {
+            "m/limited:free": [_upstream_429_with_retry_after("3600")],
+            "m/ok:free": [_ok()],
+            "m/also-ok:free": [_ok()],
+        }
+    )
+    await _enable_openrouter()
+    run_id = await _create_run(["m/limited:free", "m/ok:free", "m/also-ok:free"], max_attempts=3)
+
+    # The run legitimately stays open - the limited item is parked an hour out
+    # and that wait is honoured - so drive it concurrently and assert that the
+    # OTHER models were probed promptly rather than sleeping behind it.
+    task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
+    body: dict = {}
+    for _ in range(400):
+        await asyncio.sleep(0.02)
+        body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
+        if body["counts"]["passed"] == 2:
+            break
+    await _stop(task)
+
+    assert body["counts"]["passed"] == 2, "other models were probed, not stalled behind one model's wait"
+    assert http.posted.count("m/ok:free") == 1
+    assert http.posted.count("m/also-ok:free") == 1
+    # The offending item carries the vendor wait itself.
+    by_id = {item["modelId"]: item for item in body["items"]}
+    assert by_id["m/limited:free"]["limitScope"] == "model"
+    # And the provider was never presented as paused for a model-scoped limit.
+    assert all(not provider["providerPaused"] for provider in body["providers"])
+
+
+@pytest.mark.asyncio
+async def test_a_model_scoped_wait_parks_the_offending_item_until_it_elapses(async_client, scripted):
+    """F1, other half: the vendor's wait is still respected for that item."""
+
+    del async_client
+    scripted({"m/limited:free": [_upstream_429_with_retry_after("3600")], "m/ok:free": [_ok()]})
+    await _enable_openrouter()
+    run_id = await _create_run(["m/limited:free", "m/ok:free"], max_attempts=3)
+
+    before = utcnow()
+    task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
+    for _ in range(300):
+        await asyncio.sleep(0.02)
+        async with SessionLocal() as session:
+            probed = (
+                await session.execute(
+                    select(FreeModelDiscoveryRunItem).where(
+                        FreeModelDiscoveryRunItem.model_id == "m/limited:free"
+                    )
+                )
+            ).scalar_one()
+            if probed.attempts > 0:
+                break
+    await _stop(task)
+
+    async with SessionLocal() as session:
+        item = (
+            await session.execute(
+                select(FreeModelDiscoveryRunItem).where(
+                    FreeModelDiscoveryRunItem.model_id == "m/limited:free"
+                )
+            )
+        ).scalar_one()
+    assert item.attempts == 1
+    assert item.state == "queued"
+    assert item.next_attempt_at is not None
+    # Parked roughly an hour out, not the 2-minute default requeue.
+    assert (item.next_attempt_at - before).total_seconds() > 600
+
+
+@pytest.mark.asyncio
+async def test_scope_from_a_200_error_body_is_persisted(async_client, scripted):
+    """F2: the documented 200-with-error case sets a scope and can pause the
+    group, so that scope must be durable - otherwise a restart or a second
+    replica loses the only explanation for the pause."""
+
+    scripted({"m/a:free": [_shared_limit_in_200_body()], "m/b:free": [_ok()]})
+    await _enable_openrouter()
+    run_id = await _create_run(["m/a:free", "m/b:free"], max_attempts=2)
+
+    task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
+    await asyncio.sleep(0.15)
+    await _stop(task)
+
+    async with SessionLocal() as session:
+        item = (
+            await session.execute(
+                select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.model_id == "m/a:free")
+            )
+        ).scalar_one()
+    assert item.last_http_status == 200
+    assert item.last_limit_scope == "shared", "scope must persist even without a 429 status"
+
+    # And it survives into the API without the in-memory runner state.
+    body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
+    by_id = {i["modelId"]: i for i in body["items"]}
+    assert by_id["m/a:free"]["limitScope"] == "shared"
