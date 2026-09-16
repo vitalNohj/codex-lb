@@ -336,32 +336,34 @@ async def test_production_chat_chunk_chain_settles_upstream_on_context_limit() -
     assert owner is not None
 
 
-async def test_context_limit_close_settles_even_when_consumer_is_cancelled() -> None:
-    """A client disconnect must not interrupt settlement.
+async def test_context_limit_close_settles_when_cancelled_mid_settlement() -> None:
+    """A client disconnect arriving *during* settlement must not interrupt it.
 
-    Invariant guard, not a regression: this passes on the unchanged base too,
-    because a plain single cancellation already drives the generator's cleanup.
-    It is kept to pin the property that cancellation - the case where a stranded
-    reservation matters most - still settles, so a future change to the close
-    path cannot quietly break it.
+    This is the case the shield exists for. The rewrite returns early and begins
+    closing the reservation-owning stream; settlement is not instantaneous (it
+    awaits real database work), so a disconnect can land while that close is
+    in flight. Awaiting the close unshielded lets the cancellation tear
+    settlement apart partway, stranding the reservation on the very path where
+    a leak is most likely - so the close defers cancellation instead.
     """
 
     settled: list[str] = []
 
     async def reservation_owning_stream():
         try:
-            while True:
-                # Await between chunks so the cancellation can actually land
-                # mid-stream, as a real client disconnect does.
-                await asyncio.sleep(0.01)
-                yield b'data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
+            yield b'data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
+            yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
+            yield b'data: {"id":"c2","object":"chat.completion.chunk","choices":[]}\n\n'
         finally:
-            await asyncio.sleep(0)  # settlement awaits, as the real one does
+            # Settlement is awaited work, not a bare append - a single `await`
+            # here is what makes it interruptible.
+            for _ in range(5):
+                await asyncio.sleep(0.02)
             settled.append("released")
 
-    # Held for the duration, as the response task holds it: otherwise refcount
-    # finalization would settle the reservation on its own and the assertion
-    # would pass even without the shielded close.
+    # Held for the duration, as the live response task holds it: otherwise
+    # refcount finalization would settle the reservation by itself and this
+    # would pass even with the close removed.
     owner = reservation_owning_stream()
     wrapper = stream_bytes_with_cursor_usage_fallback(
         owner,
@@ -374,10 +376,14 @@ async def test_context_limit_close_settles_even_when_consumer_is_cancelled() -> 
             pass
 
     task = asyncio.create_task(consume())
-    await asyncio.sleep(0.05)
+    # Let the rewrite fire and reach the close, then disconnect mid-settlement.
+    await asyncio.sleep(0.03)
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+    # Enough time for the settlement to finish if it was allowed to.
+    await asyncio.sleep(0.5)
 
     assert settled == ["released"]
     assert owner is not None

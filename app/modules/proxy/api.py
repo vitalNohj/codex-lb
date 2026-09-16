@@ -7828,12 +7828,20 @@ async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) ->
         async for line in inner:
             yield line
     finally:
-        # Close the wrapped stream rather than abandoning it: ``async for``
-        # does not, and the stream underneath owns the API-key usage
-        # reservation, so an early stop downstream (the Cursor context-limit
-        # rewrite) would otherwise leave its settlement to a later event-loop
-        # finalization while the caller's quota stays held.
-        await aclose_stream(inner)
+        # Close the wrapped streams rather than abandoning them: ``async for``
+        # does not, and ``stream`` owns the API-key usage reservation, so an
+        # early stop downstream (the Cursor context-limit rewrite) would
+        # otherwise leave its settlement to a later event-loop finalization
+        # while the caller's quota stays held.
+        #
+        # ``stream`` is closed in a ``finally`` of its own: it is the
+        # reservation owner, so it must be closed even if closing ``inner``
+        # raises. ``_stream_response_error_events`` consumes ``stream`` with a
+        # bare ``async for`` and so does not pass the close along itself.
+        try:
+            await aclose_stream(inner)
+        finally:
+            await aclose_stream(stream)
 
 
 async def _stream_response_error_events(
