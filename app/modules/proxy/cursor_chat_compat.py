@@ -14,6 +14,7 @@ from app.core.openai.chat_responses import ChatCompletion, ChatCompletionUsage
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
+from app.core.utils.stream_close import aclose_stream
 from app.modules.api_keys.service import ApiKeyData
 
 logger = logging.getLogger(__name__)
@@ -299,11 +300,7 @@ async def stream_responses_with_cursor_context_limit_fallback(
             # carry created/failure payloads.
             payload = (
                 parse_sse_data_json(event)
-                if (
-                    "response.failed" in event
-                    or "response.created" in event
-                    or '"error"' in event
-                )
+                if ("response.failed" in event or "response.created" in event or '"error"' in event)
                 else None
             )
             if payload is not None:
@@ -333,28 +330,6 @@ async def stream_responses_with_cursor_context_limit_fallback(
             await aclose()
 
 
-async def _aclose_upstream(stream: AsyncIterator[object]) -> None:
-    """Close the wrapped upstream iterator so its ``finally`` runs now.
-
-    The sidecar stream iterators settle the API-key usage reservation in a
-    ``finally`` block. When this wrapper returns early on a context-limit
-    rewrite it stops iterating that generator without exhausting it, and an
-    abandoned async generator's ``finally`` only runs whenever the event loop
-    later finalizes it - after the response has already completed. Until then
-    the reservation stays ``reserved`` and its quota stays consumed, so the
-    caller's allowance is held for a request the upstream refused.
-
-    Closing explicitly makes settlement part of the request that caused it.
-    ``aclose()`` is idempotent, so the normal exhausted path is unaffected, and
-    settlement itself is a compare-and-set on ``reserved``, so the later
-    finalization cannot release or charge a second time.
-    """
-
-    aclose = getattr(stream, "aclose", None)
-    if aclose is not None:
-        await aclose()
-
-
 async def stream_with_cursor_usage_fallback(
     stream: AsyncIterator[str],
     payload: ChatCompletionsRequest,
@@ -369,7 +344,7 @@ async def stream_with_cursor_usage_fallback(
         for chunk in rewriter.flush():
             yield chunk.decode("utf-8")
     finally:
-        await _aclose_upstream(stream)
+        await aclose_stream(stream)
 
 
 async def stream_bytes_with_cursor_usage_fallback(
@@ -388,7 +363,7 @@ async def stream_bytes_with_cursor_usage_fallback(
         for rewritten_chunk in rewriter.flush():
             yield rewritten_chunk
     finally:
-        await _aclose_upstream(stream)
+        await aclose_stream(stream)
 
 
 def apply_cursor_usage_fallback(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 
 from app.core.openai.chat_requests import ChatCompletionsRequest
@@ -10,6 +12,7 @@ from app.core.openai.chat_responses import (
     ChatCompletionChoice,
     ChatCompletionMessage,
     ChatCompletionUsage,
+    stream_chat_chunks,
 )
 from app.modules.proxy.cursor_chat_compat import (
     CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
@@ -274,3 +277,107 @@ async def test_chat_text_fallback_settles_upstream_on_context_limit() -> None:
 
     assert not any('"error"' in event for event in events)
     assert settled == ["released"]
+
+
+async def test_production_chat_chunk_chain_settles_upstream_on_context_limit() -> None:
+    """The real native-chat wrapper chain must settle, not just a bare generator.
+
+    `/v1/chat/completions` stacks `stream_chat_chunks` over the reservation-owning
+    service stream and only then applies the Cursor rewrite. Each intermediate
+    layer is an `async for`, which does not close what it consumes, so a close
+    that stops at the outermost wrapper would still strand the reservation. This
+    exercises that production stacking rather than handing the wrapper a settling
+    generator directly.
+    """
+
+    settled: list[str] = []
+
+    async def reservation_owning_stream():
+        try:
+            yield 'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+            yield (
+                'data: {"type":"response.failed","response":{"id":"r","error":'
+                '{"message":"Input token limit exceeded","type":"invalid_request_error",'
+                '"code":"context_length_exceeded","param":"input"}}}\n\n'
+            )
+            yield 'data: {"type":"response.output_text.delta","delta":"leak"}\n\n'
+        finally:
+            settled.append("released")
+
+    # Keep a reference to every layer for the whole test, exactly as the server
+    # does while the StreamingResponse task is alive. Without this, CPython
+    # refcounting finalizes an abandoned generator the moment the last
+    # reference drops, which would settle the reservation by accident and hide
+    # the defect - so a test that let the layers go out of scope would pass
+    # even with close propagation removed.
+    owner = reservation_owning_stream()
+    chained = stream_chat_chunks(
+        owner,
+        model="deepseek/deepseek-chat",
+        include_usage=True,
+    )
+
+    events = [
+        event
+        async for event in stream_with_cursor_usage_fallback(
+            chained,
+            _payload("deepseek/deepseek-chat"),
+        )
+    ]
+
+    assert not any("leak" in event for event in events)
+    # Settled through the full production chain, within the request.
+    assert settled == ["released"]
+
+    # Still referenced, still settled exactly once - not stranded awaiting a
+    # finalization that a live response task would never let happen.
+    await asyncio.sleep(0.05)
+    assert settled == ["released"]
+    assert owner is not None
+
+
+async def test_context_limit_close_settles_even_when_consumer_is_cancelled() -> None:
+    """A client disconnect must not interrupt settlement.
+
+    Invariant guard, not a regression: this passes on the unchanged base too,
+    because a plain single cancellation already drives the generator's cleanup.
+    It is kept to pin the property that cancellation - the case where a stranded
+    reservation matters most - still settles, so a future change to the close
+    path cannot quietly break it.
+    """
+
+    settled: list[str] = []
+
+    async def reservation_owning_stream():
+        try:
+            while True:
+                # Await between chunks so the cancellation can actually land
+                # mid-stream, as a real client disconnect does.
+                await asyncio.sleep(0.01)
+                yield b'data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
+        finally:
+            await asyncio.sleep(0)  # settlement awaits, as the real one does
+            settled.append("released")
+
+    # Held for the duration, as the response task holds it: otherwise refcount
+    # finalization would settle the reservation on its own and the assertion
+    # would pass even without the shielded close.
+    owner = reservation_owning_stream()
+    wrapper = stream_bytes_with_cursor_usage_fallback(
+        owner,
+        _payload("deepseek/deepseek-chat"),
+        source="test",
+    )
+
+    async def consume() -> None:
+        async for _ in wrapper:
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert settled == ["released"]
+    assert owner is not None

@@ -11,6 +11,7 @@ from app.core.openai.models import OpenAIError, OpenAIErrorEnvelope, ResponseUsa
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import format_sse_data, parse_sse_data_json
+from app.core.utils.stream_close import aclose_stream
 
 
 class ChatToolCallFunction(BaseModel):
@@ -436,23 +437,33 @@ async def stream_chat_chunks(
     created = int(time.time())
     state = _ChatChunkState()
     terminal_chunk_sent = False
-    async for line in stream:
-        if terminal_chunk_sent:
-            continue
-        for chunk in iter_chat_chunks(
-            [line],
-            model=model,
-            created=created,
-            state=state,
-            include_usage=include_usage,
-        ):
-            yield chunk
-            if chunk.strip() == "data: [DONE]":
-                terminal_chunk_sent = True
-                break
-    if not terminal_chunk_sent:
-        yield _dump_sse(_upstream_stream_truncated_error_payload())
-        yield "data: [DONE]\n\n"
+    try:
+        async for line in stream:
+            if terminal_chunk_sent:
+                continue
+            for chunk in iter_chat_chunks(
+                [line],
+                model=model,
+                created=created,
+                state=state,
+                include_usage=include_usage,
+            ):
+                yield chunk
+                if chunk.strip() == "data: [DONE]":
+                    terminal_chunk_sent = True
+                    break
+        if not terminal_chunk_sent:
+            yield _dump_sse(_upstream_stream_truncated_error_payload())
+            yield "data: [DONE]\n\n"
+    finally:
+        # Propagate close to the wrapped stream. ``async for`` does not close
+        # the iterator it consumes, so when a downstream consumer stops early
+        # (the Cursor context-limit rewrite) the stream that owns the API-key
+        # usage reservation would otherwise be abandoned, deferring its
+        # settlement ``finally`` to a later event-loop finalization and holding
+        # the caller's quota past the end of the request. ``aclose()`` is
+        # idempotent, so the exhausted path is unaffected.
+        await aclose_stream(stream)
 
 
 async def collect_chat_completion(stream: AsyncIterator[str], model: str) -> ChatCompletionResult:
