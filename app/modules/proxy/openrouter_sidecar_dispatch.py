@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -22,7 +23,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
-from app.core.utils.cancellation import await_cleanup_deferring_cancellation
+from app.core.utils.cancellation import await_result_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
@@ -379,9 +380,12 @@ async def _openrouter_stream_iterator(
         # ``completed=False``. Exactly-once is unaffected: settlement is a
         # compare-and-set on ``reserved``.
         #
-        # Cancellation is deferred, not swallowed: the deferral re-raises once
-        # the cleanup completes, so the request still terminates as cancelled.
-        settlement = await _settle_stream_deferring_cancellation(
+        # Cancellation is deferred, not swallowed: it is re-raised below, after
+        # the request log is written. The log is part of the same deferred unit
+        # on purpose - re-raising between the settlement and the log would leave
+        # a durable finalized charge with no request-log row explaining it,
+        # which is worse than either outcome alone.
+        settlement, settlement_deferred_cancellation = await _settle_stream_deferring_cancellation(
             reservation,
             api_key=api_key,
             model=model,
@@ -389,18 +393,22 @@ async def _openrouter_stream_iterator(
             billed_cost_usd=billed_cost.value,
             completed=completed,
         )
-        await _log_openrouter_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="success" if completed else "error",
-            error_code=None if completed else error_code,
-            error_message=None if completed else error_message,
-            usage=settlement.usage,
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-            cost=settlement.cost,
+        _, log_deferred_cancellation = await await_result_deferring_cancellation(
+            _log_openrouter_request(
+                api_key=api_key,
+                model=model,
+                started_at=started_at,
+                status="success" if completed else "error",
+                error_code=None if completed else error_code,
+                error_message=None if completed else error_message,
+                usage=settlement.usage,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
+                cost=settlement.cost,
+            )
         )
+        if settlement_deferred_cancellation or log_deferred_cancellation:
+            raise asyncio.CancelledError
 
 
 class _SseUsageDecoder:
@@ -532,13 +540,17 @@ async def _settle_stream_deferring_cancellation(
     usage: SidecarUsage | None,
     billed_cost_usd: float | None,
     completed: bool,
-) -> ExternalResponseSettlement[SidecarUsage]:
+) -> tuple[ExternalResponseSettlement[SidecarUsage], bool]:
     """Resolve this stream's price and settle its reservation as one unit.
 
     Kept together deliberately: settlement needs the resolved cost, so splitting
     the two would let a cancelled request settle against a price it never
     resolved. Both steps are the existing ones with the existing captured
     inputs - this changes when they run, not what they decide.
+
+    Returns the settlement and whether a cancellation was deferred, so the
+    caller can finish its own required cleanup (the request log) before
+    re-raising it.
     """
 
     async def _settle() -> ExternalResponseSettlement[SidecarUsage]:
@@ -558,7 +570,7 @@ async def _settle_stream_deferring_cancellation(
         )
         return settlement
 
-    return await await_cleanup_deferring_cancellation(_settle())
+    return await await_result_deferring_cancellation(_settle())
 
 
 async def _finalize_or_release_openrouter_reservation(

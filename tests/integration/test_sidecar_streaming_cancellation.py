@@ -32,7 +32,7 @@ from sqlalchemy import select
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarConfig
 from app.core.config.settings import get_settings
-from app.db.models import ApiKeyLimit, ApiKeyUsageReservation
+from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
@@ -149,6 +149,12 @@ async def _reservation_statuses() -> list[str]:
 async def _limit_current_values() -> list[int]:
     async with SessionLocal() as session:
         return list((await session.execute(select(ApiKeyLimit.current_value))).scalars().all())
+
+
+async def _sidecar_logs() -> list[tuple[str, str | None]]:
+    async with SessionLocal() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+    return [(r.status, r.error_code) for r in rows if r.source == "openrouter_sidecar"]
 
 
 async def _configure(client: AsyncClient) -> None:
@@ -452,6 +458,41 @@ async def test_settlement_happens_exactly_once_under_repeated_cancellation(
     # below the pre-request baseline.
     assert await _reservation_rows() == [("released", None, None, None)]
     assert await _limit_current_values() == [0]
+
+
+@pytest.mark.asyncio
+async def test_a_settled_charge_is_never_recorded_without_its_request_log(
+    app_instance, async_client, openrouter_enabled, fake_openrouter
+):
+    """A durable charge must not exist with no request-log row explaining it.
+
+    The deferred cancellation is re-raised only after BOTH the settlement and
+    the request log are written. Re-raising between them would leave a finalized
+    charge and consumed quota that nothing in the log accounts for - an
+    unexplainable bill, worse than either outcome alone.
+    """
+
+    await _configure(async_client)
+    key = await _create_key("charge-needs-its-log")
+
+    await _cancel_midstream(
+        app_instance,
+        key,
+        chunks=[_DELTA, _USAGE_WITH_COST, _DELTA, _DONE],
+        gate_after=1,
+        fake=fake_openrouter,
+    )
+    await _settle_quiesced()
+
+    rows = await _reservation_rows()
+    assert len(rows) == 1
+    status, _input_tokens, _output_tokens, cost_microdollars = rows[0]
+    assert status == "finalized"
+    assert cost_microdollars == 250_000
+
+    # The charge exists, so its log row must exist too.
+    logs = await _sidecar_logs()
+    assert len(logs) == 1, f"a finalized charge was recorded with no request log: {logs}"
 
 
 @pytest.mark.asyncio
