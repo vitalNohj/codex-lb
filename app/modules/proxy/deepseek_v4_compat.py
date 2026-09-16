@@ -28,7 +28,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import cast
 
@@ -427,7 +427,10 @@ class DeepSeekReasoningStreamObserver:
             cache=cache,
         )
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
+    async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+        # Declared as a generator, not a bare ``AsyncIterator``, so callers can
+        # see and use ``aclose()``: closing this observer is what propagates the
+        # close to the wrapped sidecar stream and settles its reservation.
         try:
             async for chunk in self._stream:
                 self._recorder.record(chunk)
