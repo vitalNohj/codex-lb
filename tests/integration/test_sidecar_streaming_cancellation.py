@@ -541,14 +541,19 @@ async def _cancel_while_suspended_in(
     chunks: list[bytes],
     fake,
 ) -> str:
-    """Cancel the request while a REAL settlement operation is suspended.
+    """Cancel at a deterministic gate immediately BEFORE a real settlement call.
 
     The chunk gate cancels during provider delivery, which is upstream of the
-    work this fix protects. This instead wraps the genuine callable named by
+    work this fix protects. This wraps the genuine callable named by
     ``target_module``/``target_name`` - the price lookup, or the reservation
-    write - so the request task is cancelled while that operation is actually
-    in flight. The real implementation still runs; only a suspension point is
-    inserted in front of it, so persistence stays real.
+    write - and parks on a gate placed **immediately before** it, so the
+    cancellation is delivered with that call pending and about to run. The real
+    implementation then executes unmodified, so persistence is real.
+
+    Stated precisely because the distinction matters: this is a deterministic
+    gate in front of the real call, **not** cancellation injected inside an
+    already-running database transaction. Cancelling mid-transaction is a
+    different scenario and is not covered here.
 
     Returns how the request task terminated, so the caller can assert that
     cancellation propagated rather than accepting any outcome.
@@ -591,7 +596,7 @@ async def _cancel_while_suspended_in(
     task = asyncio.create_task(_drive())
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
-        # The real operation is suspended right now. Cancel into it.
+        # Parked at the gate: the real call is pending and about to run.
         task.cancel()
         await asyncio.sleep(0)
         release.set()
@@ -616,11 +621,11 @@ async def _cancel_while_suspended_in(
 async def test_cancellation_during_the_real_price_lookup_still_settles(
     app_instance, async_client, openrouter_enabled, fake_openrouter, monkeypatch
 ):
-    """Cancel while `external_request_cost` - the real price lookup - is suspended.
+    """Cancel at a gate immediately before the real `external_request_cost` lookup.
 
     This is the exact operation whose CancelledError used to escape before the
-    reservation was ever written. The real lookup still executes; only a
-    suspension point is inserted ahead of it.
+    reservation was ever written. The gate sits in front of it; the real lookup
+    then runs unmodified and settlement persists for real.
     """
 
     await _configure(async_client)
@@ -652,10 +657,11 @@ async def test_cancellation_during_the_real_price_lookup_still_settles(
 async def test_cancellation_during_the_real_reservation_write_still_settles(
     app_instance, async_client, openrouter_enabled, fake_openrouter, monkeypatch
 ):
-    """Cancel while the reservation write itself is suspended.
+    """Cancel at a gate immediately before the real reservation write.
 
     One step later than the price lookup: the durable settlement must still
-    complete exactly once, against real persistence.
+    complete exactly once, against real persistence. As above this is a gate in
+    front of the write, not cancellation inside an open transaction.
     """
 
     await _configure(async_client)
