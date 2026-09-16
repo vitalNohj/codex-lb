@@ -27,6 +27,12 @@ from app.core.config.settings import get_settings
 from app.core.utils.time import utcnow
 from app.db.models import FreeModelDiscoveryRunItem
 from app.db.session import get_background_session
+from app.modules.free_model_discovery.limits import (
+    MAX_HONOURED_WAIT_SECONDS,
+    cap_wait,
+    describe_wait,
+    group_wait_seconds,
+)
 from app.modules.free_model_discovery.pacing import ProviderPacer
 from app.modules.free_model_discovery.probe import (
     ChatCompletionClient,
@@ -130,6 +136,15 @@ def _get_leader_election() -> _LeaderElectionLike:
 class ProviderProgress:
     current_interval_seconds: float
     next_probe_at: datetime | None
+    # Operator-facing reason this provider is waiting, when it is waiting for
+    # a stated reason rather than ordinary pacing. ``None`` while probing.
+    waiting_reason: str | None = None
+    # ``shared`` only when the vendor explicitly attributed the limit to its
+    # own platform/account allowance; never inferred from a bare 429.
+    limit_scope: str | None = None
+    # True when the whole provider queue is paused on one vendor instruction,
+    # rather than each item being retried through the same known block.
+    provider_paused: bool = False
 
 
 # run_id -> provider -> live pacing state, for the run view. Process-local by
@@ -332,7 +347,11 @@ class FreeModelDiscoveryRunner:
 
     async def _park_provider(self, run_id: str, provider: str, *, reason: str) -> None:
         """Provider cannot be probed at all (disabled or no key): every one of
-        its queued items is unresolved for this run."""
+        its queued items is unresolved for this run.
+
+        No request is issued here, so no attempt is consumed - these models are
+        untested, not tried and rejected.
+        """
 
         now = utcnow()
         async with get_background_session() as session:
@@ -354,14 +373,26 @@ class FreeModelDiscoveryRunner:
         api_key: str | None = None,
     ) -> None:
         wait_seconds = 0.0
+        # Set only while the whole provider queue is paused on ONE explicit
+        # vendor instruction, so the wait is described honestly rather than
+        # looking like ordinary pacing.
+        pause_reason: str | None = None
+        pause_scope: str | None = None
         while not self._stop.is_set():
             if wait_seconds > 0:
                 _progress.setdefault(run_id, {})[provider] = ProviderProgress(
                     current_interval_seconds=pacer.current_seconds,
                     next_probe_at=utcnow() + timedelta(seconds=wait_seconds),
+                    waiting_reason=pause_reason,
+                    limit_scope=pause_scope,
+                    provider_paused=pause_reason is not None,
                 )
+                # Sliced, so cancel and the run deadline still interrupt a long
+                # provider-wide wait instead of sleeping through them.
                 if not await self._wait(wait_seconds, run_id, deadline):
                     return
+            pause_reason = None
+            pause_scope = None
             async with get_background_session() as session:
                 repository = FreeModelDiscoveryRepository(session)
                 if await self._should_halt(repository, run_id, deadline):
@@ -379,6 +410,23 @@ class FreeModelDiscoveryRunner:
                 )
                 result = await probe_model(client, item.model_id, api_key=api_key)
                 wait_seconds = await self._apply_result(session, repository, item, result, pacer, max_attempts)
+                if result.shared_limit:
+                    # The vendor explicitly named its OWN platform/account
+                    # allowance, so every model behind this credential is
+                    # behind the same block. Waiting once at the group level
+                    # beats trying each remaining item through it - which is
+                    # what burned attempts before.
+                    group_wait = group_wait_seconds(result.evidence)
+                    pause_scope = result.limit_scope
+                    pause_reason = describe_wait(result.limit_scope, result.evidence)
+                    if group_wait is not None:
+                        # Never resume earlier than the provider permitted.
+                        wait_seconds = max(wait_seconds, group_wait)
+                        await self._defer_provider_queue(
+                            repository, run_id, provider, until=utcnow() + timedelta(seconds=wait_seconds)
+                        )
+                    # With no published window we keep ordinary backoff rather
+                    # than inventing a pause the operator cannot verify.
 
     async def _apply_result(
         self,
@@ -391,22 +439,65 @@ class FreeModelDiscoveryRunner:
     ) -> float:
         now = utcnow()
         if result.verdict == "inconclusive":
+            # Persist whatever scope the vendor attributed, whatever the status
+            # carrying it. Gating this on ``rate_limited`` (i.e. HTTP 429)
+            # dropped the documented 200-with-error-body case, which still
+            # sets a scope and can still pause the group - so the pause would
+            # survive in memory while nothing durable explained it.
+            persisted_scope = result.limit_scope if result.limit_scope != "unknown" else None
+            if result.rate_limited and persisted_scope is None:
+                persisted_scope = "unknown"
             if item.attempts + 1 >= max_attempts:
+                # This probe was really issued, so it is counted here. The
+                # give-up branch used to drop it, leaving ``attempts`` one
+                # short of the requests actually sent.
                 await repository.mark_unresolved(
                     item,
                     resolved_at=now,
                     outcome=f"gave up after {max_attempts} attempts: {result.outcome}",
+                    attempted=True,
+                    attempted_at=now,
+                    http_status=result.http_status,
+                    limit_scope=persisted_scope,
                 )
             else:
+                # A vendor wait applies to THIS item even when the limit is
+                # model-scoped, so park it until then rather than retrying it
+                # ahead of the provider's own instruction.
+                next_attempt_at = now + _INCONCLUSIVE_REQUEUE
+                if result.retry_after_seconds is not None:
+                    next_attempt_at = max(
+                        next_attempt_at,
+                        now + timedelta(seconds=min(result.retry_after_seconds, MAX_HONOURED_WAIT_SECONDS)),
+                    )
                 await repository.record_inconclusive(
                     item,
                     attempted_at=now,
-                    next_attempt_at=now + _INCONCLUSIVE_REQUEUE,
+                    next_attempt_at=next_attempt_at,
                     http_status=result.http_status,
                     outcome=result.outcome,
+                    limit_scope=persisted_scope,
                 )
-            if result.rate_limited:
-                return pacer.on_rate_limited(result.retry_after_seconds)
+            if result.rate_limited or result.retry_after_seconds is not None:
+                if result.shared_limit:
+                    # Only an explicitly shared limit blocks every model behind
+                    # this credential, so only it may drive the shared pacer
+                    # and hold the provider loop past the pacing cap.
+                    heuristic = pacer.on_rate_limited(result.retry_after_seconds)
+                    return cap_wait(heuristic, result.evidence, cap_seconds=pacer.cap_seconds)
+                if result.limit_scope == "model":
+                    # The vendor named an upstream backend, so this says nothing
+                    # about the rest of the queue. The offending item already
+                    # carries the wait in its ``next_attempt_at``; touching the
+                    # SHARED pacer here would drive it to the 600s cap and slow
+                    # every unrelated model - and it only decays after three
+                    # clean responses, so one rejection would linger for hours.
+                    return pacer.on_inconclusive()
+                # Unknown scope: back off the provider conservatively, but never
+                # past the heuristic cap - an unproven scope must not buy the
+                # long vendor wait that only a shared limit earns.
+                heuristic = pacer.on_rate_limited(result.retry_after_seconds)
+                return min(heuristic, pacer.cap_seconds)
             return pacer.on_inconclusive()
 
         added = False
@@ -431,6 +522,23 @@ class FreeModelDiscoveryRunner:
             added_to_full_models=added,
         )
         return pacer.on_verdict()
+
+    async def _defer_provider_queue(
+        self,
+        repository: FreeModelDiscoveryRepository,
+        run_id: str,
+        provider: str,
+        *,
+        until: datetime,
+    ) -> None:
+        """Hold this provider's remaining queued items until ``until``.
+
+        Persisted rather than kept in memory so a restart mid-wait cannot
+        bypass a window the vendor actually imposed. Only pushes items later,
+        never earlier, so it can never pull a longer existing wait forward.
+        """
+
+        await repository.defer_queued_items(run_id, provider, until=until)
 
     async def _should_halt(self, repository: FreeModelDiscoveryRepository, run_id: str, deadline: datetime) -> bool:
         if self._stop.is_set():

@@ -15,6 +15,7 @@ import type {
   FreeModelDiscoveryRun,
   FreeModelDiscoveryRunItem,
   FreeModelItemState,
+  FreeModelLimitScope,
   FreeModelProvider,
   FreeModelRunStatus,
 } from "@/features/settings/free-model-discovery-schemas";
@@ -44,6 +45,14 @@ const ITEM_STATE_LABELS: Record<FreeModelItemState, string> = {
   passed: "Passed",
   failed: "Failed",
   unresolved: "Unresolved",
+};
+
+// Deliberately plain wording. "unknown" must not imply the account is
+// exhausted, and "model" must not imply the model is broken.
+const LIMIT_SCOPE_LABELS: Record<FreeModelLimitScope, string> = {
+  shared: "provider-wide limit",
+  model: "model's upstream limited",
+  unknown: "rate limited, scope unknown",
 };
 
 function runStatusVariant(status: FreeModelRunStatus): "default" | "secondary" | "destructive" | "outline" {
@@ -170,7 +179,17 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
         }
         busy={startMutation.isPending}
         onStart={async (payload) => {
-          await startMutation.mutateAsync(payload);
+          // `mutateAsync` rejects on a rejected start, and that rejection used
+          // to escape into the dialog's click handler as an unhandled promise
+          // rejection - so the dialog neither closed nor rendered the reason,
+          // which reads as "nothing happened". The error is already surfaced
+          // from `startMutation.error` below; swallow it here and keep the
+          // dialog open so the operator can read it and retry.
+          try {
+            await startMutation.mutateAsync(payload);
+          } catch {
+            return;
+          }
           setDialogOpen(false);
         }}
       />
@@ -182,6 +201,11 @@ function RunSummary({ run }: { run: FreeModelDiscoveryRun }) {
   const [detailsOpen, setDetailsOpen] = useState(run.status === "running");
   const done = run.counts.total - run.counts.queued;
   const percent = run.counts.total === 0 ? 100 : Math.round((done / run.counts.total) * 100);
+  // A run that ended without evaluating anything is not a successful sweep,
+  // even though execution finished cleanly.
+  const nothingEvaluated =
+    run.status !== "running" && run.counts.total > 0 && run.counts.passed === 0 && run.counts.failed === 0;
+  const pausedProviders = run.providers.filter((provider) => provider.providerPaused && provider.waitingReason);
 
   return (
     <div className="space-y-2" data-testid="free-model-discovery-run">
@@ -220,6 +244,9 @@ function RunSummary({ run }: { run: FreeModelDiscoveryRun }) {
         </span>
         <span>
           <span className="font-medium text-foreground">{run.counts.queued}</span> queued
+          {run.counts.retrying > 0 ? (
+            <span className="text-muted-foreground"> ({run.counts.retrying} retrying)</span>
+          ) : null}
         </span>
       </div>
       {run.status === "running" ? (
@@ -227,11 +254,27 @@ function RunSummary({ run }: { run: FreeModelDiscoveryRun }) {
           {run.providers.map((provider) => (
             <span key={provider.provider}>
               {PROVIDER_LABELS[provider.provider]}: {provider.counts.queued} queued
+              {provider.counts.retrying > 0 ? ` (${provider.counts.retrying} retrying)` : ""}
               {provider.currentIntervalSeconds != null ? `, pace ${Math.round(provider.currentIntervalSeconds)}s` : ""}
               {provider.nextProbeAt ? `, next ${formatDateTimeInline(provider.nextProbeAt)}` : ""}
             </span>
           ))}
         </div>
+      ) : null}
+
+      {/* A provider-imposed wait must not read as a stopped run. */}
+      {pausedProviders.map((provider) => (
+        <AlertMessage key={provider.provider} variant="warning">
+          {PROVIDER_LABELS[provider.provider]} paused: {provider.waitingReason}
+          {provider.nextProbeAt ? ` Resuming ${formatDateTimeInline(provider.nextProbeAt)}.` : ""}
+        </AlertMessage>
+      ))}
+
+      {nothingEvaluated ? (
+        <AlertMessage variant="warning">
+          This run ended without evaluating any model, so nothing was confirmed working or broken. The listed models
+          were not tested.
+        </AlertMessage>
       ) : null}
       {run.errorMessage ? <AlertMessage variant="error">{run.errorMessage}</AlertMessage> : null}
 
@@ -269,6 +312,12 @@ function RunItemRow({ item }: { item: FreeModelDiscoveryRunItem }) {
   }
   if (item.state === "queued" && item.nextAttemptAt) {
     diagnostics.push(`retry ${formatDateTimeInline(item.nextAttemptAt)}`);
+  }
+  // Name the scope the provider actually stated. "unknown" is reported as
+  // unknown rather than guessed, and a rate-limited model is never presented
+  // as a model that failed.
+  if (item.limitScope) {
+    diagnostics.push(LIMIT_SCOPE_LABELS[item.limitScope]);
   }
   if (item.lastOutcome && item.state !== "passed") {
     diagnostics.push(item.lastOutcome);

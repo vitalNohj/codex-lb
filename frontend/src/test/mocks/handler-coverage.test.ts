@@ -70,6 +70,9 @@ const EXPECTED_ENDPOINTS = [
 	// settings
 	"GET */api/settings",
 	"PUT */api/settings",
+	// free model discovery
+	"GET */api/free-model-discovery/plan",
+	"GET */api/free-model-discovery/runs/current",
 	"GET */api/settings/telemetry",
 	"PUT */api/settings/telemetry",
 	"GET /api/settings/upstream-proxy",

@@ -184,7 +184,19 @@ async def test_run_lifecycle_pins_passed_models_and_records_cooldown(async_clien
     run = response.json()
     run_id = run["id"]
     assert run["status"] == "running"
-    assert run["counts"] == {"total": 3, "queued": 3, "passed": 0, "failed": 0, "unresolved": 0, "added": 0}
+    # Nothing probed yet, so all three are awaiting a first attempt rather
+    # than retrying - the distinction that keeps a retrying run from reading
+    # as untouched.
+    assert run["counts"] == {
+        "total": 3,
+        "queued": 3,
+        "passed": 0,
+        "failed": 0,
+        "unresolved": 0,
+        "added": 0,
+        "awaitingFirstAttempt": 3,
+        "retrying": 0,
+    }
 
     # A second start while one is active is a conflict.
     response = await async_client.post(
@@ -204,7 +216,16 @@ async def test_run_lifecycle_pins_passed_models_and_records_cooldown(async_clien
     run = response.json()
     assert run["status"] == "completed"
     assert run["finishedAt"] is not None
-    assert run["counts"] == {"total": 3, "queued": 0, "passed": 2, "failed": 1, "unresolved": 0, "added": 2}
+    assert run["counts"] == {
+        "total": 3,
+        "queued": 0,
+        "passed": 2,
+        "failed": 1,
+        "unresolved": 0,
+        "added": 2,
+        "awaitingFirstAttempt": 0,
+        "retrying": 0,
+    }
     items = {item["modelId"]: item for item in run["items"]}
 
     passed = items["deepseek/deepseek-r1:free"]

@@ -20,6 +20,22 @@ from app.core.utils.json_guards import is_json_mapping
 
 logger = logging.getLogger(__name__)
 
+# The only response headers ever copied off a rejection, lowercased. An
+# allowlist, not a redaction pass: anything not named here never leaves the
+# transport boundary, so no cookie, authorization echo or account identifier
+# can reach a surface that renders provider text.
+#
+# Defined here rather than imported from the discovery module: a core HTTP
+# client must not depend on a feature module, and these are ordinary HTTP
+# rate-limit headers rather than anything discovery-specific.
+RATE_LIMIT_HEADERS: frozenset[str] = frozenset(
+    {"retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"}
+)
+
+# Rate-limit header values are short tokens; cap them so a hostile upstream
+# cannot push unbounded text into an exception that reaches operator surfaces.
+_HEADER_VALUE_MAX_CHARS = 64
+
 
 @dataclass(frozen=True, slots=True)
 class OpenRouterSidecarConfig:
@@ -35,11 +51,24 @@ class OpenRouterSidecarConfig:
 
 
 class OpenRouterSidecarError(Exception):
-    def __init__(self, status_code: int, message: str, *, body: JsonValue | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        body: JsonValue | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
         self.body = body
+        # Only the documented rate-limit/retry headers, copied out at the
+        # boundary. Free-model discovery needs ``Retry-After`` and the
+        # ``X-RateLimit-*`` family to tell a provider-wide limit from an
+        # upstream one; keeping the whole header map would drag cookies and
+        # authorization echoes into places that serve text to the dashboard.
+        self.rate_limit_headers: dict[str, str] = dict(headers or {})
 
 
 class OpenRouterSidecarUnavailableError(OpenRouterSidecarError):
@@ -157,7 +186,7 @@ class OpenRouterSidecarClient:
                 ) as resp:
                     data = await _read_response_json(resp)
                     if resp.status >= 400:
-                        raise _error_from_status(resp.status, data)
+                        raise _error_from_status(resp.status, data, getattr(resp, "headers", None))
                     return data
         except OpenRouterSidecarError:
             raise
@@ -210,7 +239,9 @@ async def _read_response_json(resp: aiohttp.ClientResponse) -> JsonValue:
         return {"message": text}
 
 
-def _error_from_status(status_code: int, body: JsonValue) -> OpenRouterSidecarError:
+def _error_from_status(
+    status_code: int, body: JsonValue, headers: Mapping[str, str] | None = None
+) -> OpenRouterSidecarError:
     message = f"OpenRouter sidecar returned HTTP {status_code}"
     if is_json_mapping(body):
         error = body.get("error")
@@ -222,7 +253,26 @@ def _error_from_status(status_code: int, body: JsonValue) -> OpenRouterSidecarEr
             body_message = body.get("message")
             if isinstance(body_message, str) and body_message:
                 message = body_message
-    return OpenRouterSidecarError(status_code, message, body=body)
+    return OpenRouterSidecarError(status_code, message, body=body, headers=_rate_limit_headers(headers))
+
+
+def _rate_limit_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Copy out only the documented retry/limit headers, case-insensitively.
+
+    An allowlist rather than a redaction pass: anything not named here simply
+    never leaves the transport boundary.
+    """
+
+    if not headers:
+        return {}
+    captured: dict[str, str] = {}
+    for key, value in headers.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        lowered = key.lower()
+        if lowered in RATE_LIMIT_HEADERS:
+            captured[lowered] = value[:_HEADER_VALUE_MAX_CHARS]
+    return captured
 
 
 def _transport_message(exc: BaseException, action: str) -> str:

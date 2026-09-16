@@ -15,10 +15,15 @@ import aiohttp
 
 from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix, parse_sidecar_per_token_usd
 from app.core.clients.http import lease_http_session
+from app.core.clients.openrouter_sidecar import RATE_LIMIT_HEADERS
 from app.core.types import JsonValue
 from app.core.usage.pricing import ModelPrice
 from app.core.usage.runtime_pricing import get_runtime_pricing_registry
 from app.core.utils.json_guards import is_json_mapping
+
+# Rate-limit header values are short tokens; cap them so a hostile upstream
+# cannot push unbounded text into an exception that reaches operator surfaces.
+_HEADER_VALUE_MAX_CHARS = 64
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +42,22 @@ class OrcaRouterSidecarConfig:
 
 
 class OrcaRouterSidecarError(Exception):
-    def __init__(self, status_code: int, message: str, *, body: JsonValue | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        body: JsonValue | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
         self.body = body
+        # Same allowlisted rate-limit headers the OpenRouter client keeps, so
+        # discovery reads one shape for both providers. See
+        # ``RATE_LIMIT_HEADERS`` for why this is an allowlist.
+        self.rate_limit_headers: dict[str, str] = dict(headers or {})
 
 
 class OrcaRouterSidecarUnavailableError(OrcaRouterSidecarError):
@@ -176,7 +192,7 @@ class OrcaRouterSidecarClient:
                 ) as resp:
                     data = await _read_response_json(resp)
                     if resp.status >= 400:
-                        raise _error_from_status(resp.status, data)
+                        raise _error_from_status(resp.status, data, getattr(resp, "headers", None))
                     return data
         except OrcaRouterSidecarError:
             raise
@@ -377,7 +393,9 @@ async def _read_response_json(resp: aiohttp.ClientResponse) -> JsonValue:
         return {"message": text}
 
 
-def _error_from_status(status_code: int, body: JsonValue) -> OrcaRouterSidecarError:
+def _error_from_status(
+    status_code: int, body: JsonValue, headers: Mapping[str, str] | None = None
+) -> OrcaRouterSidecarError:
     message = f"OrcaRouter sidecar returned HTTP {status_code}"
     if is_json_mapping(body):
         error = body.get("error")
@@ -389,7 +407,22 @@ def _error_from_status(status_code: int, body: JsonValue) -> OrcaRouterSidecarEr
             body_message = body.get("message")
             if isinstance(body_message, str) and body_message:
                 message = body_message
-    return OrcaRouterSidecarError(status_code, message, body=body)
+    return OrcaRouterSidecarError(status_code, message, body=body, headers=_rate_limit_headers(headers))
+
+
+def _rate_limit_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Copy out only the documented retry/limit headers, case-insensitively."""
+
+    if not headers:
+        return {}
+    captured: dict[str, str] = {}
+    for key, value in headers.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        lowered = key.lower()
+        if lowered in RATE_LIMIT_HEADERS:
+            captured[lowered] = value[:_HEADER_VALUE_MAX_CHARS]
+    return captured
 
 
 def _transport_message(exc: BaseException, action: str) -> str:

@@ -149,7 +149,11 @@ describe("FreeModelDiscoveryPanel", () => {
     await user.click(screen.getByRole("button", { name: "Discover free models" }));
     const dialog = await screen.findByRole("dialog", { name: "Discover free models" });
     const openrouter = await within(dialog).findByRole("region", { name: "OpenRouter candidates" });
-    await user.click(within(openrouter).getByRole("checkbox", { name: "Probe deepseek/deepseek-r1:free" }));
+    // `new` candidates are checked by default, so this one is already
+    // selected; clicking it would DESELECT it and `handleStart` would return
+    // early without ever calling the server, which is not what this test is
+    // about. Assert the default selection instead and start from it.
+    expect(within(openrouter).getByRole("checkbox", { name: "Probe deepseek/deepseek-r1:free" })).toBeChecked();
     await user.click(within(dialog).getByRole("button", { name: /^Start run/ }));
 
     // The rejection is actionable and the dialog does not silently close.
@@ -249,5 +253,96 @@ describe("FreeModelDiscoveryPanel", () => {
     expect(within(run).getByText("2/2 resolved")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Discover free models" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Cancel run" })).toBeNull();
+  });
+});
+
+describe("FreeModelDiscoveryPanel rate-limit reporting", () => {
+  function serveRun(run: Record<string, unknown>) {
+    server.use(
+      http.get("*/api/free-model-discovery/runs/current", () => HttpResponse.json(run)),
+    );
+  }
+
+  it("explains a provider-wide pause instead of looking like a stopped run", async () => {
+    serveRun(
+      runFixture({
+        counts: {
+          total: 3, queued: 3, passed: 0, failed: 0, unresolved: 0, added: 0,
+          awaitingFirstAttempt: 2, retrying: 1,
+        },
+        providers: [
+          {
+            provider: "openrouter",
+            counts: {
+              total: 3, queued: 3, passed: 0, failed: 0, unresolved: 0, added: 0,
+              awaitingFirstAttempt: 2, retrying: 1,
+            },
+            currentIntervalSeconds: 40,
+            nextProbeAt: "2026-01-01T01:00:00Z",
+            waitingReason: "Provider-wide limit reached; provider asked to wait 1h",
+            limitScope: "shared",
+            providerPaused: true,
+          },
+        ],
+      }),
+    );
+    renderPanel();
+
+    // The operator is told WHY nothing is moving, not left with a 0% bar.
+    expect(await screen.findByText(/Provider-wide limit reached/)).toBeInTheDocument();
+    expect(screen.getByText(/OpenRouter paused/)).toBeInTheDocument();
+    // A retried item is distinguished from an untouched one. Shown in both the
+    // run summary and the per-provider line, so assert on all matches.
+    expect(screen.getAllByText(/1 retrying/).length).toBeGreaterThan(0);
+  });
+
+  it("reports an unknown-scope rate limit without claiming the account is exhausted", async () => {
+    serveRun(
+      runFixture({
+        counts: {
+          total: 1, queued: 1, passed: 0, failed: 0, unresolved: 0, added: 0,
+          awaitingFirstAttempt: 0, retrying: 1,
+        },
+        providers: [],
+        items: [
+          {
+            provider: "openrouter",
+            modelId: "vendor/model:free",
+            group: "new",
+            state: "queued",
+            attempts: 1,
+            nextAttemptAt: "2026-01-01T00:02:00Z",
+            lastHttpStatus: 429,
+            lastOutcome: "http 429: Provider returned error",
+            limitScope: "unknown",
+            addedToFullModels: false,
+          },
+        ],
+      }),
+    );
+    renderPanel();
+
+    expect(await screen.findByText(/rate limited, scope unknown/)).toBeInTheDocument();
+    // Must not assert a provider-wide block from an ambiguous rejection.
+    expect(screen.queryByText(/provider-wide limit/i)).not.toBeInTheDocument();
+  });
+
+  it("does not present a run that evaluated nothing as a successful sweep", async () => {
+    serveRun(
+      runFixture({
+        status: "completed",
+        finishedAt: "2026-01-01T02:00:00Z",
+        counts: {
+          total: 2, queued: 0, passed: 0, failed: 0, unresolved: 2, added: 0,
+          awaitingFirstAttempt: 0, retrying: 0,
+        },
+        providers: [],
+        items: [],
+      }),
+    );
+    renderPanel();
+
+    expect(await screen.findByText(/ended without evaluating any model/)).toBeInTheDocument();
+    expect(screen.getByText(/were not tested/)).toBeInTheDocument();
   });
 });
