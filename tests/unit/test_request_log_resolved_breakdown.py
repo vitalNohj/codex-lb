@@ -42,7 +42,7 @@ def _log(**overrides) -> RequestLog:
 
 
 def test_a_resolved_external_row_reports_only_its_persisted_total() -> None:
-    entry = to_request_log_entry(_log())
+    entry = to_request_log_entry(_log(), include_sensitive_metadata=False)
 
     assert entry.cost_usd == pytest.approx(EXPECTED_TOTAL)
     assert entry.cost_breakdown.total_usd == pytest.approx(EXPECTED_TOTAL)
@@ -58,7 +58,8 @@ def test_equal_totals_cannot_prove_the_historical_component_rate() -> None:
             output_tokens=1_000,
             cached_input_tokens=0,
             cost_usd=0.000003,
-        )
+        ),
+        include_sensitive_metadata=False,
     )
 
     assert entry.cost_usd == pytest.approx(0.000003)
@@ -71,7 +72,9 @@ def test_equal_totals_cannot_prove_the_historical_component_rate() -> None:
 def test_an_upstream_billed_total_is_never_split_by_a_list_rate() -> None:
     """The billed debit is authoritative and is not reconciled against list price."""
 
-    entry = to_request_log_entry(_log(cost_usd=0.00846, cost_source=CostSource.UPSTREAM_BILLED.value))
+    entry = to_request_log_entry(
+        _log(cost_usd=0.00846, cost_source=CostSource.UPSTREAM_BILLED.value), include_sensitive_metadata=False
+    )
 
     assert entry.cost_usd == pytest.approx(0.00846)
     assert entry.cost_breakdown.input_usd is None
@@ -82,7 +85,8 @@ def test_an_unresolved_row_still_reports_nothing_at_all() -> None:
     """The acceptance-critical property is unchanged by restoring the split."""
 
     entry = to_request_log_entry(
-        _log(cost_usd=None, cost_source=None, price_status=ExternalPriceStatus.UNRESOLVED.value)
+        _log(cost_usd=None, cost_source=None, price_status=ExternalPriceStatus.UNRESOLVED.value),
+        include_sensitive_metadata=False,
     )
 
     assert entry.cost_usd is None
@@ -125,7 +129,7 @@ def test_a_non_participating_row_keeps_its_component_split(cost_source: str) -> 
     is null.
     """
 
-    entry = to_request_log_entry(_non_participating_log(cost_source=cost_source))
+    entry = to_request_log_entry(_non_participating_log(cost_source=cost_source), include_sensitive_metadata=False)
 
     assert entry.cost_usd == pytest.approx(_STATIC_TOTAL)
     assert entry.cost_breakdown.input_usd is not None
@@ -142,6 +146,7 @@ def test_a_non_participating_row_whose_total_disagrees_shows_no_invented_split()
 
     entry = to_request_log_entry(
         _non_participating_log(cost_usd=0.5, cost_source=CostSource.UPSTREAM_BILLED.value),
+        include_sensitive_metadata=False,
     )
 
     assert entry.cost_usd == pytest.approx(0.5)
@@ -171,7 +176,8 @@ def test_a_participating_billed_row_with_no_status_still_avoids_the_static_table
             cost_usd=_STATIC_TOTAL,
             cost_source=CostSource.UPSTREAM_BILLED.value,
             price_status=None,
-        )
+        ),
+        include_sensitive_metadata=False,
     )
 
     assert entry.cost_usd == pytest.approx(_STATIC_TOTAL), "the billed amount stays authoritative"

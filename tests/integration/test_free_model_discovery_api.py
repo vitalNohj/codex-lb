@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from collections import deque
 from collections.abc import Mapping
 from datetime import timedelta
@@ -24,6 +23,7 @@ from app.modules.free_model_discovery import runner as runner_module
 from app.modules.free_model_discovery import service as service_module
 from app.modules.free_model_discovery.runner import FreeModelDiscoveryRunner
 from app.modules.free_model_discovery.service import ProviderAccess
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -64,6 +64,26 @@ def _clear_client_caches():
     reset_orcarouter_sidecar_client_cache()
     yield
     reset_orcarouter_sidecar_client_cache()
+
+
+@pytest.fixture(autouse=True)
+def _enable_discovery_execution(monkeypatch):
+    """Let starts through the execution gate.
+
+    ``discovery_execution_enabled()`` reads the global automations switch, which
+    the suite's conftest pins off process-wide so the real scheduler cannot tick
+    into unrelated tests. The start API refuses with 409
+    ``discovery_execution_disabled`` under that default, so every test here that
+    posts a run was failing on the gate rather than on its own subject.
+
+    Enabling it at the API module - the same seam the disabled-gate test uses in
+    reverse - keeps the switch itself untouched and leaves that test's explicit
+    override authoritative.
+    """
+
+    from app.modules.free_model_discovery import api as api_module
+
+    monkeypatch.setattr(api_module, "discovery_execution_enabled", lambda: True)
 
 
 @pytest.fixture
@@ -372,18 +392,12 @@ async def test_second_concurrent_run_insert_is_rejected_by_the_database(async_cl
     # rebuild, is refused rather than creating a parallel sweep.
     async with SessionLocal() as session:
         with pytest.raises(ActiveRunExistsError):
-            await FreeModelDiscoveryRepository(session).create_run(
-                items=[("openrouter", "c/d:free", "new")], **common
-            )
+            await FreeModelDiscoveryRepository(session).create_run(items=[("openrouter", "c/d:free", "new")], **common)
 
     # Exactly one run is live, and the session survived the rejection.
     async with SessionLocal() as session:
         running = (
-            (
-                await session.execute(
-                    select(FreeModelDiscoveryRun).where(FreeModelDiscoveryRun.status == "running")
-                )
-            )
+            (await session.execute(select(FreeModelDiscoveryRun).where(FreeModelDiscoveryRun.status == "running")))
             .scalars()
             .all()
         )
@@ -415,7 +429,7 @@ async def test_start_is_rejected_when_discovery_execution_is_disabled(async_clie
 
 
 @pytest.mark.asyncio
-async def test_operator_write_between_discovery_read_and_update_forces_a_retry(monkeypatch):
+async def test_operator_write_between_discovery_read_and_update_forces_a_retry(db_setup, monkeypatch):
     """Force the interleaving the CAS exists for.
 
     Seeding settings *before* discovery reads them proves nothing: the append
@@ -423,14 +437,18 @@ async def test_operator_write_between_discovery_read_and_update_forces_a_retry(m
     discovery's read and before its conditional update, which is exactly the
     window that used to lose one side silently.
 
-    NOT EXECUTED in the pass that added it.
+    Takes ``db_setup`` because it drives the repositories directly instead of
+    going through ``async_client``; without it no test schema is created and the
+    first write fails with ``no such table``.
     """
 
     from app.modules.free_model_discovery.service import FreeModelDiscoveryService
     from app.modules.settings import repository as settings_repository_module
 
     async with SessionLocal() as session:
-        settings = (await session.execute(select(DashboardSettings))).scalar_one()
+        # get_or_create, not a bare SELECT: driving the repositories directly
+        # means no request has materialized the singleton settings row yet.
+        settings = await SettingsRepository(session).get_or_create()
         settings.openrouter_sidecar_full_models_json = json.dumps(["seed/model:free"])
         await session.commit()
 
@@ -456,9 +474,7 @@ async def test_operator_write_between_discovery_read_and_update_forces_a_retry(m
     )
 
     async with SessionLocal() as session:
-        added = await FreeModelDiscoveryService(session).pin_full_model(
-            "openrouter", "discovered/model:free"
-        )
+        added = await FreeModelDiscoveryService(session).pin_full_model("openrouter", "discovered/model:free")
 
     assert added is True
     assert conflicts == [1], "the racing write must have been triggered"
@@ -475,11 +491,11 @@ async def test_operator_write_between_discovery_read_and_update_forces_a_retry(m
 
 
 @pytest.mark.asyncio
-async def test_stale_operator_save_cannot_overwrite_a_discovery_append():
+async def test_stale_operator_save_cannot_overwrite_a_discovery_append(db_setup):
     """The reverse direction: an operator form loaded before the append must
     not silently clobber it. The existing version CAS answers 409.
 
-    NOT EXECUTED in the pass that added it.
+    Takes ``db_setup`` for the test schema; see the note above.
     """
 
     from app.core.exceptions import DashboardSettingsConflictError
@@ -500,7 +516,7 @@ async def test_stale_operator_save_cannot_overwrite_a_discovery_append():
 
         with pytest.raises(DashboardSettingsConflictError):
             await stale_repository.update(
-                openrouter_sidecar_full_models=["operator/only:free"],
+                openrouter_sidecar_full_models_json=json.dumps(["operator/only:free"]),
                 expected_version=stale_version,
             )
 
@@ -512,13 +528,13 @@ async def test_stale_operator_save_cannot_overwrite_a_discovery_append():
 
 
 @pytest.mark.asyncio
-async def test_loaded_run_item_survives_pinning_and_verdict_persistence(fake_clients):
+async def test_loaded_run_item_survives_pinning_and_verdict_persistence(db_setup, fake_clients):
     """Regression for the expiration bug: pinning must not expire the caller's
     run item, whose attributes ``record_verdict`` reads synchronously right
     after. On an async session an implicit lazy load raises rather than
     querying, so this would fail at the verdict write, not at the pin.
 
-    NOT EXECUTED in the pass that added it.
+    Takes ``db_setup`` for the test schema; see the note above.
     """
 
     from app.modules.free_model_discovery.repository import FreeModelDiscoveryRepository
@@ -538,9 +554,7 @@ async def test_loaded_run_item_survives_pinning_and_verdict_persistence(fake_cli
         item = await repository.next_queued_item(run.id, "openrouter")
         assert item is not None
 
-        added = await FreeModelDiscoveryService(session).pin_full_model(
-            "openrouter", item.model_id
-        )
+        added = await FreeModelDiscoveryService(session).pin_full_model("openrouter", item.model_id)
         assert added is True
 
         # The attributes the runner touches next must still be readable without

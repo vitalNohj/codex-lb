@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
-from app.dependencies import FreeModelDiscoveryContext, get_free_model_discovery_context
 from app.core.exceptions import DashboardConflictError
+from app.dependencies import FreeModelDiscoveryContext, get_free_model_discovery_context
 from app.modules.free_model_discovery.runner import (
     discovery_execution_enabled,
     wake_free_model_discovery_runner,

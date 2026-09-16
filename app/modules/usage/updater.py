@@ -405,16 +405,24 @@ class UsageUpdater:
         if account.status in (AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
         try:
+            # Named factory rather than a long defaulted lambda: same early
+            # binding of the loop-invariant arguments, but it fits the line
+            # limit and matches the sibling call site above.
+            async def refresh_factory(
+                account: Account = account,
+                access_token_override: str | None = access_token_override,
+                ignore_persisted_cooldown: bool = ignore_persisted_cooldown,
+            ) -> AccountRefreshResult:
+                return await self._refresh_account(
+                    account,
+                    usage_account_id=account.chatgpt_account_id,
+                    access_token_override=access_token_override,
+                    ignore_persisted_cooldown=ignore_persisted_cooldown,
+                )
+
             result = await _USAGE_REFRESH_SINGLEFLIGHT.run(
                 account.id,
-                lambda account=account, access_token_override=access_token_override, ignore_persisted_cooldown=ignore_persisted_cooldown: (
-                    self._refresh_account(
-                        account,
-                        usage_account_id=account.chatgpt_account_id,
-                        access_token_override=access_token_override,
-                        ignore_persisted_cooldown=ignore_persisted_cooldown,
-                    )
-                ),
+                refresh_factory,
                 join_existing=False,
             )
             await self._sync_account_from_repo(account)

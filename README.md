@@ -197,7 +197,7 @@ docker run -d --name codex-lb \
 # or run from source
 uv sync
 cd frontend && bun install && bun run build && cd ..
-uv run fastapi run app/main.py --host 127.0.0.1 --port 2455
+uv run codex-lb --host 127.0.0.1 --port 2455
 ```
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
@@ -223,7 +223,9 @@ Open the dashboard → enter the token + new password → done. The token is sha
 **Manual token:** To use a fixed token instead, set the env var before starting:
 
 ```bash
+docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
 docker run -d --name codex-lb \
+  --network codex-lb-net \
   -e CODEX_LB_DASHBOARD_BOOTSTRAP_TOKEN=your-secret-token \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
@@ -563,7 +565,9 @@ If the trusted header is missing and no fallback password is configured, the das
 **Authelia / trusted header**
 
 ```bash
+docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
 docker run -d --name codex-lb \
+  --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -e CODEX_LB_DASHBOARD_AUTH_MODE=trusted_header \
   -e CODEX_LB_DASHBOARD_AUTH_PROXY_HEADER=Remote-User \
@@ -576,7 +580,9 @@ docker run -d --name codex-lb \
 **Hard override / no app-level dashboard auth**
 
 ```bash
+docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
 docker run -d --name codex-lb \
+  --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -e CODEX_LB_DASHBOARD_AUTH_MODE=disabled \
   -v codex-lb-data:/var/lib/codex-lb \

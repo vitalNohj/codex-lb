@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import importlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol, TypeVar, cast
@@ -28,13 +28,50 @@ from app.core.utils.time import utcnow
 from app.db.models import FreeModelDiscoveryRunItem
 from app.db.session import get_background_session
 from app.modules.free_model_discovery.pacing import ProviderPacer
-from app.modules.free_model_discovery.probe import ChatCompletionClient, ProbeResult, probe_model
+from app.modules.free_model_discovery.probe import (
+    ChatCompletionClient,
+    ProbeResult,
+    probe_model,
+    redact_provider_text,
+)
 from app.modules.free_model_discovery.repository import FreeModelDiscoveryRepository
 from app.modules.free_model_discovery.schemas import FREE_MODEL_PROVIDERS, FreeModelProvider
 from app.modules.free_model_discovery.service import FreeModelDiscoveryService, provider_access
+from app.modules.proxy.openrouter_sidecar_dispatch import openrouter_sidecar_config_from_settings
+from app.modules.proxy.orcarouter_sidecar_dispatch import orcarouter_sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
+
+
+async def _configured_provider_api_keys(session: AsyncSession) -> tuple[str | None, ...]:
+    """Every provider credential discovery could have used, for redaction only.
+
+    Read on the failure path, where the exception may carry upstream text that
+    echoed a key. Never raises: redacting against no key is a weaker guarantee
+    than redacting against the real ones, but it must not stop the run from
+    being marked failed - leaving the run ``running`` forever is the worse
+    outcome and the bug this path exists to prevent.
+
+    A failed lookup is rolled back before returning. The caller reuses this
+    session immediately to write the failed row, and on PostgreSQL every
+    statement in an aborted transaction is rejected until it is rolled back -
+    so swallowing the error without one would silently defeat the very path
+    this helper serves. The rollback is best-effort for the same reason.
+    """
+
+    try:
+        settings = await SettingsRepository(session).get_or_create()
+        return (
+            openrouter_sidecar_config_from_settings(settings).api_key,
+            orcarouter_sidecar_config_from_settings(settings).api_key,
+        )
+    except Exception:
+        logger.warning("Could not resolve provider keys to redact a discovery failure", exc_info=True)
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        return ()
+
 
 # Poll cadence when idle. A ``wake()`` short-circuits it.
 _IDLE_POLL_SECONDS = 30.0
@@ -44,8 +81,40 @@ _WAIT_SLICE_SECONDS = 5.0
 # provider pacer still bounds the gap between probes; this only orders the
 # queue so the next item gets its turn before a retry.
 _INCONCLUSIVE_REQUEUE = timedelta(minutes=2)
+# Cap on the operator-visible failure text persisted to ``error_message``.
+_RUN_ERROR_MAX_CHARS = 255
 
 _T = TypeVar("_T")
+
+
+def _run_error_message(exc: BaseException, *, api_keys: Sequence[str | None] = ()) -> str:
+    """Operator-facing text for a run that died of an unexpected internal error.
+
+    Deliberately the exception type plus its own message, never a traceback and
+    never settings, headers or prompts: this string is served by the run API and
+    rendered in the dashboard. Full diagnostics stay in the logs, where
+    ``logger.exception`` already put them.
+
+    An exception raised inside a provider client can still carry upstream text
+    that echoed a credential, so the message is redacted against EVERY
+    configured provider key, not just the unconditional ``Bearer``/``sk-orca-``
+    patterns. Those patterns alone would miss a bare OpenRouter ``sk-`` key,
+    which has no distinguishing prefix - matching the configured value exactly
+    is what closes that gap. Redaction is applied per key because the sanitizer
+    takes one credential at a time.
+    """
+
+    detail = str(exc).strip()
+    described = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+    redacted = f"discovery run failed: {described}"
+    for api_key in api_keys:
+        redacted = redact_provider_text(redacted, api_key=api_key)
+    # A final unconditional pass, so text is still sanitized when no key could
+    # be resolved (e.g. the settings read itself is what failed).
+    redacted = " ".join(redact_provider_text(redacted, api_key=None).split())
+    if len(redacted) <= _RUN_ERROR_MAX_CHARS:
+        return redacted
+    return redacted[: _RUN_ERROR_MAX_CHARS - 3] + "..."
 
 
 class _LeaderElectionLike(Protocol):
@@ -151,6 +220,7 @@ class FreeModelDiscoveryRunner:
 
     async def _drive_as_leader(self) -> None:
         async with self._lock:
+            run_id: str | None = None
             try:
                 async with get_background_session() as session:
                     run = await FreeModelDiscoveryRepository(session).get_active_run()
@@ -159,9 +229,45 @@ class FreeModelDiscoveryRunner:
                     return
                 await self.drive_run(run_id)
             except asyncio.CancelledError:
+                # Shutdown/cancellation is not a run failure: the run stays
+                # ``running`` so the next boot resumes it, exactly like
+                # ``_finalize`` does when ``_stop`` is set.
                 raise
-            except Exception:
+            except Exception as exc:
                 logger.exception("Free model discovery runner failed")
+                if run_id is not None:
+                    await self._fail_run(run_id, exc)
+
+    async def _fail_run(self, run_id: str, exc: BaseException) -> None:
+        """Record an unexpected driver error as a terminal ``failed`` run.
+
+        Without this the broad ``except`` above only logged, so a run whose
+        driver could never reach its first probe stayed ``running`` forever
+        with ``error_message`` NULL - the dashboard kept rendering a dead run
+        as Running, and the single-active index blocked every later run.
+
+        Provider-specific and transport failures never reach here: ``probe_model``
+        turns them into ``inconclusive`` results the queue retries. Anything that
+        escapes to this handler is an unexpected internal failure, which is why
+        it is terminal rather than retried.
+
+        Persisting the row must never itself wedge the loop, so its own failure
+        is logged and swallowed; the next tick retries.
+        """
+
+        try:
+            async with get_background_session() as session:
+                # Resolve the configured credentials while settings are still
+                # bound, so the failure text can be redacted against the real
+                # keys rather than pattern-guessed.
+                api_keys = await _configured_provider_api_keys(session)
+                await FreeModelDiscoveryRepository(session).fail_run(
+                    run_id, finished_at=utcnow(), error_message=_run_error_message(exc, api_keys=api_keys)
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to record a failed free model discovery run run_id=%s", run_id)
 
     async def drive_run(self, run_id: str) -> None:
         """Drive one run to a terminal state. Each provider queue runs in its
@@ -179,14 +285,27 @@ class FreeModelDiscoveryRunner:
             cap = run.pacing_cap_seconds
             max_attempts = run.max_attempts_per_item
             deadline = run.deadline_at
+            # Resolve provider access HERE, while ``settings`` is still bound to
+            # a live session. ``provider_access`` reads ORM columns, and this
+            # block's exit expires the instance, so reading it afterwards raised
+            # ``DetachedInstanceError`` on every tick - before any provider
+            # client existed, so discovery never issued a single probe.
+            # ``ProviderAccess`` is a frozen dataclass of plain values and an
+            # already-constructed client, so it stays valid past this boundary
+            # and no transaction is held open across the probe network calls.
+            accesses = {
+                provider: provider_access(settings, provider)
+                for provider in FREE_MODEL_PROVIDERS
+                if provider in providers_present
+            }
 
         _progress[run_id] = {}
         try:
             tasks: list[asyncio.Task[None]] = []
             for provider in FREE_MODEL_PROVIDERS:
-                if provider not in providers_present:
+                access = accesses.get(provider)
+                if access is None:
                     continue
-                access = provider_access(settings, provider)
                 if access.client is None:
                     await self._park_provider(run_id, provider, reason=access.message or "provider unavailable")
                     continue
@@ -354,7 +473,12 @@ class FreeModelDiscoveryRunner:
                 status = "expired"
             else:
                 status = "completed"
-            await repository.finish_run(run_id, status=status, finished_at=now)
+            finished = await repository.finish_run(run_id, status=status, finished_at=now)
+        if not finished:
+            # Another writer ended this run between the read above and the
+            # guarded write; its terminal state is the truthful one.
+            logger.info("Free model discovery run was already finished by another writer run_id=%s", run_id)
+            return
         logger.info("Free model discovery run finished run_id=%s status=%s", run_id, status)
 
 

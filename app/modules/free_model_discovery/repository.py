@@ -118,20 +118,49 @@ class FreeModelDiscoveryRepository:
 
     async def finish_run(
         self, run_id: str, *, status: str, finished_at: datetime, error_message: str | None = None
-    ) -> None:
-        """Terminal transition. Any item still queued becomes ``unresolved``."""
+    ) -> bool:
+        """Terminal transition, guarded on the run still being ``running``.
 
+        Every terminal transition is a compare-and-set on ``status`` so exactly
+        one writer can end a run. Several can legitimately race for it: the
+        driver's orderly finish, the error path, and - with the runner
+        leader-gated but the row shared - another replica. An unguarded UPDATE
+        let a finalizer that had already read ``running`` overwrite a terminal
+        state another writer had just committed, so a run that died of an
+        internal error could be relabelled ``completed`` and lose its
+        ``error_message``.
+
+        Queued items are resolved only when the transition actually wins,
+        keeping item state consistent with the status the winner wrote.
+
+        Returns whether this call performed the transition.
+        """
+
+        result = await self._session.execute(
+            update(FreeModelDiscoveryRun)
+            .where(FreeModelDiscoveryRun.id == run_id, FreeModelDiscoveryRun.status == ACTIVE_RUN_STATUS)
+            .values(status=status, finished_at=finished_at, error_message=error_message)
+        )
+        if int(getattr(result, "rowcount", 0) or 0) <= 0:
+            # Another writer ended this run first; its terminal state stands.
+            await self._session.rollback()
+            return False
         await self._session.execute(
             update(FreeModelDiscoveryRunItem)
             .where(FreeModelDiscoveryRunItem.run_id == run_id, FreeModelDiscoveryRunItem.state == "queued")
             .values(state="unresolved", resolved_at=finished_at)
         )
-        await self._session.execute(
-            update(FreeModelDiscoveryRun)
-            .where(FreeModelDiscoveryRun.id == run_id)
-            .values(status=status, finished_at=finished_at, error_message=error_message)
-        )
         await self._session.commit()
+        return True
+
+    async def fail_run(self, run_id: str, *, finished_at: datetime, error_message: str) -> bool:
+        """Terminal ``failed`` transition for an unexpected driver error.
+
+        Thin alias over the same guarded transition ``finish_run`` performs, so
+        the error path cannot drift from the orderly one.
+        """
+
+        return await self.finish_run(run_id, status="failed", finished_at=finished_at, error_message=error_message)
 
     # --- items ----------------------------------------------------------
 
