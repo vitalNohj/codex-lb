@@ -17,7 +17,7 @@ from app.core.clients.openrouter_sidecar import (
 )
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
-from app.db.models import ApiKeyUsageReservation, RequestLog
+from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
@@ -260,6 +260,43 @@ async def _reservation_statuses() -> list[str]:
         return list(result.scalars().all())
 
 
+async def _limit_current_values() -> list[int]:
+    """Durable reserved-quota counters, the resource a release actually returns.
+
+    Reservation ``status`` alone does not prove the quota came back: settlement
+    flips the row and adjusts ``api_key_limits.current_value`` in the same
+    transaction, so the counter is the end-user-visible fact (how much of the
+    key's allowance stays consumed) and the status is only its bookkeeping.
+    """
+
+    async with SessionLocal() as session:
+        result = await session.execute(select(ApiKeyLimit.current_value))
+        return list(result.scalars().all())
+
+
+_TOTAL_TOKENS_LIMIT = LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)
+
+
+def _context_length_error() -> OpenRouterSidecarError:
+    return OpenRouterSidecarError(
+        400,
+        "This endpoint's maximum context length is 163840 tokens",
+        body={"error": {"code": "context_length_exceeded", "message": "maximum context length"}},
+    )
+
+
+async def _configure_openrouter(async_client) -> None:
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "openrouterSidecarEnabled": True,
+            "openrouterSidecarApiKey": "openrouter-key",
+            "openrouterSidecarModelPrefixes": ["deepseek/"],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
 def _chat_sse_payloads(body: bytes | str) -> list[dict]:
     text = body.decode("utf-8") if isinstance(body, bytes) else body
     return [
@@ -476,28 +513,25 @@ async def test_cursor_context_limit_error_is_logged_as_success_and_releases_its_
     openrouter_enabled,
     fake_openrouter,
 ):
-    """A synthetic success must not be recorded as an error.
+    """A synthetic success must not be recorded as an error, and must not charge.
 
     The client receives HTTP 200 with synthetic usage, so logging it as an error
     and finalizing its reservation would charge quota for a request that was
     never billed and would report a failure the caller never saw.
+
+    The key carries a real limit so a reservation genuinely exists: admission
+    skips the reservation ledger entirely for a key with no applicable limit
+    (``openspec/changes/skip-empty-usage-reservations``), and asserting a
+    release against a key that never reserved anything tests nothing about the
+    release path.
     """
 
-    await async_client.put(
-        "/api/settings",
-        json={
-            "openrouterSidecarEnabled": True,
-            "openrouterSidecarApiKey": "openrouter-key",
-            "openrouterSidecarModelPrefixes": ["deepseek/"],
-        },
-    )
+    await _configure_openrouter(async_client)
     await _enable_api_key_auth(async_client)
-    key = await _create_api_key("cursor-context-limit-key")
-    fake_openrouter.chat_error = OpenRouterSidecarError(
-        400,
-        "This endpoint's maximum context length is 163840 tokens",
-        body={"error": {"code": "context_length_exceeded", "message": "maximum context length"}},
-    )
+    key = await _create_api_key("cursor-context-limit-key", limits=[_TOTAL_TOKENS_LIMIT])
+    fake_openrouter.chat_error = _context_length_error()
+
+    assert await _limit_current_values() == [0]
 
     response = await async_client.post(
         "/v1/chat/completions",
@@ -517,6 +551,116 @@ async def test_cursor_context_limit_error_is_logged_as_success_and_releases_its_
     # Released, never finalized: the upstream refused the request, so there is no
     # spend to settle and the reserved quota must go back.
     assert await _reservation_statuses() == ["released"]
+    # The real resource, not just the bookkeeping row: the whole reserved
+    # allowance is available again, so the refused request ties up no capacity.
+    assert await _limit_current_values() == [0]
+
+
+@pytest.mark.asyncio
+async def test_cursor_context_limit_stream_releases_its_reservation(
+    async_client,
+    openrouter_enabled,
+    fake_openrouter,
+):
+    """The streaming context-limit path returns the reserved quota too.
+
+    Streaming settles in the iterator's ``finally``, on a task detached from the
+    response, so this asserts after the suite's persistence drain rather than
+    sleeping on a wall clock.
+    """
+
+    await _configure_openrouter(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("cursor-context-limit-stream-key", limits=[_TOTAL_TOKENS_LIMIT])
+    fake_openrouter.stream_context_error = True
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}", "User-Agent": "Cursor/1.0"},
+        json={
+            "model": "deepseek/deepseek-chat",
+            "messages": [{"role": "user", "content": "too much"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert b'"error"' not in body
+    assert await _reservation_statuses() == ["released"]
+    assert await _limit_current_values() == [0]
+
+
+@pytest.mark.asyncio
+async def test_cursor_context_limit_with_limit_free_key_creates_no_reservation(
+    async_client,
+    openrouter_enabled,
+    fake_openrouter,
+):
+    """A key with no applicable limit reserves nothing, so there is nothing to release.
+
+    This is the admission contract from ``skip-empty-usage-reservations``, not a
+    leak: no reservation row is created, so no quota is held and the absence of
+    a ``released`` row is the correct outcome rather than a missing release.
+    """
+
+    await _configure_openrouter(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("cursor-context-limit-unlimited-key")
+    fake_openrouter.chat_error = _context_length_error()
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}", "User-Agent": "Cursor/1.0"},
+        json={"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": "too much"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"]["prompt_tokens"] == CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
+    assert await _reservation_statuses() == []
+    assert await _limit_current_values() == []
+
+
+@pytest.mark.asyncio
+async def test_cursor_context_limit_release_does_not_touch_another_requests_reservation(
+    async_client,
+    openrouter_enabled,
+    fake_openrouter,
+):
+    """The release returns this request's quota only.
+
+    A context-limit refusal on one key must not hand back the allowance another
+    key's successful request legitimately consumed.
+    """
+
+    await _configure_openrouter(async_client)
+    await _enable_api_key_auth(async_client)
+    billed_key = await _create_api_key("cursor-context-limit-bystander-key", limits=[_TOTAL_TOKENS_LIMIT])
+
+    billed = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {billed_key.key}"},
+        json={"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert billed.status_code == 200
+    # The fake upstream reports 10 prompt + 5 completion tokens.
+    assert await _limit_current_values() == [15]
+
+    refused_key = await _create_api_key("cursor-context-limit-refused-key", limits=[_TOTAL_TOKENS_LIMIT])
+    fake_openrouter.chat_error = _context_length_error()
+
+    refused = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {refused_key.key}", "User-Agent": "Cursor/1.0"},
+        json={"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": "too much"}]},
+    )
+
+    assert refused.status_code == 200
+    assert sorted(await _reservation_statuses()) == ["finalized", "released"]
+    # The bystander keeps its legitimate charge; only the refused request's
+    # reservation goes back.
+    assert sorted(await _limit_current_values()) == [0, 15]
 
 
 @pytest.mark.asyncio

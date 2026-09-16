@@ -17,7 +17,9 @@ from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
     apply_cursor_usage_fallback_to_response,
     needs_cursor_proactive_compaction,
+    stream_bytes_with_cursor_usage_fallback,
     stream_responses_with_cursor_context_limit_fallback,
+    stream_with_cursor_usage_fallback,
 )
 
 
@@ -210,3 +212,65 @@ async def test_stream_responses_fallback_closes_source_on_context_limit() -> Non
     assert source._index == 2
     assert any("1000000" in event for event in events)
     assert not any("should not leak" in event for event in events)
+
+
+async def test_chat_bytes_fallback_settles_upstream_on_context_limit() -> None:
+    """The chat wrapper must close the sidecar stream it stops consuming.
+
+    The sidecar stream iterators release the API-key usage reservation in a
+    ``finally``. This wrapper returns early once it rewrites a context-limit
+    error into a synthetic success, and ``async for`` does not close the
+    iterator it consumes, so without an explicit close that release would only
+    run at a later event-loop finalization - after the response completed, with
+    the caller's quota still held in the meantime.
+    """
+
+    settled: list[str] = []
+
+    async def settling_stream():
+        try:
+            yield b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
+            yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
+            yield b'data: {"id":"c2","object":"chat.completion.chunk","choices":[]}\n\n'
+        finally:
+            settled.append("released")
+
+    chunks = [
+        chunk
+        async for chunk in stream_bytes_with_cursor_usage_fallback(
+            settling_stream(),
+            _payload("deepseek/deepseek-chat"),
+            source="test",
+        )
+    ]
+
+    body = b"".join(chunks)
+    assert b'"error"' not in body
+    assert str(CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS).encode() in body
+    # Settled as part of this request, not deferred to a later GC pass.
+    assert settled == ["released"]
+
+
+async def test_chat_text_fallback_settles_upstream_on_context_limit() -> None:
+    """Same contract for the ``str`` variant used by the native chat path."""
+
+    settled: list[str] = []
+
+    async def settling_stream():
+        try:
+            yield 'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
+            yield 'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n'
+            yield 'data: {"id":"c2","object":"chat.completion.chunk","choices":[]}\n\n'
+        finally:
+            settled.append("released")
+
+    events = [
+        event
+        async for event in stream_with_cursor_usage_fallback(
+            settling_stream(),
+            _payload("deepseek/deepseek-chat"),
+        )
+    ]
+
+    assert not any('"error"' in event for event in events)
+    assert settled == ["released"]

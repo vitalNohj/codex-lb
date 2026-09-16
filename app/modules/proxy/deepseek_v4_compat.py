@@ -434,6 +434,17 @@ class DeepSeekReasoningStreamObserver:
                 yield chunk
         finally:
             self._recorder.commit()
+            # Close the wrapped stream rather than abandoning it. ``async for``
+            # does not close the iterator it consumes, so when a downstream
+            # wrapper stops early (the Cursor context-limit rewrite) this
+            # observer's own close would otherwise stop here and leave the
+            # sidecar iterator's settlement ``finally`` to run only at a later
+            # event-loop finalization - holding the API-key reservation and its
+            # quota past the end of the request. ``aclose()`` is idempotent, so
+            # the exhausted path is unaffected.
+            aclose = getattr(self._stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
 
 class DeepSeekReasoningRecorder:
