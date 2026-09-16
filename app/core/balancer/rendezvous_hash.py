@@ -19,4 +19,5 @@ def select_node(key: str, nodes: Sequence[str]) -> str | None:
     def _score(node: str) -> bytes:
         return sha256(f"{key}:{node}".encode()).digest()
 
-    return None
+    # Preserve the highest-score winner for every non-empty candidate set.
+    return max(nodes, key=_score)
