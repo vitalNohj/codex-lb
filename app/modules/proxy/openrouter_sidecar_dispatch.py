@@ -22,6 +22,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.utils.cancellation import await_result_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
@@ -54,6 +55,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.external_pricing_logging import (
     BilledCostAccumulator,
     ExternalRequestCost,
+    ExternalResponseSettlement,
     cost_microdollars,
     external_request_cost,
     external_response_settlement,
@@ -361,19 +363,31 @@ async def _openrouter_stream_iterator(
         error_message = str(exc) or exc.__class__.__name__
         raise
     finally:
-        settlement = await external_response_settlement(
-            provider=OPENROUTER_PRICING_PROVIDER,
+        # Settle as one cancellation-deferred unit. Price resolution is an
+        # awaited database read that precedes the reservation write, so a
+        # request task cancelled mid-stream used to raise out of
+        # ``external_response_settlement`` before the settlement helper was ever
+        # entered - leaving the reservation ``reserved`` and its quota held
+        # until stale reclamation. Reproduced end to end through the real
+        # endpoint and iterator.
+        #
+        # The span covers resolution *and* settlement because settling needs
+        # the resolved cost: splitting them would settle with a price the
+        # request never resolved. The accounting decision is unchanged - the
+        # helper still releases when neither usage nor a charge resolves and
+        # still finalizes a provider-reported billed cost, which survives
+        # ``completed=False``. Exactly-once is unaffected: settlement is a
+        # compare-and-set on ``reserved``.
+        #
+        # Cancellation is deferred, not swallowed: the deferral re-raises once
+        # the cleanup completes, so the request still terminates as cancelled.
+        settlement = await _settle_stream_deferring_cancellation(
+            reservation,
+            api_key=api_key,
             model=model,
             usage=usage,
             billed_cost_usd=billed_cost.value,
             completed=completed,
-        )
-        await _finalize_or_release_openrouter_reservation(
-            reservation,
-            api_key=api_key,
-            model=model,
-            usage=settlement.usage,
-            cost=settlement.cost,
         )
         await _log_openrouter_request(
             api_key=api_key,
@@ -508,6 +522,43 @@ async def _log_openrouter_request(
             get_request_id(),
             exc_info=True,
         )
+
+
+async def _settle_stream_deferring_cancellation(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    usage: SidecarUsage | None,
+    billed_cost_usd: float | None,
+    completed: bool,
+) -> ExternalResponseSettlement[SidecarUsage]:
+    """Resolve this stream's price and settle its reservation as one unit.
+
+    Kept together deliberately: settlement needs the resolved cost, so splitting
+    the two would let a cancelled request settle against a price it never
+    resolved. Both steps are the existing ones with the existing captured
+    inputs - this changes when they run, not what they decide.
+    """
+
+    async def _settle() -> ExternalResponseSettlement[SidecarUsage]:
+        settlement = await external_response_settlement(
+            provider=OPENROUTER_PRICING_PROVIDER,
+            model=model,
+            usage=usage,
+            billed_cost_usd=billed_cost_usd,
+            completed=completed,
+        )
+        await _finalize_or_release_openrouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
+        return settlement
+
+    return await await_result_deferring_cancellation(_settle())
 
 
 async def _finalize_or_release_openrouter_reservation(
