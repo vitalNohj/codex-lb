@@ -50,6 +50,13 @@ _USAGE = (
     b'data: {"id":"c2","object":"chat.completion.chunk","choices":[],'
     b'"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n'
 )
+# Same usage frame, plus a provider-reported billed cost. ``billed_cost_usd``
+# survives ``completed=False``, so this drives the settlement helper's
+# *finalize* branch rather than its release branch.
+_USAGE_WITH_COST = (
+    b'data: {"id":"c2","object":"chat.completion.chunk","choices":[],'
+    b'"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}}\n\n'
+)
 _CONTEXT_ERROR = b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n'
 _DONE = b"data: [DONE]\n\n"
 
@@ -236,7 +243,25 @@ async def test_control_context_limit_rejection_releases_through_the_real_stack(
 # --------------------------------------------------------------------------
 
 
-async def _cancel_midstream(app, key, *, chunks: list[bytes], gate_after: int, fake) -> None:
+async def _settle_quiesced(timeout_seconds: float = 5.0) -> None:
+    """Wait until no reservation is still ``reserved``, or fail loudly.
+
+    Polls a real condition instead of sleeping a fixed interval: a fixed sleep
+    either flakes under load or silently passes by outlasting the very defect
+    under test.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while loop.time() < deadline:
+        statuses = await _reservation_statuses()
+        if statuses and "reserved" not in statuses:
+            return
+        await asyncio.sleep(0.01)
+    # Fall through: the caller's exact assertion reports the real end state.
+
+
+async def _cancel_midstream(app, key, *, chunks: list[bytes], gate_after: int, fake, cancel_times: int = 1) -> None:
     """Cancel the real request task while the production iterator is suspended."""
 
     fake.chunks = chunks
@@ -266,7 +291,13 @@ async def _cancel_midstream(app, key, *, chunks: list[bytes], gate_after: int, f
     task = asyncio.create_task(_drive())
     try:
         await asyncio.wait_for(fake.gate_reached.wait(), timeout=5)
-        task.cancel()
+        # Cancel while the production iterator is suspended mid-stream, i.e.
+        # during the settlement span rather than between requests.
+        for attempt in range(cancel_times):
+            task.cancel()
+            if attempt + 1 < cancel_times:
+                # Re-deliver cancellation while cleanup is in flight.
+                await asyncio.sleep(0)
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
     finally:
@@ -298,18 +329,13 @@ async def test_injected_cancellation_before_any_usage_event(
     # Gate immediately after the first content delta: no usage frame decoded.
     await _cancel_midstream(app_instance, key, chunks=[_DELTA, _USAGE, _DONE], gate_after=0, fake=fake_openrouter)
 
-    # Settle asynchronously if it is going to; do not race the assertion.
-    await asyncio.sleep(0.3)
+    await _settle_quiesced()
 
-    statuses = await _reservation_statuses()
-    values = await _limit_current_values()
-    assert statuses in (["reserved"], ["released"]), f"unexpected terminal state: {statuses}"
-    # Recorded as observed behaviour. The pairing is the point: a released
-    # reservation must return the quota, a retained one must still hold it.
-    if statuses == ["released"]:
-        assert values == [0]
-    else:
-        assert values == [1000], "a retained reservation must still hold its quota"
+    # EXACT regression. Fails on the pre-fix code, where the cancellation was
+    # raised out of ``external_response_settlement``'s price lookup before the
+    # settlement helper ran, leaving ``['reserved']`` / ``[1000]``.
+    assert await _reservation_rows() == [("released", None, None, None)]
+    assert await _limit_current_values() == [0]
 
 
 @pytest.mark.asyncio
@@ -334,22 +360,98 @@ async def test_injected_cancellation_after_observable_usage(
         fake=fake_openrouter,
     )
 
-    await asyncio.sleep(0.3)
+    await _settle_quiesced()
+
+    # EXACT regression, pinning the CURRENT contract rather than a preference:
+    # ``completed=False`` suppresses settled token usage, and with no
+    # billed-cost field no charge resolves, so the existing helper takes its
+    # release branch - exactly as an uncancelled interrupted stream does.
+    # Fails pre-fix with ``['reserved']`` / ``[1000]``.
+    assert await _reservation_rows() == [("released", None, None, None)]
+    assert await _limit_current_values() == [0]
+
+
+@pytest.mark.asyncio
+async def test_injected_cancellation_after_provider_billed_cost_finalizes(
+    app_instance, async_client, openrouter_enabled, fake_openrouter
+):
+    """Cancelled after the provider reported a BILLED COST: must finalize, not release.
+
+    ``completed=False`` suppresses settled token usage but NOT ``billed_cost_usd``,
+    so a resolved nonzero charge drives the settlement helper's finalize branch.
+    This pins that the correction preserves BOTH branches: a blanket release here
+    would discard money the provider actually reported.
+    """
+
+    await _configure(async_client)
+    key = await _create_key("cancel-after-billed-cost")
+
+    await _cancel_midstream(
+        app_instance,
+        key,
+        chunks=[_DELTA, _USAGE_WITH_COST, _DELTA, _DONE],
+        gate_after=1,
+        fake=fake_openrouter,
+    )
+    await _settle_quiesced()
 
     rows = await _reservation_rows()
-    values = await _limit_current_values()
     assert len(rows) == 1
-    status, input_tokens, output_tokens, _cost = rows[0]
-    assert status in ("reserved", "finalized", "released"), f"unexpected terminal state: {status}"
-    if status == "finalized":
-        # If it settles, it must settle the usage the provider actually
-        # reported - never a free request.
-        assert (input_tokens, output_tokens) == (10, 5)
-        assert values == [15]
-    elif status == "released":
-        assert values == [0]
-    else:
-        assert values == [1000], "a retained reservation must still hold its quota"
+    status, input_tokens, output_tokens, cost_microdollars = rows[0]
+    # Finalized, not released - the billed cost survived cancellation.
+    assert status == "finalized", f"a provider-billed cancellation must finalize, got {status!r}"
+    # $0.25 recorded as microdollars, the durable monetary charge.
+    assert cost_microdollars == 250_000, f"wrong durable charge: {cost_microdollars}"
+    # Token usage stays suppressed by completed=False; this is the existing
+    # contract and the correction does not change it.
+    assert (input_tokens, output_tokens) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_uncancelled_interrupted_stream_matches_the_cancelled_outcome(
+    async_client, openrouter_enabled, fake_openrouter
+):
+    """Equivalence control: cancellation must settle like an ordinary incomplete stream.
+
+    The provider ends the stream without ``[DONE]`` and without a billed cost,
+    so this is an incomplete stream that was never cancelled. Its settled state
+    is the benchmark the cancelled cases above are held to.
+    """
+
+    await _configure(async_client)
+    key = await _create_key("uncancelled-incomplete")
+    fake_openrouter.chunks = [_DELTA, _USAGE]  # no [DONE]: completed stays False
+
+    await _stream_request(async_client, key, cursor=False)
+    await _settle_quiesced()
+
+    assert await _reservation_rows() == [("released", None, None, None)]
+    assert await _limit_current_values() == [0]
+
+
+@pytest.mark.asyncio
+async def test_settlement_happens_exactly_once_under_repeated_cancellation(
+    app_instance, async_client, openrouter_enabled, fake_openrouter
+):
+    """Repeated cancellation must not double-settle or double-refund."""
+
+    await _configure(async_client)
+    key = await _create_key("repeat-cancel")
+
+    await _cancel_midstream(
+        app_instance,
+        key,
+        chunks=[_DELTA, _USAGE, _DONE],
+        gate_after=0,
+        fake=fake_openrouter,
+        cancel_times=3,
+    )
+    await _settle_quiesced()
+
+    # Exactly one reservation row, settled once; the quota returns once, never
+    # below the pre-request baseline.
+    assert await _reservation_rows() == [("released", None, None, None)]
+    assert await _limit_current_values() == [0]
 
 
 @pytest.mark.asyncio
@@ -370,7 +472,7 @@ async def test_cancelled_request_does_not_disturb_another_keys_reservation(
     await _cancel_midstream(
         app_instance, cancelled_key, chunks=[_DELTA, _USAGE, _DONE], gate_after=0, fake=fake_openrouter
     )
-    await asyncio.sleep(0.3)
+    await _settle_quiesced()
 
     statuses = sorted(await _reservation_statuses())
     values = sorted(await _limit_current_values())
