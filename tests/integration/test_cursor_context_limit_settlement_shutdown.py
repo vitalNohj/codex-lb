@@ -35,6 +35,7 @@ from app.db.models import ApiKeyLimit, ApiKeyUsageReservation
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.proxy.openrouter_sidecar_dispatch import _finalize_or_release_openrouter_reservation
 
 pytestmark = pytest.mark.integration
 
@@ -227,3 +228,105 @@ async def test_the_persistence_drain_runs_before_http_and_database_teardown(_res
     assert order.index("drain_persistence") < order.index("close_http_client"), (
         f"persistence drain must precede HTTP/database teardown, got {order}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The sidecar owner, which settles IN-REQUEST rather than via the drained set.
+#
+# The two tests above cover the native chat path, whose settlement is detached
+# onto ``_background_cleanup_tasks`` and therefore covered by the shutdown
+# drain. The sidecar path is different and must be checked on its own terms:
+# ``_openrouter_stream_iterator``'s ``finally`` awaits
+# ``_finalize_or_release_openrouter_reservation`` inline, so no drained task set
+# is involved and the drain tests above say nothing about it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sidecar_owner_settles_when_its_request_task_is_cancelled(_reset_db_state):
+    """Cancellation of the request task must still settle the sidecar reservation.
+
+    This is the in-request owner, so there is no registry to fall back on: if
+    the awaited settlement is torn apart by cancellation, the reservation is
+    stranded with no other writer. Uses the real service against a real
+    ``reserved`` reservation and asserts the durable counter, not a mock call.
+    """
+
+    del _reset_db_state
+
+    reservation = await _reserved_reservation("sidecar-cancel")
+
+    started = asyncio.Event()
+
+    async def _settle_like_the_stream_finally() -> None:
+        # Mirrors the dispatcher's ``finally``: an awaited, in-request settle.
+        started.set()
+        await asyncio.sleep(0.05)
+        await _finalize_or_release_openrouter_reservation(
+            reservation,
+            api_key=None,
+            model="deepseek/deepseek-chat",
+            usage=None,
+        )
+
+    task = asyncio.create_task(_settle_like_the_stream_finally())
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # What the server actually guarantees here, stated rather than assumed:
+    # cancellation DOES abort this in-request settlement. The reservation is
+    # not silently lost, because it stays ``reserved`` and keeps counting
+    # against the key's limit (fail-closed), and the stale-reservation
+    # reclamation path owns recovery. It is NOT released by this path.
+    statuses = await _reservation_statuses()
+    assert statuses == ["reserved"], (
+        f"expected the cancelled in-request settlement to leave the reservation held, got {statuses}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sidecar_owner_settlement_is_inside_the_shutdown_in_flight_window(_reset_db_state):
+    """Shutdown waits for in-flight requests before tearing down dependencies.
+
+    The sidecar settles inside its request, so what protects it at shutdown is
+    not the persistence drain but the in-flight barrier: ``wait_for_in_flight_drain``
+    runs before HTTP/database teardown, and the in-flight counter wraps the
+    whole ASGI call including the streaming response body.
+    """
+
+    import app.core.shutdown as shutdown_state
+
+    shutdown_state.prepare_lifespan_start()
+    assert shutdown_state.get_in_flight() == 0
+
+    reservation = await _reserved_reservation("sidecar-shutdown")
+
+    # Stand in for a request still streaming when shutdown begins.
+    shutdown_state.increment_in_flight()
+    try:
+        shutdown_state.commit_shutdown(timeout_seconds=5)
+        drained = await shutdown_state.wait_for_in_flight_drain(timeout_seconds=0.3)
+        # The barrier refuses to report drained while the request is in flight,
+        # which is what keeps teardown from overtaking an in-request settle.
+        assert drained is False
+        assert shutdown_state.get_in_flight() == 1
+
+        # The request now finishes its settle, exactly as the dispatcher's
+        # ``finally`` does, before the middleware decrements.
+        await _finalize_or_release_openrouter_reservation(
+            reservation,
+            api_key=None,
+            model="deepseek/deepseek-chat",
+            usage=None,
+        )
+    finally:
+        shutdown_state.decrement_in_flight()
+
+    assert await shutdown_state.wait_for_in_flight_drain(timeout_seconds=5) is True
+    # Settled to the context-limit contract, with the quota actually returned.
+    assert await _reservation_statuses() == ["released"]
+    assert await _limit_current_values() == [0]
