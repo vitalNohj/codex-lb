@@ -55,6 +55,7 @@ from app.modules.free_model_discovery.schemas import (
     FreeModelDiscoveryRunSummary,
     FreeModelDiscoveryStartRequest,
     FreeModelItemState,
+    FreeModelLimitScope,
     FreeModelProvider,
     FreeModelProviderPlan,
     FreeModelProviderPlanStatus,
@@ -392,6 +393,12 @@ def _counts(items: Sequence[FreeModelDiscoveryRunItem]) -> FreeModelDiscoveryRun
     for item in items:
         if item.state == "queued":
             counts.queued += 1
+            # A probed-and-requeued item is not an untouched one. Collapsing
+            # the two is what let a live, retrying run read as "0 resolved".
+            if item.attempts > 0:
+                counts.retrying += 1
+            else:
+                counts.awaiting_first_attempt += 1
         elif item.state == "passed":
             counts.passed += 1
         elif item.state == "failed":
@@ -415,12 +422,29 @@ def _run_response(
         if not provider_items:
             continue
         live = progress.get(provider)
+        # Process-local pacing state exists only while this process drives the
+        # run. The persisted per-item scope is the fallback, so a restart or a
+        # second replica still explains why the provider is waiting.
+        persisted_scope = next(
+            (
+                item.last_limit_scope
+                for item in provider_items
+                if item.state == "queued" and item.last_limit_scope
+            ),
+            None,
+        )
         providers.append(
             FreeModelDiscoveryProviderProgress(
                 provider=provider,
                 counts=_counts(provider_items),
                 current_interval_seconds=live.current_interval_seconds if live is not None else None,
                 next_probe_at=live.next_probe_at if live is not None else None,
+                waiting_reason=live.waiting_reason if live is not None else None,
+                limit_scope=cast(
+                    "FreeModelLimitScope | None",
+                    (live.limit_scope if live is not None and live.limit_scope else persisted_scope),
+                ),
+                provider_paused=bool(live.provider_paused) if live is not None else False,
             )
         )
     return FreeModelDiscoveryRunResponse(
@@ -443,6 +467,7 @@ def _run_response(
                 group=cast(FreeModelCandidateGroup, item.candidate_group),
                 state=cast(FreeModelItemState, item.state),
                 attempts=item.attempts,
+                limit_scope=cast("FreeModelLimitScope | None", item.last_limit_scope),
                 next_attempt_at=item.next_attempt_at,
                 last_attempt_at=item.last_attempt_at,
                 last_http_status=item.last_http_status,

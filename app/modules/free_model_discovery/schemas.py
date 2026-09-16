@@ -12,6 +12,10 @@ FreeModelCandidateGroup = Literal["new", "unresolved", "due", "cooldown"]
 FreeModelRunStatus = Literal["running", "completed", "cancelled", "expired", "failed"]
 FreeModelItemState = Literal["queued", "passed", "failed", "unresolved"]
 FreeModelProviderPlanStatus = Literal["ok", "disabled", "missing_api_key", "unreachable", "error"]
+# What a rate-limit rejection was EXPLICITLY attributed to by the vendor.
+# ``unknown`` is the honest default: a bare 429/402, a generic message or a run
+# of 429s does not establish scope.
+FreeModelLimitScope = Literal["shared", "model", "unknown"]
 
 FREE_MODEL_PROVIDERS: tuple[FreeModelProvider, ...] = ("openrouter", "orcarouter")
 
@@ -71,6 +75,8 @@ class FreeModelDiscoveryRunItemResponse(DashboardModel):
     group: FreeModelCandidateGroup
     state: FreeModelItemState
     attempts: int
+    # Scope of the last rate-limit rejection, when there was one.
+    limit_scope: FreeModelLimitScope | None = None
     next_attempt_at: datetime | None = None
     last_attempt_at: datetime | None = None
     last_http_status: int | None = None
@@ -89,6 +95,11 @@ class FreeModelDiscoveryRunCounts(DashboardModel):
     failed: int = 0
     unresolved: int = 0
     added: int = 0
+    # Split of ``queued`` by whether a request was ever issued. A retried item
+    # is not the same as an untouched one, and collapsing them is what made a
+    # live run look stopped at "0 resolved".
+    awaiting_first_attempt: int = 0
+    retrying: int = 0
 
 
 class FreeModelDiscoveryProviderProgress(DashboardModel):
@@ -97,6 +108,12 @@ class FreeModelDiscoveryProviderProgress(DashboardModel):
     # Current adaptive interval the runner is honouring for this provider.
     current_interval_seconds: float | None = None
     next_probe_at: datetime | None = None
+    # Why this provider is waiting, when it is waiting for a stated reason.
+    waiting_reason: str | None = None
+    # Scope the vendor actually attributed the limit to, never inferred.
+    limit_scope: FreeModelLimitScope | None = None
+    # True when the whole provider queue is held on one vendor instruction.
+    provider_paused: bool = False
 
 
 class FreeModelDiscoveryRunResponse(DashboardModel):

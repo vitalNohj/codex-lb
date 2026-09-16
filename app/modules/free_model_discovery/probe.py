@@ -14,7 +14,7 @@ runner just retries later. Error strings are never parsed for meaning.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from app.core.clients.claude_sidecar import SidecarModel
@@ -25,6 +25,12 @@ from app.core.clients.orcarouter_sidecar import (
     sanitize_orcarouter_message,
 )
 from app.core.utils.json_guards import JsonValue, is_json_mapping
+from app.modules.free_model_discovery.limits import (
+    LimitScope,
+    RateLimitEvidence,
+    classify_scope,
+    evidence_from_response,
+)
 
 PROBE_PROMPT = "Reply with exactly: ok"
 PROBE_MAX_TOKENS = 16
@@ -53,10 +59,20 @@ class ProbeResult:
     content_ok_match: bool | None = None
     reasoning_chars: int | None = None
     retry_after_seconds: float | None = None
+    # What the vendor actually attributed the rejection to. ``unknown`` unless
+    # the documented contract established it - a 429 alone never does.
+    limit_scope: LimitScope = "unknown"
+    evidence: RateLimitEvidence = field(default_factory=RateLimitEvidence)
 
     @property
     def rate_limited(self) -> bool:
         return self.http_status == 429
+
+    @property
+    def shared_limit(self) -> bool:
+        """Only an explicitly vendor-attributed provider/account-wide limit."""
+
+        return self.limit_scope == "shared"
 
 
 def build_probe_payload(model_id: str) -> dict[str, JsonValue]:
@@ -103,13 +119,19 @@ async def probe_model(
             outcome=_clip(redact_provider_text(f"transport: {exc.message}", api_key=api_key)),
         )
     except (OpenRouterSidecarError, OrcaRouterSidecarError) as exc:
+        evidence = evidence_from_response(
+            headers=getattr(exc, "rate_limit_headers", None), body=exc.body
+        )
+        scope = classify_scope(evidence)
         return ProbeResult(
             verdict="inconclusive",
             http_status=exc.status_code,
             outcome=_clip(
                 redact_provider_text(f"http {exc.status_code}: {exc.message}", api_key=api_key)
             ),
-            retry_after_seconds=_retry_after_from_body(exc.body),
+            retry_after_seconds=evidence.retry_after_seconds,
+            limit_scope=scope,
+            evidence=evidence,
         )
     return classify_completion(body, api_key=api_key)
 
@@ -129,11 +151,19 @@ def classify_completion(body: JsonValue, *, api_key: str | None = None) -> Probe
     # and no choices. That is not a verdict on the model.
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
+        # OpenRouter documents that a provider failing after headers were sent
+        # yields "a 200 OK whose JSON body holds only an error object and no
+        # choices", so scope evidence has to be read here too - not only on
+        # the exception paths.
+        evidence = evidence_from_response(headers=None, body=body)
         return ProbeResult(
             verdict="inconclusive",
             http_status=200,
             # Redact before clipping: clipping a secret still persists a prefix.
             outcome=_clip(redact_provider_text(_describe_missing_choices(body), api_key=api_key)),
+            retry_after_seconds=evidence.retry_after_seconds,
+            limit_scope=classify_scope(evidence),
+            evidence=evidence,
         )
     first = choices[0]
     if not is_json_mapping(first):
@@ -205,29 +235,6 @@ def _describe_missing_choices(body: Mapping[str, JsonValue]) -> str:
         if isinstance(message, str) and message:
             return f"200 without choices: {message}"
     return "200 without choices"
-
-
-def _retry_after_from_body(body: JsonValue | None) -> float | None:
-    """Best-effort: some routers echo a retry hint in the error body."""
-
-    if not is_json_mapping(body):
-        return None
-    error = body.get("error")
-    container = error if is_json_mapping(error) else body
-    for key in ("retry_after", "retryAfter", "retry_after_seconds"):
-        value = container.get(key)
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)) and value >= 0:
-            return float(value)
-        if isinstance(value, str):
-            try:
-                parsed = float(value)
-            except ValueError:
-                continue
-            if parsed >= 0:
-                return parsed
-    return None
 
 
 def _clip(text: str) -> str:

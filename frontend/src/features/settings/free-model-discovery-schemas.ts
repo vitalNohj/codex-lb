@@ -5,6 +5,9 @@ export const FreeModelCandidateGroupSchema = z.enum(["new", "unresolved", "due",
 export const FreeModelRunStatusSchema = z.enum(["running", "completed", "cancelled", "expired", "failed"]);
 export const FreeModelItemStateSchema = z.enum(["queued", "passed", "failed", "unresolved"]);
 export const FreeModelProviderPlanStatusSchema = z.enum(["ok", "disabled", "missing_api_key", "unreachable", "error"]);
+// What the vendor EXPLICITLY attributed a rate-limit rejection to. "unknown"
+// is the honest default: a bare 429/402 or a generic message proves nothing.
+export const FreeModelLimitScopeSchema = z.enum(["shared", "model", "unknown"]);
 
 export const FreeModelCandidateSchema = z.object({
   provider: FreeModelProviderSchema,
@@ -52,6 +55,9 @@ export const FreeModelDiscoveryRunCountsSchema = z.object({
   failed: z.number().int().nonnegative().optional().default(0),
   unresolved: z.number().int().nonnegative().optional().default(0),
   added: z.number().int().nonnegative().optional().default(0),
+  // Split of `queued`: never-attempted vs. probed-and-retrying.
+  awaitingFirstAttempt: z.number().int().nonnegative().optional().default(0),
+  retrying: z.number().int().nonnegative().optional().default(0),
 });
 
 export const FreeModelDiscoveryRunItemSchema = z.object({
@@ -69,6 +75,7 @@ export const FreeModelDiscoveryRunItemSchema = z.object({
   reasoningChars: z.number().int().nullable().optional().default(null),
   addedToFullModels: z.boolean().optional().default(false),
   resolvedAt: z.string().nullable().optional().default(null),
+  limitScope: FreeModelLimitScopeSchema.nullable().optional().default(null),
 });
 
 export const FreeModelDiscoveryProviderProgressSchema = z.object({
@@ -76,6 +83,9 @@ export const FreeModelDiscoveryProviderProgressSchema = z.object({
   counts: FreeModelDiscoveryRunCountsSchema,
   currentIntervalSeconds: z.number().nullable().optional().default(null),
   nextProbeAt: z.string().nullable().optional().default(null),
+  waitingReason: z.string().nullable().optional().default(null),
+  limitScope: FreeModelLimitScopeSchema.nullable().optional().default(null),
+  providerPaused: z.boolean().optional().default(false),
 });
 
 export const FreeModelDiscoveryRunSchema = z.object({
@@ -100,6 +110,7 @@ export type FreeModelProvider = z.infer<typeof FreeModelProviderSchema>;
 export type FreeModelCandidateGroup = z.infer<typeof FreeModelCandidateGroupSchema>;
 export type FreeModelRunStatus = z.infer<typeof FreeModelRunStatusSchema>;
 export type FreeModelItemState = z.infer<typeof FreeModelItemStateSchema>;
+export type FreeModelLimitScope = z.infer<typeof FreeModelLimitScopeSchema>;
 export type FreeModelCandidate = z.infer<typeof FreeModelCandidateSchema>;
 export type FreeModelProviderPlan = z.infer<typeof FreeModelProviderPlanSchema>;
 export type FreeModelDiscoveryPlan = z.infer<typeof FreeModelDiscoveryPlanSchema>;

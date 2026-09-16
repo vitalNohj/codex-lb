@@ -5,6 +5,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy import or_ as sa_or
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -188,6 +189,34 @@ class FreeModelDiscoveryRepository:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def defer_queued_items(self, run_id: str, provider: str, *, until: datetime) -> int:
+        """Push this provider's queued items out to ``until``, never earlier.
+
+        Used when the vendor explicitly identified a provider/account-wide
+        limit with a published window: the whole group waits once instead of
+        each item rediscovering the same block and spending an attempt on it.
+
+        The ``next_attempt_at IS NULL OR < until`` guard makes this monotonic,
+        so a longer wait already recorded for an item is never shortened.
+        Persisting it means a restart during the window still observes it.
+        """
+
+        result = await self._session.execute(
+            update(FreeModelDiscoveryRunItem)
+            .where(
+                FreeModelDiscoveryRunItem.run_id == run_id,
+                FreeModelDiscoveryRunItem.provider == provider,
+                FreeModelDiscoveryRunItem.state == "queued",
+                sa_or(
+                    FreeModelDiscoveryRunItem.next_attempt_at.is_(None),
+                    FreeModelDiscoveryRunItem.next_attempt_at < until,
+                ),
+            )
+            .values(next_attempt_at=until)
+        )
+        await self._session.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+
     async def count_queued(self, run_id: str, provider: str) -> int:
         stmt = select(func.count(FreeModelDiscoveryRunItem.id)).where(
             FreeModelDiscoveryRunItem.run_id == run_id,
@@ -204,19 +233,51 @@ class FreeModelDiscoveryRepository:
         next_attempt_at: datetime,
         http_status: int | None,
         outcome: str,
+        limit_scope: str | None = None,
     ) -> None:
         item.attempts += 1
         item.last_attempt_at = attempted_at
         item.next_attempt_at = next_attempt_at
         item.last_http_status = http_status
         item.last_outcome = outcome
+        item.last_limit_scope = limit_scope
         await self._session.commit()
 
-    async def mark_unresolved(self, item: FreeModelDiscoveryRunItem, *, resolved_at: datetime, outcome: str) -> None:
+    async def mark_unresolved(
+        self,
+        item: FreeModelDiscoveryRunItem,
+        *,
+        resolved_at: datetime,
+        outcome: str,
+        attempted: bool = False,
+        attempted_at: datetime | None = None,
+        http_status: int | None = None,
+        limit_scope: str | None = None,
+    ) -> None:
+        """Resolve an item that never reached a verdict.
+
+        ``attempted`` records that this transition FOLLOWED a real probe whose
+        request was actually issued - the exhausted-budget case. That probe was
+        previously lost: the give-up branch wrote the item without counting it,
+        so ``attempts`` sat one below the number of requests really sent and
+        contradicted its own "gave up after N attempts" text.
+
+        It stays ``False`` for items resolved WITHOUT a request - a parked
+        provider, or queued work swept up when a run ends - because waiting and
+        cancellation must never consume an attempt.
+        """
+
         item.state = "unresolved"
         item.resolved_at = resolved_at
         item.last_outcome = outcome
         item.next_attempt_at = None
+        if attempted:
+            item.attempts += 1
+            item.last_attempt_at = attempted_at or resolved_at
+            if http_status is not None:
+                item.last_http_status = http_status
+            if limit_scope is not None:
+                item.last_limit_scope = limit_scope
         await self._session.commit()
 
     async def record_verdict(
@@ -239,6 +300,8 @@ class FreeModelDiscoveryRepository:
         item.state = verdict
         item.last_attempt_at = attempted_at
         item.next_attempt_at = None
+        # A real verdict supersedes any earlier rate-limit attribution.
+        item.last_limit_scope = None
         item.last_http_status = http_status
         item.last_outcome = outcome
         item.content_chars = content_chars

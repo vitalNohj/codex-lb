@@ -706,6 +706,12 @@ class FreeModelDiscoveryRunItem(Base):
     last_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Short sanitized description of the last inconclusive outcome.
     last_outcome: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # What the vendor EXPLICITLY attributed the last rate-limit rejection to:
+    # ``shared`` (its own platform/account allowance), ``model`` (an upstream
+    # backend), or ``unknown``. Never inferred from a bare 429/402 or from a
+    # run of consecutive rejections. Persisted so the operator-facing reason
+    # survives a restart mid-run.
+    last_limit_scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
     content_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content_ok_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     reasoning_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
