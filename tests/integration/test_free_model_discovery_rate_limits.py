@@ -680,3 +680,58 @@ async def test_scope_from_a_200_error_body_is_persisted(async_client, scripted):
     body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
     by_id = {i["modelId"]: i for i in body["items"]}
     assert by_id["m/a:free"]["limitScope"] == "shared"
+
+
+@pytest.mark.asyncio
+async def test_a_model_scoped_wait_does_not_move_the_shared_pacer(async_client, scripted):
+    """A model-scoped limit must not slow down unrelated models.
+
+    ``_apply_result`` used to call ``pacer.on_rate_limited()`` before checking
+    scope, so one model's ``Retry-After: 3600`` drove the SHARED provider pacer
+    straight to its 600s cap. The offending item was already parked, yet every
+    later model then waited ten minutes between probes, and the pacer only
+    decays after three clean responses.
+
+    Uses PRODUCTION pacing values deliberately: with a test cap of a few
+    milliseconds the defect is arithmetically invisible.
+    """
+
+    del async_client
+    scripted(
+        {
+            "m/limited:free": [_upstream_429_with_retry_after("3600")],
+            "m/ok:free": [_ok()],
+        }
+    )
+    await _enable_openrouter()
+    run_id = await _create_run(
+        ["m/limited:free", "m/ok:free"], max_attempts=3, floor=20.0, cap=600.0
+    )
+
+    captured: list[float] = []
+    original = FreeModelDiscoveryRunner._apply_result
+
+    async def _record(self, session, repository, item, result, pacer, max_attempts):
+        wait = await original(self, session, repository, item, result, pacer, max_attempts)
+        captured.append(pacer.current_seconds)
+        return wait
+
+    runner = FreeModelDiscoveryRunner(enabled=True)
+    FreeModelDiscoveryRunner._apply_result = _record  # type: ignore[method-assign]
+    try:
+        task = asyncio.create_task(runner.drive_run(run_id))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if captured:
+                break
+        await _stop(task)
+    finally:
+        FreeModelDiscoveryRunner._apply_result = original  # type: ignore[method-assign]
+
+    assert captured, "the limited item should have been probed"
+    # The shared pacer stays at the floor: this rejection was one model's, and
+    # the vendor's wait is carried by that item's own next_attempt_at.
+    assert captured[0] == 20.0, (
+        f"model-scoped limit moved the shared pacer to {captured[0]}s, "
+        "delaying every unrelated model"
+    )

@@ -479,16 +479,24 @@ class FreeModelDiscoveryRunner:
                     limit_scope=persisted_scope,
                 )
             if result.rate_limited or result.retry_after_seconds is not None:
-                heuristic = pacer.on_rate_limited(result.retry_after_seconds)
                 if result.shared_limit:
                     # Only an explicitly shared limit blocks every model behind
-                    # this credential, so only it may hold the provider loop
-                    # past the pacing cap.
+                    # this credential, so only it may drive the shared pacer
+                    # and hold the provider loop past the pacing cap.
+                    heuristic = pacer.on_rate_limited(result.retry_after_seconds)
                     return cap_wait(heuristic, result.evidence, cap_seconds=pacer.cap_seconds)
-                # A model-scoped or unknown-scope wait belongs to the offending
-                # ITEM (parked above), not to the whole queue: letting it sleep
-                # the provider loop would stall models that would have passed,
-                # which is the opposite of this change's intent.
+                if result.limit_scope == "model":
+                    # The vendor named an upstream backend, so this says nothing
+                    # about the rest of the queue. The offending item already
+                    # carries the wait in its ``next_attempt_at``; touching the
+                    # SHARED pacer here would drive it to the 600s cap and slow
+                    # every unrelated model - and it only decays after three
+                    # clean responses, so one rejection would linger for hours.
+                    return pacer.on_inconclusive()
+                # Unknown scope: back off the provider conservatively, but never
+                # past the heuristic cap - an unproven scope must not buy the
+                # long vendor wait that only a shared limit earns.
+                heuristic = pacer.on_rate_limited(result.retry_after_seconds)
                 return min(heuristic, pacer.cap_seconds)
             return pacer.on_inconclusive()
 

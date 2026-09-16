@@ -149,11 +149,23 @@ def parse_retry_after(raw: str | None, *, now: datetime | None = None) -> float 
 
 
 def _parse_int(raw: str | None) -> int | None:
+    """Parse an allowlisted counter header defensively.
+
+    ``int(float("inf"))`` raises ``OverflowError``, which is neither
+    ``TypeError`` nor ``ValueError``, so a header of ``inf`` or ``1e400`` would
+    escape evidence extraction and reach the driver's terminal failure path -
+    killing the whole run over an upstream-controlled string. Non-finite values
+    are rejected outright, and ``OverflowError`` is caught as a backstop.
+    """
+
     if raw is None:
         return None
     try:
-        return int(float(raw))
-    except (TypeError, ValueError):
+        value = float(raw)
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

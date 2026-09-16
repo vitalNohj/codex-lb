@@ -245,3 +245,24 @@ def test_wait_text_names_the_scope_honestly():
 def test_wait_text_reports_a_published_wait():
     assert "1h" in describe_wait("shared", RateLimitEvidence(retry_after_seconds=3600.0))
     assert "90s" not in describe_wait("shared", RateLimitEvidence(retry_after_seconds=3600.0))
+
+
+# --- non-finite header values ---------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["inf", "-inf", "Infinity", "nan", "1e400"])
+def test_non_finite_header_values_never_raise(raw):
+    """An allowlisted header is upstream-controlled text.
+
+    ``int(float("inf"))`` raises ``OverflowError``, which is neither
+    ``TypeError`` nor ``ValueError``. Escaping here would abort evidence
+    extraction and take down the whole discovery run through the driver's
+    terminal failure path - a hostile or buggy header must never do that.
+    """
+
+    evidence = evidence_from_response(
+        headers={"X-RateLimit-Remaining": raw, "X-RateLimit-Limit": raw}, body=None, now=_NOW
+    )
+    assert evidence.remaining is None
+    assert evidence.limit is None
+    assert classify_scope(evidence) == "unknown"
