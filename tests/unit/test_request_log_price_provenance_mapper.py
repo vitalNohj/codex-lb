@@ -63,7 +63,7 @@ def test_the_static_table_still_matches_these_ids_by_substring(model: str) -> No
     [ExternalPriceStatus.UNRESOLVED.value, ExternalPriceStatus.AMBIGUOUS.value],
 )
 def test_an_unresolved_external_row_keeps_a_null_cost_through_the_mapper(model: str, price_status: str) -> None:
-    entry = to_request_log_entry(_log(model=model, price_status=price_status))
+    entry = to_request_log_entry(_log(model=model, price_status=price_status), include_sensitive_metadata=False)
 
     assert entry.cost_usd is None, "an unresolved model must not borrow a glob-matched rate"
     assert entry.cost_breakdown.total_usd is None
@@ -73,7 +73,9 @@ def test_an_unresolved_external_row_keeps_a_null_cost_through_the_mapper(model: 
 
 
 def test_a_not_token_priced_row_stays_blank_rather_than_glob_priced() -> None:
-    entry = to_request_log_entry(_log(price_status=ExternalPriceStatus.NOT_TOKEN_PRICED.value))
+    entry = to_request_log_entry(
+        _log(price_status=ExternalPriceStatus.NOT_TOKEN_PRICED.value), include_sensitive_metadata=False
+    )
 
     assert entry.cost_usd is None
     assert entry.cost_breakdown.total_usd is None
@@ -85,7 +87,8 @@ def test_a_resolved_external_row_reports_its_persisted_calculated_cost() -> None
             cost_usd=0.006,
             cost_source=CostSource.CATALOG_CALCULATED.value,
             price_status=ExternalPriceStatus.RESOLVED.value,
-        )
+        ),
+        include_sensitive_metadata=False,
     )
 
     assert entry.cost_usd == pytest.approx(0.006)
@@ -100,7 +103,8 @@ def test_an_upstream_billed_row_reports_the_billed_amount_verbatim() -> None:
             cost_usd=0.00846,
             cost_source=CostSource.UPSTREAM_BILLED.value,
             price_status=ExternalPriceStatus.RESOLVED.value,
-        )
+        ),
+        include_sensitive_metadata=False,
     )
 
     assert entry.cost_usd == pytest.approx(0.00846)
@@ -109,7 +113,9 @@ def test_an_upstream_billed_row_reports_the_billed_amount_verbatim() -> None:
 def test_a_non_participating_row_still_uses_the_static_table() -> None:
     """Ollama, OmniRoute and the main proxy path are untouched by the fix."""
 
-    entry = to_request_log_entry(_log(model="gpt-5.1", source="ollama_sidecar", price_status=None))
+    entry = to_request_log_entry(
+        _log(model="gpt-5.1", source="ollama_sidecar", price_status=None), include_sensitive_metadata=False
+    )
 
     assert entry.cost_usd is not None
     assert entry.cost_usd > 0

@@ -31,19 +31,19 @@ def _log(**overrides) -> RequestLog:
 
 
 def test_savings_is_reference_minus_actual() -> None:
-    entry = to_request_log_entry(_log())
+    entry = to_request_log_entry(_log(), include_sensitive_metadata=False)
     assert entry.reference_cost_usd == pytest.approx(0.016)
     # cost_usd here is computed from the cost breakdown (free model -> 0).
     assert entry.savings_usd == pytest.approx(0.016)
 
 
 def test_savings_unset_when_reference_cost_missing() -> None:
-    entry = to_request_log_entry(_log(reference_cost_usd=None))
+    entry = to_request_log_entry(_log(reference_cost_usd=None), include_sensitive_metadata=False)
     assert entry.reference_cost_usd is None
     assert entry.savings_usd is None
 
 
 def test_savings_floored_at_zero() -> None:
     # Reference lower than actual cost -> no negative savings.
-    entry = to_request_log_entry(_log(cost_usd=0.05, reference_cost_usd=0.01))
+    entry = to_request_log_entry(_log(cost_usd=0.05, reference_cost_usd=0.01), include_sensitive_metadata=False)
     assert entry.savings_usd == pytest.approx(0.0)
