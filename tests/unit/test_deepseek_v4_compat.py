@@ -585,6 +585,48 @@ async def test_stream_forwards_error_chunks_unchanged() -> None:
     assert forwarded == chunks
 
 
+@pytest.mark.asyncio
+async def test_stream_closes_upstream_when_consumer_stops_early() -> None:
+    """Abandoning the observer must close the stream it wraps.
+
+    The sidecar stream iterators settle the API-key usage reservation in a
+    ``finally``. The Cursor context-limit rewrite stops consuming partway
+    through, and ``async for`` does not close the iterator it consumes, so
+    without an explicit ``aclose()`` here that settlement would be deferred to a
+    later event-loop finalization - leaving the reservation held and the
+    caller's quota consumed after the request already finished.
+    """
+
+    settled: list[str] = []
+
+    async def settling_stream():
+        try:
+            yield _sse(_chunk(reasoning="r"))
+            yield _sse(_chunk(reasoning="more"))
+            yield _sse("[DONE]")
+        finally:
+            settled.append("released")
+
+    observer = DeepSeekReasoningStreamObserver(
+        settling_stream(),
+        outgoing_messages=[{"role": "user", "content": "hi"}],
+        provider="omniroute",
+        model_family="deepseek-v4-flash",
+        api_key_digest="d",
+        cache=DeepSeekReasoningCache(),
+    )
+
+    iterator = observer.__aiter__()
+    assert await anext(iterator) is not None
+    assert settled == []
+
+    # The downstream wrapper stops here, exactly as the context-limit rewrite does.
+    await iterator.aclose()
+
+    # Settled synchronously, not left to a later garbage-collection pass.
+    assert settled == ["released"]
+
+
 # --------------------------------------------------------------------------
 # Multi-round chain (DeepSeek requires the complete reasoning chain)
 # --------------------------------------------------------------------------

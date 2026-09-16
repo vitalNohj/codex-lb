@@ -333,18 +333,43 @@ async def stream_responses_with_cursor_context_limit_fallback(
             await aclose()
 
 
+async def _aclose_upstream(stream: AsyncIterator[object]) -> None:
+    """Close the wrapped upstream iterator so its ``finally`` runs now.
+
+    The sidecar stream iterators settle the API-key usage reservation in a
+    ``finally`` block. When this wrapper returns early on a context-limit
+    rewrite it stops iterating that generator without exhausting it, and an
+    abandoned async generator's ``finally`` only runs whenever the event loop
+    later finalizes it - after the response has already completed. Until then
+    the reservation stays ``reserved`` and its quota stays consumed, so the
+    caller's allowance is held for a request the upstream refused.
+
+    Closing explicitly makes settlement part of the request that caused it.
+    ``aclose()`` is idempotent, so the normal exhausted path is unaffected, and
+    settlement itself is a compare-and-set on ``reserved``, so the later
+    finalization cannot release or charge a second time.
+    """
+
+    aclose = getattr(stream, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
 async def stream_with_cursor_usage_fallback(
     stream: AsyncIterator[str],
     payload: ChatCompletionsRequest,
 ) -> AsyncIterator[str]:
     rewriter = CursorChatSseCompatRewriter(payload, source="stream")
-    async for line in stream:
-        for chunk in rewriter.feed(line.encode("utf-8")):
+    try:
+        async for line in stream:
+            for chunk in rewriter.feed(line.encode("utf-8")):
+                yield chunk.decode("utf-8")
+            if rewriter.terminated:
+                return
+        for chunk in rewriter.flush():
             yield chunk.decode("utf-8")
-        if rewriter.terminated:
-            return
-    for chunk in rewriter.flush():
-        yield chunk.decode("utf-8")
+    finally:
+        await _aclose_upstream(stream)
 
 
 async def stream_bytes_with_cursor_usage_fallback(
@@ -354,13 +379,16 @@ async def stream_bytes_with_cursor_usage_fallback(
     source: str = "stream_bytes",
 ) -> AsyncIterator[bytes]:
     rewriter = CursorChatSseCompatRewriter(payload, source=source)
-    async for chunk in stream:
-        for rewritten_chunk in rewriter.feed(chunk):
+    try:
+        async for chunk in stream:
+            for rewritten_chunk in rewriter.feed(chunk):
+                yield rewritten_chunk
+            if rewriter.terminated:
+                return
+        for rewritten_chunk in rewriter.flush():
             yield rewritten_chunk
-        if rewriter.terminated:
-            return
-    for rewritten_chunk in rewriter.flush():
-        yield rewritten_chunk
+    finally:
+        await _aclose_upstream(stream)
 
 
 def apply_cursor_usage_fallback(
