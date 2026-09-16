@@ -164,6 +164,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
+from app.core.utils.stream_close import aclose_stream
 from app.db.models import Account, AccountStatus, ModelSource
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
@@ -7822,8 +7823,17 @@ async def _close_responses_stream_best_effort(
 
 
 async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    async for line in _stream_response_error_events(stream, owns_reservation=False, reservation=None):
-        yield line
+    inner = _stream_response_error_events(stream, owns_reservation=False, reservation=None)
+    try:
+        async for line in inner:
+            yield line
+    finally:
+        # Close the wrapped stream rather than abandoning it: ``async for``
+        # does not, and the stream underneath owns the API-key usage
+        # reservation, so an early stop downstream (the Cursor context-limit
+        # rewrite) would otherwise leave its settlement to a later event-loop
+        # finalization while the caller's quota stays held.
+        await aclose_stream(inner)
 
 
 async def _stream_response_error_events(

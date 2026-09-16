@@ -34,6 +34,7 @@ from typing import cast
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
+from app.core.utils.stream_close import aclose_stream
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +148,7 @@ def _reduce_message(message: JsonValue) -> JsonValue:
     role = message.get("role")
     reduced: dict[str, JsonValue] = {"role": role}
     if role == "tool":
-        reduced["tool_call_id"] = (
-            message.get("tool_call_id") or message.get("toolCallId") or message.get("call_id")
-        )
+        reduced["tool_call_id"] = message.get("tool_call_id") or message.get("toolCallId") or message.get("call_id")
         reduced["content"] = _reduce_content(message.get("content"))
         return reduced
     reduced["content"] = _reduce_content(message.get("content"))
@@ -171,9 +170,7 @@ def reasoning_cache_key(
     model_family: str,
     api_key_digest: str,
 ) -> str:
-    payload = "\u0000".join(
-        (canonical_prefix(messages), provider, model_family, api_key_digest)
-    )
+    payload = "\u0000".join((canonical_prefix(messages), provider, model_family, api_key_digest))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -445,9 +442,7 @@ class DeepSeekReasoningStreamObserver:
             # event-loop finalization - holding the API-key reservation and its
             # quota past the end of the request. ``aclose()`` is idempotent, so
             # the exhausted path is unaffected.
-            aclose = getattr(self._stream, "aclose", None)
-            if aclose is not None:
-                await aclose()
+            await aclose_stream(self._stream)
 
 
 class DeepSeekReasoningRecorder:
