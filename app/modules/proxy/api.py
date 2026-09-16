@@ -7372,10 +7372,14 @@ def _request_state_str(request: Request, name: str) -> str | None:
 
 
 async def _prepend_first(first: str | None, stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    if first is not None:
-        yield first
-    async for line in stream:
-        yield line
+    try:
+        if first is not None:
+            yield first
+        async for line in stream:
+            yield line
+    finally:
+        # Same reservation-ownership reason as ``_prepend_items``.
+        await aclose_stream(stream)
 
 
 async def _read_first_stream_item(stream: AsyncIterator[str]) -> str:
@@ -7718,26 +7722,46 @@ async def _probe_chat_stream_startup_error(
 
 
 async def _prepend_items(items: list[str], stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    for item in items:
-        yield item
-    async for line in stream:
-        yield line
+    try:
+        for item in items:
+            yield item
+        async for line in stream:
+            yield line
+    finally:
+        # ``stream`` owns the API-key usage reservation. ``async for`` does not
+        # close what it consumes, so without this a consumer that stops early
+        # (the Cursor context-limit rewrite) would leave the reservation held
+        # until a later event-loop finalization that a live response task can
+        # prevent indefinitely.
+        await aclose_stream(stream)
 
 
 async def _prepend_first_task(first_task: asyncio.Task[str], stream: AsyncIterator[str]) -> AsyncIterator[str]:
     try:
         first = await first_task
     except StopAsyncIteration:
+        # Upstream ended before the first item; still close the reservation
+        # owner rather than returning out from under it.
+        await aclose_stream(stream)
         return
+    except BaseException:
+        # The probe failed or was cancelled; the wrapped stream still owns the
+        # reservation, so close it before propagating.
+        await aclose_stream(stream)
+        raise
     finally:
         # If the wrapping stream is closed before the first item is consumed
         # (client disconnect, request teardown), cancel the still-running probe
         # task so it does not hold the upstream connection open.
         if not first_task.done():
             first_task.cancel()
-    yield first
-    async for line in stream:
-        yield line
+    try:
+        yield first
+        async for line in stream:
+            yield line
+    finally:
+        # Same reservation-ownership reason as ``_prepend_items``.
+        await aclose_stream(stream)
 
 
 async def _prepend_initial_sse_heartbeat(
