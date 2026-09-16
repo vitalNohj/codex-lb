@@ -22,7 +22,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
-from app.core.utils.cancellation import await_result_deferring_cancellation
+from app.core.utils.cancellation import await_cleanup_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
@@ -558,7 +558,7 @@ async def _settle_stream_deferring_cancellation(
         )
         return settlement
 
-    return await await_result_deferring_cancellation(_settle())
+    return await await_cleanup_deferring_cancellation(_settle())
 
 
 async def _finalize_or_release_openrouter_reservation(
