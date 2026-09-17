@@ -192,6 +192,26 @@ def _disable_telemetry_scheduler_startup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _disable_claude_sidecar_background_loops_startup(monkeypatch):
+    """Stop the ambient Claude-sidecar loops from racing tests, like their siblings.
+
+    These were the lifespan-started background loops still missing such a
+    fixture. Both read settings through ``get_settings_cache().get()``, which
+    seeds a ``dashboard_settings`` row when none exists. Tests that delete the
+    row to observe re-seeding (``test_settings_api``'s ``_reseed_settings_row``)
+    were intermittently losing the race: a loop re-created the row from the
+    *previous* environment between the DELETE and the env change, so the
+    assertion saw a stale seed. Reproduced on the unchanged base at roughly one
+    failure in eight runs.
+    """
+
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "build_claude_sidecar_quota_poller", lambda: _NoopScheduler())
+    monkeypatch.setattr(main_module, "build_claude_sidecar_usage_collector", lambda: _NoopScheduler())
+
+
+@pytest.fixture(autouse=True)
 def _disable_free_model_discovery_runner_startup(monkeypatch):
     import app.main as main_module
 

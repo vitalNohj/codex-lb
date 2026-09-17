@@ -14,6 +14,7 @@ from app.core.openai.chat_responses import ChatCompletion, ChatCompletionUsage
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
+from app.core.utils.stream_close import aclose_stream
 from app.modules.api_keys.service import ApiKeyData
 
 logger = logging.getLogger(__name__)
@@ -299,11 +300,7 @@ async def stream_responses_with_cursor_context_limit_fallback(
             # carry created/failure payloads.
             payload = (
                 parse_sse_data_json(event)
-                if (
-                    "response.failed" in event
-                    or "response.created" in event
-                    or '"error"' in event
-                )
+                if ("response.failed" in event or "response.created" in event or '"error"' in event)
                 else None
             )
             if payload is not None:
@@ -338,13 +335,16 @@ async def stream_with_cursor_usage_fallback(
     payload: ChatCompletionsRequest,
 ) -> AsyncIterator[str]:
     rewriter = CursorChatSseCompatRewriter(payload, source="stream")
-    async for line in stream:
-        for chunk in rewriter.feed(line.encode("utf-8")):
+    try:
+        async for line in stream:
+            for chunk in rewriter.feed(line.encode("utf-8")):
+                yield chunk.decode("utf-8")
+            if rewriter.terminated:
+                return
+        for chunk in rewriter.flush():
             yield chunk.decode("utf-8")
-        if rewriter.terminated:
-            return
-    for chunk in rewriter.flush():
-        yield chunk.decode("utf-8")
+    finally:
+        await aclose_stream(stream)
 
 
 async def stream_bytes_with_cursor_usage_fallback(
@@ -354,13 +354,16 @@ async def stream_bytes_with_cursor_usage_fallback(
     source: str = "stream_bytes",
 ) -> AsyncIterator[bytes]:
     rewriter = CursorChatSseCompatRewriter(payload, source=source)
-    async for chunk in stream:
-        for rewritten_chunk in rewriter.feed(chunk):
+    try:
+        async for chunk in stream:
+            for rewritten_chunk in rewriter.feed(chunk):
+                yield rewritten_chunk
+            if rewriter.terminated:
+                return
+        for rewritten_chunk in rewriter.flush():
             yield rewritten_chunk
-        if rewriter.terminated:
-            return
-    for rewritten_chunk in rewriter.flush():
-        yield rewritten_chunk
+    finally:
+        await aclose_stream(stream)
 
 
 def apply_cursor_usage_fallback(

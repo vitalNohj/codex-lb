@@ -28,12 +28,13 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import cast
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
+from app.core.utils.stream_close import aclose_stream
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +148,7 @@ def _reduce_message(message: JsonValue) -> JsonValue:
     role = message.get("role")
     reduced: dict[str, JsonValue] = {"role": role}
     if role == "tool":
-        reduced["tool_call_id"] = (
-            message.get("tool_call_id") or message.get("toolCallId") or message.get("call_id")
-        )
+        reduced["tool_call_id"] = message.get("tool_call_id") or message.get("toolCallId") or message.get("call_id")
         reduced["content"] = _reduce_content(message.get("content"))
         return reduced
     reduced["content"] = _reduce_content(message.get("content"))
@@ -171,9 +170,7 @@ def reasoning_cache_key(
     model_family: str,
     api_key_digest: str,
 ) -> str:
-    payload = "\u0000".join(
-        (canonical_prefix(messages), provider, model_family, api_key_digest)
-    )
+    payload = "\u0000".join((canonical_prefix(messages), provider, model_family, api_key_digest))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -427,13 +424,25 @@ class DeepSeekReasoningStreamObserver:
             cache=cache,
         )
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
+    async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+        # Declared as a generator, not a bare ``AsyncIterator``, so callers can
+        # see and use ``aclose()``: closing this observer is what propagates the
+        # close to the wrapped sidecar stream and settles its reservation.
         try:
             async for chunk in self._stream:
                 self._recorder.record(chunk)
                 yield chunk
         finally:
             self._recorder.commit()
+            # Close the wrapped stream rather than abandoning it. ``async for``
+            # does not close the iterator it consumes, so when a downstream
+            # wrapper stops early (the Cursor context-limit rewrite) this
+            # observer's own close would otherwise stop here and leave the
+            # sidecar iterator's settlement ``finally`` to run only at a later
+            # event-loop finalization - holding the API-key reservation and its
+            # quota past the end of the request. ``aclose()`` is idempotent, so
+            # the exhausted path is unaffected.
+            await aclose_stream(self._stream)
 
 
 class DeepSeekReasoningRecorder:

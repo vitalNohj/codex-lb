@@ -164,6 +164,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
+from app.core.utils.stream_close import aclose_stream
 from app.db.models import Account, AccountStatus, ModelSource
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
@@ -7371,10 +7372,14 @@ def _request_state_str(request: Request, name: str) -> str | None:
 
 
 async def _prepend_first(first: str | None, stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    if first is not None:
-        yield first
-    async for line in stream:
-        yield line
+    try:
+        if first is not None:
+            yield first
+        async for line in stream:
+            yield line
+    finally:
+        # Same reservation-ownership reason as ``_prepend_items``.
+        await aclose_stream(stream)
 
 
 async def _read_first_stream_item(stream: AsyncIterator[str]) -> str:
@@ -7717,26 +7722,46 @@ async def _probe_chat_stream_startup_error(
 
 
 async def _prepend_items(items: list[str], stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    for item in items:
-        yield item
-    async for line in stream:
-        yield line
+    try:
+        for item in items:
+            yield item
+        async for line in stream:
+            yield line
+    finally:
+        # ``stream`` owns the API-key usage reservation. ``async for`` does not
+        # close what it consumes, so without this a consumer that stops early
+        # (the Cursor context-limit rewrite) would leave the reservation held
+        # until a later event-loop finalization that a live response task can
+        # prevent indefinitely.
+        await aclose_stream(stream)
 
 
 async def _prepend_first_task(first_task: asyncio.Task[str], stream: AsyncIterator[str]) -> AsyncIterator[str]:
     try:
         first = await first_task
     except StopAsyncIteration:
+        # Upstream ended before the first item; still close the reservation
+        # owner rather than returning out from under it.
+        await aclose_stream(stream)
         return
+    except BaseException:
+        # The probe failed or was cancelled; the wrapped stream still owns the
+        # reservation, so close it before propagating.
+        await aclose_stream(stream)
+        raise
     finally:
         # If the wrapping stream is closed before the first item is consumed
         # (client disconnect, request teardown), cancel the still-running probe
         # task so it does not hold the upstream connection open.
         if not first_task.done():
             first_task.cancel()
-    yield first
-    async for line in stream:
-        yield line
+    try:
+        yield first
+        async for line in stream:
+            yield line
+    finally:
+        # Same reservation-ownership reason as ``_prepend_items``.
+        await aclose_stream(stream)
 
 
 async def _prepend_initial_sse_heartbeat(
@@ -7822,8 +7847,25 @@ async def _close_responses_stream_best_effort(
 
 
 async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    async for line in _stream_response_error_events(stream, owns_reservation=False, reservation=None):
-        yield line
+    inner = _stream_response_error_events(stream, owns_reservation=False, reservation=None)
+    try:
+        async for line in inner:
+            yield line
+    finally:
+        # Close the wrapped streams rather than abandoning them: ``async for``
+        # does not, and ``stream`` owns the API-key usage reservation, so an
+        # early stop downstream (the Cursor context-limit rewrite) would
+        # otherwise leave its settlement to a later event-loop finalization
+        # while the caller's quota stays held.
+        #
+        # ``stream`` is closed in a ``finally`` of its own: it is the
+        # reservation owner, so it must be closed even if closing ``inner``
+        # raises. ``_stream_response_error_events`` consumes ``stream`` with a
+        # bare ``async for`` and so does not pass the close along itself.
+        try:
+            await aclose_stream(inner)
+        finally:
+            await aclose_stream(stream)
 
 
 async def _stream_response_error_events(
