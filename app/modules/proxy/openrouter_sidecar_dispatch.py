@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 
+import anyio
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -23,7 +24,6 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
-from app.core.utils.cancellation import await_result_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
@@ -72,6 +72,8 @@ from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_erro
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 OPENROUTER_SIDECAR_SOURCE = "openrouter_sidecar"
 
@@ -393,7 +395,7 @@ async def _openrouter_stream_iterator(
             billed_cost_usd=billed_cost.value,
             completed=completed,
         )
-        _, log_deferred_cancellation = await await_result_deferring_cancellation(
+        _, log_deferred_cancellation = await _await_result_deferring_cancellation(
             _log_openrouter_request(
                 api_key=api_key,
                 model=model,
@@ -532,6 +534,42 @@ async def _log_openrouter_request(
         )
 
 
+async def _await_result_deferring_cancellation(awaitable: Awaitable[_T]) -> tuple[_T, bool]:
+    """Run ``awaitable`` to completion, deferring cancellation until it finishes.
+
+    Returns ``(result, cancellation_deferred)``. A cancellation delivered while
+    the awaitable is in flight is absorbed so the cleanup can finish, and
+    reported through the flag so the caller can re-raise it - deferred, never
+    swallowed. If the awaitable is itself cancelled, that propagates at once.
+
+    Settlement that writes durable accounting cannot simply run in a
+    ``finally``: the ``finally`` executes, but the first ``await`` inside it
+    re-raises the pending ``CancelledError``, so work after that point never
+    happens - leaving the reservation held and the caller's quota consumed.
+
+    Mirrors ``_await_result_deferring_cancellation`` in
+    ``app/modules/proxy/api.py``, which has long used this pattern for owned
+    proxy cleanup. Kept module-private here rather than shared: this module is
+    its only consumer.
+
+    This bounds nothing on its own: callers must pass work that already
+    terminates (an owned settlement), never an open-ended wait. Ordinary
+    failures propagate unchanged - nothing is suppressed here.
+    """
+
+    task = asyncio.ensure_future(awaitable)
+    cancellation_deferred = False
+    with anyio.CancelScope(shield=True):
+        while True:
+            try:
+                return await asyncio.shield(task), cancellation_deferred
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancellation_deferred = True
+    raise RuntimeError("unreachable shielded cancellation-deferral state")
+
+
 async def _settle_stream_deferring_cancellation(
     reservation: ApiKeyUsageReservationData | None,
     *,
@@ -570,7 +608,7 @@ async def _settle_stream_deferring_cancellation(
         )
         return settlement
 
-    return await await_result_deferring_cancellation(_settle())
+    return await _await_result_deferring_cancellation(_settle())
 
 
 async def _finalize_or_release_openrouter_reservation(
