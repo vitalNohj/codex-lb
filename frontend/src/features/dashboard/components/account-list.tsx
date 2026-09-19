@@ -569,7 +569,7 @@ function ClaudeAuthListRow({
       </div>
       <span className="text-muted-foreground">-</span>
       <div className="min-w-0">
-        <SidecarEffortSelect provider={account.provider} compact />
+        <SidecarEffortSelect provider={account.provider} accountId={account.accountId} compact />
       </div>
       <div className="flex justify-end gap-1">
         <Button

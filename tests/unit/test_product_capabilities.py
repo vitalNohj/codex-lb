@@ -27,7 +27,13 @@ def test_omniroute_is_disabled_as_a_product_capability() -> None:
 
 def test_capabilities_the_product_does_not_gate_are_enabled() -> None:
     # Sidecar providers with no capability entry must stay routable.
-    for provider in ("claude", "openrouter", "orcarouter", "ollama"):
+    for provider in (
+        "claude",
+        "openrouter",
+        "orcarouter",
+        "ollama",
+        "openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+    ):
         assert is_capability_enabled(provider) is True
 
 

@@ -38,6 +38,10 @@ from app.modules.proxy.account_cache import (
     propagate_account_routing_change,
 )
 from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
+from app.modules.openai_compat.endpoints import (
+    OpenAICompatEndpointUpdateData,
+    StoredOpenAICompatEndpoint,
+)
 from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
     AccountProxyBindingResponse,
@@ -45,6 +49,8 @@ from app.modules.settings.schemas import (
     CustomAliasCatalogEntrySchema,
     DashboardSettingsResponse,
     DashboardSettingsUpdateRequest,
+    OpenAICompatEndpointResponse,
+    OpenAICompatEndpointUpdate,
     RuntimeConnectAddressResponse,
     UpstreamProxyAdminResponse,
     UpstreamProxyEndpointCreateRequest,
@@ -249,6 +255,9 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         nvidia_sidecar_last_checked_at=settings.nvidia_sidecar_last_checked_at,
         nvidia_sidecar_last_model_count=settings.nvidia_sidecar_last_model_count,
         nvidia_sidecar_default_reasoning_effort=settings.nvidia_sidecar_default_reasoning_effort,
+        openai_compat_endpoints=[
+            _openai_compat_endpoint_response(endpoint) for endpoint in settings.openai_compat_endpoints
+        ],
         orcarouter_sidecar_enabled=settings.orcarouter_sidecar_enabled,
         orcarouter_sidecar_base_url=settings.orcarouter_sidecar_base_url,
         orcarouter_sidecar_api_key_configured=settings.orcarouter_sidecar_api_key_configured,
@@ -312,6 +321,60 @@ def _auth_plan_data(plan) -> ClaudeSidecarAuthPlanData:
 
 def _sidecar_prefix_data(prefix) -> SidecarPrefix:
     return SidecarPrefix(prefix=prefix.prefix, strip=prefix.strip)
+
+
+def _openai_compat_endpoint_response(endpoint: StoredOpenAICompatEndpoint) -> OpenAICompatEndpointResponse:
+    return OpenAICompatEndpointResponse(
+        id=endpoint.id,
+        name=endpoint.name,
+        enabled=endpoint.enabled,
+        base_url=endpoint.base_url,
+        api_key_configured=endpoint.api_key_configured,
+        model_prefixes=[asdict(prefix) for prefix in endpoint.prefixes],
+        full_models=list(endpoint.full_models),
+        connect_timeout_seconds=endpoint.connect_timeout_seconds,
+        request_timeout_seconds=endpoint.request_timeout_seconds,
+        models_cache_ttl_seconds=endpoint.models_cache_ttl_seconds,
+        default_reasoning_effort=endpoint.default_reasoning_effort,
+        last_health_status=endpoint.last_health_status,
+        last_health_message=endpoint.last_health_message,
+        last_checked_at=endpoint.last_checked_at,
+        last_model_count=endpoint.last_model_count,
+    )
+
+
+def _openai_compat_update_data(item: OpenAICompatEndpointUpdate) -> OpenAICompatEndpointUpdateData:
+    return OpenAICompatEndpointUpdateData(
+        id=item.id,
+        name=item.name,
+        enabled=item.enabled,
+        base_url=item.base_url,
+        api_key=item.api_key if "api_key" in item.model_fields_set else None,
+        clear_api_key=item.clear_api_key is True,
+        prefixes=[_sidecar_prefix_data(prefix) for prefix in item.model_prefixes],
+        full_models=list(item.full_models),
+        connect_timeout_seconds=item.connect_timeout_seconds,
+        request_timeout_seconds=item.request_timeout_seconds,
+        models_cache_ttl_seconds=item.models_cache_ttl_seconds,
+        default_reasoning_effort=item.default_reasoning_effort,
+    )
+
+
+def _openai_compat_update_from_stored(endpoint: StoredOpenAICompatEndpoint) -> OpenAICompatEndpointUpdateData:
+    return OpenAICompatEndpointUpdateData(
+        id=endpoint.id,
+        name=endpoint.name,
+        enabled=endpoint.enabled,
+        base_url=endpoint.base_url,
+        api_key=None,
+        clear_api_key=False,
+        prefixes=list(endpoint.prefixes),
+        full_models=list(endpoint.full_models),
+        connect_timeout_seconds=endpoint.connect_timeout_seconds,
+        request_timeout_seconds=endpoint.request_timeout_seconds,
+        models_cache_ttl_seconds=endpoint.models_cache_ttl_seconds,
+        default_reasoning_effort=endpoint.default_reasoning_effort,
+    )
 
 
 #: OmniRoute update fields, paired with the only value accepted while the
@@ -1209,6 +1272,11 @@ async def update_settings(
                     if "nvidia_sidecar_default_reasoning_effort" in payload.model_fields_set
                     else current.nvidia_sidecar_default_reasoning_effort
                 ),
+                openai_compat_endpoints=(
+                    [_openai_compat_update_data(item) for item in payload.openai_compat_endpoints]
+                    if payload.openai_compat_endpoints is not None
+                    else [_openai_compat_update_from_stored(endpoint) for endpoint in current.openai_compat_endpoints]
+                ),
                 orcarouter_sidecar_enabled=(
                     payload.orcarouter_sidecar_enabled
                     if payload.orcarouter_sidecar_enabled is not None
@@ -1539,6 +1607,7 @@ async def update_settings(
             "nvidia_sidecar_last_checked_at",
             "nvidia_sidecar_last_model_count",
             "nvidia_sidecar_default_reasoning_effort",
+            "openai_compat_endpoints",
             "orcarouter_sidecar_enabled",
             "orcarouter_sidecar_base_url",
             "orcarouter_sidecar_api_key_configured",

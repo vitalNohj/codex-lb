@@ -143,6 +143,7 @@ class SettingsRepository:
             nvidia_sidecar_connect_timeout_seconds=static_settings.nvidia_sidecar_connect_timeout_seconds,
             nvidia_sidecar_request_timeout_seconds=static_settings.nvidia_sidecar_request_timeout_seconds,
             nvidia_sidecar_models_cache_ttl_seconds=static_settings.nvidia_sidecar_models_cache_ttl_seconds,
+            openai_compat_endpoints_json="[]",
             orcarouter_sidecar_enabled=static_settings.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=static_settings.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_encrypted=(
@@ -281,6 +282,7 @@ class SettingsRepository:
         nvidia_sidecar_last_health_message: str | None | object = _UNSET,
         nvidia_sidecar_last_checked_at: datetime | None | object = _UNSET,
         nvidia_sidecar_last_model_count: int | None | object = _UNSET,
+        openai_compat_endpoints_json: str | None | object = _UNSET,
         orcarouter_sidecar_last_health_status: str | None | object = _UNSET,
         orcarouter_sidecar_last_health_message: str | None | object = _UNSET,
         orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
@@ -320,6 +322,7 @@ class SettingsRepository:
             "nvidia_sidecar_last_health_message": nvidia_sidecar_last_health_message,
             "nvidia_sidecar_last_checked_at": nvidia_sidecar_last_checked_at,
             "nvidia_sidecar_last_model_count": nvidia_sidecar_last_model_count,
+            "openai_compat_endpoints_json": openai_compat_endpoints_json,
             "orcarouter_sidecar_last_health_status": orcarouter_sidecar_last_health_status,
             "orcarouter_sidecar_last_health_message": orcarouter_sidecar_last_health_message,
             "orcarouter_sidecar_last_checked_at": orcarouter_sidecar_last_checked_at,
@@ -469,6 +472,7 @@ class SettingsRepository:
         nvidia_sidecar_last_checked_at: datetime | None | object = _UNSET,
         nvidia_sidecar_last_model_count: int | None | object = _UNSET,
         nvidia_sidecar_default_reasoning_effort: str | None | object = _UNSET,
+        openai_compat_endpoints_json: str | None = None,
         orcarouter_sidecar_enabled: bool | None = None,
         orcarouter_sidecar_base_url: str | None = None,
         orcarouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -725,6 +729,8 @@ class SettingsRepository:
             settings.nvidia_sidecar_last_model_count = nvidia_sidecar_last_model_count
         if nvidia_sidecar_default_reasoning_effort is not _UNSET:
             settings.nvidia_sidecar_default_reasoning_effort = nvidia_sidecar_default_reasoning_effort
+        if openai_compat_endpoints_json is not None:
+            settings.openai_compat_endpoints_json = openai_compat_endpoints_json
         if orcarouter_sidecar_enabled is not None:
             settings.orcarouter_sidecar_enabled = orcarouter_sidecar_enabled
         if orcarouter_sidecar_base_url is not None:

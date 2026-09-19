@@ -76,6 +76,8 @@ export function AccountActions({
             ? "OmniRoute"
             : account.provider === "ollama"
               ? "Ollama"
+              : account.provider === "openai_compat"
+                ? account.displayName || "OpenAI-compat"
               : "Claude via CLIProxyAPI";
     return (
       <div className="space-y-3 border-t pt-4">

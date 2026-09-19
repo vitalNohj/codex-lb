@@ -405,6 +405,10 @@ const nvidiaSidecarModels = [
   { id: "z-ai/glm-5.3", created: 523, ownedBy: "nvidia" },
 ];
 
+const openaiCompatModels = [
+  { id: "vast-llama", created: 623, ownedBy: "openai_compat" },
+];
+
 // Shape and field names come from OpenCodeGoSidecarModelSummary in the backend
 // contract (data/codexlb-opencode-go-integration/contract.md section 3): the
 // `glm-5.3` row is that document's literal example. The fixture covers every
@@ -2386,6 +2390,39 @@ export const handlers = [
       modelCount: nvidiaSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
       models: nvidiaSidecarModels,
+    });
+  }),
+
+  http.get("*/api/openai-compat/:endpointId/status", ({ params }) => {
+    return HttpResponse.json({
+      id: params.endpointId,
+      name: "Vast",
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenAI-compat reachable",
+      baseUrl: "https://openai.vast.ai/demo/v1",
+      modelCount: openaiCompatModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+    });
+  }),
+
+  http.get("*/api/openai-compat/:endpointId/models", () => {
+    return HttpResponse.json({ models: openaiCompatModels });
+  }),
+
+  http.post("*/api/openai-compat/:endpointId/test", ({ params }) => {
+    return HttpResponse.json({
+      id: params.endpointId,
+      name: "Vast",
+      enabled: true,
+      configured: true,
+      status: "healthy",
+      message: "OpenAI-compat reachable",
+      baseUrl: "https://openai.vast.ai/demo/v1",
+      modelCount: openaiCompatModels.length,
+      lastCheckedAt: "2026-01-01T00:00:00Z",
+      models: openaiCompatModels,
     });
   }),
 

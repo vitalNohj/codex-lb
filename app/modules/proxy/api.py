@@ -52,6 +52,7 @@ from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
+from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import (
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
@@ -312,6 +313,13 @@ from app.modules.proxy.nvidia_sidecar_dispatch import (
     nvidia_routing_entry,
     proxy_chat_to_nvidia,
 )
+from app.modules.proxy.openai_compat_dispatch import (
+    enabled_openai_compat_routing_entries,
+    load_openai_compat_configs,
+    openai_compat_config_by_provider,
+    proxy_chat_to_openai_compat,
+)
+from app.modules.openai_compat.endpoints import is_openai_compat_provider
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     load_orcarouter_sidecar_config,
     orcarouter_routing_entry,
@@ -1151,6 +1159,7 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     nvidia_config = await load_nvidia_sidecar_config()
+    openai_compat_configs = await load_openai_compat_configs()
     orcarouter_config = await load_orcarouter_sidecar_config()
     opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
@@ -1163,6 +1172,7 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if nvidia_config is not None and nvidia_config.enabled:
         routing_entries.append(nvidia_routing_entry(nvidia_config))
+    routing_entries.extend(enabled_openai_compat_routing_entries(openai_compat_configs))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     # Ownership, deliberately NOT usability. An enabled integration owns its
@@ -4103,6 +4113,7 @@ async def _build_models_response_body(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     nvidia_config = await load_nvidia_sidecar_config()
+    openai_compat_configs = await load_openai_compat_configs()
     orcarouter_config = await load_orcarouter_sidecar_config()
     opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
@@ -4115,6 +4126,7 @@ async def _build_models_response_body(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if nvidia_config is not None and nvidia_config.enabled:
         routing_entries.append(nvidia_routing_entry(nvidia_config))
+    routing_entries.extend(enabled_openai_compat_routing_entries(openai_compat_configs))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     # Ownership, deliberately NOT usability. An enabled integration owns its
@@ -4219,6 +4231,32 @@ async def _build_models_response_body(
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "nvidia",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+    for openai_compat_config in openai_compat_configs:
+        if not openai_compat_config.enabled:
+            continue
+        discovered_models = await OpenAICompatSidecarClient(openai_compat_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in openai_compat_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != openai_compat_config.provider_id:
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "openai_compat",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -4768,6 +4806,7 @@ async def v1_chat_completions(
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
     nvidia_config = await load_nvidia_sidecar_config()
+    openai_compat_configs = await load_openai_compat_configs()
     orcarouter_config = await load_orcarouter_sidecar_config()
     opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
@@ -4780,6 +4819,7 @@ async def v1_chat_completions(
         routing_entries.append(openrouter_routing_entry(openrouter_config))
     if nvidia_config is not None and nvidia_config.enabled:
         routing_entries.append(nvidia_routing_entry(nvidia_config))
+    routing_entries.extend(enabled_openai_compat_routing_entries(openai_compat_configs))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     # Ownership, deliberately NOT usability. An enabled integration owns its
@@ -4844,6 +4884,23 @@ async def v1_chat_completions(
                 rate_limit_headers=rate_limit_headers,
                 sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
                 client=NvidiaSidecarClient(nvidia_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if is_openai_compat_provider(decision.provider):
+            openai_compat_config = openai_compat_config_by_provider(
+                openai_compat_configs, decision.provider
+            )
+            assert openai_compat_config is not None
+            return await proxy_chat_to_openai_compat(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OpenAICompatSidecarClient(openai_compat_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
             )

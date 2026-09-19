@@ -55,6 +55,9 @@ export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other
   if (account.provider === "orcarouter") {
     return "orcarouter";
   }
+  if (account.provider === "openai_compat") {
+    return "openai_compat";
+  }
   if ((account.provider ?? "claude") === "claude") {
     return "cliproxy";
   }
