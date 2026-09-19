@@ -9,6 +9,7 @@ from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.opencode_go_sidecar import get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
 from app.core.clients.orcarouter_sidecar import get_orcarouter_sidecar_client
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.db.session import detach_session_objects, get_background_session
@@ -28,6 +29,7 @@ from app.modules.proxy.opencode_go_sidecar_dispatch import (
     opencode_go_is_usable,
 )
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
+from app.modules.proxy.nvidia_sidecar_dispatch import load_nvidia_sidecar_config
 from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,18 @@ async def list_models() -> dict:
                 continue
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}", "sourceOnly": False})
+    nvidia_config = await load_nvidia_sidecar_config()
+    if nvidia_config is not None and nvidia_config.enabled:
+        try:
+            nvidia_models = await NvidiaSidecarClient(nvidia_config).list_models_cached()
+        except Exception:
+            logger.warning("failed to append NVIDIA sidecar models to dashboard model list", exc_info=True)
+            nvidia_models = []
+        for sidecar_model in nvidia_models:
+            if sidecar_model.id in seen_model_ids:
+                continue
+            seen_model_ids.add(sidecar_model.id)
+            models.append({"id": sidecar_model.id, "name": f"NVIDIA: {sidecar_model.id}", "sourceOnly": False})
     orcarouter_config = await load_orcarouter_sidecar_config()
     if orcarouter_config is not None and orcarouter_config.enabled:
         try:

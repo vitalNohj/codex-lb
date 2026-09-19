@@ -50,6 +50,7 @@ export function AccountListItem({
   const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || t("accounts.detail.unknownWorkspace");
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
   const isOpenRouter = account.provider === "openrouter";
+  const isNvidia = account.provider === "nvidia";
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
@@ -58,6 +59,8 @@ export function AccountListItem({
   const isClaude = (account.provider ?? "claude") === "claude";
   const sidecarLabel = isOpenRouter
     ? "OpenRouter"
+    : isNvidia
+      ? "NVIDIA"
     : isOrcaRouter
       ? "OrcaRouter"
       : isOmniRoute
@@ -109,7 +112,7 @@ export function AccountListItem({
   // summary reports a status and a model count. They stay hidden for the hosted
   // aggregators, where the status collapses to an uninformative OK/--.
   const showSidecarStatusRows =
-    account.synthetic === true && !isOpenRouter && !isOrcaRouter && !isOmniRoute;
+    account.synthetic === true && !isOpenRouter && !isNvidia && !isOrcaRouter && !isOmniRoute;
   const availableResetCredits = account.availableResetCredits ?? 0;
   const resetBadgeLabel = availableResetCredits > 99 ? "99+" : String(availableResetCredits);
   const statusEligibilityHint = status === "active" ? t("accounts.listItem.statusActiveHint") : undefined;

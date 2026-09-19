@@ -20,7 +20,7 @@ from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
 _UNSET = object()
-_OPERATIONAL_JSON_COLUMNS = frozenset({"openrouter_sidecar_full_models_json", "orcarouter_sidecar_full_models_json"})
+_OPERATIONAL_JSON_COLUMNS = frozenset({"openrouter_sidecar_full_models_json", "nvidia_sidecar_full_models_json", "orcarouter_sidecar_full_models_json"})
 
 
 class SettingsRepository:
@@ -129,6 +129,20 @@ class SettingsRepository:
             openrouter_sidecar_connect_timeout_seconds=static_settings.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=static_settings.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=static_settings.openrouter_sidecar_models_cache_ttl_seconds,
+            nvidia_sidecar_enabled=static_settings.nvidia_sidecar_enabled,
+            nvidia_sidecar_base_url=static_settings.nvidia_sidecar_base_url,
+            nvidia_sidecar_api_key_encrypted=(
+                TokenEncryptor().encrypt(static_settings.nvidia_sidecar_api_key.strip())
+                if static_settings.nvidia_sidecar_api_key.strip()
+                else None
+            ),
+            nvidia_sidecar_model_prefixes_json=dump_configured_sidecar_prefixes(
+                static_settings.nvidia_sidecar_model_prefixes
+            ),
+            nvidia_sidecar_full_models_json="[]",
+            nvidia_sidecar_connect_timeout_seconds=static_settings.nvidia_sidecar_connect_timeout_seconds,
+            nvidia_sidecar_request_timeout_seconds=static_settings.nvidia_sidecar_request_timeout_seconds,
+            nvidia_sidecar_models_cache_ttl_seconds=static_settings.nvidia_sidecar_models_cache_ttl_seconds,
             orcarouter_sidecar_enabled=static_settings.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=static_settings.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_encrypted=(
@@ -263,6 +277,10 @@ class SettingsRepository:
         openrouter_sidecar_last_health_message: str | None | object = _UNSET,
         openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         openrouter_sidecar_last_model_count: int | None | object = _UNSET,
+        nvidia_sidecar_last_health_status: str | None | object = _UNSET,
+        nvidia_sidecar_last_health_message: str | None | object = _UNSET,
+        nvidia_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        nvidia_sidecar_last_model_count: int | None | object = _UNSET,
         orcarouter_sidecar_last_health_status: str | None | object = _UNSET,
         orcarouter_sidecar_last_health_message: str | None | object = _UNSET,
         orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
@@ -298,6 +316,10 @@ class SettingsRepository:
             "openrouter_sidecar_last_health_message": openrouter_sidecar_last_health_message,
             "openrouter_sidecar_last_checked_at": openrouter_sidecar_last_checked_at,
             "openrouter_sidecar_last_model_count": openrouter_sidecar_last_model_count,
+            "nvidia_sidecar_last_health_status": nvidia_sidecar_last_health_status,
+            "nvidia_sidecar_last_health_message": nvidia_sidecar_last_health_message,
+            "nvidia_sidecar_last_checked_at": nvidia_sidecar_last_checked_at,
+            "nvidia_sidecar_last_model_count": nvidia_sidecar_last_model_count,
             "orcarouter_sidecar_last_health_status": orcarouter_sidecar_last_health_status,
             "orcarouter_sidecar_last_health_message": orcarouter_sidecar_last_health_message,
             "orcarouter_sidecar_last_checked_at": orcarouter_sidecar_last_checked_at,
@@ -434,6 +456,19 @@ class SettingsRepository:
         openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         openrouter_sidecar_last_model_count: int | None | object = _UNSET,
         openrouter_sidecar_default_reasoning_effort: str | None | object = _UNSET,
+        nvidia_sidecar_enabled: bool | None = None,
+        nvidia_sidecar_base_url: str | None = None,
+        nvidia_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        nvidia_sidecar_model_prefixes_json: str | None = None,
+        nvidia_sidecar_full_models_json: str | None = None,
+        nvidia_sidecar_connect_timeout_seconds: float | None = None,
+        nvidia_sidecar_request_timeout_seconds: float | None = None,
+        nvidia_sidecar_models_cache_ttl_seconds: float | None = None,
+        nvidia_sidecar_last_health_status: str | None | object = _UNSET,
+        nvidia_sidecar_last_health_message: str | None | object = _UNSET,
+        nvidia_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        nvidia_sidecar_last_model_count: int | None | object = _UNSET,
+        nvidia_sidecar_default_reasoning_effort: str | None | object = _UNSET,
         orcarouter_sidecar_enabled: bool | None = None,
         orcarouter_sidecar_base_url: str | None = None,
         orcarouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -664,6 +699,32 @@ class SettingsRepository:
             settings.openrouter_sidecar_last_model_count = openrouter_sidecar_last_model_count
         if openrouter_sidecar_default_reasoning_effort is not _UNSET:
             settings.openrouter_sidecar_default_reasoning_effort = openrouter_sidecar_default_reasoning_effort
+        if nvidia_sidecar_enabled is not None:
+            settings.nvidia_sidecar_enabled = nvidia_sidecar_enabled
+        if nvidia_sidecar_base_url is not None:
+            settings.nvidia_sidecar_base_url = nvidia_sidecar_base_url
+        if nvidia_sidecar_api_key_encrypted is not _UNSET:
+            settings.nvidia_sidecar_api_key_encrypted = nvidia_sidecar_api_key_encrypted
+        if nvidia_sidecar_model_prefixes_json is not None:
+            settings.nvidia_sidecar_model_prefixes_json = nvidia_sidecar_model_prefixes_json
+        if nvidia_sidecar_full_models_json is not None:
+            settings.nvidia_sidecar_full_models_json = nvidia_sidecar_full_models_json
+        if nvidia_sidecar_connect_timeout_seconds is not None:
+            settings.nvidia_sidecar_connect_timeout_seconds = nvidia_sidecar_connect_timeout_seconds
+        if nvidia_sidecar_request_timeout_seconds is not None:
+            settings.nvidia_sidecar_request_timeout_seconds = nvidia_sidecar_request_timeout_seconds
+        if nvidia_sidecar_models_cache_ttl_seconds is not None:
+            settings.nvidia_sidecar_models_cache_ttl_seconds = nvidia_sidecar_models_cache_ttl_seconds
+        if nvidia_sidecar_last_health_status is not _UNSET:
+            settings.nvidia_sidecar_last_health_status = nvidia_sidecar_last_health_status
+        if nvidia_sidecar_last_health_message is not _UNSET:
+            settings.nvidia_sidecar_last_health_message = nvidia_sidecar_last_health_message
+        if nvidia_sidecar_last_checked_at is not _UNSET:
+            settings.nvidia_sidecar_last_checked_at = nvidia_sidecar_last_checked_at
+        if nvidia_sidecar_last_model_count is not _UNSET:
+            settings.nvidia_sidecar_last_model_count = nvidia_sidecar_last_model_count
+        if nvidia_sidecar_default_reasoning_effort is not _UNSET:
+            settings.nvidia_sidecar_default_reasoning_effort = nvidia_sidecar_default_reasoning_effort
         if orcarouter_sidecar_enabled is not None:
             settings.orcarouter_sidecar_enabled = orcarouter_sidecar_enabled
         if orcarouter_sidecar_base_url is not None:

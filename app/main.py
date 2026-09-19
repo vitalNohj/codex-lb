@@ -93,6 +93,7 @@ from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
 from app.modules.opencode_go import api as opencode_go_api
 from app.modules.opencode_go_sidecar import api as opencode_go_sidecar_api
 from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
+from app.modules.nvidia_sidecar import api as nvidia_sidecar_api
 from app.modules.orcarouter_sidecar import api as orcarouter_sidecar_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.cap_partitioning import refresh_cap_partition
@@ -915,6 +916,7 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
     app.include_router(dashboard_api.router)
     app.include_router(claude_sidecar_api.router)
     app.include_router(openrouter_sidecar_api.router)
+    app.include_router(nvidia_sidecar_api.router)
     app.include_router(orcarouter_sidecar_api.router)
     app.include_router(opencode_go_sidecar_api.router)
     # Quota read (GET /api/opencode-go/quota). Without this include the route is

@@ -140,6 +140,7 @@ async def openrouter_enabled(monkeypatch):
 # the transport this control expects to reach.
 _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
+    "NvidiaSidecarClient",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",

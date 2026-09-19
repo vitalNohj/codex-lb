@@ -14,6 +14,7 @@ import pytest
 import app.modules.proxy.external_pricing_sources as pricing_sources
 from app.modules.proxy.external_pricing_sources import (
     _load_cliproxy_context,
+    _load_nvidia_context,
     _load_openrouter_context,
     _load_orcarouter_context,
 )
@@ -24,12 +25,14 @@ pytestmark = pytest.mark.unit
 _LOADERS = (
     ("orcarouter", _load_orcarouter_context, "app.modules.proxy.orcarouter_sidecar_dispatch"),
     ("openrouter", _load_openrouter_context, "app.modules.proxy.openrouter_sidecar_dispatch"),
+    ("nvidia", _load_nvidia_context, "app.modules.proxy.nvidia_sidecar_dispatch"),
     ("cliproxy", _load_cliproxy_context, "app.modules.proxy.claude_sidecar_dispatch"),
 )
 
 _CONFIG_LOADERS = {
     "orcarouter": "load_orcarouter_sidecar_config",
     "openrouter": "load_openrouter_sidecar_config",
+    "nvidia": "load_nvidia_sidecar_config",
     "cliproxy": "load_sidecar_config",
 }
 

@@ -26,6 +26,7 @@ from app.core.usage.external_pricing.catalogs import (
     PROVIDER_CLIPROXY,
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
+    PROVIDER_NVIDIA,
     PROVIDER_ORCAROUTER,
     is_external_priced_provider,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "PROVIDER_CLIPROXY",
     "PROVIDER_OPENCODE_GO",
     "PROVIDER_OPENROUTER",
+    "PROVIDER_NVIDIA",
     "PROVIDER_ORCAROUTER",
     "CalculatedCost",
     "ServingContext",

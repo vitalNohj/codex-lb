@@ -577,6 +577,40 @@ describe("AccountCard", () => {
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
   });
 
+  it("shows NVIDIA health and requests without a model count", () => {
+    const nvidia = createAccountSummary({
+      accountId: "nvidia-sidecar",
+      email: "integrate.api.nvidia.com",
+      displayName: "NVIDIA",
+      planType: "nvidia",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "nvidia",
+      healthStatus: "healthy",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      modelCount: 3,
+      usage: null,
+      requestUsage: {
+        requestCount: 4,
+        totalTokens: 100,
+        cachedInputTokens: 0,
+        totalCostUsd: 0,
+        totalSavingsUsd: 0,
+      },
+    });
+
+    renderWithProviders(<AccountCard account={nvidia} />);
+
+    expect(screen.getAllByText("NVIDIA")).toHaveLength(1);
+    expect(screen.getByText("Health")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
+    expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    expect(screen.getByText("Requests")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  });
+
   it("hides the saved row when there are no savings", () => {
     const openRouter = createAccountSummary({
       accountId: "openrouter-sidecar",

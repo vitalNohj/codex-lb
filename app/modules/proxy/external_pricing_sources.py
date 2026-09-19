@@ -42,6 +42,7 @@ from app.core.usage.external_pricing.catalogs import (
     PROVIDER_CLIPROXY,
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
+    PROVIDER_NVIDIA,
     PROVIDER_ORCAROUTER,
     catalog_from_sidecar_models,
 )
@@ -133,6 +134,32 @@ async def _load_openrouter_context(_provider: str) -> ServingContext | None:
     )
 
 
+async def _load_nvidia_context(_provider: str) -> ServingContext | None:
+    from app.core.clients.nvidia_sidecar import (
+        NVIDIA_PRICING_PROVIDER,
+        NvidiaSidecarClient,
+    )
+    from app.modules.proxy.nvidia_sidecar_dispatch import load_nvidia_sidecar_config
+
+    config = await load_nvidia_sidecar_config()
+    if config is None:
+        return None
+    if not config.enabled:
+        return ServingContext.disabled(
+            aliases=await load_model_aliases(),
+            prefixes=_prefix_pairs(config.prefixes),
+        )
+    models = await NvidiaSidecarClient(config).list_models()
+    return ServingContext(
+        catalog=catalog_from_sidecar_models(
+            NVIDIA_PRICING_PROVIDER,
+            _catalog_rows(list(models)),
+        ),
+        aliases=await load_model_aliases(),
+        prefixes=_prefix_pairs(config.prefixes),
+    )
+
+
 async def _load_cliproxy_context(_provider: str) -> ServingContext | None:
     """Routing identity for CLIProxyAPI ids; no price catalog.
 
@@ -210,4 +237,5 @@ def register_external_pricing_sources() -> None:
     register_serving_context_loader(PROVIDER_ORCAROUTER, _load_orcarouter_context)
     register_serving_context_loader(PROVIDER_OPENCODE_GO, _load_opencode_go_context)
     register_serving_context_loader(PROVIDER_OPENROUTER, _load_openrouter_context)
+    register_serving_context_loader(PROVIDER_NVIDIA, _load_nvidia_context)
     register_serving_context_loader(PROVIDER_CLIPROXY, _load_cliproxy_context)

@@ -46,6 +46,9 @@ export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other
   if (account.provider === "openrouter") {
     return "openrouter";
   }
+  if (account.provider === "nvidia") {
+    return "nvidia";
+  }
   if (account.provider === "omniroute") {
     return "omniroute";
   }

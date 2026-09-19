@@ -40,6 +40,7 @@ _FORBIDDEN_DISPATCH = (
     "_source_chat_completion_response",
     "_probe_chat_stream_startup_error",
     "OpenRouterSidecarClient",
+    "NvidiaSidecarClient",
     "OrcaRouterSidecarClient",
     "OmniRouteSidecarClient",
     "OllamaSidecarClient",
@@ -310,6 +311,7 @@ def _usage_chunks(payloads: list[dict]) -> list[dict]:
 _UNEXPECTED_TRANSPORTS: tuple[str, ...] = (
     # Other provider sidecars (api.py imports, lines 50-53).
     "OpenRouterSidecarClient",
+    "NvidiaSidecarClient",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OllamaSidecarClient",

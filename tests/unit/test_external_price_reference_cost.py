@@ -45,7 +45,7 @@ def test_the_static_table_still_matches_this_id_by_substring() -> None:
     assert canonical != GLOB_MATCHING_MODEL
 
 
-@pytest.mark.parametrize("provider", ["openrouter", "orcarouter", "cliproxy"])
+@pytest.mark.parametrize("provider", ["openrouter", "orcarouter", "cliproxy", "nvidia"])
 def test_a_participating_provider_gets_no_static_table_reference_price(provider: str) -> None:
     assert get_reference_pricing_for_model(GLOB_MATCHING_MODEL, provider=provider) is None
     assert (

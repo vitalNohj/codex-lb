@@ -150,6 +150,31 @@ def test_ollama_participates_in_longest_prefix_matching() -> None:
     assert decision.wire_model == "oss:120b-cloud"
 
 
+def test_nvidia_full_model_beats_openrouter_prefix() -> None:
+    decision = resolve_sidecar_route(
+        "z-ai/glm-5.3",
+        (
+            _entry("openrouter", prefixes=(SidecarPrefix(prefix="z-ai/", strip=False),)),
+            _entry("nvidia", full_models=("z-ai/glm-5.3",)),
+        ),
+    )
+
+    assert decision is not None
+    assert decision.provider == "nvidia"
+    assert decision.wire_model == "z-ai/glm-5.3"
+
+
+def test_nvidia_strip_prefix_forwards_wire_model() -> None:
+    decision = resolve_sidecar_route(
+        "nvidia/z-ai/glm-5.3",
+        (_entry("nvidia", prefixes=(SidecarPrefix(prefix="nvidia/", strip=True),)),),
+    )
+
+    assert decision is not None
+    assert decision.provider == "nvidia"
+    assert decision.wire_model == "z-ai/glm-5.3"
+
+
 def test_orcarouter_sits_between_openrouter_and_omniroute() -> None:
     # Deliberately the full tuple, not a relative-order subset: this is a
     # complete contract over the tiebreak order, and asserting only that
@@ -162,6 +187,7 @@ def test_orcarouter_sits_between_openrouter_and_omniroute() -> None:
     assert SIDECAR_PROVIDER_ORDER == (
         "claude",
         "openrouter",
+        "nvidia",
         "orcarouter",
         "omniroute",
         "ollama",

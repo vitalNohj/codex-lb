@@ -89,6 +89,7 @@ _OUTBOUND_BOUNDARIES = (
     # Per-provider sidecar clients.
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
+    "NvidiaSidecarClient",
     "OrcaRouterSidecarClient",
     "OmniRouteSidecarClient",
     "OllamaSidecarClient",

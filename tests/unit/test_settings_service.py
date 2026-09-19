@@ -213,12 +213,14 @@ def _settings_update(
     *,
     claude_prefixes: list[SidecarPrefix] | None = None,
     openrouter_prefixes: list[SidecarPrefix] | None = None,
+    nvidia_prefixes: list[SidecarPrefix] | None = None,
     orcarouter_prefixes: list[SidecarPrefix] | None = None,
     opencode_go_prefixes: list[SidecarPrefix] | None = None,
     omniroute_prefixes: list[SidecarPrefix] | None = None,
     ollama_prefixes: list[SidecarPrefix] | None = None,
     claude_models: list[str] | None = None,
     openrouter_models: list[str] | None = None,
+    nvidia_models: list[str] | None = None,
     orcarouter_models: list[str] | None = None,
     opencode_go_models: list[str] | None = None,
     omniroute_models: list[str] | None = None,
@@ -296,6 +298,16 @@ def _settings_update(
         openrouter_sidecar_request_timeout_seconds=600.0,
         openrouter_sidecar_models_cache_ttl_seconds=60.0,
         openrouter_sidecar_default_reasoning_effort=None,
+        nvidia_sidecar_enabled=False,
+        nvidia_sidecar_base_url="https://integrate.api.nvidia.com/v1",
+        nvidia_sidecar_api_key=None,
+        nvidia_sidecar_clear_api_key=False,
+        nvidia_sidecar_model_prefixes=nvidia_prefixes or [],
+        nvidia_sidecar_full_models=nvidia_models or [],
+        nvidia_sidecar_connect_timeout_seconds=8.0,
+        nvidia_sidecar_request_timeout_seconds=600.0,
+        nvidia_sidecar_models_cache_ttl_seconds=60.0,
+        nvidia_sidecar_default_reasoning_effort=None,
         orcarouter_sidecar_enabled=False,
         orcarouter_sidecar_base_url="https://api.orcarouter.ai/v1",
         orcarouter_sidecar_api_key=None,
@@ -396,6 +408,21 @@ def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
     assert exc_info.value.conflict.kind == "full_model"
     assert exc_info.value.conflict.owner == "OpenRouter"
     assert exc_info.value.conflict.challenger == "Ollama"
+
+
+def test_sidecar_route_validator_rejects_nvidia_openrouter_duplicate_full_models() -> None:
+    payload = _settings_update(
+        openrouter_models=["z-ai/glm-5.3"],
+        nvidia_models=["z-ai/glm-5.3"],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "full_model"
+    assert exc_info.value.conflict.value == "z-ai/glm-5.3"
+    assert exc_info.value.conflict.owner == "OpenRouter"
+    assert exc_info.value.conflict.challenger == "NVIDIA"
 
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
