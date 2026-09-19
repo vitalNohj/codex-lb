@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 
 from app.core.clients.openai_compat_sidecar import (
-    OpenAICompatSidecarClient,
     OpenAICompatSidecarError,
     OpenAICompatSidecarUnavailableError,
+    get_openai_compat_sidecar_client,
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.openai_compat.endpoints import (
@@ -68,7 +68,7 @@ class OpenAICompatService:
         )
         if config is None:
             raise HTTPException(status_code=404, detail="OpenAI-compat endpoint not found")
-        client = OpenAICompatSidecarClient(config)
+        client = get_openai_compat_sidecar_client(config)
         try:
             models = await client.list_models()
         except OpenAICompatSidecarUnavailableError as exc:
@@ -107,7 +107,7 @@ class OpenAICompatService:
         )
         if config is None:
             return OpenAICompatModelsResponse(models=[])
-        models = await OpenAICompatSidecarClient(config).list_models_cached()
+        models = await get_openai_compat_sidecar_client(config).list_models_cached()
         return OpenAICompatModelsResponse(models=_model_summaries(models))
 
     async def _record_test_result(

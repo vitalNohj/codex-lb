@@ -87,7 +87,10 @@ async def test_openai_compat_test_connection_records_error_statuses(
     error,
     expected_status,
 ):
-    monkeypatch.setattr("app.modules.openai_compat.service.OpenAICompatSidecarClient", _FakeOpenAICompatClient)
+    monkeypatch.setattr(
+        "app.modules.openai_compat.service.get_openai_compat_sidecar_client",
+        _FakeOpenAICompatClient,
+    )
     _FakeOpenAICompatClient.error = error
     await _put_endpoint(async_client)
 
@@ -107,7 +110,10 @@ async def test_openai_compat_test_connection_records_error_statuses(
 async def test_openai_compat_test_connection_records_healthy_without_bumping_version(
     async_client, monkeypatch
 ):
-    monkeypatch.setattr("app.modules.openai_compat.service.OpenAICompatSidecarClient", _FakeOpenAICompatClient)
+    monkeypatch.setattr(
+        "app.modules.openai_compat.service.get_openai_compat_sidecar_client",
+        _FakeOpenAICompatClient,
+    )
     _FakeOpenAICompatClient.error = None
     _FakeOpenAICompatClient.models = [
         SidecarModel(id="Qwen/Qwen2.5-7B", created=123, owned_by="openai_compat")
