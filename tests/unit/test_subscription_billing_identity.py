@@ -157,5 +157,6 @@ def test_the_billing_identity_predicate_normalizes_like_the_provider_keys() -> N
     assert reports_per_request_billed_cost("OpenRouter")
     assert reports_per_request_billed_cost("  orcarouter  ")
     assert not reports_per_request_billed_cost("cliproxy")
+    assert not reports_per_request_billed_cost("nvidia")
     assert not reports_per_request_billed_cost(None)
     assert not reports_per_request_billed_cost("")

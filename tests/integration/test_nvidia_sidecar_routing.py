@@ -128,6 +128,7 @@ def _make_upstream_model(slug: str) -> UpstreamModel:
 @pytest.fixture
 async def nvidia_enabled(monkeypatch):
     monkeypatch.setenv("CODEX_LB_NVIDIA_SIDECAR_ENABLED", "true")
+    monkeypatch.setenv("CODEX_LB_CLAUDE_SIDECAR_ENABLED", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -234,8 +235,12 @@ async def fake_nvidia(monkeypatch):
     async def load_config():
         return config
 
+    async def load_claude_disabled():
+        return None
+
     monkeypatch.setattr("app.modules.proxy.api.load_nvidia_sidecar_config", load_config)
     monkeypatch.setattr("app.modules.proxy.api.NvidiaSidecarClient", lambda _config: client)
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_claude_disabled)
     return client
 
 
@@ -494,7 +499,10 @@ async def test_cursor_context_limit_error_is_logged_as_success_and_releases_its_
         },
     )
     await _enable_api_key_auth(async_client)
-    key = await _create_api_key("cursor-context-limit-key")
+    key = await _create_api_key(
+        "cursor-context-limit-key",
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
     fake_nvidia.chat_error = NvidiaSidecarError(
         400,
         "This endpoint's maximum context length is 163840 tokens",
