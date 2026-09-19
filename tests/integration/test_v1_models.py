@@ -21,6 +21,7 @@ pytestmark = pytest.mark.integration
 _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
+    "NvidiaSidecarClient",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",

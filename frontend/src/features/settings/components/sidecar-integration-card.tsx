@@ -33,6 +33,7 @@ import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 export type SidecarIntegrationId =
   | "claude"
   | "openrouter"
+  | "nvidia"
   | "orcarouter"
   | "omniroute"
   | "ollama"
@@ -185,6 +186,7 @@ type SidecarIntegrationCardProviderProps = {
 const INTEGRATION_NAMES: Record<SidecarIntegrationId, string> = {
   claude: "CLIProxyAPI",
   openrouter: "OpenRouter",
+  nvidia: "NVIDIA",
   orcarouter: "OrcaRouter",
   omniroute: "OmniRoute",
   ollama: "Ollama",
@@ -250,6 +252,12 @@ function integrationValues(settings: DashboardSettings, current?: IntegrationVal
       name: INTEGRATION_NAMES.openrouter,
       prefixes: settings.openrouterSidecarModelPrefixes ?? [],
       fullModels: settings.openrouterSidecarFullModels ?? [],
+    },
+    {
+      id: "nvidia",
+      name: INTEGRATION_NAMES.nvidia,
+      prefixes: settings.nvidiaSidecarModelPrefixes ?? [],
+      fullModels: settings.nvidiaSidecarFullModels ?? [],
     },
     {
       id: "orcarouter",

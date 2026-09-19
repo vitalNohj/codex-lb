@@ -40,6 +40,7 @@ from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
 from app.modules.opencode_go.service import OpenCodeGoQuotaService
 from app.modules.opencode_go_sidecar.service import OpenCodeGoSidecarService
 from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
+from app.modules.nvidia_sidecar.service import NvidiaSidecarService
 from app.modules.orcarouter_sidecar.service import OrcaRouterSidecarService
 from app.modules.proxy.capability_lineage_repository import CapabilityLineageRepository
 from app.modules.proxy.repo_bundle import ProxyRepositories
@@ -141,6 +142,13 @@ class OpenRouterSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OpenRouterSidecarService
+
+
+@dataclass(slots=True)
+class NvidiaSidecarContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: NvidiaSidecarService
 
 
 @dataclass(slots=True)
@@ -390,6 +398,14 @@ def get_openrouter_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OpenRouterSidecarService(settings_repository)
     return OpenRouterSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_nvidia_sidecar_context(
+    session: AsyncSession = Depends(get_session),
+) -> NvidiaSidecarContext:
+    settings_repository = SettingsRepository(session)
+    service = NvidiaSidecarService(settings_repository)
+    return NvidiaSidecarContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_orcarouter_sidecar_context(

@@ -8,7 +8,14 @@ describe("AccountTypeFilterToggle", () => {
   it("reflects enabled state via aria-pressed", () => {
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: false, openrouter: true, omniroute: false, orcarouter: true }}
+        value={{
+          codex: true,
+          cliproxy: false,
+          openrouter: true,
+          nvidia: true,
+          omniroute: false,
+          orcarouter: true,
+        }}
         onToggle={vi.fn()}
       />,
     );
@@ -25,6 +32,10 @@ describe("AccountTypeFilterToggle", () => {
       "aria-pressed",
       "true",
     );
+    expect(screen.getByRole("button", { name: "Hide NVIDIA accounts" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(screen.getByRole("button", { name: "Hide OrcaRouter accounts" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -34,7 +45,14 @@ describe("AccountTypeFilterToggle", () => {
   it("offers no OmniRoute filter while the capability is disabled", () => {
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: true, openrouter: true, orcarouter: true, omniroute: true }}
+        value={{
+          codex: true,
+          cliproxy: true,
+          openrouter: true,
+          nvidia: true,
+          orcarouter: true,
+          omniroute: true,
+        }}
         onToggle={vi.fn()}
       />,
     );
@@ -46,7 +64,14 @@ describe("AccountTypeFilterToggle", () => {
   it("orders the filter buttons to match the sidecar provider order", () => {
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: true, openrouter: true, orcarouter: true, omniroute: true }}
+        value={{
+          codex: true,
+          cliproxy: true,
+          openrouter: true,
+          nvidia: true,
+          orcarouter: true,
+          omniroute: true,
+        }}
         onToggle={vi.fn()}
       />,
     );
@@ -55,6 +80,7 @@ describe("AccountTypeFilterToggle", () => {
       "Codex",
       "CLIProxy",
       "OpenRouter",
+      "NVIDIA",
       "OrcaRouter",
     ]);
   });
@@ -64,7 +90,14 @@ describe("AccountTypeFilterToggle", () => {
     const onToggle = vi.fn();
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: true, openrouter: true, omniroute: true, orcarouter: true }}
+        value={{
+          codex: true,
+          cliproxy: true,
+          openrouter: true,
+          nvidia: true,
+          omniroute: true,
+          orcarouter: true,
+        }}
         onToggle={onToggle}
       />,
     );
@@ -72,6 +105,10 @@ describe("AccountTypeFilterToggle", () => {
     await user.click(screen.getByRole("button", { name: "Hide OpenRouter accounts" }));
 
     expect(onToggle).toHaveBeenCalledWith("openrouter");
+
+    await user.click(screen.getByRole("button", { name: "Hide NVIDIA accounts" }));
+
+    expect(onToggle).toHaveBeenCalledWith("nvidia");
 
     await user.click(screen.getByRole("button", { name: "Hide OrcaRouter accounts" }));
 

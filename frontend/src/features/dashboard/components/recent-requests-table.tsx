@@ -65,6 +65,7 @@ const TRANSPORT_LABELS: Record<string, string> = {
 const SIDECAR_SOURCE_LABELS: Record<string, string> = {
   claude_sidecar: "CLIProxyAPI",
   openrouter_sidecar: "OpenRouter",
+  nvidia_sidecar: "NVIDIA",
   orcarouter_sidecar: "OrcaRouter",
   omniroute_sidecar: "OmniRoute",
   ollama_sidecar: "Ollama",
@@ -81,6 +82,7 @@ const TRANSPORT_CLASS_MAP: Record<string, string> = {
 const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
   claude_sidecar: "CLIProxyAPI",
   openrouter_sidecar: "OpenRouter",
+  nvidia_sidecar: "NVIDIA",
   orcarouter_sidecar: "OrcaRouter",
   omniroute_sidecar: "OmniRoute",
   ollama_sidecar: "Ollama",

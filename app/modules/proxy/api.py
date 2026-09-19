@@ -51,6 +51,7 @@ from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import (
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
@@ -304,6 +305,11 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     load_openrouter_sidecar_config,
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
+)
+from app.modules.proxy.nvidia_sidecar_dispatch import (
+    load_nvidia_sidecar_config,
+    nvidia_routing_entry,
+    proxy_chat_to_nvidia,
 )
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     load_orcarouter_sidecar_config,
@@ -1143,6 +1149,7 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
     """
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
+    nvidia_config = await load_nvidia_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
     opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
@@ -1153,6 +1160,8 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if nvidia_config is not None and nvidia_config.enabled:
+        routing_entries.append(nvidia_routing_entry(nvidia_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     # Ownership, deliberately NOT usability. An enabled integration owns its
@@ -4092,6 +4101,7 @@ async def _build_models_response_body(
 
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
+    nvidia_config = await load_nvidia_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
     opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
@@ -4102,6 +4112,8 @@ async def _build_models_response_body(
         routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if nvidia_config is not None and nvidia_config.enabled:
+        routing_entries.append(nvidia_routing_entry(nvidia_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     # Ownership, deliberately NOT usability. An enabled integration owns its
@@ -4182,6 +4194,30 @@ async def _build_models_response_body(
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openrouter",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+    if nvidia_config is not None and nvidia_config.enabled:
+        discovered_models = await NvidiaSidecarClient(nvidia_config).list_models_cached()
+        created_by_model = {model.id: model.created for model in discovered_models}
+        owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        for slug in nvidia_config.full_models:
+            decision = resolve_sidecar_route(slug, routing_entry_tuple)
+            if decision is None or decision.provider != "nvidia":
+                continue
+            if slug in seen_model_ids:
+                continue
+            if not _model_visible_for_api_key(slug, allowed_models):
+                continue
+            seen_model_ids.add(slug)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": slug,
+                        "created": created_by_model.get(slug) or created,
+                        "owned_by": owner_by_model.get(slug) or "nvidia",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
@@ -4730,6 +4766,7 @@ async def v1_chat_completions(
 
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
+    nvidia_config = await load_nvidia_sidecar_config()
     orcarouter_config = await load_orcarouter_sidecar_config()
     opencode_go_config = await load_opencode_go_sidecar_config()
     omniroute_config = await load_omniroute_sidecar_config()
@@ -4740,6 +4777,8 @@ async def v1_chat_completions(
         routing_entries.append(claude_routing_entry(sidecar_config))
     if openrouter_config is not None and openrouter_config.enabled:
         routing_entries.append(openrouter_routing_entry(openrouter_config))
+    if nvidia_config is not None and nvidia_config.enabled:
+        routing_entries.append(nvidia_routing_entry(nvidia_config))
     if orcarouter_config is not None and orcarouter_config.enabled:
         routing_entries.append(orcarouter_routing_entry(orcarouter_config))
     # Ownership, deliberately NOT usability. An enabled integration owns its
@@ -4790,6 +4829,20 @@ async def v1_chat_completions(
                 rate_limit_headers=rate_limit_headers,
                 sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
                 client=OpenRouterSidecarClient(openrouter_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=decision.wire_model,
+            )
+        if decision.provider == "nvidia":
+            assert nvidia_config is not None
+            return await proxy_chat_to_nvidia(
+                request,
+                payload,
+                effective_model=effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=NvidiaSidecarClient(nvidia_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
             )

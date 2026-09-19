@@ -448,11 +448,14 @@ function SyntheticAccountCard({
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
   const isOpenRouter = account.provider === "openrouter";
+  const isNvidia = account.provider === "nvidia";
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
   const sidecarLabel = isOpenRouter
     ? "OpenRouter"
+    : isNvidia
+      ? "NVIDIA"
     : isOrcaRouter
       ? "OrcaRouter"
       : isOmniRoute

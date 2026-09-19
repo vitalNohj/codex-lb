@@ -46,6 +46,7 @@ from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_sum
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
 from app.modules.accounts.opencode_go_sidecar_summary import build_opencode_go_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
+from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
 from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.schemas import (
@@ -254,6 +255,9 @@ class AccountsService:
             openrouter_synthetic = await self._openrouter_sidecar_account_summary()
             if openrouter_synthetic is not None:
                 summaries.append(openrouter_synthetic)
+            nvidia_synthetic = await self._nvidia_sidecar_account_summary()
+            if nvidia_synthetic is not None:
+                summaries.append(nvidia_synthetic)
             orcarouter_synthetic = await self._orcarouter_sidecar_account_summary()
             if orcarouter_synthetic is not None:
                 summaries.append(orcarouter_synthetic)
@@ -320,6 +324,19 @@ class AccountsService:
             total_cost_usd=usage_summary.total_cost_usd,
         )
         return build_openrouter_sidecar_summary(settings, request_usage)
+
+    async def _nvidia_sidecar_account_summary(self) -> AccountSummary | None:
+        if self._settings_repo is None:
+            return None
+        settings = await self._settings_repo.get_or_create()
+        usage_summary = await self._repo.request_usage_summary_for_source("nvidia_sidecar")
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
+        )
+        return build_nvidia_sidecar_summary(settings, request_usage)
 
     async def _orcarouter_sidecar_account_summary(self) -> AccountSummary | None:
         if self._settings_repo is None:

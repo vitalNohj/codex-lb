@@ -97,6 +97,7 @@ describe("useDashboardPreferencesStore", () => {
       codex: true,
       cliproxy: true,
       openrouter: true,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
     });
@@ -105,6 +106,7 @@ describe("useDashboardPreferencesStore", () => {
         codex: true,
         cliproxy: true,
         openrouter: true,
+        nvidia: true,
         orcarouter: true,
         omniroute: true,
       }),
@@ -120,6 +122,7 @@ describe("useDashboardPreferencesStore", () => {
       codex: true,
       cliproxy: true,
       openrouter: false,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
     });
@@ -128,6 +131,7 @@ describe("useDashboardPreferencesStore", () => {
         codex: true,
         cliproxy: true,
         openrouter: false,
+        nvidia: true,
         orcarouter: true,
         omniroute: true,
       }),
@@ -147,6 +151,7 @@ describe("useDashboardPreferencesStore", () => {
       codex: true,
       cliproxy: false,
       openrouter: false,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
     });
@@ -165,6 +170,7 @@ describe("useDashboardPreferencesStore", () => {
       codex: false,
       cliproxy: true,
       openrouter: true,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
     });

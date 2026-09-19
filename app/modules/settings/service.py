@@ -104,6 +104,19 @@ class DashboardSettingsData:
     openrouter_sidecar_last_checked_at: datetime | None
     openrouter_sidecar_last_model_count: int | None
     openrouter_sidecar_default_reasoning_effort: str | None
+    nvidia_sidecar_enabled: bool
+    nvidia_sidecar_base_url: str
+    nvidia_sidecar_api_key_configured: bool
+    nvidia_sidecar_model_prefixes: list[SidecarPrefix]
+    nvidia_sidecar_full_models: list[str]
+    nvidia_sidecar_connect_timeout_seconds: float
+    nvidia_sidecar_request_timeout_seconds: float
+    nvidia_sidecar_models_cache_ttl_seconds: float
+    nvidia_sidecar_last_health_status: str | None
+    nvidia_sidecar_last_health_message: str | None
+    nvidia_sidecar_last_checked_at: datetime | None
+    nvidia_sidecar_last_model_count: int | None
+    nvidia_sidecar_default_reasoning_effort: str | None
     orcarouter_sidecar_enabled: bool
     orcarouter_sidecar_base_url: str
     orcarouter_sidecar_api_key_configured: bool
@@ -239,6 +252,16 @@ class DashboardSettingsUpdateData:
     openrouter_sidecar_request_timeout_seconds: float
     openrouter_sidecar_models_cache_ttl_seconds: float
     openrouter_sidecar_default_reasoning_effort: str | None
+    nvidia_sidecar_enabled: bool
+    nvidia_sidecar_base_url: str
+    nvidia_sidecar_api_key: str | None
+    nvidia_sidecar_clear_api_key: bool
+    nvidia_sidecar_model_prefixes: list[SidecarPrefix]
+    nvidia_sidecar_full_models: list[str]
+    nvidia_sidecar_connect_timeout_seconds: float
+    nvidia_sidecar_request_timeout_seconds: float
+    nvidia_sidecar_models_cache_ttl_seconds: float
+    nvidia_sidecar_default_reasoning_effort: str | None
     orcarouter_sidecar_enabled: bool
     orcarouter_sidecar_base_url: str
     orcarouter_sidecar_api_key: str | None
@@ -364,6 +387,14 @@ class SettingsService:
             openrouter_api_key_encrypted = (
                 self._encryptor.encrypt(openrouter_api_key_value) if openrouter_api_key_value else None
             )
+        nvidia_api_key_encrypted = current.nvidia_sidecar_api_key_encrypted
+        if payload.nvidia_sidecar_clear_api_key:
+            nvidia_api_key_encrypted = None
+        elif payload.nvidia_sidecar_api_key is not None:
+            nvidia_api_key_value = payload.nvidia_sidecar_api_key.strip()
+            nvidia_api_key_encrypted = (
+                self._encryptor.encrypt(nvidia_api_key_value) if nvidia_api_key_value else None
+            )
         orcarouter_api_key_encrypted = current.orcarouter_sidecar_api_key_encrypted
         if payload.orcarouter_sidecar_clear_api_key:
             orcarouter_api_key_encrypted = None
@@ -474,6 +505,17 @@ class SettingsService:
             openrouter_sidecar_request_timeout_seconds=payload.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=payload.openrouter_sidecar_models_cache_ttl_seconds,
             openrouter_sidecar_default_reasoning_effort=payload.openrouter_sidecar_default_reasoning_effort,
+            nvidia_sidecar_enabled=payload.nvidia_sidecar_enabled,
+            nvidia_sidecar_base_url=payload.nvidia_sidecar_base_url,
+            nvidia_sidecar_api_key_encrypted=nvidia_api_key_encrypted,
+            nvidia_sidecar_model_prefixes_json=_dump_nvidia_sidecar_model_prefixes(
+                payload.nvidia_sidecar_model_prefixes
+            ),
+            nvidia_sidecar_full_models_json=_dump_sidecar_full_models(payload.nvidia_sidecar_full_models),
+            nvidia_sidecar_connect_timeout_seconds=payload.nvidia_sidecar_connect_timeout_seconds,
+            nvidia_sidecar_request_timeout_seconds=payload.nvidia_sidecar_request_timeout_seconds,
+            nvidia_sidecar_models_cache_ttl_seconds=payload.nvidia_sidecar_models_cache_ttl_seconds,
+            nvidia_sidecar_default_reasoning_effort=payload.nvidia_sidecar_default_reasoning_effort,
             orcarouter_sidecar_enabled=payload.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=payload.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_encrypted=orcarouter_api_key_encrypted,
@@ -633,6 +675,21 @@ class SettingsService:
             openrouter_sidecar_last_checked_at=row.openrouter_sidecar_last_checked_at,
             openrouter_sidecar_last_model_count=row.openrouter_sidecar_last_model_count,
             openrouter_sidecar_default_reasoning_effort=row.openrouter_sidecar_default_reasoning_effort,
+            nvidia_sidecar_enabled=row.nvidia_sidecar_enabled,
+            nvidia_sidecar_base_url=row.nvidia_sidecar_base_url,
+            nvidia_sidecar_api_key_configured=row.nvidia_sidecar_api_key_encrypted is not None,
+            nvidia_sidecar_model_prefixes=_parse_nvidia_sidecar_model_prefixes(
+                row.nvidia_sidecar_model_prefixes_json
+            ),
+            nvidia_sidecar_full_models=_parse_sidecar_full_models(row.nvidia_sidecar_full_models_json),
+            nvidia_sidecar_connect_timeout_seconds=row.nvidia_sidecar_connect_timeout_seconds,
+            nvidia_sidecar_request_timeout_seconds=row.nvidia_sidecar_request_timeout_seconds,
+            nvidia_sidecar_models_cache_ttl_seconds=row.nvidia_sidecar_models_cache_ttl_seconds,
+            nvidia_sidecar_last_health_status=row.nvidia_sidecar_last_health_status,
+            nvidia_sidecar_last_health_message=row.nvidia_sidecar_last_health_message,
+            nvidia_sidecar_last_checked_at=row.nvidia_sidecar_last_checked_at,
+            nvidia_sidecar_last_model_count=row.nvidia_sidecar_last_model_count,
+            nvidia_sidecar_default_reasoning_effort=row.nvidia_sidecar_default_reasoning_effort,
             orcarouter_sidecar_enabled=row.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=row.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_configured=row.orcarouter_sidecar_api_key_encrypted is not None,
@@ -939,6 +996,14 @@ def _dump_openrouter_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> st
     return _dump_sidecar_model_prefixes(prefixes)
 
 
+def _parse_nvidia_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
+    return _parse_sidecar_model_prefixes(raw)
+
+
+def _dump_nvidia_sidecar_model_prefixes(prefixes: list[SidecarPrefix]) -> str:
+    return _dump_sidecar_model_prefixes(prefixes)
+
+
 def _parse_orcarouter_sidecar_model_prefixes(raw: str | None) -> list[SidecarPrefix]:
     return _parse_sidecar_model_prefixes(raw)
 
@@ -1010,6 +1075,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
         (
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
+            ("NVIDIA", payload.nvidia_sidecar_model_prefixes),
             ("OrcaRouter", payload.orcarouter_sidecar_model_prefixes),
             ("OpenCode Go", payload.opencode_go_sidecar_model_prefixes),
             *omniroute_prefixes,
@@ -1020,6 +1086,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
         (
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
+            ("NVIDIA", payload.nvidia_sidecar_full_models),
             ("OrcaRouter", payload.orcarouter_sidecar_full_models),
             ("OpenCode Go", payload.opencode_go_sidecar_full_models),
             *omniroute_full_models,

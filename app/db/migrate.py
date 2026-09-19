@@ -605,6 +605,7 @@ def _is_ignored_schema_drift(connection: Connection, diff: object) -> bool:
         if table_name == "dashboard_settings" and column_name in {
             "claude_sidecar_model_prefixes_json",
             "openrouter_sidecar_model_prefixes_json",
+            "nvidia_sidecar_model_prefixes_json",
         }:
             return True
 

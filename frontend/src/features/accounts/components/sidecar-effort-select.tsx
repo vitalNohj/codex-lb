@@ -19,6 +19,7 @@ import { useSettings } from "@/features/settings/hooks/use-settings";
 type EffortFieldKey =
   | "claudeSidecarDefaultReasoningEffort"
   | "openrouterSidecarDefaultReasoningEffort"
+  | "nvidiaSidecarDefaultReasoningEffort"
   | "orcarouterSidecarDefaultReasoningEffort"
   | "omnirouteSidecarDefaultReasoningEffort"
   | "ollamaSidecarDefaultReasoningEffort";
@@ -26,6 +27,9 @@ type EffortFieldKey =
 function fieldForProvider(provider: string | null | undefined): EffortFieldKey {
   if (provider === "openrouter") {
     return "openrouterSidecarDefaultReasoningEffort";
+  }
+  if (provider === "nvidia") {
+    return "nvidiaSidecarDefaultReasoningEffort";
   }
   if (provider === "orcarouter") {
     return "orcarouterSidecarDefaultReasoningEffort";
