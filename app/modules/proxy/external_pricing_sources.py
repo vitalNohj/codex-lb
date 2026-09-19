@@ -40,9 +40,9 @@ from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
 from app.core.types import JsonValue
 from app.core.usage.external_pricing.catalogs import (
     PROVIDER_CLIPROXY,
+    PROVIDER_NVIDIA,
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
-    PROVIDER_NVIDIA,
     PROVIDER_ORCAROUTER,
     catalog_from_sidecar_models,
 )

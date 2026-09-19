@@ -1,7 +1,7 @@
 ## 1. OpenSpec artifacts
 
 - [x] 1.1 Create proposal, design, context, tasks, and delta specs for generic OpenAI-compat endpoints.
-- [ ] 1.2 Validate `add-openai-compat-endpoints` with `uv run openspec validate add-openai-compat-endpoints --strict`.
+- [x] 1.2 Validate `add-openai-compat-endpoints` with `uv run openspec validate add-openai-compat-endpoints --strict`.
 
 ## 2. Database
 
@@ -38,7 +38,7 @@
 
 ## 7. Verification
 
-- [ ] 7.1 `uv run openspec validate add-openai-compat-endpoints --strict`
-- [ ] 7.2 `uv run pytest` on the new unit/integration tests plus uniqueness and `test_sidecar_routing.py`
-- [ ] 7.3 From `frontend/`: targeted vitest including the integrations card, then `bun run build`
-- [ ] 7.4 Do not restart systemd. Do not run the full suite unprompted.
+- [x] 7.1 `uv run openspec validate add-openai-compat-endpoints --strict`
+- [x] 7.2 `uv run pytest` on the new unit/integration tests plus uniqueness and `test_sidecar_routing.py`
+- [x] 7.3 From `frontend/`: targeted vitest including the integrations card, then `bun run build`
+- [x] 7.4 Do not restart systemd. Do not run the full suite unprompted.

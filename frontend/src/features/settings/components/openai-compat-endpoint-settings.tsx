@@ -40,11 +40,6 @@ export function OpenAICompatEndpointSettings({
     modelsEnabled: sidecarEnabled,
   });
 
-  const persistEndpoint = (patch: Partial<OpenAICompatEndpoint>) =>
-    onSave({
-      openaiCompatEndpoints: mapOpenAICompatEndpointUpdates(settings, endpoint.id, patch),
-    });
-
   const handleRemove = async () => {
     const remaining = storedOpenAICompatEndpointUpdates(settings).filter((item) => item.id !== endpoint.id);
     await onSave({ openaiCompatEndpoints: remaining });

@@ -87,14 +87,14 @@ from app.modules.free_model_discovery import api as free_model_discovery_api
 from app.modules.free_model_discovery.runner import build_free_model_discovery_runner
 from app.modules.health import api as health_api
 from app.modules.model_sources import api as model_sources_api
+from app.modules.nvidia_sidecar import api as nvidia_sidecar_api
 from app.modules.oauth import api as oauth_api
 from app.modules.ollama_sidecar import api as ollama_sidecar_api
 from app.modules.omniroute_sidecar import api as omniroute_sidecar_api
+from app.modules.openai_compat import api as openai_compat_api
 from app.modules.opencode_go import api as opencode_go_api
 from app.modules.opencode_go_sidecar import api as opencode_go_sidecar_api
 from app.modules.openrouter_sidecar import api as openrouter_sidecar_api
-from app.modules.nvidia_sidecar import api as nvidia_sidecar_api
-from app.modules.openai_compat import api as openai_compat_api
 from app.modules.orcarouter_sidecar import api as orcarouter_sidecar_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.cap_partitioning import refresh_cap_partition

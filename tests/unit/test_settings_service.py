@@ -8,8 +8,8 @@ import pytest
 import app.modules.settings.service as settings_service_module
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.db.models import DashboardSettings
-from app.modules.settings.repository import SettingsRepository
 from app.modules.openai_compat.endpoints import OpenAICompatEndpointUpdateData
+from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import (
     DashboardSettingsUpdateData,
     SettingsService,
