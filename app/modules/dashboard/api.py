@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
+from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
 from app.core.clients.opencode_go_sidecar import get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
-from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
-from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
 from app.core.clients.orcarouter_sidecar import get_orcarouter_sidecar_client
 from app.core.openai.model_registry import get_model_registry, is_public_model
 from app.db.session import detach_session_objects, get_background_session
@@ -23,15 +23,15 @@ from app.modules.dashboard.schemas import (
 from app.modules.model_sources.catalog import source_models_to_upstream_models
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
+from app.modules.proxy.nvidia_sidecar_dispatch import load_nvidia_sidecar_config
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
+from app.modules.proxy.openai_compat_dispatch import load_openai_compat_configs
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     load_opencode_go_sidecar_config,
     opencode_go_is_usable,
 )
 from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
-from app.modules.proxy.nvidia_sidecar_dispatch import load_nvidia_sidecar_config
-from app.modules.proxy.openai_compat_dispatch import load_openai_compat_configs
 from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
 
 logger = logging.getLogger(__name__)

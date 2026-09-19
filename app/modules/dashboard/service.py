@@ -10,11 +10,11 @@ from app.core.usage.types import UsageWindowRow
 from app.core.utils.time import utcnow
 from app.db.models import UsageHistory
 from app.modules.accounts.mappers import build_account_summaries
+from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
+from app.modules.accounts.openai_compat_summary import build_openai_compat_summary
 from app.modules.accounts.opencode_go_sidecar_summary import build_opencode_go_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
-from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
-from app.modules.accounts.openai_compat_summary import build_openai_compat_summary
 from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
 from app.modules.accounts.schemas import AccountRequestUsage
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary

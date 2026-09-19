@@ -32,16 +32,16 @@ from app.core.upstream_proxy import resolve_proxy_endpoint
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import Account, AccountProxyBinding, AccountStatus, ProxyEndpoint, ProxyPool, ProxyPoolMember
 from app.dependencies import SettingsContext, get_proxy_service_for_app, get_settings_context
+from app.modules.openai_compat.endpoints import (
+    OpenAICompatEndpointUpdateData,
+    StoredOpenAICompatEndpoint,
+)
 from app.modules.proxy.account_cache import (
     clear_account_routing_unavailable,
     get_account_selection_cache,
     propagate_account_routing_change,
 )
 from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
-from app.modules.openai_compat.endpoints import (
-    OpenAICompatEndpointUpdateData,
-    StoredOpenAICompatEndpoint,
-)
 from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
     AccountProxyBindingResponse,

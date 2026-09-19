@@ -205,7 +205,10 @@ def merge_openai_compat_endpoints(
     return tuple(merged)
 
 
-def decrypt_endpoint_api_key(endpoint: StoredOpenAICompatEndpoint, encryptor: TokenEncryptor | None = None) -> str | None:
+def decrypt_endpoint_api_key(
+    endpoint: StoredOpenAICompatEndpoint,
+    encryptor: TokenEncryptor | None = None,
+) -> str | None:
     if not endpoint.api_key_encrypted_b64:
         return None
     try:

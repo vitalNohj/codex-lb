@@ -6,10 +6,9 @@ import pytest
 
 from app.db.models import DashboardSettings
 from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
-from app.modules.accounts.openai_compat_summary import build_openai_compat_summary
-from app.modules.openai_compat.endpoints import StoredOpenAICompatEndpoint
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
+from app.modules.accounts.openai_compat_summary import build_openai_compat_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
 from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
@@ -23,6 +22,7 @@ from app.modules.claude_sidecar.usage_estimates import (
     ClaudeAuthUsageEstimate,
     ClaudeUsageEstimates,
 )
+from app.modules.openai_compat.endpoints import StoredOpenAICompatEndpoint
 
 
 def _settings(**overrides) -> DashboardSettings:

@@ -47,12 +47,12 @@ from app.core.auth.refresh import RefreshError
 from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
+from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
+from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
 from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
-from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
-from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
 from app.core.clients.proxy import (
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
@@ -225,6 +225,7 @@ from app.modules.model_sources.selection import (
     effective_model_for_api_key,
     select_responses_model_source,
 )
+from app.modules.openai_compat.endpoints import is_openai_compat_provider
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
@@ -284,6 +285,11 @@ from app.modules.proxy.model_aliasing import (
     load_model_aliases,
     resolve_request_model_alias,
 )
+from app.modules.proxy.nvidia_sidecar_dispatch import (
+    load_nvidia_sidecar_config,
+    nvidia_routing_entry,
+    proxy_chat_to_nvidia,
+)
 from app.modules.proxy.ollama_sidecar_dispatch import (
     load_ollama_sidecar_config,
     ollama_routing_entry,
@@ -294,6 +300,12 @@ from app.modules.proxy.omniroute_sidecar_dispatch import (
     omniroute_routing_entry,
     proxy_chat_to_omniroute,
     proxy_responses_to_omniroute,
+)
+from app.modules.proxy.openai_compat_dispatch import (
+    enabled_openai_compat_routing_entries,
+    load_openai_compat_configs,
+    openai_compat_config_by_provider,
+    proxy_chat_to_openai_compat,
 )
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
@@ -308,18 +320,6 @@ from app.modules.proxy.openrouter_sidecar_dispatch import (
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
-from app.modules.proxy.nvidia_sidecar_dispatch import (
-    load_nvidia_sidecar_config,
-    nvidia_routing_entry,
-    proxy_chat_to_nvidia,
-)
-from app.modules.proxy.openai_compat_dispatch import (
-    enabled_openai_compat_routing_entries,
-    load_openai_compat_configs,
-    openai_compat_config_by_provider,
-    proxy_chat_to_openai_compat,
-)
-from app.modules.openai_compat.endpoints import is_openai_compat_provider
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     load_orcarouter_sidecar_config,
     orcarouter_routing_entry,
