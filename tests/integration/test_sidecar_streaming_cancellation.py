@@ -272,11 +272,20 @@ async def _settle_quiesced(timeout_seconds: float = 5.0) -> None:
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
-    while loop.time() < deadline:
-        statuses = await _reservation_statuses()
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            # Bound each query by the REMAINING budget, not just the loop
+            # condition: a stalled query would otherwise run past the helper's
+            # absolute deadline and the caller's timeout would fire instead.
+            statuses = await asyncio.wait_for(_reservation_statuses(), timeout=remaining)
+        except TimeoutError:
+            break
         if statuses and "reserved" not in statuses:
             return
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(min(0.01, max(deadline - loop.time(), 0)))
     # Fall through: the caller's exact assertion reports the real end state.
 
 

@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import json
 
+import pytest
+
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import (
     ChatCompletion,
@@ -14,6 +16,7 @@ from app.core.openai.chat_responses import (
     ChatCompletionUsage,
     stream_chat_chunks,
 )
+from app.core.utils.stream_close import aclose_stream
 from app.modules.proxy.cursor_chat_compat import (
     CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS,
     CursorChatSseCompatRewriter,
@@ -387,3 +390,74 @@ async def test_context_limit_close_settles_when_cancelled_mid_settlement() -> No
 
     assert settled == ["released"]
     assert owner is not None
+
+
+async def test_aclose_stream_completes_the_close_then_re_raises_the_cancellation() -> None:
+    """The shielded close must defer the caller's cancellation, never swallow it.
+
+    Absorbing the cancellation so the upstream `finally` can settle is the whole
+    point; returning normally afterwards is not. A request cancelled mid-close
+    would then look completed to everything below it, which is the same defect
+    that was already fixed once in the sibling settlement helper.
+    """
+
+    closed: list[str] = []
+
+    class _SlowClosingStream:
+        def __aiter__(self) -> _SlowClosingStream:
+            return self
+
+        async def __anext__(self) -> str:
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            # Closing awaits real work, as the sidecar settlement does.
+            await asyncio.sleep(0.05)
+            closed.append("closed")
+
+    async def caller() -> str:
+        await aclose_stream(_SlowClosingStream())
+        return "completed-normally"
+
+    task = asyncio.create_task(caller())
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Both halves of the contract: the close ran to completion...
+    assert closed == ["closed"]
+    # ...and the caller did not finish normally (asserted by pytest.raises).
+
+
+async def test_aclose_stream_without_cancellation_returns_normally() -> None:
+    """Control: with no cancellation, nothing is deferred and nothing is raised."""
+
+    closed: list[str] = []
+
+    class _Stream:
+        def __aiter__(self) -> _Stream:
+            return self
+
+        async def __anext__(self) -> str:
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            closed.append("closed")
+
+    await aclose_stream(_Stream())
+    assert closed == ["closed"]
+
+
+async def test_aclose_stream_skips_iterators_without_aclose() -> None:
+    """A plain class-based iterator has nothing to close and must not raise."""
+
+    class _NoClose:
+        def __aiter__(self) -> _NoClose:
+            return self
+
+        async def __anext__(self) -> str:
+            raise StopAsyncIteration
+
+    await aclose_stream(_NoClose())

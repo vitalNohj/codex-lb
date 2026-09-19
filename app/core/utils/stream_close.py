@@ -31,8 +31,9 @@ async def aclose_stream(stream: AsyncIterator[object]) -> None:
     be interrupted partway - reintroducing, on the path most likely to hit it,
     the very leak this close exists to prevent. This mirrors the deferred
     cancellation used for owned upstream cleanup elsewhere in the proxy: a
-    cancellation that arrives mid-close is absorbed and re-raised only if the
-    close itself was cancelled.
+    cancellation that arrives mid-close is absorbed so the close completes, then
+    re-raised, so the request still terminates as cancelled. A cancellation of
+    the close itself propagates immediately.
 
     ``aclose()`` is idempotent, so calling it on an exhausted or already-closed
     generator is a no-op and the normal completion path is unaffected.
@@ -42,11 +43,18 @@ async def aclose_stream(stream: AsyncIterator[object]) -> None:
     if aclose is None:
         return
     task = asyncio.ensure_future(aclose())
+    cancellation_deferred = False
     with anyio.CancelScope(shield=True):
         while True:
             try:
                 await asyncio.shield(task)
-                return
+                break
             except asyncio.CancelledError:
                 if task.cancelled():
                     raise
+                cancellation_deferred = True
+    if cancellation_deferred:
+        # Deferred, never swallowed. Absorbing the cancellation so the close can
+        # finish is the point; returning normally afterwards is not - callers
+        # below would treat a cancelled request as a completed one.
+        raise asyncio.CancelledError
