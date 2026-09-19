@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.db.models import DashboardSettings
+from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
@@ -369,6 +370,75 @@ def test_openrouter_summary_paused_when_disabled() -> None:
     summary = build_openrouter_sidecar_summary(settings, request_usage=None)
 
     assert summary is not None
+    assert summary.status == "paused"
+
+
+def test_nvidia_summary_active_when_enabled_and_configured() -> None:
+    settings = _settings(
+        nvidia_sidecar_enabled=True,
+        nvidia_sidecar_api_key_encrypted=b"key",
+    )
+
+    summary = build_nvidia_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.account_id == "nvidia-sidecar"
+    assert summary.display_name == "NVIDIA"
+    assert summary.provider == "nvidia"
+    assert summary.status == "active"
+
+
+def test_nvidia_summary_active_without_health_probe() -> None:
+    settings = _settings(
+        nvidia_sidecar_enabled=True,
+        nvidia_sidecar_api_key_encrypted=b"key",
+        nvidia_sidecar_last_health_status=None,
+    )
+
+    summary = build_nvidia_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.status == "active"
+    assert summary.health_status == "healthy"
+
+
+def test_nvidia_summary_ignores_stale_disabled_health_when_configured() -> None:
+    settings = _settings(
+        nvidia_sidecar_enabled=True,
+        nvidia_sidecar_api_key_encrypted=b"key",
+        nvidia_sidecar_last_health_status="disabled",
+    )
+
+    summary = build_nvidia_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.status == "active"
+    assert summary.health_status == "healthy"
+
+
+def test_nvidia_summary_paused_when_disabled() -> None:
+    settings = _settings(
+        nvidia_sidecar_enabled=False,
+        nvidia_sidecar_api_key_encrypted=b"key",
+    )
+
+    summary = build_nvidia_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.status == "paused"
+
+
+def test_nvidia_summary_paused_when_missing_api_key() -> None:
+    settings = _settings(
+        nvidia_sidecar_enabled=True,
+        nvidia_sidecar_api_key_encrypted=None,
+        nvidia_sidecar_base_url="https://integrate.api.nvidia.com/v1",
+    )
+
+    summary = build_nvidia_sidecar_summary(settings, request_usage=None)
+
+    assert summary is not None
+    assert summary.display_name == "NVIDIA"
     assert summary.status == "paused"
 
 

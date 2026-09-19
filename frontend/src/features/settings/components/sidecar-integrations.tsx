@@ -7,6 +7,7 @@ import { FreeModelDiscoveryPanel } from "@/features/settings/components/free-mod
 import { OllamaSidecarSettings } from "@/features/settings/components/ollama-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { OpenCodeGoSidecarSettings } from "@/features/settings/components/opencode-go-sidecar-settings";
+import { NvidiaSidecarSettings } from "@/features/settings/components/nvidia-sidecar-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -70,6 +71,13 @@ export function SidecarIntegrationsCard({
       sectionId: "openrouter-sidecar",
       enabled: settings.openrouterSidecarEnabled ?? false,
       render: () => <OpenRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
+    },
+    {
+      value: "nvidia",
+      label: "NVIDIA",
+      sectionId: "nvidia-sidecar",
+      enabled: settings.nvidiaSidecarEnabled ?? false,
+      render: () => <NvidiaSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
     {
       value: "orcarouter",
