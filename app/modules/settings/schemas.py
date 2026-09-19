@@ -238,6 +238,63 @@ class SidecarModelPrefix(DashboardModel):
         return normalized
 
 
+class OpenAICompatEndpointResponse(DashboardModel):
+    id: str
+    name: str
+    enabled: bool = False
+    base_url: str
+    api_key_configured: bool = False
+    model_prefixes: list[SidecarModelPrefix] = Field(default_factory=list, max_length=32)
+    full_models: list[str] = Field(default_factory=list, max_length=256)
+    connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    request_timeout_seconds: float = Field(default=600.0, gt=0)
+    models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    default_reasoning_effort: str | None = None
+    last_health_status: str | None = None
+    last_health_message: str | None = None
+    last_checked_at: datetime | None = None
+    last_model_count: int | None = Field(default=None, ge=0)
+
+
+class OpenAICompatEndpointUpdate(DashboardModel):
+    id: str | None = Field(default=None, max_length=36)
+    name: str = Field(min_length=1, max_length=64)
+    enabled: bool = False
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str | None = Field(default=None, max_length=4096)
+    clear_api_key: bool = False
+    model_prefixes: list[SidecarModelPrefix] = Field(default_factory=list, max_length=32)
+    full_models: list[str] = Field(default_factory=list, max_length=256)
+    connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    request_timeout_seconds: float = Field(default=600.0, gt=0)
+    models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    default_reasoning_effort: str | None = Field(default=None, max_length=16)
+
+    @field_validator("api_key")
+    @classmethod
+    def _normalize_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("openai_compat_endpoints base_url must not be blank")
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("openai_compat_endpoints base_url must be an http(s) URL")
+        return normalized
+
+    @field_validator("default_reasoning_effort")
+    @classmethod
+    def _normalize_effort(cls, value: str | None) -> str | None:
+        return _normalize_sidecar_default_reasoning_effort(value)
+
+
 class CustomAliasCatalogEntrySchema(DashboardModel):
     context_length: int | None = Field(default=None, gt=0)
 
@@ -348,6 +405,7 @@ class DashboardSettingsResponse(DashboardModel):
     nvidia_sidecar_last_checked_at: datetime | None = None
     nvidia_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     nvidia_sidecar_default_reasoning_effort: str | None = None
+    openai_compat_endpoints: list[OpenAICompatEndpointResponse] = Field(default_factory=list, max_length=32)
     orcarouter_sidecar_enabled: bool = False
     orcarouter_sidecar_base_url: str = Field(default="https://api.orcarouter.ai/v1", min_length=1)
     orcarouter_sidecar_api_key_configured: bool = False
@@ -506,6 +564,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     nvidia_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     nvidia_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     nvidia_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
+    openai_compat_endpoints: list[OpenAICompatEndpointUpdate] | None = Field(default=None, max_length=32)
     orcarouter_sidecar_enabled: bool | None = None
     orcarouter_sidecar_base_url: str | None = Field(default=None, max_length=2048)
     orcarouter_sidecar_api_key: str | None = Field(default=None, max_length=4096)

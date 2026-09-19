@@ -299,6 +299,7 @@ class _LookupCoordinator:
 
 _coordinator = _LookupCoordinator()
 _serving_context_loaders: dict[str, ServingContextLoader] = {}
+_serving_context_prefix_loaders: dict[str, ServingContextLoader] = {}
 _reference_catalog_memo: tuple[float, Catalog | None] | None = None
 _reference_catalog_lock = asyncio.Lock()
 _orcarouter_reference_memo: tuple[float, "OrcaRouterReference"] | None = None
@@ -335,6 +336,16 @@ def register_serving_context_loader(provider: str, loader: ServingContextLoader)
     _serving_context_loaders[provider.strip().lower()] = loader
 
 
+def register_serving_context_prefix_loader(prefix: str, loader: ServingContextLoader) -> None:
+    """Register a loader for every provider key that starts with ``prefix``.
+
+    Used for dynamic ids such as ``openai_compat:{uuid}`` that cannot be
+    enumerated at startup.
+    """
+
+    _serving_context_prefix_loaders[prefix.strip().lower()] = loader
+
+
 def registered_serving_context_providers() -> frozenset[str]:
     """Providers that have declared how to reach their own serving context.
 
@@ -352,6 +363,7 @@ def registered_serving_context_providers() -> frozenset[str]:
 def reset_serving_context_loaders() -> None:
     global _reference_catalog_memo, _orcarouter_reference_memo
     _serving_context_loaders.clear()
+    _serving_context_prefix_loaders.clear()
     _reference_catalog_memo = None
     _orcarouter_reference_memo = None
 
@@ -765,6 +777,11 @@ async def load_serving_context(provider_key: str) -> ServingContext | None:
     """
 
     loader = _serving_context_loaders.get(provider_key)
+    if loader is None:
+        for prefix, prefix_loader in _serving_context_prefix_loaders.items():
+            if provider_key.startswith(prefix):
+                loader = prefix_loader
+                break
     if loader is None:
         logger.warning(
             "provider %s participates in external pricing but registered no serving-context loader; "

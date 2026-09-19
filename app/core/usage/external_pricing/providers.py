@@ -16,6 +16,7 @@ PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_NVIDIA = "nvidia"
 PROVIDER_ORCAROUTER = "orcarouter"
 PROVIDER_CLIPROXY = "cliproxy"
+OPENAI_COMPAT_PROVIDER_PREFIX = "openai_compat:"
 #: OpenCode Go. Participates so its ids reach the resolver, but it publishes no
 #: rates of its own: ``GET /zen/go/v1/models`` carries no pricing block at all.
 #: Its cost is always a list-price *estimate*, never subscription spend.
@@ -80,7 +81,10 @@ _LOG_SOURCE_PROVIDERS: dict[str, str] = {
 
 
 def is_external_priced_provider(provider: str | None) -> bool:
-    return bool(provider) and provider.strip().lower() in EXTERNAL_PRICED_PROVIDERS
+    if not provider:
+        return False
+    lowered = provider.strip().lower()
+    return lowered in EXTERNAL_PRICED_PROVIDERS or lowered.startswith(OPENAI_COMPAT_PROVIDER_PREFIX)
 
 
 def reports_per_request_billed_cost(provider: str | None) -> bool:
@@ -95,10 +99,16 @@ def reports_per_request_billed_cost(provider: str | None) -> bool:
 
 
 def is_external_priced_log_source(source: str | None) -> bool:
-    return bool(source) and source.strip().lower() in EXTERNAL_PRICED_LOG_SOURCES
+    if not source:
+        return False
+    lowered = source.strip().lower()
+    return lowered in EXTERNAL_PRICED_LOG_SOURCES or lowered.startswith(OPENAI_COMPAT_PROVIDER_PREFIX)
 
 
 def external_priced_provider_for_log_source(source: str | None) -> str | None:
     if not source:
         return None
-    return _LOG_SOURCE_PROVIDERS.get(source.strip().lower())
+    lowered = source.strip().lower()
+    if lowered.startswith(OPENAI_COMPAT_PROVIDER_PREFIX):
+        return lowered
+    return _LOG_SOURCE_PROVIDERS.get(lowered)

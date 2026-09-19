@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.core.config.settings_cache import get_settings_cache
 from app.core.usage.external_pricing.providers import external_priced_provider_for_log_source
 from app.core.usage.external_pricing.store import normalize_lookup_key
+from app.modules.openai_compat.endpoints import is_openai_compat_log_source, parse_openai_compat_endpoints
 from app.modules.request_logs.mappers import (
     QUOTA_CODES,
     RATE_LIMIT_CODES,
@@ -141,6 +143,17 @@ class RequestLogsService:
         sidecar_account_label_by_request_id = await self._repo.get_claude_sidecar_account_labels_for_logs(
             claude_sidecar_logs
         )
+        openai_compat_label_by_source: dict[str, str] = {}
+        if any(is_openai_compat_log_source(log.source) for log in logs):
+            try:
+                settings = await get_settings_cache().get()
+            except Exception:
+                settings = None
+            if settings is not None:
+                openai_compat_label_by_source = {
+                    endpoint.provider_id: endpoint.name
+                    for endpoint in parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
+                }
         price_key_by_log_id = {
             log.id: normalize_lookup_key(provider, log.model)
             for log in logs
@@ -151,7 +164,10 @@ class RequestLogsService:
             to_request_log_entry(
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
-                sidecar_account_label=sidecar_account_label_by_request_id.get(log.request_id),
+                sidecar_account_label=(
+                    sidecar_account_label_by_request_id.get(log.request_id)
+                    or openai_compat_label_by_source.get(log.source or "")
+                ),
                 display_price_status=(
                     current_status.value
                     if (key := price_key_by_log_id.get(log.id)) is not None

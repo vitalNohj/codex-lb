@@ -54,6 +54,7 @@ export function AccountListItem({
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
+  const isOpenAICompat = account.provider === "openai_compat";
   // An absent provider still means Claude, matching the subtitle fallback below
   // and the schema, which declares provider as nullable/optional.
   const isClaude = (account.provider ?? "claude") === "claude";
@@ -67,6 +68,8 @@ export function AccountListItem({
         ? "OmniRoute"
         : isOllama
           ? "Ollama"
+          : isOpenAICompat
+            ? account.displayName || "OpenAI-compat"
           : "CLIProxyAPI";
   const slotSubtitle = account.synthetic
     ? `${formatSlug(account.provider ?? "claude")} | ${account.baseUrl ?? sidecarLabel}`
@@ -112,7 +115,7 @@ export function AccountListItem({
   // summary reports a status and a model count. They stay hidden for the hosted
   // aggregators, where the status collapses to an uninformative OK/--.
   const showSidecarStatusRows =
-    account.synthetic === true && !isOpenRouter && !isNvidia && !isOrcaRouter && !isOmniRoute;
+    account.synthetic === true && !isOpenRouter && !isNvidia && !isOrcaRouter && !isOmniRoute && !isOpenAICompat;
   const availableResetCredits = account.availableResetCredits ?? 0;
   const resetBadgeLabel = availableResetCredits > 99 ? "99+" : String(availableResetCredits);
   const statusEligibilityHint = status === "active" ? t("accounts.listItem.statusActiveHint") : undefined;

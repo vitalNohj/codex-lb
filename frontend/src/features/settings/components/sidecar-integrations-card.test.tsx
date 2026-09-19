@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -100,6 +100,7 @@ const BASE_SETTINGS = {
   opencodeGoSidecarConnectTimeoutSeconds: 8,
   opencodeGoSidecarRequestTimeoutSeconds: 600,
   opencodeGoSidecarModelsCacheTtlSeconds: 60,
+  openaiCompatEndpoints: [],
   guestAccessEnabled: false,
   prohibitFastMode: false,
   httpDownstreamTransportPolicy: "smart",
@@ -302,5 +303,136 @@ describe("SidecarIntegrationsCard", () => {
       "data-state",
       "active",
     );
+  });
+
+  it("offers a + control that is not itself a tab", () => {
+    renderCard(BASE_SETTINGS);
+
+    expect(screen.getByRole("button", { name: "Add OpenAI-compatible endpoint" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Add OpenAI/ })).toBeNull();
+  });
+
+  it("creates a named OpenAI-compat tab from the add dialog", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a");
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SidecarIntegrationsCard settings={BASE_SETTINGS} busy={false} onSave={onSave} />
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Add OpenAI-compatible endpoint" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Name"), "Vast");
+    await user.type(within(dialog).getByLabelText("Base URL"), "https://openai.vast.ai/demo/v1");
+    await user.click(within(dialog).getByRole("button", { name: "Add" }));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openaiCompatEndpoints: [
+            expect.objectContaining({
+              id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+              name: "Vast",
+              enabled: false,
+              baseUrl: "https://openai.vast.ai/demo/v1",
+            }),
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("renders a stored OpenAI-compat endpoint as a tab after first-class integrations", () => {
+    renderCard({
+      ...BASE_SETTINGS,
+      openaiCompatEndpoints: [
+        {
+          id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+          name: "Vast",
+          enabled: true,
+          baseUrl: "https://openai.vast.ai/demo/v1",
+          apiKeyConfigured: false,
+          modelPrefixes: [],
+          fullModels: ["vast-llama"],
+          connectTimeoutSeconds: 8,
+          requestTimeoutSeconds: 600,
+          modelsCacheTtlSeconds: 60,
+          defaultReasoningEffort: null,
+          lastHealthStatus: null,
+          lastHealthMessage: null,
+          lastCheckedAt: null,
+          lastModelCount: null,
+        },
+      ],
+    } as DashboardSettings);
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
+      "CLIProxyAPI",
+      "OpenRouter",
+      "NVIDIA",
+      "OrcaRouter",
+      "Ollama",
+      "OpenCode Go",
+      "Vast",
+    ]);
+  });
+
+  it("deep-links an OpenAI-compat endpoint hash to that tab", () => {
+    renderCard(
+      {
+        ...BASE_SETTINGS,
+        openaiCompatEndpoints: [
+          {
+            id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+            name: "Vast",
+            enabled: false,
+            baseUrl: "https://openai.vast.ai/demo/v1",
+            apiKeyConfigured: false,
+            modelPrefixes: [],
+            fullModels: [],
+            connectTimeoutSeconds: 8,
+            requestTimeoutSeconds: 600,
+            modelsCacheTtlSeconds: 60,
+            defaultReasoningEffort: null,
+            lastHealthStatus: null,
+            lastHealthMessage: null,
+            lastCheckedAt: null,
+            lastModelCount: null,
+          },
+        ],
+      } as DashboardSettings,
+      "#openai-compat-2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+    );
+
+    expect(screen.getByRole("tab", { name: "Vast" })).toHaveAttribute("data-state", "active");
+    expect(screen.getByRole("switch", { name: "Enable Vast" })).toBeInTheDocument();
+  });
+
+  it("disables the + control at 32 endpoints", () => {
+    const endpoints = Array.from({ length: 32 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      name: `EP${index}`,
+      enabled: false,
+      baseUrl: "http://127.0.0.1:8000/v1",
+      apiKeyConfigured: false,
+      modelPrefixes: [],
+      fullModels: [],
+      connectTimeoutSeconds: 8,
+      requestTimeoutSeconds: 600,
+      modelsCacheTtlSeconds: 60,
+      defaultReasoningEffort: null,
+      lastHealthStatus: null,
+      lastHealthMessage: null,
+      lastCheckedAt: null,
+      lastModelCount: null,
+    }));
+    renderCard({ ...BASE_SETTINGS, openaiCompatEndpoints: endpoints } as DashboardSettings);
+
+    expect(screen.getByRole("button", { name: "Add OpenAI-compatible endpoint" })).toBeDisabled();
   });
 });

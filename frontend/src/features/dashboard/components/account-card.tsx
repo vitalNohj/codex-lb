@@ -363,7 +363,7 @@ export function ClaudeAuthCard({
 
       {/* Reasoning effort override occupies the warm-up slot */}
       <div className="mt-3">
-        <SidecarEffortSelect provider={account.provider} />
+        <SidecarEffortSelect provider={account.provider} accountId={account.accountId} />
       </div>
 
       {/* Actions */}
@@ -452,6 +452,7 @@ function SyntheticAccountCard({
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
+  const isOpenAICompat = account.provider === "openai_compat";
   const sidecarLabel = isOpenRouter
     ? "OpenRouter"
     : isNvidia
@@ -462,6 +463,8 @@ function SyntheticAccountCard({
         ? "OmniRoute"
         : isOllama
           ? "Ollama"
+          : isOpenAICompat
+            ? account.displayName || "OpenAI-compat"
           : "CLI Proxy API";
   // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
   // integration must never inherit Claude pause and quota controls by default.
@@ -600,7 +603,7 @@ function SyntheticAccountCard({
       )}
 
       <div className="mt-3">
-        <SidecarEffortSelect provider={account.provider} />
+        <SidecarEffortSelect provider={account.provider} accountId={account.accountId} />
       </div>
 
       <div className="mt-3 flex items-center gap-1.5 border-t pt-3">

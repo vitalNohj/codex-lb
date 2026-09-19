@@ -8,6 +8,7 @@ import pytest
 import app.modules.settings.service as settings_service_module
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.db.models import DashboardSettings
+from app.modules.openai_compat.endpoints import OpenAICompatEndpointUpdateData
 from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import (
     DashboardSettingsUpdateData,
@@ -218,6 +219,7 @@ def _settings_update(
     opencode_go_prefixes: list[SidecarPrefix] | None = None,
     omniroute_prefixes: list[SidecarPrefix] | None = None,
     ollama_prefixes: list[SidecarPrefix] | None = None,
+    openai_compat_endpoints: list[OpenAICompatEndpointUpdateData] | None = None,
     claude_models: list[str] | None = None,
     openrouter_models: list[str] | None = None,
     nvidia_models: list[str] | None = None,
@@ -308,6 +310,7 @@ def _settings_update(
         nvidia_sidecar_request_timeout_seconds=600.0,
         nvidia_sidecar_models_cache_ttl_seconds=60.0,
         nvidia_sidecar_default_reasoning_effort=None,
+        openai_compat_endpoints=openai_compat_endpoints or [],
         orcarouter_sidecar_enabled=False,
         orcarouter_sidecar_base_url="https://api.orcarouter.ai/v1",
         orcarouter_sidecar_api_key=None,
@@ -410,6 +413,31 @@ def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
     assert exc_info.value.conflict.challenger == "Ollama"
 
 
+def _openai_compat_endpoints(
+    *,
+    name: str = "Vast",
+    endpoint_id: str = "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+    prefixes: list[SidecarPrefix] | None = None,
+    models: list[str] | None = None,
+) -> list[OpenAICompatEndpointUpdateData]:
+    return [
+        OpenAICompatEndpointUpdateData(
+            id=endpoint_id,
+            name=name,
+            enabled=True,
+            base_url="https://openai.vast.ai/demo/v1",
+            api_key=None,
+            clear_api_key=False,
+            prefixes=prefixes or [],
+            full_models=models or [],
+            connect_timeout_seconds=8.0,
+            request_timeout_seconds=600.0,
+            models_cache_ttl_seconds=60.0,
+            default_reasoning_effort=None,
+        )
+    ]
+
+
 def test_sidecar_route_validator_rejects_nvidia_openrouter_duplicate_full_models() -> None:
     payload = _settings_update(
         openrouter_models=["z-ai/glm-5.3"],
@@ -423,6 +451,56 @@ def test_sidecar_route_validator_rejects_nvidia_openrouter_duplicate_full_models
     assert exc_info.value.conflict.value == "z-ai/glm-5.3"
     assert exc_info.value.conflict.owner == "OpenRouter"
     assert exc_info.value.conflict.challenger == "NVIDIA"
+
+
+def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_full_models() -> None:
+    payload = _settings_update(
+        nvidia_models=["z-ai/glm-5.3"],
+        openai_compat_endpoints=_openai_compat_endpoints(models=["z-ai/glm-5.3"]),
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "full_model"
+    assert exc_info.value.conflict.value == "z-ai/glm-5.3"
+    assert exc_info.value.conflict.owner == "NVIDIA"
+    assert exc_info.value.conflict.challenger == "Vast"
+
+
+def test_sidecar_route_validator_rejects_two_openai_compat_endpoints_sharing_a_full_model() -> None:
+    payload = _settings_update(
+        openai_compat_endpoints=[
+            *_openai_compat_endpoints(models=["Qwen/Qwen2.5-7B"]),
+            *_openai_compat_endpoints(
+                name="vLLM",
+                endpoint_id="3d0c9e4b-2f5e-4c8b-8d22-8b1f5e3c2d1b",
+                models=["Qwen/Qwen2.5-7B"],
+            ),
+        ]
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "full_model"
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"Vast", "vLLM"}
+
+
+def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_prefixes() -> None:
+    payload = _settings_update(
+        nvidia_prefixes=[SidecarPrefix(prefix="vast/", strip=True)],
+        openai_compat_endpoints=_openai_compat_endpoints(
+            prefixes=[SidecarPrefix(prefix="vast/", strip=True)]
+        ),
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_unique_sidecar_routes(payload)
+
+    assert exc_info.value.conflict.kind == "prefix"
+    assert exc_info.value.conflict.value == "vast/"
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"NVIDIA", "Vast"}
 
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:

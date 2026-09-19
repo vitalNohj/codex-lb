@@ -9,9 +9,14 @@ import type { AccountSummary } from "@/features/accounts/schemas";
 import {
   useClaudeSidecarAccountExcludedModels,
   useClaudeSidecarAccountPause,
+  useOpenAICompatSidecar,
   useSidecarConnectionTest,
   type SidecarConnectionProvider,
 } from "@/features/settings/hooks/use-settings";
+import {
+  openaiCompatEndpointIdFromAccountId,
+  openaiCompatSectionId,
+} from "@/features/settings/openai-compat-endpoints";
 import { formatDateTimeInline, formatPercentNullable, formatQuotaResetLabel, formatSlug } from "@/utils/formatters";
 
 function testProviderFor(provider: string | null | undefined): SidecarConnectionProvider {
@@ -39,13 +44,19 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
+  const isOpenAICompat = account.provider === "openai_compat";
   // Allowlisted, not "everything that is not one of the HTTP sidecars": a new
   // integration must never inherit Claude pause and quota controls by default.
   // An absent provider still means Claude, matching testProviderFor's default
   // and the schema, which declares provider as nullable/optional.
   const isClaude = (account.provider ?? "claude") === "claude";
+  const openaiCompatEndpointId = openaiCompatEndpointIdFromAccountId(account.accountId) ?? "";
+  const openaiCompatSidecar = useOpenAICompatSidecar(isOpenAICompat ? openaiCompatEndpointId : "", {
+    modelsEnabled: false,
+  });
   const testProvider = testProviderFor(account.provider);
-  const testMutation = useSidecarConnectionTest(testProvider);
+  const sidecarTestMutation = useSidecarConnectionTest(testProvider);
+  const testMutation = isOpenAICompat ? openaiCompatSidecar.testMutation : sidecarTestMutation;
   const pauseMutation = useClaudeSidecarAccountPause();
   const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
   const settingsAnchor = isOpenRouter
@@ -58,6 +69,8 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
         ? "/settings#omniroute-sidecar"
         : isOllama
           ? "/settings#ollama-sidecar"
+          : isOpenAICompat && openaiCompatEndpointId
+            ? `/settings#${openaiCompatSectionId(openaiCompatEndpointId)}`
           : "/settings#claude-sidecar";
   const lastChecked = account.lastCheckedAt ? formatDateTimeInline(account.lastCheckedAt) : null;
   const lastQuotaCheck = account.lastRefreshAt ? formatDateTimeInline(account.lastRefreshAt) : null;
@@ -91,6 +104,8 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                 ? "Read-only OmniRoute sidecar account"
                 : isOllama
                   ? "Read-only Ollama account"
+                : isOpenAICompat
+                  ? "Read-only OpenAI-compat account"
                   : "Read-only Claude sidecar account"}
         </p>
       </div>
@@ -203,7 +218,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
 
       {isClaude ? <ClaudeSidecarQuotaEstimation /> : null}
 
-      <SidecarEffortSelect provider={account.provider} />
+      <SidecarEffortSelect provider={account.provider} accountId={account.accountId} />
 
       {account.healthMessage ? (
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">

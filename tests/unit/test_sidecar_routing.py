@@ -195,6 +195,55 @@ def test_orcarouter_sits_between_openrouter_and_omniroute() -> None:
     )
 
 
+def test_unknown_provider_ranks_after_named_sidecars() -> None:
+    decision = resolve_sidecar_route(
+        "vast/qwen",
+        (
+            _entry(
+                "openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+                prefixes=(SidecarPrefix(prefix="vast/", strip=True),),
+            ),
+            _entry("openrouter", prefixes=(SidecarPrefix(prefix="vast/", strip=True),)),
+        ),
+    )
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+
+
+def test_openai_compat_prefix_still_routes() -> None:
+    decision = resolve_sidecar_route(
+        "vast/Qwen/Qwen2.5-7B",
+        (
+            _entry(
+                "openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+                prefixes=(SidecarPrefix(prefix="vast/", strip=True),),
+            ),
+        ),
+    )
+
+    assert decision is not None
+    assert decision.provider == "openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a"
+    assert decision.wire_model == "Qwen/Qwen2.5-7B"
+
+
+def test_openrouter_full_model_beats_openai_compat_prefix() -> None:
+    decision = resolve_sidecar_route(
+        "Qwen/Qwen2.5-7B",
+        (
+            _entry(
+                "openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+                prefixes=(SidecarPrefix(prefix="Qwen/", strip=True),),
+            ),
+            _entry("openrouter", full_models=("Qwen/Qwen2.5-7B",)),
+        ),
+    )
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+    assert decision.wire_model == "Qwen/Qwen2.5-7B"
+
+
 def test_orcarouter_auto_is_forwarded_unstripped() -> None:
     decision = resolve_sidecar_route(
         "orcarouter/auto",

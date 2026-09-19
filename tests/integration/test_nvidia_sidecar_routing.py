@@ -142,6 +142,7 @@ async def nvidia_enabled(monkeypatch):
 _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
+    "OpenAICompatSidecarClient",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",

@@ -141,6 +141,7 @@ async def openrouter_enabled(monkeypatch):
 _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "NvidiaSidecarClient",
+    "OpenAICompatSidecarClient",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",
