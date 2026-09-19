@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -9,7 +7,6 @@ from app.core.clients.nvidia_sidecar import NvidiaSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.nvidia_sidecar_dispatch import (
-    _finalize_or_release_nvidia_reservation,
     _log_nvidia_request,
     _nvidia_request_cost,
     build_nvidia_chat_payload,
@@ -91,8 +88,25 @@ def test_build_nvidia_chat_payload_override_replaces_nested_reasoning() -> None:
     assert "reasoning" not in payload.body
 
 
+def _install_catalog_price(monkeypatch: pytest.MonkeyPatch, cost: object) -> None:
+    from app.core.usage.external_pricing.service import CalculatedCost
+    from app.db.models import ExternalPriceStatus
+    from app.modules.proxy import external_pricing_logging
+
+    async def _calculated_cost(**_kwargs: object) -> tuple[object, object]:
+        if cost is None:
+            return None, ExternalPriceStatus.UNRESOLVED
+        assert isinstance(cost, CalculatedCost)
+        return cost, ExternalPriceStatus.RESOLVED
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _calculated_cost)
+
+
 @pytest.mark.asyncio
-async def test_log_nvidia_request_passes_authoritative_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_log_nvidia_request_uses_catalog_price_not_echoed_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.usage.external_pricing.service import CalculatedCost
+
+    _install_catalog_price(monkeypatch, CalculatedCost(0.25, "z-ai/glm-5.3", "nvidia"))
     calls: list[dict[str, object]] = []
 
     class _SessionContext:
@@ -124,89 +138,39 @@ async def test_log_nvidia_request_passes_authoritative_cost(monkeypatch: pytest.
     assert len(calls) == 1
     assert calls[0]["request_id"] == "req-nvidia-cost"
     assert calls[0]["source"] == "nvidia_sidecar"
-    assert calls[0]["cost_usd"] == 0.00123
+    assert calls[0]["cost_usd"] == pytest.approx(0.25)
+    assert calls[0]["cost_source"] == "catalog_calculated"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "usage_payload",
-    [
-        {"cost": 0.01},
-        {"prompt_tokens": 10, "cost": 0.01},
-        {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.01},
-    ],
-)
-async def test_billed_cost_without_complete_tokens_reaches_log_and_quota(
-    monkeypatch: pytest.MonkeyPatch,
-    usage_payload: dict[str, float],
-) -> None:
-    finalized: list[dict[str, object]] = []
-    logged: list[dict[str, object]] = []
-
-    class _SessionContext:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-    class _ApiKeysService:
-        def __init__(self, repository: object) -> None:
-            self.repository = repository
-
-        async def finalize_usage_reservation(self, reservation_id: str, **kwargs: object) -> None:
-            finalized.append({"reservation_id": reservation_id, **kwargs})
-
-    class _Repository:
-        def __init__(self, session: object) -> None:
-            self.session = session
-
-        async def add_log(self, **kwargs: object) -> None:
-            logged.append(kwargs)
-
-    monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.get_background_session", _SessionContext)
-    monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.ApiKeysService", _ApiKeysService)
-    monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.RequestLogsRepository", _Repository)
-    monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.get_request_id", lambda: "req-billed")
-
-    payload = {"usage": usage_payload}
+async def test_nvidia_echoed_cost_is_not_upstream_billed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_catalog_price(monkeypatch, None)
+    payload = {"usage": {"prompt_tokens": 10, "cost": 0.01}}
     usage = extract_usage(payload)
     cost = await _nvidia_request_cost(
-        "vendor/model-x",
+        "z-ai/glm-5.3",
         usage,
         billed_cost_usd=extract_billed_cost(payload),
     )
-    reservation = SimpleNamespace(reservation_id="reservation-1")
-    await _finalize_or_release_nvidia_reservation(
-        reservation,
-        api_key=None,
-        model="vendor/model-x",
-        usage=usage,
-        cost=cost,
-    )
-    await _log_nvidia_request(
-        api_key=None,
-        model="vendor/model-x",
-        started_at=0,
-        status="success",
-        usage=usage,
-        cost=cost,
-    )
 
-    assert cost.cost_source == "upstream_billed"
-    assert finalized[0]["cost_microdollars"] == 10_000
-    assert logged[0]["cost_usd"] == pytest.approx(0.01)
-    assert logged[0]["cost_source"] == "upstream_billed"
+    assert cost.cost_usd is None
+    assert cost.cost_source is None
 
 
 @pytest.mark.asyncio
-async def test_log_nvidia_free_request_records_reference_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_log_nvidia_request_records_reference_cost_without_billed_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.core.usage.pricing import ModelPrice
     from app.core.usage.runtime_pricing import get_runtime_pricing_registry
 
+    _install_catalog_price(monkeypatch, None)
     registry = get_runtime_pricing_registry()
     registry.clear()
-    registry.update_models([("vendor/model-x", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))])
+    registry.update_models(
+        [("z-ai/glm-5.3", ModelPrice(input_per_1m=0.8, output_per_1m=4.0))],
+        provider="nvidia",
+    )
 
     calls: list[dict[str, object]] = []
 
@@ -226,11 +190,11 @@ async def test_log_nvidia_free_request_records_reference_cost(monkeypatch: pytes
 
     monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.get_background_session", _SessionContext)
     monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.RequestLogsRepository", _Repository)
-    monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.get_request_id", lambda: "req-free")
+    monkeypatch.setattr("app.modules.proxy.nvidia_sidecar_dispatch.get_request_id", lambda: "req-ref")
 
     await _log_nvidia_request(
         api_key=None,
-        model="vendor/model-x:free",
+        model="z-ai/glm-5.3",
         started_at=0,
         status="success",
         usage=SidecarUsage(input_tokens=10_000, output_tokens=2_000, cost_usd=0.0),
@@ -238,8 +202,8 @@ async def test_log_nvidia_free_request_records_reference_cost(monkeypatch: pytes
 
     registry.clear()
     assert len(calls) == 1
-    # Free model: actual spend is 0 but reference (paid-equivalent) cost is recorded.
-    assert calls[0]["cost_usd"] == 0.0
+    assert calls[0]["cost_usd"] is None
+    assert calls[0]["cost_source"] is None
     assert calls[0]["reference_cost_usd"] == pytest.approx(0.016)
 
 

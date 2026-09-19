@@ -1,7 +1,7 @@
 ## 1. OpenSpec artifacts
 
 - [x] 1.1 Create proposal, design, context, tasks, and delta specs for NVIDIA sidecar routing.
-- [ ] 1.2 Validate `add-nvidia-sidecar-routing` with `uv run openspec validate add-nvidia-sidecar-routing --strict`.
+- [x] 1.2 Validate `add-nvidia-sidecar-routing` with `uv run openspec validate add-nvidia-sidecar-routing --strict`.
 
 ## 2. Database and env defaults
 
@@ -58,7 +58,7 @@
 
 ## 9. Verification
 
-- [ ] 9.1 `uv run openspec validate add-nvidia-sidecar-routing --strict`
-- [ ] 9.2 `uv run pytest` on the new unit/integration tests plus `test_settings_service.py` uniqueness and `test_sidecar_routing.py`
-- [ ] 9.3 From `frontend/`: targeted vitest including `sidecar-integrations-card.test.tsx`, then `bun run build`
-- [ ] 9.4 Do not restart systemd. Do not run the full suite unprompted.
+- [x] 9.1 `uv run openspec validate add-nvidia-sidecar-routing --strict`
+- [x] 9.2 `uv run pytest` on the new unit/integration tests plus `test_settings_service.py` uniqueness and `test_sidecar_routing.py`
+- [x] 9.3 From `frontend/`: targeted vitest including `sidecar-integrations-card.test.tsx`, then `bun run build`
+- [x] 9.4 Do not restart systemd. Do not run the full suite unprompted.
