@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.core.clients.nvidia_sidecar import (
-    NvidiaSidecarClient,
     NvidiaSidecarError,
     NvidiaSidecarUnavailableError,
+    get_nvidia_sidecar_client,
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.nvidia_sidecar.schemas import (
@@ -59,7 +59,7 @@ class NvidiaSidecarService:
                 models=[],
             )
 
-        client = NvidiaSidecarClient(nvidia_sidecar_config_from_settings(settings))
+        client = get_nvidia_sidecar_client(nvidia_sidecar_config_from_settings(settings))
         checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
             models = await client.list_models()
@@ -90,7 +90,9 @@ class NvidiaSidecarService:
         status, _message = _classify_static_status(settings)
         if status != "healthy":
             return NvidiaSidecarModelsResponse(models=[])
-        models = await NvidiaSidecarClient(nvidia_sidecar_config_from_settings(settings)).list_models_cached()
+        models = await get_nvidia_sidecar_client(
+            nvidia_sidecar_config_from_settings(settings)
+        ).list_models_cached()
         return NvidiaSidecarModelsResponse(models=_model_summaries(models))
 
     async def _record_test_result(

@@ -47,10 +47,10 @@ from app.core.auth.refresh import RefreshError
 from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.clients.files import FileProxyError
-from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
+from app.core.clients.nvidia_sidecar import NvidiaSidecarClient, get_nvidia_sidecar_client
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
-from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
+from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient, get_openai_compat_sidecar_client
 from app.core.clients.opencode_go_sidecar import OpenCodeGoSidecarClient, get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarClient, get_orcarouter_sidecar_client
@@ -4212,7 +4212,9 @@ async def _build_models_response_body(
                 )
             )
     if nvidia_config is not None and nvidia_config.enabled:
-        discovered_models = await NvidiaSidecarClient(nvidia_config).list_models_cached()
+        # Config-keyed client so ``models_cache_ttl_seconds`` actually spans
+        # requests; an inline client resets the TTL state on every call.
+        discovered_models = await get_nvidia_sidecar_client(nvidia_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in nvidia_config.full_models:
@@ -4238,7 +4240,9 @@ async def _build_models_response_body(
     for openai_compat_config in openai_compat_configs:
         if not openai_compat_config.enabled:
             continue
-        discovered_models = await OpenAICompatSidecarClient(openai_compat_config).list_models_cached()
+        # Config-keyed client so ``models_cache_ttl_seconds`` actually spans
+        # requests; an inline client resets the TTL state on every call.
+        discovered_models = await get_openai_compat_sidecar_client(openai_compat_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in openai_compat_config.full_models:

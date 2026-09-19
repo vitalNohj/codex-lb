@@ -70,7 +70,10 @@ async def test_nvidia_sidecar_test_connection_records_error_statuses(
     error,
     expected_status,
 ):
-    monkeypatch.setattr("app.modules.nvidia_sidecar.service.NvidiaSidecarClient", _FakeNVIDIAClient)
+    monkeypatch.setattr(
+        "app.modules.nvidia_sidecar.service.get_nvidia_sidecar_client",
+        _FakeNVIDIAClient,
+    )
     _FakeNVIDIAClient.error = error
     response = await async_client.put(
         "/api/settings",
@@ -94,7 +97,10 @@ async def test_nvidia_sidecar_test_connection_records_error_statuses(
 
 @pytest.mark.asyncio
 async def test_nvidia_sidecar_test_connection_records_healthy_and_lists_models(async_client, monkeypatch):
-    monkeypatch.setattr("app.modules.nvidia_sidecar.service.NvidiaSidecarClient", _FakeNVIDIAClient)
+    monkeypatch.setattr(
+        "app.modules.nvidia_sidecar.service.get_nvidia_sidecar_client",
+        _FakeNVIDIAClient,
+    )
     _FakeNVIDIAClient.error = None
     _FakeNVIDIAClient.models = [
         SidecarModel(id="z-ai/glm-5.3", created=123, owned_by="nvidia")

@@ -10,6 +10,8 @@ from app.core.clients.nvidia_sidecar import (
     NvidiaSidecarConfig,
     NvidiaSidecarError,
     NvidiaSidecarUnavailableError,
+    get_nvidia_sidecar_client,
+    reset_nvidia_sidecar_client_cache,
 )
 from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models
 from app.core.usage.external_pricing.resolution import UnpricedReason
@@ -219,3 +221,60 @@ async def test_transport_error_becomes_unavailable(monkeypatch) -> None:
 
     with pytest.raises(NvidiaSidecarUnavailableError):
         await client.list_models()
+
+
+@pytest.fixture(autouse=True)
+def _clear_nvidia_client_cache():
+    reset_nvidia_sidecar_client_cache()
+    yield
+    reset_nvidia_sidecar_client_cache()
+
+
+def test_client_cache_returns_the_same_instance_for_an_unchanged_config() -> None:
+    config = _config(api_key="key")
+
+    first = get_nvidia_sidecar_client(config)
+    second = get_nvidia_sidecar_client(_config(api_key="key"))
+
+    # Same instance means ``list_models_cached`` keeps its TTL state, so a
+    # second ``GET /v1/models`` inside the TTL costs no upstream round trip.
+    assert first is second
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"api_key": "rotated-key"},
+        {"base_url": "https://nim.internal/v1"},
+        {"models_cache_ttl_seconds": 5.0},
+        {"prefixes": (SidecarPrefix(prefix="nvidia-", strip=True),)},
+        {"enabled": False},
+    ],
+)
+def test_client_cache_evicts_on_any_config_change(changed) -> None:
+    first = get_nvidia_sidecar_client(_config(api_key="key"))
+
+    second = get_nvidia_sidecar_client(_config(**{"api_key": "key", **changed}))
+
+    assert second is not first
+    assert get_nvidia_sidecar_client(_config(**{"api_key": "key", **changed})) is second
+
+
+@pytest.mark.asyncio
+async def test_client_cache_eviction_drops_the_previous_credential_and_models(monkeypatch) -> None:
+    session = _FakeSession(get_response=_FakeResponse(200, '{"data":[{"id":"moonshotai/kimi-k3"}]}'))
+    monkeypatch.setattr("app.core.clients.nvidia_sidecar.lease_http_session", lambda: _Lease(session))
+
+    stale = get_nvidia_sidecar_client(_config(api_key="old-key"))
+    assert [model.id for model in await stale.list_models_cached()] == ["moonshotai/kimi-k3"]
+
+    rotated = get_nvidia_sidecar_client(_config(api_key="new-key"))
+    session.get_response = _FakeResponse(200, '{"data":[{"id":"nvidia/nemotron-3.5-lightning-30b-a3b"}]}')
+
+    assert rotated.config.api_key == "new-key"
+    assert [model.id for model in await rotated.list_models_cached()] == [
+        "nvidia/nemotron-3.5-lightning-30b-a3b"
+    ]
+    assert session.last_headers["Authorization"] == "Bearer new-key"
+    reset_nvidia_sidecar_client_cache()
+    assert get_nvidia_sidecar_client(_config(api_key="new-key")) is not rotated

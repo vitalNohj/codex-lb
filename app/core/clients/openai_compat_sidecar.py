@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -231,6 +232,38 @@ class OpenAICompatSidecarClient:
             raise OpenAICompatSidecarUnavailableError(
                 _transport_message(exc, f"stream {self._config.name}")
             ) from exc
+
+
+# Per-endpoint client cache. ``list_models_cached`` keeps its TTL state on the
+# instance, so a client built inline per request could never hit that cache.
+#
+# Keyed by endpoint id because operators can keep several named endpoints at
+# once. A settings change for one endpoint produces a different
+# ``OpenAICompatSidecarConfig`` and replaces only that entry, dropping the
+# previous credential and cached model list for that endpoint alone.
+_cached_clients: dict[str, OpenAICompatSidecarClient] = {}
+_cached_clients_lock = threading.Lock()
+
+
+def get_openai_compat_sidecar_client(config: OpenAICompatSidecarConfig) -> OpenAICompatSidecarClient:
+    """Return a client whose models cache survives across requests."""
+
+    global _cached_clients
+    with _cached_clients_lock:
+        cached = _cached_clients.get(config.endpoint_id)
+        if cached is not None and cached.config == config:
+            return cached
+        client = OpenAICompatSidecarClient(config)
+        _cached_clients[config.endpoint_id] = client
+        return client
+
+
+def reset_openai_compat_sidecar_client_cache() -> None:
+    """Drop cached clients (and the credentials they hold)."""
+
+    global _cached_clients
+    with _cached_clients_lock:
+        _cached_clients = {}
 
 
 def _parse_openai_compat_pricing(pricing: JsonValue) -> ModelPrice | None:

@@ -310,6 +310,7 @@ async def _nvidia_stream_iterator(
     usage: SidecarUsage | None = None
     billed_cost = BilledCostAccumulator()
     completed = False
+    stream_error = False
     error_code = "nvidia_sidecar_stream_incomplete"
     error_message: str | None = None
     try:
@@ -318,8 +319,18 @@ async def _nvidia_stream_iterator(
             async for raw_chunk in chunks:
                 for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
                     if event == "[DONE]":
-                        completed = True
+                        if not stream_error:
+                            completed = True
                         continue
+                    provider_error = _sse_provider_error(
+                        event,
+                        default_code="nvidia_sidecar_error",
+                        default_message="NVIDIA sidecar stream error",
+                    )
+                    if provider_error is not None:
+                        stream_error = True
+                        completed = False
+                        error_code, error_message = provider_error
                     event_usage = extract_usage(event)
                     if event_usage is not None:
                         usage = event_usage
@@ -327,8 +338,18 @@ async def _nvidia_stream_iterator(
                 yield raw_chunk
             for event in decoder.flush():
                 if event == "[DONE]":
-                    completed = True
+                    if not stream_error:
+                        completed = True
                     continue
+                provider_error = _sse_provider_error(
+                    event,
+                    default_code="nvidia_sidecar_error",
+                    default_message="NVIDIA sidecar stream error",
+                )
+                if provider_error is not None:
+                    stream_error = True
+                    completed = False
+                    error_code, error_message = provider_error
                 event_usage = extract_usage(event)
                 if event_usage is not None:
                     usage = event_usage
@@ -434,6 +455,28 @@ def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
     except json.JSONDecodeError:
         return None
     return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
+
+
+def _sse_provider_error(
+    event: JsonObject | str,
+    *,
+    default_code: str,
+    default_message: str,
+) -> tuple[str, str] | None:
+    if not is_json_mapping(event):
+        return None
+    error = event.get("error")
+    if error is None:
+        return None
+    if is_json_mapping(error):
+        code = error.get("code")
+        message = error.get("message")
+        resolved_code = code if isinstance(code, str) and code else default_code
+        resolved_message = message if isinstance(message, str) and message else default_message
+        return resolved_code, resolved_message
+    if isinstance(error, str) and error:
+        return default_code, error
+    return default_code, default_message
 
 
 def _error_sse(error: OpenAIErrorEnvelope) -> bytes:

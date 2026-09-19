@@ -46,6 +46,7 @@ class _FakeOpenAICompatClient:
         self.stream_error: Exception | None = None
         self.stream_include_usage = True
         self.stream_context_error = False
+        self.stream_provider_error = False
 
     async def list_models_cached(self):
         return self.models
@@ -68,6 +69,7 @@ class _FakeOpenAICompatClient:
             self.stream_error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
+            provider_error=self.stream_provider_error,
         )
 
 
@@ -78,10 +80,12 @@ class _FakeStreamContext:
         *,
         include_usage: bool = True,
         context_error: bool = False,
+        provider_error: bool = False,
     ) -> None:
         self.error = error
         self.include_usage = include_usage
         self.context_error = context_error
+        self.provider_error = provider_error
 
     async def __aenter__(self):
         if self.error is not None:
@@ -91,6 +95,10 @@ class _FakeStreamContext:
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
                 yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
+                yield b"data: [DONE]\n\n"
+                return
+            if self.provider_error:
+                yield (b'data: {"error":{"code":"upstream_error","message":"compat overloaded"}}\n\n')
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
@@ -132,6 +140,7 @@ _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
     "NvidiaSidecarClient",
+    "get_nvidia_sidecar_client",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",
@@ -174,6 +183,11 @@ async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fak
         lambda _config: fake_openai_compat,
         raising=True,
     )
+    monkeypatch.setattr(
+        "app.modules.proxy.api.get_openai_compat_sidecar_client",
+        lambda _config: fake_openai_compat,
+        raising=True,
+    )
 
     app = create_app()
 
@@ -187,6 +201,7 @@ async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fak
         f"app module resolved outside this task copy: {proxy_api.__file__}"
     )
     assert proxy_api.OpenAICompatSidecarClient(fake_openai_compat.config) is fake_openai_compat
+    assert proxy_api.get_openai_compat_sidecar_client(fake_openai_compat.config) is fake_openai_compat
     for name in _CATALOG_CONTROL_REFUSED:
         with pytest.raises(_UnexpectedTransport):
             getattr(proxy_api, name)()
@@ -224,6 +239,7 @@ async def fake_openai_compat(monkeypatch):
 
     monkeypatch.setattr("app.modules.proxy.api.load_openai_compat_configs", load_configs)
     monkeypatch.setattr("app.modules.proxy.api.OpenAICompatSidecarClient", lambda _config: client)
+    monkeypatch.setattr("app.modules.proxy.api.get_openai_compat_sidecar_client", lambda _config: client)
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_claude_disabled)
     return client
 
@@ -529,3 +545,28 @@ async def test_responses_does_not_dispatch_openai_compat(async_client, fake_open
     assert fake_openai_compat.chat_payloads == []
     assert fake_openai_compat.stream_payloads == []
     assert response.status_code > 0
+
+
+@pytest.mark.asyncio
+async def test_openai_compat_stream_provider_error_then_done_is_logged_as_error(
+    async_client,
+    fake_openai_compat,
+):
+    fake_openai_compat.stream_provider_error = True
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": MODEL, "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert b'"error"' in body
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == PROVIDER_ID]
+    assert sidecar_logs
+    assert sidecar_logs[-1].status == "error"
+    assert sidecar_logs[-1].error_code == "upstream_error"
+    assert sidecar_logs[-1].error_message == "compat overloaded"

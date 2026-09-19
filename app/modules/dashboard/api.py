@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
-from app.core.clients.nvidia_sidecar import NvidiaSidecarClient
+from app.core.clients.nvidia_sidecar import get_nvidia_sidecar_client
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
-from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
+from app.core.clients.openai_compat_sidecar import get_openai_compat_sidecar_client
 from app.core.clients.opencode_go_sidecar import get_opencode_go_sidecar_client
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.clients.orcarouter_sidecar import get_orcarouter_sidecar_client
@@ -117,7 +117,9 @@ async def list_models() -> dict:
     nvidia_config = await load_nvidia_sidecar_config()
     if nvidia_config is not None and nvidia_config.enabled:
         try:
-            nvidia_models = await NvidiaSidecarClient(nvidia_config).list_models_cached()
+            # Config-keyed client so ``models_cache_ttl_seconds`` spans requests;
+            # an inline client discards the TTL state on every model-picker load.
+            nvidia_models = await get_nvidia_sidecar_client(nvidia_config).list_models_cached()
         except Exception:
             logger.warning("failed to append NVIDIA sidecar models to dashboard model list", exc_info=True)
             nvidia_models = []
@@ -131,7 +133,9 @@ async def list_models() -> dict:
         if not openai_compat_config.enabled:
             continue
         try:
-            openai_compat_models = await OpenAICompatSidecarClient(openai_compat_config).list_models_cached()
+            openai_compat_models = await get_openai_compat_sidecar_client(
+                openai_compat_config
+            ).list_models_cached()
         except Exception:
             logger.warning(
                 "failed to append OpenAI-compat models to dashboard model list endpoint_id=%s",

@@ -11,9 +11,11 @@ from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.nvidia_sidecar import (
+    NvidiaSidecarClient,
     NvidiaSidecarConfig,
     NvidiaSidecarError,
     NvidiaSidecarUnavailableError,
+    reset_nvidia_sidecar_client_cache,
 )
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
@@ -43,6 +45,7 @@ class _FakeNVIDIAClient:
         self.stream_error: Exception | None = None
         self.stream_include_usage = True
         self.stream_context_error = False
+        self.stream_provider_error = False
 
     async def list_models_cached(self):
         return self.models
@@ -65,6 +68,7 @@ class _FakeNVIDIAClient:
             self.stream_error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
+            provider_error=self.stream_provider_error,
         )
 
 
@@ -75,10 +79,12 @@ class _FakeStreamContext:
         *,
         include_usage: bool = True,
         context_error: bool = False,
+        provider_error: bool = False,
     ) -> None:
         self.error = error
         self.include_usage = include_usage
         self.context_error = context_error
+        self.provider_error = provider_error
 
     async def __aenter__(self):
         if self.error is not None:
@@ -88,6 +94,10 @@ class _FakeStreamContext:
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
                 yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
+                yield b"data: [DONE]\n\n"
+                return
+            if self.provider_error:
+                yield (b'data: {"error":{"code":"upstream_error","message":"NVIDIA overloaded"}}\n\n')
                 yield b"data: [DONE]\n\n"
                 return
             if self.include_usage:
@@ -137,12 +147,14 @@ async def nvidia_enabled(monkeypatch):
 # Transports the catalog handler can reach, by the exact name it looks up:
 # provider clients bound in ``app.modules.proxy.api`` plus the OrcaRouter
 # factory the catalog path uses instead of the class (api.py:4076), and the
-# native dispatch symbols. ``NvidiaSidecarClient`` is absent because it is
-# the transport this control expects to reach.
+# native dispatch symbols. ``NvidiaSidecarClient`` and
+# ``get_nvidia_sidecar_client`` are absent because they are the transport
+# this control expects to reach.
 _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
     "OpenAICompatSidecarClient",
+    "get_openai_compat_sidecar_client",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",
@@ -193,6 +205,11 @@ async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fak
         lambda _config: fake_nvidia,
         raising=True,
     )
+    monkeypatch.setattr(
+        "app.modules.proxy.api.get_nvidia_sidecar_client",
+        lambda _config: fake_nvidia,
+        raising=True,
+    )
 
     app = create_app()
 
@@ -206,6 +223,7 @@ async def lifespan_free_client(_reset_db_state, block_unexpected_transports, fak
         f"app module resolved outside this task copy: {proxy_api.__file__}"
     )
     assert proxy_api.NvidiaSidecarClient(fake_nvidia.config) is fake_nvidia
+    assert proxy_api.get_nvidia_sidecar_client(fake_nvidia.config) is fake_nvidia
     for name in _CATALOG_CONTROL_REFUSED:
         with pytest.raises(_UnexpectedTransport):
             getattr(proxy_api, name)()
@@ -241,6 +259,7 @@ async def fake_nvidia(monkeypatch):
 
     monkeypatch.setattr("app.modules.proxy.api.load_nvidia_sidecar_config", load_config)
     monkeypatch.setattr("app.modules.proxy.api.NvidiaSidecarClient", lambda _config: client)
+    monkeypatch.setattr("app.modules.proxy.api.get_nvidia_sidecar_client", lambda _config: client)
     monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_claude_disabled)
     return client
 
@@ -652,3 +671,98 @@ async def test_responses_does_not_dispatch_nvidia(async_client, nvidia_enabled, 
     assert fake_nvidia.chat_payloads == []
     assert fake_nvidia.stream_payloads == []
     assert response.status_code > 0
+
+
+@pytest.mark.asyncio
+async def test_repeated_model_list_requests_reuse_the_nvidia_models_cache(
+    async_client,
+    nvidia_enabled,
+    monkeypatch,
+):
+    """``GET /v1/models`` must not pay an upstream round trip on every call."""
+
+    reset_nvidia_sidecar_client_cache()
+    config = NvidiaSidecarConfig(
+        enabled=True,
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key="nvidia-key",
+        prefixes=(SidecarPrefix(prefix="nvidia/", strip=True),),
+        connect_timeout_seconds=8.0,
+        request_timeout_seconds=600.0,
+        models_cache_ttl_seconds=60.0,
+        full_models=("z-ai/glm-5.3",),
+    )
+    upstream_fetches = 0
+
+    async def _counting_list_models(_self):
+        nonlocal upstream_fetches
+        upstream_fetches += 1
+        return [_FakeModel("z-ai/glm-5.3")]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_nvidia_sidecar_config", load_config)
+    monkeypatch.setattr(NvidiaSidecarClient, "list_models", _counting_list_models)
+
+    try:
+        await async_client.put(
+            "/api/settings",
+            json={
+                "nvidiaSidecarEnabled": True,
+                "nvidiaSidecarApiKey": "nvidia-key",
+                "nvidiaSidecarFullModels": ["z-ai/glm-5.3"],
+            },
+        )
+        await _enable_api_key_auth(async_client)
+        key = await _create_api_key("models-cache-key", allowed_models=["z-ai/glm-5.3"])
+        headers = {"Authorization": f"Bearer {key.key}"}
+
+        for _ in range(3):
+            response = await async_client.get("/v1/models", headers=headers)
+            assert response.status_code == 200
+            assert "z-ai/glm-5.3" in [item["id"] for item in response.json()["data"]]
+
+        assert upstream_fetches == 1
+    finally:
+        reset_nvidia_sidecar_client_cache()
+
+
+@pytest.mark.asyncio
+async def test_nvidia_stream_provider_error_then_done_is_logged_as_error(
+    async_client,
+    nvidia_enabled,
+    fake_nvidia,
+):
+    """An in-band SSE error followed by ``[DONE]`` is still a failed request."""
+
+    await async_client.put(
+        "/api/settings",
+        json={
+            "nvidiaSidecarEnabled": True,
+            "nvidiaSidecarApiKey": "nvidia-key",
+            "nvidiaSidecarFullModels": ["z-ai/glm-5.3"],
+        },
+    )
+    fake_nvidia.stream_provider_error = True
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "z-ai/glm-5.3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert b'"error"' in body
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "nvidia_sidecar"]
+    assert sidecar_logs
+    assert sidecar_logs[-1].status == "error"
+    assert sidecar_logs[-1].error_code == "upstream_error"
+    assert sidecar_logs[-1].error_message == "NVIDIA overloaded"

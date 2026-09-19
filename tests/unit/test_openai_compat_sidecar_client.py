@@ -10,6 +10,8 @@ from app.core.clients.openai_compat_sidecar import (
     OpenAICompatSidecarConfig,
     OpenAICompatSidecarError,
     OpenAICompatSidecarUnavailableError,
+    get_openai_compat_sidecar_client,
+    reset_openai_compat_sidecar_client_cache,
 )
 from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models
 from app.core.usage.external_pricing.resolution import UnpricedReason
@@ -232,3 +234,51 @@ async def test_transport_error_becomes_unavailable(monkeypatch) -> None:
 
     with pytest.raises(OpenAICompatSidecarUnavailableError):
         await client.list_models()
+
+
+@pytest.fixture(autouse=True)
+def _clear_openai_compat_client_cache():
+    reset_openai_compat_sidecar_client_cache()
+    yield
+    reset_openai_compat_sidecar_client_cache()
+
+
+def test_client_cache_returns_the_same_instance_for_an_unchanged_config() -> None:
+    first = get_openai_compat_sidecar_client(_config(api_key="key"))
+    second = get_openai_compat_sidecar_client(_config(api_key="key"))
+
+    assert first is second
+
+
+def test_client_cache_keeps_distinct_endpoints_independent() -> None:
+    first = get_openai_compat_sidecar_client(_config(endpoint_id=ENDPOINT_ID, api_key="one"))
+    other_id = "3d0c9a4b-2f5e-4c8b-8d22-8b1f5e3c2d1b"
+    second = get_openai_compat_sidecar_client(
+        _config(endpoint_id=other_id, name="vLLM", api_key="two")
+    )
+
+    assert first is not second
+    assert get_openai_compat_sidecar_client(_config(endpoint_id=ENDPOINT_ID, api_key="one")) is first
+    assert get_openai_compat_sidecar_client(
+        _config(endpoint_id=other_id, name="vLLM", api_key="two")
+    ) is second
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"api_key": "rotated-key"},
+        {"base_url": "https://vllm.internal/v1"},
+        {"models_cache_ttl_seconds": 5.0},
+        {"prefixes": (SidecarPrefix(prefix="vast-", strip=True),)},
+        {"enabled": False},
+        {"name": "LM Studio"},
+    ],
+)
+def test_client_cache_evicts_on_any_config_change(changed) -> None:
+    first = get_openai_compat_sidecar_client(_config(api_key="key"))
+
+    second = get_openai_compat_sidecar_client(_config(**{"api_key": "key", **changed}))
+
+    assert second is not first
+    assert get_openai_compat_sidecar_client(_config(**{"api_key": "key", **changed})) is second
