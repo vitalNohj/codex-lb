@@ -90,6 +90,7 @@ _OUTBOUND_BOUNDARIES = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
     "NvidiaSidecarClient",
+    "OpenAICompatSidecarClient",
     "OrcaRouterSidecarClient",
     "OmniRouteSidecarClient",
     "OllamaSidecarClient",

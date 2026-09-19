@@ -22,6 +22,7 @@ _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
     "NvidiaSidecarClient",
+    "OpenAICompatSidecarClient",
     "OrcaRouterSidecarClient",
     "get_orcarouter_sidecar_client",
     "OmniRouteSidecarClient",

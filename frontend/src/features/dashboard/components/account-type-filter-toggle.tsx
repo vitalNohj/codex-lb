@@ -17,6 +17,7 @@ const LABELS: Record<AccountTypeKey, string> = {
   nvidia: "NVIDIA",
   orcarouter: "OrcaRouter",
   omniroute: "Omniroute",
+  openai_compat: "OpenAI-compat",
 };
 
 export function AccountTypeFilterToggle({ value, onToggle }: AccountTypeFilterToggleProps) {

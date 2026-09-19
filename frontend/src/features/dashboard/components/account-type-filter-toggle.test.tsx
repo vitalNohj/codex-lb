@@ -15,6 +15,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           omniroute: false,
           orcarouter: true,
+          openai_compat: true,
         }}
         onToggle={vi.fn()}
       />,
@@ -52,6 +53,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           orcarouter: true,
           omniroute: true,
+          openai_compat: true,
         }}
         onToggle={vi.fn()}
       />,
@@ -71,6 +73,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           orcarouter: true,
           omniroute: true,
+          openai_compat: true,
         }}
         onToggle={vi.fn()}
       />,
@@ -82,6 +85,7 @@ describe("AccountTypeFilterToggle", () => {
       "OpenRouter",
       "NVIDIA",
       "OrcaRouter",
+      "OpenAI-compat",
     ]);
   });
 
@@ -97,6 +101,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           omniroute: true,
           orcarouter: true,
+          openai_compat: true,
         }}
         onToggle={onToggle}
       />,

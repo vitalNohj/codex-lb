@@ -29,8 +29,9 @@ import type {
 } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
 import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
+import { openaiCompatIntegrationId, isOpenAICompatIntegrationId } from "@/features/settings/openai-compat-endpoints";
 
-export type SidecarIntegrationId =
+export type BuiltInSidecarIntegrationId =
   | "claude"
   | "openrouter"
   | "nvidia"
@@ -38,6 +39,8 @@ export type SidecarIntegrationId =
   | "omniroute"
   | "ollama"
   | "opencodeGo";
+
+export type SidecarIntegrationId = BuiltInSidecarIntegrationId | `openaiCompat:${string}`;
 
 /**
  * Render props handed to a provider-specific discovered-models browser.
@@ -183,7 +186,7 @@ type SidecarIntegrationCardProviderProps = {
   children: ReactNode;
 };
 
-const INTEGRATION_NAMES: Record<SidecarIntegrationId, string> = {
+const INTEGRATION_NAMES: Record<BuiltInSidecarIntegrationId, string> = {
   claude: "CLIProxyAPI",
   openrouter: "OpenRouter",
   nvidia: "NVIDIA",
@@ -192,6 +195,14 @@ const INTEGRATION_NAMES: Record<SidecarIntegrationId, string> = {
   ollama: "Ollama",
   opencodeGo: "OpenCode Go",
 };
+
+function ownerNameFor(id: SidecarIntegrationId, settings: DashboardSettings): string {
+  if (isOpenAICompatIntegrationId(id)) {
+    const endpointId = id.slice("openaiCompat:".length);
+    return settings.openaiCompatEndpoints?.find((endpoint) => endpoint.id === endpointId)?.name ?? "OpenAI-compat";
+  }
+  return INTEGRATION_NAMES[id];
+}
 
 const SidecarIntegrationContext = createContext<SidecarIntegrationContextValue | null>(null);
 
@@ -289,6 +300,12 @@ function integrationValues(settings: DashboardSettings, current?: IntegrationVal
       prefixes: settings.opencodeGoSidecarModelPrefixes ?? [],
       fullModels: settings.opencodeGoSidecarFullModels ?? [],
     },
+    ...(settings.openaiCompatEndpoints ?? []).map((endpoint) => ({
+      id: openaiCompatIntegrationId(endpoint.id),
+      name: endpoint.name,
+      prefixes: endpoint.modelPrefixes ?? [],
+      fullModels: endpoint.fullModels ?? [],
+    })),
   ];
   if (!current) {
     return values;
@@ -310,7 +327,7 @@ function findDuplicateOwner(params: {
   }
   const values = integrationValues(params.settings, {
     id: params.currentId,
-    name: INTEGRATION_NAMES[params.currentId],
+    name: ownerNameFor(params.currentId, params.settings),
     prefixes: params.currentPrefixes ?? [],
     fullModels: params.currentFullModels ?? [],
   });

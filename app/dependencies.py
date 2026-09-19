@@ -41,6 +41,7 @@ from app.modules.opencode_go.service import OpenCodeGoQuotaService
 from app.modules.opencode_go_sidecar.service import OpenCodeGoSidecarService
 from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
 from app.modules.nvidia_sidecar.service import NvidiaSidecarService
+from app.modules.openai_compat.service import OpenAICompatService
 from app.modules.orcarouter_sidecar.service import OrcaRouterSidecarService
 from app.modules.proxy.capability_lineage_repository import CapabilityLineageRepository
 from app.modules.proxy.repo_bundle import ProxyRepositories
@@ -149,6 +150,13 @@ class NvidiaSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: NvidiaSidecarService
+
+
+@dataclass(slots=True)
+class OpenAICompatContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: OpenAICompatService
 
 
 @dataclass(slots=True)
@@ -406,6 +414,14 @@ def get_nvidia_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = NvidiaSidecarService(settings_repository)
     return NvidiaSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_openai_compat_context(
+    session: AsyncSession = Depends(get_session),
+) -> OpenAICompatContext:
+    settings_repository = SettingsRepository(session)
+    service = OpenAICompatService(settings_repository)
+    return OpenAICompatContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_orcarouter_sidecar_context(

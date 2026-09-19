@@ -6,6 +6,8 @@ import pytest
 
 from app.db.models import DashboardSettings
 from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
+from app.modules.accounts.openai_compat_summary import build_openai_compat_summary
+from app.modules.openai_compat.endpoints import StoredOpenAICompatEndpoint
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
@@ -426,6 +428,46 @@ def test_nvidia_summary_paused_when_disabled() -> None:
 
     assert summary is not None
     assert summary.status == "paused"
+
+
+def _openai_compat_endpoint(**overrides) -> StoredOpenAICompatEndpoint:
+    values = {
+        "id": "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+        "name": "Vast",
+        "enabled": True,
+        "base_url": "https://openai.vast.ai/demo/v1",
+        "api_key_encrypted_b64": None,
+        "prefixes": (),
+        "full_models": ("Qwen/Qwen2.5-7B",),
+        "connect_timeout_seconds": 8.0,
+        "request_timeout_seconds": 600.0,
+        "models_cache_ttl_seconds": 60.0,
+        "default_reasoning_effort": None,
+        "last_health_status": None,
+        "last_health_message": None,
+        "last_checked_at": None,
+        "last_model_count": None,
+    }
+    values.update(overrides)
+    return StoredOpenAICompatEndpoint(**values)
+
+
+def test_openai_compat_summary_active_without_api_key() -> None:
+    summary = build_openai_compat_summary(_openai_compat_endpoint(), request_usage=None)
+
+    assert summary.account_id == "openai-compat-2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a"
+    assert summary.display_name == "Vast"
+    assert summary.provider == "openai_compat"
+    assert summary.status == "active"
+    assert summary.health_status == "healthy"
+
+
+def test_openai_compat_summary_paused_when_disabled() -> None:
+    summary = build_openai_compat_summary(_openai_compat_endpoint(enabled=False), request_usage=None)
+
+    assert summary.display_name == "Vast"
+    assert summary.status == "paused"
+    assert summary.health_status == "disabled"
 
 
 def test_nvidia_summary_paused_when_missing_api_key() -> None:

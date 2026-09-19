@@ -229,6 +229,47 @@ describe("buildSettingsUpdateRequest", () => {
     expect(payload.orcarouterSidecarFullModels).toEqual(["orcarouter/auto"]);
   });
 
+  it("preserves OpenAI-compat endpoints when saving unrelated fields", () => {
+    const settings = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      openaiCompatEndpoints: [
+        {
+          id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+          name: "Vast",
+          enabled: true,
+          baseUrl: "https://openai.vast.ai/demo/v1",
+          apiKeyConfigured: false,
+          modelPrefixes: [{ prefix: "vast/", strip: true }],
+          fullModels: ["vast-llama"],
+          connectTimeoutSeconds: 8,
+          requestTimeoutSeconds: 600,
+          modelsCacheTtlSeconds: 60,
+        },
+      ],
+    });
+
+    const payload = buildSettingsUpdateRequest(settings, { dashboardSessionTtlSeconds: 7200 });
+
+    expect(payload.openaiCompatEndpoints).toEqual([
+      expect.objectContaining({
+        id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+        name: "Vast",
+        enabled: true,
+        baseUrl: "https://openai.vast.ai/demo/v1",
+        fullModels: ["vast-llama"],
+      }),
+    ]);
+  });
+
   it("preserves Ollama sidecar settings when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,

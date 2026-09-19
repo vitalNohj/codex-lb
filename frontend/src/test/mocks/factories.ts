@@ -617,6 +617,7 @@ export function createDashboardSettings(
 		opencodeGoSidecarConnectTimeoutSeconds: 8,
 		opencodeGoSidecarRequestTimeoutSeconds: 600,
 		opencodeGoSidecarModelsCacheTtlSeconds: 60,
+		openaiCompatEndpoints: [],
 		guestAccessEnabled: false,
 		guestPasswordConfigured: false,
 		limitWarmupStaggeredIdleEnabled: false,

@@ -100,6 +100,7 @@ describe("useDashboardPreferencesStore", () => {
       nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
     });
     expect(window.localStorage.getItem("codex-lb-dashboard-account-type-visibility")).toBe(
       JSON.stringify({
@@ -109,6 +110,7 @@ describe("useDashboardPreferencesStore", () => {
         nvidia: true,
         orcarouter: true,
         omniroute: true,
+        openai_compat: true,
       }),
     );
   });
@@ -125,6 +127,7 @@ describe("useDashboardPreferencesStore", () => {
       nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
     });
     expect(window.localStorage.getItem("codex-lb-dashboard-account-type-visibility")).toBe(
       JSON.stringify({
@@ -134,6 +137,7 @@ describe("useDashboardPreferencesStore", () => {
         nvidia: true,
         orcarouter: true,
         omniroute: true,
+        openai_compat: true,
       }),
     );
   });
@@ -154,6 +158,34 @@ describe("useDashboardPreferencesStore", () => {
       nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
+    });
+  });
+
+  it("hydrates preferences persisted before the openai_compat key existed without resetting other toggles", async () => {
+    window.localStorage.setItem(
+      "codex-lb-dashboard-account-type-visibility",
+      JSON.stringify({
+        codex: true,
+        cliproxy: false,
+        openrouter: false,
+        nvidia: false,
+        omniroute: true,
+        orcarouter: true,
+      }),
+    );
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility).toEqual({
+      codex: true,
+      cliproxy: false,
+      openrouter: false,
+      nvidia: false,
+      omniroute: true,
+      orcarouter: true,
+      openai_compat: true,
     });
   });
 
@@ -173,6 +205,7 @@ describe("useDashboardPreferencesStore", () => {
       nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
     });
   });
 

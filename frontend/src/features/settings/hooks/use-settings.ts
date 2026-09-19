@@ -17,6 +17,7 @@ import {
   getOpenCodeGoSidecarStatus,
   getOpenRouterSidecarStatus,
   getNvidiaSidecarStatus,
+  getOpenAICompatStatus,
   getOrcaRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
@@ -25,6 +26,7 @@ import {
   listOpenCodeGoSidecarModels,
   listOpenRouterSidecarModels,
   listNvidiaSidecarModels,
+  listOpenAICompatModels,
   listOrcaRouterSidecarModels,
   getTelemetryConsent,
   getUpstreamProxyAdmin,
@@ -39,6 +41,7 @@ import {
   testOpenCodeGoSidecarConnection,
   testOpenRouterSidecarConnection,
   testNvidiaSidecarConnection,
+  testOpenAICompatConnection,
   testOrcaRouterSidecarConnection,
   testUpstreamProxyEndpoint,
   updateSettings,
@@ -87,6 +90,7 @@ const SETTINGS_COLLECTION_FIELDS = [
   "openrouterSidecarFullModels",
   "nvidiaSidecarModelPrefixes",
   "nvidiaSidecarFullModels",
+  "openaiCompatEndpoints",
   "orcarouterSidecarModelPrefixes",
   "orcarouterSidecarFullModels",
   "omnirouteSidecarModelPrefixes",
@@ -601,6 +605,40 @@ export function useNvidiaSidecar(options?: { modelsEnabled?: boolean }) {
     enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useSidecarConnectionTest("nvidia");
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useOpenAICompatSidecar(
+  endpointId: string,
+  options?: { modelsEnabled?: boolean },
+) {
+  const queryClient = useQueryClient();
+  const enabled = Boolean(endpointId);
+  const statusQuery = useQuery({
+    queryKey: ["settings", "openai-compat", endpointId, "status"],
+    queryFn: () => getOpenAICompatStatus(endpointId),
+    enabled,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "openai-compat", endpointId, "models"],
+    queryFn: () => listOpenAICompatModels(endpointId),
+    enabled: enabled && (options?.modelsEnabled ?? true),
+  });
+  const testMutation = useMutation({
+    mutationFn: () => testOpenAICompatConnection(endpointId),
+    onSuccess: () => {
+      toast.success("OpenAI-compat endpoint tested");
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "OpenAI-compat endpoint test failed");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["settings", "openai-compat", endpointId] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
   return { statusQuery, modelsQuery, testMutation };
 }
 

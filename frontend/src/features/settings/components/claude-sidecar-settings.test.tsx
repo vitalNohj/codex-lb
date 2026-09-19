@@ -62,6 +62,7 @@ const BASE_SETTINGS: DashboardSettings = {
   orcarouterSidecarConnectTimeoutSeconds: 8,
   orcarouterSidecarRequestTimeoutSeconds: 600,
   orcarouterSidecarModelsCacheTtlSeconds: 60,
+  openaiCompatEndpoints: [],
   guestAccessEnabled: false,
   prohibitFastMode: false,
   httpDownstreamTransportPolicy: "smart",

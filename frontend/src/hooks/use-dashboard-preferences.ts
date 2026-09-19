@@ -12,7 +12,7 @@ const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
 export type DashboardAccountViewMode = "cards" | "list";
 export type DashboardRequestLogViewMode = "simplified" | "expanded";
 
-export type AccountTypeKey = "codex" | "cliproxy" | "openrouter" | "nvidia" | "orcarouter" | "omniroute";
+export type AccountTypeKey = "codex" | "cliproxy" | "openrouter" | "nvidia" | "orcarouter" | "omniroute" | "openai_compat";
 export type AccountTypeVisibility = Record<AccountTypeKey, boolean>;
 
 /**
@@ -29,10 +29,11 @@ export const ACCOUNT_TYPE_KEYS: AccountTypeKey[] = [
   "nvidia",
   "orcarouter",
   ...(OMNIROUTE_ENABLED ? (["omniroute"] as const) : []),
+  "openai_compat",
 ];
 
 function defaultAccountTypeVisibility(): AccountTypeVisibility {
-  return { codex: true, cliproxy: true, openrouter: true, nvidia: true, orcarouter: true, omniroute: true };
+  return { codex: true, cliproxy: true, openrouter: true, nvidia: true, orcarouter: true, omniroute: true, openai_compat: true };
 }
 
 type DashboardPreferencesState = {

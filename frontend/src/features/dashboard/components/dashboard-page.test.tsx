@@ -207,6 +207,7 @@ describe("DashboardPage", () => {
         nvidia: true,
         omniroute: true,
         orcarouter: true,
+        openai_compat: true,
       },
       accountListSort: null,
       initialized: true,

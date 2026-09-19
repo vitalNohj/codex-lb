@@ -82,6 +82,57 @@ export const SidecarModelPrefixSchema = z.object({
 const SidecarModelPrefixesSchema = z.array(SidecarModelPrefixSchema).max(32);
 const RequiredSidecarModelPrefixesSchema = SidecarModelPrefixesSchema.min(1);
 const SidecarFullModelsSchema = z.array(z.string().trim().min(1).max(256)).max(256);
+
+const OpenAICompatHttpUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2048)
+  .refine(
+    (value) => {
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "Base URL must be an http(s) URL" },
+  );
+
+export const OpenAICompatEndpointResponseSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().trim().min(1).max(64),
+  enabled: z.boolean().optional().default(false),
+  baseUrl: OpenAICompatHttpUrlSchema,
+  apiKeyConfigured: z.boolean().optional().default(false),
+  modelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
+  fullModels: SidecarFullModelsSchema.optional().default([]),
+  connectTimeoutSeconds: z.number().positive().optional().default(8),
+  requestTimeoutSeconds: z.number().positive().optional().default(600),
+  modelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+  defaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
+  lastHealthStatus: z.string().nullable().optional().default(null),
+  lastHealthMessage: z.string().nullable().optional().default(null),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
+  lastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+});
+
+export const OpenAICompatEndpointUpdateSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(64),
+  enabled: z.boolean().optional().default(false),
+  baseUrl: OpenAICompatHttpUrlSchema,
+  apiKey: z.string().trim().max(4096).optional(),
+  clearApiKey: z.boolean().optional(),
+  modelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
+  fullModels: SidecarFullModelsSchema.optional().default([]),
+  connectTimeoutSeconds: z.number().positive().optional().default(8),
+  requestTimeoutSeconds: z.number().positive().optional().default(600),
+  modelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
+  defaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+});
+
 export const ClaudeSidecarPlanTypeSchema = z.enum(["pro", "max5", "max20", "custom"]);
 export const ClaudeSidecarAuthPlanSchema = z.object({
   authIndex: z.string().trim().min(1).max(255).nullable().optional(),
@@ -222,6 +273,7 @@ export const DashboardSettingsSchema = z
     nvidiaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     nvidiaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     nvidiaSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
+    openaiCompatEndpoints: z.array(OpenAICompatEndpointResponseSchema).optional().default([]),
     orcarouterSidecarEnabled: z.boolean().optional().default(false),
     orcarouterSidecarBaseUrl: z.string().trim().min(1).optional().default("https://api.orcarouter.ai/v1"),
     orcarouterSidecarApiKeyConfigured: z.boolean().optional().default(false),
@@ -415,6 +467,7 @@ export const SettingsUpdateRequestSchema = z
     nvidiaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
     nvidiaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
     nvidiaSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
+    openaiCompatEndpoints: z.array(OpenAICompatEndpointUpdateSchema).max(32).optional(),
     orcarouterSidecarEnabled: z.boolean().optional(),
     orcarouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
     orcarouterSidecarApiKey: z.string().trim().max(4096).optional(),
@@ -573,6 +626,32 @@ export const NvidiaSidecarTestResponseSchema = NvidiaSidecarStatusResponseSchema
 
 export const NvidiaSidecarModelsResponseSchema = z.object({
   models: z.array(NvidiaSidecarModelSummarySchema).default([]),
+});
+
+export const OpenAICompatModelSummarySchema = z.object({
+  id: z.string(),
+  created: z.number().int().nullable().optional(),
+  ownedBy: z.string().nullable().optional(),
+});
+
+export const OpenAICompatStatusResponseSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  status: ThirdPartySidecarStatusValueSchema,
+  message: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  modelCount: z.number().int().nonnegative().nullable().optional(),
+  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+export const OpenAICompatTestResponseSchema = OpenAICompatStatusResponseSchema.extend({
+  models: z.array(OpenAICompatModelSummarySchema).default([]),
+});
+
+export const OpenAICompatModelsResponseSchema = z.object({
+  models: z.array(OpenAICompatModelSummarySchema).default([]),
 });
 
 const OrcaRouterSidecarStatusValueSchema = ThirdPartySidecarStatusValueSchema;
@@ -822,6 +901,8 @@ type NvidiaSidecarSettingsFields = Pick<
   | "nvidiaSidecarDefaultReasoningEffort"
 >;
 
+type OpenAICompatEndpointsFields = Pick<ParsedDashboardSettings, "openaiCompatEndpoints">;
+
 type OrcaRouterSidecarSettingsFields = Pick<
   ParsedDashboardSettings,
   | "orcarouterSidecarEnabled"
@@ -920,6 +1001,7 @@ export type DashboardSettings = Omit<
   | keyof ClaudeSidecarSettingsFields
   | keyof OpenRouterSidecarSettingsFields
   | keyof NvidiaSidecarSettingsFields
+  | keyof OpenAICompatEndpointsFields
   | keyof OrcaRouterSidecarSettingsFields
   | keyof OmniRouteSidecarSettingsFields
   | keyof OllamaSidecarSettingsFields
@@ -930,6 +1012,7 @@ export type DashboardSettings = Omit<
   Partial<ClaudeSidecarSettingsFields> &
   Partial<OpenRouterSidecarSettingsFields> &
   Partial<NvidiaSidecarSettingsFields> &
+  Partial<OpenAICompatEndpointsFields> &
   Partial<OrcaRouterSidecarSettingsFields> &
   Partial<OmniRouteSidecarSettingsFields> &
   Partial<OllamaSidecarSettingsFields> &
@@ -956,6 +1039,12 @@ export type NvidiaSidecarModelSummary = z.infer<typeof NvidiaSidecarModelSummary
 export type NvidiaSidecarStatusResponse = z.infer<typeof NvidiaSidecarStatusResponseSchema>;
 export type NvidiaSidecarTestResponse = z.infer<typeof NvidiaSidecarTestResponseSchema>;
 export type NvidiaSidecarModelsResponse = z.infer<typeof NvidiaSidecarModelsResponseSchema>;
+export type OpenAICompatEndpoint = z.infer<typeof OpenAICompatEndpointResponseSchema>;
+export type OpenAICompatEndpointUpdate = z.infer<typeof OpenAICompatEndpointUpdateSchema>;
+export type OpenAICompatModelSummary = z.infer<typeof OpenAICompatModelSummarySchema>;
+export type OpenAICompatStatusResponse = z.infer<typeof OpenAICompatStatusResponseSchema>;
+export type OpenAICompatTestResponse = z.infer<typeof OpenAICompatTestResponseSchema>;
+export type OpenAICompatModelsResponse = z.infer<typeof OpenAICompatModelsResponseSchema>;
 export type OrcaRouterSidecarModelSummary = z.infer<typeof OrcaRouterSidecarModelSummarySchema>;
 export type OrcaRouterSidecarStatusResponse = z.infer<typeof OrcaRouterSidecarStatusResponseSchema>;
 export type OrcaRouterSidecarTestResponse = z.infer<typeof OrcaRouterSidecarTestResponseSchema>;

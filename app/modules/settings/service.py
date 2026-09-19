@@ -8,6 +8,13 @@ from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
+from app.modules.openai_compat.endpoints import (
+    OpenAICompatEndpointUpdateData,
+    StoredOpenAICompatEndpoint,
+    dump_openai_compat_endpoints,
+    merge_openai_compat_endpoints,
+    parse_openai_compat_endpoints,
+)
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
     canonicalize_additional_quota_key,
@@ -117,6 +124,7 @@ class DashboardSettingsData:
     nvidia_sidecar_last_checked_at: datetime | None
     nvidia_sidecar_last_model_count: int | None
     nvidia_sidecar_default_reasoning_effort: str | None
+    openai_compat_endpoints: list[StoredOpenAICompatEndpoint]
     orcarouter_sidecar_enabled: bool
     orcarouter_sidecar_base_url: str
     orcarouter_sidecar_api_key_configured: bool
@@ -262,6 +270,7 @@ class DashboardSettingsUpdateData:
     nvidia_sidecar_request_timeout_seconds: float
     nvidia_sidecar_models_cache_ttl_seconds: float
     nvidia_sidecar_default_reasoning_effort: str | None
+    openai_compat_endpoints: list[OpenAICompatEndpointUpdateData]
     orcarouter_sidecar_enabled: bool
     orcarouter_sidecar_base_url: str
     orcarouter_sidecar_api_key: str | None
@@ -516,6 +525,13 @@ class SettingsService:
             nvidia_sidecar_request_timeout_seconds=payload.nvidia_sidecar_request_timeout_seconds,
             nvidia_sidecar_models_cache_ttl_seconds=payload.nvidia_sidecar_models_cache_ttl_seconds,
             nvidia_sidecar_default_reasoning_effort=payload.nvidia_sidecar_default_reasoning_effort,
+            openai_compat_endpoints_json=dump_openai_compat_endpoints(
+                merge_openai_compat_endpoints(
+                    current.openai_compat_endpoints_json,
+                    payload.openai_compat_endpoints,
+                    self._encryptor,
+                )
+            ),
             orcarouter_sidecar_enabled=payload.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=payload.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_encrypted=orcarouter_api_key_encrypted,
@@ -690,6 +706,7 @@ class SettingsService:
             nvidia_sidecar_last_checked_at=row.nvidia_sidecar_last_checked_at,
             nvidia_sidecar_last_model_count=row.nvidia_sidecar_last_model_count,
             nvidia_sidecar_default_reasoning_effort=row.nvidia_sidecar_default_reasoning_effort,
+            openai_compat_endpoints=list(parse_openai_compat_endpoints(row.openai_compat_endpoints_json)),
             orcarouter_sidecar_enabled=row.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=row.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_configured=row.orcarouter_sidecar_api_key_encrypted is not None,
@@ -1076,6 +1093,10 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
             ("NVIDIA", payload.nvidia_sidecar_model_prefixes),
+            *(
+                (endpoint.name, endpoint.prefixes)
+                for endpoint in payload.openai_compat_endpoints
+            ),
             ("OrcaRouter", payload.orcarouter_sidecar_model_prefixes),
             ("OpenCode Go", payload.opencode_go_sidecar_model_prefixes),
             *omniroute_prefixes,
@@ -1087,6 +1108,10 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
             ("NVIDIA", payload.nvidia_sidecar_full_models),
+            *(
+                (endpoint.name, endpoint.full_models)
+                for endpoint in payload.openai_compat_endpoints
+            ),
             ("OrcaRouter", payload.orcarouter_sidecar_full_models),
             ("OpenCode Go", payload.opencode_go_sidecar_full_models),
             *omniroute_full_models,

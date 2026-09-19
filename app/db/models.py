@@ -1509,6 +1509,12 @@ class DashboardSettings(Base):
     nvidia_sidecar_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     nvidia_sidecar_last_model_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nvidia_sidecar_default_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
+    openai_compat_endpoints_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+        nullable=False,
+    )
     orcarouter_sidecar_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

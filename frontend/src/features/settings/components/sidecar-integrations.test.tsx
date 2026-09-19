@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api-client";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { NvidiaSidecarSettings } from "@/features/settings/components/nvidia-sidecar-settings";
+import { OpenAICompatEndpointSettings } from "@/features/settings/components/openai-compat-endpoint-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
@@ -89,6 +90,7 @@ const BASE_SETTINGS = {
   orcarouterSidecarConnectTimeoutSeconds: 8,
   orcarouterSidecarRequestTimeoutSeconds: 600,
   orcarouterSidecarModelsCacheTtlSeconds: 60,
+  openaiCompatEndpoints: [],
   guestAccessEnabled: false,
   prohibitFastMode: false,
   httpDownstreamTransportPolicy: "smart",
@@ -205,6 +207,59 @@ describe("shared sidecar integration settings", () => {
     );
 
     expect(screen.getByText("Full model z-ai/glm-5.3 is already used by OpenRouter.")).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("does not persist an OpenAI-compat full model while OpenRouter already owns it", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithQueryClient(
+      <OpenAICompatEndpointSettings
+        endpoint={{
+          id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+          name: "Vast",
+          enabled: true,
+          baseUrl: "https://openai.vast.ai/demo/v1",
+          apiKeyConfigured: false,
+          modelPrefixes: [],
+          fullModels: ["deepseek/deepseek-chat"],
+          connectTimeoutSeconds: 8,
+          requestTimeoutSeconds: 600,
+          modelsCacheTtlSeconds: 60,
+          defaultReasoningEffort: null,
+          lastHealthStatus: null,
+          lastHealthMessage: null,
+          lastCheckedAt: null,
+          lastModelCount: null,
+        }}
+        settings={{
+          ...BASE_SETTINGS,
+          openaiCompatEndpoints: [
+            {
+              id: "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+              name: "Vast",
+              enabled: true,
+              baseUrl: "https://openai.vast.ai/demo/v1",
+              apiKeyConfigured: false,
+              modelPrefixes: [],
+              fullModels: ["deepseek/deepseek-chat"],
+              connectTimeoutSeconds: 8,
+              requestTimeoutSeconds: 600,
+              modelsCacheTtlSeconds: 60,
+              defaultReasoningEffort: null,
+              lastHealthStatus: null,
+              lastHealthMessage: null,
+              lastCheckedAt: null,
+              lastModelCount: null,
+            },
+          ],
+          openrouterSidecarFullModels: ["deepseek/deepseek-chat"],
+        }}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    expect(screen.getByText("Full model deepseek/deepseek-chat is already used by OpenRouter.")).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
   });
 
