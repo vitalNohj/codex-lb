@@ -223,3 +223,76 @@ async def test_one_failing_endpoint_does_not_remove_the_others(async_client, fan
     for index, model in enumerate(_MODELS):
         if index != 1:
             assert model in ids, f"{model} lost because another endpoint failed"
+
+
+@pytest.fixture
+def fanout_endpoints_dashboard(monkeypatch):
+    """Same fanout, patched where the dashboard model picker resolves clients."""
+
+    tracker = _Tracker()
+    configs = tuple(_config(endpoint_id, index) for index, endpoint_id in enumerate(_ENDPOINT_IDS))
+    clients = {
+        config.endpoint_id: _ConcurrencyTrackingClient(config, tracker, _MODELS[index])
+        for index, config in enumerate(configs)
+    }
+
+    async def load_configs():
+        return configs
+
+    async def load_claude_disabled():
+        return None
+
+    monkeypatch.setattr("app.modules.dashboard.api.load_openai_compat_configs", load_configs)
+    monkeypatch.setattr("app.modules.dashboard.api.load_sidecar_config", load_claude_disabled)
+    monkeypatch.setattr(
+        "app.modules.dashboard.api.get_openai_compat_sidecar_client",
+        lambda config: clients[config.endpoint_id],
+    )
+    return tracker, clients
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_model_picker_also_refreshes_concurrently(async_client, fanout_endpoints_dashboard):
+    """``GET /api/models`` had the same serial fanout as ``/v1/models``.
+
+    Same 600 s-per-endpoint stacking, on the surface an operator stares at while
+    it happens. Fails on the pre-fix serial loop with ``max_in_flight == 1``.
+    """
+
+    tracker, clients = fanout_endpoints_dashboard
+
+    response = await async_client.get("/api/models")
+
+    assert response.status_code == 200, response.text
+    assert tracker.max_in_flight == len(_ENDPOINT_IDS), (
+        f"expected all {len(_ENDPOINT_IDS)} refreshes in flight together, peaked at {tracker.max_in_flight}"
+    )
+    assert [client.refresh_count for client in clients.values()] == [1] * len(_ENDPOINT_IDS)
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_picker_keeps_the_other_endpoints_when_one_fails(
+    async_client, fanout_endpoints_dashboard, monkeypatch
+):
+    """Per-endpoint isolation must survive the switch to ``gather``.
+
+    The pre-fix code had a per-endpoint ``try``; a bare ``gather`` would have
+    dropped every endpoint's models when any one raised.
+    """
+
+    tracker, clients = fanout_endpoints_dashboard
+    failing_id = _ENDPOINT_IDS[1]
+    clients[failing_id] = _FailingClient(clients[failing_id].config, tracker, _MODELS[1])
+    monkeypatch.setattr(
+        "app.modules.dashboard.api.get_openai_compat_sidecar_client",
+        lambda config: clients[config.endpoint_id],
+    )
+
+    response = await async_client.get("/api/models")
+
+    assert response.status_code == 200, response.text
+    ids = [item["id"] for item in response.json()["models"]]
+    for index, model in enumerate(_MODELS):
+        if index != 1:
+            assert model in ids, f"{model} lost from the picker because another endpoint failed"
+    assert _MODELS[1] not in ids

@@ -58,7 +58,16 @@ def normalize_openai_compat_base_url(value: str) -> str:
       request no longer targets the path the operator reviewed - and a fragment
       truncates the appended path entirely.
     * **Dot segments** (``/v1/../../admin``) resolve at the wire, so what the
-      dashboard shows is not what is called.
+      dashboard shows is not what is called. Percent-encoded dot segments
+      (``%2e%2e``) and backslashes have to be rejected too, not just the literal
+      spelling: the HTTP client canonicalizes the URL *after* this check, so
+      ``https://host/v1/%2e%2e/%2e%2e/admin`` plus the appended ``/models``
+      leaves as ``https://host/admin/models``. A literal-only check reads as a
+      defence while letting the same redirection through, which is worse than no
+      check. Any ``%`` in the path is therefore refused rather than decode-and-
+      re-inspected: these are API base URLs, so no legitimate one needs
+      percent-encoding, and a decode-then-check loop has to be exactly right
+      about double encoding to be safe.
 
     Rejecting rather than silently rewriting is deliberate: a URL the operator
     did not mean is a credential-destination mistake, and a save-time error is
@@ -87,6 +96,10 @@ def normalize_openai_compat_base_url(value: str) -> str:
     if not hostname:
         raise OpenAICompatBaseUrlError("base_url must contain a host")
     path = parts.path.rstrip("/")
+    if "%" in path:
+        raise OpenAICompatBaseUrlError("base_url path must not contain percent-encoded characters")
+    if "\\" in path:
+        raise OpenAICompatBaseUrlError("base_url path must not contain backslashes")
     if any(segment in {".", ".."} for segment in path.split("/")):
         raise OpenAICompatBaseUrlError("base_url path must not contain '.' or '..' segments")
     if "//" in path:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
-from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel
 from app.core.clients.nvidia_sidecar import get_nvidia_sidecar_client
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openai_compat_sidecar import get_openai_compat_sidecar_client
@@ -129,20 +130,38 @@ async def list_models() -> dict:
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"NVIDIA: {sidecar_model.id}", "sourceOnly": False})
     openai_compat_configs = await load_openai_compat_configs()
-    for openai_compat_config in openai_compat_configs:
-        if not openai_compat_config.enabled:
-            continue
-        try:
-            openai_compat_models = await get_openai_compat_sidecar_client(
-                openai_compat_config
-            ).list_models_cached()
-        except Exception:
+    # Refresh the enabled endpoints concurrently, for the same reason
+    # ``_build_models_response_body`` does: each endpoint carries its own
+    # ``request_timeout_seconds`` (600 s by default) and there can be up to
+    # ``OPENAI_COMPAT_MAX_ENDPOINTS`` of them, so a serial loop on a cold cache
+    # stacked every endpoint's timeout and stalled the dashboard model picker.
+    # ``return_exceptions=True`` preserves the per-endpoint isolation the
+    # per-endpoint ``try`` gave: one unreachable endpoint must not drop the
+    # others from the picker. Results stay positionally aligned with
+    # ``enabled_openai_compat_configs``, so the listed order is unchanged.
+    enabled_openai_compat_configs = [config for config in openai_compat_configs if config.enabled]
+    openai_compat_results = await asyncio.gather(
+        *(
+            get_openai_compat_sidecar_client(config).list_models_cached()
+            for config in enabled_openai_compat_configs
+        ),
+        return_exceptions=True,
+    )
+    for openai_compat_config, openai_compat_result in zip(
+        enabled_openai_compat_configs, openai_compat_results, strict=True
+    ):
+        if isinstance(openai_compat_result, BaseException):
+            if isinstance(openai_compat_result, asyncio.CancelledError):
+                # The request itself is going away, not this endpoint failing.
+                raise openai_compat_result
             logger.warning(
                 "failed to append OpenAI-compat models to dashboard model list endpoint_id=%s",
                 openai_compat_config.endpoint_id,
-                exc_info=True,
+                exc_info=openai_compat_result,
             )
-            openai_compat_models = []
+            openai_compat_models: list[SidecarModel] = []
+        else:
+            openai_compat_models = openai_compat_result
         for sidecar_model in openai_compat_models:
             if sidecar_model.id in seen_model_ids:
                 continue

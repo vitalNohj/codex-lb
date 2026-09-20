@@ -188,6 +188,30 @@ class TestBaseUrlValidation:
                 "'.' or '..' segments",
                 id="single-dot-segment",
             ),
+            # Percent-encoded dot segments are the bypass a literal-only check
+            # misses: the HTTP client canonicalizes AFTER validation, so
+            # ``/v1/%2e%2e/%2e%2e/admin`` + ``/models`` leaves as
+            # ``/admin/models``. Verified against yarl, the URL type aiohttp uses.
+            pytest.param(
+                "https://openai.vast.ai/v1/%2e%2e/%2e%2e/admin",
+                "percent-encoded characters",
+                id="encoded-dot-dot-segments",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1/..%2Fadmin",
+                "percent-encoded characters",
+                id="encoded-slash",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1/%2E%2E/admin",
+                "percent-encoded characters",
+                id="encoded-dot-dot-uppercase",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1\\..\\admin",
+                "backslashes",
+                id="backslash-path-traversal",
+            ),
             pytest.param("ftp://openai.vast.ai/v1", "http(s) URL", id="non-http-scheme"),
             pytest.param("file:///etc/passwd", "http(s) URL", id="file-scheme"),
             pytest.param("https:///v1", "must contain a host", id="no-host"),
@@ -242,3 +266,35 @@ class TestBaseUrlValidation:
         )
 
         assert parse_openai_compat_endpoints(raw) == ()
+
+
+def test_percent_encoded_traversal_cannot_survive_client_canonicalization() -> None:
+    """The bypass, demonstrated against the URL type aiohttp actually uses.
+
+    A literal-only dot-segment check reads as a defence while letting the exact
+    same redirection through, which is worse than no check: the request library
+    canonicalizes the URL after validation. This asserts the wire target that
+    WOULD have resulted, so the test documents the consequence rather than just
+    the rejection.
+    """
+
+    import yarl
+
+    hostile = "https://openai.vast.ai/v1/%2e%2e/%2e%2e/admin"
+    # What the credential-bearing request would have become had this been accepted.
+    assert str(yarl.URL(hostile + "/models")) == "https://openai.vast.ai/admin/models"
+
+    encryptor = TokenEncryptor()
+    with pytest.raises(ValueError, match="percent-encoded"):
+        merge_openai_compat_endpoints("[]", [_update(base_url=hostile)], encryptor)
+
+
+def test_a_stored_blob_with_encoded_traversal_is_dropped_rather_than_loaded() -> None:
+    """The client re-validates, so such a blob never becomes a routable config."""
+
+    raw = (
+        '[{"id":"' + ENDPOINT_ID + '","name":"Vast",'
+        '"base_url":"https://openai.vast.ai/v1/%2e%2e/%2e%2e/admin","enabled":true}]'
+    )
+
+    assert parse_openai_compat_endpoints(raw) == ()
