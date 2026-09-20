@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +11,7 @@ from app.core.clients.openai_compat_sidecar import (
     reset_openai_compat_sidecar_client_cache,
 )
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.db.models import DashboardSettings
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.openai_compat_dispatch import (
     _log_openai_compat_request,
@@ -302,7 +302,8 @@ def test_loading_configs_reconciles_the_client_cache_with_the_current_endpoints(
     kept = get_openai_compat_sidecar_client(kept_config)
 
     # A settings blob that lists only the endpoint that still exists.
-    settings = SimpleNamespace(
+    settings = DashboardSettings(
+        id=1,
         openai_compat_endpoints_json=json.dumps(
             [
                 {

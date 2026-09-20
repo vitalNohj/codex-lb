@@ -406,7 +406,10 @@ class SettingsRepository:
             .values(**{column: value, "updated_at": func.now()})
         )
         await self._session.commit()
-        if result.rowcount == 0:
+        # ``getattr`` rather than a direct attribute read: ``rowcount`` is not on
+        # the generic ``Result`` type, the same accommodation the other
+        # affected-row checks in this codebase make.
+        if int(getattr(result, "rowcount", 0) or 0) <= 0:
             return False
         settings = await self.get_or_create()
         await self._session.refresh(settings)

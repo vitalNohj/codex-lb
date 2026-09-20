@@ -115,7 +115,7 @@ def openai_compat_configs_from_settings(settings: DashboardSettings) -> tuple[Op
     # deleted endpoint's cached client - holding its decrypted API key - would
     # survive for the life of the process, since deletion produces no config to
     # evict the entry with.
-    retain_openai_compat_sidecar_clients(endpoint.id for endpoint in endpoints)
+    retain_openai_compat_sidecar_clients([endpoint.id for endpoint in endpoints])
     configs: list[OpenAICompatSidecarConfig] = []
     for endpoint in endpoints:
         configs.append(
