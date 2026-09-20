@@ -345,14 +345,24 @@ class AccountsService:
         if self._settings_repo is None:
             return []
         settings = await self._settings_repo.get_or_create()
+        endpoints = parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
+        if not endpoints:
+            return []
+        # One grouped aggregate rather than one query per endpoint: operators may
+        # configure up to ``OPENAI_COMPAT_MAX_ENDPOINTS`` of them, and a
+        # per-endpoint query made loading the accounts page an N+1 over the
+        # request-log aggregate.
+        usage_summaries = await self._repo.request_usage_summaries_for_sources(
+            [endpoint.provider_id for endpoint in endpoints]
+        )
         summaries: list[AccountSummary] = []
-        for endpoint in parse_openai_compat_endpoints(settings.openai_compat_endpoints_json):
-            usage_summary = await self._repo.request_usage_summary_for_source(endpoint.provider_id)
+        for endpoint in endpoints:
+            usage_summary = usage_summaries.get(endpoint.provider_id)
             request_usage = AccountRequestUsage(
-                request_count=usage_summary.request_count,
-                total_tokens=usage_summary.total_tokens,
-                cached_input_tokens=usage_summary.cached_input_tokens,
-                total_cost_usd=usage_summary.total_cost_usd,
+                request_count=usage_summary.request_count if usage_summary else 0,
+                total_tokens=usage_summary.total_tokens if usage_summary else 0,
+                cached_input_tokens=usage_summary.cached_input_tokens if usage_summary else 0,
+                total_cost_usd=usage_summary.total_cost_usd if usage_summary else 0.0,
             )
             summaries.append(build_openai_compat_summary(endpoint, request_usage))
         return summaries

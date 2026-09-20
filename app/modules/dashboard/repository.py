@@ -126,3 +126,6 @@ class DashboardRepository:
 
     async def request_usage_summary_for_source(self, source: str):
         return await self._accounts_repo.request_usage_summary_for_source(source)
+
+    async def request_usage_summaries_for_sources(self, sources: Collection[str]):
+        return await self._accounts_repo.request_usage_summaries_for_sources(sources)

@@ -45,7 +45,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.auth.refresh import RefreshError
 from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
-from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel
 from app.core.clients.files import FileProxyError
 from app.core.clients.nvidia_sidecar import NvidiaSidecarClient, get_nvidia_sidecar_client
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
@@ -4238,12 +4238,52 @@ async def _build_models_response_body(
                     }
                 )
             )
-    for openai_compat_config in openai_compat_configs:
-        if not openai_compat_config.enabled:
+    # Refresh every enabled endpoint's catalog concurrently. Operators can
+    # configure up to ``OPENAI_COMPAT_MAX_ENDPOINTS`` endpoints, each with its
+    # own ``request_timeout_seconds`` (600 s by default), so awaiting them one at
+    # a time made the first ``/v1/models`` after cache expiry accumulate every
+    # endpoint's timeout in series instead of waiting for the slowest one. Each
+    # call carries its own client timeout, so the fanout needs no extra bound.
+    #
+    # ``return_exceptions=True`` because the default gather abandons the whole
+    # batch on the first failure: one unreachable endpoint would then empty the
+    # advertised catalog for every other endpoint - strictly worse than the
+    # serial loop, where earlier endpoints had already contributed.
+    # ``list_models_cached`` normally absorbs provider errors itself and returns
+    # ``[]``; this covers whatever it does not, so per-endpoint failure stays
+    # per-endpoint. An endpoint's configured full models remain advertised
+    # either way - pinning is the operator's explicit statement that the id is
+    # offered, and only the discovered metadata is missing.
+    #
+    # Results stay positionally aligned with ``enabled_openai_compat_configs``,
+    # so the advertised order is the configured order, not the completion order.
+    enabled_openai_compat_configs = [config for config in openai_compat_configs if config.enabled]
+    openai_compat_results = await asyncio.gather(
+        *(
+            get_openai_compat_sidecar_client(config).list_models_cached()
+            # Config-keyed client so ``models_cache_ttl_seconds`` actually spans
+            # requests; an inline client resets the TTL state on every call.
+            for config in enabled_openai_compat_configs
+        ),
+        return_exceptions=True,
+    )
+    openai_compat_catalogs: list[list[SidecarModel]] = []
+    for openai_compat_config, result in zip(enabled_openai_compat_configs, openai_compat_results, strict=True):
+        if isinstance(result, BaseException):
+            if isinstance(result, asyncio.CancelledError):
+                # Not this endpoint's failure: the request itself is going away.
+                raise result
+            logger.warning(
+                "failed to refresh OpenAI-compat catalog endpoint_id=%s",
+                openai_compat_config.endpoint_id,
+                exc_info=result,
+            )
+            openai_compat_catalogs.append([])
             continue
-        # Config-keyed client so ``models_cache_ttl_seconds`` actually spans
-        # requests; an inline client resets the TTL state on every call.
-        discovered_models = await get_openai_compat_sidecar_client(openai_compat_config).list_models_cached()
+        openai_compat_catalogs.append(result)
+    for openai_compat_config, discovered_models in zip(
+        enabled_openai_compat_configs, openai_compat_catalogs, strict=True
+    ):
         created_by_model = {model.id: model.created for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in openai_compat_config.full_models:

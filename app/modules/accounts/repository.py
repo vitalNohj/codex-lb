@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -103,6 +104,17 @@ class AccountRequestUsageSummary:
     cached_input_tokens: int
     total_cost_usd: float
     total_savings_usd: float = 0.0
+
+
+#: A source with no request-log rows aggregates to all zeros. The grouped query
+#: omits it rather than emitting a zero row, so callers substitute this.
+_EMPTY_REQUEST_USAGE_SUMMARY = AccountRequestUsageSummary(
+    request_count=0,
+    total_tokens=0,
+    cached_input_tokens=0,
+    total_cost_usd=0.0,
+    total_savings_usd=0.0,
+)
 
 
 # The account-listing request-usage summary dedupes and re-aggregates the
@@ -283,11 +295,34 @@ class AccountsRepository:
         return summaries
 
     async def request_usage_summary_for_source(self, source: str) -> AccountRequestUsageSummary:
+        summaries = await self.request_usage_summaries_for_sources([source])
+        return summaries.get(source, _EMPTY_REQUEST_USAGE_SUMMARY)
+
+    async def request_usage_summaries_for_sources(
+        self, sources: Collection[str]
+    ) -> dict[str, AccountRequestUsageSummary]:
+        """Aggregate request usage for several log sources in one grouped query.
+
+        The synthetic sidecar accounts each need one of these, and the generic
+        OpenAI-compat feature turns that from a fixed handful into one per
+        configured endpoint (up to ``OPENAI_COMPAT_MAX_ENDPOINTS``). Issuing them
+        one at a time made listing accounts an N+1 over a request-log aggregate.
+        Grouping by ``source`` is the same aggregate with the same filters, so
+        the per-source answers are unchanged.
+
+        Sources with no matching rows are simply absent from the result; callers
+        that need a value for every source they asked for should fall back to an
+        empty summary, which is what the single-source wrapper does.
+        """
+
+        requested = list(dict.fromkeys(sources))
+        if not requested:
+            return {}
         output_tokens_expr = func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)
         conditions = [
             RequestLog.request_kind.not_in(("warmup", "limit_warmup")),
             RequestLog.deleted_at.is_(None),
-            RequestLog.source == source,
+            RequestLog.source.in_(requested),
         ]
         savings_diff = RequestLog.reference_cost_usd - func.coalesce(RequestLog.cost_usd, 0.0)
         per_request_savings = case(
@@ -305,25 +340,34 @@ class AccountsRepository:
             (savings_diff > 0.0, savings_diff),
             else_=0.0,
         )
-        stmt = select(
-            func.count(RequestLog.id).label("request_count"),
-            func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(output_tokens_expr), 0).label("output_tokens"),
-            func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
-            func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
-            func.coalesce(func.sum(per_request_savings), 0.0).label("total_savings_usd"),
-        ).where(*conditions)
-        row = (await self._session.execute(stmt)).one()
-        input_sum = int(row.input_tokens or 0)
-        output_sum = int(row.output_tokens or 0)
-        cached_sum = max(0, min(int(row.cached_input_tokens or 0), input_sum))
-        return AccountRequestUsageSummary(
-            request_count=int(row.request_count or 0),
-            total_tokens=input_sum + output_sum,
-            cached_input_tokens=cached_sum,
-            total_cost_usd=round(float(row.total_cost_usd or 0.0), 6),
-            total_savings_usd=round(float(row.total_savings_usd or 0.0), 6),
+        stmt = (
+            select(
+                RequestLog.source.label("source"),
+                func.count(RequestLog.id).label("request_count"),
+                func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(output_tokens_expr), 0).label("output_tokens"),
+                func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
+                func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
+                func.coalesce(func.sum(per_request_savings), 0.0).label("total_savings_usd"),
+            )
+            .where(*conditions)
+            .group_by(RequestLog.source)
         )
+        summaries: dict[str, AccountRequestUsageSummary] = {}
+        for row in (await self._session.execute(stmt)).all():
+            if not row.source:
+                continue
+            input_sum = int(row.input_tokens or 0)
+            output_sum = int(row.output_tokens or 0)
+            cached_sum = max(0, min(int(row.cached_input_tokens or 0), input_sum))
+            summaries[row.source] = AccountRequestUsageSummary(
+                request_count=int(row.request_count or 0),
+                total_tokens=input_sum + output_sum,
+                cached_input_tokens=cached_sum,
+                total_cost_usd=round(float(row.total_cost_usd or 0.0), 6),
+                total_savings_usd=round(float(row.total_savings_usd or 0.0), 6),
+            )
+        return summaries
 
     async def exists_active_chatgpt_account_id(self, chatgpt_account_id: str) -> bool:
         return await self.get_active_by_chatgpt_account_id(chatgpt_account_id) is not None

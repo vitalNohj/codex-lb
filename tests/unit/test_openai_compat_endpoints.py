@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 import pytest
@@ -142,3 +143,102 @@ def test_patch_endpoint_health_updates_only_the_named_row() -> None:
     by_id = {endpoint.id: endpoint for endpoint in patched}
     assert by_id[ENDPOINT_ID].last_health_status == "unreachable"
     assert by_id[other.id].last_health_status is None
+
+
+class TestBaseUrlValidation:
+    """A configured base URL decides where the operator's bearer token is sent.
+
+    Reported on https://github.com/vitalNohj/codex-lb/pull/59: the previous
+    validator accepted any ``http(s)`` URL with a host, so userinfo, a query, a
+    fragment or dot segments all survived into the URL the credential rides on.
+    The host itself is deliberately unpinned - the whole point of this feature is
+    arbitrary OpenAI-compatible servers - so only the shape is checked.
+    """
+
+    @pytest.mark.parametrize(
+        ("base_url", "reason"),
+        [
+            pytest.param(
+                "https://attacker@openai.vast.ai/v1",
+                "userinfo",
+                id="userinfo",
+            ),
+            pytest.param(
+                "https://user:pass@openai.vast.ai/v1",
+                "userinfo",
+                id="userinfo-with-password",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1?redirect=https://attacker.example",
+                "query string",
+                id="query",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1#/../../admin",
+                "fragment",
+                id="fragment",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1/../../admin",
+                "'.' or '..' segments",
+                id="dot-dot-segments",
+            ),
+            pytest.param(
+                "https://openai.vast.ai/v1/./models",
+                "'.' or '..' segments",
+                id="single-dot-segment",
+            ),
+            pytest.param("ftp://openai.vast.ai/v1", "http(s) URL", id="non-http-scheme"),
+            pytest.param("file:///etc/passwd", "http(s) URL", id="file-scheme"),
+            pytest.param("https:///v1", "must contain a host", id="no-host"),
+            pytest.param("   ", "must not be blank", id="blank"),
+        ],
+    )
+    def test_a_credential_bearing_url_shape_is_refused_at_save_time(self, base_url: str, reason: str) -> None:
+        encryptor = TokenEncryptor()
+
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            merge_openai_compat_endpoints("[]", [_update(base_url=base_url)], encryptor)
+
+    @pytest.mark.parametrize(
+        ("base_url", "expected"),
+        [
+            pytest.param(
+                "https://openai.vast.ai/demo/v1/",
+                "https://openai.vast.ai/demo/v1",
+                id="trailing-slash-stripped",
+            ),
+            pytest.param(
+                "HTTPS://OpenAI.Vast.AI/demo/v1",
+                "https://openai.vast.ai/demo/v1",
+                # Scheme and host are case-insensitive per RFC 3986, so two
+                # spellings of one endpoint must not read as two endpoints.
+                id="scheme-and-host-lowercased",
+            ),
+            pytest.param("http://localhost:11434/v1", "http://localhost:11434/v1", id="plain-http-with-port"),
+            pytest.param("https://openai.vast.ai", "https://openai.vast.ai", id="bare-host-no-path"),
+            pytest.param("http://[::1]:8000/v1", "http://[::1]:8000/v1", id="ipv6-literal"),
+        ],
+    )
+    def test_a_legitimate_arbitrary_host_is_accepted_and_canonicalized(self, base_url: str, expected: str) -> None:
+        """Arbitrary hosts stay allowed: only the shape is validated, never the host."""
+
+        encryptor = TokenEncryptor()
+
+        merged = merge_openai_compat_endpoints("[]", [_update(base_url=base_url)], encryptor)
+
+        assert merged[0].base_url == expected
+
+    def test_a_stored_blob_with_a_refused_url_is_dropped_rather_than_loaded(self) -> None:
+        """A blob written before this check (or edited out of band) must not route.
+
+        ``_parse_stored_entry`` runs the same validator, so a persisted endpoint
+        whose URL would be refused today never becomes a routable config.
+        """
+
+        raw = (
+            '[{"id":"' + ENDPOINT_ID + '","name":"Vast",'
+            '"base_url":"https://attacker@openai.vast.ai/v1","enabled":true}]'
+        )
+
+        assert parse_openai_compat_endpoints(raw) == ()

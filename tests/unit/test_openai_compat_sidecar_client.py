@@ -12,6 +12,7 @@ from app.core.clients.openai_compat_sidecar import (
     OpenAICompatSidecarUnavailableError,
     get_openai_compat_sidecar_client,
     reset_openai_compat_sidecar_client_cache,
+    retain_openai_compat_sidecar_clients,
 )
 from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models
 from app.core.usage.external_pricing.resolution import UnpricedReason
@@ -282,3 +283,57 @@ def test_client_cache_evicts_on_any_config_change(changed) -> None:
 
     assert second is not first
     assert get_openai_compat_sidecar_client(_config(**{"api_key": "key", **changed})) is second
+
+
+class TestCachedClientRetention:
+    """A deleted endpoint must not leave its decrypted API key in the cache.
+
+    Reported on https://github.com/vitalNohj/codex-lb/pull/59: replacing an
+    endpoint's config evicts its entry, but *deleting* one produces no config
+    again, so the removed endpoint's client - holding its decrypted key - stayed
+    alive for the whole process lifetime.
+    """
+
+    OTHER_ID = "3d0c9a4b-2f5e-4c8b-8d22-8b1f5e3c2d1b"
+
+    def test_a_removed_endpoint_client_and_its_credential_are_dropped(self) -> None:
+        removed = get_openai_compat_sidecar_client(_config(api_key="secret-to-forget"))
+        kept = get_openai_compat_sidecar_client(_config(endpoint_id=self.OTHER_ID, name="vLLM", api_key="kept"))
+
+        # The operator deleted the first endpoint; only the second remains.
+        retain_openai_compat_sidecar_clients([self.OTHER_ID])
+
+        # The surviving endpoint keeps its cached client (and so its models TTL).
+        assert get_openai_compat_sidecar_client(_config(endpoint_id=self.OTHER_ID, name="vLLM", api_key="kept")) is kept
+        # The removed one is gone: re-requesting the same config builds a NEW
+        # client, proving the old instance - and its credential - was evicted.
+        assert get_openai_compat_sidecar_client(_config(api_key="secret-to-forget")) is not removed
+
+    def test_reconciliation_against_the_same_set_is_a_no_op(self) -> None:
+        """Running on every settings read must not keep throwing the cache away.
+
+        Evicting a live endpoint's client would silently defeat
+        ``models_cache_ttl_seconds``, which is exactly what the config-keyed
+        cache exists to make work.
+        """
+
+        client = get_openai_compat_sidecar_client(_config(api_key="key"))
+
+        retain_openai_compat_sidecar_clients([ENDPOINT_ID])
+        retain_openai_compat_sidecar_clients([ENDPOINT_ID])
+
+        assert get_openai_compat_sidecar_client(_config(api_key="key")) is client
+
+    def test_retaining_nothing_clears_every_entry(self) -> None:
+        """Deleting the last endpoint leaves no credential behind."""
+
+        first = get_openai_compat_sidecar_client(_config(api_key="one"))
+        second = get_openai_compat_sidecar_client(_config(endpoint_id=self.OTHER_ID, name="vLLM", api_key="two"))
+
+        retain_openai_compat_sidecar_clients([])
+
+        assert get_openai_compat_sidecar_client(_config(api_key="one")) is not first
+        assert (
+            get_openai_compat_sidecar_client(_config(endpoint_id=self.OTHER_ID, name="vLLM", api_key="two"))
+            is not second
+        )

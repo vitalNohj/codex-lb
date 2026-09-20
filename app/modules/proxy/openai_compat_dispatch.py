@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import codecs
 import json
 import logging
+import re
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 
+import anyio
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -15,6 +19,7 @@ from app.core.clients.openai_compat_sidecar import (
     OpenAICompatSidecarConfig,
     OpenAICompatSidecarError,
     OpenAICompatSidecarUnavailableError,
+    retain_openai_compat_sidecar_clients,
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
@@ -57,6 +62,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.external_pricing_logging import (
     BilledCostAccumulator,
     ExternalRequestCost,
+    ExternalResponseSettlement,
     cost_microdollars,
     external_request_cost,
     external_response_settlement,
@@ -68,6 +74,13 @@ from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_erro
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+#: An SSE event ends at two consecutive line endings, in any combination of the
+#: three the spec permits. Mirrors ``_SSE_LINE_BOUNDARY`` in
+#: ``app/core/utils/sse.py``, applied twice.
+_SSE_EVENT_BOUNDARY = re.compile(r"(?:\r\n|\r|\n){2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +109,15 @@ async def load_openai_compat_configs() -> tuple[OpenAICompatSidecarConfig, ...]:
 
 def openai_compat_configs_from_settings(settings: DashboardSettings) -> tuple[OpenAICompatSidecarConfig, ...]:
     encryptor = TokenEncryptor()
+    endpoints = parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
+    # Every read of the endpoint list is also the moment we learn which
+    # endpoints still exist, so reconcile the client cache here. Without it a
+    # deleted endpoint's cached client - holding its decrypted API key - would
+    # survive for the life of the process, since deletion produces no config to
+    # evict the entry with.
+    retain_openai_compat_sidecar_clients(endpoint.id for endpoint in endpoints)
     configs: list[OpenAICompatSidecarConfig] = []
-    for endpoint in parse_openai_compat_endpoints(settings.openai_compat_endpoints_json):
+    for endpoint in endpoints:
         configs.append(
             OpenAICompatSidecarConfig(
                 endpoint_id=endpoint.id,
@@ -330,7 +350,7 @@ async def _openai_compat_stream_iterator(
         async with client.stream_chat_completion(payload) as chunks:
             decoder = _SseUsageDecoder()
             async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                for event in decoder.feed(raw_chunk):
                     if event == "[DONE]":
                         if not stream_error:
                             completed = True
@@ -395,11 +415,101 @@ async def _openai_compat_stream_iterator(
         error_message = str(exc) or exc.__class__.__name__
         raise
     finally:
-        settlement = await external_response_settlement(
-            provider=client.config.provider_id,
+        # Settle as one cancellation-deferred unit, exactly as the OpenRouter
+        # sidecar does (see ``openrouter_sidecar_dispatch._settle_stream_
+        # deferring_cancellation``). Price resolution is an awaited database
+        # read that precedes the reservation write, so a request task cancelled
+        # mid-stream raises out of ``external_response_settlement`` before the
+        # settlement helper is ever entered - leaving the reservation
+        # ``reserved`` and its quota held until stale reclamation.
+        #
+        # Cancellation is deferred, not swallowed: it is re-raised below, after
+        # the request log is written, so the request still terminates as
+        # cancelled. The log joins the same deferred unit on purpose -
+        # re-raising between the settlement and the log would leave a durable
+        # finalized charge with no request-log row explaining it.
+        settlement, settlement_deferred_cancellation = await _settle_stream_deferring_cancellation(
+            reservation,
+            api_key=api_key,
             model=model,
             usage=usage,
             billed_cost_usd=billed_cost.value,
+            completed=completed,
+            provider=client.config.provider_id,
+        )
+        _, log_deferred_cancellation = await _await_result_deferring_cancellation(
+            _log_openai_compat_request(
+                api_key=api_key,
+                model=model,
+                started_at=started_at,
+                status="success" if completed else "error",
+                error_code=None if completed else error_code,
+                error_message=None if completed else error_message,
+                usage=settlement.usage,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
+                cost=settlement.cost,
+                client=client,
+            )
+        )
+        if settlement_deferred_cancellation or log_deferred_cancellation:
+            raise asyncio.CancelledError
+
+
+async def _await_result_deferring_cancellation(awaitable: Awaitable[_T]) -> tuple[_T, bool]:
+    """Run ``awaitable`` to completion, deferring cancellation until it finishes.
+
+    Returns ``(result, cancellation_deferred)``. A cancellation delivered while
+    the awaitable is in flight is absorbed so the cleanup can finish, and
+    reported through the flag so the caller can re-raise it - deferred, never
+    swallowed. If the awaitable is itself cancelled, that propagates at once.
+
+    Mirrors the identically named helper in ``openrouter_sidecar_dispatch.py``
+    and ``api.py``: settlement that writes durable accounting cannot simply run
+    in a ``finally``, because the first ``await`` inside it re-raises the
+    pending ``CancelledError`` and work after that point never happens.
+
+    This bounds nothing on its own: callers must pass work that already
+    terminates (an owned settlement), never an open-ended wait.
+    """
+
+    task = asyncio.ensure_future(awaitable)
+    cancellation_deferred = False
+    with anyio.CancelScope(shield=True):
+        while True:
+            try:
+                return await asyncio.shield(task), cancellation_deferred
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancellation_deferred = True
+    raise RuntimeError("unreachable shielded cancellation-deferral state")
+
+
+async def _settle_stream_deferring_cancellation(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    usage: SidecarUsage | None,
+    billed_cost_usd: float | None,
+    completed: bool,
+    provider: str,
+) -> tuple[ExternalResponseSettlement[SidecarUsage], bool]:
+    """Resolve this stream's price and settle its reservation as one unit.
+
+    Kept together deliberately: settlement needs the resolved cost, so splitting
+    the two would let a cancelled request settle against a price it never
+    resolved. Both steps are the existing ones with the existing captured
+    inputs - this changes when they run, not what they decide.
+    """
+
+    async def _settle() -> ExternalResponseSettlement[SidecarUsage]:
+        settlement = await external_response_settlement(
+            provider=provider,
+            model=model,
+            usage=usage,
+            billed_cost_usd=billed_cost_usd,
             completed=completed,
         )
         await _finalize_or_release_openai_compat_reservation(
@@ -409,41 +519,75 @@ async def _openai_compat_stream_iterator(
             usage=settlement.usage,
             cost=settlement.cost,
         )
-        await _log_openai_compat_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="success" if completed else "error",
-            error_code=None if completed else error_code,
-            error_message=None if completed else error_message,
-            usage=settlement.usage,
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-            cost=settlement.cost,
-            client=client,
-        )
+        return settlement
+
+    return await _await_result_deferring_cancellation(_settle())
 
 
 class _SseUsageDecoder:
+    """Split an SSE byte stream into events, tolerant of real-world framing.
+
+    This feature routes to *arbitrary* operator-configured OpenAI-compatible
+    servers (vLLM, LM Studio, llama.cpp, NIM, ...), so neither property below is
+    theoretical. Both mirror the decoder in
+    ``app/modules/proxy/opencode_go_sidecar_dispatch.py``.
+
+    * **Event delimiters.** The SSE spec allows ``\\r\\n``, ``\\n`` and bare
+      ``\\r`` line endings, so an event boundary is any two consecutive ones.
+      Matching only ``\\n\\n`` buffers a CRLF stream to EOF and then parses the
+      whole thing as one malformed event - losing the usage object and the
+      ``[DONE]`` sentinel, which in turn makes a completed stream log as an
+      error and release its reservation instead of finalizing it.
+
+    * **Chunk boundaries are arbitrary byte offsets.** aiohttp splits on the
+      network, not on character boundaries, so a multi-byte character can land
+      half in one chunk and half in the next. Decoding each chunk independently
+      with ``errors="ignore"`` silently deletes those bytes and can corrupt the
+      JSON of the event carrying ``usage``.
+
+    Callers therefore feed **bytes**, and this class owns the decoding. The raw
+    chunks still reach the client untouched; only this observer decodes.
+    """
+
     def __init__(self) -> None:
         self._buffer = ""
+        # One decoder for the whole stream: it is what carries a split
+        # multi-byte sequence across the chunk boundary. ``replace`` rather than
+        # ``ignore`` so genuinely invalid bytes stay visible as U+FFFD instead of
+        # vanishing and silently shortening the text.
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-    def feed(self, chunk: str) -> list[JsonObject | str]:
-        self._buffer += chunk
+    def feed(self, chunk: bytes) -> list[JsonObject | str]:
+        self._buffer += self._decoder.decode(chunk)
         return self._drain_complete_events()
 
     def flush(self) -> list[JsonObject | str]:
-        if not self._buffer:
-            return []
+        """Drain the tail at EOF, including any undelimited final event.
+
+        Flushing the UTF-8 decoder first matters: a stream truncated mid
+        character would otherwise leave those bytes unaccounted for.
+        """
+
+        self._buffer += self._decoder.decode(b"", final=True)
+        # A well-formed final event may still be followed by a delimiter, so
+        # drain complete events before treating the remainder as a partial one.
+        events = self._drain_complete_events()
         pending = self._buffer
         self._buffer = ""
-        event = _parse_sse_event(pending)
-        return [event] if event is not None else []
+        if pending.strip():
+            event = _parse_sse_event(pending)
+            if event is not None:
+                events.append(event)
+        return events
 
     def _drain_complete_events(self) -> list[JsonObject | str]:
         events: list[JsonObject | str] = []
-        while "\n\n" in self._buffer:
-            raw_event, self._buffer = self._buffer.split("\n\n", 1)
+        while True:
+            match = _SSE_EVENT_BOUNDARY.search(self._buffer)
+            if match is None:
+                break
+            raw_event = self._buffer[: match.start()]
+            self._buffer = self._buffer[match.end() :]
             event = _parse_sse_event(raw_event)
             if event is not None:
                 events.append(event)
@@ -452,6 +596,8 @@ class _SseUsageDecoder:
 
 def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
     data_lines: list[str] = []
+    # ``str.splitlines`` already treats CR, LF and CRLF as line breaks, so a
+    # single-line-ending dialect never leaks into field parsing.
     for raw_line in raw_event.splitlines():
         if not raw_line or raw_line.startswith(":"):
             continue

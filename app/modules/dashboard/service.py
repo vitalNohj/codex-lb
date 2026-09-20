@@ -269,15 +269,23 @@ class DashboardService:
 
     async def _build_openai_compat_summaries(self):
         settings = await self._repo.get_settings()
+        endpoints = parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
+        if not endpoints:
+            return []
+        # One grouped aggregate rather than one query per endpoint - see
+        # ``AccountsRepository.request_usage_summaries_for_sources``.
+        usage_summaries = await self._repo.request_usage_summaries_for_sources(
+            [endpoint.provider_id for endpoint in endpoints]
+        )
         summaries = []
-        for endpoint in parse_openai_compat_endpoints(settings.openai_compat_endpoints_json):
-            usage_summary = await self._repo.request_usage_summary_for_source(endpoint.provider_id)
+        for endpoint in endpoints:
+            usage_summary = usage_summaries.get(endpoint.provider_id)
             request_usage = AccountRequestUsage(
-                request_count=usage_summary.request_count,
-                total_tokens=usage_summary.total_tokens,
-                cached_input_tokens=usage_summary.cached_input_tokens,
-                total_cost_usd=usage_summary.total_cost_usd,
-                total_savings_usd=usage_summary.total_savings_usd,
+                request_count=usage_summary.request_count if usage_summary else 0,
+                total_tokens=usage_summary.total_tokens if usage_summary else 0,
+                cached_input_tokens=usage_summary.cached_input_tokens if usage_summary else 0,
+                total_cost_usd=usage_summary.total_cost_usd if usage_summary else 0.0,
+                total_savings_usd=usage_summary.total_savings_usd if usage_summary else 0.0,
             )
             summaries.append(build_openai_compat_summary(endpoint, request_usage))
         return summaries

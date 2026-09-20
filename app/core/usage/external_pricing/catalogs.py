@@ -47,9 +47,9 @@ from app.core.types import JsonValue
 from app.core.usage.external_pricing.providers import (
     EXTERNAL_PRICED_PROVIDERS,
     PROVIDER_CLIPROXY,
+    PROVIDER_NVIDIA,
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
-    PROVIDER_NVIDIA,
     PROVIDER_ORCAROUTER,
     is_external_priced_provider,
 )

@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.clients.claude_sidecar import SidecarPrefix
-from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarConfig
+from app.core.clients.openai_compat_sidecar import (
+    OpenAICompatSidecarConfig,
+    get_openai_compat_sidecar_client,
+    reset_openai_compat_sidecar_client_cache,
+)
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.openai_compat_dispatch import (
     _log_openai_compat_request,
     _openai_compat_request_cost,
     build_openai_compat_chat_payload,
+    openai_compat_configs_from_settings,
 )
 
 ENDPOINT_ID = "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a"
@@ -264,3 +272,51 @@ def test_build_openai_compat_chat_payload_requested_none_effective_override() ->
 
     assert payload.requested_reasoning_effort is None
     assert payload.effective_reasoning_effort == "low"
+
+
+def test_loading_configs_reconciles_the_client_cache_with_the_current_endpoints(monkeypatch) -> None:
+    """The reconciliation must be wired into the settings read, not merely exist.
+
+    ``openai_compat_configs_from_settings`` is every caller's route from the
+    stored blob to a routable config, so it is where we learn which endpoints
+    still exist. Without this call a deleted endpoint's cached client - and its
+    decrypted API key - survived for the whole process lifetime
+    (https://github.com/vitalNohj/codex-lb/pull/59).
+    """
+
+    reset_openai_compat_sidecar_client_cache()
+    removed_id = "3d0c9a4b-2f5e-4c8b-8d22-8b1f5e3c2d1b"
+    removed = get_openai_compat_sidecar_client(_config())
+    kept_config = OpenAICompatSidecarConfig(
+        endpoint_id=removed_id,
+        name="vLLM",
+        enabled=True,
+        base_url="https://vllm.internal/v1",
+        api_key=None,
+        prefixes=(SidecarPrefix(prefix="vllm/", strip=True),),
+        connect_timeout_seconds=8.0,
+        request_timeout_seconds=600.0,
+        models_cache_ttl_seconds=60.0,
+        full_models=(),
+    )
+    kept = get_openai_compat_sidecar_client(kept_config)
+
+    # A settings blob that lists only the endpoint that still exists.
+    settings = SimpleNamespace(
+        openai_compat_endpoints_json=json.dumps(
+            [
+                {
+                    "id": removed_id,
+                    "name": "vLLM",
+                    "enabled": True,
+                    "base_url": "https://vllm.internal/v1",
+                }
+            ]
+        )
+    )
+
+    openai_compat_configs_from_settings(settings)
+
+    assert get_openai_compat_sidecar_client(kept_config) is kept
+    assert get_openai_compat_sidecar_client(_config()) is not removed
+    reset_openai_compat_sidecar_client_cache()

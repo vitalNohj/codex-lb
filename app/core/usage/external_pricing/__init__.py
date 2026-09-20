@@ -24,9 +24,9 @@ from __future__ import annotations
 from app.core.usage.external_pricing.catalogs import (
     EXTERNAL_PRICED_PROVIDERS,
     PROVIDER_CLIPROXY,
+    PROVIDER_NVIDIA,
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
-    PROVIDER_NVIDIA,
     PROVIDER_ORCAROUTER,
     is_external_priced_provider,
 )

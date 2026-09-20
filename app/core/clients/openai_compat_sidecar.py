@@ -5,10 +5,11 @@ import json
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -36,6 +37,67 @@ RATE_LIMIT_HEADERS: frozenset[str] = frozenset(
 # Rate-limit header values are short tokens; cap them so a hostile upstream
 # cannot push unbounded text into an exception that reaches operator surfaces.
 _HEADER_VALUE_MAX_CHARS = 64
+
+
+class OpenAICompatBaseUrlError(ValueError):
+    """A configured base URL is not a shape this client will send a key to."""
+
+
+def normalize_openai_compat_base_url(value: str) -> str:
+    """Return the canonical form of a configured base URL, or raise.
+
+    This feature deliberately accepts **arbitrary** OpenAI-compatible hosts, so
+    the host itself cannot be pinned. What *is* checkable is the shape, and the
+    shape decides where the operator's bearer token is sent once ``/models`` or
+    ``/chat/completions`` is appended:
+
+    * **Userinfo** (``https://attacker@host/v1``) makes aiohttp authenticate to
+      one identity while the configured key rides along in the ``Authorization``
+      header; it is never meaningful for these APIs.
+    * **Query and fragment** survive the append as ``/v1?x=y/models``, so the
+      request no longer targets the path the operator reviewed - and a fragment
+      truncates the appended path entirely.
+    * **Dot segments** (``/v1/../../admin``) resolve at the wire, so what the
+      dashboard shows is not what is called.
+
+    Rejecting rather than silently rewriting is deliberate: a URL the operator
+    did not mean is a credential-destination mistake, and a save-time error is
+    the only place it can still be corrected. The scheme and host are
+    case-normalized because both are case-insensitive per RFC 3986, so two
+    spellings of one endpoint must not read as two different endpoints.
+    """
+
+    candidate = value.strip()
+    if not candidate:
+        raise OpenAICompatBaseUrlError("base_url must not be blank")
+    parts = urlsplit(candidate)
+    if parts.scheme.lower() not in {"http", "https"}:
+        raise OpenAICompatBaseUrlError("base_url must be an http(s) URL")
+    if "@" in parts.netloc:
+        raise OpenAICompatBaseUrlError("base_url must not contain userinfo")
+    if parts.query:
+        raise OpenAICompatBaseUrlError("base_url must not contain a query string")
+    if parts.fragment:
+        raise OpenAICompatBaseUrlError("base_url must not contain a fragment")
+    try:
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError as exc:  # malformed IPv6 literal or non-numeric port
+        raise OpenAICompatBaseUrlError("base_url authority is not valid") from exc
+    if not hostname:
+        raise OpenAICompatBaseUrlError("base_url must contain a host")
+    path = parts.path.rstrip("/")
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        raise OpenAICompatBaseUrlError("base_url path must not contain '.' or '..' segments")
+    if "//" in path:
+        raise OpenAICompatBaseUrlError("base_url path must not contain empty segments")
+    scheme = parts.scheme.lower()
+    # ``hostname`` already lowercases and strips the brackets from an IPv6
+    # literal, so put them back rather than reusing the raw netloc (which may
+    # carry the original casing).
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    authority = f"{host}:{port}" if port is not None else host
+    return f"{scheme}://{authority}{path}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +157,10 @@ class OpenAICompatSidecarClient:
 
     @property
     def base_url(self) -> str:
-        return self._config.base_url.rstrip("/")
+        # Re-validated here, not merely at save time: a stored blob can predate
+        # the validator or be edited out of band, and this property is the last
+        # point before the bearer token is put on the wire.
+        return normalize_openai_compat_base_url(self._config.base_url)
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -256,6 +321,27 @@ def get_openai_compat_sidecar_client(config: OpenAICompatSidecarConfig) -> OpenA
         client = OpenAICompatSidecarClient(config)
         _cached_clients[config.endpoint_id] = client
         return client
+
+
+def retain_openai_compat_sidecar_clients(endpoint_ids: Collection[str]) -> None:
+    """Drop cached clients for endpoints that no longer exist.
+
+    Replacing an endpoint's config already evicts its entry, but *deleting* one
+    never produces a config again, so the cache kept the removed endpoint's
+    client - and with it the decrypted API key - alive for the whole process
+    lifetime. Reconciling against the current endpoint-id set every time the
+    endpoint list is read bounds the cache by the configured endpoints and drops
+    the credential when the operator removes it.
+
+    Cheap enough for the hot path: a membership test over at most
+    ``OPENAI_COMPAT_MAX_ENDPOINTS`` ids, mutating only when something is stale.
+    """
+
+    retained = set(endpoint_ids)
+    with _cached_clients_lock:
+        stale = [endpoint_id for endpoint_id in _cached_clients if endpoint_id not in retained]
+        for endpoint_id in stale:
+            del _cached_clients[endpoint_id]
 
 
 def reset_openai_compat_sidecar_client_cache() -> None:

@@ -182,3 +182,118 @@ async def test_unrelated_settings_update_preserves_openai_compat_api_key(async_c
     assert endpoint["apiKeyConfigured"] is True
     assert "apiKey" not in endpoint
     assert "vast-key" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_endpoint_edit_is_not_reverted_by_a_health_write(async_client, monkeypatch):
+    """Two overlapping writers to one shared JSON blob must both survive.
+
+    ``openai_compat_endpoints_json`` holds every endpoint's *configuration* as
+    well as its health, so recording a test result used to rewrite the whole blob
+    from a stale read - silently reverting whatever landed in between. Reported on
+    https://github.com/vitalNohj/codex-lb/pull/59, and reachable with no unusual
+    timing: each dashboard endpoint card has its own Test button, and an operator
+    save is an independent request.
+
+    The interfering write is injected between this caller's read and its write,
+    which is exactly the window the compare-and-set closes.
+    """
+
+    import json as _json
+
+    from sqlalchemy import select as _select
+
+    from app.db.models import DashboardSettings as _DashboardSettings
+    from app.db.session import SessionLocal as _SessionLocal
+    from app.modules.settings import repository as settings_repository_module
+
+    monkeypatch.setattr(
+        "app.modules.openai_compat.service.get_openai_compat_sidecar_client",
+        _FakeOpenAICompatClient,
+    )
+    _FakeOpenAICompatClient.error = None
+    await _put_endpoint(async_client, apiKey="vast-key")
+
+    races: list[int] = []
+    original = settings_repository_module.SettingsRepository.update_operational_json_column_if_unchanged
+
+    async def _racing_write(self, column, *, expected, value):
+        if not races:
+            races.append(1)
+            # Another writer commits a CONFIGURATION change to the same blob
+            # between this caller's read and its write.
+            async with _SessionLocal() as other:
+                row = (await other.execute(_select(_DashboardSettings))).scalar_one()
+                blob = _json.loads(row.openai_compat_endpoints_json or "[]")
+                blob[0]["name"] = "Renamed By Operator"
+                row.openai_compat_endpoints_json = _json.dumps(blob, separators=(",", ":"))
+                await other.commit()
+        return await original(self, column, expected=expected, value=value)
+
+    monkeypatch.setattr(
+        settings_repository_module.SettingsRepository,
+        "update_operational_json_column_if_unchanged",
+        _racing_write,
+    )
+
+    response = await async_client.post(f"/api/openai-compat/{ENDPOINT_ID}/test")
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+    assert races == [1], "the racing write must have been triggered"
+
+    after = await async_client.get("/api/settings")
+    assert after.status_code == 200
+    endpoint = after.json()["openaiCompatEndpoints"][0]
+    # BOTH survive: the retry re-applied this health result on top of the
+    # operator's committed rename instead of overwriting it with a stale read.
+    assert endpoint["name"] == "Renamed By Operator"
+    status = await async_client.get(f"/api/openai-compat/{ENDPOINT_ID}/status")
+    assert status.status_code == 200
+    assert status.json()["status"] == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_two_endpoints_tested_in_sequence_both_keep_their_health(async_client, monkeypatch):
+    """Recording one endpoint's health must not erase another's.
+
+    Both live in the same JSON blob, so a whole-blob write from a read taken
+    before the other endpoint's result would drop it.
+    """
+
+    other_id = "3d0c9e4b-2f5e-4c8b-8d22-8b1f5e3c2d1b"
+    payload = [
+        {**ENDPOINT, "apiKey": "vast-key"},
+        {
+            **ENDPOINT,
+            "id": other_id,
+            "name": "vLLM",
+            "baseUrl": "https://vllm.internal/v1",
+            "fullModels": ["meta/llama-3.1-8b"],
+            "apiKey": "vllm-key",
+        },
+    ]
+    response = await async_client.put("/api/settings", json={"openaiCompatEndpoints": payload})
+    assert response.status_code == 200, response.text
+
+    monkeypatch.setattr(
+        "app.modules.openai_compat.service.get_openai_compat_sidecar_client",
+        _FakeOpenAICompatClient,
+    )
+
+    _FakeOpenAICompatClient.error = OpenAICompatSidecarError(401, "bad key")
+    first = await async_client.post(f"/api/openai-compat/{ENDPOINT_ID}/test")
+    assert first.status_code == 200
+    assert first.json()["status"] == "unauthorized"
+
+    _FakeOpenAICompatClient.error = None
+    second = await async_client.post(f"/api/openai-compat/{other_id}/test")
+    assert second.status_code == 200
+    assert second.json()["status"] == "healthy"
+
+    # The first endpoint's recorded failure is still there.
+    first_status = await async_client.get(f"/api/openai-compat/{ENDPOINT_ID}/status")
+    assert first_status.status_code == 200
+    assert first_status.json()["status"] == "unauthorized"
+    second_status = await async_client.get(f"/api/openai-compat/{other_id}/status")
+    assert second_status.status_code == 200
+    assert second_status.json()["status"] == "healthy"

@@ -7,6 +7,7 @@ from app.core.clients.nvidia_sidecar import (
     NvidiaSidecarUnavailableError,
     get_nvidia_sidecar_client,
 )
+from app.core.clients.orcarouter_sidecar import sanitize_orcarouter_message
 from app.core.config.settings_cache import get_settings_cache
 from app.modules.nvidia_sidecar.schemas import (
     NvidiaSidecarModelsResponse,
@@ -59,14 +60,15 @@ class NvidiaSidecarService:
                 models=[],
             )
 
-        client = get_nvidia_sidecar_client(nvidia_sidecar_config_from_settings(settings))
+        config = nvidia_sidecar_config_from_settings(settings)
+        client = get_nvidia_sidecar_client(config)
         checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
             models = await client.list_models()
         except NvidiaSidecarUnavailableError as exc:
             return await self._record_test_result(
                 status="unreachable",
-                message=_sanitize_message(exc.message),
+                message=_sanitize_message(exc.message, api_key=config.api_key),
                 checked_at=checked_at,
                 models=[],
             )
@@ -74,7 +76,7 @@ class NvidiaSidecarService:
             status: NvidiaSidecarStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
             return await self._record_test_result(
                 status=status,
-                message=_sanitize_message(exc.message),
+                message=_sanitize_message(exc.message, api_key=config.api_key),
                 checked_at=checked_at,
                 models=[],
             )
@@ -147,5 +149,13 @@ def _model_summaries(models) -> list[NvidiaSidecarModelSummary]:
     ]
 
 
-def _sanitize_message(message: str) -> str:
-    return message.replace("Bearer ", "Bearer [redacted]")
+def _sanitize_message(message: str, *, api_key: str | None = None) -> str:
+    """Strip credentials from upstream text before it is persisted and served.
+
+    Replacing only the literal ``"Bearer "`` prefix turned an echoed
+    ``Bearer nvapi-secret`` into ``Bearer [redacted]nvapi-secret``, leaving the
+    key intact in ``nvidia_sidecar_last_health_message`` - which the status and
+    test APIs return verbatim. The shared sanitizer replaces the whole token.
+    """
+
+    return sanitize_orcarouter_message(message, api_key=api_key)

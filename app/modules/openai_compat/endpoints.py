@@ -13,10 +13,13 @@ import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.clients.openai_compat_sidecar import (
+    OpenAICompatBaseUrlError,
+    normalize_openai_compat_base_url,
+)
 from app.core.crypto import TokenEncryptor
 from app.modules.proxy.sidecar_routing import parse_sidecar_full_models, parse_sidecar_prefixes
 
@@ -318,13 +321,20 @@ def _require_name(value: str) -> str:
 
 
 def _require_base_url(value: str) -> str:
-    normalized = value.strip().rstrip("/")
-    if not normalized:
-        raise ValueError("openai_compat_endpoints base_url must not be blank")
-    parsed = urlparse(normalized)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("openai_compat_endpoints base_url must be an http(s) URL")
-    return normalized
+    """Validate and canonicalize a configured base URL at save time.
+
+    Shape only: the whole point of this feature is that the host is arbitrary,
+    so it cannot be pinned. The client re-runs the same normalizer immediately
+    before putting the bearer token on the wire - see
+    ``normalize_openai_compat_base_url`` for why each rejected shape changes the
+    credential's destination. Validating in both places keeps a stored blob that
+    predates this check (or was edited out of band) from reaching the network.
+    """
+
+    try:
+        return normalize_openai_compat_base_url(value)
+    except OpenAICompatBaseUrlError as exc:
+        raise ValueError(f"openai_compat_endpoints {exc}") from exc
 
 
 def _encrypt_api_key(encryptor: TokenEncryptor, plaintext: str) -> str:
