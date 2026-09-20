@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 
+import anyio
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -54,6 +56,7 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.external_pricing_logging import (
     BilledCostAccumulator,
     ExternalRequestCost,
+    ExternalResponseSettlement,
     cost_microdollars,
     external_request_cost,
     external_response_settlement,
@@ -69,6 +72,8 @@ from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_erro
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 OPENROUTER_SIDECAR_SOURCE = "openrouter_sidecar"
 
@@ -361,32 +366,51 @@ async def _openrouter_stream_iterator(
         error_message = str(exc) or exc.__class__.__name__
         raise
     finally:
-        settlement = await external_response_settlement(
-            provider=OPENROUTER_PRICING_PROVIDER,
+        # Settle as one cancellation-deferred unit. Price resolution is an
+        # awaited database read that precedes the reservation write, so a
+        # request task cancelled mid-stream used to raise out of
+        # ``external_response_settlement`` before the settlement helper was ever
+        # entered - leaving the reservation ``reserved`` and its quota held
+        # until stale reclamation. Reproduced end to end through the real
+        # endpoint and iterator.
+        #
+        # The span covers resolution *and* settlement because settling needs
+        # the resolved cost: splitting them would settle with a price the
+        # request never resolved. The accounting decision is unchanged - the
+        # helper still releases when neither usage nor a charge resolves and
+        # still finalizes a provider-reported billed cost, which survives
+        # ``completed=False``. Exactly-once is unaffected: settlement is a
+        # compare-and-set on ``reserved``.
+        #
+        # Cancellation is deferred, not swallowed: it is re-raised below, after
+        # the request log is written. The log is part of the same deferred unit
+        # on purpose - re-raising between the settlement and the log would leave
+        # a durable finalized charge with no request-log row explaining it,
+        # which is worse than either outcome alone.
+        settlement, settlement_deferred_cancellation = await _settle_stream_deferring_cancellation(
+            reservation,
+            api_key=api_key,
             model=model,
             usage=usage,
             billed_cost_usd=billed_cost.value,
             completed=completed,
         )
-        await _finalize_or_release_openrouter_reservation(
-            reservation,
-            api_key=api_key,
-            model=model,
-            usage=settlement.usage,
-            cost=settlement.cost,
+        _, log_deferred_cancellation = await _await_result_deferring_cancellation(
+            _log_openrouter_request(
+                api_key=api_key,
+                model=model,
+                started_at=started_at,
+                status="success" if completed else "error",
+                error_code=None if completed else error_code,
+                error_message=None if completed else error_message,
+                usage=settlement.usage,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
+                cost=settlement.cost,
+            )
         )
-        await _log_openrouter_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="success" if completed else "error",
-            error_code=None if completed else error_code,
-            error_message=None if completed else error_message,
-            usage=settlement.usage,
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-            cost=settlement.cost,
-        )
+        if settlement_deferred_cancellation or log_deferred_cancellation:
+            raise asyncio.CancelledError
 
 
 class _SseUsageDecoder:
@@ -508,6 +532,83 @@ async def _log_openrouter_request(
             get_request_id(),
             exc_info=True,
         )
+
+
+async def _await_result_deferring_cancellation(awaitable: Awaitable[_T]) -> tuple[_T, bool]:
+    """Run ``awaitable`` to completion, deferring cancellation until it finishes.
+
+    Returns ``(result, cancellation_deferred)``. A cancellation delivered while
+    the awaitable is in flight is absorbed so the cleanup can finish, and
+    reported through the flag so the caller can re-raise it - deferred, never
+    swallowed. If the awaitable is itself cancelled, that propagates at once.
+
+    Settlement that writes durable accounting cannot simply run in a
+    ``finally``: the ``finally`` executes, but the first ``await`` inside it
+    re-raises the pending ``CancelledError``, so work after that point never
+    happens - leaving the reservation held and the caller's quota consumed.
+
+    Mirrors ``_await_result_deferring_cancellation`` in
+    ``app/modules/proxy/api.py``, which has long used this pattern for owned
+    proxy cleanup. Kept module-private here rather than shared: this module is
+    its only consumer.
+
+    This bounds nothing on its own: callers must pass work that already
+    terminates (an owned settlement), never an open-ended wait. Ordinary
+    failures propagate unchanged - nothing is suppressed here.
+    """
+
+    task = asyncio.ensure_future(awaitable)
+    cancellation_deferred = False
+    with anyio.CancelScope(shield=True):
+        while True:
+            try:
+                return await asyncio.shield(task), cancellation_deferred
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancellation_deferred = True
+    raise RuntimeError("unreachable shielded cancellation-deferral state")
+
+
+async def _settle_stream_deferring_cancellation(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    usage: SidecarUsage | None,
+    billed_cost_usd: float | None,
+    completed: bool,
+) -> tuple[ExternalResponseSettlement[SidecarUsage], bool]:
+    """Resolve this stream's price and settle its reservation as one unit.
+
+    Kept together deliberately: settlement needs the resolved cost, so splitting
+    the two would let a cancelled request settle against a price it never
+    resolved. Both steps are the existing ones with the existing captured
+    inputs - this changes when they run, not what they decide.
+
+    Returns the settlement and whether a cancellation was deferred, so the
+    caller can finish its own required cleanup (the request log) before
+    re-raising it.
+    """
+
+    async def _settle() -> ExternalResponseSettlement[SidecarUsage]:
+        settlement = await external_response_settlement(
+            provider=OPENROUTER_PRICING_PROVIDER,
+            model=model,
+            usage=usage,
+            billed_cost_usd=billed_cost_usd,
+            completed=completed,
+        )
+        await _finalize_or_release_openrouter_reservation(
+            reservation,
+            api_key=api_key,
+            model=model,
+            usage=settlement.usage,
+            cost=settlement.cost,
+        )
+        return settlement
+
+    return await _await_result_deferring_cancellation(_settle())
 
 
 async def _finalize_or_release_openrouter_reservation(
