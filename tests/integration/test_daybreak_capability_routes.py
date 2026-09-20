@@ -79,6 +79,8 @@ _LOCAL_AUTHENTICATED_ROUTES: frozenset[_RouteKey] = frozenset(
         ("HTTP", "GET", "/v1/reset-credit"),
         ("HTTP", "GET", "/api/codex/usage/"),
         ("HTTP", "GET", "/api/codex/usage"),
+        ("HTTP", "GET", "/api/oauth/usage"),
+        ("HTTP", "GET", "/api/oauth/usage/"),
     }
 )
 _RESPONSES_WEBSOCKET_ROUTES: frozenset[_RouteKey] = frozenset(
@@ -627,6 +629,8 @@ _LOCAL_ROUTE_CASES = [
     pytest.param("GET", "/v1/reset-credit", 200, id="self-service-reset-credit-list"),
     pytest.param("GET", "/api/codex/usage", 200, id="codex-usage"),
     pytest.param("GET", "/api/codex/usage/", 200, id="codex-usage-slash"),
+    pytest.param("GET", "/api/oauth/usage", 200, id="anthropic-oauth-usage"),
+    pytest.param("GET", "/api/oauth/usage/", 200, id="anthropic-oauth-usage-slash"),
 ]
 
 
