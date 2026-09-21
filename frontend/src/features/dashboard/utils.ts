@@ -46,11 +46,17 @@ export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other
   if (account.provider === "openrouter") {
     return "openrouter";
   }
+  if (account.provider === "nvidia") {
+    return "nvidia";
+  }
   if (account.provider === "omniroute") {
     return "omniroute";
   }
   if (account.provider === "orcarouter") {
     return "orcarouter";
+  }
+  if (account.provider === "openai_compat") {
+    return "openai_compat";
   }
   if ((account.provider ?? "claude") === "claude") {
     return "cliproxy";

@@ -204,8 +204,10 @@ describe("DashboardPage", () => {
         codex: true,
         cliproxy: true,
         openrouter: true,
+        nvidia: true,
         omniroute: true,
         orcarouter: true,
+        openai_compat: true,
       },
       accountListSort: null,
       initialized: true,
@@ -614,6 +616,33 @@ describe("DashboardPage", () => {
 
     expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, orcaRouterAccount]);
     expect(useDashboardPreferencesStore.getState().accountTypeVisibility.orcarouter).toBe(true);
+  });
+
+  it("hides and shows the NVIDIA synthetic account through its own filter toggle", async () => {
+    const user = userEvent.setup();
+    const codexAccount = createAccountSummary({ accountId: "acc_codex" });
+    const nvidiaAccount = createAccountSummary({
+      accountId: "nvidia-sidecar",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "nvidia",
+      displayName: "NVIDIA",
+    });
+    mockReadyDashboard(createDashboardOverview({ accounts: [codexAccount, nvidiaAccount] }));
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, nvidiaAccount]);
+
+    await user.click(screen.getByRole("button", { name: "Hide NVIDIA accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.nvidia).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Show NVIDIA accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, nvidiaAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.nvidia).toBe(true);
   });
 
   it("hides a Claude sidecar without a provider when the CLIProxy filter is off", async () => {

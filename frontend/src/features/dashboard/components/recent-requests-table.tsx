@@ -65,6 +65,7 @@ const TRANSPORT_LABELS: Record<string, string> = {
 const SIDECAR_SOURCE_LABELS: Record<string, string> = {
   claude_sidecar: "CLIProxyAPI",
   openrouter_sidecar: "OpenRouter",
+  nvidia_sidecar: "NVIDIA",
   orcarouter_sidecar: "OrcaRouter",
   omniroute_sidecar: "OmniRoute",
   ollama_sidecar: "Ollama",
@@ -81,6 +82,7 @@ const TRANSPORT_CLASS_MAP: Record<string, string> = {
 const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
   claude_sidecar: "CLIProxyAPI",
   openrouter_sidecar: "OpenRouter",
+  nvidia_sidecar: "NVIDIA",
   orcarouter_sidecar: "OrcaRouter",
   omniroute_sidecar: "OmniRoute",
   ollama_sidecar: "Ollama",
@@ -94,9 +96,12 @@ const SIDECAR_ACCOUNT_LABELS: Record<string, string> = {
  * provider label nor their raw source slug is rendered, so the disabled
  * integration's branding never reaches the user.
  */
-function sidecarSourceDisplay(source: string | null | undefined): string | null {
+function sidecarSourceDisplay(source: string | null | undefined, accountLabel?: string | null): string | null {
   if (!source || isDisabledCapabilityRequestSource(source)) {
     return null;
+  }
+  if (source.startsWith("openai_compat:")) {
+    return accountLabel || "OpenAI-compat";
   }
   return SIDECAR_SOURCE_LABELS[source] ?? source;
 }
@@ -105,6 +110,9 @@ function sidecarAccountLabel(request: RequestLog): string | null {
   const source = request.source;
   if (!source || isDisabledCapabilityRequestSource(source)) {
     return null;
+  }
+  if (source.startsWith("openai_compat:")) {
+    return request.sidecarAccountLabel || "OpenAI-compat";
   }
   const providerLabel = SIDECAR_ACCOUNT_LABELS[source];
   if (!providerLabel) {
@@ -612,7 +620,7 @@ export function RecentRequestsTable({
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
-                <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source) ?? "—"} />
+                <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source, selectedRequest?.sidecarAccountLabel) ?? "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequestError.errorCode ?? "—"} mono />
               </div>

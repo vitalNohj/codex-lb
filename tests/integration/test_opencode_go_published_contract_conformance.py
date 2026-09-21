@@ -78,13 +78,25 @@ def test_the_routing_provider_id_is_registered_with_the_exact_contract_spelling(
 
 
 def test_existing_provider_order_is_not_disturbed_by_the_new_entry():
-    """Regression guard that is meaningful today, before the Go code lands."""
+    """Regression guard that is meaningful today, before the Go code lands.
+
+    Asserts the *relative* order of the providers this contract names, which is
+    what the tiebreak actually depends on - not an exhaustive list of every
+    provider that exists. An exact-list assertion also failed whenever an
+    unrelated integration was added between them (NVIDIA, inserted after
+    OpenRouter by ``add-nvidia-sidecar-routing``), reporting a reshuffle that had
+    not happened while proving nothing extra about the ones that matter.
+    """
     from app.modules.proxy.sidecar_routing import SIDECAR_PROVIDER_ORDER
 
-    existing = [p for p in SIDECAR_PROVIDER_ORDER if p != PROVIDER_KEY]
-    assert existing == ["claude", "openrouter", "orcarouter", "omniroute", "ollama"], (
+    contract_relevant = ["claude", "openrouter", "orcarouter", "omniroute", "ollama"]
+    for provider in contract_relevant:
+        assert provider in SIDECAR_PROVIDER_ORDER, f"{provider} disappeared from the provider order"
+    positions = [SIDECAR_PROVIDER_ORDER.index(provider) for provider in contract_relevant]
+    assert positions == sorted(positions), (
         "the relative order of the existing integrations is load-bearing for "
-        "prefix tiebreaks and must not be reshuffled to insert a new provider"
+        "prefix tiebreaks and must not be reshuffled to insert a new provider; "
+        f"got {list(SIDECAR_PROVIDER_ORDER)}"
     )
 
 

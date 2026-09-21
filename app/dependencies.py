@@ -34,9 +34,11 @@ from app.modules.free_model_discovery.service import FreeModelDiscoveryService
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.model_sources.service import ModelSourcesService
+from app.modules.nvidia_sidecar.service import NvidiaSidecarService
 from app.modules.oauth.service import OauthService
 from app.modules.ollama_sidecar.service import OllamaSidecarService
 from app.modules.omniroute_sidecar.service import OmniRouteSidecarService
+from app.modules.openai_compat.service import OpenAICompatService
 from app.modules.opencode_go.service import OpenCodeGoQuotaService
 from app.modules.opencode_go_sidecar.service import OpenCodeGoSidecarService
 from app.modules.openrouter_sidecar.service import OpenRouterSidecarService
@@ -141,6 +143,20 @@ class OpenRouterSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: OpenRouterSidecarService
+
+
+@dataclass(slots=True)
+class NvidiaSidecarContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: NvidiaSidecarService
+
+
+@dataclass(slots=True)
+class OpenAICompatContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: OpenAICompatService
 
 
 @dataclass(slots=True)
@@ -390,6 +406,22 @@ def get_openrouter_sidecar_context(
     settings_repository = SettingsRepository(session)
     service = OpenRouterSidecarService(settings_repository)
     return OpenRouterSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_nvidia_sidecar_context(
+    session: AsyncSession = Depends(get_session),
+) -> NvidiaSidecarContext:
+    settings_repository = SettingsRepository(session)
+    service = NvidiaSidecarService(settings_repository)
+    return NvidiaSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_openai_compat_context(
+    session: AsyncSession = Depends(get_session),
+) -> OpenAICompatContext:
+    settings_repository = SettingsRepository(session)
+    service = OpenAICompatService(settings_repository)
+    return OpenAICompatContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_orcarouter_sidecar_context(

@@ -20,7 +20,19 @@ from app.db.models import DashboardSettings
 
 _SETTINGS_ID = 1
 _UNSET = object()
-_OPERATIONAL_JSON_COLUMNS = frozenset({"openrouter_sidecar_full_models_json", "orcarouter_sidecar_full_models_json"})
+_OPERATIONAL_JSON_COLUMNS = frozenset(
+    {
+        "openrouter_sidecar_full_models_json",
+        "nvidia_sidecar_full_models_json",
+        "orcarouter_sidecar_full_models_json",
+    }
+)
+
+# Operational JSON columns written WITHOUT bumping ``version``, under a
+# compare-and-set on the column's own value instead. See
+# ``update_operational_json_column_if_unchanged`` for why both properties are
+# needed at once.
+_OPERATIONAL_JSON_CAS_COLUMNS = frozenset({"openai_compat_endpoints_json"})
 
 
 class SettingsRepository:
@@ -129,6 +141,21 @@ class SettingsRepository:
             openrouter_sidecar_connect_timeout_seconds=static_settings.openrouter_sidecar_connect_timeout_seconds,
             openrouter_sidecar_request_timeout_seconds=static_settings.openrouter_sidecar_request_timeout_seconds,
             openrouter_sidecar_models_cache_ttl_seconds=static_settings.openrouter_sidecar_models_cache_ttl_seconds,
+            nvidia_sidecar_enabled=static_settings.nvidia_sidecar_enabled,
+            nvidia_sidecar_base_url=static_settings.nvidia_sidecar_base_url,
+            nvidia_sidecar_api_key_encrypted=(
+                TokenEncryptor().encrypt(static_settings.nvidia_sidecar_api_key.strip())
+                if static_settings.nvidia_sidecar_api_key.strip()
+                else None
+            ),
+            nvidia_sidecar_model_prefixes_json=dump_configured_sidecar_prefixes(
+                static_settings.nvidia_sidecar_model_prefixes
+            ),
+            nvidia_sidecar_full_models_json="[]",
+            nvidia_sidecar_connect_timeout_seconds=static_settings.nvidia_sidecar_connect_timeout_seconds,
+            nvidia_sidecar_request_timeout_seconds=static_settings.nvidia_sidecar_request_timeout_seconds,
+            nvidia_sidecar_models_cache_ttl_seconds=static_settings.nvidia_sidecar_models_cache_ttl_seconds,
+            openai_compat_endpoints_json="[]",
             orcarouter_sidecar_enabled=static_settings.orcarouter_sidecar_enabled,
             orcarouter_sidecar_base_url=static_settings.orcarouter_sidecar_base_url,
             orcarouter_sidecar_api_key_encrypted=(
@@ -263,6 +290,11 @@ class SettingsRepository:
         openrouter_sidecar_last_health_message: str | None | object = _UNSET,
         openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         openrouter_sidecar_last_model_count: int | None | object = _UNSET,
+        nvidia_sidecar_last_health_status: str | None | object = _UNSET,
+        nvidia_sidecar_last_health_message: str | None | object = _UNSET,
+        nvidia_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        nvidia_sidecar_last_model_count: int | None | object = _UNSET,
+        openai_compat_endpoints_json: str | None | object = _UNSET,
         orcarouter_sidecar_last_health_status: str | None | object = _UNSET,
         orcarouter_sidecar_last_health_message: str | None | object = _UNSET,
         orcarouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
@@ -298,6 +330,11 @@ class SettingsRepository:
             "openrouter_sidecar_last_health_message": openrouter_sidecar_last_health_message,
             "openrouter_sidecar_last_checked_at": openrouter_sidecar_last_checked_at,
             "openrouter_sidecar_last_model_count": openrouter_sidecar_last_model_count,
+            "nvidia_sidecar_last_health_status": nvidia_sidecar_last_health_status,
+            "nvidia_sidecar_last_health_message": nvidia_sidecar_last_health_message,
+            "nvidia_sidecar_last_checked_at": nvidia_sidecar_last_checked_at,
+            "nvidia_sidecar_last_model_count": nvidia_sidecar_last_model_count,
+            "openai_compat_endpoints_json": openai_compat_endpoints_json,
             "orcarouter_sidecar_last_health_status": orcarouter_sidecar_last_health_status,
             "orcarouter_sidecar_last_health_message": orcarouter_sidecar_last_health_message,
             "orcarouter_sidecar_last_checked_at": orcarouter_sidecar_last_checked_at,
@@ -326,6 +363,57 @@ class SettingsRepository:
         await self._session.commit()
         await self._session.refresh(settings)
         return settings
+
+    async def update_operational_json_column_if_unchanged(
+        self, column: str, *, expected: str | None, value: str
+    ) -> bool:
+        """Write one operational JSON column only if it still holds ``expected``.
+
+        Returns ``True`` on success and ``False`` when another writer changed the
+        column first, so the caller can re-read and re-apply its own narrow edit.
+
+        This column needs two properties that no existing path offers together:
+
+        * **It must not bump ``version``.** ``openai_compat_endpoints_json`` is a
+          collection the Settings form edits, and the form's optimistic-version
+          check refuses a save whose snapshot is stale. Recording a health result
+          - an operator pressing one endpoint card's Test button - must not make
+          the form they are already editing refuse to save. This is the same
+          reasoning ``update_operational`` documents, and an existing test pins
+          it.
+        * **It must not be a blind whole-blob overwrite.** The same blob holds
+          every endpoint's *configuration* as well as its health, so a write
+          built from a stale read silently reverts a concurrent endpoint edit or
+          another endpoint's test result.
+
+        A compare-and-set on the column's own value satisfies both: it detects
+        exactly the interference that matters (someone else changed this blob)
+        while leaving the row's ``version`` - and therefore every open form -
+        alone. The Core UPDATE is dialect-agnostic and needs no row lock, because
+        the ``WHERE`` clause is evaluated by the database at write time.
+        """
+
+        if column not in _OPERATIONAL_JSON_CAS_COLUMNS:
+            raise ValueError(f"column {column!r} is not a compare-and-set operational JSON column")
+        settings_column = getattr(DashboardSettings, column)
+        # ``expected`` may legitimately be NULL (the column has never been
+        # written), and ``= NULL`` matches nothing in SQL, so branch on it.
+        current_matches = settings_column.is_(None) if expected is None else settings_column == expected
+        result = await self._session.execute(
+            update(DashboardSettings)
+            .where(DashboardSettings.id == _SETTINGS_ID)
+            .where(current_matches)
+            .values(**{column: value, "updated_at": func.now()})
+        )
+        await self._session.commit()
+        # ``getattr`` rather than a direct attribute read: ``rowcount`` is not on
+        # the generic ``Result`` type, the same accommodation the other
+        # affected-row checks in this codebase make.
+        if int(getattr(result, "rowcount", 0) or 0) <= 0:
+            return False
+        settings = await self.get_or_create()
+        await self._session.refresh(settings)
+        return True
 
     async def update_operational_json_column(self, column: str, value: str) -> DashboardSettings:
         """Persist one sidecar full-model JSON column under the version CAS.
@@ -434,6 +522,20 @@ class SettingsRepository:
         openrouter_sidecar_last_checked_at: datetime | None | object = _UNSET,
         openrouter_sidecar_last_model_count: int | None | object = _UNSET,
         openrouter_sidecar_default_reasoning_effort: str | None | object = _UNSET,
+        nvidia_sidecar_enabled: bool | None = None,
+        nvidia_sidecar_base_url: str | None = None,
+        nvidia_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
+        nvidia_sidecar_model_prefixes_json: str | None = None,
+        nvidia_sidecar_full_models_json: str | None = None,
+        nvidia_sidecar_connect_timeout_seconds: float | None = None,
+        nvidia_sidecar_request_timeout_seconds: float | None = None,
+        nvidia_sidecar_models_cache_ttl_seconds: float | None = None,
+        nvidia_sidecar_last_health_status: str | None | object = _UNSET,
+        nvidia_sidecar_last_health_message: str | None | object = _UNSET,
+        nvidia_sidecar_last_checked_at: datetime | None | object = _UNSET,
+        nvidia_sidecar_last_model_count: int | None | object = _UNSET,
+        nvidia_sidecar_default_reasoning_effort: str | None | object = _UNSET,
+        openai_compat_endpoints_json: str | None = None,
         orcarouter_sidecar_enabled: bool | None = None,
         orcarouter_sidecar_base_url: str | None = None,
         orcarouter_sidecar_api_key_encrypted: bytes | None | object = _UNSET,
@@ -664,6 +766,34 @@ class SettingsRepository:
             settings.openrouter_sidecar_last_model_count = openrouter_sidecar_last_model_count
         if openrouter_sidecar_default_reasoning_effort is not _UNSET:
             settings.openrouter_sidecar_default_reasoning_effort = openrouter_sidecar_default_reasoning_effort
+        if nvidia_sidecar_enabled is not None:
+            settings.nvidia_sidecar_enabled = nvidia_sidecar_enabled
+        if nvidia_sidecar_base_url is not None:
+            settings.nvidia_sidecar_base_url = nvidia_sidecar_base_url
+        if nvidia_sidecar_api_key_encrypted is not _UNSET:
+            settings.nvidia_sidecar_api_key_encrypted = nvidia_sidecar_api_key_encrypted
+        if nvidia_sidecar_model_prefixes_json is not None:
+            settings.nvidia_sidecar_model_prefixes_json = nvidia_sidecar_model_prefixes_json
+        if nvidia_sidecar_full_models_json is not None:
+            settings.nvidia_sidecar_full_models_json = nvidia_sidecar_full_models_json
+        if nvidia_sidecar_connect_timeout_seconds is not None:
+            settings.nvidia_sidecar_connect_timeout_seconds = nvidia_sidecar_connect_timeout_seconds
+        if nvidia_sidecar_request_timeout_seconds is not None:
+            settings.nvidia_sidecar_request_timeout_seconds = nvidia_sidecar_request_timeout_seconds
+        if nvidia_sidecar_models_cache_ttl_seconds is not None:
+            settings.nvidia_sidecar_models_cache_ttl_seconds = nvidia_sidecar_models_cache_ttl_seconds
+        if nvidia_sidecar_last_health_status is not _UNSET:
+            settings.nvidia_sidecar_last_health_status = nvidia_sidecar_last_health_status
+        if nvidia_sidecar_last_health_message is not _UNSET:
+            settings.nvidia_sidecar_last_health_message = nvidia_sidecar_last_health_message
+        if nvidia_sidecar_last_checked_at is not _UNSET:
+            settings.nvidia_sidecar_last_checked_at = nvidia_sidecar_last_checked_at
+        if nvidia_sidecar_last_model_count is not _UNSET:
+            settings.nvidia_sidecar_last_model_count = nvidia_sidecar_last_model_count
+        if nvidia_sidecar_default_reasoning_effort is not _UNSET:
+            settings.nvidia_sidecar_default_reasoning_effort = nvidia_sidecar_default_reasoning_effort
+        if openai_compat_endpoints_json is not None:
+            settings.openai_compat_endpoints_json = openai_compat_endpoints_json
         if orcarouter_sidecar_enabled is not None:
             settings.orcarouter_sidecar_enabled = orcarouter_sidecar_enabled
         if orcarouter_sidecar_base_url is not None:

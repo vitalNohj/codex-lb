@@ -57,6 +57,7 @@ const BASE_SETTINGS: DashboardSettings = {
   openrouterSidecarLastHealthMessage: "OpenRouter sidecar reachable",
   openrouterSidecarLastCheckedAt: "2026-01-01T00:00:00Z",
   openrouterSidecarLastModelCount: 1,
+  openaiCompatEndpoints: [],
   guestAccessEnabled: false,
   prohibitFastMode: false,
   httpDownstreamTransportPolicy: "smart",

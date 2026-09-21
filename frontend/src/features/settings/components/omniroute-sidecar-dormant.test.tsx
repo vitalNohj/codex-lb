@@ -66,6 +66,7 @@ const BASE_SETTINGS: DashboardSettings = {
   omnirouteSidecarLastHealthMessage: "OmniRoute sidecar reachable",
   omnirouteSidecarLastCheckedAt: "2026-01-01T00:00:00Z",
   omnirouteSidecarLastModelCount: 1,
+  openaiCompatEndpoints: [],
   guestAccessEnabled: false,
   prohibitFastMode: false,
   httpDownstreamTransportPolicy: "smart",
@@ -148,7 +149,15 @@ describe("OmniRoute disabled as a product integration", () => {
   it("hides OmniRoute accounts from the account-type filter", () => {
     render(
       <AccountTypeFilterToggle
-        value={{ codex: true, cliproxy: true, openrouter: true, orcarouter: true, omniroute: true }}
+        value={{
+          codex: true,
+          cliproxy: true,
+          openrouter: true,
+          nvidia: true,
+          orcarouter: true,
+          omniroute: true,
+          openai_compat: true,
+        }}
         onToggle={vi.fn()}
       />,
     );
@@ -159,14 +168,14 @@ describe("OmniRoute disabled as a product integration", () => {
   it("classifies an OmniRoute account as a disabled capability", () => {
     expect(isDisabledCapabilityAccount({ provider: "omniroute" })).toBe(true);
     // Neighbouring providers stay enabled.
-    for (const provider of ["openrouter", "orcarouter", "claude", "ollama"]) {
+    for (const provider of ["openrouter", "nvidia", "orcarouter", "claude", "ollama", "openai_compat"]) {
       expect(isDisabledCapabilityAccount({ provider })).toBe(false);
     }
   });
 
   it("classifies an OmniRoute request-log source as a disabled capability", () => {
     expect(isDisabledCapabilityRequestSource("omniroute_sidecar")).toBe(true);
-    for (const source of ["openrouter_sidecar", "orcarouter_sidecar", "claude_sidecar", "ollama_sidecar"]) {
+    for (const source of ["openrouter_sidecar", "nvidia_sidecar", "orcarouter_sidecar", "claude_sidecar", "ollama_sidecar", "openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a"]) {
       expect(isDisabledCapabilityRequestSource(source)).toBe(false);
     }
   });

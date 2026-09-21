@@ -97,16 +97,20 @@ describe("useDashboardPreferencesStore", () => {
       codex: true,
       cliproxy: true,
       openrouter: true,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
     });
     expect(window.localStorage.getItem("codex-lb-dashboard-account-type-visibility")).toBe(
       JSON.stringify({
         codex: true,
         cliproxy: true,
         openrouter: true,
+        nvidia: true,
         orcarouter: true,
         omniroute: true,
+        openai_compat: true,
       }),
     );
   });
@@ -120,16 +124,20 @@ describe("useDashboardPreferencesStore", () => {
       codex: true,
       cliproxy: true,
       openrouter: false,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
     });
     expect(window.localStorage.getItem("codex-lb-dashboard-account-type-visibility")).toBe(
       JSON.stringify({
         codex: true,
         cliproxy: true,
         openrouter: false,
+        nvidia: true,
         orcarouter: true,
         omniroute: true,
+        openai_compat: true,
       }),
     );
   });
@@ -147,8 +155,37 @@ describe("useDashboardPreferencesStore", () => {
       codex: true,
       cliproxy: false,
       openrouter: false,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
+    });
+  });
+
+  it("hydrates preferences persisted before the openai_compat key existed without resetting other toggles", async () => {
+    window.localStorage.setItem(
+      "codex-lb-dashboard-account-type-visibility",
+      JSON.stringify({
+        codex: true,
+        cliproxy: false,
+        openrouter: false,
+        nvidia: false,
+        omniroute: true,
+        orcarouter: true,
+      }),
+    );
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility).toEqual({
+      codex: true,
+      cliproxy: false,
+      openrouter: false,
+      nvidia: false,
+      omniroute: true,
+      orcarouter: true,
+      openai_compat: true,
     });
   });
 
@@ -165,8 +202,10 @@ describe("useDashboardPreferencesStore", () => {
       codex: false,
       cliproxy: true,
       openrouter: true,
+      nvidia: true,
       omniroute: true,
       orcarouter: true,
+      openai_compat: true,
     });
   });
 

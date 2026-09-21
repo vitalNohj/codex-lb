@@ -298,6 +298,13 @@ class Settings(BaseSettings):
     openrouter_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     openrouter_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    nvidia_sidecar_enabled: bool = False
+    nvidia_sidecar_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_sidecar_api_key: str = ""
+    nvidia_sidecar_model_prefixes: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    nvidia_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
+    nvidia_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
+    nvidia_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     orcarouter_sidecar_enabled: bool = False
     orcarouter_sidecar_base_url: str = "https://api.orcarouter.ai/v1"
     orcarouter_sidecar_api_key: str = ""
@@ -752,6 +759,21 @@ class Settings(BaseSettings):
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError("openrouter_sidecar_base_url must not be blank")
+        return normalized
+
+    @field_validator("nvidia_sidecar_model_prefixes", mode="before")
+    @classmethod
+    def _normalize_nvidia_sidecar_model_prefixes(cls, value: StringListInput) -> list[str]:
+        return _normalize_string_list(value, field_name="nvidia_sidecar_model_prefixes")
+
+    @field_validator("nvidia_sidecar_base_url", mode="before")
+    @classmethod
+    def _normalize_nvidia_sidecar_base_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("nvidia_sidecar_base_url must be a string")
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("nvidia_sidecar_base_url must not be blank")
         return normalized
 
     @field_validator("orcarouter_sidecar_model_prefixes", mode="before")

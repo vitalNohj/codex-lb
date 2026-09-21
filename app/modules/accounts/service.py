@@ -42,8 +42,10 @@ from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.accounts.deletion import request_account_deletion_run
 from app.modules.accounts.mappers import build_account_summaries, build_account_usage_trends
+from app.modules.accounts.nvidia_sidecar_summary import build_nvidia_sidecar_summary
 from app.modules.accounts.ollama_sidecar_summary import build_ollama_sidecar_summary
 from app.modules.accounts.omniroute_sidecar_summary import build_omniroute_sidecar_summary
+from app.modules.accounts.openai_compat_summary import build_openai_compat_summary
 from app.modules.accounts.opencode_go_sidecar_summary import build_opencode_go_sidecar_summary
 from app.modules.accounts.openrouter_sidecar_summary import build_openrouter_sidecar_summary
 from app.modules.accounts.orcarouter_sidecar_summary import build_orcarouter_sidecar_summary
@@ -74,6 +76,7 @@ from app.modules.claude_sidecar.quota import snapshot_from_json
 from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.limit_warmup.repository import LimitWarmupRepository
+from app.modules.openai_compat.endpoints import parse_openai_compat_endpoints
 from app.modules.proxy.account_cache import (
     clear_account_routing_unavailable,
     get_account_selection_cache,
@@ -254,6 +257,10 @@ class AccountsService:
             openrouter_synthetic = await self._openrouter_sidecar_account_summary()
             if openrouter_synthetic is not None:
                 summaries.append(openrouter_synthetic)
+            nvidia_synthetic = await self._nvidia_sidecar_account_summary()
+            if nvidia_synthetic is not None:
+                summaries.append(nvidia_synthetic)
+            summaries.extend(await self._openai_compat_account_summaries())
             orcarouter_synthetic = await self._orcarouter_sidecar_account_summary()
             if orcarouter_synthetic is not None:
                 summaries.append(orcarouter_synthetic)
@@ -320,6 +327,45 @@ class AccountsService:
             total_cost_usd=usage_summary.total_cost_usd,
         )
         return build_openrouter_sidecar_summary(settings, request_usage)
+
+    async def _nvidia_sidecar_account_summary(self) -> AccountSummary | None:
+        if self._settings_repo is None:
+            return None
+        settings = await self._settings_repo.get_or_create()
+        usage_summary = await self._repo.request_usage_summary_for_source("nvidia_sidecar")
+        request_usage = AccountRequestUsage(
+            request_count=usage_summary.request_count,
+            total_tokens=usage_summary.total_tokens,
+            cached_input_tokens=usage_summary.cached_input_tokens,
+            total_cost_usd=usage_summary.total_cost_usd,
+        )
+        return build_nvidia_sidecar_summary(settings, request_usage)
+
+    async def _openai_compat_account_summaries(self) -> list[AccountSummary]:
+        if self._settings_repo is None:
+            return []
+        settings = await self._settings_repo.get_or_create()
+        endpoints = parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
+        if not endpoints:
+            return []
+        # One grouped aggregate rather than one query per endpoint: operators may
+        # configure up to ``OPENAI_COMPAT_MAX_ENDPOINTS`` of them, and a
+        # per-endpoint query made loading the accounts page an N+1 over the
+        # request-log aggregate.
+        usage_summaries = await self._repo.request_usage_summaries_for_sources(
+            [endpoint.provider_id for endpoint in endpoints]
+        )
+        summaries: list[AccountSummary] = []
+        for endpoint in endpoints:
+            usage_summary = usage_summaries.get(endpoint.provider_id)
+            request_usage = AccountRequestUsage(
+                request_count=usage_summary.request_count if usage_summary else 0,
+                total_tokens=usage_summary.total_tokens if usage_summary else 0,
+                cached_input_tokens=usage_summary.cached_input_tokens if usage_summary else 0,
+                total_cost_usd=usage_summary.total_cost_usd if usage_summary else 0.0,
+            )
+            summaries.append(build_openai_compat_summary(endpoint, request_usage))
+        return summaries
 
     async def _orcarouter_sidecar_account_summary(self) -> AccountSummary | None:
         if self._settings_repo is None:

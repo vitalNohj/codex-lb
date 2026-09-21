@@ -16,6 +16,8 @@ import {
   getOmniRouteSidecarStatus,
   getOpenCodeGoSidecarStatus,
   getOpenRouterSidecarStatus,
+  getNvidiaSidecarStatus,
+  getOpenAICompatStatus,
   getOrcaRouterSidecarStatus,
   getSettings,
   listClaudeSidecarModels,
@@ -23,6 +25,8 @@ import {
   listOmniRouteSidecarModels,
   listOpenCodeGoSidecarModels,
   listOpenRouterSidecarModels,
+  listNvidiaSidecarModels,
+  listOpenAICompatModels,
   listOrcaRouterSidecarModels,
   getTelemetryConsent,
   getUpstreamProxyAdmin,
@@ -36,6 +40,8 @@ import {
   testOmniRouteSidecarConnection,
   testOpenCodeGoSidecarConnection,
   testOpenRouterSidecarConnection,
+  testNvidiaSidecarConnection,
+  testOpenAICompatConnection,
   testOrcaRouterSidecarConnection,
   testUpstreamProxyEndpoint,
   updateSettings,
@@ -82,6 +88,9 @@ const SETTINGS_COLLECTION_FIELDS = [
   "claudeSidecarAuthPlans",
   "openrouterSidecarModelPrefixes",
   "openrouterSidecarFullModels",
+  "nvidiaSidecarModelPrefixes",
+  "nvidiaSidecarFullModels",
+  "openaiCompatEndpoints",
   "orcarouterSidecarModelPrefixes",
   "orcarouterSidecarFullModels",
   "omnirouteSidecarModelPrefixes",
@@ -350,6 +359,7 @@ export function useUpstreamProxyAdmin() {
 export type SidecarConnectionProvider =
   | "claude"
   | "openrouter"
+  | "nvidia"
   | "orcarouter"
   | "omniroute"
   | "ollama"
@@ -375,6 +385,12 @@ const SIDECAR_TEST_CONFIG: Record<
     testConnection: testOpenRouterSidecarConnection,
     successMessage: "OpenRouter sidecar tested",
     errorMessage: "OpenRouter sidecar test failed",
+  },
+  nvidia: {
+    queryKey: "nvidia-sidecar",
+    testConnection: testNvidiaSidecarConnection,
+    successMessage: "NVIDIA tested",
+    errorMessage: "NVIDIA test failed",
   },
   orcarouter: {
     queryKey: "orcarouter-sidecar",
@@ -575,6 +591,54 @@ export function useOpenRouterSidecar(options?: { modelsEnabled?: boolean }) {
     enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useSidecarConnectionTest("openrouter");
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useNvidiaSidecar(options?: { modelsEnabled?: boolean }) {
+  const statusQuery = useQuery({
+    queryKey: ["settings", "nvidia-sidecar", "status"],
+    queryFn: getNvidiaSidecarStatus,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "nvidia-sidecar", "models"],
+    queryFn: listNvidiaSidecarModels,
+    enabled: options?.modelsEnabled ?? true,
+  });
+  const testMutation = useSidecarConnectionTest("nvidia");
+  return { statusQuery, modelsQuery, testMutation };
+}
+
+export function useOpenAICompatSidecar(
+  endpointId: string,
+  options?: { modelsEnabled?: boolean },
+) {
+  const queryClient = useQueryClient();
+  const enabled = Boolean(endpointId);
+  const statusQuery = useQuery({
+    queryKey: ["settings", "openai-compat", endpointId, "status"],
+    queryFn: () => getOpenAICompatStatus(endpointId),
+    enabled,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "openai-compat", endpointId, "models"],
+    queryFn: () => listOpenAICompatModels(endpointId),
+    enabled: enabled && (options?.modelsEnabled ?? true),
+  });
+  const testMutation = useMutation({
+    mutationFn: () => testOpenAICompatConnection(endpointId),
+    onSuccess: () => {
+      toast.success("OpenAI-compat endpoint tested");
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "OpenAI-compat endpoint test failed");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["settings", "openai-compat", endpointId] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
   return { statusQuery, modelsQuery, testMutation };
 }
 

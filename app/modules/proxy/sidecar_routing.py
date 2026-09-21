@@ -27,6 +27,7 @@ from app.core.config.product_capabilities import is_capability_enabled
 SIDECAR_PROVIDER_ORDER: tuple[str, ...] = (
     "claude",
     "openrouter",
+    "nvidia",
     "orcarouter",
     "omniroute",
     "ollama",

@@ -9,6 +9,10 @@ import {
   REASONING_EFFORT_OPTIONS,
   REASONING_EFFORT_UNSET,
 } from "@/features/settings/reasoning-effort";
+import {
+  mapOpenAICompatEndpointUpdates,
+  openaiCompatEndpointIdFromAccountId,
+} from "@/features/settings/openai-compat-endpoints";
 import type {
   DashboardSettings,
   SettingsUpdateRequest,
@@ -19,6 +23,7 @@ import { useSettings } from "@/features/settings/hooks/use-settings";
 type EffortFieldKey =
   | "claudeSidecarDefaultReasoningEffort"
   | "openrouterSidecarDefaultReasoningEffort"
+  | "nvidiaSidecarDefaultReasoningEffort"
   | "orcarouterSidecarDefaultReasoningEffort"
   | "omnirouteSidecarDefaultReasoningEffort"
   | "ollamaSidecarDefaultReasoningEffort";
@@ -26,6 +31,9 @@ type EffortFieldKey =
 function fieldForProvider(provider: string | null | undefined): EffortFieldKey {
   if (provider === "openrouter") {
     return "openrouterSidecarDefaultReasoningEffort";
+  }
+  if (provider === "nvidia") {
+    return "nvidiaSidecarDefaultReasoningEffort";
   }
   if (provider === "orcarouter") {
     return "orcarouterSidecarDefaultReasoningEffort";
@@ -41,9 +49,11 @@ function fieldForProvider(provider: string | null | undefined): EffortFieldKey {
 
 export function SidecarEffortSelect({
   provider,
+  accountId,
   compact = false,
 }: {
   provider: string | null | undefined;
+  accountId?: string;
   compact?: boolean;
 }) {
   const { settingsQuery, updateSettingsMutation } = useSettings();
@@ -51,12 +61,30 @@ export function SidecarEffortSelect({
   if (!settings) {
     return null;
   }
+  const openaiCompatEndpointId =
+    provider === "openai_compat" ? openaiCompatEndpointIdFromAccountId(accountId) : null;
+  const openaiCompatEndpoint = openaiCompatEndpointId
+    ? (settings.openaiCompatEndpoints ?? []).find((endpoint) => endpoint.id === openaiCompatEndpointId)
+    : null;
+  if (provider === "openai_compat" && !openaiCompatEndpoint) {
+    return null;
+  }
   const field = fieldForProvider(provider);
-  const current = (settings as DashboardSettings)[field] ?? null;
+  const current = openaiCompatEndpoint
+    ? (openaiCompatEndpoint.defaultReasoningEffort ?? null)
+    : ((settings as DashboardSettings)[field] ?? null);
   const busy = updateSettingsMutation.isPending;
   const handleChange = (value: string) => {
     const effort: SidecarReasoningEffort | null =
       value === REASONING_EFFORT_UNSET ? null : (value as SidecarReasoningEffort);
+    if (openaiCompatEndpoint) {
+      void updateSettingsMutation.mutateAsync({
+        openaiCompatEndpoints: mapOpenAICompatEndpointUpdates(settings, openaiCompatEndpoint.id, {
+          defaultReasoningEffort: effort,
+        }),
+      });
+      return;
+    }
     const patch = { [field]: effort } as Partial<SettingsUpdateRequest>;
     void updateSettingsMutation.mutateAsync(patch);
   };
