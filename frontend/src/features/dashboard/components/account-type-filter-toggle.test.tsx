@@ -15,6 +15,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           omniroute: false,
           orcarouter: true,
+          opencode_go: true,
           openai_compat: true,
         }}
         onToggle={vi.fn()}
@@ -53,6 +54,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           orcarouter: true,
           omniroute: true,
+          opencode_go: true,
           openai_compat: true,
         }}
         onToggle={vi.fn()}
@@ -73,6 +75,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           orcarouter: true,
           omniroute: true,
+          opencode_go: true,
           openai_compat: true,
         }}
         onToggle={vi.fn()}
@@ -85,6 +88,7 @@ describe("AccountTypeFilterToggle", () => {
       "OpenRouter",
       "NVIDIA",
       "OrcaRouter",
+      "OpenCode Go",
       "OpenAI-compat",
     ]);
   });
@@ -101,6 +105,7 @@ describe("AccountTypeFilterToggle", () => {
           nvidia: true,
           omniroute: true,
           orcarouter: true,
+          opencode_go: true,
           openai_compat: true,
         }}
         onToggle={onToggle}
@@ -118,5 +123,9 @@ describe("AccountTypeFilterToggle", () => {
     await user.click(screen.getByRole("button", { name: "Hide OrcaRouter accounts" }));
 
     expect(onToggle).toHaveBeenCalledWith("orcarouter");
+
+    await user.click(screen.getByRole("button", { name: "Hide OpenCode Go accounts" }));
+
+    expect(onToggle).toHaveBeenCalledWith("opencode_go");
   });
 });

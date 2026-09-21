@@ -73,6 +73,7 @@ describe("accountTypeKey", () => {
     expect(accountTypeKey({ ...synthetic, provider: "nvidia" })).toBe("nvidia");
     expect(accountTypeKey({ ...synthetic, provider: "omniroute" })).toBe("omniroute");
     expect(accountTypeKey({ ...synthetic, provider: "orcarouter" })).toBe("orcarouter");
+    expect(accountTypeKey({ ...synthetic, provider: "opencode_go" })).toBe("opencode_go");
     expect(accountTypeKey({ ...synthetic, provider: "openai_compat" })).toBe("openai_compat");
     expect(accountTypeKey({ ...synthetic, provider: "ollama" })).toBe("other");
     expect(accountTypeKey({ ...synthetic, synthetic: false, provider: null })).toBe("codex");

@@ -207,6 +207,7 @@ describe("DashboardPage", () => {
         nvidia: true,
         omniroute: true,
         orcarouter: true,
+        opencode_go: true,
         openai_compat: true,
       },
       accountListSort: null,
@@ -643,6 +644,33 @@ describe("DashboardPage", () => {
 
     expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, nvidiaAccount]);
     expect(useDashboardPreferencesStore.getState().accountTypeVisibility.nvidia).toBe(true);
+  });
+
+  it("hides and shows the OpenCode Go synthetic account through its own filter toggle", async () => {
+    const user = userEvent.setup();
+    const codexAccount = createAccountSummary({ accountId: "acc_codex" });
+    const openCodeGoAccount = createAccountSummary({
+      accountId: "opencode-go-sidecar",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "opencode_go",
+      displayName: "OpenCode Go",
+    });
+    mockReadyDashboard(createDashboardOverview({ accounts: [codexAccount, openCodeGoAccount] }));
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, openCodeGoAccount]);
+
+    await user.click(screen.getByRole("button", { name: "Hide OpenCode Go accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.opencode_go).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Show OpenCode Go accounts" }));
+
+    expect(accountCardsSpy).toHaveBeenLastCalledWith([codexAccount, openCodeGoAccount]);
+    expect(useDashboardPreferencesStore.getState().accountTypeVisibility.opencode_go).toBe(true);
   });
 
   it("hides a Claude sidecar without a provider when the CLIProxy filter is off", async () => {
