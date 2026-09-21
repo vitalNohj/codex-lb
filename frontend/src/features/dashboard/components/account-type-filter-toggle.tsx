@@ -17,6 +17,7 @@ const LABELS: Record<AccountTypeKey, string> = {
   nvidia: "NVIDIA",
   orcarouter: "OrcaRouter",
   omniroute: "Omniroute",
+  opencode_go: "OpenCode Go",
   openai_compat: "OpenAI-compat",
 };
 

@@ -156,6 +156,7 @@ describe("OmniRoute disabled as a product integration", () => {
           nvidia: true,
           orcarouter: true,
           omniroute: true,
+          opencode_go: true,
           openai_compat: true,
         }}
         onToggle={vi.fn()}
