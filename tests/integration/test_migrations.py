@@ -1302,6 +1302,10 @@ async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
                        NULL, 200000, 1000000, 100000, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
                       ('acc_sol', 'key_sol', 'req_unknown', '2026-09-22 00:04:00', 'gpt-6-not-a-real-model',
                        NULL, 1000, 1000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_sol_pro', '2026-09-22 00:04:30', 'gpt-6-sol-pro',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_unrelated_luna', '2026-09-22 00:04:45', 'unrelated/gpt-6-luna',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
                       ('acc_sol', 'key_sol', 'req_old_luna', '2026-09-22 00:05:00', 'gpt-5.6-luna',
                        NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
                       ('acc_sol', 'key_sol', 'req_priced', '2026-09-22 00:06:00', 'gpt-6-luna',
@@ -1382,6 +1386,9 @@ async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
         assert dup_costs[1] == pytest.approx(10.4)
         assert costs["req_sol_cached"] == pytest.approx(10.22)
         assert costs["req_unknown"] is None
+        assert costs["req_sol_pro"] is None
+        assert sources["req_sol_pro"] is None
+        assert costs["req_unrelated_luna"] is None
         assert costs["req_old_luna"] is None
         assert costs["req_priced"] == pytest.approx(1.0)
         assert costs["req_billed"] is None

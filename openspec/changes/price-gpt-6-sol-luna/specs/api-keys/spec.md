@@ -52,6 +52,11 @@ The existing `priority` and `fast` service-tier aliases MUST use the Fast/priori
 - **WHEN** the requested model is `gpt-6-sol-2026-09-22`, `codex/gpt-6-sol`, `openai/gpt-6-luna`, or `gpt-6-luna-20260922`
 - **THEN** cost accounting resolves it to the matching `gpt-6-sol` or `gpt-6-luna` price entry
 
+#### Scenario: Lookalike ids do not receive Sol or Luna pricing
+
+- **WHEN** cost accounting receives model `gpt-6-sol-pro` or `unrelated/gpt-6-luna`
+- **THEN** it does not resolve a `gpt-6-sol` or `gpt-6-luna` price
+
 ### Requirement: GPT-6 Sol and Luna grants stay bounded to their model ids
 
 An `allowed_models` entry of `gpt-6-sol` or `gpt-6-luna` MUST admit the canonical id, a dated snapshot of that id, and the same id with a `codex/` or `openai/` prefix. It MUST NOT admit an id that only contains the name, such as `gpt-6-sol-pro` or `unrelated/gpt-6-luna`.
@@ -88,6 +93,12 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 #### Scenario: Backfill leaves unknown models as unknown cost
 
 - **GIVEN** a pre-existing request log whose model still has no pricing entry
+- **WHEN** the migration runs
+- **THEN** that row's `cost_usd` remains NULL
+
+#### Scenario: Backfill does not price lookalike model ids
+
+- **GIVEN** a pre-existing request log with model `gpt-6-sol-pro` or `unrelated/gpt-6-luna` and `cost_usd IS NULL`
 - **WHEN** the migration runs
 - **THEN** that row's `cost_usd` remains NULL
 

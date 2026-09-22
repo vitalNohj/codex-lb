@@ -5,7 +5,7 @@ GPT-6 Sol and GPT-6 Luna request logs persist `cost_usd = NULL` because the stat
 ## What Changes
 
 - Add canonical OpenAI list prices for `gpt-6-sol` and `gpt-6-luna` (standard, Fast/priority, Flex, long-context)
-- Add prefix-tolerant aliases so snapshot and `codex/` / `openai/` ids resolve
+- Recognize dated snapshots and `codex/` / `openai/` ids through the bounded versioned identity, without a leading-star glob
 - Keep those leading-star aliases from widening API-key model grants
 - Backfill historical `gpt-6-sol` and `gpt-6-luna` rows whose `cost_usd` is still NULL
 

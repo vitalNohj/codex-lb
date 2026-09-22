@@ -109,6 +109,14 @@ def test_get_pricing_for_model_gpt_6_aliases(requested_model: str, canonical_mod
     assert result == (canonical_model, DEFAULT_PRICING_MODELS[canonical_model])
 
 
+@pytest.mark.parametrize(
+    "requested_model",
+    ["gpt-6-sol-pro", "unrelated/gpt-6-sol", "gpt-6-luna-pro", "unrelated/gpt-6-luna"],
+)
+def test_get_pricing_for_model_gpt_6_sol_luna_lookalikes_are_unpriced(requested_model: str) -> None:
+    assert get_pricing_for_model(requested_model, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+
+
 def test_get_pricing_for_model_gpt_5_4_mini_alias():
     result = get_pricing_for_model("gpt-5.4-mini-2026-03-17", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None

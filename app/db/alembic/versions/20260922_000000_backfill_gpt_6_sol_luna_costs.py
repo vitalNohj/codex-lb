@@ -43,6 +43,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.engine import Connection
 
+from app.core.usage.model_ids import resolve_versioned_model_id
 from app.core.usage.pricing import UsageTokens, calculate_cost_from_usage, get_pricing_for_model
 
 revision = "20260922_000000_backfill_gpt_6_sol_luna_costs"
@@ -52,6 +53,8 @@ depends_on = None
 
 _BACKFILL_BATCH_SIZE = 1000
 _MODEL_MATCHES = ("%gpt-6-sol%", "%gpt-6-luna%")
+_BACKFILL_MODELS = frozenset({"gpt-6-sol", "gpt-6-luna"})
+_ROLLUP_STATE_ID = 1
 _EXCLUDED_REQUEST_KINDS = ("warmup", "limit_warmup")
 _STATIC_TABLE = "static_table"
 _HOUR = timedelta(hours=1)
@@ -73,6 +76,10 @@ def _calculate_cost(
     cached_input_tokens: int | None,
     reasoning_tokens: int | None,
 ) -> float | None:
+    # The LIKE prefilter also matches lookalikes such as ``gpt-6-sol-pro``.
+    # Only the bounded identity may receive a list price.
+    if resolve_versioned_model_id(model or "") not in _BACKFILL_MODELS:
+        return None
     if not model or input_tokens is None:
         return None
     resolved_output_tokens = output_tokens if output_tokens is not None else reasoning_tokens
@@ -112,6 +119,32 @@ def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, str):
         return datetime.fromisoformat(value)
     return None
+
+
+def _lock_rollup_state(bind: Connection) -> None:
+    """Hold the fold-state row until this migration transaction commits.
+
+    A fold that commits between the watermark read and the cost update can
+    fold a still-NULL row, advance ``folded_through`` past it, and leave the
+    new cost out of the lifetime rollup forever. Lifetime rollups are not
+    rebuilt from raw. The fold passes lock this same row with ``FOR UPDATE``.
+    PostgreSQL honors that lock. SQLite ignores it, so a same-value update
+    reserves the writer lock for the rest of the transaction instead.
+    """
+
+    if not _has_table(bind, "account_usage_rollup_state"):
+        return
+    state = sa.table(
+        "account_usage_rollup_state",
+        sa.column("id", sa.Integer()),
+        sa.column("folded_through", sa.DateTime()),
+    )
+    if bind.dialect.name == "postgresql":
+        bind.execute(sa.select(state.c.folded_through).where(state.c.id == _ROLLUP_STATE_ID).with_for_update())
+        return
+    bind.execute(
+        sa.update(state).where(state.c.id == _ROLLUP_STATE_ID).values(folded_through=state.c.folded_through)
+    )
 
 
 def _read_watermark(bind: Connection) -> datetime | None:
@@ -373,6 +406,7 @@ def upgrade() -> None:
     log_columns = _columns(bind, "request_logs")
     has_cost_source = "cost_source" in log_columns
     eligible = _owns_price_elsewhere(request_logs, log_columns)
+    _lock_rollup_state(bind)
     watermark = _read_watermark(bind)
     earliest_repriced: datetime | None = None
 

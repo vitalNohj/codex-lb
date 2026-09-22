@@ -1337,6 +1337,11 @@ The existing `priority` and `fast` service-tier aliases MUST use the Fast/priori
 - **WHEN** the requested model is `gpt-6-sol-2026-09-22`, `codex/gpt-6-sol`, or `openai/gpt-6-luna`
 - **THEN** cost accounting resolves it to the matching `gpt-6-sol` or `gpt-6-luna` price entry
 
+#### Scenario: Lookalike ids do not receive Sol or Luna pricing
+
+- **WHEN** cost accounting receives model `gpt-6-sol-pro` or `unrelated/gpt-6-luna`
+- **THEN** it does not resolve a `gpt-6-sol` or `gpt-6-luna` price
+
 ### Requirement: GPT-6 Sol and Luna grants stay bounded to their model ids
 
 An `allowed_models` entry of `gpt-6-sol` or `gpt-6-luna` MUST admit the canonical id, a dated snapshot of that id, and the same id with a `codex/` or `openai/` prefix. It MUST NOT admit an id that only contains the name, such as `gpt-6-sol-pro` or `unrelated/gpt-6-luna`.
@@ -1349,7 +1354,7 @@ An `allowed_models` entry of `gpt-6-sol` or `gpt-6-luna` MUST admit the canonica
 
 ### Requirement: Historical GPT-6 Sol and Luna request logs are backfilled with cost
 
-A database migration MUST recompute `cost_usd` for existing `request_logs` rows whose model is GPT-6 Sol or GPT-6 Luna and whose `cost_usd` is NULL, using the recognized pricing, so dollar reports include that historical usage. The migration MUST leave unknown models, externally owned prices, and already-priced rows unchanged, and MUST NOT clear costs on downgrade.
+A database migration MUST recompute `cost_usd` for existing `request_logs` rows whose model is GPT-6 Sol or GPT-6 Luna and whose `cost_usd` is NULL, using the recognized pricing, so dollar reports include that historical usage. The migration MUST leave unknown models, lookalike ids, externally owned prices, and already-priced rows unchanged, and MUST NOT clear costs on downgrade.
 
 #### Scenario: Backfill populates cost for prior Sol and Luna traffic
 
@@ -1357,6 +1362,12 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 - **WHEN** the migration runs
 - **THEN** the row's `cost_usd` is set from the resolved pricing
 - **AND** the row's `cost_source` is `static_table`
+
+#### Scenario: Backfill does not price lookalike model ids
+
+- **GIVEN** a pre-existing request log with model `gpt-6-sol-pro` and `cost_usd IS NULL`
+- **WHEN** the migration runs
+- **THEN** that row's `cost_usd` remains NULL
 
 ### Requirement: Claude Fable 5.1 pricing is distinct from Fable 5
 

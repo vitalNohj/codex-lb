@@ -1,7 +1,7 @@
 ## 1. Pricing registry
 
 - [x] 1.1 Add canonical `gpt-6-sol` and `gpt-6-luna` `ModelPrice` rows from the published list rates
-- [x] 1.2 Add `*gpt-6-sol*` and `*gpt-6-luna*` aliases so snapshot and `codex/` / `openai/` prefixes resolve
+- [x] 1.2 Resolve dated snapshots and `codex/` / `openai/` prefixes through the bounded versioned identity, without a leading-star glob
 - [x] 1.3 Extend the bounded versioned identity and keep those leading-star aliases from widening API-key grants
 
 ## 2. Historical backfill
