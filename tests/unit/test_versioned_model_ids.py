@@ -21,6 +21,11 @@ pytestmark = pytest.mark.unit
         ("gpt-6-astra", "gpt-6-astra"),
         ("codex/gpt-6-astra-2026-09-03", "gpt-6-astra"),
         ("GPT-6-ASTRA-20260903", "gpt-6-astra"),
+        ("gpt-6-sol", "gpt-6-sol"),
+        ("openai/gpt-6-sol-2026-09-22", "gpt-6-sol"),
+        ("GPT-6-SOL-20260922", "gpt-6-sol"),
+        ("codex/gpt-6-luna", "gpt-6-luna"),
+        ("gpt-6-luna-20260922", "gpt-6-luna"),
         ("cc/claude-fable-5.1-thinking-max", "claude-fable-5-1"),
         ("cp_claude-fable-5-1", "claude-fable-5-1"),
         ("claude-fable-5-1-20260901", "claude-fable-5-1"),
@@ -31,6 +36,10 @@ pytestmark = pytest.mark.unit
         ("notclaude-fable-5-1", None),
         ("gpt-6-astra-pro", None),
         ("unrelated/gpt-6-astra", None),
+        ("gpt-6-sol-pro", None),
+        ("unrelated/gpt-6-sol", None),
+        ("gpt-6-luna-pro", None),
+        ("unrelated/gpt-6-luna", None),
     ],
 )
 def test_versioned_identity_is_bounded(requested: str, canonical: str | None) -> None:
@@ -74,6 +83,41 @@ def test_an_allowlist_naming_the_version_still_admits_it(requested: str) -> None
     key = SimpleNamespace(allowed_models=["claude-fable-5-1"], allowed_reasoning_efforts=None)
 
     validate_model_access(cast(Any, key), requested)
+
+
+@pytest.mark.parametrize(
+    ("grant", "requested"),
+    [
+        ("gpt-6-sol", "gpt-6-sol"),
+        ("gpt-6-sol", "gpt-6-sol-2026-09-22"),
+        ("gpt-6-sol", "codex/gpt-6-sol"),
+        ("gpt-6-sol", "openai/gpt-6-sol"),
+        ("gpt-6-luna", "gpt-6-luna"),
+        ("gpt-6-luna", "gpt-6-luna-20260922"),
+        ("gpt-6-luna", "codex/gpt-6-luna"),
+    ],
+)
+def test_sol_and_luna_grants_admit_bounded_ids(grant: str, requested: str) -> None:
+    key = SimpleNamespace(allowed_models=[grant], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), requested)
+
+
+@pytest.mark.parametrize(
+    ("grant", "requested"),
+    [
+        ("gpt-6-sol", "gpt-6-sol-pro"),
+        ("gpt-6-sol", "unrelated/gpt-6-sol"),
+        ("gpt-6-luna", "gpt-6-luna-pro"),
+        ("gpt-6-luna", "unrelated/gpt-6-luna"),
+        ("gpt-6-astra", "gpt-6-sol"),
+    ],
+)
+def test_sol_and_luna_grants_reject_lookalikes(grant: str, requested: str) -> None:
+    key = SimpleNamespace(allowed_models=[grant], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
 
 
 def test_family_allowlist_still_admits_the_family() -> None:

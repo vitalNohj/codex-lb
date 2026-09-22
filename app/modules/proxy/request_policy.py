@@ -37,6 +37,12 @@ from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidec
 
 logger = logging.getLogger(__name__)
 
+# Leading-star price globs exist so prefixed and dated ids still resolve.
+# Collapsing access identity through them would let a lookalike such as
+# ``gpt-6-sol-pro`` satisfy a grant of the canonical id. The versioned
+# matcher above this alias already admits the real forms.
+_BOUNDED_NATIVE_PRICE_KEYS = frozenset({"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"})
+
 # Reasoning efforts that the upstream ChatGPT/Codex backend silently drops
 # (the WebSocket never produces ``response.completed``). When a client sends
 # one of these we transparently rewrite it to a value the resolved model
@@ -186,10 +192,10 @@ def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEnt
     gpt_alias = resolve_model_alias(model)
     normalized = gpt_alias if gpt_alias is not None else model
     pricing_alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
-    if pricing_alias is not None and pricing_alias != "gpt-6-astra":
-        return _AccessIdentity(provider, pricing_alias)
-    if pricing_alias == "gpt-6-astra":
+    if pricing_alias in _BOUNDED_NATIVE_PRICE_KEYS:
         return _AccessIdentity(provider, normalized)
+    if pricing_alias is not None:
+        return _AccessIdentity(provider, pricing_alias)
     sidecar_alias = canonical_sidecar_model(normalized)
     return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
 

@@ -1255,6 +1255,163 @@ async def test_gpt_6_astra_cost_backfill_migration_populates_cost(tmp_path):
     assert rollup_row_count == 1
 
 
+@pytest.mark.asyncio
+async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
+    """NULL Sol and Luna rows gain list-price cost. Lookalikes, external prices, and rollup watermarks stay put."""
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gpt-6-sol-luna-cost-backfill.sqlite'}"
+    parent_revision = "20260919_000000_add_openai_compat_endpoints"
+    revision = "20260922_000000_backfill_gpt_6_sol_luna_costs"
+    watermark = "2026-09-22 12:00:00"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO api_keys (id, name, key_hash, key_prefix, is_active, created_at)"
+                    " VALUES ('key_sol', 'sol', 'hash_sol', 'sk-sol', 1, '2026-09-22 00:00:00')"
+                )
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, api_key_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, cost_source, price_status, request_kind
+                    )
+                    VALUES
+                      ('acc_sol', 'key_sol', 'req_sol', '2026-09-22 00:00:00', 'gpt-6-sol',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_luna', '2026-09-22 00:01:00', 'gpt-6-luna',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_sol_prefixed', '2026-09-22 00:02:00', 'openai/gpt-6-sol',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_dup', '2026-09-22 00:03:00', 'gpt-6-sol',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_dup', '2026-09-22 00:03:00', 'gpt-6-sol',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', 10.4, 'static_table', NULL, 'normal'),
+                      (NULL, 'key_sol', 'req_sol_cached', '2026-09-22 18:00:00', 'gpt-6-sol',
+                       NULL, 200000, 1000000, 100000, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_unknown', '2026-09-22 00:04:00', 'gpt-6-not-a-real-model',
+                       NULL, 1000, 1000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_old_luna', '2026-09-22 00:05:00', 'gpt-5.6-luna',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_priced', '2026-09-22 00:06:00', 'gpt-6-luna',
+                       NULL, 1000, 1000, 0, 0, 100, 'success', 1.0, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_billed', '2026-09-22 00:07:00', 'openai/gpt-6-sol',
+                       'openrouter', 200000, 1000000, 0, 0, 100, 'success', NULL, 'upstream_billed', NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_pending', '2026-09-22 00:08:00', 'gpt-6-luna',
+                       'openrouter', 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, 'pending', 'normal')
+                    """
+                )
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO account_usage_rollups (account_id, request_count, input_tokens,"
+                    " output_tokens, cached_input_tokens, total_cost_usd)"
+                    " VALUES ('acc_sol', 2, 0, 0, 0, 11.4)"
+                )
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO api_key_usage_rollups (api_key_id, request_count, input_tokens,"
+                    " output_tokens, cached_input_tokens, total_cost_usd)"
+                    " VALUES ('key_sol', 2, 0, 0, 0, 11.4)"
+                )
+            )
+            await session.commit()
+            await session.execute(
+                text(
+                    "UPDATE account_usage_rollup_state SET folded_through = :wm,"
+                    " hourly_folded_through = :wm, conversation_folded_through = :wm,"
+                    " upgrade_repair_from = NULL"
+                ),
+                {"wm": watermark},
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
+
+        async def _snapshot():
+            async with session_factory() as session:
+                rows = (
+                    await session.execute(
+                        text("SELECT request_id, cost_usd, cost_source, price_status FROM request_logs ORDER BY id")
+                    )
+                ).all()
+                state = (
+                    await session.execute(
+                        text(
+                            "SELECT folded_through, hourly_folded_through, upgrade_repair_from"
+                            " FROM account_usage_rollup_state"
+                        )
+                    )
+                ).one()
+                account_total = (
+                    await session.execute(
+                        text("SELECT total_cost_usd FROM account_usage_rollups WHERE account_id = 'acc_sol'")
+                    )
+                ).scalar_one()
+                key_total = (
+                    await session.execute(
+                        text("SELECT total_cost_usd FROM api_key_usage_rollups WHERE api_key_id = 'key_sol'")
+                    )
+                ).scalar_one()
+            costs = {row[0]: row[1] for row in rows}
+            sources = {row[0]: row[2] for row in rows}
+            statuses = {row[0]: row[3] for row in rows}
+            dup_costs = [row[1] for row in rows if row[0] == "req_dup"]
+            return costs, sources, statuses, state, float(account_total), float(key_total), dup_costs
+
+        costs, sources, statuses, state, account_total, key_total, dup_costs = await _snapshot()
+        assert costs["req_sol"] == pytest.approx(10.4)
+        assert sources["req_sol"] == "static_table"
+        assert costs["req_luna"] == pytest.approx(0.52)
+        assert sources["req_luna"] == "static_table"
+        assert costs["req_sol_prefixed"] == pytest.approx(10.4)
+        assert len(dup_costs) == 2
+        assert dup_costs[0] == pytest.approx(10.4)
+        assert dup_costs[1] == pytest.approx(10.4)
+        assert costs["req_sol_cached"] == pytest.approx(10.22)
+        assert costs["req_unknown"] is None
+        assert costs["req_old_luna"] is None
+        assert costs["req_priced"] == pytest.approx(1.0)
+        assert costs["req_billed"] is None
+        assert sources["req_billed"] == "upstream_billed"
+        assert costs["req_pending"] is None
+        assert statuses["req_pending"] == "pending"
+        assert str(state[0]).startswith(watermark)
+        assert str(state[1]).startswith(watermark)
+        assert str(state[2]).startswith("2026-09-22 00:00:00")
+        # Folded new costs: sol 10.4 + luna 0.52 + prefixed 10.4. The duplicate
+        # lower id is repriced but is not the group's max(id), so the account
+        # rollup does not gain it. The API-key rollup does.
+        assert account_total == pytest.approx(11.4 + 10.4 + 0.52 + 10.4)
+        assert key_total == pytest.approx(11.4 + 10.4 + 0.52 + 10.4 + 10.4)
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        after_downgrade = await _snapshot()
+        assert after_downgrade[0] == costs
+        assert after_downgrade[4] == pytest.approx(account_total)
+        assert after_downgrade[5] == pytest.approx(key_total)
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
+        after_rerun = await _snapshot()
+        assert after_rerun[0]["req_sol"] == pytest.approx(10.4)
+        assert after_rerun[4] == pytest.approx(account_total)
+        assert after_rerun[5] == pytest.approx(key_total)
+    finally:
+        await engine.dispose()
+
+
 async def _seed_astra_backfill_fixture(session_factory, *, watermark: str) -> None:
     """Duplicate group, external-provenance rows, and rows that must not move.
 
