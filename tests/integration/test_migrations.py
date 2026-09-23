@@ -3192,3 +3192,62 @@ async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
         assert stored == "not-json"
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claude_opus_5_5_pin_replays_over_its_own_ownership_table(tmp_path):
+    """The legacy-revision remap re-runs migrations the schema already has.
+
+    ``run_upgrade`` rewinds ``alembic_version`` to a remapped ancestor and
+    upgrades again, so every revision above that ancestor must be a no-op on a
+    schema that already carries it. The pin revision creates a table; a second
+    pass must neither fail on it nor register a second owner for the row, and
+    must not re-add a pin the operator removed after the first pass.
+    """
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-opus-5-5-replay.sqlite'}"
+    parent_revision = "20260919_000000_add_openai_compat_endpoints"
+    pin_revision = "20260923_000000_pin_claude_opus_5_5_full_model"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            pinned = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+            owners = (await conn.execute(text("SELECT COUNT(*) FROM claude_opus_5_5_pin_ownership"))).scalar_one()
+        assert "claude-opus-5-5" in json.loads(pinned)
+        assert owners == 1
+
+        async def replay() -> tuple[str, int]:
+            # Rewind only the bookkeeping, exactly like the remap does, then
+            # upgrade again over the schema the earlier pass left behind.
+            await to_thread.run_sync(lambda: command.stamp(_build_alembic_config(db_url), parent_revision))
+            result = await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+            assert result.current_revision == pin_revision
+            async with engine.connect() as conn:
+                stored = (
+                    await conn.execute(
+                        text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1")
+                    )
+                ).scalar_one()
+                owners = (await conn.execute(text("SELECT COUNT(*) FROM claude_opus_5_5_pin_ownership"))).scalar_one()
+            return stored, owners
+
+        assert await replay() == (pinned, 1)
+
+        # The operator drops the pin after the first pass; a replay keeps it dropped.
+        unpinned = json.dumps([model for model in json.loads(pinned) if model != "claude-opus-5-5"])
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": unpinned},
+            )
+        assert await replay() == (unpinned, 1)
+    finally:
+        await engine.dispose()

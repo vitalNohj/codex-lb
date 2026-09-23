@@ -74,13 +74,21 @@ def _setting_text(raw: object) -> str | None:
 
 def _apply_batches(bind: Connection, transform: Callable[[str | None], str | None], *, owned_only: bool) -> None:
     last_id = 0
-    ownership_join = f"INNER JOIN {_OWNERSHIP_TABLE} AS owned ON owned.settings_id = settings.id" if owned_only else ""
+    if owned_only:
+        ownership_join = f"INNER JOIN {_OWNERSHIP_TABLE} AS owned ON owned.settings_id = settings.id"
+        ownership_filter = ""
+    else:
+        # Rows an earlier run of this revision already pinned are skipped, so a
+        # replay never re-adds a pin the operator has since removed (nor
+        # registers the row a second time).
+        ownership_join = f"LEFT JOIN {_OWNERSHIP_TABLE} AS owned ON owned.settings_id = settings.id"
+        ownership_filter = "AND owned.settings_id IS NULL "
     while True:
         batch = bind.execute(
             sa.text(
                 f"SELECT settings.id, settings.{_COLUMN_NAME} "
                 f"FROM {_TABLE_NAME} AS settings {ownership_join} "
-                "WHERE settings.id > :last_id ORDER BY settings.id LIMIT :limit"
+                f"WHERE settings.id > :last_id {ownership_filter}ORDER BY settings.id LIMIT :limit"
             ),
             {"last_id": last_id, "limit": _BATCH_SIZE},
         ).fetchall()
@@ -108,10 +116,14 @@ def upgrade() -> None:
     bind = op.get_bind()
     if _COLUMN_NAME not in _columns(bind, _TABLE_NAME):
         return
-    op.create_table(
-        _OWNERSHIP_TABLE,
-        sa.Column("settings_id", sa.Integer(), primary_key=True),
-    )
+    # A legacy-revision remap replays this revision on a schema that already
+    # ran it: the ownership table must survive that, and the row pass skips the
+    # rows it already owns.
+    if not sa.inspect(bind).has_table(_OWNERSHIP_TABLE):
+        op.create_table(
+            _OWNERSHIP_TABLE,
+            sa.Column("settings_id", sa.Integer(), primary_key=True),
+        )
     _apply_batches(bind, _append_model, owned_only=False)
 
 
