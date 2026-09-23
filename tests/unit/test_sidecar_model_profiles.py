@@ -28,6 +28,8 @@ def test_canonical_sidecar_model_strips_cp_prefix_via_pricing_alias() -> None:
     assert canonical_sidecar_model("cp-claude-fable-5") == "claude-fable-5"
     assert canonical_sidecar_model("cc/claude-fable-5-1") == "claude-fable-5-1"
     assert canonical_sidecar_model("claude-fable-5.1") == "claude-fable-5-1"
+    assert canonical_sidecar_model("cc/claude-opus-5-5") == "claude-opus-5-5"
+    assert canonical_sidecar_model("claude-opus-5.5") == "claude-opus-5-5"
 
 
 def test_canonical_sidecar_model_restores_claude_family_prefix() -> None:
@@ -71,6 +73,30 @@ def test_apply_sidecar_model_profile_keeps_fable_5_1_off_fable_5() -> None:
         stripped_model="claude-fable-5.1",
     )
     assert dotted_wire == "claude-fable-5-1"
+
+
+def test_apply_sidecar_model_profile_keeps_opus_5_5_off_opus_5() -> None:
+    body: dict[str, JsonValue] = {}
+    wire_model = apply_sidecar_model_profile(
+        body,
+        stripped_model="claude-opus-5-5-thinking-max",
+    )
+
+    assert wire_model == "claude-opus-5-5"
+    assert body["model"] == "claude-opus-5-5"
+    assert body["reasoning_effort"] == "max"
+
+    dotted_body: dict[str, JsonValue] = {}
+    dotted_wire = apply_sidecar_model_profile(dotted_body, stripped_model="cc/claude-opus-5.5")
+    assert dotted_wire == "claude-opus-5-5"
+
+    dated_body: dict[str, JsonValue] = {}
+    dated_wire = apply_sidecar_model_profile(dated_body, stripped_model="claude-opus-5-5-20260922")
+    assert dated_wire == "claude-opus-5-5-20260922"
+
+    opus_5_body: dict[str, JsonValue] = {}
+    opus_5_wire = apply_sidecar_model_profile(opus_5_body, stripped_model="cc/claude-opus-5")
+    assert opus_5_wire == "claude-opus-5"
 
 
 def test_apply_sidecar_model_profile_preserves_existing_reasoning_effort() -> None:

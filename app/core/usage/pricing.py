@@ -410,6 +410,14 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=0.5,
         output_per_1m=25.0,
     ),
+    # Opus 5.5 cache reads are $0.20 (5% of input), not Opus 5's $0.50.
+    # Identity comes from resolve_versioned_model_id, not a new family glob:
+    # ``*claude-opus-5*`` already matches ``claude-opus-5-5``.
+    "claude-opus-5-5": ModelPrice(
+        input_per_1m=4.0,
+        cached_input_per_1m=0.20,
+        output_per_1m=20.0,
+    ),
     "claude-opus-4-8": ModelPrice(
         input_per_1m=5.0,
         cached_input_per_1m=0.5,

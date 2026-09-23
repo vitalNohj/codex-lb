@@ -562,6 +562,33 @@ async def test_fable_version_survives_chat_forwarding(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("model", "wire_model", "effort", "max_tokens"),
+    [
+        ("cc/claude-opus-5-5", "claude-opus-5-5", None, 32_768),
+        ("claude-opus-5.5", "claude-opus-5-5", None, 32_768),
+        ("claude-opus-5-5-thinking-max", "claude-opus-5-5", "max", 32_768),
+        ("claude-opus-5-5-20260922", "claude-opus-5-5-20260922", None, 32_768),
+        ("cc/claude-opus-5", "claude-opus-5", None, 4096),
+    ],
+)
+async def test_opus_5_5_survives_chat_forwarding(
+    async_client, sidecar_enabled, fake_sidecar, model, wire_model, effort, max_tokens
+):
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
+    )
+
+    assert response.status_code == 200
+    payload = fake_sidecar.chat_payloads[0]
+    assert payload["model"] == wire_model
+    assert payload["max_tokens"] == max_tokens
+    if effort is not None:
+        assert payload["reasoning_effort"] == effort
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("input_tokens", "requested_output", "expected_output"),
     [(10, 200_000, 128_000), (170_000, 4096, 32_768), (980_000, 4096, None)],
 )

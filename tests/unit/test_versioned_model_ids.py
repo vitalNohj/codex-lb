@@ -34,6 +34,18 @@ pytestmark = pytest.mark.unit
         ("claude-fable-5.10", None),
         ("claude-fable-5-1-unrelated", None),
         ("notclaude-fable-5-1", None),
+        ("claude-opus-5-5", "claude-opus-5-5"),
+        ("cc/claude-opus-5.5", "claude-opus-5-5"),
+        ("cp_claude-opus-5-5", "claude-opus-5-5"),
+        ("cp-claude-opus-5.5", "claude-opus-5-5"),
+        ("claude-opus-5-5-thinking-max", "claude-opus-5-5"),
+        ("CLAUDE-OPUS-5-5-20260922", "claude-opus-5-5"),
+        ("claude-opus-5", None),
+        ("claude-opus-5-50", None),
+        ("claude-opus-55", None),
+        ("notclaude-opus-5-5", None),
+        ("not-claude-opus-5-5", None),
+        ("not/claude-opus-5-5", None),
         ("gpt-6-astra-pro", None),
         ("unrelated/gpt-6-astra", None),
         ("gpt-6-sol-pro", None),
@@ -124,6 +136,34 @@ def test_family_allowlist_still_admits_the_family() -> None:
     key = SimpleNamespace(allowed_models=["claude-fable-5"], allowed_reasoning_efforts=None)
 
     validate_model_access(cast(Any, key), "cc/claude-fable-5")
+
+
+@pytest.mark.parametrize("requested", ["cc/claude-opus-5-5", "claude-opus-5.5", "claude-opus-5-5-thinking-max"])
+def test_opus_5_allowlist_does_not_admit_opus_5_5(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-opus-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
+
+
+def test_opus_5_allowlist_still_admits_opus_5() -> None:
+    key = SimpleNamespace(allowed_models=["claude-opus-5"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), "cc/claude-opus-5")
+
+
+@pytest.mark.parametrize("requested", ["claude-opus-5.5", "cc/claude-opus-5-5", "claude-opus-5-5-20260922"])
+def test_opus_5_5_allowlist_admits_bounded_ids(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-opus-5-5"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), requested)
+
+
+def test_opus_5_5_allowlist_rejects_hyphen_lookalike() -> None:
+    key = SimpleNamespace(allowed_models=["claude-opus-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "not-claude-opus-5-5")
 
 
 def _two_provider_routing() -> tuple[SidecarRoutingEntry, ...]:
