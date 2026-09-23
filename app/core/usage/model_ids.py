@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 
-_ASTRA_ID = re.compile(r"(?:(?:codex|openai)/)?gpt-6-astra(?:-\d{4}-\d{2}-\d{2}|-\d{8})?", re.IGNORECASE)
+_GPT6_NATIVE_ID = re.compile(
+    r"(?:(?:codex|openai)/)?gpt-6-(astra|sol|luna)(?:-\d{4}-\d{2}-\d{2}|-\d{8})?",
+    re.IGNORECASE,
+)
 _FABLE_5_1_ID = re.compile(
     r"(?:^|[/:_-])claude-fable-5[.-]1"
     r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"
@@ -33,8 +36,9 @@ _OPUS_5_5_ID = re.compile(
 def resolve_versioned_model_id(model: str) -> str | None:
     """Recognize supported versions without swallowing other family versions."""
     normalized = model.strip()
-    if _ASTRA_ID.fullmatch(normalized):
-        return "gpt-6-astra"
+    native = _GPT6_NATIVE_ID.fullmatch(normalized)
+    if native is not None:
+        return f"gpt-6-{native.group(1).lower()}"
     if _FABLE_5_1_ID.search(normalized):
         return "claude-fable-5-1"
     if _OPUS_5_5_ID.search(normalized):
