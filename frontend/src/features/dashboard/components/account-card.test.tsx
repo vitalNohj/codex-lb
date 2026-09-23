@@ -248,13 +248,19 @@ describe("AccountCard", () => {
 
     renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
 
+    const details = screen.getByRole("button", { name: "Details" });
+    const list = screen.getByRole("group", { name: "Excluded models" });
+    expect(details.parentElement).toContainElement(list);
+    expect(list.className).toMatch(/overflow-x-auto/);
+    expect(list.className).not.toMatch(/flex-wrap/);
     expect(screen.getByText("Excluded")).toBeInTheDocument();
     // A known family renders as its label; anything else renders raw.
     expect(screen.getByText("Fable")).toBeInTheDocument();
     expect(screen.getByText("claude-opus-4-*")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Exclude models/i })).toBeNull();
   });
 
-  it("shows no excluded badge but still offers editing when the list is empty", () => {
+  it("shows no excluded badge when the list is empty", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
       displayName: "CLI Proxy API",
@@ -285,94 +291,8 @@ describe("AccountCard", () => {
 
     expect(screen.queryByText("Excluded")).toBeNull();
     expect(screen.queryByText("Fable")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
-    ).toBeInTheDocument();
-  });
-
-  it("does not claim a read failure for an estimate-only auth row", async () => {
-    const user = userEvent.setup();
-    const account = createAccountSummary({
-      accountId: "claude-sidecar",
-      displayName: "CLI Proxy API",
-      planType: "claude",
-      status: "active",
-      synthetic: true,
-      kind: "sidecar",
-      provider: "claude",
-      usage: null,
-    });
-    const auth = {
-      name: "claude-one@example.com",
-      authIndex: "0",
-      email: "claude-one@example.com",
-      provider: "claude",
-      paused: false,
-      excludedModels: [],
-      excludedModelsState: "unsupported" as const,
-      quotaExceeded: false,
-      modelsExceeded: [],
-      success: 0,
-      failed: 0,
-      primaryRemainingPercent: 75,
-      secondaryRemainingPercent: 96,
-    };
-
-    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
-    await user.click(
-      screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
-    );
-
-    expect(screen.queryByText(/Could not read/)).toBeNull();
-    expect(
-      screen.getByText("Excluded models are not available for this row."),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("switch", { name: "Exclude Fable on claude-one@example.com" }),
-    ).toBeDisabled();
-  });
-
-  it("opens the excluded-models editor from the card", async () => {
-    const user = userEvent.setup();
-    const account = createAccountSummary({
-      accountId: "claude-sidecar",
-      displayName: "CLI Proxy API",
-      planType: "claude",
-      status: "active",
-      synthetic: true,
-      kind: "sidecar",
-      provider: "claude",
-      usage: null,
-    });
-    const auth = {
-      name: "claude-1",
-      authIndex: "0",
-      email: "claude-one@example.com",
-      provider: "claude",
-      paused: false,
-      excludedModels: [],
-      excludedModelsState: "available",
-      quotaExceeded: false,
-      modelsExceeded: [],
-      success: 0,
-      failed: 0,
-      primaryRemainingPercent: 75,
-      secondaryRemainingPercent: 96,
-    };
-
-    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
-
-    expect(
-      screen.queryByRole("switch", { name: "Exclude Fable on claude-one@example.com" }),
-    ).toBeNull();
-
-    await user.click(
-      screen.getByRole("button", { name: "Exclude models on claude-one@example.com" }),
-    );
-
-    expect(
-      screen.getByRole("switch", { name: "Exclude Fable on claude-one@example.com" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Excluded models" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Exclude models/i })).toBeNull();
   });
 
   it("shows Resume for a paused CLI Proxy API auth card", () => {

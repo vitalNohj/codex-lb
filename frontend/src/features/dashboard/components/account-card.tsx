@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { Ban, Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
+import { Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -7,11 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
-import {
-  useClaudeSidecarAccountExcludedModels,
-  useClaudeSidecarAccountPause,
-} from "@/features/settings/hooks/use-settings";
-import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
+import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
 import { excludedModelLabels } from "@/features/settings/lib/excluded-model-families";
 import { StatusBadge } from "@/components/status-badge";
 import {
@@ -320,8 +315,6 @@ export function ClaudeAuthCard({
 }) {
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
-  const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
-  const [editingExclusions, setEditingExclusions] = useState(false);
   const title = auth.email ?? auth.name;
   const exclusionLabels = excludedModelLabels(auth.excludedModels);
   const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
@@ -372,7 +365,7 @@ export function ClaudeAuthCard({
           type="button"
           size="sm"
           variant="ghost"
-          className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+          className="h-7 shrink-0 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
           onClick={() => onAction?.(account, "details")}
         >
           <ExternalLink className="h-3 w-3" />
@@ -383,7 +376,7 @@ export function ClaudeAuthCard({
           size="sm"
           variant="ghost"
           className={cn(
-            "h-7 gap-1.5 rounded-lg text-xs",
+            "h-7 shrink-0 gap-1.5 rounded-lg text-xs",
             auth.paused
               ? "text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
               : "text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300",
@@ -395,45 +388,23 @@ export function ClaudeAuthCard({
           {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
           {auth.paused ? "Resume" : "Pause"}
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-          aria-expanded={editingExclusions}
-          aria-label={`Exclude models on ${title}`}
-          onClick={() => setEditingExclusions((open) => !open)}
-        >
-          <Ban className="h-3 w-3" />
-          Exclude models
-        </Button>
+        {exclusionLabels.length > 0 ? (
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="shrink-0 text-[11px] text-muted-foreground">Excluded</span>
+            <div
+              role="group"
+              aria-label="Excluded models"
+              className="flex min-w-0 items-center gap-1.5 overflow-x-auto overscroll-x-contain [scrollbar-width:thin]"
+            >
+              {exclusionLabels.map((label) => (
+                <Badge key={label} variant="secondary" className="shrink-0 text-[11px]">
+                  {label}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
-
-      {/* Excluded models */}
-      {exclusionLabels.length > 0 ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] text-muted-foreground">Excluded</span>
-          {exclusionLabels.map((label) => (
-            <Badge key={label} variant="secondary" className="text-[11px]">
-              {label}
-            </Badge>
-          ))}
-        </div>
-      ) : null}
-      {editingExclusions ? (
-        <div className="mt-2 border-t pt-2">
-          <ExcludedModelsEditor
-            name={auth.name}
-            emailLabel={title}
-            excludedModels={auth.excludedModels}
-            state={auth.excludedModelsState}
-            disabled={excludedModelsMutation.isPending}
-            onChange={(next) =>
-              excludedModelsMutation.mutate({ name: auth.name, excludedModels: next })
-            }
-          />
-        </div>
-      ) : null}
     </div>
   );
 }
