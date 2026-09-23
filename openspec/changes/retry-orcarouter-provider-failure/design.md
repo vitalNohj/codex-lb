@@ -8,22 +8,24 @@ The configured request timeout is 600s per attempt. The 300s cutoff is upstream 
 
 **Goals:**
 
-- One extra attempt when OrcaRouter reports a provider or transport failure and the client has received nothing yet.
+- One extra attempt when OrcaRouter, OpenRouter, NVIDIA, OpenCode Go, or a plus-button OpenAI-compatible endpoint reports a provider or transport failure and the client has received nothing yet.
+- OpenCode Go Responses uses that same rule.
 - Streaming and non-streaming share that rule.
 - The request log records the final outcome once.
 
 **Non-Goals:**
 
-- Retrying other sidecars.
+- Retrying Claude, OmniRoute, or Ollama.
 - Retrying HTTP 4xx, including context-length errors.
+- Retrying an OpenCode Go body that exceeds the size limit.
 - Retrying after any streamed byte has been sent.
 - A new setting, backoff, or request-log column.
 - Changing the per-attempt timeout.
 
 ## Decisions
 
-1. Retry inside `orcarouter_sidecar_dispatch.py`, not the HTTP client. The client stays a single POST. The dispatch path owns "has the client seen bytes yet" and settlement.
-2. Retry when `OrcaRouterSidecarError.status_code >= 500`. That covers 500, 502, 503, 504, and 524. `OrcaRouterSidecarUnavailableError` is a 503, so connection failures and timeouts are included. 4xx is not.
+1. One shared predicate, `retry_sidecar_provider_failure`, decides the retry. Each dispatch calls it. The rule is HTTP status >= 500, nothing delivered, first failure only. An error with `retryable` false (OpenCode Go oversized body) is not retried.
+2. Non-streaming calls go through `call_with_sidecar_provider_retry`. Streaming keeps its own loop because a yielded chunk cannot be taken back, and each iterator still owns its error event and settlement.
 3. Exactly one extra attempt, immediately, with the same payload. No sleep. OrcaRouter's reroute happens on the new request.
 4. On a stream, retry only when the generator has not yielded. A mid-stream failure still becomes one SSE error, matching today's behavior.
 5. Settlement and the request log stay in the existing `finally` / error paths, so a retried success writes one success row and a double failure writes one error row. Latency covers both attempts.

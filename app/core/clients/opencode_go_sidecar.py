@@ -125,12 +125,13 @@ class OpenCodeGoSidecarResponseTooLargeError(OpenCodeGoSidecarError):
     """The upstream body exceeded :data:`MAX_RESPONSE_BYTES`.
 
     502 rather than 503: the upstream answered, and what it sent is unusable.
-    Calling it "unavailable" would invite a retry that reproduces the same
-    oversized transfer.
+    ``retryable`` is false so the provider retry does not download that body
+    again.
     """
 
     def __init__(self, message: str) -> None:
         super().__init__(502, message, body=None)
+        self.retryable = False
 
 
 class OpenCodeGoSidecarClient:

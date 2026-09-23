@@ -70,7 +70,12 @@ from app.modules.proxy.sidecar_routing import (
     parse_sidecar_full_models,
     parse_sidecar_prefixes,
 )
-from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
+from app.modules.proxy.sidecar_upstream_errors import (
+    call_with_sidecar_provider_retry,
+    client_facing_sidecar_error,
+    log_sidecar_provider_retry,
+    retry_sidecar_provider_failure,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -203,7 +208,11 @@ async def proxy_chat_to_nvidia(
         )
 
     try:
-        response_body = await client.chat_completion(sidecar_payload.body)
+        response_body = await call_with_sidecar_provider_retry(
+            lambda: client.chat_completion(sidecar_payload.body),
+            provider="NVIDIA",
+            model=effective_model,
+        )
     except NvidiaSidecarUnavailableError:
         await _release_nvidia_reservation(reservation, api_key=api_key)
         await _log_nvidia_request(
@@ -325,70 +334,86 @@ async def _nvidia_stream_iterator(
     stream_error = False
     error_code = "nvidia_sidecar_stream_incomplete"
     error_message: str | None = None
+    delivered = False
     try:
-        async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
-            async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk):
-                    if event == "[DONE]":
-                        if not stream_error:
-                            completed = True
-                        continue
-                    provider_error = _sse_provider_error(
-                        event,
-                        default_code="nvidia_sidecar_error",
-                        default_message="NVIDIA sidecar stream error",
-                    )
-                    if provider_error is not None:
-                        stream_error = True
-                        completed = False
-                        error_code, error_message = provider_error
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                    billed_cost.observe(extract_billed_cost(event))
-                yield raw_chunk
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    if not stream_error:
-                        completed = True
+        for attempt in range(2):
+            usage = None
+            billed_cost = BilledCostAccumulator()
+            completed = False
+            stream_error = False
+            try:
+                async with client.stream_chat_completion(payload) as chunks:
+                    decoder = _SseUsageDecoder()
+                    async for raw_chunk in chunks:
+                        for event in decoder.feed(raw_chunk):
+                            if event == "[DONE]":
+                                if not stream_error:
+                                    completed = True
+                                continue
+                            provider_error = _sse_provider_error(
+                                event,
+                                default_code="nvidia_sidecar_error",
+                                default_message="NVIDIA sidecar stream error",
+                            )
+                            if provider_error is not None:
+                                stream_error = True
+                                completed = False
+                                error_code, error_message = provider_error
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                            billed_cost.observe(extract_billed_cost(event))
+                        delivered = True
+                        yield raw_chunk
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            if not stream_error:
+                                completed = True
+                            continue
+                        provider_error = _sse_provider_error(
+                            event,
+                            default_code="nvidia_sidecar_error",
+                            default_message="NVIDIA sidecar stream error",
+                        )
+                        if provider_error is not None:
+                            stream_error = True
+                            completed = False
+                            error_code, error_message = provider_error
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                        billed_cost.observe(extract_billed_cost(event))
+                return
+            except NvidiaSidecarError as exc:
+                if retry_sidecar_provider_failure(
+                    attempt=attempt, delivered=delivered, status_code=exc.status_code
+                ):
+                    log_sidecar_provider_retry(provider="NVIDIA", status_code=exc.status_code, model=model)
                     continue
-                provider_error = _sse_provider_error(
-                    event,
-                    default_code="nvidia_sidecar_error",
-                    default_message="NVIDIA sidecar stream error",
+                if isinstance(exc, NvidiaSidecarUnavailableError):
+                    error_code = "nvidia_sidecar_unavailable"
+                    error_message = "NVIDIA sidecar unavailable"
+                    yield _error_sse(
+                        openai_error(
+                            "nvidia_sidecar_unavailable",
+                            "NVIDIA sidecar unavailable",
+                            error_type="upstream_error",
+                        )
+                    )
+                    yield b"data: [DONE]\n\n"
+                    return
+                error_code = "nvidia_sidecar_error"
+                error_message = exc.message
+                billed_cost.observe(extract_billed_cost(exc.body))
+                client_error = client_facing_sidecar_error(
+                    status_code=exc.status_code,
+                    message=exc.message,
+                    error_code="nvidia_sidecar_error",
+                    body=exc.body,
                 )
-                if provider_error is not None:
-                    stream_error = True
-                    completed = False
-                    error_code, error_message = provider_error
-                event_usage = extract_usage(event)
-                if event_usage is not None:
-                    usage = event_usage
-                billed_cost.observe(extract_billed_cost(event))
-    except NvidiaSidecarUnavailableError:
-        error_code = "nvidia_sidecar_unavailable"
-        error_message = "NVIDIA sidecar unavailable"
-        yield _error_sse(
-            openai_error(
-                "nvidia_sidecar_unavailable",
-                "NVIDIA sidecar unavailable",
-                error_type="upstream_error",
-            )
-        )
-        yield b"data: [DONE]\n\n"
-    except NvidiaSidecarError as exc:
-        error_code = "nvidia_sidecar_error"
-        error_message = exc.message
-        billed_cost.observe(extract_billed_cost(exc.body))
-        client_error = client_facing_sidecar_error(
-            status_code=exc.status_code,
-            message=exc.message,
-            error_code="nvidia_sidecar_error",
-            body=exc.body,
-        )
-        yield _error_sse(client_error.content)
-        yield b"data: [DONE]\n\n"
+                yield _error_sse(client_error.content)
+                yield b"data: [DONE]\n\n"
+                return
     except BaseException as exc:
         error_code = "nvidia_sidecar_stream_interrupted"
         error_message = str(exc) or exc.__class__.__name__

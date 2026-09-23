@@ -67,37 +67,17 @@ from app.modules.proxy.sidecar_routing import (
     parse_sidecar_full_models,
     parse_sidecar_prefixes,
 )
-from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
+from app.modules.proxy.sidecar_upstream_errors import (
+    call_with_sidecar_provider_retry,
+    client_facing_sidecar_error,
+    log_sidecar_provider_retry,
+    retry_sidecar_provider_failure,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
 ORCAROUTER_SIDECAR_SOURCE = "orcarouter_sidecar"
-
-
-def _retry_orcarouter_provider_failure(
-    exc: OrcaRouterSidecarError,
-    *,
-    attempt: int,
-    delivered: bool,
-) -> bool:
-    """One immediate retry so OrcaRouter can choose another provider.
-
-    Status >= 500 covers gateway timeouts (524), bad gateways (502), and
-    transport failures reported as 503. A 4xx is the request itself. A stream
-    that already yielded cannot be replaced.
-    """
-
-    return attempt == 0 and not delivered and exc.status_code >= 500
-
-
-def _log_orcarouter_provider_retry(exc: OrcaRouterSidecarError, *, model: str) -> None:
-    logger.warning(
-        "OrcaRouter provider failure status=%s model=%s request_id=%s; retrying once",
-        exc.status_code,
-        model,
-        get_request_id(),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,9 +198,9 @@ async def proxy_chat_to_orcarouter(
         )
 
     try:
-        response_body = await _orcarouter_chat_with_provider_retry(
-            client,
-            sidecar_payload.body,
+        response_body = await call_with_sidecar_provider_retry(
+            lambda: client.chat_completion(sidecar_payload.body),
+            provider="OrcaRouter",
             model=effective_model,
         )
     except OrcaRouterSidecarUnavailableError:
@@ -327,21 +307,6 @@ async def proxy_chat_to_orcarouter(
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
 
 
-async def _orcarouter_chat_with_provider_retry(
-    client: OrcaRouterSidecarClient,
-    body: Mapping[str, JsonValue],
-    *,
-    model: str,
-) -> JsonValue:
-    try:
-        return await client.chat_completion(body)
-    except OrcaRouterSidecarError as exc:
-        if not _retry_orcarouter_provider_failure(exc, attempt=0, delivered=False):
-            raise
-        _log_orcarouter_provider_retry(exc, model=model)
-        return await client.chat_completion(body)
-
-
 async def _orcarouter_stream_iterator(
     payload: Mapping[str, JsonValue],
     *,
@@ -388,8 +353,10 @@ async def _orcarouter_stream_iterator(
                         billed_cost.observe(extract_billed_cost(event))
                 return
             except OrcaRouterSidecarError as exc:
-                if _retry_orcarouter_provider_failure(exc, attempt=attempt, delivered=delivered):
-                    _log_orcarouter_provider_retry(exc, model=model)
+                if retry_sidecar_provider_failure(
+                    attempt=attempt, delivered=delivered, status_code=exc.status_code
+                ):
+                    log_sidecar_provider_retry(provider="OrcaRouter", status_code=exc.status_code, model=model)
                     continue
                 if isinstance(exc, OrcaRouterSidecarUnavailableError):
                     error_code = "orcarouter_sidecar_unavailable"
