@@ -9,9 +9,11 @@ from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.opencode_go_sidecar import (
     OpenCodeGoSidecarConfig,
     OpenCodeGoSidecarError,
+    OpenCodeGoSidecarResponseTooLargeError,
     OpenCodeGoSidecarUnavailableError,
 )
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.requests import ResponsesRequest
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     OPENCODE_GO_SIDECAR_SOURCE,
     _headers_with_retry_after,
@@ -19,6 +21,7 @@ from app.modules.proxy.opencode_go_sidecar_dispatch import (
     build_opencode_go_chat_payload,
     opencode_go_routing_entry,
     proxy_chat_to_opencode_go,
+    proxy_responses_to_opencode_go,
 )
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 
@@ -60,22 +63,63 @@ class _FakeStream:
         return None
 
 
+class _ScriptedStream:
+    def __init__(self, attempt: Exception | list[bytes | Exception]) -> None:
+        self._attempt = attempt
+
+    async def __aenter__(self):
+        if isinstance(self._attempt, Exception):
+            raise self._attempt
+
+        async def _iter():
+            for chunk in self._attempt:
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
+
+        return _iter()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
 class _FakeClient:
-    def __init__(self, *, response=None, error: Exception | None = None, chunks: list[bytes] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        response=None,
+        error: Exception | None = None,
+        chunks: list[bytes] | None = None,
+        script: list[Exception | dict | list[bytes | Exception]] | None = None,
+    ) -> None:
         self.config = _config()
         self._response = response
         self._error = error
         self._chunks = chunks or []
+        self._script = list(script) if script is not None else None
         self.calls: list[tuple[dict, dict | None]] = []
 
-    async def chat_completion(self, payload, *, client_headers=None):
+    def _record(self, payload, client_headers) -> None:
         self.calls.append((dict(payload), dict(client_headers) if client_headers else None))
+
+    async def chat_completion(self, payload, *, client_headers=None):
+        self._record(payload, client_headers)
+        if self._script is not None:
+            item = self._script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
         if self._error is not None:
             raise self._error
         return self._response
 
     def stream_chat_completion(self, payload, *, client_headers=None):
-        self.calls.append((dict(payload), dict(client_headers) if client_headers else None))
+        self._record(payload, client_headers)
+        if self._script is not None:
+            item = self._script.pop(0)
+            if isinstance(item, list) or isinstance(item, Exception):
+                return _ScriptedStream(item)
+            raise AssertionError("stream script entries must be an exception or a chunk list")
         if self._error is not None:
             raise self._error
         return _FakeStream(self._chunks)
@@ -598,3 +642,135 @@ class TestSseFraming:
         events = self._events(payload)
 
         assert events[0]["choices"][0]["delta"]["content"] == "a\ufffdb"
+
+
+def _completion() -> dict:
+    return {
+        "id": "chatcmpl-retry",
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+    }
+
+
+async def _read_stream(response) -> bytes:
+    received = b""
+    async for chunk in response.body_iterator:
+        received += chunk if isinstance(chunk, bytes) else chunk.encode()
+    return received
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_retries_524_then_returns_the_second_attempt(_isolate_side_effects) -> None:
+    client = _FakeClient(script=[OpenCodeGoSidecarError(524, "OpenCode Go returned HTTP 524"), _completion()])
+
+    response = await _dispatch(client, "glm-5.3")
+
+    assert response.status_code == 200
+    assert len(client.calls) == 2
+    assert _isolate_side_effects[-1]["status"] == "success"
+    assert len(_isolate_side_effects) == 1
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_does_not_retry_http_400(_isolate_side_effects) -> None:
+    client = _FakeClient(script=[OpenCodeGoSidecarError(400, "bad request", body={"error": {"message": "bad"}})])
+
+    response = await _dispatch(client, "glm-5.3")
+
+    assert response.status_code == 400
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_does_not_retry_an_oversized_response(_isolate_side_effects) -> None:
+    client = _FakeClient(script=[OpenCodeGoSidecarResponseTooLargeError("response too large")])
+
+    response = await _dispatch(client, "glm-5.3")
+
+    assert response.status_code == 502
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_stream_retries_502_before_any_chunk(_isolate_side_effects) -> None:
+    client = _FakeClient(
+        script=[
+            OpenCodeGoSidecarError(502, "bad gateway"),
+            [b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', b"data: [DONE]\n\n"],
+        ]
+    )
+
+    response = await _dispatch(client, "glm-5.3", stream=True)
+    body = await _read_stream(response)
+
+    assert len(client.calls) == 2
+    assert b'"content":"ok"' in body
+    assert b"bad gateway" not in body
+    assert _isolate_side_effects[-1]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_stream_does_not_retry_after_a_chunk(_isolate_side_effects) -> None:
+    client = _FakeClient(
+        script=[
+            [
+                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                OpenCodeGoSidecarError(502, "bad gateway"),
+            ]
+        ]
+    )
+
+    response = await _dispatch(client, "glm-5.3", stream=True)
+    body = await _read_stream(response)
+
+    assert len(client.calls) == 1
+    assert b'"content":"hi"' in body
+    assert b"bad gateway" in body
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_responses_retries_524_then_returns_the_second_attempt(_isolate_side_effects) -> None:
+    client = _FakeClient(script=[OpenCodeGoSidecarError(524, "gateway timeout"), _completion()])
+    request = ResponsesRequest.model_validate({"model": "glm-5.3", "instructions": "", "input": "hi"})
+
+    response = await proxy_responses_to_opencode_go(
+        _FakeRequest(),  # type: ignore[arg-type]
+        request,
+        effective_model="glm-5.3",
+        api_key=None,
+        reservation=None,
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=0,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert response.status_code == 200
+    assert len(client.calls) == 2
+    assert _isolate_side_effects[-1]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_responses_stream_retries_502_before_any_event(_isolate_side_effects) -> None:
+    client = _FakeClient(
+        script=[
+            OpenCodeGoSidecarError(502, "bad gateway"),
+            [b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', b"data: [DONE]\n\n"],
+        ]
+    )
+    request = ResponsesRequest.model_validate({"model": "glm-5.3", "instructions": "", "input": "hi", "stream": True})
+
+    response = await proxy_responses_to_opencode_go(
+        _FakeRequest(),  # type: ignore[arg-type]
+        request,
+        effective_model="glm-5.3",
+        api_key=None,
+        reservation=None,
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=0,
+        client=client,  # type: ignore[arg-type]
+    )
+    body = await _read_stream(response)
+
+    assert len(client.calls) == 2
+    assert b"bad gateway" not in body
+    assert b'"delta":"ok"' in body

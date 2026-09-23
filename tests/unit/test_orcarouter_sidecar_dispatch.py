@@ -1,18 +1,30 @@
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from fastapi import Request
+from starlette.responses import StreamingResponse
 
 from app.core.clients.claude_sidecar import SidecarPrefix
-from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
+from app.core.clients.orcarouter_sidecar import (
+    OrcaRouterSidecarClient,
+    OrcaRouterSidecarConfig,
+    OrcaRouterSidecarError,
+    OrcaRouterSidecarUnavailableError,
+)
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.types import JsonValue
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage, extract_billed_cost, extract_usage
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     _finalize_or_release_orcarouter_reservation,
     _log_orcarouter_request,
     _orcarouter_request_cost,
     build_orcarouter_chat_payload,
+    proxy_chat_to_orcarouter,
 )
 
 
@@ -344,3 +356,214 @@ def test_build_orcarouter_chat_payload_requested_none_effective_override() -> No
 
     assert payload.requested_reasoning_effort is None
     assert payload.effective_reasoning_effort == "low"
+
+
+class _RetryChatClient:
+    def __init__(self, results: list[JsonValue | Exception]) -> None:
+        self._results = list(results)
+        self.calls = 0
+        self.config = _config()
+
+    async def chat_completion(self, payload: object) -> JsonValue:
+        del payload
+        self.calls += 1
+        item = self._results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _RetryStreamClient:
+    def __init__(self, attempts: list[Exception | list[bytes | Exception]]) -> None:
+        self._attempts = list(attempts)
+        self.calls = 0
+        self.config = _config()
+
+    def stream_chat_completion(self, payload: object) -> "_RetryStreamContext":
+        del payload
+        self.calls += 1
+        return _RetryStreamContext(self._attempts.pop(0))
+
+
+class _RetryStreamContext:
+    def __init__(self, attempt: Exception | list[bytes | Exception]) -> None:
+        self._attempt = attempt
+
+    async def __aenter__(self) -> AsyncIterator[bytes]:
+        if isinstance(self._attempt, Exception):
+            raise self._attempt
+
+        async def chunks() -> AsyncIterator[bytes]:
+            for chunk in self._attempt:
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
+
+        return chunks()
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+
+def _silence_orcarouter_logs(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    logged: list[dict[str, object]] = []
+
+    class _SessionContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class _Repository:
+        def __init__(self, session: object) -> None:
+            del session
+
+        async def add_log(self, **kwargs: object) -> None:
+            logged.append(kwargs)
+
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.get_background_session", _SessionContext)
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.RequestLogsRepository", _Repository)
+    monkeypatch.setattr("app.modules.proxy.orcarouter_sidecar_dispatch.get_request_id", lambda: "req-retry")
+    return logged
+
+
+def _chat_request(*, stream: bool) -> ChatCompletionsRequest:
+    return ChatCompletionsRequest.model_validate(
+        {
+            "model": "z-ai/glm-5.3-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        }
+    )
+
+
+def _completion() -> dict[str, JsonValue]:
+    return {
+        "id": "chatcmpl-retry",
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+    }
+
+
+async def _proxy(client: object, *, stream: bool):
+    return await proxy_chat_to_orcarouter(
+        cast(Request, SimpleNamespace()),
+        _chat_request(stream=stream),
+        effective_model="z-ai/glm-5.3-flash",
+        api_key=None,
+        reservation=None,
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=0,
+        client=cast(OrcaRouterSidecarClient, client),
+    )
+
+
+async def _read_stream(response: StreamingResponse) -> bytes:
+    chunks: list[bytes] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode())
+    return b"".join(chunks)
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_retries_524_then_returns_the_second_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged = _silence_orcarouter_logs(monkeypatch)
+    client = _RetryChatClient(
+        [
+            OrcaRouterSidecarError(524, "OrcaRouter sidecar returned HTTP 524"),
+            _completion(),
+        ]
+    )
+
+    response = await _proxy(client, stream=False)
+
+    assert response.status_code == 200
+    assert json.loads(bytes(response.body))["id"] == "chatcmpl-retry"
+    assert client.calls == 2
+    assert logged[0]["status"] == "success"
+    assert len(logged) == 1
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_returns_the_second_524_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged = _silence_orcarouter_logs(monkeypatch)
+    client = _RetryChatClient(
+        [
+            OrcaRouterSidecarError(524, "OrcaRouter sidecar returned HTTP 524"),
+            OrcaRouterSidecarError(524, "OrcaRouter sidecar returned HTTP 524"),
+        ]
+    )
+
+    response = await _proxy(client, stream=False)
+
+    assert response.status_code == 524
+    assert json.loads(bytes(response.body))["error"]["message"] == "OrcaRouter sidecar returned HTTP 524"
+    assert client.calls == 2
+    assert len(logged) == 1
+    assert logged[0]["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_does_not_retry_http_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_orcarouter_logs(monkeypatch)
+    client = _RetryChatClient(
+        [OrcaRouterSidecarError(400, "bad request", body={"error": {"message": "bad request"}})]
+    )
+
+    response = await _proxy(client, stream=False)
+
+    assert response.status_code == 400
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_retries_transport_failure_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_orcarouter_logs(monkeypatch)
+    client = _RetryChatClient([OrcaRouterSidecarUnavailableError("connection reset"), _completion()])
+
+    response = await _proxy(client, stream=False)
+
+    assert response.status_code == 200
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_stream_retries_502_before_any_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged = _silence_orcarouter_logs(monkeypatch)
+    client = _RetryStreamClient(
+        [
+            OrcaRouterSidecarError(502, "bad gateway"),
+            [b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', b"data: [DONE]\n\n"],
+        ]
+    )
+
+    response = await _proxy(client, stream=True)
+    body = await _read_stream(response)
+
+    assert client.calls == 2
+    assert b'"content":"ok"' in body
+    assert b"bad gateway" not in body
+    assert logged[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_stream_does_not_retry_after_a_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_orcarouter_logs(monkeypatch)
+    client = _RetryStreamClient(
+        [
+            [
+                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                OrcaRouterSidecarError(524, "OrcaRouter sidecar returned HTTP 524"),
+            ],
+            [b'data: {"choices":[{"delta":{"content":"nope"}}]}\n\n', b"data: [DONE]\n\n"],
+        ]
+    )
+
+    response = await _proxy(client, stream=True)
+    body = await _read_stream(response)
+
+    assert client.calls == 1
+    assert b'"content":"hi"' in body
+    assert b"nope" not in body
+    assert b"HTTP 524" in body

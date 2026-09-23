@@ -70,7 +70,12 @@ from app.modules.proxy.external_pricing_logging import (
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
-from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
+from app.modules.proxy.sidecar_upstream_errors import (
+    call_with_sidecar_provider_retry,
+    client_facing_sidecar_error,
+    log_sidecar_provider_retry,
+    retry_sidecar_provider_failure,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -223,7 +228,11 @@ async def proxy_chat_to_openai_compat(
         )
 
     try:
-        response_body = await client.chat_completion(sidecar_payload.body)
+        response_body = await call_with_sidecar_provider_retry(
+            lambda: client.chat_completion(sidecar_payload.body),
+            provider=endpoint_name,
+            model=effective_model,
+        )
     except OpenAICompatSidecarUnavailableError:
         await _release_openai_compat_reservation(reservation, api_key=api_key)
         await _log_openai_compat_request(
@@ -346,70 +355,86 @@ async def _openai_compat_stream_iterator(
     error_code = "openai_compat_stream_incomplete"
     error_message: str | None = None
     endpoint_name = client.config.name
+    delivered = False
     try:
-        async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
-            async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk):
-                    if event == "[DONE]":
-                        if not stream_error:
-                            completed = True
-                        continue
-                    provider_error = _sse_provider_error(
-                        event,
-                        default_code="openai_compat_error",
-                        default_message=f"{endpoint_name} stream error",
-                    )
-                    if provider_error is not None:
-                        stream_error = True
-                        completed = False
-                        error_code, error_message = provider_error
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                    billed_cost.observe(extract_billed_cost(event))
-                yield raw_chunk
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    if not stream_error:
-                        completed = True
+        for attempt in range(2):
+            usage = None
+            billed_cost = BilledCostAccumulator()
+            completed = False
+            stream_error = False
+            try:
+                async with client.stream_chat_completion(payload) as chunks:
+                    decoder = _SseUsageDecoder()
+                    async for raw_chunk in chunks:
+                        for event in decoder.feed(raw_chunk):
+                            if event == "[DONE]":
+                                if not stream_error:
+                                    completed = True
+                                continue
+                            provider_error = _sse_provider_error(
+                                event,
+                                default_code="openai_compat_error",
+                                default_message=f"{endpoint_name} stream error",
+                            )
+                            if provider_error is not None:
+                                stream_error = True
+                                completed = False
+                                error_code, error_message = provider_error
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                            billed_cost.observe(extract_billed_cost(event))
+                        delivered = True
+                        yield raw_chunk
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            if not stream_error:
+                                completed = True
+                            continue
+                        provider_error = _sse_provider_error(
+                            event,
+                            default_code="openai_compat_error",
+                            default_message=f"{endpoint_name} stream error",
+                        )
+                        if provider_error is not None:
+                            stream_error = True
+                            completed = False
+                            error_code, error_message = provider_error
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                        billed_cost.observe(extract_billed_cost(event))
+                return
+            except OpenAICompatSidecarError as exc:
+                if retry_sidecar_provider_failure(
+                    attempt=attempt, delivered=delivered, status_code=exc.status_code
+                ):
+                    log_sidecar_provider_retry(provider=endpoint_name, status_code=exc.status_code, model=model)
                     continue
-                provider_error = _sse_provider_error(
-                    event,
-                    default_code="openai_compat_error",
-                    default_message=f"{endpoint_name} stream error",
+                if isinstance(exc, OpenAICompatSidecarUnavailableError):
+                    error_code = "openai_compat_unavailable"
+                    error_message = f"{endpoint_name} unavailable"
+                    yield _error_sse(
+                        openai_error(
+                            "openai_compat_unavailable",
+                            f"{endpoint_name} unavailable",
+                            error_type="upstream_error",
+                        )
+                    )
+                    yield b"data: [DONE]\n\n"
+                    return
+                error_code = "openai_compat_error"
+                error_message = exc.message
+                billed_cost.observe(extract_billed_cost(exc.body))
+                client_error = client_facing_sidecar_error(
+                    status_code=exc.status_code,
+                    message=exc.message,
+                    error_code="openai_compat_error",
+                    body=exc.body,
                 )
-                if provider_error is not None:
-                    stream_error = True
-                    completed = False
-                    error_code, error_message = provider_error
-                event_usage = extract_usage(event)
-                if event_usage is not None:
-                    usage = event_usage
-                billed_cost.observe(extract_billed_cost(event))
-    except OpenAICompatSidecarUnavailableError:
-        error_code = "openai_compat_unavailable"
-        error_message = f"{endpoint_name} unavailable"
-        yield _error_sse(
-            openai_error(
-                "openai_compat_unavailable",
-                f"{endpoint_name} unavailable",
-                error_type="upstream_error",
-            )
-        )
-        yield b"data: [DONE]\n\n"
-    except OpenAICompatSidecarError as exc:
-        error_code = "openai_compat_error"
-        error_message = exc.message
-        billed_cost.observe(extract_billed_cost(exc.body))
-        client_error = client_facing_sidecar_error(
-            status_code=exc.status_code,
-            message=exc.message,
-            error_code="openai_compat_error",
-            body=exc.body,
-        )
-        yield _error_sse(client_error.content)
-        yield b"data: [DONE]\n\n"
+                yield _error_sse(client_error.content)
+                yield b"data: [DONE]\n\n"
+                return
     except BaseException as exc:
         error_code = "openai_compat_stream_interrupted"
         error_message = str(exc) or exc.__class__.__name__

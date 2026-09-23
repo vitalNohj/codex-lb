@@ -68,7 +68,12 @@ from app.modules.proxy.sidecar_routing import (
     parse_sidecar_full_models,
     parse_sidecar_prefixes,
 )
-from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
+from app.modules.proxy.sidecar_upstream_errors import (
+    call_with_sidecar_provider_retry,
+    client_facing_sidecar_error,
+    log_sidecar_provider_retry,
+    retry_sidecar_provider_failure,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -196,7 +201,11 @@ async def proxy_chat_to_openrouter(
         )
 
     try:
-        response_body = await client.chat_completion(sidecar_payload.body)
+        response_body = await call_with_sidecar_provider_retry(
+            lambda: client.chat_completion(sidecar_payload.body),
+            provider="OpenRouter",
+            model=effective_model,
+        )
     except OpenRouterSidecarUnavailableError:
         await _release_openrouter_reservation(reservation, api_key=api_key)
         await _log_openrouter_request(
@@ -317,50 +326,65 @@ async def _openrouter_stream_iterator(
     completed = False
     error_code = "openrouter_sidecar_stream_incomplete"
     error_message: str | None = None
+    delivered = False
     try:
-        async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
-            async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
-                    if event == "[DONE]":
-                        completed = True
-                        continue
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                    billed_cost.observe(extract_billed_cost(event))
-                yield raw_chunk
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    completed = True
+        for attempt in range(2):
+            usage = None
+            billed_cost = BilledCostAccumulator()
+            completed = False
+            try:
+                async with client.stream_chat_completion(payload) as chunks:
+                    decoder = _SseUsageDecoder()
+                    async for raw_chunk in chunks:
+                        for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
+                            if event == "[DONE]":
+                                completed = True
+                                continue
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                            billed_cost.observe(extract_billed_cost(event))
+                        delivered = True
+                        yield raw_chunk
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            completed = True
+                            continue
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                        billed_cost.observe(extract_billed_cost(event))
+                return
+            except OpenRouterSidecarError as exc:
+                if retry_sidecar_provider_failure(
+                    attempt=attempt, delivered=delivered, status_code=exc.status_code
+                ):
+                    log_sidecar_provider_retry(provider="OpenRouter", status_code=exc.status_code, model=model)
                     continue
-                event_usage = extract_usage(event)
-                if event_usage is not None:
-                    usage = event_usage
-                billed_cost.observe(extract_billed_cost(event))
-    except OpenRouterSidecarUnavailableError:
-        error_code = "openrouter_sidecar_unavailable"
-        error_message = "OpenRouter sidecar unavailable"
-        yield _error_sse(
-            openai_error(
-                "openrouter_sidecar_unavailable",
-                "OpenRouter sidecar unavailable",
-                error_type="upstream_error",
-            )
-        )
-        yield b"data: [DONE]\n\n"
-    except OpenRouterSidecarError as exc:
-        error_code = "openrouter_sidecar_error"
-        error_message = exc.message
-        billed_cost.observe(extract_billed_cost(exc.body))
-        client_error = client_facing_sidecar_error(
-            status_code=exc.status_code,
-            message=exc.message,
-            error_code="openrouter_sidecar_error",
-            body=exc.body,
-        )
-        yield _error_sse(client_error.content)
-        yield b"data: [DONE]\n\n"
+                if isinstance(exc, OpenRouterSidecarUnavailableError):
+                    error_code = "openrouter_sidecar_unavailable"
+                    error_message = "OpenRouter sidecar unavailable"
+                    yield _error_sse(
+                        openai_error(
+                            "openrouter_sidecar_unavailable",
+                            "OpenRouter sidecar unavailable",
+                            error_type="upstream_error",
+                        )
+                    )
+                    yield b"data: [DONE]\n\n"
+                    return
+                error_code = "openrouter_sidecar_error"
+                error_message = exc.message
+                billed_cost.observe(extract_billed_cost(exc.body))
+                client_error = client_facing_sidecar_error(
+                    status_code=exc.status_code,
+                    message=exc.message,
+                    error_code="openrouter_sidecar_error",
+                    body=exc.body,
+                )
+                yield _error_sse(client_error.content)
+                yield b"data: [DONE]\n\n"
+                return
     except BaseException as exc:
         error_code = "openrouter_sidecar_stream_interrupted"
         error_message = str(exc) or exc.__class__.__name__

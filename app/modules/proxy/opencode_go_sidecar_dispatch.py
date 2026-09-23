@@ -86,7 +86,12 @@ from app.modules.proxy.sidecar_routing import (
     parse_sidecar_full_models,
     parse_sidecar_prefixes,
 )
-from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
+from app.modules.proxy.sidecar_upstream_errors import (
+    call_with_sidecar_provider_retry,
+    client_facing_sidecar_error,
+    log_sidecar_provider_retry,
+    retry_sidecar_provider_failure,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
@@ -390,7 +395,11 @@ async def proxy_chat_to_opencode_go(
         )
 
     try:
-        response_body = await client.chat_completion(sidecar_payload.body, client_headers=client_headers)
+        response_body = await call_with_sidecar_provider_retry(
+            lambda: client.chat_completion(sidecar_payload.body, client_headers=client_headers),
+            provider="OpenCode Go",
+            model=effective_model,
+        )
     except OpenCodeGoSidecarUnavailableError:
         await _release_opencode_go_reservation(reservation, api_key=api_key)
         await _log_opencode_go_request(
@@ -560,7 +569,11 @@ async def proxy_responses_to_opencode_go(
         )
 
     try:
-        response_body = await client.chat_completion(chat_body, client_headers=client_headers)
+        response_body = await call_with_sidecar_provider_retry(
+            lambda: client.chat_completion(chat_body, client_headers=client_headers),
+            provider="OpenCode Go",
+            model=effective_model,
+        )
     except OpenCodeGoSidecarUnavailableError:
         await _release_opencode_go_reservation(reservation, api_key=api_key)
         await _log_opencode_go_request(
@@ -665,60 +678,81 @@ async def _opencode_go_responses_stream_iterator(
     completed = False
     error_code = "opencode_go_sidecar_stream_incomplete"
     error_message: str | None = None
-    synthesizer = ResponsesStreamSynthesizer(model=model)
+    delivered = False
     try:
-        async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
-            decoder = _SseUsageDecoder()
-            async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk):
-                    if event == "[DONE]":
-                        completed = True
-                    else:
-                        event_usage = extract_usage(event)
-                        if event_usage is not None:
-                            usage = event_usage
-                        billed_cost.observe(extract_billed_cost(event))
-                    for responses_event in synthesizer.feed(event):
+        for attempt in range(2):
+            usage = None
+            billed_cost = BilledCostAccumulator()
+            completed = False
+            synthesizer = ResponsesStreamSynthesizer(model=model)
+            try:
+                async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
+                    decoder = _SseUsageDecoder()
+                    async for raw_chunk in chunks:
+                        for event in decoder.feed(raw_chunk):
+                            if event == "[DONE]":
+                                completed = True
+                            else:
+                                event_usage = extract_usage(event)
+                                if event_usage is not None:
+                                    usage = event_usage
+                                billed_cost.observe(extract_billed_cost(event))
+                            for responses_event in synthesizer.feed(event):
+                                delivered = True
+                                yield _responses_sse(responses_event)
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            completed = True
+                        else:
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                            billed_cost.observe(extract_billed_cost(event))
+                        for responses_event in synthesizer.feed(event):
+                            delivered = True
+                            yield _responses_sse(responses_event)
+                    # ``completed`` is True only if the upstream sent ``[DONE]``. A
+                    # clean EOF without it is a truncated response, and must not be
+                    # reported to the client as a completed one.
+                    for responses_event in synthesizer.finish(upstream_completed=completed):
+                        delivered = True
                         yield _responses_sse(responses_event)
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    completed = True
-                else:
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                    billed_cost.observe(extract_billed_cost(event))
-                for responses_event in synthesizer.feed(event):
-                    yield _responses_sse(responses_event)
-            # ``completed`` is True only if the upstream sent ``[DONE]``. A
-            # clean EOF without it is a truncated response, and must not be
-            # reported to the client as a completed one.
-            for responses_event in synthesizer.finish(upstream_completed=completed):
-                yield _responses_sse(responses_event)
-            yield b"data: [DONE]\n\n"
-    except OpenCodeGoSidecarUnavailableError:
-        error_code = "opencode_go_sidecar_unavailable"
-        error_message = "OpenCode Go unavailable"
-        yield _error_sse(
-            openai_error(
-                "opencode_go_sidecar_unavailable",
-                "OpenCode Go unavailable",
-                error_type="upstream_error",
-            )
-        )
-        yield b"data: [DONE]\n\n"
-    except OpenCodeGoSidecarError as exc:
-        error_code = "opencode_go_sidecar_error"
-        error_message = sanitize_opencode_go_message(exc.message, api_key=client.config.api_key)
-        billed_cost.observe(extract_billed_cost(exc.body))
-        client_error = client_facing_sidecar_error(
-            status_code=exc.status_code,
-            message=error_message,
-            error_code="opencode_go_sidecar_error",
-            body=sanitize_opencode_go_error_body(exc.body, api_key=client.config.api_key),
-        )
-        yield _error_sse(client_error.content)
-        yield b"data: [DONE]\n\n"
+                    delivered = True
+                    yield b"data: [DONE]\n\n"
+                return
+            except OpenCodeGoSidecarError as exc:
+                if retry_sidecar_provider_failure(
+                    attempt=attempt,
+                    delivered=delivered,
+                    status_code=exc.status_code,
+                    retryable=getattr(exc, "retryable", True) is not False,
+                ):
+                    log_sidecar_provider_retry(provider="OpenCode Go", status_code=exc.status_code, model=model)
+                    continue
+                if isinstance(exc, OpenCodeGoSidecarUnavailableError):
+                    error_code = "opencode_go_sidecar_unavailable"
+                    error_message = "OpenCode Go unavailable"
+                    yield _error_sse(
+                        openai_error(
+                            "opencode_go_sidecar_unavailable",
+                            "OpenCode Go unavailable",
+                            error_type="upstream_error",
+                        )
+                    )
+                    yield b"data: [DONE]\n\n"
+                    return
+                error_code = "opencode_go_sidecar_error"
+                error_message = sanitize_opencode_go_message(exc.message, api_key=client.config.api_key)
+                billed_cost.observe(extract_billed_cost(exc.body))
+                client_error = client_facing_sidecar_error(
+                    status_code=exc.status_code,
+                    message=error_message,
+                    error_code="opencode_go_sidecar_error",
+                    body=sanitize_opencode_go_error_body(exc.body, api_key=client.config.api_key),
+                )
+                yield _error_sse(client_error.content)
+                yield b"data: [DONE]\n\n"
+                return
     except BaseException as exc:
         error_code = "opencode_go_sidecar_stream_interrupted"
         error_message = sanitize_opencode_go_message(
@@ -789,50 +823,68 @@ async def _opencode_go_stream_iterator(
     completed = False
     error_code = "opencode_go_sidecar_stream_incomplete"
     error_message: str | None = None
+    delivered = False
     try:
-        async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
-            decoder = _SseUsageDecoder()
-            async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk):
-                    if event == "[DONE]":
-                        completed = True
-                        continue
-                    event_usage = extract_usage(event)
-                    if event_usage is not None:
-                        usage = event_usage
-                    billed_cost.observe(extract_billed_cost(event))
-                yield raw_chunk
-            for event in decoder.flush():
-                if event == "[DONE]":
-                    completed = True
+        for attempt in range(2):
+            usage = None
+            billed_cost = BilledCostAccumulator()
+            completed = False
+            try:
+                async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
+                    decoder = _SseUsageDecoder()
+                    async for raw_chunk in chunks:
+                        for event in decoder.feed(raw_chunk):
+                            if event == "[DONE]":
+                                completed = True
+                                continue
+                            event_usage = extract_usage(event)
+                            if event_usage is not None:
+                                usage = event_usage
+                            billed_cost.observe(extract_billed_cost(event))
+                        delivered = True
+                        yield raw_chunk
+                    for event in decoder.flush():
+                        if event == "[DONE]":
+                            completed = True
+                            continue
+                        event_usage = extract_usage(event)
+                        if event_usage is not None:
+                            usage = event_usage
+                        billed_cost.observe(extract_billed_cost(event))
+                return
+            except OpenCodeGoSidecarError as exc:
+                if retry_sidecar_provider_failure(
+                    attempt=attempt,
+                    delivered=delivered,
+                    status_code=exc.status_code,
+                    retryable=getattr(exc, "retryable", True) is not False,
+                ):
+                    log_sidecar_provider_retry(provider="OpenCode Go", status_code=exc.status_code, model=model)
                     continue
-                event_usage = extract_usage(event)
-                if event_usage is not None:
-                    usage = event_usage
-                billed_cost.observe(extract_billed_cost(event))
-    except OpenCodeGoSidecarUnavailableError:
-        error_code = "opencode_go_sidecar_unavailable"
-        error_message = "OpenCode Go unavailable"
-        yield _error_sse(
-            openai_error(
-                "opencode_go_sidecar_unavailable",
-                "OpenCode Go unavailable",
-                error_type="upstream_error",
-            )
-        )
-        yield b"data: [DONE]\n\n"
-    except OpenCodeGoSidecarError as exc:
-        error_code = "opencode_go_sidecar_error"
-        error_message = sanitize_opencode_go_message(exc.message, api_key=client.config.api_key)
-        billed_cost.observe(extract_billed_cost(exc.body))
-        client_error = client_facing_sidecar_error(
-            status_code=exc.status_code,
-            message=error_message,
-            error_code="opencode_go_sidecar_error",
-            body=sanitize_opencode_go_error_body(exc.body, api_key=client.config.api_key),
-        )
-        yield _error_sse(client_error.content)
-        yield b"data: [DONE]\n\n"
+                if isinstance(exc, OpenCodeGoSidecarUnavailableError):
+                    error_code = "opencode_go_sidecar_unavailable"
+                    error_message = "OpenCode Go unavailable"
+                    yield _error_sse(
+                        openai_error(
+                            "opencode_go_sidecar_unavailable",
+                            "OpenCode Go unavailable",
+                            error_type="upstream_error",
+                        )
+                    )
+                    yield b"data: [DONE]\n\n"
+                    return
+                error_code = "opencode_go_sidecar_error"
+                error_message = sanitize_opencode_go_message(exc.message, api_key=client.config.api_key)
+                billed_cost.observe(extract_billed_cost(exc.body))
+                client_error = client_facing_sidecar_error(
+                    status_code=exc.status_code,
+                    message=error_message,
+                    error_code="opencode_go_sidecar_error",
+                    body=sanitize_opencode_go_error_body(exc.body, api_key=client.config.api_key),
+                )
+                yield _error_sse(client_error.content)
+                yield b"data: [DONE]\n\n"
+                return
     except BaseException as exc:
         # Covers client disconnect and task cancellation. The ``finally`` block
         # below still settles the reservation and writes the log row, so a
