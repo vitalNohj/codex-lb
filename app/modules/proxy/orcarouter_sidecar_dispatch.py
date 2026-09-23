@@ -353,9 +353,7 @@ async def _orcarouter_stream_iterator(
                         billed_cost.observe(extract_billed_cost(event))
                 return
             except OrcaRouterSidecarError as exc:
-                if retry_sidecar_provider_failure(
-                    attempt=attempt, delivered=delivered, status_code=exc.status_code
-                ):
+                if retry_sidecar_provider_failure(attempt=attempt, delivered=delivered, status_code=exc.status_code):
                     log_sidecar_provider_retry(provider="OrcaRouter", status_code=exc.status_code, model=model)
                     continue
                 if isinstance(exc, OrcaRouterSidecarUnavailableError):

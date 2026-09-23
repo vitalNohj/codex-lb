@@ -5,9 +5,7 @@ from importlib import import_module
 
 import pytest
 
-migration = import_module(
-    "app.db.alembic.versions.20260618_040000_unify_sidecar_routing_settings"
-)
+migration = import_module("app.db.alembic.versions.20260618_040000_unify_sidecar_routing_settings")
 
 pytestmark = pytest.mark.unit
 

@@ -214,9 +214,7 @@ class OpenAICompatSidecarClient:
             )
         raw_models = data.get("data")
         if not isinstance(raw_models, list):
-            raise OpenAICompatSidecarError(
-                502, f"Missing 'data' key in {self._config.name} models response", body=data
-            )
+            raise OpenAICompatSidecarError(502, f"Missing 'data' key in {self._config.name} models response", body=data)
 
         models: list[SidecarModel] = []
         for entry in raw_models:
@@ -285,9 +283,7 @@ class OpenAICompatSidecarClient:
         except OpenAICompatSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise OpenAICompatSidecarUnavailableError(
-                _transport_message(exc, f"call {self._config.name}")
-            ) from exc
+            raise OpenAICompatSidecarUnavailableError(_transport_message(exc, f"call {self._config.name}")) from exc
 
     @asynccontextmanager
     async def stream_chat_completion(self, payload: Mapping[str, JsonValue]) -> AsyncIterator[AsyncIterator[bytes]]:
@@ -307,9 +303,7 @@ class OpenAICompatSidecarClient:
         except OpenAICompatSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise OpenAICompatSidecarUnavailableError(
-                _transport_message(exc, f"stream {self._config.name}")
-            ) from exc
+            raise OpenAICompatSidecarUnavailableError(_transport_message(exc, f"stream {self._config.name}")) from exc
 
 
 # Per-endpoint client cache. ``list_models_cached`` keeps its TTL state on the

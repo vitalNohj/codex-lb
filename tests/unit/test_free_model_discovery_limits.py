@@ -106,9 +106,7 @@ def test_only_whitelisted_fields_are_captured():
 
 
 def test_conflicting_header_and_body_hints_honour_the_longer_wait():
-    evidence = evidence_from_response(
-        headers={"Retry-After": "10"}, body={"error": {"retry_after": 300}}, now=_NOW
-    )
+    evidence = evidence_from_response(headers={"Retry-After": "10"}, body={"error": {"retry_after": 300}}, now=_NOW)
     assert evidence.retry_after_seconds == 300.0
 
 
@@ -116,9 +114,7 @@ def test_reset_header_is_kept_as_opaque_text_not_a_timestamp():
     """OpenRouter documents the header family but not the unit of Reset, so
     converting it to a time would be invented."""
 
-    evidence = evidence_from_response(
-        headers={"X-RateLimit-Reset": "1789000000000"}, body=None, now=_NOW
-    )
+    evidence = evidence_from_response(headers={"X-RateLimit-Reset": "1789000000000"}, body=None, now=_NOW)
     assert evidence.reset_hint == "1789000000000"
     assert evidence.retry_after_seconds is None
 

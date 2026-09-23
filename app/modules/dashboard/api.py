@@ -141,10 +141,7 @@ async def list_models() -> dict:
     # ``enabled_openai_compat_configs``, so the listed order is unchanged.
     enabled_openai_compat_configs = [config for config in openai_compat_configs if config.enabled]
     openai_compat_results = await asyncio.gather(
-        *(
-            get_openai_compat_sidecar_client(config).list_models_cached()
-            for config in enabled_openai_compat_configs
-        ),
+        *(get_openai_compat_sidecar_client(config).list_models_cached() for config in enabled_openai_compat_configs),
         return_exceptions=True,
     )
     for openai_compat_config, openai_compat_result in zip(

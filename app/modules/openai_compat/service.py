@@ -199,10 +199,7 @@ def _classify_status(enabled: bool, recorded_status: str | None) -> tuple[OpenAI
 
 
 def _model_summaries(models) -> list[OpenAICompatModelSummary]:
-    return [
-        OpenAICompatModelSummary(id=model.id, created=model.created, owned_by=model.owned_by)
-        for model in models
-    ]
+    return [OpenAICompatModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models]
 
 
 def _sanitize_message(message: str, *, api_key: str | None = None) -> str:

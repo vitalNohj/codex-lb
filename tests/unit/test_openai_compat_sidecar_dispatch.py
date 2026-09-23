@@ -313,7 +313,7 @@ def test_loading_configs_reconciles_the_client_cache_with_the_current_endpoints(
                     "base_url": "https://vllm.internal/v1",
                 }
             ]
-        )
+        ),
     )
 
     openai_compat_configs_from_settings(settings)

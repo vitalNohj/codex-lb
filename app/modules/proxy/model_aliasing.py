@@ -140,9 +140,7 @@ def append_discoverable_alias_models(
 ) -> list[dict[str, JsonValue]]:
     """Return ``items`` plus any discoverable alias entries not already present."""
 
-    existing_entries = {
-        str(entry["id"]): entry for entry in items if isinstance(entry.get("id"), str)
-    }
+    existing_entries = {str(entry["id"]): entry for entry in items if isinstance(entry.get("id"), str)}
     alias_entries = build_discoverable_alias_model_entries(
         aliases,
         existing_entries,

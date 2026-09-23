@@ -101,9 +101,7 @@ def provider_access(settings: DashboardSettings, provider: FreeModelProvider) ->
         if settings.openrouter_sidecar_api_key_encrypted is None:
             return ProviderAccess("missing_api_key", "OpenRouter sidecar API key is not configured", None)
         openrouter_config = openrouter_sidecar_config_from_settings(settings)
-        return ProviderAccess(
-            "ok", None, OpenRouterSidecarClient(openrouter_config), api_key=openrouter_config.api_key
-        )
+        return ProviderAccess("ok", None, OpenRouterSidecarClient(openrouter_config), api_key=openrouter_config.api_key)
     if not settings.orcarouter_sidecar_enabled:
         return ProviderAccess("disabled", "OrcaRouter sidecar is disabled", None)
     if settings.orcarouter_sidecar_api_key_encrypted is None:
@@ -247,9 +245,7 @@ class FreeModelDiscoveryService:
             # but ``build_plan`` calls provider APIs, so a second click can
             # arrive in between. Same answer as the pre-check, so a double
             # click is indistinguishable from a slow one to the caller.
-            raise DashboardConflictError(
-                "A discovery run is already in progress", code="discovery_run_active"
-            ) from exc
+            raise DashboardConflictError("A discovery run is already in progress", code="discovery_run_active") from exc
         return await self.get_run(run.id)
 
     async def get_run(self, run_id: str) -> FreeModelDiscoveryRunResponse:
@@ -426,11 +422,7 @@ def _run_response(
         # run. The persisted per-item scope is the fallback, so a restart or a
         # second replica still explains why the provider is waiting.
         persisted_scope = next(
-            (
-                item.last_limit_scope
-                for item in provider_items
-                if item.state == "queued" and item.last_limit_scope
-            ),
+            (item.last_limit_scope for item in provider_items if item.state == "queued" and item.last_limit_scope),
             None,
         )
         providers.append(

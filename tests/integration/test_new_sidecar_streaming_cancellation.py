@@ -328,9 +328,7 @@ async def _cancel_midstream(app, key, *, chunks: list[bytes], gate_after: int, f
 
 
 @pytest.mark.asyncio
-async def test_nvidia_control_completed_stream_finalizes_with_observed_usage(
-    async_client, nvidia_enabled, fake_nvidia
-):
+async def test_nvidia_control_completed_stream_finalizes_with_observed_usage(async_client, nvidia_enabled, fake_nvidia):
     """Baseline: an uncancelled stream finalizes and charges the observed usage."""
 
     await _configure_nvidia(async_client)
@@ -371,9 +369,7 @@ async def test_nvidia_injected_cancellation_before_any_usage_event(
     assert await _limit_current_values() == [0]
 
     # Gate immediately after the first content delta: no usage frame decoded.
-    outcome = await _cancel_midstream(
-        app_instance, key, chunks=[_DELTA, _USAGE, _DONE], gate_after=0, fake=fake_nvidia
-    )
+    outcome = await _cancel_midstream(app_instance, key, chunks=[_DELTA, _USAGE, _DONE], gate_after=0, fake=fake_nvidia)
     assert outcome == "CancelledError", f"cancellation did not propagate: {outcome}"
 
     await _settle_quiesced()
@@ -493,9 +489,7 @@ async def test_nvidia_settlement_happens_exactly_once_under_repeated_cancellatio
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_control_completed_stream_finalizes_with_observed_usage(
-    async_client, fake_openai_compat
-):
+async def test_openai_compat_control_completed_stream_finalizes_with_observed_usage(async_client, fake_openai_compat):
     """Baseline: an uncancelled stream finalizes and charges the observed usage."""
 
     await _configure_openai_compat(async_client)

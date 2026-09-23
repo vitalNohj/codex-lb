@@ -507,9 +507,7 @@ async def test_orcarouter_returns_the_second_524_once(monkeypatch: pytest.Monkey
 @pytest.mark.asyncio
 async def test_orcarouter_does_not_retry_http_400(monkeypatch: pytest.MonkeyPatch) -> None:
     _silence_orcarouter_logs(monkeypatch)
-    client = _RetryChatClient(
-        [OrcaRouterSidecarError(400, "bad request", body={"error": {"message": "bad request"}})]
-    )
+    client = _RetryChatClient([OrcaRouterSidecarError(400, "bad request", body={"error": {"message": "bad request"}})])
 
     response = await _proxy(client, stream=False)
 

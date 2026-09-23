@@ -789,7 +789,6 @@ async def test_list_accounts_flags_email_duplicates(async_client):
     assert accounts_by_id["blank-b"]["isEmailDuplicate"] is False
 
 
-
 @pytest.mark.asyncio
 async def test_accounts_list_includes_read_only_claude_sidecar_synthetic_account(async_client):
     response = await async_client.put(
@@ -1064,9 +1063,7 @@ async def test_accounts_list_sidecar_includes_estimated_usage(async_client):
 
     accounts = await async_client.get("/api/accounts")
     assert accounts.status_code == 200
-    sidecar = next(
-        account for account in accounts.json()["accounts"] if account["accountId"] == "claude-sidecar"
-    )
+    sidecar = next(account for account in accounts.json()["accounts"] if account["accountId"] == "claude-sidecar")
     assert sidecar["usage"]["primaryRemainingPercent"] == 75.0
     assert sidecar["usage"]["secondaryRemainingPercent"] == pytest.approx(96.428571)
     assert sidecar["windowMinutesPrimary"] == 300

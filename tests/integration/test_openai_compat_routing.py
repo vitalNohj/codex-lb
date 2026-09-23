@@ -381,9 +381,7 @@ async def test_openai_compat_cursor_stream_applies_usage_fallback(async_client, 
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_cursor_stream_context_limit_returns_synthetic_usage(
-    async_client, fake_openai_compat
-):
+async def test_openai_compat_cursor_stream_context_limit_returns_synthetic_usage(async_client, fake_openai_compat):
     fake_openai_compat.stream_context_error = True
 
     async with async_client.stream(
@@ -439,9 +437,7 @@ async def test_cursor_context_limit_error_is_logged_as_success_and_releases_its_
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_non_cursor_stream_does_not_apply_usage_fallback(
-    async_client, fake_openai_compat
-):
+async def test_openai_compat_non_cursor_stream_does_not_apply_usage_fallback(async_client, fake_openai_compat):
     fake_openai_compat.stream_include_usage = False
 
     async with async_client.stream(
@@ -490,9 +486,7 @@ async def test_openai_compat_strip_prefix_forwards_wire_model(async_client, fake
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_allowlist_hides_unlisted_full_model(
-    lifespan_free_client, fake_openai_compat
-):
+async def test_openai_compat_allowlist_hides_unlisted_full_model(lifespan_free_client, fake_openai_compat):
     await _enable_api_key_auth(lifespan_free_client)
     registry = get_model_registry()
     await registry.update({"plus": [_make_upstream_model("gpt-5.4")]})

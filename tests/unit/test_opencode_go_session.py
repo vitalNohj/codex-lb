@@ -48,9 +48,7 @@ def test_over_long_direct_header_is_hashed_rather_than_forwarded_or_dropped() ->
     # value is still a real conversation, so it is hashed to a bounded opaque
     # id that stays stable across turns rather than discarded.
     long_value = "x" * 500
-    resolved = resolve_opencode_go_session_id(
-        {"user-agent": "opencode/1.2.3", OPENCODE_SESSION_HEADER: long_value}
-    )
+    resolved = resolve_opencode_go_session_id({"user-agent": "opencode/1.2.3", OPENCODE_SESSION_HEADER: long_value})
 
     assert resolved is not None
     assert resolved.startswith("ses_")

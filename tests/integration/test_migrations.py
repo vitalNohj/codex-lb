@@ -3152,8 +3152,7 @@ async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
             ownership = (
                 await conn.execute(
                     text(
-                        "SELECT name FROM sqlite_master WHERE type = 'table' "
-                        "AND name = 'claude_opus_5_5_pin_ownership'"
+                        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'claude_opus_5_5_pin_ownership'"
                     )
                 )
             ).first()
