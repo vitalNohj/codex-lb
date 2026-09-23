@@ -3,6 +3,7 @@ import type { PropsWithChildren } from "react";
 import { useTranslation } from "react-i18next";
 
 import { CodexLogo } from "@/components/brand/codex-logo";
+import { ForkMark } from "@/components/brand/fork-mark";
 import { SpinnerBlock } from "@/components/ui/spinner";
 import { BootstrapSetupScreen } from "@/features/auth/components/bootstrap-setup-screen";
 import { LoginForm } from "@/features/auth/components/login-form";
@@ -61,9 +62,9 @@ export function AuthGate({ children }: PropsWithChildren) {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 shadow-sm ring-2 ring-primary/10 ring-offset-2 ring-offset-background">
               <CodexLogo size={28} className="text-primary" />
             </div>
-            <div>
+            <div className="flex items-center justify-center gap-2">
               <h1 className="text-xl font-semibold tracking-tight">{t("auth.appTitle")}</h1>
-              <p className="mt-0.5 text-sm text-muted-foreground">{t("auth.appSubtitle")}</p>
+              <ForkMark>{t("auth.appSubtitle")}</ForkMark>
             </div>
           </div>
           <LoginForm />

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Link, NavLink, useLocation } from "react-router-dom";
 
 import { CodexLogo } from "@/components/brand/codex-logo";
+import { ForkMark } from "@/components/brand/fork-mark";
 import { LanguageToggle, LanguageToggleMobile } from "@/components/layout/language-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -106,12 +107,10 @@ export function AppHeader({
             href={FORK_REPOSITORY_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="min-w-0 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex min-w-0 items-center gap-1.5 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <p className="truncate text-sm font-semibold tracking-tight">Codex LB++</p>
-            <p className="truncate text-[11px] leading-tight text-muted-foreground">
-              fork by VitalNohj
-            </p>
+            <span className="truncate text-sm font-semibold tracking-tight">Codex LB++</span>
+            <ForkMark />
           </a>
         </div>
 
@@ -231,12 +230,10 @@ export function AppHeader({
                     href={FORK_REPOSITORY_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="min-w-0 no-underline transition-colors hover:opacity-80"
+                    className="flex min-w-0 items-center gap-1.5 no-underline transition-colors hover:opacity-80"
                   >
-                    <span className="block text-sm font-semibold">Codex LB++</span>
-                    <span className="block text-[11px] font-normal leading-tight text-muted-foreground">
-                      fork by VitalNohj
-                    </span>
+                    <span className="truncate text-sm font-semibold">Codex LB++</span>
+                    <ForkMark />
                   </a>
                 </SheetTitle>
               </SheetHeader>

@@ -35,12 +35,13 @@ describe("AppHeader", () => {
     expect(screen.queryByText(/omniroute/i)).toBeNull();
   });
 
-  it("brands the header as the VitalNohj fork and links the title to the fork repo", () => {
+  it("marks the header as a fork and links the title to the fork repo", () => {
     renderHeader();
 
     expect(screen.getByText("Codex LB++")).toBeInTheDocument();
-    expect(screen.getByText("fork by VitalNohj")).toBeInTheDocument();
-    const forkLink = screen.getByRole("link", { name: /Codex LB\+\+.*fork by VitalNohj/i });
+    expect(screen.getByText("fork")).toBeInTheDocument();
+    expect(screen.queryByText(/vitalnohj/i)).not.toBeInTheDocument();
+    const forkLink = screen.getByRole("link", { name: /Codex LB\+\+\s*fork/i });
     expect(forkLink).toHaveAttribute("href", "https://github.com/vitalNohj/codex-lb");
     expect(forkLink).toHaveAttribute("target", "_blank");
     expect(forkLink).toHaveAttribute("rel", "noopener noreferrer");
