@@ -15,7 +15,7 @@ from app.core.auth.refresh import RefreshError
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from app.core.usage import refresh_scheduler as refresh_scheduler_module
-from app.core.usage.models import UsagePayload
+from app.core.usage.models import RateLimitPayload, UsagePayload
 from app.core.usage.refresh_scheduler import _select_long_window_entries
 from app.core.utils.shared_future import _WAITERS_ATTR, wait_on_shared_future
 from app.core.utils.time import utcnow
@@ -1055,6 +1055,62 @@ async def test_recover_keeps_rate_limited_after_reset_credit_when_weekly_exhaust
     assert account.status == AccountStatus.RATE_LIMITED
     assert account.reset_at == now + 5 * 24 * 3600
     assert account.blocked_at == now - 60
+
+
+@pytest.mark.asyncio
+async def test_reset_credit_refresh_clears_block_when_usage_lags_then_periodic_refresh_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accounts_repo = StubAccountsRepository()
+    usage_repo = StubUsageRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo)
+    account = _make_account("acc_reset_credit_lagged", "workspace_reset_credit_lagged")
+    account.status = AccountStatus.RATE_LIMITED
+    account.deactivation_reason = None
+    now = int(time.time())
+    account.blocked_at = now - 60
+    account.reset_at = now + 5 * 24 * 3600
+    accounts_repo.accounts_by_id[account.id] = account
+    snapshots = [
+        UsagePayload(
+            plan_type="plus",
+            rate_limit=RateLimitPayload(
+                primary_window=usage_updater_module.UsageWindow(used_percent=100.0, reset_at=now + 3600),
+                secondary_window=usage_updater_module.UsageWindow(used_percent=0.0, reset_at=now + 86400),
+            ),
+        ),
+        UsagePayload(
+            plan_type="plus",
+            rate_limit=RateLimitPayload(
+                primary_window=usage_updater_module.UsageWindow(used_percent=0.0, reset_at=now + 18000),
+                secondary_window=usage_updater_module.UsageWindow(used_percent=0.0, reset_at=now + 86400),
+            ),
+        ),
+    ]
+
+    async def _fetch_usage(**kwargs: object) -> UsagePayload:
+        del kwargs
+        return snapshots.pop(0)
+
+    monkeypatch.setattr(usage_updater_module, "fetch_usage", _fetch_usage)
+    monkeypatch.setattr(usage_updater_module, "resolve_upstream_route", AsyncMock(return_value=None))
+
+    lagged = await updater.force_refresh_result(
+        account,
+        ignore_refresh_disabled=True,
+        ignore_persisted_cooldown=True,
+    )
+
+    assert lagged.fetch_succeeded is True
+    assert account.status == AccountStatus.RATE_LIMITED
+    assert account.blocked_at is None
+    assert account.reset_at == now + 5 * 24 * 3600
+
+    await updater._refresh_account(account, usage_account_id=account.chatgpt_account_id)
+
+    assert account.status == AccountStatus.ACTIVE
+    assert account.reset_at is None
+    assert account.blocked_at is None
 
 
 @pytest.mark.asyncio
