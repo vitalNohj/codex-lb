@@ -247,6 +247,8 @@ from app.modules.proxy._service.support import (
     _strip_blank_html_comment_lines,
 )
 from app.modules.proxy.account_cache import get_account_selection_cache
+from app.modules.proxy.alias_pool_attempts import ChatRequestAttribution
+from app.modules.proxy.alias_pool_dispatch import PoolTargetUnroutable, dispatch_chat_with_failover
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import (
     claude_routing_entry,
@@ -287,6 +289,7 @@ from app.modules.proxy.model_aliasing import (
     append_discoverable_alias_models,
     load_model_aliases,
     resolve_request_model_alias,
+    resolve_request_model_alias_pool,
 )
 from app.modules.proxy.nvidia_sidecar_dispatch import (
     load_nvidia_sidecar_config,
@@ -387,6 +390,7 @@ from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaim
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.settings.repository import SettingsRepository
+from app.modules.settings.service import is_pool_capable_provider
 from app.modules.usage.mappers import usage_history_to_window_row
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import UsageUpdater
@@ -5001,10 +5005,26 @@ async def v1_chat_completions(
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
     requested_model = payload.model
-    aliased_model = await resolve_request_model_alias(payload.model)
-    if aliased_model is not None and aliased_model != payload.model:
-        payload.model = aliased_model
+    resolved_alias = await resolve_request_model_alias_pool(payload.model)
+    # Sidecar routing, the wire model, and pricing all operate on the real
+    # target, so ``payload.model`` is rewritten to the primary target exactly
+    # as before. Metering does not: request-limit reservation and the
+    # request-log ``model`` column key on the alias the client asked for, so a
+    # ``model_filter`` naming the alias applies and the dashboard shows the
+    # name the client uses.
+    if resolved_alias is not None and resolved_alias.primary != payload.model:
+        payload.model = resolved_alias.primary
     effective_model = _effective_model_for_api_key(api_key, payload.model)
+    # An enforced model replaces whatever the client asked for, alias included,
+    # so pooling and alias attribution apply only when the key enforces none.
+    alias_pool = (
+        resolved_alias
+        if resolved_alias is not None
+        and resolved_alias.alias is not None
+        and (api_key is None or api_key.enforced_model is None)
+        else None
+    )
+    metering_model = alias_pool.alias if alias_pool is not None and alias_pool.alias is not None else effective_model
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
 
@@ -5041,14 +5061,115 @@ async def v1_chat_completions(
         routing_entries.append(ollama_routing_entry(ollama_config))
 
     validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
+    if alias_pool is not None and alias_pool.is_pool:
+        # An alias with two or more targets: meter once against the alias, then
+        # try the targets in order. Per-target access is re-checked inside the
+        # loop so an allowlist naming the alias cannot reach a target the key
+        # may not use directly.
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=metering_model,
+            request_service_tier=payload.service_tier,
+            request_usage_budget=None,
+        )
+
+        async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
+            target_effective_model = _effective_model_for_api_key(api_key, target)
+            target_decision = resolve_sidecar_route(target_effective_model, tuple(routing_entries))
+            if target_decision is None or not is_pool_capable_provider(target_decision.provider):
+                raise PoolTargetUnroutable(
+                    target, provider=target_decision.provider if target_decision is not None else None
+                )
+            payload.model = target
+            if target_decision.provider == "openrouter":
+                assert openrouter_config is not None
+                return await proxy_chat_to_openrouter(
+                    request,
+                    payload,
+                    effective_model=target_effective_model,
+                    api_key=api_key,
+                    reservation=reservation,
+                    rate_limit_headers=rate_limit_headers,
+                    sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                    client=OpenRouterSidecarClient(openrouter_config),
+                    cursor_compat=cursor_compat_client,
+                    wire_model=target_decision.wire_model,
+                    attribution=attribution,
+                    allow_failover=True,
+                )
+            if target_decision.provider == "orcarouter":
+                assert orcarouter_config is not None
+                return await proxy_chat_to_orcarouter(
+                    request,
+                    payload,
+                    effective_model=target_effective_model,
+                    api_key=api_key,
+                    reservation=reservation,
+                    rate_limit_headers=rate_limit_headers,
+                    sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                    client=OrcaRouterSidecarClient(orcarouter_config),
+                    cursor_compat=cursor_compat_client,
+                    wire_model=target_decision.wire_model,
+                    attribution=attribution,
+                    allow_failover=True,
+                )
+            openai_compat_config = openai_compat_config_by_provider(openai_compat_configs, target_decision.provider)
+            if openai_compat_config is None:
+                raise PoolTargetUnroutable(target, provider=target_decision.provider)
+            return await proxy_chat_to_openai_compat(
+                request,
+                payload,
+                effective_model=target_effective_model,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OpenAICompatSidecarClient(openai_compat_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=target_decision.wire_model,
+                attribution=attribution,
+                allow_failover=True,
+            )
+
+        try:
+            return await dispatch_chat_with_failover(
+                request,
+                alias=metering_model,
+                targets=alias_pool.targets,
+                api_key=api_key,
+                routing_entries=tuple(routing_entries),
+                effective_model_for=lambda target: _effective_model_for_api_key(api_key, target),
+                dispatch=_dispatch_pool_target,
+            )
+        except PoolTargetUnroutable as exc:
+            # Every target lost its pool-capable route after the pool was
+            # saved (an integration was disabled). Operator configuration,
+            # surfaced as such rather than as a client error.
+            await _release_reservation(reservation)
+            logger.error("alias_pool_unroutable request_id=%s alias=%s", get_request_id(), exc.target)
+            return _logged_error_json_response(
+                request,
+                503,
+                openai_error(
+                    "alias_pool_unroutable",
+                    f"No enabled provider can serve any target of alias {exc.target!r}",
+                    error_type="upstream_error",
+                ),
+                headers=rate_limit_headers,
+            )
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:
         validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
         reservation = await _enforce_request_limits(
             api_key,
-            request_model=effective_model,
+            request_model=metering_model,
             request_service_tier=payload.service_tier,
             request_usage_budget=None,
+        )
+        attribution = (
+            ChatRequestAttribution.aliased(alias=metering_model, target=effective_model)
+            if alias_pool is not None
+            else None
         )
         if decision.provider == "claude":
             assert sidecar_config is not None
@@ -5077,6 +5198,7 @@ async def v1_chat_completions(
                 client=OpenRouterSidecarClient(openrouter_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
+                attribution=attribution,
             )
         if decision.provider == "nvidia":
             assert nvidia_config is not None
@@ -5106,6 +5228,7 @@ async def v1_chat_completions(
                 client=OpenAICompatSidecarClient(openai_compat_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
+                attribution=attribution,
             )
         if decision.provider == "orcarouter":
             assert orcarouter_config is not None
@@ -5120,6 +5243,7 @@ async def v1_chat_completions(
                 client=OrcaRouterSidecarClient(orcarouter_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
+                attribution=attribution,
             )
         if decision.provider == "opencode_go":
             assert opencode_go_config is not None

@@ -2,7 +2,9 @@
 
 Also the one-shot provider retry shared by OpenAI-compatible sidecars: a
 gateway or transport failure before any client byte is sent once more so the
-upstream can choose another provider.
+upstream can choose another provider. Dispatchers that open the upstream
+stream before committing the client response spend that one retry through
+``open_sidecar_stream`` and ``relay_sidecar_stream``, which share it.
 
 Once the proxy has accepted the client API key, an upstream 401/403 is a
 provider-side credential/pool failure — never a client auth failure. Passing
@@ -12,7 +14,8 @@ those statuses through kills long-running clients that treat 401 as fatal.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from typing import TypeVar, cast
 
@@ -82,17 +85,102 @@ async def call_with_sidecar_provider_retry(
     try:
         return await operation()
     except Exception as exc:
-        status_code = getattr(exc, "status_code", None)
-        retryable = getattr(exc, "retryable", True) is not False
-        if not isinstance(status_code, int) or not retry_sidecar_provider_failure(
-            attempt=0,
-            delivered=False,
-            status_code=status_code,
-            retryable=retryable,
-        ):
+        status_code = _provider_retry_status(exc, attempt=0, delivered=False)
+        if status_code is None:
             raise
         log_sidecar_provider_retry(provider=provider, status_code=status_code, model=model)
         return await operation()
+
+
+SidecarStreamOpener = Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]]
+"""Opens one upstream stream: entering it sends the POST and raises on an error status."""
+
+
+@dataclass(frozen=True, slots=True)
+class OpenedSidecarStream:
+    """An upstream stream whose status was observed before the client response.
+
+    ``exit_stack`` owns the upstream response. ``retry_used`` is true when the
+    one-shot provider retry was spent getting the stream open, so relaying it
+    must not spend the retry a second time.
+    """
+
+    chunks: AsyncIterator[bytes]
+    exit_stack: AsyncExitStack
+    retry_used: bool
+
+
+async def open_sidecar_stream(
+    open_stream: SidecarStreamOpener,
+    *,
+    provider: str,
+    model: str,
+) -> OpenedSidecarStream:
+    """Open an upstream stream, repeating the open once after a provider failure.
+
+    A failed open leaves nothing to close and raises the last attempt's error.
+    """
+
+    attempts = 0
+
+    async def open_once() -> OpenedSidecarStream:
+        nonlocal attempts
+        attempts += 1
+        exit_stack = AsyncExitStack()
+        chunks = await exit_stack.enter_async_context(open_stream())
+        return OpenedSidecarStream(chunks=chunks, exit_stack=exit_stack, retry_used=attempts > 1)
+
+    return await call_with_sidecar_provider_retry(open_once, provider=provider, model=model)
+
+
+async def relay_sidecar_stream(
+    opened: OpenedSidecarStream,
+    open_stream: SidecarStreamOpener,
+    *,
+    provider: str,
+    model: str,
+) -> AsyncGenerator[bytes, None]:
+    """Yield an opened stream's chunks, reopening once if it fails before the first.
+
+    The client status is committed by now, but no upstream byte has been relayed
+    before the first chunk, so a provider failure there is retried like an open
+    failure: once per request, and not at all if the open already spent the
+    retry. Every other failure propagates for the caller to turn into its error
+    frame. Closing this generator closes the upstream response.
+    """
+
+    delivered = False
+    try:
+        async with opened.exit_stack:
+            async for chunk in opened.chunks:
+                delivered = True
+                yield chunk
+        return
+    except Exception as exc:
+        status_code = _provider_retry_status(exc, attempt=1 if opened.retry_used else 0, delivered=delivered)
+        if status_code is None:
+            raise
+        log_sidecar_provider_retry(provider=provider, status_code=status_code, model=model)
+    async with open_stream() as chunks:
+        async for chunk in chunks:
+            yield chunk
+
+
+def _provider_retry_status(exc: Exception, *, attempt: int, delivered: bool) -> int | None:
+    """The status of a provider failure that earns the one-shot retry, else ``None``."""
+
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        return None
+    retryable = getattr(exc, "retryable", True) is not False
+    if not retry_sidecar_provider_failure(
+        attempt=attempt,
+        delivered=delivered,
+        status_code=status_code,
+        retryable=retryable,
+    ):
+        return None
+    return status_code
 
 
 def client_facing_sidecar_error(

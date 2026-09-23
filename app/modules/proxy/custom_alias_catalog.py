@@ -33,7 +33,7 @@ class CustomAliasCatalogEntry:
 
 def reconcile_custom_alias_catalog(
     catalog: Mapping[str, Mapping[str, int]],
-    aliases: Mapping[str, str],
+    aliases: Mapping[str, object],
 ) -> dict[str, dict[str, int]]:
     """Drop catalog rows that are not configured aliases or lack a context length."""
 
@@ -55,7 +55,7 @@ def reconcile_custom_alias_catalog(
 
 def filter_custom_alias_catalog_for_aliases(
     catalog: Mapping[str, CustomAliasCatalogEntry],
-    aliases: Mapping[str, str],
+    aliases: Mapping[str, object],
 ) -> dict[str, CustomAliasCatalogEntry]:
     """Keep only catalog rows keyed by configured alias ids."""
 

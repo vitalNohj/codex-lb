@@ -991,14 +991,12 @@ async def test_orcarouter_chat_error_relays_ordinary_upstream_text_unchanged(
         },
     )
 
-    if stream:
-        relayed = [
-            payload["error"]["message"]
-            for payload in _chat_sse_payloads(response.content)
-            if isinstance(payload.get("error"), dict)
-        ]
-    else:
-        relayed = [response.json()["error"]["message"]]
+    # The upstream is opened before the client response is committed, so a
+    # failed open is a JSON error with the upstream status on both paths
+    # rather than an error frame inside an already-committed event stream.
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    relayed = [response.json()["error"]["message"]]
     assert relayed == [_ORDINARY_UPSTREAM_MESSAGE]
 
     async with SessionLocal() as session:

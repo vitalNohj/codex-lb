@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import cast
 
@@ -22,11 +23,18 @@ from app.core.clients.openrouter_sidecar import (
     OpenRouterSidecarConfig,
     OpenRouterSidecarError,
 )
+from app.core.clients.orcarouter_sidecar import (
+    OrcaRouterSidecarClient,
+    OrcaRouterSidecarConfig,
+    OrcaRouterSidecarError,
+)
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonValue
+from app.modules.proxy.alias_pool_attempts import PoolTargetFailed
 from app.modules.proxy.nvidia_sidecar_dispatch import proxy_chat_to_nvidia
 from app.modules.proxy.openai_compat_dispatch import proxy_chat_to_openai_compat
 from app.modules.proxy.openrouter_sidecar_dispatch import proxy_chat_to_openrouter
+from app.modules.proxy.orcarouter_sidecar_dispatch import proxy_chat_to_orcarouter
 
 pytestmark = pytest.mark.unit
 
@@ -358,3 +366,160 @@ async def test_openai_compat_does_not_retry_http_400(monkeypatch: pytest.MonkeyP
 
     assert response.status_code == 400
     assert client.calls == 1
+
+
+# The dispatchers that can serve an alias pool open the upstream stream before
+# the client response, and the open and the relay share one retry: a provider
+# failure is sent once more whether it arrives as the open's status or as the
+# stream failing before its first chunk, never twice. In a pool the target's
+# retry comes first, and the pool fails over only when it failed as well.
+
+
+def _orcarouter_config() -> OrcaRouterSidecarConfig:
+    return OrcaRouterSidecarConfig(
+        enabled=True,
+        base_url="https://api.orcarouter.ai/v1",
+        api_key="key",
+        prefixes=_prefixes("orcarouter/"),
+        connect_timeout_seconds=8.0,
+        request_timeout_seconds=600.0,
+        models_cache_ttl_seconds=60.0,
+    )
+
+
+@dataclass(frozen=True)
+class _PoolCapableSidecar:
+    module: str
+    dispatch: Callable[..., Awaitable[object]]
+    client_type: type
+    config: Callable[[], object]
+    error: Callable[[int, str], Exception]
+
+    async def proxy(self, client: object, *, stream: bool, allow_failover: bool = False):
+        return await self.dispatch(
+            cast(Request, SimpleNamespace()),
+            _chat_request(stream=stream),
+            effective_model="vendor/model",
+            api_key=None,
+            reservation=None,
+            rate_limit_headers={},
+            sse_keepalive_interval_seconds=0,
+            client=cast(self.client_type, client),
+            allow_failover=allow_failover,
+        )
+
+
+_POOL_CAPABLE_SIDECARS = [
+    pytest.param(
+        _PoolCapableSidecar(
+            module="app.modules.proxy.orcarouter_sidecar_dispatch",
+            dispatch=proxy_chat_to_orcarouter,
+            client_type=OrcaRouterSidecarClient,
+            config=_orcarouter_config,
+            error=OrcaRouterSidecarError,
+        ),
+        id="orcarouter",
+    ),
+    pytest.param(
+        _PoolCapableSidecar(
+            module="app.modules.proxy.openrouter_sidecar_dispatch",
+            dispatch=proxy_chat_to_openrouter,
+            client_type=OpenRouterSidecarClient,
+            config=_openrouter_config,
+            error=OpenRouterSidecarError,
+        ),
+        id="openrouter",
+    ),
+    pytest.param(
+        _PoolCapableSidecar(
+            module="app.modules.proxy.openai_compat_dispatch",
+            dispatch=proxy_chat_to_openai_compat,
+            client_type=OpenAICompatSidecarClient,
+            config=_compat_config,
+            error=OpenAICompatSidecarError,
+        ),
+        id="openai_compat",
+    ),
+]
+
+_OK_STREAM: list[bytes | Exception] = [b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', b"data: [DONE]\n\n"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sidecar", _POOL_CAPABLE_SIDECARS)
+async def test_pool_capable_stream_retries_a_failure_before_the_first_chunk(
+    monkeypatch: pytest.MonkeyPatch, sidecar: _PoolCapableSidecar
+) -> None:
+    logged = _silence(monkeypatch, sidecar.module)
+    client = _ScriptedStreamClient([[sidecar.error(502, "bad gateway")], _OK_STREAM], sidecar.config())
+
+    response = await sidecar.proxy(client, stream=True)
+    body = await _read_stream(response)
+
+    assert client.calls == 2
+    assert b'"content":"ok"' in body
+    assert b"bad gateway" not in body
+    assert [row["status"] for row in logged] == ["success"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sidecar", _POOL_CAPABLE_SIDECARS)
+async def test_pool_capable_stream_open_and_relay_share_one_retry(
+    monkeypatch: pytest.MonkeyPatch, sidecar: _PoolCapableSidecar
+) -> None:
+    logged = _silence(monkeypatch, sidecar.module)
+    client = _ScriptedStreamClient(
+        [sidecar.error(502, "bad gateway"), [sidecar.error(524, "gateway timeout")], _OK_STREAM],
+        sidecar.config(),
+    )
+
+    response = await sidecar.proxy(client, stream=True)
+    body = await _read_stream(response)
+
+    assert client.calls == 2
+    assert b"gateway timeout" in body
+    assert b'"content":"ok"' not in body
+    assert [row["status"] for row in logged] == ["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sidecar", _POOL_CAPABLE_SIDECARS)
+@pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
+async def test_pool_target_is_retried_before_it_fails_over(
+    monkeypatch: pytest.MonkeyPatch, sidecar: _PoolCapableSidecar, stream: bool
+) -> None:
+    logged = _silence(monkeypatch, sidecar.module)
+    failures = [sidecar.error(503, "overloaded"), sidecar.error(524, "gateway timeout")]
+    client = (
+        _ScriptedStreamClient(list(failures), sidecar.config())
+        if stream
+        else _ScriptedChatClient(list(failures), sidecar.config())
+    )
+
+    with pytest.raises(PoolTargetFailed) as raised:
+        await sidecar.proxy(client, stream=stream, allow_failover=True)
+
+    assert client.calls == 2
+    assert raised.value.failure.status_code == 524
+    assert logged == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sidecar", _POOL_CAPABLE_SIDECARS)
+@pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
+async def test_pool_target_fails_over_at_once_on_a_client_side_failure(
+    monkeypatch: pytest.MonkeyPatch, sidecar: _PoolCapableSidecar, stream: bool
+) -> None:
+    _silence(monkeypatch, sidecar.module)
+    failures = [sidecar.error(429, "rate limited")]
+    client = (
+        _ScriptedStreamClient(list(failures), sidecar.config())
+        if stream
+        else _ScriptedChatClient(list(failures), sidecar.config())
+    )
+
+    with pytest.raises(PoolTargetFailed) as raised:
+        await sidecar.proxy(client, stream=stream, allow_failover=True)
+
+    assert client.calls == 1
+    assert raised.value.failure.status_code == 429
