@@ -45,7 +45,7 @@ Opus 5.5 MUST use a 32,768-token output floor, a 128,000-token output cap, and a
 
 ### Requirement: Stored CLIProxyAPI full models include Claude Opus 5.5
 
-Upgrading dashboard settings MUST append `claude-opus-5-5` to the CLIProxyAPI full-model list when that id is absent. Existing entries and their order MUST be preserved. A list that already contains the id, including a different letter case, MUST be left unchanged. Invalid JSON MUST be left unchanged. Downgrade MUST remove only `claude-opus-5-5`.
+Upgrading dashboard settings MUST append `claude-opus-5-5` to the CLIProxyAPI full-model list when that id is absent. Existing entries and their order MUST be preserved. A list that already contains the id, including a different letter case, MUST be left unchanged. Invalid JSON MUST be left unchanged. Downgrade MUST remove `claude-opus-5-5` only from rows this upgrade appended. A pin that was already stored MUST stay.
 
 #### Scenario: Upgrade appends Opus 5.5 without reordering
 
@@ -59,8 +59,14 @@ Upgrading dashboard settings MUST append `claude-opus-5-5` to the CLIProxyAPI fu
 - **WHEN** the upgrade runs
 - **THEN** the stored JSON is unchanged
 
-#### Scenario: Downgrade removes only Opus 5.5
+#### Scenario: Downgrade removes only Opus 5.5 this upgrade appended
 
-- **GIVEN** stored CLIProxyAPI full models are `claude-opus-5`, `claude-fable-5-1`, and `claude-opus-5-5`
+- **GIVEN** stored CLIProxyAPI full models were `claude-opus-5` then `claude-fable-5-1` before this upgrade appended `claude-opus-5-5`
 - **WHEN** the downgrade runs
 - **THEN** the full-model list is `claude-opus-5` then `claude-fable-5-1`
+
+#### Scenario: Downgrade leaves a pin that predated the upgrade
+
+- **GIVEN** stored CLIProxyAPI full models already contained `claude-opus-5-5` before the upgrade
+- **WHEN** the downgrade runs
+- **THEN** that `claude-opus-5-5` entry is still present

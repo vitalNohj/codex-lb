@@ -1364,7 +1364,7 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 
 #### Scenario: An Opus 5.5 lookalike does not use the Opus 5.5 entry
 
-- **WHEN** native price lookup receives model `claude-opus-5-50`
+- **WHEN** native price lookup receives model `claude-opus-5-50` or `not-claude-opus-5-5`
 - **THEN** it does not resolve the canonical model `claude-opus-5-5`
 
 ### Requirement: An Opus 5 allowlist does not admit Opus 5.5

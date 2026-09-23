@@ -200,6 +200,10 @@ def test_get_pricing_for_model_claude_opus_5_5_does_not_collapse_to_opus_5():
     assert lookalike is not None
     assert lookalike[0] == "claude-opus-5"
 
+    hyphen_lookalike = get_pricing_for_model("not-claude-opus-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert hyphen_lookalike is not None
+    assert hyphen_lookalike[0] == "claude-opus-5"
+
 
 def test_get_pricing_for_model_claude_opus_5_sidecar_slash_prefix():
     result = get_pricing_for_model("cc/claude-opus-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)

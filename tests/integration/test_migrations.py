@@ -2948,7 +2948,9 @@ async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
             stored = (
                 await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
             ).scalar_one()
+            owned = (await conn.execute(text("SELECT settings_id FROM claude_opus_5_5_pin_ownership"))).scalar_one()
         assert stored == pinned
+        assert owned == 1
 
         await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
         async with engine.connect() as conn:
@@ -2963,6 +2965,16 @@ async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
                 await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
             ).scalar_one()
         assert json.loads(stored) == ["claude-opus-5", "claude-fable-5-1"]
+        async with engine.connect() as conn:
+            ownership = (
+                await conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'claude_opus_5_5_pin_ownership'"
+                    )
+                )
+            ).first()
+        assert ownership is None
 
         async with engine.begin() as conn:
             await conn.execute(
@@ -2976,6 +2988,14 @@ async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
             ).scalar_one()
         assert stored == '["claude-opus-5","Claude-Opus-5-5"]'
 
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == '["claude-opus-5","Claude-Opus-5-5"]'
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
         async with engine.begin() as conn:
             await conn.execute(
                 text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),

@@ -18,8 +18,10 @@ _FABLE_5_1_ID = re.compile(
     r"(?:-(?:thinking|reasoning))?$",
     re.IGNORECASE,
 )
+# Bare id, or a prefix this proxy actually routes: cc/, cp-, cp_.
+# A single separator such as "-" would also accept not-claude-opus-5-5.
 _OPUS_5_5_ID = re.compile(
-    r"(?:^|[/:_-])claude-opus-5[.-]5"
+    r"^(?:cc/|cp[-_])?claude-opus-5[.-]5"
     r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"
     r"(?:-(?:thinking|reasoning))?"
     r"(?:-(?:none|auto|minimal|low|medium|high|xhigh|extra|max))?"

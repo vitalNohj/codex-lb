@@ -6,7 +6,7 @@
 
 ## 2. Full-model pin
 
-- [x] 2.1 Append `claude-opus-5-5` to stored CLIProxyAPI full models when absent. Downgrade removes only that id.
+- [x] 2.1 Append `claude-opus-5-5` to stored CLIProxyAPI full models when absent. Downgrade removes that id only from rows this upgrade appended.
 
 ## 3. Validation
 

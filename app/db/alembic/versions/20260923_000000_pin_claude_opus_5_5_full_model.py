@@ -22,6 +22,8 @@ depends_on = None
 _TABLE_NAME = "dashboard_settings"
 _COLUMN_NAME = "claude_sidecar_full_models_json"
 _MODEL_ID = "claude-opus-5-5"
+_OWNERSHIP_TABLE = "claude_opus_5_5_pin_ownership"
+_BATCH_SIZE = 250
 
 
 def _columns(connection: Connection, table_name: str) -> set[str]:
@@ -64,23 +66,58 @@ def _remove_model(raw: str | None) -> str | None:
     return json.dumps(kept, separators=(",", ":"))
 
 
-def _rewrite(bind: Connection, transform: Callable[[str | None], str | None]) -> None:
-    if _COLUMN_NAME not in _columns(bind, _TABLE_NAME):
-        return
-    rows = bind.execute(sa.text(f"SELECT id, {_COLUMN_NAME} FROM {_TABLE_NAME}")).fetchall()
-    for row in rows:
-        updated = transform(row[1])
-        if updated is None or updated == row[1]:
-            continue
-        bind.execute(
-            sa.text(f"UPDATE {_TABLE_NAME} SET {_COLUMN_NAME} = :value WHERE id = :id"),
-            {"value": updated, "id": row[0]},
-        )
+def _setting_text(raw: object) -> str | None:
+    if raw is None or isinstance(raw, str):
+        return raw
+    return str(raw)
+
+
+def _apply_batches(bind: Connection, transform: Callable[[str | None], str | None], *, owned_only: bool) -> None:
+    last_id = 0
+    ownership_join = f"INNER JOIN {_OWNERSHIP_TABLE} AS owned ON owned.settings_id = settings.id" if owned_only else ""
+    while True:
+        batch = bind.execute(
+            sa.text(
+                f"SELECT settings.id, settings.{_COLUMN_NAME} "
+                f"FROM {_TABLE_NAME} AS settings {ownership_join} "
+                "WHERE settings.id > :last_id ORDER BY settings.id LIMIT :limit"
+            ),
+            {"last_id": last_id, "limit": _BATCH_SIZE},
+        ).fetchall()
+        if not batch:
+            return
+        for row in batch:
+            updated = transform(_setting_text(row[1]))
+            if updated is None:
+                continue
+            bind.execute(
+                sa.text(f"UPDATE {_TABLE_NAME} SET {_COLUMN_NAME} = :value WHERE id = :id"),
+                {"value": updated, "id": row[0]},
+            )
+            if not owned_only:
+                bind.execute(
+                    sa.text(f"INSERT INTO {_OWNERSHIP_TABLE} (settings_id) VALUES (:id)"),
+                    {"id": row[0]},
+                )
+        last_id = int(batch[-1][0])
+        if len(batch) < _BATCH_SIZE:
+            return
 
 
 def upgrade() -> None:
-    _rewrite(op.get_bind(), _append_model)
+    bind = op.get_bind()
+    if _COLUMN_NAME not in _columns(bind, _TABLE_NAME):
+        return
+    op.create_table(
+        _OWNERSHIP_TABLE,
+        sa.Column("settings_id", sa.Integer(), primary_key=True),
+    )
+    _apply_batches(bind, _append_model, owned_only=False)
 
 
 def downgrade() -> None:
-    _rewrite(op.get_bind(), _remove_model)
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table(_OWNERSHIP_TABLE) and _COLUMN_NAME in _columns(bind, _TABLE_NAME):
+        _apply_batches(bind, _remove_model, owned_only=True)
+    if sa.inspect(bind).has_table(_OWNERSHIP_TABLE):
+        op.drop_table(_OWNERSHIP_TABLE)
