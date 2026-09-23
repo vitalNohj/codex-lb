@@ -92,12 +92,29 @@ def test_get_pricing_for_model_gpt_5_6_aliases(requested_model: str, canonical_m
         ("gpt-6-astra-2026-09-03", "gpt-6-astra"),
         ("codex/gpt-6-astra", "gpt-6-astra"),
         ("openai/gpt-6-astra", "gpt-6-astra"),
+        ("gpt-6-sol", "gpt-6-sol"),
+        ("gpt-6-sol-2026-09-22", "gpt-6-sol"),
+        ("codex/gpt-6-sol", "gpt-6-sol"),
+        ("openai/gpt-6-sol", "gpt-6-sol"),
+        ("GPT-6-SOL-20260922", "gpt-6-sol"),
+        ("gpt-6-luna", "gpt-6-luna"),
+        ("gpt-6-luna-2026-09-22", "gpt-6-luna"),
+        ("codex/gpt-6-luna", "gpt-6-luna"),
+        ("openai/gpt-6-luna", "gpt-6-luna"),
     ],
 )
-def test_get_pricing_for_model_gpt_6_astra_aliases(requested_model: str, canonical_model: str) -> None:
+def test_get_pricing_for_model_gpt_6_aliases(requested_model: str, canonical_model: str) -> None:
     result = get_pricing_for_model(requested_model, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
 
     assert result == (canonical_model, DEFAULT_PRICING_MODELS[canonical_model])
+
+
+@pytest.mark.parametrize(
+    "requested_model",
+    ["gpt-6-sol-pro", "unrelated/gpt-6-sol", "gpt-6-luna-pro", "unrelated/gpt-6-luna"],
+)
+def test_get_pricing_for_model_gpt_6_sol_luna_lookalikes_are_unpriced(requested_model: str) -> None:
+    assert get_pricing_for_model(requested_model, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
 
 
 def test_get_pricing_for_model_gpt_5_4_mini_alias():
@@ -407,6 +424,14 @@ def test_calculate_cost_from_usage_flex_service_tier():
         ("gpt-6-astra", "flex", 25.55),
         ("gpt-6-astra", "priority", 102.2),
         ("gpt-6-astra", "fast", 102.2),
+        ("gpt-6-sol", None, 10.22),
+        ("gpt-6-sol", "flex", 5.11),
+        ("gpt-6-sol", "priority", 20.44),
+        ("gpt-6-sol", "fast", 20.44),
+        ("gpt-6-luna", None, 0.511),
+        ("gpt-6-luna", "flex", 0.2555),
+        ("gpt-6-luna", "priority", 1.022),
+        ("gpt-6-luna", "fast", 1.022),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_service_tiers(
@@ -436,6 +461,10 @@ def test_calculate_cost_from_usage_gpt_5_6_service_tiers(
         ("gpt-5.6-luna", "flex", 0.141),
         ("gpt-6-astra", None, 12.6),
         ("gpt-6-astra", "flex", 6.3),
+        ("gpt-6-sol", None, 2.52),
+        ("gpt-6-sol", "flex", 1.26),
+        ("gpt-6-luna", None, 0.126),
+        ("gpt-6-luna", "flex", 0.063),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_long_context(
@@ -461,6 +490,8 @@ def test_calculate_cost_from_usage_gpt_5_6_long_context(
         ("gpt-5.6-terra", 2.0, 4.0),
         ("gpt-5.6-luna", 0.2, 0.4),
         ("gpt-6-astra", 10.0, 20.0),
+        ("gpt-6-sol", 2.0, 4.0),
+        ("gpt-6-luna", 0.10, 0.20),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_uses_272k_long_context_boundary(

@@ -131,6 +131,39 @@ async def test_add_log_computes_cost_for_gpt_6_astra(db_setup) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "expected_cost"),
+    [
+        ("gpt-6-sol", 10.22),
+        ("codex/gpt-6-sol", 10.22),
+        ("gpt-6-luna", 0.511),
+        ("openai/gpt-6-luna", 0.511),
+    ],
+)
+async def test_add_log_computes_cost_for_gpt_6_sol_and_luna(db_setup, model: str, expected_cost: float) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+
+        saved = await repo.add_log(
+            account_id=None,
+            request_id=f"req_{model.replace('/', '_')}",
+            model=model,
+            input_tokens=200_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=100_000,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+        )
+
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
+        assert persisted is not None
+        assert persisted.cost_usd == pytest.approx(expected_cost)
+        assert persisted.cost_source == CostSource.STATIC_TABLE.value
+
+
+@pytest.mark.asyncio
 async def test_add_log_persists_request_and_connection_kinds(db_setup) -> None:
     del db_setup
     async with SessionLocal() as session:
