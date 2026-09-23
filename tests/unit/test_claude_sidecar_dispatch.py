@@ -325,6 +325,36 @@ def test_build_sidecar_chat_payload_raises_cursor_max_tokens_to_model_floor() ->
     assert payload.body["max_tokens"] == 32_768
 
 
+def test_build_sidecar_chat_payload_forwards_opus_5_5_wire_model() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-opus-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-opus-5-5", _config())
+
+    assert payload.body["model"] == "claude-opus-5-5"
+    assert payload.body["max_tokens"] == 32_768
+
+
+def test_build_sidecar_chat_payload_leaves_opus_5_max_tokens_unchanged() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-opus-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-opus-5", _config())
+
+    assert payload.body["model"] == "claude-opus-5"
+    assert payload.body["max_tokens"] == 4096
+
+
 def test_build_sidecar_chat_payload_forwards_fable_5_1_wire_model() -> None:
     request = ChatCompletionsRequest.model_validate(
         {

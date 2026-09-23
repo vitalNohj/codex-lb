@@ -85,7 +85,7 @@ def _resolve_sidecar_wire_model_and_effort(model: str) -> tuple[str, str | None]
         return model, None
 
     versioned = resolve_versioned_model_id(model)
-    if versioned == "claude-fable-5-1":
+    if versioned is not None and versioned.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
         _, effort = _split_model_reasoning_suffix(model)
         return (model if _is_date_suffix_variant(model, versioned) else versioned), effort
 

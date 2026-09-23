@@ -2920,3 +2920,73 @@ async def test_file_account_pins_migration_upgrade_and_downgrade(tmp_path):
             assert await conn.run_sync(_schema_state) is not None
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-opus-5-5-full-model.sqlite'}"
+    parent_revision = "20260919_000000_add_openai_compat_endpoints"
+    pin_revision = "20260923_000000_pin_claude_opus_5_5_full_model"
+    original = '["claude-opus-5","claude-fable-5-1"]'
+    pinned = '["claude-opus-5","claude-fable-5-1","claude-opus-5-5"]'
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": original},
+            )
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == pinned
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == pinned
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert json.loads(stored) == ["claude-opus-5", "claude-fable-5-1"]
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": '["claude-opus-5","Claude-Opus-5-5"]'},
+            )
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == '["claude-opus-5","Claude-Opus-5-5"]'
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": "not-json"},
+            )
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == "not-json"
+    finally:
+        await engine.dispose()
