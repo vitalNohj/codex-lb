@@ -85,7 +85,7 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 
 #### Scenario: Backfill populates cost for prior Sol and Luna traffic
 
-- **GIVEN** a pre-existing request log with model `gpt-6-sol` or `gpt-6-luna`, token usage, and `cost_usd IS NULL`
+- **GIVEN** a pre-existing request log with model `gpt-6-sol`, `gpt-6-luna`, or `GPT-6-SOL-20260922`, token usage, and `cost_usd IS NULL`
 - **WHEN** the migration runs
 - **THEN** the row's `cost_usd` is set from the resolved pricing
 - **AND** the row's `cost_source` is `static_table`

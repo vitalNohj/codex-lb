@@ -1255,6 +1255,21 @@ async def test_gpt_6_astra_cost_backfill_migration_populates_cost(tmp_path):
     assert rollup_row_count == 1
 
 
+def test_gpt_6_sol_luna_backfill_prefilter_lowers_model_for_postgres() -> None:
+    import sqlalchemy as sa
+    from sqlalchemy.dialects import postgresql
+
+    migration = importlib.import_module("app.db.alembic.versions.20260922_000000_backfill_gpt_6_sol_luna_costs")
+    request_logs = sa.table("request_logs", sa.column("model", sa.String()))
+    compiled = str(
+        migration._model_match(request_logs).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "lower(request_logs.model)" in compiled
+
+
 @pytest.mark.asyncio
 async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
     """NULL Sol and Luna rows gain list-price cost. Lookalikes, external prices, and rollup watermarks stay put."""
@@ -1289,6 +1304,8 @@ async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
                     )
                     VALUES
                       ('acc_sol', 'key_sol', 'req_sol', '2026-09-22 00:00:00', 'gpt-6-sol',
+                       NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
+                      ('acc_sol', 'key_sol', 'req_sol_upper', '2026-09-22 00:00:30', 'GPT-6-SOL-20260922',
                        NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
                       ('acc_sol', 'key_sol', 'req_luna', '2026-09-22 00:01:00', 'gpt-6-luna',
                        NULL, 200000, 1000000, 0, 0, 100, 'success', NULL, NULL, NULL, 'normal'),
@@ -1378,6 +1395,8 @@ async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
         costs, sources, statuses, state, account_total, key_total, dup_costs = await _snapshot()
         assert costs["req_sol"] == pytest.approx(10.4)
         assert sources["req_sol"] == "static_table"
+        assert costs["req_sol_upper"] == pytest.approx(10.4)
+        assert sources["req_sol_upper"] == "static_table"
         assert costs["req_luna"] == pytest.approx(0.52)
         assert sources["req_luna"] == "static_table"
         assert costs["req_sol_prefixed"] == pytest.approx(10.4)
@@ -1398,11 +1417,11 @@ async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
         assert str(state[0]).startswith(watermark)
         assert str(state[1]).startswith(watermark)
         assert str(state[2]).startswith("2026-09-22 00:00:00")
-        # Folded new costs: sol 10.4 + luna 0.52 + prefixed 10.4. The duplicate
-        # lower id is repriced but is not the group's max(id), so the account
-        # rollup does not gain it. The API-key rollup does.
-        assert account_total == pytest.approx(11.4 + 10.4 + 0.52 + 10.4)
-        assert key_total == pytest.approx(11.4 + 10.4 + 0.52 + 10.4 + 10.4)
+        # Folded new costs: sol 10.4 + uppercase sol 10.4 + luna 0.52 + prefixed 10.4.
+        # The duplicate lower id is repriced but is not the group's max(id), so the
+        # account rollup does not gain it. The API-key rollup does.
+        assert account_total == pytest.approx(11.4 + 10.4 + 10.4 + 0.52 + 10.4)
+        assert key_total == pytest.approx(11.4 + 10.4 + 10.4 + 0.52 + 10.4 + 10.4)
 
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
         after_downgrade = await _snapshot()

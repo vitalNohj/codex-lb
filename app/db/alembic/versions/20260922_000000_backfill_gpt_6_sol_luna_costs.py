@@ -237,7 +237,10 @@ def _request_logs_table() -> Any:
 
 
 def _model_match(request_logs: Any) -> Any:
-    return sa.or_(*(request_logs.c.model.like(pattern) for pattern in _MODEL_MATCHES))
+    # PostgreSQL LIKE is case-sensitive. Lowercase patterns would skip
+    # GPT-6-SOL-20260922 before the case-insensitive resolver runs.
+    normalized_model = sa.func.lower(request_logs.c.model)
+    return sa.or_(*(normalized_model.like(pattern) for pattern in _MODEL_MATCHES))
 
 
 def _group_max_ids(bind: Connection, rows: list[dict[str, Any]]) -> dict[tuple[object, object, object], int]:
