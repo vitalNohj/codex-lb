@@ -7,8 +7,8 @@ import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
-import { excludedModelLabels } from "@/features/settings/lib/excluded-model-families";
 import { StatusBadge } from "@/components/status-badge";
+import { ExcludedModelsRail } from "@/features/dashboard/components/excluded-models-rail";
 import {
   accountSubscriptionCredits,
   formatCreditValue,
@@ -316,7 +316,6 @@ export function ClaudeAuthCard({
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
   const title = auth.email ?? auth.name;
-  const exclusionLabels = excludedModelLabels(auth.excludedModels);
   const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
   const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
   const providerLabel = auth.provider === "claude"
@@ -388,22 +387,8 @@ export function ClaudeAuthCard({
           {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
           {auth.paused ? "Resume" : "Pause"}
         </Button>
-        {exclusionLabels.length > 0 ? (
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            <span className="shrink-0 text-[11px] text-muted-foreground">Excluded</span>
-            <div
-              role="group"
-              aria-label="Excluded models"
-              className="flex min-w-0 items-center gap-1.5 overflow-x-auto overscroll-x-contain [scrollbar-width:thin]"
-            >
-              {exclusionLabels.map((label) => (
-                <Badge key={label} variant="secondary" className="shrink-0 text-[11px]">
-                  {label}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        ) : null}
+        {/* Read-only info, so a rule keeps it apart from the buttons. */}
+        <ExcludedModelsRail excludedModels={auth.excludedModels} className="ml-1 border-l pl-2.5" />
       </div>
     </div>
   );
