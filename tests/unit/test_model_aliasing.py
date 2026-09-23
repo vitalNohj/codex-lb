@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.core.types import JsonValue
 from app.modules.proxy.model_aliasing import (
     append_discoverable_alias_models,
     build_discoverable_alias_model_entries,
@@ -13,7 +14,7 @@ def _pool(*targets: str) -> ModelAliasPool:
     return ModelAliasPool(targets=targets)
 
 
-def _registry_entry(model_id: str) -> dict[str, object]:
+def _registry_entry(model_id: str) -> dict[str, JsonValue]:
     return {
         "id": model_id,
         "created": 1,
