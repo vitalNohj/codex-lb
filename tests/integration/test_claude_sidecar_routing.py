@@ -19,6 +19,7 @@ from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
 from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_cooldown_gate
 from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 
 pytestmark = pytest.mark.integration
 
@@ -560,20 +561,38 @@ async def test_fable_version_survives_chat_forwarding(
         assert payload["reasoning_effort"] == effort
 
 
+def _use_live_opus_sidecar(fake_sidecar, monkeypatch) -> None:
+    """Route like production: ``cc/`` strips, and only the hyphen id is pinned."""
+    config = replace(
+        fake_sidecar.config,
+        prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+        full_models=("claude-opus-5-5",),
+    )
+    fake_sidecar.config = config
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("model", "wire_model", "effort", "max_tokens"),
     [
         ("cc/claude-opus-5-5", "claude-opus-5-5", None, 32_768),
-        ("claude-opus-5.5", "claude-opus-5-5", None, 32_768),
-        ("claude-opus-5-5-thinking-max", "claude-opus-5-5", "max", 32_768),
-        ("claude-opus-5-5-20260922", "claude-opus-5-5-20260922", None, 32_768),
+        ("cc/claude-opus-5.5", "claude-opus-5-5", None, 32_768),
+        ("claude-opus-5-5", "claude-opus-5-5", None, 32_768),
+        ("cc/claude-opus-5-5-thinking-max", "claude-opus-5-5", "max", 32_768),
+        ("cc/claude-opus-5-5-20260922", "claude-opus-5-5-20260922", None, 32_768),
         ("cc/claude-opus-5", "claude-opus-5", None, 4096),
     ],
 )
 async def test_opus_5_5_survives_chat_forwarding(
-    async_client, sidecar_enabled, fake_sidecar, model, wire_model, effort, max_tokens
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch, model, wire_model, effort, max_tokens
 ):
+    _use_live_opus_sidecar(fake_sidecar, monkeypatch)
+
     response = await async_client.post(
         "/v1/chat/completions",
         json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
@@ -585,6 +604,28 @@ async def test_opus_5_5_survives_chat_forwarding(
     assert payload["max_tokens"] == max_tokens
     if effort is not None:
         assert payload["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5.5", "claude-opus-5-5-20260922"])
+def test_bare_opus_5_5_variants_without_cc_prefix_stay_off_the_sidecar(model):
+    """Dotted and dated ids match the live prefix, not the hyphen pin.
+
+    Production pins only ``claude-opus-5-5`` and strips ``cc/``. These bare
+    forms must stay unresolved. The same ids under ``cc/`` must still match,
+    and the hyphen pin must still match, so a disabled capability cannot make
+    this pass by dropping every route. This stays off the HTTP client: an
+    unrouted chat completion in this module hits the native dispatch guard.
+    """
+
+    entry = SidecarRoutingEntry(
+        provider="claude",
+        prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+        full_models=("claude-opus-5-5",),
+    )
+    entries = (entry,)
+    assert resolve_sidecar_route("claude-opus-5-5", entries) is not None
+    assert resolve_sidecar_route(f"cc/{model}", entries) is not None
+    assert resolve_sidecar_route(model, entries) is None
 
 
 @pytest.mark.asyncio
@@ -876,7 +917,9 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     then applies the model profile, which maps aliases and splits a
     reasoning-effort suffix. Either one makes the catalog name a model the
     request never reaches: ``cp-claude-sonnet`` becomes ``claude-sonnet``,
-    ``claude-fable-5-1`` becomes ``claude-fable-5``. Read the public catalog and
+    ``claude-opus-4-7-high`` becomes ``claude-opus-4-7``. A versioned id the
+    profile preserves, such as ``claude-fable-5-1``, must round-trip. Read the
+    public catalog and
     send the discovered ids it advertises back through the real request path,
     exactly as a client that picks a model from ``GET /v1/models`` does.
 
@@ -891,14 +934,16 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
         full_models=(),
         prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cp-", strip=True)),
     )
-    # The dated id is the unaffected control: neither rewrite touches it, so it
-    # must be advertised AND must round-trip.
-    expected_round_trip = ("claude-sonnet-4-5-20250929",)
+    # Neither rewrite touches these, so each must be advertised AND round-trip.
+    # Fable 5.1 is preserved by the versioned matcher, not rewritten to Fable 5.
+    expected_round_trip = (
+        "claude-sonnet-4-5-20250929",
+        "claude-fable-5-1",
+    )
     # Each of these is rewritten before dispatch, so none may be advertised:
-    # a strip-prefix id, an alias mapping, a reasoning-effort suffix, a -latest.
+    # a strip-prefix id, a reasoning-effort suffix, a -latest.
     expected_omitted = (
         "cp-claude-sonnet",
-        "claude-fable-5-1",
         "claude-opus-4-7-high",
         "claude-3-5-sonnet-latest",
     )
@@ -983,13 +1028,13 @@ async def test_a_pinned_full_model_the_profile_rewrites_stays_advertised(
 ):
     """Pinned advertising is unchanged by the discovered-id routability check.
 
-    ``claude-fable-5-1`` is remapped to ``claude-fable-5`` by the dispatch-time
-    model profile, which is pre-existing behavior for pinned ids and not this
-    change's concern. The check decides which DISCOVERED ids may join the
-    catalog; it must never evict an id the operator pinned.
+    ``claude-opus-4-7-high`` is still rewritten to ``claude-opus-4-7`` by the
+    dispatch-time model profile. The check decides which DISCOVERED ids may
+    join the catalog; it must never evict an id the operator pinned.
     """
 
-    config = replace(fake_sidecar.config, full_models=("claude-fable-5-1",))
+    config = replace(fake_sidecar.config, full_models=("claude-opus-4-7-high",))
+    fake_sidecar.config = config
     fake_sidecar.models = [_FakeModel("claude-sonnet-4-5-20250929")]
 
     async def load_config():
@@ -1000,7 +1045,15 @@ async def test_a_pinned_full_model_the_profile_rewrites_stays_advertised(
     listed = await lifespan_free_client.get("/v1/models")
 
     assert listed.status_code == 200
-    assert "claude-fable-5-1" in [item["id"] for item in listed.json()["data"]]
+    assert "claude-opus-4-7-high" in [item["id"] for item in listed.json()["data"]]
+
+    response = await lifespan_free_client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-opus-4-7-high", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "claude-opus-4-7"
 
 
 @pytest.mark.asyncio

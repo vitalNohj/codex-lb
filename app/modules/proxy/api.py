@@ -4161,7 +4161,7 @@ async def _build_models_response_body(
             # model profile (alias mapping plus reasoning-effort suffix split)
             # that ``build_sidecar_chat_payload`` applies to the wire model.
             # Either one can silently redirect the request -- ``cp-claude-sonnet``
-            # to ``claude-sonnet``, ``claude-fable-5-1`` to ``claude-fable-5`` --
+            # to ``claude-sonnet``, ``claude-opus-4-7-high`` to ``claude-opus-4-7`` --
             # so resolve the id the whole way and require it to come back
             # unchanged. An id that does not survive stays out of the catalog
             # rather than being published as a model it does not reach.
