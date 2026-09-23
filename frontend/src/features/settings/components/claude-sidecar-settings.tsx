@@ -1,6 +1,6 @@
 import { Bot } from "lucide-react";
 
-import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
+import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
 import type {
   ClaudeSidecarRoutingStrategy,

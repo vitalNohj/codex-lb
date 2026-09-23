@@ -4,7 +4,7 @@ import { Rocket } from "lucide-react";
 import { AlertMessage } from "@/components/alert-message";
 import { OpenCodeGoModelsBrowser } from "@/features/settings/components/opencode-go-models-browser";
 import { ClearStoredApiKey } from "@/features/settings/components/sidecar-clear-api-key";
-import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
+import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useOpenCodeGoSidecar } from "@/features/settings/hooks/use-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 

@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, use, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ReactNode, use, useMemo, useRef, useState } from "react";
 import { ExternalLink, Pause, Play, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
@@ -1156,20 +1156,25 @@ type PriorityInputProps = {
 
 function PriorityInput({ account, disabled, onCommit }: PriorityInputProps) {
   const [value, setValue] = useState(String(account.priority));
-  const lastCommitted = useRef(account.priority);
-
-  useEffect(() => {
+  // `lastCommitted` is the value most recently sent (or received), so a blur
+  // that changes nothing is not re-sent. When the server value moves (another
+  // tab, a refetch) the draft is reset during render, keyed on the last prop
+  // seen, rather than in an effect, so stale text never reaches the DOM.
+  const [lastCommitted, setLastCommitted] = useState(account.priority);
+  const [seenPriority, setSeenPriority] = useState(account.priority);
+  if (seenPriority !== account.priority) {
+    setSeenPriority(account.priority);
+    setLastCommitted(account.priority);
     setValue(String(account.priority));
-    lastCommitted.current = account.priority;
-  }, [account.priority]);
+  }
 
   const commit = () => {
     const next = Number.parseInt(value, 10);
-    if (!Number.isFinite(next) || next < 0 || next === lastCommitted.current) {
-      setValue(String(lastCommitted.current));
+    if (!Number.isFinite(next) || next < 0 || next === lastCommitted) {
+      setValue(String(lastCommitted));
       return;
     }
-    lastCommitted.current = next;
+    setLastCommitted(next);
     onCommit(next);
   };
 
@@ -1296,8 +1301,12 @@ function Status() {
   return <AlertMessage variant="error">{state.saveError}</AlertMessage>;
 }
 
-export const SidecarIntegrationCard = {
-  Provider: SidecarIntegrationCardProvider,
+// The parts are consumed as a namespace - `import * as SidecarIntegrationCard`,
+// then `<SidecarIntegrationCard.Provider>` - rather than through an exported
+// object literal, so this module exports only components (and types) and
+// keeps Fast Refresh (`react-refresh/only-export-components`).
+export {
+  SidecarIntegrationCardProvider as Provider,
   Frame,
   Header,
   Callout,

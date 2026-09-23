@@ -1,7 +1,7 @@
 import { Globe } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
+import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useOpenAICompatSidecar } from "@/features/settings/hooks/use-settings";
 import {
   DEFAULT_OPENAI_COMPAT_CONNECT_TIMEOUT_SECONDS,

@@ -1,6 +1,6 @@
 import { Globe } from "lucide-react";
 
-import { SidecarIntegrationCard } from "@/features/settings/components/sidecar-integration-card";
+import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useOrcaRouterSidecar } from "@/features/settings/hooks/use-settings";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
