@@ -2,7 +2,7 @@
 
 ### Requirement: Successful reset-credit consume recovers blocked account status
 
-After a successful reset-credit consume the system MUST force-refresh that account's usage and MUST recover a `rate_limited` or `quota_exceeded` account to `active` when the post-reset windows report available quota, even if a persisted 429 `blocked_at`/`reset_at` cooldown is still in the future. The consume itself is proof the blocked window was reset. Exhausted post-reset windows MUST remain blocked. Periodic usage refresh MUST keep honoring the persisted cooldown when no reset-credit consume authorized recovery.
+After a successful reset-credit consume the system MUST force-refresh that account's usage and MUST recover a `rate_limited` or `quota_exceeded` account to `active` when the post-reset windows report available quota, even if a persisted 429 `blocked_at`/`reset_at` cooldown is still in the future. The consume itself is proof the blocked window was reset. That proof MUST clear persisted `blocked_at` before the forced refresh returns, including when the refresh is skipped or the snapshot is still exhausted, so a later periodic refresh can recover after upstream usage lags or the process restarts. Exhausted post-reset windows MUST remain `rate_limited` or `quota_exceeded` until a snapshot shows available quota. Periodic usage refresh MUST keep honoring the persisted cooldown while `blocked_at` is still set and no reset-credit consume has cleared it.
 
 #### Scenario: Rate-limited Plus account recovers after reset credit
 
@@ -18,6 +18,20 @@ After a successful reset-credit consume the system MUST force-refresh that accou
 - **AND** a reset-credit consume succeeds
 - **AND** the following usage refresh writes weekly usage at `100%`
 - **THEN** the account stays `rate_limited`
+- **AND** persisted `blocked_at` is cleared
+- **AND** the account is not marked `active` while that weekly window stays exhausted
+
+#### Scenario: Lagged post-reset usage recovers on a later refresh
+
+- **GIVEN** an account is persisted as `rate_limited` with `blocked_at` set and `reset_at` still in the future
+- **AND** a reset-credit consume succeeds
+- **AND** the forced usage refresh still writes primary usage at `100%`
+- **THEN** the account stays `rate_limited`
+- **AND** persisted `blocked_at` is cleared
+- **AND** persisted `reset_at` stays in place
+- **WHEN** a later periodic usage refresh writes primary and weekly usage below `100%`
+- **THEN** the account is marked `active`
+- **AND** persisted `reset_at` and `blocked_at` are cleared
 
 #### Scenario: Periodic refresh still honors a running 429 cooldown
 

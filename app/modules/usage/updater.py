@@ -399,6 +399,12 @@ class UsageUpdater:
         ignore_persisted_cooldown: bool = False,
     ) -> AccountRefreshResult:
         """Refresh one account and expose whether the upstream fetch completed."""
+        if ignore_persisted_cooldown:
+            # The consume already proved the blocked window was reset. Drop the
+            # 429 block marker before the fetch so a lagged /wham/usage sample
+            # (still exhausted on this call) cannot pin the old cooldown after
+            # restart. A later periodic refresh recovers once quota is available.
+            await self._waive_persisted_block_after_reset_credit(account)
         settings = get_settings()
         if not settings.usage_refresh_enabled and not ignore_refresh_disabled:
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
@@ -849,6 +855,38 @@ class UsageUpdater:
         )
         return True
 
+    async def _waive_persisted_block_after_reset_credit(self, account: Account) -> None:
+        """Clear the 429 ``blocked_at`` marker after a successful reset credit.
+
+        ``blocked_at`` is what arms the persisted cooldown hold. Removing it
+        leaves status and ``reset_at`` unchanged, so an exhausted snapshot
+        stays out of rotation, while a later refresh that sees available quota
+        can recover without the pre-reset deadline. A newer 429 rewrites
+        ``blocked_at`` and the compare-and-set misses.
+        """
+        if not self._auth_manager:
+            return
+        if account.status not in (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED):
+            return
+        if account.blocked_at is None:
+            return
+        repo = cast(AccountsRepositoryWithStatusComparePort, self._auth_manager._repo)
+        updated = await repo.update_status_if_current(
+            account.id,
+            account.status,
+            account.deactivation_reason,
+            account.reset_at,
+            blocked_at=None,
+            expected_status=account.status,
+            expected_deactivation_reason=account.deactivation_reason,
+            expected_reset_at=account.reset_at,
+            expected_blocked_at=account.blocked_at,
+        )
+        if not updated:
+            await self._sync_account_from_repo(account)
+            return
+        account.blocked_at = None
+
     async def _recover_quota_status_from_usage(
         self,
         account: Account,
@@ -875,6 +913,10 @@ class UsageUpdater:
                 # Reset-credit consume is the exception: upstream already
                 # confirmed the blocked window was reset, so the post-reset
                 # usage snapshot is allowed to recover before that deadline.
+                # The consume path clears blocked_at up front. If this snapshot
+                # is still exhausted, the row stays rate_limited with reset_at
+                # intact, and the next periodic refresh (blocked_at already
+                # cleared) recovers once the windows show available quota.
                 now = time.time()
                 cooldown_deadline = plausible_rate_limit_reset_at(account.reset_at, now=now) or (
                     float(account.blocked_at) + RATE_LIMITED_MIN_COOLDOWN_SECONDS

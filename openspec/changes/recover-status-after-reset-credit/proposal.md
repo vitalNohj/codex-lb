@@ -5,7 +5,8 @@ Redeeming a rate-limit reset credit already force-refreshes usage, but recovery 
 ## What Changes
 
 - After a successful reset-credit consume, the forced usage refresh MUST ignore that persisted 429 cooldown and recover `rate_limited`/`quota_exceeded` to `active` when post-reset windows have available quota.
-- Periodic usage refresh keeps honoring the cooldown. Exhausted post-reset windows stay blocked.
+- The consume clears persisted `blocked_at` even when that forced snapshot is still exhausted, so a later periodic refresh recovers once usage catches up, including after restart.
+- Periodic usage refresh keeps honoring the cooldown while `blocked_at` is still set. Exhausted post-reset windows stay blocked.
 
 ## Capabilities
 

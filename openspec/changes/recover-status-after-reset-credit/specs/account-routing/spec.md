@@ -30,8 +30,11 @@ recovery.
 A successful reset-credit consume is operator-and-upstream proof that the
 blocked window was reset. The forced usage refresh that follows that consume
 MUST be allowed to recover the account to `ACTIVE` before the persisted
-cooldown elapses when the post-reset windows have available quota. Periodic
-usage refresh without that consume MUST keep the cooldown hold.
+cooldown elapses when the post-reset windows have available quota. That
+consume MUST clear persisted `blocked_at` even when the forced snapshot is
+still exhausted, so a later periodic refresh recovers once quota is available
+without waiting out the pre-reset `reset_at`. Periodic usage refresh for a
+row that still has `blocked_at` set MUST keep the cooldown hold.
 
 #### Scenario: Usage refresh does not clear a running Retry-After cooldown
 
@@ -66,5 +69,14 @@ usage refresh without that consume MUST keep the cooldown hold.
 - **GIVEN** an account marked `RATE_LIMITED` by a 429 whose persisted `reset_at` is still in the future
 - **AND** a reset-credit consume for that account succeeds
 - **AND** the following forced usage refresh writes available quota on the post-reset windows
+- **THEN** the persisted row is marked `ACTIVE`
+- **AND** `reset_at` and `blocked_at` are cleared
+
+#### Scenario: Lagged reset-credit usage recovers after the block marker is cleared
+
+- **GIVEN** an account marked `RATE_LIMITED` by a 429 whose persisted `reset_at` is still in the future
+- **AND** a reset-credit consume succeeds while the forced usage refresh still shows an exhausted window
+- **THEN** persisted `blocked_at` is cleared and the row stays `RATE_LIMITED` until quota is available
+- **WHEN** a later usage refresh writes available quota before `reset_at`
 - **THEN** the persisted row is marked `ACTIVE`
 - **AND** `reset_at` and `blocked_at` are cleared
