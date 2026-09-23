@@ -906,6 +906,56 @@ async def test_sidecar_model_list_includes_discovered_prefix_models(
 
 
 @pytest.mark.asyncio
+async def test_strip_prefix_alias_is_listed_when_dispatch_reaches_that_model(
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    """``cc/claude-opus-5-5`` is a catalog id even though dispatch strips ``cc/``.
+
+    The same-string round trip hides every strip-prefix alias, so none of the
+    ``cc/`` models a client actually calls show up next to the pinned bare ids.
+    An alias is listed when stripping and the model profile land on the
+    upstream id the alias names. A suffix the profile rewrites stays hidden.
+    """
+
+    config = replace(
+        fake_sidecar.config,
+        full_models=("claude-opus-5-5",),
+        prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+    )
+    fake_sidecar.config = config
+    fake_sidecar.models = [
+        _FakeModel("claude-opus-5-5"),
+        _FakeModel("claude-opus-5"),
+        _FakeModel("claude-opus-4-7-high"),
+        _FakeModel("gemini-2.5-pro"),
+    ]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+    listed = await lifespan_free_client.get("/v1/models")
+    assert listed.status_code == 200
+    ids = [item["id"] for item in listed.json()["data"]]
+    assert "cc/claude-opus-5-5" in ids
+    assert "cc/claude-opus-5" in ids
+    assert "cc/gemini-2.5-pro" in ids
+    assert "cc/claude-opus-4-7-high" not in ids
+    assert "claude-opus-5" not in ids
+    assert "claude-opus-5-5" in ids
+
+    fake_sidecar.chat_payloads.clear()
+    response = await lifespan_free_client.post(
+        "/v1/chat/completions",
+        json={"model": "cc/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[-1]["model"] == "claude-opus-5-5"
+
+
+@pytest.mark.asyncio
 async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
 ):

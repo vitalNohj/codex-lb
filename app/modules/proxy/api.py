@@ -45,7 +45,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.auth.refresh import RefreshError
 from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
-from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel
+from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel, SidecarPrefix
 from app.core.clients.files import FileProxyError
 from app.core.clients.nvidia_sidecar import NvidiaSidecarClient, get_nvidia_sidecar_client
 from app.core.clients.ollama_sidecar import OllamaSidecarClient
@@ -372,7 +372,7 @@ from app.modules.proxy.schemas import (
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
-from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, prefix_variants, resolve_sidecar_route
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
     RateLimitResetCreditsData,
@@ -4043,6 +4043,48 @@ def _sidecar_dispatch_model(wire_model: str) -> str:
     return dispatched
 
 
+def _strip_prefix_catalog_aliases(
+    upstream_ids: tuple[str, ...],
+    prefixes: tuple[SidecarPrefix, ...],
+    routing_entries: tuple[SidecarRoutingEntry, ...],
+) -> list[tuple[str, str]]:
+    """Strip-prefix catalog ids that dispatch to the upstream id they name.
+
+    ``cc/claude-opus-5-5`` is a client-facing alias. Dispatch removes ``cc/``
+    and forwards ``claude-opus-5-5``, so the alias fails the same-string
+    round trip used for discovered ids. It is still an honest catalog entry
+    when that forward lands on the named upstream id and nowhere else.
+    """
+
+    strip_variants = tuple(
+        variant for prefix in prefixes if prefix.strip for variant in prefix_variants(prefix.prefix) if variant
+    )
+    aliases: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for upstream_id in upstream_ids:
+        base = upstream_id.strip()
+        if not base:
+            continue
+        lowered = base.lower()
+        # A base that is already a strip-prefix alias must not grow another
+        # prefix (``cp-`` + ``cp-claude-sonnet``).
+        if any(lowered.startswith(variant) for variant in strip_variants):
+            continue
+        for variant in strip_variants:
+            alias = f"{variant}{base}"
+            alias_key = alias.lower()
+            if alias_key in seen or alias_key == lowered:
+                continue
+            decision = resolve_sidecar_route(alias, routing_entries)
+            if decision is None or decision.provider != "claude":
+                continue
+            if _sidecar_dispatch_model(decision.wire_model).lower() != lowered:
+                continue
+            seen.add(alias_key)
+            aliases.append((alias, base))
+    return aliases
+
+
 def _sidecar_advertised_model_ids(
     full_models: tuple[str, ...],
     *,
@@ -4183,6 +4225,37 @@ async def _build_models_response_body(
                         "id": slug,
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "anthropic",
+                        "api_types": ["chat_completions"],
+                        **_sidecar_model_list_fields(),
+                    }
+                )
+            )
+        upstream_ids: list[str] = []
+        seen_upstream: set[str] = set()
+        for raw_id in (*(model.id for model in discovered_models), *sidecar_config.full_models):
+            upstream_key = raw_id.strip().lower()
+            if not upstream_key or upstream_key in seen_upstream:
+                continue
+            seen_upstream.add(upstream_key)
+            upstream_ids.append(raw_id.strip())
+        for alias, base in _strip_prefix_catalog_aliases(
+            tuple(upstream_ids),
+            sidecar_config.prefixes,
+            routing_entry_tuple,
+        ):
+            if alias in seen_model_ids:
+                continue
+            if not (
+                _model_visible_for_api_key(alias, allowed_models) or _model_visible_for_api_key(base, allowed_models)
+            ):
+                continue
+            seen_model_ids.add(alias)
+            items.append(
+                ModelListItem.model_validate(
+                    {
+                        "id": alias,
+                        "created": created_by_model.get(base) or created,
+                        "owned_by": owner_by_model.get(base) or "anthropic",
                         "api_types": ["chat_completions"],
                         **_sidecar_model_list_fields(),
                     }
