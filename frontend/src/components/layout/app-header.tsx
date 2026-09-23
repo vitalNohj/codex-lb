@@ -31,6 +31,14 @@ const CORE_NAV_ITEMS = [
 const OMNIROUTE_PATH = "/omni";
 const FORK_REPOSITORY_URL = "https://github.com/vitalNohj/codex-lb";
 
+function ForkMark() {
+  return (
+    <span className="shrink-0 rounded-md border border-border/70 bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide text-muted-foreground">
+      fork
+    </span>
+  );
+}
+
 const ADVANCED_NAV_ITEMS = [
   { to: "/automations", labelKey: "nav.automations" },
 ] as const;
@@ -106,12 +114,10 @@ export function AppHeader({
             href={FORK_REPOSITORY_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="min-w-0 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex min-w-0 items-center gap-1.5 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <p className="truncate text-sm font-semibold tracking-tight">Codex LB++</p>
-            <p className="truncate text-[11px] leading-tight text-muted-foreground">
-              fork by VitalNohj
-            </p>
+            <span className="truncate text-sm font-semibold tracking-tight">Codex LB++</span>
+            <ForkMark />
           </a>
         </div>
 
@@ -231,12 +237,10 @@ export function AppHeader({
                     href={FORK_REPOSITORY_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="min-w-0 no-underline transition-colors hover:opacity-80"
+                    className="flex min-w-0 items-center gap-1.5 no-underline transition-colors hover:opacity-80"
                   >
-                    <span className="block text-sm font-semibold">Codex LB++</span>
-                    <span className="block text-[11px] font-normal leading-tight text-muted-foreground">
-                      fork by VitalNohj
-                    </span>
+                    <span className="truncate text-sm font-semibold">Codex LB++</span>
+                    <ForkMark />
                   </a>
                 </SheetTitle>
               </SheetHeader>
