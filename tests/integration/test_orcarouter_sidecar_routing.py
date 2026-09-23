@@ -43,6 +43,8 @@ class _FakeOrcaRouterClient:
         self.models = [_FakeModel("orcarouter/auto")]
         self.chat_error: Exception | None = None
         self.stream_error: Exception | None = None
+        self.chat_error_queue: list[Exception] = []
+        self.stream_error_queue: list[Exception | None] = []
         self.stream_include_usage = True
         self.stream_context_error = False
         # OrcaRouter reports the billed amount as ``usage.cost_usd`` when the
@@ -55,6 +57,8 @@ class _FakeOrcaRouterClient:
 
     async def chat_completion(self, payload):
         self.chat_payloads.append(dict(payload))
+        if self.chat_error_queue:
+            raise self.chat_error_queue.pop(0)
         if self.chat_error is not None:
             raise self.chat_error
         usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
@@ -70,8 +74,9 @@ class _FakeOrcaRouterClient:
 
     def stream_chat_completion(self, payload):
         self.stream_payloads.append(dict(payload))
+        error = self.stream_error_queue.pop(0) if self.stream_error_queue else self.stream_error
         return _FakeStreamContext(
-            self.stream_error,
+            error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
             billed_cost_usd=self.billed_cost_usd,
@@ -1000,3 +1005,31 @@ async def test_orcarouter_chat_error_relays_ordinary_upstream_text_unchanged(
     sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
     assert len(sidecar_logs) == 1
     assert sidecar_logs[0].error_message == _ORDINARY_UPSTREAM_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_chat_retries_provider_524_once(async_client, orcarouter_enabled, fake_orcarouter):
+    await async_client.put(
+        "/api/settings",
+        json={
+            "orcarouterSidecarEnabled": True,
+            "orcarouterSidecarApiKey": "orcarouter-key",
+            "orcarouterSidecarModelPrefixes": ["orcarouter/"],
+        },
+    )
+    fake_orcarouter.chat_error_queue = [OrcaRouterSidecarError(524, "OrcaRouter sidecar returned HTTP 524")]
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": "orcarouter/auto", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "hi"
+    assert len(fake_orcarouter.chat_payloads) == 2
+
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "orcarouter_sidecar"]
+    assert len(sidecar_logs) == 1
+    assert sidecar_logs[0].status == "success"
