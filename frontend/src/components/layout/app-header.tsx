@@ -107,7 +107,7 @@ export function AppHeader({
             href={FORK_REPOSITORY_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex min-w-0 items-center gap-1.5 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex min-w-0 items-center gap-2 rounded-lg no-underline transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span className="truncate text-sm font-semibold tracking-tight">Codex LB++</span>
             <ForkMark />
@@ -230,7 +230,7 @@ export function AppHeader({
                     href={FORK_REPOSITORY_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex min-w-0 items-center gap-1.5 no-underline transition-colors hover:opacity-80"
+                    className="flex min-w-0 items-center gap-2 no-underline transition-colors hover:opacity-80"
                   >
                     <span className="truncate text-sm font-semibold">Codex LB++</span>
                     <ForkMark />
