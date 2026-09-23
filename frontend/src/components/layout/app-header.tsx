@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Link, NavLink, useLocation } from "react-router-dom";
 
 import { CodexLogo } from "@/components/brand/codex-logo";
+import { ForkMark } from "@/components/brand/fork-mark";
 import { LanguageToggle, LanguageToggleMobile } from "@/components/layout/language-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,14 +31,6 @@ const CORE_NAV_ITEMS = [
 
 const OMNIROUTE_PATH = "/omni";
 const FORK_REPOSITORY_URL = "https://github.com/vitalNohj/codex-lb";
-
-function ForkMark() {
-  return (
-    <span className="shrink-0 rounded-md border border-border/70 bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide text-muted-foreground">
-      fork
-    </span>
-  );
-}
 
 const ADVANCED_NAV_ITEMS = [
   { to: "/automations", labelKey: "nav.automations" },

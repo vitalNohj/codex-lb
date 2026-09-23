@@ -403,7 +403,7 @@
   "apis.trend.series.cost": "Cost",
   "apis.trend.series.tokens": "Tokens",
   "auth.appTitle": "Codex LB++",
-  "auth.appSubtitle": "fork by VitalNohj",
+  "auth.appSubtitle": "fork",
   "auth.login.heading": "Sign in",
   "auth.login.subheading": "Enter your admin password to continue.",
   "auth.login.passwordLabel": "Password",

@@ -54,6 +54,9 @@ describe("AuthGate", () => {
     );
 
     expect(screen.getByText("Sign in")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Codex LB++" })).toBeInTheDocument();
+    expect(screen.getByText("fork")).toBeInTheDocument();
+    expect(screen.queryByText(/vitalnohj/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Protected content")).not.toBeInTheDocument();
     await waitFor(() => expect(refreshSession).toHaveBeenCalledTimes(1));
   });
