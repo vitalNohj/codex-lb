@@ -3,12 +3,14 @@
 ### Requirement: Model restrictions are enforced per pool target
 
 For an alias pool request the model restriction check MUST run on the alias id
-before resolution and again on each target's effective client model before that
-target is attempted. A disallowed target MUST NOT be attempted and MUST NOT
-abort the pool; the next target is considered. If the alias is disallowed the
-proxy MUST return 403 with code `model_not_allowed` before any upstream call.
-If the alias is allowed but every target is disallowed, the proxy MUST return
-403 with code `model_not_allowed` and no upstream receives a request.
+before resolution and again on each target, as the provider and model that
+target routes to, before the usage reservation is taken. A disallowed target
+MUST NOT be attempted and MUST NOT abort the pool; the next target is
+considered. If the alias is disallowed the proxy MUST return 403 with code
+`model_not_allowed` before any upstream call. If the alias is allowed but every
+target is disallowed, the proxy MUST return 403 with code `model_not_allowed`,
+no upstream receives a request, and no usage reservation is created. A key with
+an enforced model never pools: the enforced model replaces the alias.
 
 #### Scenario: Disallowed first target is skipped
 
@@ -17,6 +19,14 @@ If the alias is allowed but every target is disallowed, the proxy MUST return
 - **WHEN** the key sends `POST /v1/chat/completions` with `model: "pooled/glm-5.3"`
 - **THEN** OrcaRouter receives no request
 - **AND** OpenRouter receives the request
+
+#### Scenario: Alias allowed but no target allowed
+
+- **GIVEN** a key with request limits has `allowed_models: ["pooled/glm-5.3"]`
+- **WHEN** the key sends `POST /v1/chat/completions` with `model: "pooled/glm-5.3"`
+- **THEN** the proxy returns 403 with code `model_not_allowed`
+- **AND** no upstream receives a request
+- **AND** no usage reservation is created
 
 #### Scenario: Alias not allowed
 

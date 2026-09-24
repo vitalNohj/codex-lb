@@ -576,6 +576,34 @@ async def test_pool_rejects_key_allowed_on_alias_but_no_target(
 
 
 @pytest.mark.asyncio
+async def test_pool_rejection_on_every_target_reserves_nothing_for_a_limited_key(
+    async_client, pool_providers_enabled, fake_orcarouter, fake_openrouter
+):
+    # A key with limits reserves budget before dispatch. When it may use the
+    # alias but none of its targets, the 403 must come before that reservation,
+    # exactly as on the single-provider path, or the budget stays held until
+    # the stale-reservation sweep.
+    await _configure_pool(async_client)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        "alias-only-limited",
+        allowed_models=[ALIAS],
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json=_chat_request(stream=False),
+    )
+
+    assert response.status_code == 403
+    assert fake_orcarouter.attempts == 0
+    assert fake_openrouter.attempts == 0
+    assert await _reservation_statuses() == []
+
+
+@pytest.mark.asyncio
 async def test_model_filtered_limit_keyed_on_the_alias_applies(
     async_client, pool_providers_enabled, fake_orcarouter, fake_openrouter
 ):

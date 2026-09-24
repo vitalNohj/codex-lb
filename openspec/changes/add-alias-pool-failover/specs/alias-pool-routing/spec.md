@@ -234,9 +234,10 @@ line `alias_pool_attempt` with `request_id`, `alias`, `target`, `attempt`, and
 
 ### Requirement: Pool requests are metered and logged against the alias
 
-For a pool request the system SHALL validate API-key access, enforce request
-limits, and take the usage reservation once, against the alias id, before the
-first attempt. The reservation MUST be carried across failed-over attempts and
+For a pool request the system SHALL validate API-key access on the alias and
+every target, then enforce request limits and take the usage reservation once,
+against the alias id, before the first attempt. A request refused on access
+holds no reservation. The reservation MUST be carried across failed-over attempts and
 settled or released by the attempt that terminates the request, using that
 target's provider settlement. Cost resolution MUST use the serving target's
 provider and effective model, never the alias, so the price table lookup is the

@@ -248,7 +248,11 @@ from app.modules.proxy._service.support import (
 )
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.alias_pool_attempts import ChatRequestAttribution
-from app.modules.proxy.alias_pool_dispatch import PoolTargetUnroutable, dispatch_chat_with_failover
+from app.modules.proxy.alias_pool_dispatch import (
+    PoolTargetUnroutable,
+    authorize_pool_targets,
+    dispatch_chat_with_failover,
+)
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import (
     claude_routing_entry,
@@ -5062,10 +5066,18 @@ async def v1_chat_completions(
 
     validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
     if alias_pool is not None and alias_pool.is_pool:
-        # An alias with two or more targets: meter once against the alias, then
-        # try the targets in order. Per-target access is re-checked inside the
-        # loop so an allowlist naming the alias cannot reach a target the key
-        # may not use directly.
+        # An alias with two or more targets. Per-target access comes first, so
+        # an allowlist naming the alias cannot reach a target the key may not
+        # use directly, and a key refused on every target holds no budget. Then
+        # meter once against the alias and try the allowed targets in order.
+        # The pool branch only runs when the key enforces no model, so each
+        # target is dispatched exactly as it was authorized.
+        authorized_pool = authorize_pool_targets(
+            alias=metering_model,
+            targets=alias_pool.targets,
+            api_key=api_key,
+            routing_entries=tuple(routing_entries),
+        )
         reservation = await _enforce_request_limits(
             api_key,
             request_model=metering_model,
@@ -5074,8 +5086,7 @@ async def v1_chat_completions(
         )
 
         async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
-            target_effective_model = _effective_model_for_api_key(api_key, target)
-            target_decision = resolve_sidecar_route(target_effective_model, tuple(routing_entries))
+            target_decision = resolve_sidecar_route(target, tuple(routing_entries))
             if target_decision is None or not is_pool_capable_provider(target_decision.provider):
                 raise PoolTargetUnroutable(
                     target, provider=target_decision.provider if target_decision is not None else None
@@ -5086,7 +5097,7 @@ async def v1_chat_completions(
                 return await proxy_chat_to_openrouter(
                     request,
                     payload,
-                    effective_model=target_effective_model,
+                    effective_model=target,
                     api_key=api_key,
                     reservation=reservation,
                     rate_limit_headers=rate_limit_headers,
@@ -5102,7 +5113,7 @@ async def v1_chat_completions(
                 return await proxy_chat_to_orcarouter(
                     request,
                     payload,
-                    effective_model=target_effective_model,
+                    effective_model=target,
                     api_key=api_key,
                     reservation=reservation,
                     rate_limit_headers=rate_limit_headers,
@@ -5119,7 +5130,7 @@ async def v1_chat_completions(
             return await proxy_chat_to_openai_compat(
                 request,
                 payload,
-                effective_model=target_effective_model,
+                effective_model=target,
                 api_key=api_key,
                 reservation=reservation,
                 rate_limit_headers=rate_limit_headers,
@@ -5132,15 +5143,7 @@ async def v1_chat_completions(
             )
 
         try:
-            return await dispatch_chat_with_failover(
-                request,
-                alias=metering_model,
-                targets=alias_pool.targets,
-                api_key=api_key,
-                routing_entries=tuple(routing_entries),
-                effective_model_for=lambda target: _effective_model_for_api_key(api_key, target),
-                dispatch=_dispatch_pool_target,
-            )
+            return await dispatch_chat_with_failover(request, authorized_pool, dispatch=_dispatch_pool_target)
         except PoolTargetUnroutable as exc:
             # Every target lost its pool-capable route after the pool was
             # saved (an integration was disabled). Operator configuration,

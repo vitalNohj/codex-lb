@@ -17,10 +17,12 @@ is left, renders that failure through the provider that produced it. So the
 reservation is settled exactly once, by the attempt that ends the request, and
 every retryable failure - the last one included - refreshes its cooldown.
 
-Access, limits, and the reservation are the caller's business and happen once
-against the alias before the loop runs. Per-target access is re-checked here
-because an allowlist that names the alias must not become a way to reach a
-target the key may not use directly.
+Access comes first. :func:`authorize_pool_targets` narrows the pool to the
+targets the key may use, checking each target as itself - the provider and
+model the loop will send to - because an allowlist that names the alias must
+not become a way to reach a target the key may not use directly. The caller
+runs it before reserving usage, so a refused request holds no budget. Limits
+and the reservation are then the caller's business, once against the alias.
 """
 
 from __future__ import annotations
@@ -71,49 +73,86 @@ class PoolTargetUnroutable(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class _Candidate:
-    target: str
-    effective_model: str
+class AuthorizedPool:
+    """The targets of ``alias`` this request's key may use, in pool order.
+
+    Only :func:`authorize_pool_targets` builds one, so the failover loop cannot
+    run on a target list that skipped the per-target access check.
+    """
+
+    alias: str
+    targets: tuple[str, ...]
 
 
-async def dispatch_chat_with_failover(
-    request: Request,
+def authorize_pool_targets(
     *,
     alias: str,
     targets: Sequence[str],
     api_key: ApiKeyData | None,
     routing_entries: tuple[SidecarRoutingEntry, ...],
-    effective_model_for: Callable[[str], str],
+) -> AuthorizedPool:
+    """Narrow ``targets`` to the ones this key may use, keeping pool order.
+
+    Each target is authorized as itself: the provider and canonical model its
+    route resolves to are exactly what the loop dispatches, so a grant for one
+    model can never approve a request that is then sent to another. A key with
+    an enforced model never pools - the enforced model replaces the alias - so
+    there is no second identity to authorize.
+
+    Raises the last rejection when nothing is allowed, so a key allowed on the
+    alias but on none of its targets gets the same "no access" answer it would
+    get requesting any target directly. Call this before reserving usage: a
+    request refused here must hold no budget, the same order the
+    single-provider path uses.
+    """
+
+    if api_key is not None and api_key.enforced_model is not None:
+        raise ValueError("an API key with an enforced model never pools")
+    request_id = get_request_id()
+    allowed: list[str] = []
+    last_rejection: ProxyModelNotAllowed | None = None
+    for target in targets:
+        try:
+            validate_model_access(api_key, target, routing_entries=routing_entries)
+        except ProxyModelNotAllowed as exc:
+            last_rejection = exc
+            logger.info(
+                "alias_pool_attempt request_id=%s alias=%s target=%s attempt=0 outcome=rejected reason=access",
+                request_id,
+                alias,
+                target,
+            )
+            continue
+        allowed.append(target)
+    if not allowed:
+        assert last_rejection is not None
+        raise last_rejection
+    return AuthorizedPool(alias=alias, targets=tuple(allowed))
+
+
+async def dispatch_chat_with_failover(
+    request: Request,
+    pool: AuthorizedPool,
+    *,
     dispatch: PoolTargetDispatch,
     cooldowns: AliasPoolCooldownRegistry | None = None,
 ) -> Response:
-    """Try ``targets`` in pool order and return the first response produced.
+    """Try ``pool.targets`` in pool order and return the first response produced.
 
-    ``effective_model_for`` applies the API key's enforced model to a target;
-    the loop validates access on that value, the same identity the single
-    provider path validates. ``dispatch`` is described on
-    :data:`PoolTargetDispatch`.
+    ``dispatch`` is described on :data:`PoolTargetDispatch`.
     """
 
     registry = cooldowns or get_alias_pool_cooldowns()
     request_id = get_request_id()
     loop_started_at = time.monotonic()
+    alias = pool.alias
 
-    candidates = _allowed_candidates(
-        alias=alias,
-        targets=targets,
-        api_key=api_key,
-        routing_entries=routing_entries,
-        effective_model_for=effective_model_for,
-        request_id=request_id,
-    )
-
-    ordered = _order_by_cooldown(registry, candidates, alias=alias, request_id=request_id)
+    ordered = _order_by_cooldown(registry, pool.targets, alias=alias, request_id=request_id)
 
     attempts = 0
     last_failure: PoolTargetFailed | None = None
     last_failed_target: str | None = None
-    for candidate in ordered:
+    for target in ordered:
         if attempts > 0 and await request.is_disconnected():
             logger.info(
                 "alias_pool_abandoned request_id=%s alias=%s attempts=%d reason=client_disconnected",
@@ -126,48 +165,48 @@ async def dispatch_chat_with_failover(
         queue_ms = int((time.monotonic() - loop_started_at) * 1000) if attempts > 1 else None
         attribution = ChatRequestAttribution(
             model=alias,
-            upstream_model=candidate.target,
+            upstream_model=target,
             pool_attempts=attempts,
             queue_ms=queue_ms,
         )
         try:
-            response = await dispatch(candidate.target, attribution)
+            response = await dispatch(target, attribution)
         except PoolTargetUnroutable as exc:
             logger.warning(
                 "alias_pool_attempt request_id=%s alias=%s target=%s attempt=%d outcome=rejected "
                 "reason=unroutable provider=%s",
                 request_id,
                 alias,
-                candidate.target,
+                target,
                 attempts,
                 exc.provider,
             )
             continue
         except PoolTargetFailed as exc:
-            registry.record_failure(candidate.target, exc.failure)
+            registry.record_failure(target, exc.failure)
             logger.info(
                 "alias_pool_attempt request_id=%s alias=%s target=%s attempt=%d outcome=failover status=%d "
                 "cooldown_s=%.0f",
                 request_id,
                 alias,
-                candidate.target,
+                target,
                 attempts,
                 exc.failure.status_code,
                 exc.failure.cooldown_seconds(),
             )
             last_failure = exc
-            last_failed_target = candidate.target
+            last_failed_target = target
             continue
         logger.info(
             "alias_pool_attempt request_id=%s alias=%s target=%s attempt=%d outcome=served status=%d",
             request_id,
             alias,
-            candidate.target,
+            target,
             attempts,
             response.status_code,
         )
         if response.status_code < 400:
-            registry.record_success(candidate.target)
+            registry.record_success(target)
         _set_attempts_header(response, attempts)
         return response
 
@@ -192,51 +231,13 @@ async def dispatch_chat_with_failover(
     raise PoolTargetUnroutable(alias, provider=None)
 
 
-def _allowed_candidates(
-    *,
-    alias: str,
-    targets: Sequence[str],
-    api_key: ApiKeyData | None,
-    routing_entries: tuple[SidecarRoutingEntry, ...],
-    effective_model_for: Callable[[str], str],
-    request_id: str | None,
-) -> list[_Candidate]:
-    """Filter ``targets`` to the ones this key may use, in pool order.
-
-    Raises the last rejection when nothing is allowed, so a key allowed on the
-    alias but on none of its targets gets the same "no access" answer it would
-    get requesting any target directly.
-    """
-
-    allowed: list[_Candidate] = []
-    last_rejection: ProxyModelNotAllowed | None = None
-    for target in targets:
-        effective_model = effective_model_for(target)
-        try:
-            validate_model_access(api_key, effective_model, routing_entries=routing_entries)
-        except ProxyModelNotAllowed as exc:
-            last_rejection = exc
-            logger.info(
-                "alias_pool_attempt request_id=%s alias=%s target=%s attempt=0 outcome=rejected reason=access",
-                request_id,
-                alias,
-                target,
-            )
-            continue
-        allowed.append(_Candidate(target=target, effective_model=effective_model))
-    if not allowed:
-        assert last_rejection is not None
-        raise last_rejection
-    return allowed
-
-
 def _order_by_cooldown(
     registry: AliasPoolCooldownRegistry,
-    candidates: list[_Candidate],
+    targets: tuple[str, ...],
     *,
     alias: str,
     request_id: str | None,
-) -> list[_Candidate]:
+) -> list[str]:
     """Ready targets in pool order, then cooling ones soonest-to-expire first.
 
     Cooling targets stay in the list on purpose: when everything is cooling
@@ -244,8 +245,7 @@ def _order_by_cooldown(
     cooldown ends first. They are only *deprioritized* behind ready targets.
     """
 
-    by_target = {candidate.target: candidate for candidate in candidates}
-    ready, cooling = registry.order_targets(tuple(by_target))
+    ready, cooling = registry.order_targets(targets)
     for target in cooling:
         logger.info(
             "alias_pool_attempt request_id=%s alias=%s target=%s attempt=0 outcome=skipped_cooling",
@@ -253,7 +253,7 @@ def _order_by_cooldown(
             alias,
             target,
         )
-    return [by_target[target] for target in (*ready, *cooling)]
+    return [*ready, *cooling]
 
 
 def _set_attempts_header(response: Response, attempts: int) -> None:

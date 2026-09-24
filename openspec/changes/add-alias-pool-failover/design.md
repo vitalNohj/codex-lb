@@ -104,14 +104,18 @@ Per attempt:
 
 1. Skip targets in cooldown. If **every** target is cooling, attempt the one
    whose cooldown expires soonest (do not return 503 for a cooldown alone).
-2. `payload.model = target`; `effective_model = _effective_model_for_api_key(api_key, target)`;
-   `decision = resolve_sidecar_route(effective_model, routing_entries)`.
-3. `validate_model_access(api_key, effective_model, routing_entries=...)`.
-   Access is also validated on the alias id before the loop (existing rule).
-   A target the key may not use is treated as a **non-retryable rejection for
-   that target** and the loop moves on; if no target is allowed the last
-   rejection is returned. This keeps "a restricted key cannot reach a
-   disallowed target through an alias" true per target.
+2. `payload.model = target`; `decision = resolve_sidecar_route(target, routing_entries)`.
+   A key with an enforced model never pools (the enforced model replaces the
+   alias), so the target is exactly the model dispatched.
+3. Access is settled before the loop and before the reservation.
+   `authorize_pool_targets` runs `validate_model_access(api_key, target,
+   routing_entries=...)` for every target - the provider and canonical model
+   that target routes to, which is what the loop sends - after the existing
+   check on the alias id. A target the key may not use is dropped from the
+   pool; if no target is allowed the last rejection is returned as a 403 with
+   no reservation held, the same order as the single-provider path. This
+   keeps "a restricted key cannot reach a disallowed target through an alias"
+   true per target, and the loop only accepts the resulting `AuthorizedPool`.
 4. `opened = await provider.open_chat(...)`. This performs the upstream POST
    and returns either an `OpenedStream` (status 200, body not yet read), a
    `NonStreamResult` (full JSON body), or raises the provider's error types.
