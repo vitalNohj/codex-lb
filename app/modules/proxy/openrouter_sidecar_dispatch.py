@@ -25,10 +25,10 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
-from app.core.types import JsonObject, JsonValue
+from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -434,10 +434,10 @@ async def _openrouter_stream_iterator(
     error_message: str | None = None
     try:
         async with aclosing(chunks):
-            decoder = _SseUsageDecoder()
+            decoder = SseJsonDataDecoder()
             async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
-                    if event == "[DONE]":
+                for event in decoder.feed(raw_chunk):
+                    if event == SSE_DONE:
                         completed = True
                         continue
                     event_usage = extract_usage(event)
@@ -446,7 +446,7 @@ async def _openrouter_stream_iterator(
                     billed_cost.observe(extract_billed_cost(event))
                 yield raw_chunk
             for event in decoder.flush():
-                if event == "[DONE]":
+                if event == SSE_DONE:
                     completed = True
                     continue
                 event_usage = extract_usage(event)
@@ -527,53 +527,6 @@ async def _openrouter_stream_iterator(
         )
         if settlement_deferred_cancellation or log_deferred_cancellation:
             raise asyncio.CancelledError
-
-
-class _SseUsageDecoder:
-    def __init__(self) -> None:
-        self._buffer = ""
-
-    def feed(self, chunk: str) -> list[JsonObject | str]:
-        self._buffer += chunk
-        return self._drain_complete_events()
-
-    def flush(self) -> list[JsonObject | str]:
-        if not self._buffer:
-            return []
-        pending = self._buffer
-        self._buffer = ""
-        event = _parse_sse_event(pending)
-        return [event] if event is not None else []
-
-    def _drain_complete_events(self) -> list[JsonObject | str]:
-        events: list[JsonObject | str] = []
-        while "\n\n" in self._buffer:
-            raw_event, self._buffer = self._buffer.split("\n\n", 1)
-            event = _parse_sse_event(raw_event)
-            if event is not None:
-                events.append(event)
-        return events
-
-
-def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
-    data_lines: list[str] = []
-    for raw_line in raw_event.splitlines():
-        if not raw_line or raw_line.startswith(":"):
-            continue
-        field, _, value = raw_line.partition(":")
-        if field != "data":
-            continue
-        data_lines.append(value[1:] if value.startswith(" ") else value)
-    if not data_lines:
-        return None
-    data = "\n".join(data_lines)
-    if data.strip() == "[DONE]":
-        return "[DONE]"
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        return None
-    return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
 
 
 def _error_sse(error: OpenAIErrorEnvelope) -> bytes:

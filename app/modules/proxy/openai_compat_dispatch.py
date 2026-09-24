@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import json
 import logging
-import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Mapping
 from contextlib import aclosing
@@ -30,7 +28,7 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -88,11 +86,6 @@ from app.modules.request_logs.repository import RequestLogsRepository
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
-
-#: An SSE event ends at two consecutive line endings, in any combination of the
-#: three the spec permits. Mirrors ``_SSE_LINE_BOUNDARY`` in
-#: ``app/core/utils/sse.py``, applied twice.
-_SSE_EVENT_BOUNDARY = re.compile(r"(?:\r\n|\r|\n){2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,10 +461,10 @@ async def _openai_compat_stream_iterator(
     endpoint_name = client.config.name
     try:
         async with aclosing(chunks):
-            decoder = _SseUsageDecoder()
+            decoder = SseJsonDataDecoder()
             async for raw_chunk in chunks:
                 for event in decoder.feed(raw_chunk):
-                    if event == "[DONE]":
+                    if event == SSE_DONE:
                         if not stream_error:
                             completed = True
                         continue
@@ -490,7 +483,7 @@ async def _openai_compat_stream_iterator(
                     billed_cost.observe(extract_billed_cost(event))
                 yield raw_chunk
             for event in decoder.flush():
-                if event == "[DONE]":
+                if event == SSE_DONE:
                     if not stream_error:
                         completed = True
                     continue
@@ -643,99 +636,6 @@ async def _settle_stream_deferring_cancellation(
         return settlement
 
     return await _await_result_deferring_cancellation(_settle())
-
-
-class _SseUsageDecoder:
-    """Split an SSE byte stream into events, tolerant of real-world framing.
-
-    This feature routes to *arbitrary* operator-configured OpenAI-compatible
-    servers (vLLM, LM Studio, llama.cpp, NIM, ...), so neither property below is
-    theoretical. Both mirror the decoder in
-    ``app/modules/proxy/opencode_go_sidecar_dispatch.py``.
-
-    * **Event delimiters.** The SSE spec allows ``\\r\\n``, ``\\n`` and bare
-      ``\\r`` line endings, so an event boundary is any two consecutive ones.
-      Matching only ``\\n\\n`` buffers a CRLF stream to EOF and then parses the
-      whole thing as one malformed event - losing the usage object and the
-      ``[DONE]`` sentinel, which in turn makes a completed stream log as an
-      error and release its reservation instead of finalizing it.
-
-    * **Chunk boundaries are arbitrary byte offsets.** aiohttp splits on the
-      network, not on character boundaries, so a multi-byte character can land
-      half in one chunk and half in the next. Decoding each chunk independently
-      with ``errors="ignore"`` silently deletes those bytes and can corrupt the
-      JSON of the event carrying ``usage``.
-
-    Callers therefore feed **bytes**, and this class owns the decoding. The raw
-    chunks still reach the client untouched; only this observer decodes.
-    """
-
-    def __init__(self) -> None:
-        self._buffer = ""
-        # One decoder for the whole stream: it is what carries a split
-        # multi-byte sequence across the chunk boundary. ``replace`` rather than
-        # ``ignore`` so genuinely invalid bytes stay visible as U+FFFD instead of
-        # vanishing and silently shortening the text.
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-
-    def feed(self, chunk: bytes) -> list[JsonObject | str]:
-        self._buffer += self._decoder.decode(chunk)
-        return self._drain_complete_events()
-
-    def flush(self) -> list[JsonObject | str]:
-        """Drain the tail at EOF, including any undelimited final event.
-
-        Flushing the UTF-8 decoder first matters: a stream truncated mid
-        character would otherwise leave those bytes unaccounted for.
-        """
-
-        self._buffer += self._decoder.decode(b"", final=True)
-        # A well-formed final event may still be followed by a delimiter, so
-        # drain complete events before treating the remainder as a partial one.
-        events = self._drain_complete_events()
-        pending = self._buffer
-        self._buffer = ""
-        if pending.strip():
-            event = _parse_sse_event(pending)
-            if event is not None:
-                events.append(event)
-        return events
-
-    def _drain_complete_events(self) -> list[JsonObject | str]:
-        events: list[JsonObject | str] = []
-        while True:
-            match = _SSE_EVENT_BOUNDARY.search(self._buffer)
-            if match is None:
-                break
-            raw_event = self._buffer[: match.start()]
-            self._buffer = self._buffer[match.end() :]
-            event = _parse_sse_event(raw_event)
-            if event is not None:
-                events.append(event)
-        return events
-
-
-def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
-    data_lines: list[str] = []
-    # ``str.splitlines`` already treats CR, LF and CRLF as line breaks, so a
-    # single-line-ending dialect never leaks into field parsing.
-    for raw_line in raw_event.splitlines():
-        if not raw_line or raw_line.startswith(":"):
-            continue
-        field, _, value = raw_line.partition(":")
-        if field != "data":
-            continue
-        data_lines.append(value[1:] if value.startswith(" ") else value)
-    if not data_lines:
-        return None
-    data = "\n".join(data_lines)
-    if data.strip() == "[DONE]":
-        return "[DONE]"
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        return None
-    return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
 
 
 def _sse_provider_error(
