@@ -9,7 +9,7 @@ When serving `GET /v1/models`, the system SHALL advertise, for each external-int
 3. the window reported by the provider's own model catalog entry (`context_length`, `context_window`, or `top_provider.context_length`, positive integers only);
 4. 200000.
 
-`context_length`, `contextLength` and `capabilities.context_length` MUST carry the same resolved value. A strip-prefix alias MUST advertise the window of the upstream model it names.
+`context_length`, `contextLength` and `capabilities.context_length` MUST carry the same resolved value. A strip-prefix alias MUST advertise the window of the upstream model it names. A configured model alias, which otherwise copies its target's window, MUST advertise the `model_context_window_overrides` entry for its own id when one exists; the alias's dashboard catalog `contextLength` still applies last.
 
 #### Scenario: Claude 1M model advertises 1M under its bare and prefixed ids
 
@@ -38,3 +38,10 @@ When serving `GET /v1/models`, the system SHALL advertise, for each external-int
 
 - **WHEN** a sidecar model has no override, no published Claude window and no usable catalog window
 - **THEN** its entry reports `context_length=200000`
+
+#### Scenario: Override on a configured alias id applies to the alias row
+
+- **GIVEN** alias `alias-gpt` targets `gpt-5.4` (272000) and `model_context_window_overrides` maps `alias-gpt` to `515000`
+- **WHEN** a client calls `GET /v1/models`
+- **THEN** the `alias-gpt` entry reports `context_length=515000` and `metadata.context_window=515000`
+- **AND** `gpt-5.4` still reports `context_length=272000`

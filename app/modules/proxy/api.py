@@ -266,6 +266,8 @@ from app.modules.proxy.cursor_chat_compat import (
     stream_with_cursor_usage_fallback,
 )
 from app.modules.proxy.custom_alias_catalog import (
+    CustomAliasCatalogEntry,
+    apply_custom_alias_catalog_entry,
     apply_custom_alias_catalog_overrides,
     load_custom_alias_catalog,
 )
@@ -4508,6 +4510,7 @@ async def _build_models_response_body(
     if model_aliases or catalog:
         serialized_items = [item.model_dump(mode="json") for item in items]
         if model_aliases:
+            listed = len(serialized_items)
             serialized_items = append_discoverable_alias_models(
                 serialized_items,
                 model_aliases,
@@ -4515,6 +4518,7 @@ async def _build_models_response_body(
                 is_target_visible=lambda model: _model_visible_for_api_key(model, allowed_models),
                 default_entry_fields=_sidecar_model_list_fields,
             )
+            serialized_items[listed:] = _with_alias_context_window_overrides(serialized_items[listed:])
         if catalog:
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
@@ -4845,6 +4849,27 @@ def _sidecar_context_window(
             return window
     window = _catalog_context_window(raw)
     return window if window is not None else _SIDECAR_DEFAULT_CONTEXT_WINDOW
+
+
+def _with_alias_context_window_overrides(alias_entries: list[dict[str, JsonValue]]) -> list[dict[str, JsonValue]]:
+    """Alias rows copy their target's window; an override keyed on the alias id wins.
+
+    The same rule as every other ``/v1/models`` entry: the operator's
+    ``model_context_window_overrides`` entry for the advertised id. The alias's
+    own dashboard catalog entry, applied afterwards, still has the final word.
+    """
+    overrides = get_settings().model_context_window_overrides
+    if not overrides:
+        return alias_entries
+    patched: list[dict[str, JsonValue]] = []
+    for entry in alias_entries:
+        model_id = entry.get("id")
+        override = overrides.get(model_id) if isinstance(model_id, str) else None
+        if override is None:
+            patched.append(entry)
+        else:
+            patched.append(apply_custom_alias_catalog_entry(entry, CustomAliasCatalogEntry(context_length=override)))
+    return patched
 
 
 def _sidecar_model_list_fields(context_window: int = _SIDECAR_DEFAULT_CONTEXT_WINDOW) -> dict[str, JsonValue]:

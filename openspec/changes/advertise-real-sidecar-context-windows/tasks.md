@@ -8,7 +8,8 @@
 
 - [x] 2.1 Claude: bare, `cc/` alias, dated and unknown ids advertise 1M / 1M / 200k / 200k (fails on the previous code).
 - [x] 2.2 OpenRouter: `context_length`, `top_provider.context_length`, a bool value (ignored) and an operator override (wins).
-- [x] 2.3 Existing sidecar `/v1/models` suites stay green.
+- [x] 2.3 A configured alias honors an override on its own id; the dashboard alias catalog still wins.
+- [x] 2.4 Existing sidecar and `/v1/models` suites stay green.
 
 ## 3. Validation
 
