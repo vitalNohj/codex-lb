@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -219,7 +219,7 @@ describe("AccountCard", () => {
     expect(screen.queryByText("Credits:")).toBeNull();
   });
 
-  it("shows an excluded badge for a CLI Proxy API auth with exclusions", () => {
+  it("lists a CLI Proxy API auth's excluded models on the action row", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
       displayName: "CLI Proxy API",
@@ -251,16 +251,19 @@ describe("AccountCard", () => {
     const details = screen.getByRole("button", { name: "Details" });
     const list = screen.getByRole("group", { name: "Excluded models" });
     expect(details.parentElement).toContainElement(list);
+    // One line that scrolls sideways instead of wrapping onto a new row.
     expect(list.className).toMatch(/overflow-x-auto/);
-    expect(list.className).not.toMatch(/flex-wrap/);
+    expect(within(list).getByRole("list").className).not.toMatch(/flex-wrap/);
     expect(screen.getByText("Excluded")).toBeInTheDocument();
     // A known family renders as its label; anything else renders raw.
-    expect(screen.getByText("Fable")).toBeInTheDocument();
-    expect(screen.getByText("claude-opus-4-*")).toBeInTheDocument();
+    expect(within(list).getAllByRole("listitem").map((chip) => chip.textContent)).toEqual([
+      "Fable",
+      "claude-opus-4-*",
+    ]);
     expect(screen.queryByRole("button", { name: /Exclude models/i })).toBeNull();
   });
 
-  it("shows no excluded badge when the list is empty", () => {
+  it("shows no excluded models when the list is empty", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",
       displayName: "CLI Proxy API",

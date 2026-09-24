@@ -33,6 +33,7 @@ class _FakeModel:
     id: str
     created: int | None = 123
     owned_by: str | None = "nvidia"
+    raw: dict | None = None
 
 
 class _FakeNVIDIAClient:

@@ -104,12 +104,43 @@ export function customPatterns(excludedModels: readonly string[]): string[] {
   return excludedModels.filter((pattern) => familyForPattern(pattern) === undefined);
 }
 
+/** One compact chip for an exclusion list: a whole family, or one raw pattern. */
+export type ExcludedModelChip = {
+  /** Stable React key: the family id, or the trimmed raw pattern. */
+  key: string;
+  /** Family label, else the trimmed raw pattern. */
+  label: string;
+  /** Every distinct pattern the chip stands for, trimmed, in list order. */
+  patterns: string[];
+  /** True for an operator-typed pattern that no family owns. */
+  custom: boolean;
+};
+
+/**
+ * Group an exclusion list into chips: one per family, one per custom pattern.
+ *
+ * Order follows the list. Blank patterns match no model, so they get no chip,
+ * and patterns that differ only in surrounding whitespace share one chip
+ * rather than showing as two identical chips.
+ */
+export function excludedModelChips(excludedModels: readonly string[]): ExcludedModelChip[] {
+  const chips = new Map<string, ExcludedModelChip>();
+  for (const pattern of excludedModels) {
+    const trimmed = pattern.trim();
+    if (!trimmed) continue;
+    const family = familyForPattern(trimmed);
+    const key = family ? `family:${family.id}` : `pattern:${trimmed}`;
+    const chip = chips.get(key);
+    if (!chip) {
+      chips.set(key, { key, label: family?.label ?? trimmed, patterns: [trimmed], custom: !family });
+    } else if (!chip.patterns.includes(trimmed)) {
+      chip.patterns.push(trimmed);
+    }
+  }
+  return [...chips.values()];
+}
+
 /** Return the compact labels for an exclusion list: family label, else raw pattern. */
 export function excludedModelLabels(excludedModels: readonly string[]): string[] {
-  const labels: string[] = [];
-  for (const pattern of excludedModels) {
-    const label = familyForPattern(pattern)?.label ?? pattern;
-    if (!labels.includes(label)) labels.push(label);
-  }
-  return labels;
+  return [...new Set(excludedModelChips(excludedModels).map((chip) => chip.label))];
 }

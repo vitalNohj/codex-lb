@@ -250,6 +250,7 @@ from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import (
     claude_routing_entry,
+    claude_sidecar_context_window,
     load_sidecar_config,
     proxy_chat_to_sidecar,
 )
@@ -265,6 +266,8 @@ from app.modules.proxy.cursor_chat_compat import (
     stream_with_cursor_usage_fallback,
 )
 from app.modules.proxy.custom_alias_catalog import (
+    CustomAliasCatalogEntry,
+    apply_custom_alias_catalog_entry,
     apply_custom_alias_catalog_overrides,
     load_custom_alias_catalog,
 )
@@ -692,11 +695,11 @@ _V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
     "gpt-5.4-mini": 128_000,
     "gpt-5.3-codex": 128_000,
 }
-# Context window advertised for Claude sidecar (cliproxyapi) models on
-# ``/v1/models``. Cursor's local-provider discovery reads this to decide when
-# to auto-summarize/compact a conversation. Without it, Cursor never learns the
-# window and lets the conversation grow until the upstream hard-fails. Claude
-# Opus/Sonnet expose a 200k input window.
+# Context window advertised on ``/v1/models`` for a sidecar model whose real
+# window is unknown (see ``_sidecar_context_window``). Cursor's local-provider
+# discovery reads the advertised window to decide when to auto-summarize/compact
+# a conversation; without one it lets the conversation grow until the upstream
+# hard-fails.
 _SIDECAR_DEFAULT_CONTEXT_WINDOW: Final[int] = 200_000
 
 
@@ -4188,6 +4191,7 @@ async def _build_models_response_body(
     if sidecar_config is not None and sidecar_config.enabled:
         discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         pinned_full_models = {full.strip().lower() for full in sidecar_config.full_models}
         for slug in _sidecar_advertised_model_ids(
@@ -4226,7 +4230,9 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "anthropic",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug), claude_model=slug)
+                        ),
                     }
                 )
             )
@@ -4257,13 +4263,16 @@ async def _build_models_response_body(
                         "created": created_by_model.get(base) or created,
                         "owned_by": owner_by_model.get(base) or "anthropic",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(
+                            _sidecar_context_window(alias, raw=raw_by_model.get(base), claude_model=base)
+                        ),
                     }
                 )
             )
     if openrouter_config is not None and openrouter_config.enabled:
         discovered_models = await OpenRouterSidecarClient(openrouter_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in openrouter_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
@@ -4281,7 +4290,7 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openrouter",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
@@ -4290,6 +4299,7 @@ async def _build_models_response_body(
         # requests; an inline client resets the TTL state on every call.
         discovered_models = await get_nvidia_sidecar_client(nvidia_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in nvidia_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
@@ -4307,7 +4317,7 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "nvidia",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
@@ -4358,6 +4368,7 @@ async def _build_models_response_body(
         enabled_openai_compat_configs, openai_compat_catalogs, strict=True
     ):
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in openai_compat_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
@@ -4375,7 +4386,7 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openai_compat",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
@@ -4384,6 +4395,7 @@ async def _build_models_response_body(
         # requests; an inline client resets the TTL state on every call.
         discovered_models = await get_orcarouter_sidecar_client(orcarouter_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in orcarouter_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
@@ -4401,7 +4413,7 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "orcarouter",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
@@ -4413,6 +4425,7 @@ async def _build_models_response_body(
         # Config-keyed client so ``models_cache_ttl_seconds`` spans requests.
         discovered_models = await get_opencode_go_sidecar_client(opencode_go_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in opencode_go_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
@@ -4439,13 +4452,14 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "opencode",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
     if omniroute_config is not None and omniroute_config.enabled:
         discovered_models = await OmniRouteSidecarClient(omniroute_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         for slug in omniroute_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
             if decision is None or decision.provider != "omniroute":
@@ -4462,13 +4476,14 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": "omniroute",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
     if ollama_config is not None and ollama_config.enabled:
         discovered_models = await OllamaSidecarClient(ollama_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
+        raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
         for slug in ollama_config.full_models:
             decision = resolve_sidecar_route(slug, routing_entry_tuple)
@@ -4486,7 +4501,7 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "ollama",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(),
+                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
                     }
                 )
             )
@@ -4495,6 +4510,7 @@ async def _build_models_response_body(
     if model_aliases or catalog:
         serialized_items = [item.model_dump(mode="json") for item in items]
         if model_aliases:
+            listed = len(serialized_items)
             serialized_items = append_discoverable_alias_models(
                 serialized_items,
                 model_aliases,
@@ -4502,6 +4518,7 @@ async def _build_models_response_body(
                 is_target_visible=lambda model: _model_visible_for_api_key(model, allowed_models),
                 default_entry_fields=_sidecar_model_list_fields,
             )
+            serialized_items[listed:] = _with_alias_context_window_overrides(serialized_items[listed:])
         if catalog:
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
@@ -4785,11 +4802,82 @@ def _v1_model_capabilities(model: UpstreamModel, *, context_window: int) -> dict
     }
 
 
+def _positive_window(value: JsonValue | None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _catalog_context_window(raw: Mapping[str, JsonValue] | None) -> int | None:
+    """The context window a provider's own ``/models`` entry reports, if any.
+
+    OpenRouter-style catalogs (OpenRouter, OrcaRouter and most OpenAI-compatible
+    gateways) publish ``context_length`` and ``top_provider.context_length``;
+    others use ``context_window``.
+    """
+    if raw is None:
+        return None
+    for key in ("context_length", "context_window"):
+        window = _positive_window(raw.get(key))
+        if window is not None:
+            return window
+    top_provider = raw.get("top_provider")
+    if is_json_mapping(top_provider):
+        return _positive_window(top_provider.get("context_length"))
+    return None
+
+
+def _sidecar_context_window(
+    slug: str,
+    *,
+    raw: Mapping[str, JsonValue] | None = None,
+    claude_model: str | None = None,
+) -> int:
+    """The single context window ``/v1/models`` advertises for a sidecar model.
+
+    In order: the operator's ``model_context_window_overrides`` entry for the
+    advertised id; for a Claude sidecar model, the published window dispatch
+    already enforces (``claude_model`` is the upstream id a strip-prefix alias
+    names); the provider catalog's own entry; the 200k default.
+    """
+    override = get_settings().model_context_window_overrides.get(slug)
+    if override is not None:
+        return override
+    if claude_model is not None:
+        window = claude_sidecar_context_window(claude_model)
+        if window is not None:
+            return window
+    window = _catalog_context_window(raw)
+    return window if window is not None else _SIDECAR_DEFAULT_CONTEXT_WINDOW
+
+
+def _with_alias_context_window_overrides(alias_entries: list[dict[str, JsonValue]]) -> list[dict[str, JsonValue]]:
+    """Alias rows copy their target's window; an override keyed on the alias id wins.
+
+    The same rule as every other ``/v1/models`` entry: the operator's
+    ``model_context_window_overrides`` entry for the advertised id. The alias's
+    own dashboard catalog entry, applied afterwards, still has the final word.
+    """
+    overrides = get_settings().model_context_window_overrides
+    if not overrides:
+        return alias_entries
+    patched: list[dict[str, JsonValue]] = []
+    for entry in alias_entries:
+        model_id = entry.get("id")
+        override = overrides.get(model_id) if isinstance(model_id, str) else None
+        if override is None:
+            patched.append(entry)
+        else:
+            patched.append(apply_custom_alias_catalog_entry(entry, CustomAliasCatalogEntry(context_length=override)))
+    return patched
+
+
 def _sidecar_model_list_fields(context_window: int = _SIDECAR_DEFAULT_CONTEXT_WINDOW) -> dict[str, JsonValue]:
     # Mirror the capability/context fields registry models expose so Cursor's
     # local-provider discovery can learn the context window and trigger its own
     # compaction. Sidecar models are not in the upstream registry, so they have
-    # no ``UpstreamModel`` to read these from; advertise a default window.
+    # no ``UpstreamModel`` to read these from; callers pass the window from
+    # ``_sidecar_context_window``.
     return {
         "context_length": context_window,
         "contextLength": context_window,

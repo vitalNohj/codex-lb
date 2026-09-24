@@ -1825,6 +1825,47 @@ async def test_v1_models_applies_custom_alias_catalog_context_length(async_clien
 
 
 @pytest.mark.asyncio
+async def test_v1_models_alias_honors_a_context_window_override_on_its_own_id(async_client, monkeypatch):
+    """An alias copies its target's window unless the operator overrides the alias id.
+
+    The dashboard's per-alias catalog entry is applied last and stays the final word.
+    """
+    registry = get_model_registry()
+    await registry.update({"pro": [_make_upstream_model("gpt-5.4")]})
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "modelAliases": {"alias-gpt": "gpt-5.4", "alias-both": "gpt-5.4", "alias-plain": "gpt-5.4"},
+            "customAliasCatalog": {"alias-both": {"contextLength": 1_000_000}},
+        },
+    )
+    assert response.status_code == 200
+
+    from app.core.config.settings import get_settings
+    from app.modules.proxy import api as proxy_api_module
+
+    patched = get_settings().model_copy(
+        update={"model_context_window_overrides": {"alias-gpt": 515_000, "alias-both": 400_000}}
+    )
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: patched)
+
+    models_response = await async_client.get("/v1/models")
+    assert models_response.status_code == 200
+    entries = {item["id"]: item for item in models_response.json()["data"]}
+
+    alias = entries["alias-gpt"]
+    assert alias["context_length"] == 515_000
+    assert alias["contextLength"] == 515_000
+    assert alias["capabilities"]["context_length"] == 515_000
+    assert alias["metadata"]["context_window"] == 515_000
+    assert alias["metadata"]["input_context_window"] == 515_000
+    assert entries["alias-both"]["context_length"] == 1_000_000
+    assert entries["alias-plain"]["context_length"] == 272_000
+    assert entries["gpt-5.4"]["context_length"] == 272_000
+
+
+@pytest.mark.asyncio
 async def test_codex_catalog_hides_last_known_metadata_omitted_by_live_refresh(async_client):
     registry = get_model_registry()
     sol = _make_upstream_model(

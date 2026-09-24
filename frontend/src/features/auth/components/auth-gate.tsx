@@ -64,7 +64,7 @@ export function AuthGate({ children }: PropsWithChildren) {
             </div>
             <div className="flex items-center justify-center gap-2">
               <h1 className="text-xl font-semibold tracking-tight">{t("auth.appTitle")}</h1>
-              <ForkMark>{t("auth.appSubtitle")}</ForkMark>
+              <ForkMark className="text-xs">{t("auth.appSubtitle")}</ForkMark>
             </div>
           </div>
           <LoginForm />
