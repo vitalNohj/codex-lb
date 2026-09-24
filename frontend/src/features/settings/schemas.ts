@@ -44,6 +44,27 @@ const AdditionalQuotaPolicySchema = z.object({
 const CustomAliasCatalogEntrySchema = z.object({
   contextLength: z.number().int().positive().optional(),
 });
+/**
+ * Ordered failover targets for one alias; `targets[0]` is preferred. The
+ * server stores every alias in this shape, including one-target aliases.
+ */
+export const ModelAliasPoolSchema = z.object({
+  targets: z.array(z.string()).min(1),
+});
+export type ModelAliasPool = z.infer<typeof ModelAliasPoolSchema>;
+
+export const AliasPoolTargetHealthSchema = z.object({
+  state: z.enum(["healthy", "cooling"]),
+  until: z.iso.datetime({ offset: true }).nullable().optional(),
+  lastStatus: z.number().int().nullable().optional(),
+  lastError: z.string().nullable().optional(),
+});
+export type AliasPoolTargetHealth = z.infer<typeof AliasPoolTargetHealthSchema>;
+
+export const AliasPoolsHealthResponseSchema = z.object({
+  aliases: z.record(z.string(), z.record(z.string(), AliasPoolTargetHealthSchema)),
+});
+export type AliasPoolsHealthResponse = z.infer<typeof AliasPoolsHealthResponseSchema>;
 const LimitWarmupModelSchema = z.string().min(1).max(128);
 const LimitWarmupPromptSchema = z.string().min(1).max(512);
 const WeeklyPaceWorkingDaysValueSchema = z.string().regex(/^[0-6](,[0-6])*$/);
@@ -190,7 +211,7 @@ export const DashboardSettingsSchema = z
     additionalQuotaRoutingPolicies: z
       .record(z.string(), AdditionalQuotaRoutingPolicySchema)
       .optional(),
-    modelAliases: z.record(z.string(), z.string()).optional(),
+    modelAliases: z.record(z.string(), ModelAliasPoolSchema).optional(),
     customAliasCatalog: z.record(z.string(), CustomAliasCatalogEntrySchema).optional().default({}),
     additionalQuotaPolicies: z.array(AdditionalQuotaPolicySchema).optional().default([]),
     warmupModel: z.string().trim().min(1).optional().default("gpt-5.4-mini"),
@@ -413,7 +434,7 @@ export const SettingsUpdateRequestSchema = z
     additionalQuotaRoutingPolicies: z
       .record(z.string(), AdditionalQuotaRoutingPolicySchema)
       .optional(),
-    modelAliases: z.record(z.string(), z.string()).optional(),
+    modelAliases: z.record(z.string(), ModelAliasPoolSchema).optional(),
     customAliasCatalog: z.record(z.string(), CustomAliasCatalogEntrySchema).optional(),
     warmupModel: z.string().trim().min(1).optional(),
     importWithoutOverwrite: z.boolean().optional(),

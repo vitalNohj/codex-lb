@@ -654,6 +654,32 @@ async def test_unaliased_request_leaves_pool_columns_null(
 
 
 @pytest.mark.asyncio
+async def test_alias_pools_health_reflects_cooling_target_and_prunes_removed_ones(
+    async_client, pool_providers_enabled, fake_orcarouter, fake_openrouter
+):
+    await _configure_pool(async_client)
+    fake_orcarouter.error = OrcaRouterSidecarError(402, "Insufficient credits")
+    await async_client.post("/v1/chat/completions", json=_chat_request(stream=False))
+
+    health = await async_client.get("/api/settings/alias-pools/health")
+    assert health.status_code == 200
+    pool = health.json()["aliases"][ALIAS]
+    assert pool[ORCA_TARGET]["state"] == "cooling"
+    assert pool[ORCA_TARGET]["lastStatus"] == 402
+    assert pool[ORCA_TARGET]["lastError"] == "Insufficient credits"
+    assert pool[ORCA_TARGET]["until"] is not None
+    assert pool[OPENROUTER_TARGET] == {"state": "healthy", "until": None, "lastStatus": None, "lastError": None}
+
+    # Dropping OrcaRouter from the pool removes its entry and its cooldown.
+    await _configure_pool(async_client, targets=[OPENROUTER_TARGET])
+    health = await async_client.get("/api/settings/alias-pools/health")
+    assert health.json()["aliases"] == {
+        ALIAS: {OPENROUTER_TARGET: {"state": "healthy", "until": None, "lastStatus": None, "lastError": None}}
+    }
+    assert get_alias_pool_cooldowns().cooldown_for(ORCA_TARGET) is None
+
+
+@pytest.mark.asyncio
 async def test_unaliased_streaming_upstream_error_is_a_json_error_before_any_sse_bytes(
     async_client, pool_providers_enabled, fake_orcarouter, fake_openrouter
 ):

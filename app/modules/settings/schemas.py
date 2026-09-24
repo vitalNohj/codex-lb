@@ -979,6 +979,26 @@ class RuntimeConnectAddressResponse(DashboardModel):
     connect_address: str
 
 
+class AliasPoolTargetHealth(DashboardModel):
+    """Failover state of one alias pool target on this replica.
+
+    ``state`` is ``healthy`` or ``cooling``; the remaining fields are set only
+    while cooling. Cooldowns are process-local, so a multi-replica deployment
+    reports the state of the replica that answered.
+    """
+
+    state: str
+    until: datetime | None = None
+    last_status: int | None = None
+    last_error: str | None = None
+
+
+class AliasPoolsHealthResponse(DashboardModel):
+    """``{alias: {target: health}}`` for every configured alias, pool or not."""
+
+    aliases: dict[str, dict[str, AliasPoolTargetHealth]]
+
+
 class UpstreamProxyEndpointCreateRequest(DashboardModel):
     name: str = Field(min_length=1, max_length=128)
     scheme: str = Field(pattern=r"^(http|https|socks5|socks5h)$")

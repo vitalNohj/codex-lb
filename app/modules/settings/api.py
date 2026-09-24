@@ -42,12 +42,15 @@ from app.modules.proxy.account_cache import (
     get_account_selection_cache,
     propagate_account_routing_change,
 )
+from app.modules.proxy.alias_pool_attempts import get_alias_pool_cooldowns
 from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
 from app.modules.settings.model_alias_pools import ModelAliasPool
 from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
     AccountProxyBindingResponse,
     AdditionalQuotaPolicy,
+    AliasPoolsHealthResponse,
+    AliasPoolTargetHealth,
     CustomAliasCatalogEntrySchema,
     DashboardSettingsResponse,
     DashboardSettingsUpdateRequest,
@@ -500,6 +503,35 @@ async def get_settings(
 @router.get("/runtime/connect-address", response_model=RuntimeConnectAddressResponse)
 async def get_runtime_connect_address(request: Request) -> RuntimeConnectAddressResponse:
     return RuntimeConnectAddressResponse(connect_address=_resolve_runtime_connect_address(request))
+
+
+@router.get("/alias-pools/health", response_model=AliasPoolsHealthResponse)
+async def get_alias_pools_health(
+    context: SettingsContext = Depends(get_settings_context),
+) -> AliasPoolsHealthResponse:
+    """Per-target failover state for every configured alias, from this replica.
+
+    Reads the process-local cooldown registry. Entries for targets that are no
+    longer configured anywhere are dropped on the way, so a deleted alias does
+    not linger as a stale cooldown.
+    """
+
+    settings = await context.service.get_settings()
+    registry = get_alias_pool_cooldowns()
+    configured_targets = {target for pool in settings.model_aliases.values() for target in pool.targets}
+    registry.retain(configured_targets)
+    aliases: dict[str, dict[str, AliasPoolTargetHealth]] = {}
+    for alias, pool in settings.model_aliases.items():
+        aliases[alias] = {}
+        for target in pool.targets:
+            health = registry.health(target)
+            aliases[alias][target] = AliasPoolTargetHealth(
+                state=health.state,
+                until=health.until,
+                last_status=health.last_status,
+                last_error=health.last_error,
+            )
+    return AliasPoolsHealthResponse(aliases=aliases)
 
 
 @router.get("/upstream-proxy", response_model=UpstreamProxyAdminResponse)
