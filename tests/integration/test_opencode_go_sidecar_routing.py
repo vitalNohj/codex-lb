@@ -35,6 +35,7 @@ class _FakeModel:
     id: str
     created: int | None = 1789353162
     owned_by: str | None = "opencode"
+    raw: dict | None = None
 
 
 class _FakeStreamContext:

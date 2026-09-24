@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -31,6 +31,7 @@ class _FakeModel:
     id: str
     created: int | None = 123
     owned_by: str | None = "openrouter"
+    raw: dict | None = None
 
 
 class _FakeOpenRouterClient:
@@ -389,6 +390,63 @@ async def test_openrouter_model_list_merges_and_filters(lifespan_free_client, op
     # own compaction; sidecar models must expose it.
     assert sidecar_entry["context_length"] == 200_000
     assert sidecar_entry["capabilities"]["context_length"] == 200_000
+
+
+@pytest.mark.asyncio
+async def test_openrouter_model_list_advertises_the_catalog_context_window(
+    lifespan_free_client, openrouter_enabled, fake_openrouter, monkeypatch
+):
+    """The window OpenRouter's own catalog reports is the one ``/v1/models`` shows.
+
+    OpenRouter publishes ``context_length`` (and ``top_provider.context_length``)
+    per model; a model whose entry carries neither keeps the 200k default, and an
+    operator ``model_context_window_overrides`` entry wins over both.
+    """
+
+    from app.core.config.settings import get_settings
+    from app.modules.proxy import api as proxy_api_module
+
+    fake_openrouter.config = replace(
+        fake_openrouter.config,
+        full_models=(
+            "deepseek/deepseek-chat",
+            "deepseek/deepseek-r2",
+            "deepseek/deepseek-lite",
+            "deepseek/deepseek-pin",
+        ),
+    )
+    config = fake_openrouter.config
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_openrouter_sidecar_config", load_config)
+    fake_openrouter.models = [
+        _FakeModel("deepseek/deepseek-chat", raw={"id": "deepseek/deepseek-chat", "context_length": 163_840}),
+        _FakeModel(
+            "deepseek/deepseek-r2", raw={"id": "deepseek/deepseek-r2", "top_provider": {"context_length": 131_072}}
+        ),
+        _FakeModel("deepseek/deepseek-lite", raw={"id": "deepseek/deepseek-lite", "context_length": True}),
+        _FakeModel("deepseek/deepseek-pin", raw={"id": "deepseek/deepseek-pin", "context_length": 64_000}),
+    ]
+    patched = get_settings().model_copy(update={"model_context_window_overrides": {"deepseek/deepseek-pin": 96_000}})
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: patched)
+
+    response = await lifespan_free_client.get("/v1/models")
+
+    assert response.status_code == 200
+    entries = {item["id"]: item for item in response.json()["data"]}
+    expected = {
+        "deepseek/deepseek-chat": 163_840,
+        "deepseek/deepseek-r2": 131_072,
+        "deepseek/deepseek-lite": 200_000,
+        "deepseek/deepseek-pin": 96_000,
+    }
+    for model_id, window in expected.items():
+        entry = entries[model_id]
+        assert entry["context_length"] == window, model_id
+        assert entry["contextLength"] == window, model_id
+        assert entry["capabilities"]["context_length"] == window, model_id
 
 
 @pytest.mark.asyncio

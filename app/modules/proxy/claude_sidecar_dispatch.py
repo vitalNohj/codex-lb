@@ -879,6 +879,21 @@ def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
         body.pop(key, None)
 
 
+def claude_sidecar_context_window(model: str) -> int | None:
+    """The published context window of a Claude sidecar model, if known.
+
+    Same canonical resolution and table as the output bounds below, so
+    ``/v1/models`` advertises exactly the window dispatch enforces: prefixed
+    (``cc/claude-opus-5-5``), dotted, dated and effort-suffixed ids all resolve
+    to their canonical model. ``None`` for a model with no published window.
+    """
+    canonical = canonical_sidecar_model(model)
+    if canonical is None:
+        return None
+    bounds = _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical)
+    return bounds.context_window if bounds is not None else None
+
+
 def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: str) -> None:
     """Raise a client-supplied output-token limit to the model floor and clamp
     to the model's published maximum output.
