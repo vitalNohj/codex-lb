@@ -185,6 +185,51 @@ error MUST return the synthetic context-limit completion and MUST NOT fail over.
 - **THEN** the client receives the synthetic context-limit completion
 - **AND** OpenRouter receives no request
 
+### Requirement: A target that cannot be attempted receives nothing
+
+OrcaRouter and OpenRouter authenticate every request. When either is enabled
+without a usable API key (never set, cleared, or failed to decrypt), the system
+MUST NOT build or send a request to it: the caller's prompt would leave the
+process, and the upstream can only refuse it. A request routed to such an
+integration outside a pool MUST be refused locally with HTTP 503, error code
+`orcarouter_not_configured` or `openrouter_not_configured`, and `Retry-After: 60`,
+and its usage reservation MUST be released. An `openai_compat:{uuid}` endpoint
+MAY have no API key; it is sent requests as configured.
+
+Inside a pool, a target without a usable API key, and a target whose integration
+no longer routes it, MUST be skipped before anything is sent to it and the loop
+MUST continue. A skipped target MUST NOT enter a cooldown, because no upstream
+was contacted, and MUST NOT count toward `X-Codex-LB-Pool-Attempts` or
+`pool_attempts`, which count the targets the request was sent to. When no target
+of a pool can be attempted, the system MUST return HTTP 503 with error code
+`alias_pool_unavailable`, `Retry-After: 60`, and `X-Codex-LB-Pool-Attempts: 0`,
+and MUST release the reservation.
+
+#### Scenario: A keyless integration refuses locally
+
+- **GIVEN** OrcaRouter is enabled with no API key
+- **WHEN** a client posts a chat completion with `model=orcarouter/z-ai/glm-5.3`
+- **THEN** OrcaRouter receives no request
+- **AND** the client receives HTTP 503 with error code `orcarouter_not_configured`
+
+#### Scenario: A pool skips a keyless target
+
+- **GIVEN** `pooled/glm-5.3` has targets `["orcarouter/z-ai/glm-5.3", "z-ai/glm-5.3"]`
+- **AND** OrcaRouter is enabled with no API key and OpenRouter has one
+- **WHEN** a client posts a chat completion with `model=pooled/glm-5.3`
+- **THEN** OrcaRouter receives no request
+- **AND** OpenRouter serves the request
+- **AND** the response carries `X-Codex-LB-Pool-Attempts: 1`
+- **AND** `orcarouter/z-ai/glm-5.3` is not cooling
+
+#### Scenario: No target can be attempted
+
+- **GIVEN** the same pool and neither integration has an API key
+- **WHEN** a client posts a chat completion with `model=pooled/glm-5.3`
+- **THEN** no upstream receives a request
+- **AND** the client receives HTTP 503 with error code `alias_pool_unavailable`
+- **AND** the response carries `X-Codex-LB-Pool-Attempts: 0`
+
 ### Requirement: Streaming dispatch on pool-capable providers opens upstream before committing the response
 
 For `orcarouter`, `openrouter`, and `openai_compat:{uuid}` chat streaming, the
@@ -244,7 +289,9 @@ dashboard authentication, returning for every configured alias and target the
 state `healthy` or `cooling`, the cooldown expiry, the last upstream status, and
 the last sanitized error message. Each attempt SHALL emit one structured log
 line `alias_pool_attempt` with `request_id`, `alias`, `target`, `attempt`, and
-`outcome` in `served`, `failover`, `rejected`, `skipped_cooling`.
+`outcome` in `served`, `failover`, `rejected`, `skipped_cooling`. A `rejected`
+line MUST carry a `reason` of `access`, `unroutable`, or `not_configured`, and
+its `attempt` MUST be `0`, because a rejected target is not sent the request.
 
 #### Scenario: Health reflects a cooling target
 

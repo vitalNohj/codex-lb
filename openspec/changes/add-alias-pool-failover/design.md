@@ -26,6 +26,7 @@ pool *is* the star.
 | Request-log `model` | the alias the client sent (unchanged semantics) |
 | Health endpoint | `GET /api/settings/alias-pools/health` |
 | Client-visible error when every target fails | last attempt's client-facing error, plus header `X-Codex-LB-Pool-Attempts: <n>` |
+| Client-visible error when no target can be attempted | 503 `alias_pool_unavailable`, `Retry-After: 60`, `X-Codex-LB-Pool-Attempts: 0` |
 | Log line | `alias_pool_attempt request_id=… alias=… target=… attempt=… outcome=served\|failover\|rejected\|skipped_cooling` |
 
 `pooled/` is **not** a reserved prefix and is never matched by the resolver.
@@ -137,9 +138,15 @@ Per attempt:
      stream instead of opening one.
    - Retryable failure (see table): record cooldown, log `outcome=failover`,
      continue.
-   - Non-retryable failure: log `outcome=rejected`, return the provider's
-     client-facing error as today (including the Cursor context-length
-     synthetic success, which must keep winning over failover).
+   - Non-retryable failure: log `outcome=served` with the status, return the
+     provider's client-facing error as today (including the Cursor
+     context-length synthetic success, which must keep winning over failover).
+   - Target cannot be attempted (`PoolTargetUnavailable`): no pool-capable
+     route (`reason=unroutable`) or an OrcaRouter/OpenRouter integration with
+     no usable API key (`reason=not_configured`). Nothing is sent, so it is not
+     an attempt and records no cooldown; log `outcome=rejected attempt=0`,
+     continue. If no target could be attempted, return 503
+     `alias_pool_unavailable` with `X-Codex-LB-Pool-Attempts: 0`.
 6. After the last target fails, return the **last** attempt's client-facing
    error with `X-Codex-LB-Pool-Attempts`.
 
@@ -246,11 +253,19 @@ unchanged.
   resolved at the start; the next request sees the new pool.
 - Alias deleted: `custom_alias_catalog` row and cooldown entries are dropped.
 - Operator lists a target on a provider that is later disabled: the target
-  resolves to no route or a disabled route and is treated as a non-retryable
-  rejection for that target, the loop continues. Save-time validation only
-  judges aliases the save changes and accepts targets owned by a turned-off
-  integration, so the toggle itself always saves; each skip is logged at
-  `warning`.
+  resolves to no route or a disabled route and is skipped before anything is
+  sent to it, the loop continues. Save-time validation only judges aliases
+  the save changes and accepts targets owned by a turned-off integration, so
+  the toggle itself always saves; each skip is logged at `warning`.
+- OrcaRouter or OpenRouter enabled without a usable API key (never set,
+  cleared, or undecryptable): the dispatcher's credential gate refuses before
+  the payload is built, so the prompt never leaves the process. Directly that
+  is a 503 `orcarouter_not_configured` / `openrouter_not_configured` with the
+  reservation released; in a pool the target is skipped like a disabled one.
+  Sending anyway would put the prompt on the wire for a guaranteed 401, and
+  in a pool that 401 would fail over and cool a provider whose health was
+  never in question. openai-compat endpoints are exempt: a key is optional
+  there (vLLM, LM Studio).
 - Client disconnects between attempts: the loop checks
   `await request.is_disconnected()` before each open and stops.
 

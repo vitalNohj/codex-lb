@@ -183,6 +183,43 @@ def _provider_retry_status(exc: Exception, *, attempt: int, delivered: bool) -> 
     return status_code
 
 
+def has_usable_sidecar_api_key(api_key: str | None) -> bool:
+    """Can an integration that requires an API key authenticate a request?
+
+    ``None`` covers all three unusable states - never set, cleared, and failed
+    to decrypt - so a key we cannot read is treated exactly like a key we do
+    not have. A blank key is no key either: the client would send no
+    ``Authorization`` header at all.
+    """
+
+    return bool((api_key or "").strip())
+
+
+def sidecar_not_configured_error(
+    *,
+    error_code: str,
+    message: str,
+    extra_headers: Mapping[str, str] | None = None,
+) -> SidecarClientError:
+    """Refuse locally: the integration is enabled but has no usable API key.
+
+    Built before any request body leaves the process. 503 rather than 401: the
+    caller's own API key was already accepted, so this is an operator-side
+    configuration gap, not a client authentication failure - the same reasoning
+    that maps an upstream 401/403 to 503 below. ``Retry-After`` matches that
+    path so a long-running coding client backs off instead of treating the
+    condition as fatal.
+    """
+
+    headers = dict(extra_headers or {})
+    headers["Retry-After"] = str(SIDECAR_UPSTREAM_AUTH_RETRY_AFTER_SECONDS)
+    return SidecarClientError(
+        status_code=503,
+        content=openai_error(error_code, message, error_type="upstream_error"),
+        headers=headers,
+    )
+
+
 def client_facing_sidecar_error(
     *,
     status_code: int,

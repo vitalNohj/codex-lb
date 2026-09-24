@@ -37,7 +37,10 @@ A pool is validated when you save:
 Only the aliases you change are checked, so aliases saved before pools existed
 keep working, even one that names another alias. You can turn an integration
 off while pools still list it: its targets are skipped until you turn it back
-on.
+on. The same goes for an OrcaRouter or OpenRouter integration that is on but
+has no API key: its targets are skipped, and the prompt is never sent to it.
+If no target of a pool can be used, the request fails with
+`alias_pool_unavailable` (HTTP 503) without contacting any upstream.
 
 A rejected save is shown on the offending row and your edited list stays in
 place so you can fix it rather than re-enter it.
@@ -105,7 +108,9 @@ is priced as an OpenRouter request.
 For a per-attempt trail, grep the server log for `alias_pool_attempt` by
 request id; each line records the target, the attempt number, and the outcome
 (`served`, `failover` with the upstream status, `skipped_cooling`, or
-`rejected` with a reason such as `access` or `unroutable`).
+`rejected` with a reason of `access`, `unroutable`, or `not_configured`). A
+rejected target was never sent the request, so it does not count toward
+`pool_attempts`.
 
 ## API keys and quotas
 

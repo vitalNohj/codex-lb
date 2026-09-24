@@ -47,6 +47,7 @@
 - [x] 6.3 Integration: unaliased OrcaRouter/OpenRouter/openai-compat streaming upstream 502 yields a JSON 502, no SSE bytes.
 - [x] 6.4 Migration tests: string to pool, idempotent on pool rows, downgrade refusal and legacy restore, single head.
 - [x] 6.5 Frontend tests: reorder/add/remove targets, last-target remove disabled, health chip states, poll lifecycle.
+- [x] 6.6 Integration against loopback upstreams: an OrcaRouter/OpenRouter integration with no usable API key (cleared, never set, undecryptable) sends nothing, directly (503 `*_not_configured`, reservation released) and in a pool (target skipped, not counted, not cooled; all keyless -> 503 `alias_pool_unavailable`).
 
 ## 7. Docs and validation
 

@@ -5,7 +5,7 @@ report an open-time failure and to attribute their request-log row, and the
 failover loop in ``alias_pool_dispatch.py`` imports it to classify that
 failure and to consult the cooldown registry. Neither side imports the other.
 
-Three things live here:
+Four things live here:
 
 * :class:`ChatRequestAttribution` - what a dispatcher writes into the request
   log row for ``model`` / ``upstream_model`` / ``pool_attempts`` /
@@ -16,6 +16,8 @@ Three things live here:
   later target may still be tried. It carries a closure that produces the
   client-facing error response, so a terminal failure is still rendered by the
   provider that produced it.
+* :class:`PoolTargetUnavailable` - raised when a target cannot be attempted at
+  all (no route, or no usable API key), so nothing is sent to it.
 * The cooldown registry - process-local, keyed by target string.
 """
 
@@ -27,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Final
+from typing import Final, Literal
 
 from fastapi import Response
 
@@ -105,6 +107,31 @@ class PoolTargetFailed(Exception):
         super().__init__(failure.message)
         self.failure = failure
         self.render = render
+
+
+PoolTargetUnavailableReason = Literal["unroutable", "not_configured"]
+
+
+class PoolTargetUnavailable(Exception):
+    """A pool target cannot be attempted, so nothing is sent to it.
+
+    ``unroutable``: no enabled pool-capable integration routes the target.
+    Save-time validation rejects such targets, but it does not re-run when an
+    integration is turned off afterwards. ``not_configured``: the integration
+    routes the target but has no usable API key, and dispatching anyway would
+    put the caller's prompt on the wire to an upstream that cannot answer it.
+
+    Raised by the caller's ``dispatch`` for a missing route, and by a
+    dispatcher's credential gate when failover is allowed. The loop skips the
+    target without a cooldown - no upstream was contacted, so there is no
+    upstream health to record - and does not count it as an attempt.
+    """
+
+    def __init__(self, target: str, *, reason: PoolTargetUnavailableReason, provider: str | None) -> None:
+        super().__init__(f"alias pool target {target!r} is unavailable (reason={reason}, provider={provider})")
+        self.target = target
+        self.reason: PoolTargetUnavailableReason = reason
+        self.provider = provider
 
 
 def is_retryable_upstream_status(status_code: int) -> bool:

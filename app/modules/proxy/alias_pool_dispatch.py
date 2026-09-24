@@ -17,6 +17,11 @@ is left, renders that failure through the provider that produced it. So the
 reservation is settled exactly once, by the attempt that ends the request, and
 every retryable failure - the last one included - refreshes its cooldown.
 
+A target that cannot be attempted at all - no route, or an integration with no
+usable API key - raises :class:`PoolTargetUnavailable` before anything is sent.
+It is skipped without a cooldown and is not counted as an attempt: attempts
+count targets the request was actually sent to.
+
 Access comes first. :func:`authorize_pool_targets` narrows the pool to the
 targets the key may use, checking each target as itself - the provider and
 model the loop will send to - because an allowlist that names the alias must
@@ -42,6 +47,8 @@ from app.modules.proxy.alias_pool_attempts import (
     AliasPoolCooldownRegistry,
     ChatRequestAttribution,
     PoolTargetFailed,
+    PoolTargetUnavailable,
+    PoolTargetUnavailableReason,
     get_alias_pool_cooldowns,
 )
 from app.modules.proxy.request_policy import validate_model_access
@@ -53,23 +60,24 @@ PoolTargetDispatch = Callable[[str, ChatRequestAttribution], Awaitable[Response]
 """``dispatch(target, attribution) -> Response``.
 
 Raises :class:`PoolTargetFailed` for a retryable open failure,
-:class:`PoolTargetUnroutable` when the target has no enabled pool-capable
-route, and returns the provider's response otherwise.
+:class:`PoolTargetUnavailable` when the target cannot be attempted (no enabled
+pool-capable route, or no usable API key), and returns the provider's response
+otherwise.
 """
 
 
-class PoolTargetUnroutable(Exception):
-    """The target resolves to no route, or to one that cannot fail over.
+class AliasPoolUnavailable(Exception):
+    """No target of the pool could be attempted, so nothing was sent anywhere.
 
-    Save-time validation rejects these, but validation does not re-run when an
-    integration is disabled afterwards, so the loop must tolerate it: the
-    target is skipped as a non-retryable rejection and the request continues.
+    Every target was skipped as :class:`PoolTargetUnavailable`. That is an
+    operator configuration gap (integrations turned off or without an API key),
+    not a client error, and the caller surfaces it as one.
     """
 
-    def __init__(self, target: str, *, provider: str | None) -> None:
-        super().__init__(f"alias pool target {target!r} has no pool-capable route (provider={provider})")
-        self.target = target
-        self.provider = provider
+    def __init__(self, alias: str, *, reasons: frozenset[PoolTargetUnavailableReason]) -> None:
+        super().__init__(f"no target of alias pool {alias!r} can be attempted (reasons={sorted(reasons)})")
+        self.alias = alias
+        self.reasons = reasons
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +158,7 @@ async def dispatch_chat_with_failover(
     ordered = _order_by_cooldown(registry, pool.targets, alias=alias, request_id=request_id)
 
     attempts = 0
+    unavailable: set[PoolTargetUnavailableReason] = set()
     last_failure: PoolTargetFailed | None = None
     last_failed_target: str | None = None
     for target in ordered:
@@ -161,28 +170,32 @@ async def dispatch_chat_with_failover(
                 attempts,
             )
             break
-        attempts += 1
-        queue_ms = int((time.monotonic() - loop_started_at) * 1000) if attempts > 1 else None
+        # Numbered before the dispatch because the attribution carries it, but
+        # only committed once the target was actually sent the request.
+        attempt = attempts + 1
+        queue_ms = int((time.monotonic() - loop_started_at) * 1000) if attempt > 1 else None
         attribution = ChatRequestAttribution(
             model=alias,
             upstream_model=target,
-            pool_attempts=attempts,
+            pool_attempts=attempt,
             queue_ms=queue_ms,
         )
         try:
             response = await dispatch(target, attribution)
-        except PoolTargetUnroutable as exc:
+        except PoolTargetUnavailable as exc:
+            # Nothing was sent: not an attempt, and no upstream health to cool.
+            unavailable.add(exc.reason)
             logger.warning(
-                "alias_pool_attempt request_id=%s alias=%s target=%s attempt=%d outcome=rejected "
-                "reason=unroutable provider=%s",
+                "alias_pool_attempt request_id=%s alias=%s target=%s attempt=0 outcome=rejected reason=%s provider=%s",
                 request_id,
                 alias,
                 target,
-                attempts,
+                exc.reason,
                 exc.provider,
             )
             continue
         except PoolTargetFailed as exc:
+            attempts = attempt
             registry.record_failure(target, exc.failure)
             logger.info(
                 "alias_pool_attempt request_id=%s alias=%s target=%s attempt=%d outcome=failover status=%d "
@@ -197,6 +210,7 @@ async def dispatch_chat_with_failover(
             last_failure = exc
             last_failed_target = target
             continue
+        attempts = attempt
         logger.info(
             "alias_pool_attempt request_id=%s alias=%s target=%s attempt=%d outcome=served status=%d",
             request_id,
@@ -226,9 +240,9 @@ async def dispatch_chat_with_failover(
         _set_attempts_header(response, attempts)
         return response
 
-    # Nothing was dispatchable: every candidate lost its route after save-time
-    # validation. That is an operator configuration problem, not a client one.
-    raise PoolTargetUnroutable(alias, provider=None)
+    # Nothing was sent anywhere: every target lost its route after it was saved
+    # or has no usable API key. An operator configuration gap, not a client one.
+    raise AliasPoolUnavailable(alias, reasons=frozenset(unavailable))
 
 
 def _order_by_cooldown(

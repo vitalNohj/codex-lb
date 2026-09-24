@@ -247,9 +247,9 @@ from app.modules.proxy._service.support import (
     _strip_blank_html_comment_lines,
 )
 from app.modules.proxy.account_cache import get_account_selection_cache
-from app.modules.proxy.alias_pool_attempts import ChatRequestAttribution
+from app.modules.proxy.alias_pool_attempts import POOL_ATTEMPTS_HEADER, ChatRequestAttribution, PoolTargetUnavailable
 from app.modules.proxy.alias_pool_dispatch import (
-    PoolTargetUnroutable,
+    AliasPoolUnavailable,
     authorize_pool_targets,
     dispatch_chat_with_failover,
 )
@@ -5088,8 +5088,10 @@ async def v1_chat_completions(
         async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
             target_decision = resolve_sidecar_route(target, tuple(routing_entries))
             if target_decision is None or not is_pool_capable_provider(target_decision.provider):
-                raise PoolTargetUnroutable(
-                    target, provider=target_decision.provider if target_decision is not None else None
+                raise PoolTargetUnavailable(
+                    target,
+                    reason="unroutable",
+                    provider=target_decision.provider if target_decision is not None else None,
                 )
             payload.model = target
             if target_decision.provider == "openrouter":
@@ -5126,7 +5128,7 @@ async def v1_chat_completions(
                 )
             openai_compat_config = openai_compat_config_by_provider(openai_compat_configs, target_decision.provider)
             if openai_compat_config is None:
-                raise PoolTargetUnroutable(target, provider=target_decision.provider)
+                raise PoolTargetUnavailable(target, reason="unroutable", provider=target_decision.provider)
             return await proxy_chat_to_openai_compat(
                 request,
                 payload,
@@ -5144,21 +5146,28 @@ async def v1_chat_completions(
 
         try:
             return await dispatch_chat_with_failover(request, authorized_pool, dispatch=_dispatch_pool_target)
-        except PoolTargetUnroutable as exc:
-            # Every target lost its pool-capable route after the pool was
-            # saved (an integration was disabled). Operator configuration,
-            # surfaced as such rather than as a client error.
+        except AliasPoolUnavailable as exc:
+            # No target could be attempted: each lost its route after the pool
+            # was saved (an integration was turned off) or has no API key.
+            # Nothing was sent anywhere. Operator configuration, surfaced as
+            # such rather than as a client error.
             await _release_reservation(reservation)
-            logger.error("alias_pool_unroutable request_id=%s alias=%s", get_request_id(), exc.target)
+            logger.error(
+                "alias_pool_unavailable request_id=%s alias=%s reasons=%s",
+                get_request_id(),
+                exc.alias,
+                ",".join(sorted(exc.reasons)),
+            )
             return _logged_error_json_response(
                 request,
                 503,
                 openai_error(
-                    "alias_pool_unroutable",
-                    f"No enabled provider can serve any target of alias {exc.target!r}",
+                    "alias_pool_unavailable",
+                    f"No target of alias {exc.alias!r} can be served: each one's integration "
+                    "is turned off or has no API key configured",
                     error_type="upstream_error",
                 ),
-                headers=rate_limit_headers,
+                headers={**rate_limit_headers, "Retry-After": "60", POOL_ATTEMPTS_HEADER: "0"},
             )
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:

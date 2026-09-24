@@ -36,6 +36,7 @@ from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsage
 from app.modules.proxy.alias_pool_attempts import (
     ChatRequestAttribution,
     PoolTargetFailed,
+    PoolTargetUnavailable,
     retryable_failure_from_error,
 )
 from app.modules.proxy.claude_sidecar_dispatch import (
@@ -78,8 +79,10 @@ from app.modules.proxy.sidecar_routing import (
 from app.modules.proxy.sidecar_upstream_errors import (
     call_with_sidecar_provider_retry,
     client_facing_sidecar_error,
+    has_usable_sidecar_api_key,
     open_sidecar_stream,
     relay_sidecar_stream,
+    sidecar_not_configured_error,
 )
 from app.modules.request_logs.repository import RequestLogsRepository
 
@@ -88,6 +91,13 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 OPENROUTER_SIDECAR_SOURCE = "openrouter_sidecar"
+
+_NOT_CONFIGURED_CODE = "openrouter_not_configured"
+_NOT_CONFIGURED_MESSAGE = "OpenRouter is enabled but no API key is configured."
+#: A refusal sent nothing upstream: no usage, and no price to resolve. Passing
+#: this keeps the log write from scheduling a price lookup, which would call
+#: the upstream's model listing without a key.
+_UNSENT_COST = ExternalRequestCost(cost_usd=None, cost_source=None, price_status=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +194,18 @@ async def proxy_chat_to_openrouter(
     """
 
     attribution = attribution or ChatRequestAttribution.direct(effective_model)
+    # Credential gate first, before the payload is built or sent. OpenRouter
+    # authenticates every request, so without a key the upstream can only refuse
+    # it - after the caller's prompt has already left the process.
+    if not has_usable_sidecar_api_key(client.config.api_key):
+        return await _openrouter_not_configured_response(
+            effective_model=effective_model,
+            attribution=attribution,
+            api_key=api_key,
+            reservation=reservation,
+            rate_limit_headers=rate_limit_headers,
+            allow_failover=allow_failover,
+        )
     sidecar_payload = build_openrouter_chat_payload(payload, wire_model or effective_model, client.config)
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
@@ -293,6 +315,42 @@ async def proxy_chat_to_openrouter(
             source="openrouter_sidecar_non_stream",
         )
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
+
+
+async def _openrouter_not_configured_response(
+    *,
+    effective_model: str,
+    attribution: ChatRequestAttribution,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    rate_limit_headers: Mapping[str, str],
+    allow_failover: bool,
+) -> Response:
+    """Refuse a request OpenRouter cannot authenticate, sending nothing.
+
+    Inside a pool the target is skipped instead: the loop tries the next one,
+    and this attempt leaves no log row and does not touch the reservation.
+    """
+
+    if allow_failover:
+        raise PoolTargetUnavailable(effective_model, reason="not_configured", provider="openrouter")
+    await _release_openrouter_reservation(reservation, api_key=api_key)
+    await _log_openrouter_request(
+        api_key=api_key,
+        model=effective_model,
+        attribution=attribution,
+        started_at=time.monotonic(),
+        status="error",
+        error_code=_NOT_CONFIGURED_CODE,
+        error_message=_NOT_CONFIGURED_MESSAGE,
+        cost=_UNSENT_COST,
+    )
+    refusal = sidecar_not_configured_error(
+        error_code=_NOT_CONFIGURED_CODE,
+        message=_NOT_CONFIGURED_MESSAGE,
+        extra_headers=rate_limit_headers,
+    )
+    return JSONResponse(status_code=refusal.status_code, content=refusal.content, headers=refusal.headers)
 
 
 async def _openrouter_open_error_response(
