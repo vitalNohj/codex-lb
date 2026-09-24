@@ -113,11 +113,19 @@ A key's model allowlist applies to the alias and to each target. Requesting an
 alias the key may not use is refused before any upstream call. A target the
 key may not use is skipped without aborting the pool; if the alias is allowed
 but every target is disallowed, the request is refused with
-`model_not_allowed`.
+`model_not_allowed` and counts against no usage limit.
 
 Usage limits reserve once, against the alias, before the first attempt. Only
 the attempt that answers the client settles that reservation, from its own
 usage and cost, and a total failure releases it once.
+
+## Rolling back
+
+Versions before alias pools store one target per alias. Downgrading the
+database past this release turns every one-target alias back into that shape,
+but refuses, changing nothing, while any alias still has fallback targets: the
+error names them. Reduce each to the one target it should keep, then run the
+downgrade again.
 
 ---
 

@@ -112,13 +112,31 @@ def test_migration_upgrade_drops_unusable_entries() -> None:
     assert json.loads(upgraded) == {"d": {"targets": ["x"]}}
 
 
-def test_migration_downgrade_keeps_first_target() -> None:
+def test_migration_downgrade_turns_one_target_pools_back_into_strings() -> None:
+    downgraded = migration._to_legacy_shape(json.dumps({"one": {"targets": [" x "]}, "legacy": "y"}))
+
+    assert downgraded is not None
+    assert json.loads(downgraded) == {"legacy": "y", "one": "x"}
+
+
+def test_migration_downgrade_never_truncates_a_pool() -> None:
+    # ``downgrade`` refuses while such a pool exists; the rewrite itself must
+    # not discard fallback targets either.
     downgraded = migration._to_legacy_shape(
         json.dumps({"pooled": {"targets": ["first", "second"]}, "one": {"targets": ["x"]}})
     )
 
     assert downgraded is not None
-    assert json.loads(downgraded) == {"one": "x", "pooled": "first"}
+    assert json.loads(downgraded) == {"one": "x", "pooled": {"targets": ["first", "second"]}}
+
+
+def test_migration_downgrade_names_the_aliases_blocking_it() -> None:
+    raw = json.dumps({"pooled": {"targets": ["a", "b"]}, "one": {"targets": ["x"]}, "legacy": "y"})
+
+    assert migration._fallback_aliases(raw) == ["pooled"]
+    assert migration._fallback_aliases(json.dumps({"dupes": {"targets": ["a", "A"]}})) == []
+    assert "alias 'pooled' has fallback targets" in migration._downgrade_refusal(["pooled"])
+    assert "'a9' and 2 more have" in migration._downgrade_refusal([f"a{i}" for i in range(12)])
 
 
 def test_migration_downgrade_leaves_legacy_rows_untouched() -> None:

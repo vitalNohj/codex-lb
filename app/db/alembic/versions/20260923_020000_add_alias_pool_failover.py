@@ -10,11 +10,17 @@ retyped; only the value shape changes. ``request_logs`` gains
 ``upstream_model`` (the pool target that served an alias request) and
 ``pool_attempts`` (how many targets were tried), both nullable and null for
 every non-pool request.
+
+Downgrade turns one-target pools back into strings and refuses, changing
+nothing, while an alias has fallback targets: the legacy shape holds one
+target per alias, and truncating a pool would discard targets an operator
+added after the upgrade, which this migration did not write.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import sqlalchemy as sa
@@ -31,6 +37,17 @@ _ALIASES_COLUMN = "model_aliases_json"
 _LOGS_TABLE = "request_logs"
 _UPSTREAM_MODEL_COLUMN = "upstream_model"
 _POOL_ATTEMPTS_COLUMN = "pool_attempts"
+# Settings rows are read and rewritten this many at a time. The table holds a
+# single row today; the bound keeps the migration safe if that ever changes.
+_BATCH_SIZE = 100
+# How many aliases a refused downgrade names before summarizing the rest.
+_MAX_NAMED_ALIASES = 10
+
+_settings_table = sa.table(
+    _SETTINGS_TABLE,
+    sa.column("id", sa.Integer()),
+    sa.column(_ALIASES_COLUMN, sa.Text()),
+)
 
 
 def _columns(connection: Connection, table_name: str) -> set[str]:
@@ -97,48 +114,98 @@ def _to_pool_shape(raw: Any) -> str | None:
     return json.dumps(pools, sort_keys=True, separators=(",", ":"))
 
 
+def _pool_targets(value: Any) -> list[str] | None:
+    """A pool object's usable targets; ``None`` for anything else."""
+
+    if isinstance(value, dict) and isinstance(value.get("targets"), list):
+        return _normalize_targets(value["targets"])
+    return None
+
+
+def _fallback_aliases(raw: Any) -> list[str]:
+    """Aliases with more than one target, which the legacy shape cannot hold."""
+
+    parsed = _load_alias_map(raw)
+    if parsed is None:
+        return []
+    return [alias.strip() for alias, value in parsed.items() if alias.strip() and len(_pool_targets(value) or ()) > 1]
+
+
 def _to_legacy_shape(raw: Any) -> str | None:
-    """Rewrite pools to their first target as a string; ``None`` when nothing changes."""
+    """Rewrite one-target pools to the string the previous version reads.
+
+    ``None`` when nothing changes. Every other entry stays as it is: strings
+    already have the legacy shape, the previous version skips anything else,
+    and ``downgrade`` refuses to run while an alias has fallback targets.
+    """
 
     parsed = _load_alias_map(raw)
     if parsed is None:
         return None
     changed = False
-    aliases: dict[str, str] = {}
+    aliases: dict[str, Any] = {}
     for alias, value in parsed.items():
-        if not isinstance(alias, str) or not alias.strip():
+        targets = _pool_targets(value)
+        if targets is not None and len(targets) == 1:
+            aliases[alias] = targets[0]
             changed = True
-            continue
-        if isinstance(value, str):
-            if value.strip():
-                aliases[alias.strip()] = value.strip()
-            else:
-                changed = True
-            continue
-        if isinstance(value, dict) and isinstance(value.get("targets"), list):
-            targets = _normalize_targets(value["targets"])
-            changed = True
-            if targets:
-                aliases[alias.strip()] = targets[0]
-            continue
-        changed = True
+        else:
+            aliases[alias] = value
     if not changed:
         return None
     return json.dumps(aliases, sort_keys=True, separators=(",", ":"))
 
 
-def _rewrite_alias_rows(bind: Connection, rewrite: Any) -> None:
+def _alias_row_batches(bind: Connection) -> Iterator[list[tuple[Any, Any]]]:
+    """Settings rows as ``(id, aliases)``, in id order, ``_BATCH_SIZE`` at a time."""
+
+    id_column = _settings_table.c.id
+    query = sa.select(id_column, _settings_table.c[_ALIASES_COLUMN]).order_by(id_column).limit(_BATCH_SIZE)
+    last_id: Any = None
+    while True:
+        page = query if last_id is None else query.where(id_column > last_id)
+        batch = [(row[0], row[1]) for row in bind.execute(page)]
+        if not batch:
+            return
+        yield batch
+        last_id = batch[-1][0]
+
+
+def _rewrite_alias_rows(bind: Connection, rewrite: Callable[[Any], str | None]) -> None:
     if _ALIASES_COLUMN not in _columns(bind, _SETTINGS_TABLE):
         return
-    rows = bind.execute(sa.text(f"SELECT id, {_ALIASES_COLUMN} FROM {_SETTINGS_TABLE}")).mappings().all()
-    for row in rows:
-        rewritten = rewrite(row[_ALIASES_COLUMN])
-        if rewritten is None:
-            continue
-        bind.execute(
-            sa.text(f"UPDATE {_SETTINGS_TABLE} SET {_ALIASES_COLUMN} = :aliases WHERE id = :id"),
-            {"id": row["id"], "aliases": rewritten},
-        )
+    update = (
+        sa.update(_settings_table)
+        .where(_settings_table.c.id == sa.bindparam("row_id"))
+        .values({_ALIASES_COLUMN: sa.bindparam("aliases")})
+    )
+    for batch in _alias_row_batches(bind):
+        changes = [
+            {"row_id": row_id, "aliases": rewritten} for row_id, raw in batch if (rewritten := rewrite(raw)) is not None
+        ]
+        if changes:
+            bind.execute(update, changes)
+
+
+def _aliases_blocking_downgrade(bind: Connection) -> list[str]:
+    if _ALIASES_COLUMN not in _columns(bind, _SETTINGS_TABLE):
+        return []
+    return [alias for batch in _alias_row_batches(bind) for _row_id, raw in batch for alias in _fallback_aliases(raw)]
+
+
+def _downgrade_refusal(aliases: list[str]) -> str:
+    named = ", ".join(f"'{alias}'" for alias in aliases[:_MAX_NAMED_ALIASES])
+    if len(aliases) > _MAX_NAMED_ALIASES:
+        named += f" and {len(aliases) - _MAX_NAMED_ALIASES} more"
+    if len(aliases) == 1:
+        subject, reduce = f"alias {named} has", "Reduce it"
+    else:
+        subject, reduce = f"aliases {named} have", "Reduce each"
+    return (
+        f"cannot downgrade {revision}: {subject} fallback targets, which the previous version "
+        f"cannot store. {reduce} to the one target it should keep (Settings > Advanced settings > "
+        "Routing > Model aliasing), then run the downgrade again."
+    )
 
 
 def upgrade() -> None:
@@ -161,6 +228,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    # Refuse before changing anything; see the module docstring.
+    blocking = _aliases_blocking_downgrade(bind)
+    if blocking:
+        raise RuntimeError(_downgrade_refusal(blocking))
+
     log_columns = _columns(bind, _LOGS_TABLE)
     present = [column for column in (_UPSTREAM_MODEL_COLUMN, _POOL_ATTEMPTS_COLUMN) if column in log_columns]
     if present:

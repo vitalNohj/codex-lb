@@ -4,7 +4,7 @@
 - [x] 1.2 Add `ModelAliasPoolSchema` to `app/modules/settings/schemas.py`; accept `str | ModelAliasPoolSchema` on write, normalize to the pool shape, keep the 256-char caps, add the 16-target cap.
 - [x] 1.3 Add pool validation to `SettingsService` (empty, duplicate, alias-as-target, non-pool-capable member of a 2+ pool, native Codex member of a 2+ pool) using the enabled routing entries; surface as the existing settings validation error with alias and target named.
 - [x] 1.4 Define `POOL_CAPABLE_PROVIDERS = {"orcarouter", "openrouter"}` plus the `openai_compat:` prefix check in `app/modules/proxy/alias_pool_dispatch.py`.
-- [x] 1.5 Alembic revision parented on `20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads` (the live head after rebase): normalize `model_aliases_json` values, add `request_logs.upstream_model` and `request_logs.pool_attempts`, idempotent upgrade, downgrade truncates to `targets[0]` and drops only the two columns.
+- [x] 1.5 Alembic revision parented on `20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads` (the live head after rebase): normalize `model_aliases_json` values, add `request_logs.upstream_model` and `request_logs.pool_attempts`, idempotent upgrade, settings rows in bounded batches, downgrade refuses while an alias has fallback targets, else restores strings and drops only the two columns.
 - [x] 1.6 Add `upstream_model` and `pool_attempts` to `RequestLog`, the request-log write path, and the dashboard request-log row schema.
 
 ## 2. Resolution and catalog
@@ -45,7 +45,7 @@
 - [x] 6.1 Unit: alias parsing (both shapes), validation rules, retryable classification table, cooldown expiry and soonest-to-expire, catalog entry building with partially visible targets.
 - [x] 6.2 Integration with fake upstreams: 402 then 200 (streaming and non-streaming); 400 returned without second call; cursor context-length synthetic success without second call; disallowed first target skipped; all targets fail returns last error and attempts header; log row `model=alias`, `upstream_model`, `pool_attempts`; single reservation finalized once.
 - [x] 6.3 Integration: unaliased OrcaRouter/OpenRouter/openai-compat streaming upstream 502 yields a JSON 502, no SSE bytes.
-- [x] 6.4 Migration tests: string to pool, idempotent on pool rows, downgrade truncation, single head.
+- [x] 6.4 Migration tests: string to pool, idempotent on pool rows, downgrade refusal and legacy restore, single head.
 - [x] 6.5 Frontend tests: reorder/add/remove targets, last-target remove disabled, health chip states, poll lifecycle.
 
 ## 7. Docs and validation

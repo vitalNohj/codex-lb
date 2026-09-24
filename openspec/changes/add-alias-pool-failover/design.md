@@ -54,7 +54,10 @@ just an alias whose id happens to contain a slash, exactly like `or-foo/bar`.
   non-string values, so the alias simply stops resolving on that replica
   rather than crashing it). The Alembic data migration rewrites strings to
   one-element pools; downgrade rewrites one-element pools back to strings and
-  keeps only `targets[0]` for larger pools.
+  refuses, changing nothing, while any alias has fallback targets. Truncating
+  to `targets[0]` would silently drop targets an operator added after the
+  upgrade, which the migration did not write and cannot tell apart; the
+  refusal names those aliases so the operator chooses what to keep.
 
 ### Save-time validation (`SettingsService`)
 
@@ -262,6 +265,6 @@ unchanged.
   success; restricted key allowed on alias but not target 1 skips to target 2;
   all targets fail returns last error with the attempts header; request log
   row has `model=alias`, `upstream_model=target2`, `pool_attempts=2`.
-- Migration: string aliases become one-element pools; downgrade truncates to
-  `targets[0]`.
+- Migration: string aliases become one-element pools; downgrade refuses while
+  an alias has fallback targets and restores strings otherwise.
 - Frontend: reorder, add, remove targets; health chip states.
