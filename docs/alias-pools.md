@@ -34,6 +34,11 @@ A pool is validated when you save:
 - native Codex accounts cannot sit in a pool, so a single-target alias pointing
   at a Codex model keeps working exactly as before
 
+Only the aliases you change are checked, so aliases saved before pools existed
+keep working, even one that names another alias. You can turn an integration
+off while pools still list it: its targets are skipped until you turn it back
+on.
+
 A rejected save is shown on the offending row and your edited list stays in
 place so you can fix it rather than re-enter it.
 

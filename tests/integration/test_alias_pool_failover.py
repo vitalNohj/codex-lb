@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 from sqlalchemy import select
@@ -29,7 +29,8 @@ from app.core.clients.orcarouter_sidecar import (
     OrcaRouterSidecarUnavailableError,
 )
 from app.core.config.settings import get_settings
-from app.db.models import ApiKeyUsageReservation, RequestLog
+from app.core.config.settings_cache import get_settings_cache
+from app.db.models import ApiKeyUsageReservation, DashboardSettings, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
@@ -679,6 +680,89 @@ async def test_unaliased_request_leaves_pool_columns_null(
     assert logs[0].model == ORCA_TARGET
     assert logs[0].upstream_model is None
     assert logs[0].pool_attempts is None
+
+
+async def _store_model_aliases_json(raw: str) -> None:
+    """Write the alias column directly, as an upgrade from the legacy shape leaves it."""
+
+    async with SessionLocal() as session:
+        row = (await session.execute(select(DashboardSettings))).scalar_one()
+        row.model_aliases_json = raw
+        await session.commit()
+    await get_settings_cache().invalidate()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_settings_save_keeps_a_legacy_alias_whose_target_is_another_alias(async_client):
+    # Legacy single-step aliases were accepted with one alias naming another
+    # (and even themselves); the old resolver never followed the chain, and the
+    # migration carries them over as one-target pools. An unrelated save still
+    # sends the stored map back, so the no-chaining rule for pools must not
+    # lock the operator out of every other setting.
+    await async_client.get("/api/settings")
+    await _store_model_aliases_json(
+        json.dumps({"fast": {"targets": ["gpt-5.4"]}, "gpt-5.4": {"targets": ["cc/claude"]}, "x": {"targets": ["x"]}})
+    )
+    current = (await async_client.get("/api/settings")).json()
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"modelAliases": current["modelAliases"], "stickyThreadsEnabled": not current["stickyThreadsEnabled"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["stickyThreadsEnabled"] is not current["stickyThreadsEnabled"]
+    assert response.json()["modelAliases"] == current["modelAliases"]
+
+
+@pytest.mark.asyncio
+async def test_new_pool_whose_target_is_another_alias_is_still_rejected(async_client, pool_providers_enabled):
+    await _configure_pool(async_client)
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "modelAliases": {
+                ALIAS: {"targets": [ORCA_TARGET, OPENROUTER_TARGET]},
+                "pooled/other": {"targets": [OPENROUTER_TARGET, ALIAS]},
+            }
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "cannot chain" in response.text
+
+
+@pytest.mark.asyncio
+async def test_disabling_an_integration_a_pool_uses_saves_and_the_pool_skips_it(
+    async_client, pool_providers_enabled, fake_orcarouter, fake_openrouter, monkeypatch
+):
+    # Turning a provider off (say it ran out of credit) must not require
+    # editing every pool that uses it first. The pool stays as saved and the
+    # failover loop skips the target that lost its route.
+    fixed_config = fake_orcarouter.config
+
+    async def load_config_honouring_the_saved_toggle():
+        stored = await get_settings_cache().get()
+        return replace(fixed_config, enabled=bool(stored.orcarouter_sidecar_enabled))
+
+    monkeypatch.setattr("app.modules.proxy.api.load_orcarouter_sidecar_config", load_config_honouring_the_saved_toggle)
+    await _configure_pool(async_client)
+    current = (await async_client.get("/api/settings")).json()
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"orcarouterSidecarEnabled": False, "modelAliases": current["modelAliases"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["orcarouterSidecarEnabled"] is False
+    assert response.json()["modelAliases"] == current["modelAliases"]
+
+    served = await async_client.post("/v1/chat/completions", json=_chat_request(stream=False))
+    assert served.status_code == 200, served.text
+    assert fake_orcarouter.attempts == 0
+    assert fake_openrouter.attempts == 1
 
 
 @pytest.mark.asyncio

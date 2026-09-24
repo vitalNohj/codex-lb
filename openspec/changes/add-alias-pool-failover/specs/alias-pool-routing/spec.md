@@ -68,6 +68,26 @@ Pool-capable providers are `orcarouter`, `openrouter`, and every
 `openai_compat:{uuid}` endpoint. A one-target pool MAY target any model an
 alias could target before this change, including native Codex models.
 
+Only what a save changes is validated. Every save carries the whole alias map,
+so an alias whose targets equal the stored ones MUST NOT be re-validated, and
+an alias-to-alias link MUST be rejected only when the save creates it. A target
+owned by an integration that is turned off MUST be judged by that integration
+when no enabled integration routes it, so turning an integration off never
+fails a save; the proxy skips such a target at request time.
+
+#### Scenario: Unrelated save keeps a stored legacy alias chain
+
+- **GIVEN** the stored aliases are `fast -> ["gpt-5.4"]` and `gpt-5.4 -> ["cc/claude"]`, carried over from the legacy shape
+- **WHEN** the operator saves an unrelated setting and the alias map is sent back unchanged
+- **THEN** the save succeeds
+
+#### Scenario: Turning off an integration a pool uses
+
+- **GIVEN** `pooled/glm-5.3` has targets `["orcarouter/z-ai/glm-5.3", "z-ai/glm-5.3"]`
+- **WHEN** the operator turns OrcaRouter off
+- **THEN** the save succeeds and the pool is unchanged
+- **AND** a request for `pooled/glm-5.3` is served by OpenRouter without an OrcaRouter attempt
+
 #### Scenario: Alias chain is rejected
 
 - **GIVEN** the alias `a` has targets `["b"]` and `b` is a configured alias

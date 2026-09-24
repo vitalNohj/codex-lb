@@ -75,6 +75,15 @@ error envelope:
 A **one-target** pool is allowed to point anywhere an alias can point today,
 including native Codex, so the migration cannot invalidate an existing alias.
 
+Only what the save changes is judged, because every save (a TOTP toggle, an
+integration switch) sends the whole alias map back. An alias whose targets
+equal the stored ones is skipped, and rule 3 rejects only alias-to-alias links
+the save creates, so legacy single-step chains the migration carried over keep
+working. Rule 4 routes each target with the enabled integrations first and, if
+none claims it, with the ones turned off: turning an integration off is an
+operational switch that must never fail a save, and the loop skips that
+target until it is back on.
+
 Reconcile `custom_alias_catalog` against the alias key set exactly as now.
 
 ## Resolution
@@ -235,9 +244,10 @@ unchanged.
 - Alias deleted: `custom_alias_catalog` row and cooldown entries are dropped.
 - Operator lists a target on a provider that is later disabled: the target
   resolves to no route or a disabled route and is treated as a non-retryable
-  rejection for that target, the loop continues; save-time validation does not
-  re-run on integration toggles, so this is logged at `warning` once per
-  alias per minute.
+  rejection for that target, the loop continues. Save-time validation only
+  judges aliases the save changes and accepts targets owned by a turned-off
+  integration, so the toggle itself always saves; each skip is logged at
+  `warning`.
 - Client disconnects between attempts: the loop checks
   `await request.is_disconnected()` before each open and stops.
 

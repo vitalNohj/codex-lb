@@ -16,7 +16,7 @@ from app.modules.openai_compat.endpoints import (
     merge_openai_compat_endpoints,
     parse_openai_compat_endpoints,
 )
-from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.proxy.sidecar_routing import SidecarRoutingDecision, SidecarRoutingEntry, resolve_sidecar_route
 from app.modules.settings.model_alias_pools import (
     MAX_ALIAS_LENGTH,
     MAX_POOL_TARGETS,
@@ -401,7 +401,7 @@ class SettingsService:
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
         _validate_unique_sidecar_routes(payload)
-        _validate_model_alias_pools(payload)
+        _validate_model_alias_pools(payload, stored_aliases=_parse_model_aliases(current.model_aliases_json))
         api_key_encrypted = current.claude_sidecar_api_key_encrypted
         if payload.claude_sidecar_clear_api_key:
             api_key_encrypted = None
@@ -971,25 +971,47 @@ def _provider_label(provider: str, payload: DashboardSettingsUpdateData) -> str:
     return provider
 
 
-def _routing_entries_from_payload(payload: DashboardSettingsUpdateData) -> tuple[SidecarRoutingEntry, ...]:
-    """Routing entries for the settings being saved, enabled integrations only.
+@dataclass(frozen=True, slots=True)
+class _PayloadRouting:
+    """Routing entries for the settings being saved.
 
-    Built from the payload rather than the stored row so validation sees the
-    same prefixes and full models the request is about to persist.
+    ``enabled`` holds the integrations turned on, which is what the proxy
+    routes with; ``configured`` adds the ones turned off. Both are built from
+    the payload rather than the stored row, so validation sees the prefixes
+    and full models the request is about to persist.
     """
 
-    entries: list[SidecarRoutingEntry] = []
+    enabled: tuple[SidecarRoutingEntry, ...]
+    configured: tuple[SidecarRoutingEntry, ...]
+
+    def pool_target_route(self, target: str) -> SidecarRoutingDecision | None:
+        """The route ``target`` takes now, else the one its turned-off owner gives it.
+
+        Turning an integration off is an operational switch (it ran out of
+        credit, say): a pool may keep, reorder, or gain a target on it, and
+        the proxy skips that target until it is back on. Only when no enabled
+        integration routes the target is the turned-off owner consulted, so a
+        target routed now is judged by that route. Integrations the product
+        itself disables stay out, by ``resolve_sidecar_route``'s capability
+        filter.
+        """
+
+        return resolve_sidecar_route(target, self.enabled) or resolve_sidecar_route(target, self.configured)
+
+
+def _routing_entries_from_payload(payload: DashboardSettingsUpdateData) -> _PayloadRouting:
+    enabled_entries: list[SidecarRoutingEntry] = []
+    configured_entries: list[SidecarRoutingEntry] = []
 
     def add(provider: str, enabled: bool, prefixes: list[SidecarPrefix], full_models: list[str]) -> None:
-        if not enabled:
-            return
-        entries.append(
-            SidecarRoutingEntry(
-                provider=provider,
-                prefixes=tuple(prefixes),
-                full_models=tuple(full_models),
-            )
+        entry = SidecarRoutingEntry(
+            provider=provider,
+            prefixes=tuple(prefixes),
+            full_models=tuple(full_models),
         )
+        configured_entries.append(entry)
+        if enabled:
+            enabled_entries.append(entry)
 
     add(
         "claude",
@@ -1038,34 +1060,65 @@ def _routing_entries_from_payload(payload: DashboardSettingsUpdateData) -> tuple
         payload.ollama_sidecar_model_prefixes,
         payload.ollama_sidecar_full_models,
     )
-    return tuple(entries)
+    return _PayloadRouting(enabled=tuple(enabled_entries), configured=tuple(configured_entries))
 
 
-def _validate_model_alias_pools(payload: DashboardSettingsUpdateData) -> None:
-    """Reject pools that could never fail over or would confuse resolution.
+def _validate_model_alias_pools(
+    payload: DashboardSettingsUpdateData,
+    *,
+    stored_aliases: Mapping[str, ModelAliasPool],
+) -> None:
+    """Reject the alias problems this save introduces.
 
     Rules, each naming the alias and the offending target in the error:
 
     1. no targets;
     2. a repeated target (case-insensitive);
     3. a target that is itself a configured alias (no chains, so no cycles);
-    4. two or more targets where any target resolves to native Codex or to a
-       sidecar that is not pool-capable;
+    4. two or more targets where any target routes to native Codex or to a
+       sidecar that is not pool-capable (see ``_PayloadRouting.pool_target_route``
+       for targets on an integration that is turned off);
     5. more than ``MAX_POOL_TARGETS`` targets, or an alias/target over the
        length cap.
+
+    Only what the save changes is judged: every save sends the whole alias map
+    back, so re-judging stored aliases would let old data block unrelated
+    saves. An alias whose targets match ``stored_aliases`` is skipped, and a
+    chain link is allowed only when it was stored and its alias is unchanged.
+    That keeps legacy single-step chains (legacy aliases could name another
+    alias, harmlessly, and the migration carries them over) while rejecting
+    any link a save creates, including one made by adding an alias under a
+    name another alias already targets. A stored pool target that a later
+    routing change leaves unroutable is skipped by the proxy at request time.
 
     A one-target pool may point anywhere a legacy alias could, including native
     Codex, so the migration cannot invalidate an existing alias.
     """
 
     pools = normalize_alias_pools(payload.model_aliases)
-    alias_keys = {alias.lower() for alias in pools}
-    routing_entries = _routing_entries_from_payload(payload)
-
+    stored_targets = {alias.lower(): pool.targets for alias, pool in stored_aliases.items()}
+    changed_aliases: set[str] = set()
     for alias, submitted in payload.model_aliases.items():
         normalized_alias = alias.strip() if isinstance(alias, str) else ""
-        if not normalized_alias:
+        if normalized_alias and tuple(_submitted_targets(submitted)) != stored_targets.get(normalized_alias.lower()):
+            changed_aliases.add(normalized_alias.lower())
+
+    stored_links = _alias_chain_links(stored_aliases)
+    for (alias_key, target_key), (alias, target) in _alias_chain_links(pools).items():
+        if alias_key not in changed_aliases and (alias_key, target_key) in stored_links:
             continue
+        raise ModelAliasPoolError(
+            f"Alias '{alias}' target '{target}' is itself an alias; aliases cannot chain",
+            alias=alias,
+            target=target,
+        )
+
+    routing = _routing_entries_from_payload(payload)
+    for alias, submitted in payload.model_aliases.items():
+        normalized_alias = alias.strip() if isinstance(alias, str) else ""
+        if normalized_alias.lower() not in changed_aliases:
+            continue
+        raw_targets = _submitted_targets(submitted)
         if len(normalized_alias) > MAX_ALIAS_LENGTH:
             raise ModelAliasPoolError(
                 f"Alias '{normalized_alias[:32]}...' is longer than {MAX_ALIAS_LENGTH} characters",
@@ -1076,7 +1129,6 @@ def _validate_model_alias_pools(payload: DashboardSettingsUpdateData) -> None:
             # ``normalize_alias_pools`` dropped it: no usable targets. A blank
             # submission is a mistake worth reporting, not silently discarding.
             raise ModelAliasPoolError(f"Alias '{normalized_alias}' has no targets", alias=normalized_alias)
-        raw_targets = _submitted_targets(submitted)
         if len(raw_targets) != len(pool.targets):
             duplicate = _first_duplicate_target(raw_targets)
             raise ModelAliasPoolError(
@@ -1096,16 +1148,10 @@ def _validate_model_alias_pools(payload: DashboardSettingsUpdateData) -> None:
                     alias=normalized_alias,
                     target=target,
                 )
-            if target.lower() in alias_keys:
-                raise ModelAliasPoolError(
-                    f"Alias '{normalized_alias}' target '{target}' is itself an alias; aliases cannot chain",
-                    alias=normalized_alias,
-                    target=target,
-                )
         if not pool.is_pool:
             continue
         for target in pool.targets:
-            decision = resolve_sidecar_route(target, routing_entries)
+            decision = routing.pool_target_route(target)
             if decision is None:
                 raise ModelAliasPoolError(
                     f"Alias '{normalized_alias}' target '{target}' routes to native Codex, "
@@ -1121,6 +1167,21 @@ def _validate_model_alias_pools(payload: DashboardSettingsUpdateData) -> None:
                     alias=normalized_alias,
                     target=target,
                 )
+
+
+def _alias_chain_links(pools: Mapping[str, ModelAliasPool]) -> dict[tuple[str, str], tuple[str, str]]:
+    """Every ``alias -> target`` link whose target is itself an alias.
+
+    Keyed case-insensitively, valued with the spelling to report.
+    """
+
+    alias_keys = {alias.lower() for alias in pools}
+    links: dict[tuple[str, str], tuple[str, str]] = {}
+    for alias, pool in pools.items():
+        for target in pool.targets:
+            if target.lower() in alias_keys:
+                links.setdefault((alias.lower(), target.lower()), (alias, target))
+    return links
 
 
 def _submitted_targets(value: object) -> list[str]:

@@ -12,7 +12,9 @@ from app.modules.settings.schemas import DashboardSettingsUpdateRequest, ModelAl
 from app.modules.settings.service import (
     DashboardSettingsUpdateData,
     ModelAliasPoolError,
-    _validate_model_alias_pools,
+)
+from app.modules.settings.service import (
+    _validate_model_alias_pools as _validate_against_stored,
 )
 from tests.unit.test_settings_service import _openai_compat_endpoints, _settings_update
 
@@ -21,6 +23,16 @@ pytestmark = pytest.mark.unit
 
 def _pool(*targets: str) -> ModelAliasPool:
     return ModelAliasPool(targets=targets)
+
+
+def _validate_model_alias_pools(
+    payload: DashboardSettingsUpdateData,
+    *,
+    stored: dict[str, ModelAliasPool] | None = None,
+) -> None:
+    """Validate ``payload`` as a save over ``stored`` (nothing stored by default)."""
+
+    _validate_against_stored(payload, stored_aliases=stored or {})
 
 
 def _payload(aliases: dict[str, ModelAliasPool | str | dict[str, list[str]]]) -> DashboardSettingsUpdateData:
@@ -73,13 +85,59 @@ def test_rejects_pool_with_non_pool_capable_sidecar_target() -> None:
     assert "does not support pooling" in str(exc_info.value)
 
 
-def test_rejects_pool_target_on_disabled_integration_as_native() -> None:
-    payload = replace(_payload({"pooled/glm": _pool("or/a", "orca/b")}), orcarouter_sidecar_enabled=False)
+def test_accepts_turning_off_an_integration_a_stored_pool_uses() -> None:
+    stored = {"pooled/glm": _pool("or/a", "orca/b")}
+    payload = replace(_payload(dict(stored)), orcarouter_sidecar_enabled=False)
+
+    _validate_model_alias_pools(payload, stored=stored)
+
+
+def test_accepts_new_pool_target_on_a_turned_off_pool_capable_integration() -> None:
+    # Off is an operational switch: the proxy skips the target until it is
+    # back on, so the pool may be edited around it meanwhile.
+    payload = replace(_payload({"pooled/glm": _pool("orca/b", "or/a")}), orcarouter_sidecar_enabled=False)
+
+    _validate_model_alias_pools(payload, stored={"pooled/glm": _pool("or/a", "orca/b")})
+
+
+def test_rejects_new_pool_target_on_a_turned_off_non_pool_capable_integration() -> None:
+    payload = replace(_payload({"pooled/glm": _pool("or/a", "cc/glm")}), claude_sidecar_enabled=False)
 
     with pytest.raises(ModelAliasPoolError) as exc_info:
         _validate_model_alias_pools(payload)
 
-    assert exc_info.value.target == "orca/b"
+    assert exc_info.value.target == "cc/glm"
+    assert "does not support pooling" in str(exc_info.value)
+
+
+def test_turned_off_integration_does_not_shadow_the_route_a_target_takes_now() -> None:
+    # CLIProxyAPI is off but claims the longer prefix ``or/cc``; the target
+    # routes to OpenRouter today, so it is judged by that route.
+    payload = replace(
+        _payload({"pooled/glm": _pool("or/cc-glm", "orca/b")}),
+        claude_sidecar_enabled=False,
+        claude_sidecar_model_prefixes=[SidecarPrefix(prefix="or/cc", strip=True)],
+    )
+
+    _validate_model_alias_pools(payload)
+
+
+def test_unchanged_stored_pool_is_not_re_judged_when_routing_changes() -> None:
+    # The pool was valid when saved; a later routing edit that leaves a target
+    # unroutable must not block unrelated saves. The proxy skips that target.
+    stored = {"pooled/glm": _pool("or/a", "gpt-5.4")}
+
+    _validate_model_alias_pools(_payload(dict(stored)), stored=stored)
+
+
+def test_changed_pool_is_judged_in_full() -> None:
+    stored = {"pooled/glm": _pool("or/a", "gpt-5.4")}
+
+    with pytest.raises(ModelAliasPoolError) as exc_info:
+        _validate_model_alias_pools(_payload({"pooled/glm": _pool("gpt-5.4", "or/a")}), stored=stored)
+
+    assert exc_info.value.target == "gpt-5.4"
+    assert "native Codex" in str(exc_info.value)
 
 
 def test_rejects_alias_as_target() -> None:
@@ -88,6 +146,37 @@ def test_rejects_alias_as_target() -> None:
 
     assert exc_info.value.alias == "b"
     assert exc_info.value.target == "A"
+    assert "cannot chain" in str(exc_info.value)
+
+
+def test_keeps_stored_legacy_chains_on_an_unrelated_save() -> None:
+    # Legacy single-step aliases could name another alias, or themselves; the
+    # migration carries them over and every save sends them back unchanged.
+    stored = {"fast": _pool("gpt-5.4"), "gpt-5.4": _pool("cc/claude"), "x": _pool("x")}
+
+    _validate_model_alias_pools(_payload(dict(stored)), stored=stored)
+
+
+def test_rejects_chain_created_by_editing_a_stored_chaining_alias() -> None:
+    stored = {"fast": _pool("gpt-5.4"), "gpt-5.4": _pool("cc/claude")}
+
+    with pytest.raises(ModelAliasPoolError) as exc_info:
+        _validate_model_alias_pools(
+            _payload({"fast": _pool("gpt-5.4", "or/x"), "gpt-5.4": _pool("cc/claude")}), stored=stored
+        )
+
+    assert exc_info.value.alias == "fast"
+    assert exc_info.value.target == "gpt-5.4"
+
+
+def test_rejects_chain_created_by_adding_an_alias_another_alias_targets() -> None:
+    stored = {"fast": _pool("or/x", "orca/y")}
+
+    with pytest.raises(ModelAliasPoolError) as exc_info:
+        _validate_model_alias_pools(_payload({"fast": _pool("or/x", "orca/y"), "or/x": _pool("orca/z")}), stored=stored)
+
+    assert exc_info.value.alias == "fast"
+    assert exc_info.value.target == "or/x"
     assert "cannot chain" in str(exc_info.value)
 
 
