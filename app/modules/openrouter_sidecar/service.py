@@ -140,8 +140,7 @@ def _classify_status(settings) -> tuple[OpenRouterSidecarStatus, str | None]:
 
 def _model_summaries(models) -> list[OpenRouterSidecarModelSummary]:
     return [
-        OpenRouterSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by)
-        for model in models
+        OpenRouterSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models
     ]
 
 

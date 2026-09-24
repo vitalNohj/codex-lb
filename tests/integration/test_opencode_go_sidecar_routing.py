@@ -984,9 +984,7 @@ async def test_a_truncated_responses_stream_is_not_reported_complete(
 
 
 @pytest.mark.asyncio
-async def test_a_complete_responses_stream_still_reports_completed(
-    async_client, opencode_go_enabled, fake_opencode_go
-):
+async def test_a_complete_responses_stream_still_reports_completed(async_client, opencode_go_enabled, fake_opencode_go):
     """Control: the guard must not relabel genuinely finished responses."""
 
     fake_opencode_go.stream_chunks = [

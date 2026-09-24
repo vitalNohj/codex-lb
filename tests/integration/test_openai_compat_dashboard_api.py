@@ -107,17 +107,13 @@ async def test_openai_compat_test_connection_records_error_statuses(
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_test_connection_records_healthy_without_bumping_version(
-    async_client, monkeypatch
-):
+async def test_openai_compat_test_connection_records_healthy_without_bumping_version(async_client, monkeypatch):
     monkeypatch.setattr(
         "app.modules.openai_compat.service.get_openai_compat_sidecar_client",
         _FakeOpenAICompatClient,
     )
     _FakeOpenAICompatClient.error = None
-    _FakeOpenAICompatClient.models = [
-        SidecarModel(id="Qwen/Qwen2.5-7B", created=123, owned_by="openai_compat")
-    ]
+    _FakeOpenAICompatClient.models = [SidecarModel(id="Qwen/Qwen2.5-7B", created=123, owned_by="openai_compat")]
     settings = await _put_endpoint(async_client, apiKey="vast-key")
     version = settings.json()["version"]
 

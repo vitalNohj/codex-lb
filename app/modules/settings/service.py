@@ -401,9 +401,7 @@ class SettingsService:
             nvidia_api_key_encrypted = None
         elif payload.nvidia_sidecar_api_key is not None:
             nvidia_api_key_value = payload.nvidia_sidecar_api_key.strip()
-            nvidia_api_key_encrypted = (
-                self._encryptor.encrypt(nvidia_api_key_value) if nvidia_api_key_value else None
-            )
+            nvidia_api_key_encrypted = self._encryptor.encrypt(nvidia_api_key_value) if nvidia_api_key_value else None
         orcarouter_api_key_encrypted = current.orcarouter_sidecar_api_key_encrypted
         if payload.orcarouter_sidecar_clear_api_key:
             orcarouter_api_key_encrypted = None
@@ -694,9 +692,7 @@ class SettingsService:
             nvidia_sidecar_enabled=row.nvidia_sidecar_enabled,
             nvidia_sidecar_base_url=row.nvidia_sidecar_base_url,
             nvidia_sidecar_api_key_configured=row.nvidia_sidecar_api_key_encrypted is not None,
-            nvidia_sidecar_model_prefixes=_parse_nvidia_sidecar_model_prefixes(
-                row.nvidia_sidecar_model_prefixes_json
-            ),
+            nvidia_sidecar_model_prefixes=_parse_nvidia_sidecar_model_prefixes(row.nvidia_sidecar_model_prefixes_json),
             nvidia_sidecar_full_models=_parse_sidecar_full_models(row.nvidia_sidecar_full_models_json),
             nvidia_sidecar_connect_timeout_seconds=row.nvidia_sidecar_connect_timeout_seconds,
             nvidia_sidecar_request_timeout_seconds=row.nvidia_sidecar_request_timeout_seconds,
@@ -1093,10 +1089,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
             ("OpenRouter", payload.openrouter_sidecar_model_prefixes),
             ("NVIDIA", payload.nvidia_sidecar_model_prefixes),
-            *(
-                (endpoint.name, endpoint.prefixes)
-                for endpoint in payload.openai_compat_endpoints
-            ),
+            *((endpoint.name, endpoint.prefixes) for endpoint in payload.openai_compat_endpoints),
             ("OrcaRouter", payload.orcarouter_sidecar_model_prefixes),
             ("OpenCode Go", payload.opencode_go_sidecar_model_prefixes),
             *omniroute_prefixes,
@@ -1108,10 +1101,7 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("CLIProxyAPI", payload.claude_sidecar_full_models),
             ("OpenRouter", payload.openrouter_sidecar_full_models),
             ("NVIDIA", payload.nvidia_sidecar_full_models),
-            *(
-                (endpoint.name, endpoint.full_models)
-                for endpoint in payload.openai_compat_endpoints
-            ),
+            *((endpoint.name, endpoint.full_models) for endpoint in payload.openai_compat_endpoints),
             ("OrcaRouter", payload.orcarouter_sidecar_full_models),
             ("OpenCode Go", payload.opencode_go_sidecar_full_models),
             *omniroute_full_models,

@@ -167,9 +167,7 @@ def _credits_402() -> tuple[int, str, dict[str, str]]:
 def scripted(monkeypatch):
     def _install(script):
         http = _ScriptedHttpSession(script)
-        monkeypatch.setattr(
-            "app.core.clients.openrouter_sidecar.lease_http_session", lambda: _FakeLease(http)
-        )
+        monkeypatch.setattr("app.core.clients.openrouter_sidecar.lease_http_session", lambda: _FakeLease(http))
         return http
 
     monkeypatch.setattr(runner_module, "_WAIT_SLICE_SECONDS", 0.001)
@@ -367,10 +365,14 @@ async def test_an_explicit_shared_limit_pauses_the_whole_group_once(async_client
     # attempt discovering the same provider-wide block.
     async with SessionLocal() as session:
         queued = (
-            await session.execute(
-                select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.state == "queued")
+            (
+                await session.execute(
+                    select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.state == "queued")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert all(item.next_attempt_at is not None for item in queued)
     assert http.posted.count("m/b:free") == 0, "untried models were not pushed through the block"
 
@@ -629,9 +631,7 @@ async def test_a_model_scoped_wait_parks_the_offending_item_until_it_elapses(asy
         async with SessionLocal() as session:
             probed = (
                 await session.execute(
-                    select(FreeModelDiscoveryRunItem).where(
-                        FreeModelDiscoveryRunItem.model_id == "m/limited:free"
-                    )
+                    select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.model_id == "m/limited:free")
                 )
             ).scalar_one()
             if probed.attempts > 0:
@@ -641,9 +641,7 @@ async def test_a_model_scoped_wait_parks_the_offending_item_until_it_elapses(asy
     async with SessionLocal() as session:
         item = (
             await session.execute(
-                select(FreeModelDiscoveryRunItem).where(
-                    FreeModelDiscoveryRunItem.model_id == "m/limited:free"
-                )
+                select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.model_id == "m/limited:free")
             )
         ).scalar_one()
     assert item.attempts == 1
@@ -704,9 +702,7 @@ async def test_a_model_scoped_wait_does_not_move_the_shared_pacer(async_client, 
         }
     )
     await _enable_openrouter()
-    run_id = await _create_run(
-        ["m/limited:free", "m/ok:free"], max_attempts=3, floor=20.0, cap=600.0
-    )
+    run_id = await _create_run(["m/limited:free", "m/ok:free"], max_attempts=3, floor=20.0, cap=600.0)
 
     captured: list[float] = []
     original = FreeModelDiscoveryRunner._apply_result
@@ -732,6 +728,5 @@ async def test_a_model_scoped_wait_does_not_move_the_shared_pacer(async_client, 
     # The shared pacer stays at the floor: this rejection was one model's, and
     # the vendor's wait is carried by that item's own next_attempt_at.
     assert captured[0] == 20.0, (
-        f"model-scoped limit moved the shared pacer to {captured[0]}s, "
-        "delaying every unrelated model"
+        f"model-scoped limit moved the shared pacer to {captured[0]}s, delaying every unrelated model"
     )

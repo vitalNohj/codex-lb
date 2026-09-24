@@ -86,9 +86,7 @@ def test_a_character_split_across_chunks_is_reassembled(events, split_marker: by
     loses the usage the reservation settles against.
     """
 
-    payload = 'data: {"choices":[{"delta":{"content":"café 日本"}}],"usage":{"prompt_tokens":4}}\n\n'.encode(
-        "utf-8"
-    )
+    payload = 'data: {"choices":[{"delta":{"content":"café 日本"}}],"usage":{"prompt_tokens":4}}\n\n'.encode("utf-8")
     cut = payload.index(split_marker) + 1
 
     emitted = events(payload[:cut], payload[cut:])
@@ -145,9 +143,7 @@ def test_a_crlf_framed_error_before_done_is_still_seen(events) -> None:
     framing bug for any CRLF upstream.
     """
 
-    emitted = events(
-        b'data: {"error":{"code":"upstream_oom","message":"out of memory"}}\r\n\r\ndata: [DONE]\r\n\r\n'
-    )
+    emitted = events(b'data: {"error":{"code":"upstream_oom","message":"out of memory"}}\r\n\r\ndata: [DONE]\r\n\r\n')
 
     assert emitted[0]["error"]["code"] == "upstream_oom"
     assert emitted[-1] == "[DONE]"

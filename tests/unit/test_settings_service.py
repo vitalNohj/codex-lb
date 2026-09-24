@@ -490,9 +490,7 @@ def test_sidecar_route_validator_rejects_two_openai_compat_endpoints_sharing_a_f
 def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_prefixes() -> None:
     payload = _settings_update(
         nvidia_prefixes=[SidecarPrefix(prefix="vast/", strip=True)],
-        openai_compat_endpoints=_openai_compat_endpoints(
-            prefixes=[SidecarPrefix(prefix="vast/", strip=True)]
-        ),
+        openai_compat_endpoints=_openai_compat_endpoints(prefixes=[SidecarPrefix(prefix="vast/", strip=True)]),
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:

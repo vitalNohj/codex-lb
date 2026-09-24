@@ -1237,9 +1237,7 @@ async def update_settings(
                 ),
                 nvidia_sidecar_base_url=payload.nvidia_sidecar_base_url or current.nvidia_sidecar_base_url,
                 nvidia_sidecar_api_key=(
-                    payload.nvidia_sidecar_api_key
-                    if "nvidia_sidecar_api_key" in payload.model_fields_set
-                    else None
+                    payload.nvidia_sidecar_api_key if "nvidia_sidecar_api_key" in payload.model_fields_set else None
                 ),
                 nvidia_sidecar_clear_api_key=payload.nvidia_sidecar_clear_api_key is True,
                 nvidia_sidecar_model_prefixes=(

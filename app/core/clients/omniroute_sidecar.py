@@ -88,9 +88,7 @@ class OmniRouteSidecarClient:
         except OmniRouteSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise OmniRouteSidecarUnavailableError(
-                _transport_message(exc, "fetch OmniRoute sidecar models")
-            ) from exc
+            raise OmniRouteSidecarUnavailableError(_transport_message(exc, "fetch OmniRoute sidecar models")) from exc
 
         if not is_json_mapping(data):
             raise OmniRouteSidecarError(502, "Invalid response format from OmniRoute models API", body=data)

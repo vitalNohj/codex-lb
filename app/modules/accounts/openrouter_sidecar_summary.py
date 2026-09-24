@@ -10,16 +10,12 @@ def build_openrouter_sidecar_summary(
     request_usage: AccountRequestUsage | None,
 ) -> AccountSummary | None:
     """Return a synthetic AccountSummary for the OpenRouter sidecar, or None when hidden."""
-    configured = (
-        settings.openrouter_sidecar_api_key_encrypted is not None
-        or bool(settings.openrouter_sidecar_base_url)
-    )
+    configured = settings.openrouter_sidecar_api_key_encrypted is not None or bool(settings.openrouter_sidecar_base_url)
     if not configured and not settings.openrouter_sidecar_enabled:
         return None
 
     enabled_and_configured = (
-        settings.openrouter_sidecar_enabled
-        and settings.openrouter_sidecar_api_key_encrypted is not None
+        settings.openrouter_sidecar_enabled and settings.openrouter_sidecar_api_key_encrypted is not None
     )
     health_status = resolve_sidecar_health_status(
         enabled=bool(settings.openrouter_sidecar_enabled),

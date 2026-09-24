@@ -373,6 +373,8 @@ async def test_dashboard_overview_sidecar_estimated_usage_does_not_change_aggreg
     sidecar = next(account for account in payload["accounts"] if account["accountId"] == "claude-sidecar")
     assert sidecar["usage"]["primaryRemainingPercent"] == 75.0
     assert payload["summary"]["primaryWindow"]["capacityCredits"] in (None, 0, pytest.approx(0.0))
+
+
 async def test_conversation_list_agrees_with_dashboard_activity_window(
     async_client,
     db_setup,

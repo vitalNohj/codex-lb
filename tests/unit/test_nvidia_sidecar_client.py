@@ -272,9 +272,7 @@ async def test_client_cache_eviction_drops_the_previous_credential_and_models(mo
     session.get_response = _FakeResponse(200, '{"data":[{"id":"nvidia/nemotron-3.5-lightning-30b-a3b"}]}')
 
     assert rotated.config.api_key == "new-key"
-    assert [model.id for model in await rotated.list_models_cached()] == [
-        "nvidia/nemotron-3.5-lightning-30b-a3b"
-    ]
+    assert [model.id for model in await rotated.list_models_cached()] == ["nvidia/nemotron-3.5-lightning-30b-a3b"]
     assert session.last_headers["Authorization"] == "Bearer new-key"
     reset_nvidia_sidecar_client_cache()
     assert get_nvidia_sidecar_client(_config(api_key="new-key")) is not rotated

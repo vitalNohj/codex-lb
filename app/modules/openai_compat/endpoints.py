@@ -134,9 +134,7 @@ def dump_openai_compat_endpoints(endpoints: tuple[StoredOpenAICompatEndpoint, ..
                 "enabled": endpoint.enabled,
                 "base_url": endpoint.base_url,
                 "api_key_encrypted": endpoint.api_key_encrypted_b64,
-                "model_prefixes": [
-                    {"prefix": prefix.prefix, "strip": prefix.strip} for prefix in endpoint.prefixes
-                ],
+                "model_prefixes": [{"prefix": prefix.prefix, "strip": prefix.strip} for prefix in endpoint.prefixes],
                 "full_models": list(endpoint.full_models),
                 "connect_timeout_seconds": endpoint.connect_timeout_seconds,
                 "request_timeout_seconds": endpoint.request_timeout_seconds,

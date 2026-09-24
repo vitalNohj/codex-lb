@@ -278,9 +278,7 @@ def classify_scope(evidence: RateLimitEvidence) -> LimitScope:
     return "unknown"
 
 
-def describe_wait(
-    scope: LimitScope, evidence: RateLimitEvidence, *, next_attempt_at: datetime | None = None
-) -> str:
+def describe_wait(scope: LimitScope, evidence: RateLimitEvidence, *, next_attempt_at: datetime | None = None) -> str:
     """One short, operator-facing sentence. Never invents a countdown."""
 
     if scope == "shared":

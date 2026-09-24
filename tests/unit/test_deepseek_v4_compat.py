@@ -492,9 +492,7 @@ def test_recorder_does_not_commit_on_interrupt() -> None:
     )
     # Reasoning + tool-call finish but no [DONE] (interrupted upstream).
     recorder.record(_sse(_chunk(reasoning="partial")))
-    recorder.record(
-        _sse(_chunk(tool_call={"index": 0, "id": "c", "function": {"name": "f", "arguments": "{}"}}))
-    )
+    recorder.record(_sse(_chunk(tool_call={"index": 0, "id": "c", "function": {"name": "f", "arguments": "{}"}})))
     recorder.record(_sse(_chunk(finish="tool_calls")))
     recorder.commit()
     # No [DONE] => no commit => re-injection finds nothing and leaves body intact.

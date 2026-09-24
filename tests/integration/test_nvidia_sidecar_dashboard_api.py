@@ -102,9 +102,7 @@ async def test_nvidia_sidecar_test_connection_records_healthy_and_lists_models(a
         _FakeNVIDIAClient,
     )
     _FakeNVIDIAClient.error = None
-    _FakeNVIDIAClient.models = [
-        SidecarModel(id="z-ai/glm-5.3", created=123, owned_by="nvidia")
-    ]
+    _FakeNVIDIAClient.models = [SidecarModel(id="z-ai/glm-5.3", created=123, owned_by="nvidia")]
     response = await async_client.put(
         "/api/settings",
         json={

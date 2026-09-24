@@ -103,9 +103,7 @@ def redact_provider_text(message: str, *, api_key: str | None) -> str:
     return sanitize_orcarouter_message(message, api_key=api_key)
 
 
-async def probe_model(
-    client: ChatCompletionClient, model_id: str, *, api_key: str | None = None
-) -> ProbeResult:
+async def probe_model(client: ChatCompletionClient, model_id: str, *, api_key: str | None = None) -> ProbeResult:
     """Probe one model. ``api_key`` is the provider credential whose appearance
     in upstream error text must be redacted before it is persisted."""
 
@@ -119,16 +117,12 @@ async def probe_model(
             outcome=_clip(redact_provider_text(f"transport: {exc.message}", api_key=api_key)),
         )
     except (OpenRouterSidecarError, OrcaRouterSidecarError) as exc:
-        evidence = evidence_from_response(
-            headers=getattr(exc, "rate_limit_headers", None), body=exc.body
-        )
+        evidence = evidence_from_response(headers=getattr(exc, "rate_limit_headers", None), body=exc.body)
         scope = classify_scope(evidence)
         return ProbeResult(
             verdict="inconclusive",
             http_status=exc.status_code,
-            outcome=_clip(
-                redact_provider_text(f"http {exc.status_code}: {exc.message}", api_key=api_key)
-            ),
+            outcome=_clip(redact_provider_text(f"http {exc.status_code}: {exc.message}", api_key=api_key)),
             retry_after_seconds=evidence.retry_after_seconds,
             limit_scope=scope,
             evidence=evidence,

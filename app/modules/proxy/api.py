@@ -5093,9 +5093,7 @@ async def v1_chat_completions(
                 wire_model=decision.wire_model,
             )
         if is_openai_compat_provider(decision.provider):
-            openai_compat_config = openai_compat_config_by_provider(
-                openai_compat_configs, decision.provider
-            )
+            openai_compat_config = openai_compat_config_by_provider(openai_compat_configs, decision.provider)
             assert openai_compat_config is not None
             return await proxy_chat_to_openai_compat(
                 request,

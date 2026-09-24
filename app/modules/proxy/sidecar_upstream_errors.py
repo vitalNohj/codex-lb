@@ -28,9 +28,7 @@ _T = TypeVar("_T")
 SIDECAR_UPSTREAM_AUTH_STATUS_CODES = frozenset({401, 403})
 SIDECAR_UPSTREAM_AUTH_RETRY_AFTER_SECONDS = 60
 SIDECAR_UPSTREAM_UNAVAILABLE_CODE = "sidecar_upstream_unavailable"
-SIDECAR_UPSTREAM_UNAVAILABLE_MESSAGE = (
-    "Upstream provider temporarily unavailable; retry later."
-)
+SIDECAR_UPSTREAM_UNAVAILABLE_MESSAGE = "Upstream provider temporarily unavailable; retry later."
 
 
 @dataclass(frozen=True, slots=True)

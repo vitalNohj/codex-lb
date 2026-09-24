@@ -10,17 +10,11 @@ def build_nvidia_sidecar_summary(
     request_usage: AccountRequestUsage | None,
 ) -> AccountSummary | None:
     """Return a synthetic AccountSummary for the NVIDIA sidecar, or None when hidden."""
-    configured = (
-        settings.nvidia_sidecar_api_key_encrypted is not None
-        or bool(settings.nvidia_sidecar_base_url)
-    )
+    configured = settings.nvidia_sidecar_api_key_encrypted is not None or bool(settings.nvidia_sidecar_base_url)
     if not configured and not settings.nvidia_sidecar_enabled:
         return None
 
-    enabled_and_configured = (
-        settings.nvidia_sidecar_enabled
-        and settings.nvidia_sidecar_api_key_encrypted is not None
-    )
+    enabled_and_configured = settings.nvidia_sidecar_enabled and settings.nvidia_sidecar_api_key_encrypted is not None
     health_status = resolve_sidecar_health_status(
         enabled=bool(settings.nvidia_sidecar_enabled),
         api_key_configured=settings.nvidia_sidecar_api_key_encrypted is not None,

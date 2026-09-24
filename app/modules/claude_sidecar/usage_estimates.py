@@ -198,9 +198,7 @@ def _used_tokens(
     if window_start is None or window_end is None:
         return 0
     return sum(
-        max(0, int(event.total_tokens))
-        for event in events
-        if window_start <= _utc(event.timestamp) < window_end
+        max(0, int(event.total_tokens)) for event in events if window_start <= _utc(event.timestamp) < window_end
     )
 
 

@@ -92,9 +92,7 @@ class NvidiaSidecarService:
         status, _message = _classify_static_status(settings)
         if status != "healthy":
             return NvidiaSidecarModelsResponse(models=[])
-        models = await get_nvidia_sidecar_client(
-            nvidia_sidecar_config_from_settings(settings)
-        ).list_models_cached()
+        models = await get_nvidia_sidecar_client(nvidia_sidecar_config_from_settings(settings)).list_models_cached()
         return NvidiaSidecarModelsResponse(models=_model_summaries(models))
 
     async def _record_test_result(
@@ -143,10 +141,7 @@ def _classify_status(settings) -> tuple[NvidiaSidecarStatus, str | None]:
 
 
 def _model_summaries(models) -> list[NvidiaSidecarModelSummary]:
-    return [
-        NvidiaSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by)
-        for model in models
-    ]
+    return [NvidiaSidecarModelSummary(id=model.id, created=model.created, owned_by=model.owned_by) for model in models]
 
 
 def _sanitize_message(message: str, *, api_key: str | None = None) -> str:

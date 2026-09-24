@@ -96,9 +96,7 @@ async def test_openrouter_sidecar_test_connection_records_error_statuses(
 async def test_openrouter_sidecar_test_connection_records_healthy_and_lists_models(async_client, monkeypatch):
     monkeypatch.setattr("app.modules.openrouter_sidecar.service.OpenRouterSidecarClient", _FakeOpenRouterClient)
     _FakeOpenRouterClient.error = None
-    _FakeOpenRouterClient.models = [
-        SidecarModel(id="deepseek/deepseek-chat", created=123, owned_by="deepseek")
-    ]
+    _FakeOpenRouterClient.models = [SidecarModel(id="deepseek/deepseek-chat", created=123, owned_by="deepseek")]
     response = await async_client.put(
         "/api/settings",
         json={

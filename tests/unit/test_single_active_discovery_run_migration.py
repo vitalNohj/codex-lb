@@ -22,9 +22,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-migration = import_module(
-    "app.db.alembic.versions.20260914_020000_single_active_free_model_discovery_run"
-)
+migration = import_module("app.db.alembic.versions.20260914_020000_single_active_free_model_discovery_run")
 
 pytestmark = pytest.mark.unit
 

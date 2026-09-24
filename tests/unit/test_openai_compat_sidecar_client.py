@@ -131,9 +131,7 @@ async def test_list_models_omits_authorization_when_no_key(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_list_models_sends_bearer_key_when_present(monkeypatch) -> None:
-    session = _FakeSession(
-        get_response=_FakeResponse(200, '{"object":"list","data":[{"id":"Qwen/Qwen2.5-7B"}]}')
-    )
+    session = _FakeSession(get_response=_FakeResponse(200, '{"object":"list","data":[{"id":"Qwen/Qwen2.5-7B"}]}'))
     monkeypatch.setattr("app.core.clients.openai_compat_sidecar.lease_http_session", lambda: _Lease(session))
     client = OpenAICompatSidecarClient(_config(api_key="vast-key"))
 
@@ -254,15 +252,11 @@ def test_client_cache_returns_the_same_instance_for_an_unchanged_config() -> Non
 def test_client_cache_keeps_distinct_endpoints_independent() -> None:
     first = get_openai_compat_sidecar_client(_config(endpoint_id=ENDPOINT_ID, api_key="one"))
     other_id = "3d0c9a4b-2f5e-4c8b-8d22-8b1f5e3c2d1b"
-    second = get_openai_compat_sidecar_client(
-        _config(endpoint_id=other_id, name="vLLM", api_key="two")
-    )
+    second = get_openai_compat_sidecar_client(_config(endpoint_id=other_id, name="vLLM", api_key="two"))
 
     assert first is not second
     assert get_openai_compat_sidecar_client(_config(endpoint_id=ENDPOINT_ID, api_key="one")) is first
-    assert get_openai_compat_sidecar_client(
-        _config(endpoint_id=other_id, name="vLLM", api_key="two")
-    ) is second
+    assert get_openai_compat_sidecar_client(_config(endpoint_id=other_id, name="vLLM", api_key="two")) is second
 
 
 @pytest.mark.parametrize(
