@@ -124,6 +124,7 @@ class _FakeModel:
     id: str
     created: int | None = 123
     owned_by: str | None = None
+    raw: dict | None = None
 
 
 class _FakeSidecarClient:
@@ -953,6 +954,54 @@ async def test_strip_prefix_alias_is_listed_when_dispatch_reaches_that_model(
 
     assert response.status_code == 200
     assert fake_sidecar.chat_payloads[-1]["model"] == "claude-opus-5-5"
+
+
+@pytest.mark.asyncio
+async def test_sidecar_models_advertise_their_real_context_window(
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    """``/v1/models`` reports the window dispatch already enforces for the model.
+
+    Clients size their own compaction from ``context_length`` (Cursor), and
+    reviewers size their input from it (nohjbot). Advertising 200k for Opus 5.5
+    made both treat a 1M-window model as a 200k one. A strip-prefix alias
+    (``cc/claude-opus-5-5``) and a dated id resolve to the same canonical model
+    and advertise the same window; a model with no known window keeps the
+    200k default.
+    """
+
+    config = replace(
+        fake_sidecar.config,
+        full_models=("claude-opus-5-5", "claude-sonnet-4-5-20250929"),
+        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cc/", strip=True)),
+    )
+    fake_sidecar.config = config
+    fake_sidecar.models = [
+        _FakeModel("claude-opus-5-5"),
+        _FakeModel("claude-sonnet-4-5-20250929"),
+        _FakeModel("claude-unreleased-9"),
+    ]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+    listed = await lifespan_free_client.get("/v1/models")
+
+    assert listed.status_code == 200
+    entries = {item["id"]: item for item in listed.json()["data"]}
+    expected = {
+        "claude-opus-5-5": 1_000_000,
+        "cc/claude-opus-5-5": 1_000_000,
+        "claude-sonnet-4-5-20250929": 200_000,
+        "claude-unreleased-9": 200_000,
+    }
+    for model_id, window in expected.items():
+        entry = entries[model_id]
+        assert entry["context_length"] == window, model_id
+        assert entry["contextLength"] == window, model_id
+        assert entry["capabilities"]["context_length"] == window, model_id
 
 
 @pytest.mark.asyncio

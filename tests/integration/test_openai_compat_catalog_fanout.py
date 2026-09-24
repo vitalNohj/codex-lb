@@ -43,6 +43,7 @@ class _FakeModel:
     id: str
     created: int | None = 123
     owned_by: str | None = "openai_compat"
+    raw: dict | None = None
 
 
 class _ConcurrencyTrackingClient:
