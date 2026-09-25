@@ -4,8 +4,9 @@ import ipaddress
 import os
 import socket
 import time
+from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 import httpx
@@ -41,14 +42,19 @@ from app.modules.proxy.account_cache import (
     get_account_selection_cache,
     propagate_account_routing_change,
 )
+from app.modules.proxy.alias_pool_attempts import get_alias_pool_cooldowns
 from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
+from app.modules.settings.model_alias_pools import ModelAliasPool
 from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
     AccountProxyBindingResponse,
     AdditionalQuotaPolicy,
+    AliasPoolsHealthResponse,
+    AliasPoolTargetHealth,
     CustomAliasCatalogEntrySchema,
     DashboardSettingsResponse,
     DashboardSettingsUpdateRequest,
+    ModelAliasPoolSchema,
     OpenAICompatEndpointResponse,
     OpenAICompatEndpointUpdate,
     RuntimeConnectAddressResponse,
@@ -63,6 +69,7 @@ from app.modules.settings.schemas import (
 from app.modules.settings.service import (
     ClaudeSidecarAuthPlanData,
     DashboardSettingsUpdateData,
+    ModelAliasPoolError,
     SidecarRoutingConflictError,
 )
 from app.modules.usage.additional_quota_keys import (
@@ -140,6 +147,14 @@ def _custom_alias_catalog_from_service(
     }
 
 
+def _model_aliases_from_service(pools: Mapping[str, ModelAliasPool]) -> dict[str, ModelAliasPoolSchema]:
+    return {alias: ModelAliasPoolSchema(targets=list(pool.targets)) for alias, pool in pools.items()}
+
+
+def _model_aliases_to_service(pools: Mapping[str, ModelAliasPoolSchema]) -> dict[str, ModelAliasPool]:
+    return {alias: ModelAliasPool(targets=tuple(pool.targets)) for alias, pool in pools.items()}
+
+
 router = APIRouter(
     prefix="/api/settings",
     tags=["dashboard"],
@@ -188,7 +203,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         sticky_reallocation_primary_budget_threshold_pct=settings.sticky_reallocation_primary_budget_threshold_pct,
         sticky_reallocation_secondary_budget_threshold_pct=settings.sticky_reallocation_secondary_budget_threshold_pct,
         additional_quota_routing_policies=settings.additional_quota_routing_policies,
-        model_aliases=settings.model_aliases,
+        model_aliases=_model_aliases_from_service(settings.model_aliases),
         custom_alias_catalog=_custom_alias_catalog_from_service(settings.custom_alias_catalog),
         additional_quota_policies=additional_quota_policies,
         warmup_model=settings.warmup_model,
@@ -488,6 +503,35 @@ async def get_settings(
 @router.get("/runtime/connect-address", response_model=RuntimeConnectAddressResponse)
 async def get_runtime_connect_address(request: Request) -> RuntimeConnectAddressResponse:
     return RuntimeConnectAddressResponse(connect_address=_resolve_runtime_connect_address(request))
+
+
+@router.get("/alias-pools/health", response_model=AliasPoolsHealthResponse)
+async def get_alias_pools_health(
+    context: SettingsContext = Depends(get_settings_context),
+) -> AliasPoolsHealthResponse:
+    """Per-target failover state for every configured alias, from this replica.
+
+    Reads the process-local cooldown registry. Entries for targets that are no
+    longer configured anywhere are dropped on the way, so a deleted alias does
+    not linger as a stale cooldown.
+    """
+
+    settings = await context.service.get_settings()
+    registry = get_alias_pool_cooldowns()
+    configured_targets = {target for pool in settings.model_aliases.values() for target in pool.targets}
+    registry.retain(configured_targets)
+    aliases: dict[str, dict[str, AliasPoolTargetHealth]] = {}
+    for alias, pool in settings.model_aliases.items():
+        aliases[alias] = {}
+        for target in pool.targets:
+            health = registry.health(target)
+            aliases[alias][target] = AliasPoolTargetHealth(
+                state=health.state,
+                until=health.until,
+                last_status=health.last_status,
+                last_error=health.last_error,
+            )
+    return AliasPoolsHealthResponse(aliases=aliases)
 
 
 @router.get("/upstream-proxy", response_model=UpstreamProxyAdminResponse)
@@ -916,7 +960,11 @@ async def update_settings(
         single_account_id = (
             payload.single_account_id if "single_account_id" in payload.model_fields_set else current.single_account_id
         )
-        resolved_model_aliases = payload.model_aliases if payload.model_aliases is not None else current.model_aliases
+        resolved_model_aliases = (
+            _model_aliases_to_service(cast(dict[str, ModelAliasPoolSchema], payload.model_aliases))
+            if payload.model_aliases is not None
+            else current.model_aliases
+        )
         if payload.custom_alias_catalog is not None:
             resolved_custom_alias_catalog = _custom_alias_catalog_to_service(payload.custom_alias_catalog)
         else:
@@ -1498,6 +1546,16 @@ async def update_settings(
                 "kind": conflict.kind,
                 "owning_integration": conflict.owner,
                 "challenging_integration": conflict.challenger,
+            },
+        ) from exc
+    except ModelAliasPoolError as exc:
+        raise DashboardBadRequestError(
+            str(exc),
+            code="model_alias_pool_invalid",
+            details={
+                "code": "model_alias_pool_invalid",
+                "alias": exc.alias,
+                "target": exc.target,
             },
         ) from exc
     except ValueError as exc:

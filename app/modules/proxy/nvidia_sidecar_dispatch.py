@@ -12,7 +12,7 @@ from typing import TypeVar, cast
 
 import anyio
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from app.core.clients.nvidia_sidecar import (
     NVIDIA_PRICING_PROVIDER,
@@ -29,6 +29,7 @@ from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.stream_close import ClosingStreamingResponse
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -198,7 +199,7 @@ async def proxy_chat_to_nvidia(
                 payload,
                 source="nvidia_sidecar_stream",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             inject_sse_keepalives(
                 stream,
                 sse_keepalive_interval_seconds,

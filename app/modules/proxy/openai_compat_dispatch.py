@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import json
 import logging
-import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Mapping
+from contextlib import aclosing
 from dataclasses import dataclass
+from functools import partial
 from typing import TypeVar, cast
 
 import anyio
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from app.core.clients.openai_compat_sidecar import (
     OpenAICompatSidecarClient,
@@ -26,9 +26,13 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
+from app.core.utils.cancellation import complete_despite_cancellation
+from app.core.utils.client_disconnect import ClientDisconnected
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
+from app.core.utils.stream_close import ClosingStreamingResponse
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -36,6 +40,11 @@ from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsage
 from app.modules.openai_compat.endpoints import (
     decrypt_endpoint_api_key,
     parse_openai_compat_endpoints,
+)
+from app.modules.proxy.alias_pool_attempts import (
+    ChatRequestAttribution,
+    PoolTargetFailed,
+    retryable_failure_from_error,
 )
 from app.modules.proxy.claude_sidecar_dispatch import (
     SidecarUsage,
@@ -72,20 +81,16 @@ from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
 from app.modules.proxy.sidecar_upstream_errors import (
     call_with_sidecar_provider_retry,
+    client_disconnected_response,
     client_facing_sidecar_error,
-    log_sidecar_provider_retry,
-    retry_sidecar_provider_failure,
+    open_sidecar_stream_for_client,
+    relay_sidecar_stream,
 )
 from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
-
-#: An SSE event ends at two consecutive line endings, in any combination of the
-#: three the spec permits. Mirrors ``_SSE_LINE_BOUNDARY`` in
-#: ``app/core/utils/sse.py``, applied twice.
-_SSE_EVENT_BOUNDARY = re.compile(r"(?:\r\n|\r|\n){2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +192,21 @@ async def proxy_chat_to_openai_compat(
     client: OpenAICompatSidecarClient,
     cursor_compat: bool = False,
     wire_model: str | None = None,
+    attribution: ChatRequestAttribution | None = None,
+    allow_failover: bool = False,
 ) -> Response:
+    """Serve one chat request through a generic OpenAI-compatible endpoint.
+
+    Same contract as ``proxy_chat_to_orcarouter``: ``effective_model`` is the
+    dispatched model, ``attribution`` labels the log row (defaults to it), and
+    ``allow_failover`` turns a retryable open-time failure into
+    :class:`PoolTargetFailed` before anything is settled or logged. Streaming
+    opens the upstream before the ``StreamingResponse`` exists, and a provider
+    failure before any upstream byte is relayed is sent once more to the same
+    target before the pool loop sees it.
+    """
+
+    attribution = attribution or ChatRequestAttribution.direct(effective_model)
     sidecar_payload = build_openai_compat_chat_payload(payload, wire_model or effective_model, client.config)
     provider_id = client.config.provider_id
     endpoint_name = client.config.name
@@ -200,11 +219,48 @@ async def proxy_chat_to_openai_compat(
     requested_at = time.monotonic()
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
+        open_stream = partial(client.stream_chat_completion, sidecar_payload.body)
+        try:
+            opened = await open_sidecar_stream_for_client(
+                request.receive, open_stream, provider=endpoint_name, model=effective_model
+            )
+        except (ClientDisconnected, asyncio.CancelledError) as exc:
+            await complete_despite_cancellation(
+                _abandon_openai_compat_request(
+                    reservation,
+                    api_key=api_key,
+                    model=effective_model,
+                    attribution=attribution,
+                    started_at=requested_at,
+                    client=client,
+                    reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                    requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+                )
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return client_disconnected_response()
+        except OpenAICompatSidecarError as exc:
+            return await _openai_compat_open_error_response(
+                exc,
+                payload=payload,
+                effective_model=effective_model,
+                attribution=attribution,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                client=client,
+                cursor_compat=cursor_compat,
+                allow_failover=allow_failover,
+                sidecar_payload=sidecar_payload,
+                started_at=requested_at,
+            )
         stream: AsyncIterator[bytes] = _openai_compat_stream_iterator(
-            sidecar_payload.body,
+            relay_sidecar_stream(opened, open_stream, provider=endpoint_name, model=effective_model),
             api_key=api_key,
             reservation=reservation,
             model=effective_model,
+            attribution=attribution,
             started_at=requested_at,
             client=client,
             reasoning_effort=sidecar_payload.effective_reasoning_effort,
@@ -218,7 +274,7 @@ async def proxy_chat_to_openai_compat(
                 payload,
                 source="openai_compat_stream",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             inject_sse_keepalives(
                 stream,
                 sse_keepalive_interval_seconds,
@@ -233,36 +289,119 @@ async def proxy_chat_to_openai_compat(
             provider=endpoint_name,
             model=effective_model,
         )
-    except OpenAICompatSidecarUnavailableError:
-        await _release_openai_compat_reservation(reservation, api_key=api_key)
-        await _log_openai_compat_request(
-            api_key=api_key,
-            model=effective_model,
-            started_at=requested_at,
-            status="error",
-            error_code="openai_compat_unavailable",
-            error_message=f"{endpoint_name} unavailable",
-            reasoning_effort=sidecar_payload.effective_reasoning_effort,
-            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
-            client=client,
-        )
-        return JSONResponse(
-            status_code=503,
-            content=openai_error(
-                "openai_compat_unavailable",
-                f"{endpoint_name} unavailable",
-                error_type="upstream_error",
-            ),
-            headers=dict(rate_limit_headers),
-        )
     except OpenAICompatSidecarError as exc:
-        # A cursor-compat context-length response is turned into a synthetic
-        # SUCCESS for the client, so it must not fall through to the error
-        # settlement below: that would log it as an error and finalize a
-        # reservation the client was never charged for.
-        if cursor_compat and is_sidecar_context_length_error(body=exc.body, message=exc.message):
+        return await _openai_compat_open_error_response(
+            exc,
+            payload=payload,
+            effective_model=effective_model,
+            attribution=attribution,
+            api_key=api_key,
+            reservation=reservation,
+            rate_limit_headers=rate_limit_headers,
+            client=client,
+            cursor_compat=cursor_compat,
+            allow_failover=allow_failover,
+            sidecar_payload=sidecar_payload,
+            started_at=requested_at,
+        )
+
+    usage = extract_usage(response_body)
+    billed_cost_usd = extract_billed_cost(response_body)
+    cost = await _openai_compat_request_cost(
+        effective_model, usage, billed_cost_usd=billed_cost_usd, provider=provider_id
+    )
+    await _finalize_or_release_openai_compat_reservation(
+        reservation,
+        api_key=api_key,
+        model=effective_model,
+        usage=usage,
+        cost=cost,
+    )
+    await _log_openai_compat_request(
+        api_key=api_key,
+        model=effective_model,
+        attribution=attribution,
+        started_at=requested_at,
+        status="success",
+        usage=usage,
+        reasoning_effort=sidecar_payload.effective_reasoning_effort,
+        requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        cost=cost,
+        client=client,
+    )
+    if deepseek_scope is not None:
+        deepseek_capture_non_streaming(deepseek_scope, response_body)
+    if cursor_compat and is_json_mapping(response_body):
+        response_body = apply_cursor_usage_fallback_to_response(
+            cast(dict[str, JsonValue], response_body),
+            payload,
+            source="openai_compat_non_stream",
+        )
+    return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
+
+
+async def _openai_compat_open_error_response(
+    exc: OpenAICompatSidecarError,
+    *,
+    payload: ChatCompletionsRequest,
+    effective_model: str,
+    attribution: ChatRequestAttribution,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    rate_limit_headers: Mapping[str, str],
+    client: OpenAICompatSidecarClient,
+    cursor_compat: bool,
+    allow_failover: bool,
+    sidecar_payload: OpenAICompatChatPayload,
+    started_at: float,
+) -> Response:
+    """Turn an upstream failure that happened before any client byte into a response.
+
+    Shared by the streaming open and the non-streaming call. With failover
+    allowed and a retryable failure, the settle/log/render work is deferred
+    into :class:`PoolTargetFailed` so a later target can take the request
+    without this attempt leaving a log row or touching the reservation.
+    """
+
+    provider_id = client.config.provider_id
+    endpoint_name = client.config.name
+    # A cursor-compat context-length response is turned into a synthetic
+    # SUCCESS for the client, so it must not fall through to the error
+    # settlement below: that would log it as an error and finalize a
+    # reservation the client was never charged for. It also wins over
+    # failover: another target would hit the same limit.
+    if (
+        cursor_compat
+        and not isinstance(exc, OpenAICompatSidecarUnavailableError)
+        and is_sidecar_context_length_error(body=exc.body, message=exc.message)
+    ):
+        await _release_openai_compat_reservation(reservation, api_key=api_key)
+        return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
+
+    async def render() -> Response:
+        if isinstance(exc, OpenAICompatSidecarUnavailableError):
             await _release_openai_compat_reservation(reservation, api_key=api_key)
-            return cursor_context_limit_usage_completion(payload, headers=dict(rate_limit_headers))
+            await _log_openai_compat_request(
+                api_key=api_key,
+                model=effective_model,
+                attribution=attribution,
+                started_at=started_at,
+                status="error",
+                error_code="openai_compat_unavailable",
+                error_message=f"{endpoint_name} unavailable",
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+                client=client,
+            )
+            return JSONResponse(
+                status_code=503,
+                content=openai_error(
+                    "openai_compat_unavailable",
+                    f"{endpoint_name} unavailable",
+                    error_type="upstream_error",
+                ),
+                headers=dict(rate_limit_headers),
+            )
         settlement = await external_response_settlement(
             provider=provider_id,
             model=effective_model,
@@ -280,7 +419,8 @@ async def proxy_chat_to_openai_compat(
         await _log_openai_compat_request(
             api_key=api_key,
             model=effective_model,
-            started_at=requested_at,
+            attribution=attribution,
+            started_at=started_at,
             status="error",
             error_code="openai_compat_error",
             error_message=exc.message,
@@ -303,51 +443,38 @@ async def proxy_chat_to_openai_compat(
             headers=client_error.headers,
         )
 
-    usage = extract_usage(response_body)
-    billed_cost_usd = extract_billed_cost(response_body)
-    cost = await _openai_compat_request_cost(
-        effective_model, usage, billed_cost_usd=billed_cost_usd, provider=provider_id
-    )
-    await _finalize_or_release_openai_compat_reservation(
-        reservation,
-        api_key=api_key,
-        model=effective_model,
-        usage=usage,
-        cost=cost,
-    )
-    await _log_openai_compat_request(
-        api_key=api_key,
-        model=effective_model,
-        started_at=requested_at,
-        status="success",
-        usage=usage,
-        reasoning_effort=sidecar_payload.effective_reasoning_effort,
-        requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
-        cost=cost,
-        client=client,
-    )
-    if deepseek_scope is not None:
-        deepseek_capture_non_streaming(deepseek_scope, response_body)
-    if cursor_compat and is_json_mapping(response_body):
-        response_body = apply_cursor_usage_fallback_to_response(
-            cast(dict[str, JsonValue], response_body),
-            payload,
-            source="openai_compat_non_stream",
+    if allow_failover:
+        failure = retryable_failure_from_error(
+            status_code=exc.status_code,
+            message=exc.message,
+            headers=exc.rate_limit_headers,
         )
-    return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
+        if failure is not None:
+            raise PoolTargetFailed(failure, render=render) from exc
+    return await render()
 
 
 async def _openai_compat_stream_iterator(
-    payload: Mapping[str, JsonValue],
+    chunks: AsyncGenerator[bytes, None],
     *,
     api_key: ApiKeyData | None,
     reservation: ApiKeyUsageReservationData | None,
     model: str,
+    attribution: ChatRequestAttribution,
     started_at: float,
     client: OpenAICompatSidecarClient,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
+    """Relay an already-open upstream stream and settle when it ends.
+
+    ``chunks`` is the ``relay_sidecar_stream`` of an upstream opened before the
+    client response was committed; closing it closes the upstream, which
+    happens here on completion, on a mid-stream error, and on client
+    disconnect. Only mid-stream failures reach the ``except`` branches: a
+    failure before the first chunk was already retried once by the relay.
+    """
+
     usage: SidecarUsage | None = None
     billed_cost = BilledCostAccumulator()
     completed = False
@@ -355,84 +482,70 @@ async def _openai_compat_stream_iterator(
     error_code = "openai_compat_stream_incomplete"
     error_message: str | None = None
     endpoint_name = client.config.name
-    delivered = False
     try:
-        for attempt in range(2):
-            usage = None
-            billed_cost = BilledCostAccumulator()
-            completed = False
-            stream_error = False
-            try:
-                async with client.stream_chat_completion(payload) as chunks:
-                    decoder = _SseUsageDecoder()
-                    async for raw_chunk in chunks:
-                        for event in decoder.feed(raw_chunk):
-                            if event == "[DONE]":
-                                if not stream_error:
-                                    completed = True
-                                continue
-                            provider_error = _sse_provider_error(
-                                event,
-                                default_code="openai_compat_error",
-                                default_message=f"{endpoint_name} stream error",
-                            )
-                            if provider_error is not None:
-                                stream_error = True
-                                completed = False
-                                error_code, error_message = provider_error
-                            event_usage = extract_usage(event)
-                            if event_usage is not None:
-                                usage = event_usage
-                            billed_cost.observe(extract_billed_cost(event))
-                        delivered = True
-                        yield raw_chunk
-                    for event in decoder.flush():
-                        if event == "[DONE]":
-                            if not stream_error:
-                                completed = True
-                            continue
-                        provider_error = _sse_provider_error(
-                            event,
-                            default_code="openai_compat_error",
-                            default_message=f"{endpoint_name} stream error",
-                        )
-                        if provider_error is not None:
-                            stream_error = True
-                            completed = False
-                            error_code, error_message = provider_error
-                        event_usage = extract_usage(event)
-                        if event_usage is not None:
-                            usage = event_usage
-                        billed_cost.observe(extract_billed_cost(event))
-                return
-            except OpenAICompatSidecarError as exc:
-                if retry_sidecar_provider_failure(attempt=attempt, delivered=delivered, status_code=exc.status_code):
-                    log_sidecar_provider_retry(provider=endpoint_name, status_code=exc.status_code, model=model)
-                    continue
-                if isinstance(exc, OpenAICompatSidecarUnavailableError):
-                    error_code = "openai_compat_unavailable"
-                    error_message = f"{endpoint_name} unavailable"
-                    yield _error_sse(
-                        openai_error(
-                            "openai_compat_unavailable",
-                            f"{endpoint_name} unavailable",
-                            error_type="upstream_error",
-                        )
+        async with aclosing(chunks):
+            decoder = SseJsonDataDecoder()
+            async for raw_chunk in chunks:
+                for event in decoder.feed(raw_chunk):
+                    if event == SSE_DONE:
+                        if not stream_error:
+                            completed = True
+                        continue
+                    provider_error = _sse_provider_error(
+                        event,
+                        default_code="openai_compat_error",
+                        default_message=f"{endpoint_name} stream error",
                     )
-                    yield b"data: [DONE]\n\n"
-                    return
-                error_code = "openai_compat_error"
-                error_message = exc.message
-                billed_cost.observe(extract_billed_cost(exc.body))
-                client_error = client_facing_sidecar_error(
-                    status_code=exc.status_code,
-                    message=exc.message,
-                    error_code="openai_compat_error",
-                    body=exc.body,
+                    if provider_error is not None:
+                        stream_error = True
+                        completed = False
+                        error_code, error_message = provider_error
+                    event_usage = extract_usage(event)
+                    if event_usage is not None:
+                        usage = event_usage
+                    billed_cost.observe(extract_billed_cost(event))
+                yield raw_chunk
+            for event in decoder.flush():
+                if event == SSE_DONE:
+                    if not stream_error:
+                        completed = True
+                    continue
+                provider_error = _sse_provider_error(
+                    event,
+                    default_code="openai_compat_error",
+                    default_message=f"{endpoint_name} stream error",
                 )
-                yield _error_sse(client_error.content)
-                yield b"data: [DONE]\n\n"
-                return
+                if provider_error is not None:
+                    stream_error = True
+                    completed = False
+                    error_code, error_message = provider_error
+                event_usage = extract_usage(event)
+                if event_usage is not None:
+                    usage = event_usage
+                billed_cost.observe(extract_billed_cost(event))
+    except OpenAICompatSidecarUnavailableError:
+        error_code = "openai_compat_unavailable"
+        error_message = f"{endpoint_name} unavailable"
+        yield _error_sse(
+            openai_error(
+                "openai_compat_unavailable",
+                f"{endpoint_name} unavailable",
+                error_type="upstream_error",
+            )
+        )
+        yield b"data: [DONE]\n\n"
+    except OpenAICompatSidecarError as exc:
+        error_code = "openai_compat_error"
+        error_message = exc.message
+        billed_cost.observe(extract_billed_cost(exc.body))
+        client_error = client_facing_sidecar_error(
+            status_code=exc.status_code,
+            message=exc.message,
+            error_code="openai_compat_error",
+            body=exc.body,
+        )
+        yield _error_sse(client_error.content)
+        yield b"data: [DONE]\n\n"
     except BaseException as exc:
         error_code = "openai_compat_stream_interrupted"
         error_message = str(exc) or exc.__class__.__name__
@@ -464,6 +577,7 @@ async def _openai_compat_stream_iterator(
             _log_openai_compat_request(
                 api_key=api_key,
                 model=model,
+                attribution=attribution,
                 started_at=started_at,
                 status="success" if completed else "error",
                 error_code=None if completed else error_code,
@@ -547,99 +661,6 @@ async def _settle_stream_deferring_cancellation(
     return await _await_result_deferring_cancellation(_settle())
 
 
-class _SseUsageDecoder:
-    """Split an SSE byte stream into events, tolerant of real-world framing.
-
-    This feature routes to *arbitrary* operator-configured OpenAI-compatible
-    servers (vLLM, LM Studio, llama.cpp, NIM, ...), so neither property below is
-    theoretical. Both mirror the decoder in
-    ``app/modules/proxy/opencode_go_sidecar_dispatch.py``.
-
-    * **Event delimiters.** The SSE spec allows ``\\r\\n``, ``\\n`` and bare
-      ``\\r`` line endings, so an event boundary is any two consecutive ones.
-      Matching only ``\\n\\n`` buffers a CRLF stream to EOF and then parses the
-      whole thing as one malformed event - losing the usage object and the
-      ``[DONE]`` sentinel, which in turn makes a completed stream log as an
-      error and release its reservation instead of finalizing it.
-
-    * **Chunk boundaries are arbitrary byte offsets.** aiohttp splits on the
-      network, not on character boundaries, so a multi-byte character can land
-      half in one chunk and half in the next. Decoding each chunk independently
-      with ``errors="ignore"`` silently deletes those bytes and can corrupt the
-      JSON of the event carrying ``usage``.
-
-    Callers therefore feed **bytes**, and this class owns the decoding. The raw
-    chunks still reach the client untouched; only this observer decodes.
-    """
-
-    def __init__(self) -> None:
-        self._buffer = ""
-        # One decoder for the whole stream: it is what carries a split
-        # multi-byte sequence across the chunk boundary. ``replace`` rather than
-        # ``ignore`` so genuinely invalid bytes stay visible as U+FFFD instead of
-        # vanishing and silently shortening the text.
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-
-    def feed(self, chunk: bytes) -> list[JsonObject | str]:
-        self._buffer += self._decoder.decode(chunk)
-        return self._drain_complete_events()
-
-    def flush(self) -> list[JsonObject | str]:
-        """Drain the tail at EOF, including any undelimited final event.
-
-        Flushing the UTF-8 decoder first matters: a stream truncated mid
-        character would otherwise leave those bytes unaccounted for.
-        """
-
-        self._buffer += self._decoder.decode(b"", final=True)
-        # A well-formed final event may still be followed by a delimiter, so
-        # drain complete events before treating the remainder as a partial one.
-        events = self._drain_complete_events()
-        pending = self._buffer
-        self._buffer = ""
-        if pending.strip():
-            event = _parse_sse_event(pending)
-            if event is not None:
-                events.append(event)
-        return events
-
-    def _drain_complete_events(self) -> list[JsonObject | str]:
-        events: list[JsonObject | str] = []
-        while True:
-            match = _SSE_EVENT_BOUNDARY.search(self._buffer)
-            if match is None:
-                break
-            raw_event = self._buffer[: match.start()]
-            self._buffer = self._buffer[match.end() :]
-            event = _parse_sse_event(raw_event)
-            if event is not None:
-                events.append(event)
-        return events
-
-
-def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
-    data_lines: list[str] = []
-    # ``str.splitlines`` already treats CR, LF and CRLF as line breaks, so a
-    # single-line-ending dialect never leaks into field parsing.
-    for raw_line in raw_event.splitlines():
-        if not raw_line or raw_line.startswith(":"):
-            continue
-        field, _, value = raw_line.partition(":")
-        if field != "data":
-            continue
-        data_lines.append(value[1:] if value.startswith(" ") else value)
-    if not data_lines:
-        return None
-    data = "\n".join(data_lines)
-    if data.strip() == "[DONE]":
-        return "[DONE]"
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        return None
-    return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
-
-
 def _sse_provider_error(
     event: JsonObject | str,
     *,
@@ -691,6 +712,7 @@ async def _log_openai_compat_request(
     started_at: float,
     status: str,
     client: OpenAICompatSidecarClient,
+    attribution: ChatRequestAttribution | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
     usage: SidecarUsage | None = None,
@@ -698,6 +720,14 @@ async def _log_openai_compat_request(
     requested_reasoning_effort: str | None = None,
     cost: ExternalRequestCost | None = None,
 ) -> None:
+    """Write the request-log row.
+
+    ``model`` is the dispatched model and drives pricing; ``attribution`` is
+    what the row is labelled with (the client-facing alias for aliased
+    requests) and defaults to ``model``.
+    """
+
+    attribution = attribution or ChatRequestAttribution.direct(model)
     provider_id = client.config.provider_id
     try:
         if cost is None:
@@ -707,7 +737,10 @@ async def _log_openai_compat_request(
             await repo.add_log(
                 account_id=None,
                 request_id=get_request_id(),
-                model=model,
+                model=attribution.model,
+                upstream_model=attribution.upstream_model,
+                pool_attempts=attribution.pool_attempts,
+                latency_queue_ms=attribution.queue_ms,
                 input_tokens=usage.input_tokens if usage else None,
                 output_tokens=usage.output_tokens if usage else None,
                 cached_input_tokens=usage.cached_input_tokens if usage else None,
@@ -782,6 +815,34 @@ async def _finalize_or_release_openai_compat_reservation(
             get_request_id(),
             exc_info=True,
         )
+
+
+async def _abandon_openai_compat_request(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    attribution: ChatRequestAttribution,
+    started_at: float,
+    client: OpenAICompatSidecarClient,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> None:
+    """Release and log a request whose client left before the upstream answered."""
+
+    await _release_openai_compat_reservation(reservation, api_key=api_key)
+    await _log_openai_compat_request(
+        api_key=api_key,
+        model=model,
+        attribution=attribution,
+        started_at=started_at,
+        status=CANCELLED_STATUS,
+        error_code=CLIENT_DISCONNECT_ERROR_CODE,
+        error_message="client disconnected before the upstream response started",
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+        client=client,
+    )
 
 
 async def _release_openai_compat_reservation(

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from app.core.clients.claude_sidecar import (
     ClaudeSidecarClient,
@@ -26,9 +26,11 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.usage.pricing import UsageTokens
 from app.core.usage.runtime_pricing import calculate_reference_cost
+from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.stream_close import ClosingStreamingResponse
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -1120,7 +1122,7 @@ async def proxy_chat_to_sidecar(
                 payload,
                 source="claude_sidecar_stream",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             inject_sse_keepalives(
                 stream,
                 sse_keepalive_interval_seconds,
@@ -1303,7 +1305,9 @@ async def _sidecar_stream_iterator(
                     raise
             except BaseException:
                 if wait_seconds > 0.0:
-                    await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held)
+                    # A cancelled request must still hand back the poll slot, or
+                    # every later request waits behind a poller that is gone.
+                    await await_deferring_cancellation(_CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held))
                 raise
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
@@ -1357,43 +1361,95 @@ async def _sidecar_stream_iterator(
         yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
     except BaseException as exc:
-        await _release_sidecar_reservation(reservation, api_key=api_key)
-        await _log_sidecar_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="error",
-            error_code="claude_sidecar_stream_interrupted",
-            error_message=str(exc) or exc.__class__.__name__,
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-        )
+        # A client disconnect lands here as a cancellation, inside a cancel scope
+        # that re-cancels every plain await - so the release and the log must
+        # finish shielded, or the reservation stays held with no log row.
         settled = True
+        await await_deferring_cancellation(
+            _release_and_log_sidecar_request(
+                reservation,
+                api_key=api_key,
+                model=model,
+                started_at=started_at,
+                error_code="claude_sidecar_stream_interrupted",
+                error_message=str(exc) or exc.__class__.__name__,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
+            )
+        )
         raise
     finally:
         if deepseek_recorder is not None:
             deepseek_recorder.commit()
         if not settled:
-            usage_to_settle = usage if completed else None
-            cost = await _sidecar_request_cost(model, usage_to_settle)
-            await _finalize_or_release_sidecar_reservation(
-                reservation,
-                api_key=api_key,
-                model=model,
-                usage=usage_to_settle,
-                cost=cost,
+            await complete_despite_cancellation(
+                _settle_and_log_sidecar_stream(
+                    reservation,
+                    api_key=api_key,
+                    model=model,
+                    started_at=started_at,
+                    usage=usage if completed else None,
+                    completed=completed,
+                    reasoning_effort=reasoning_effort,
+                    requested_reasoning_effort=requested_reasoning_effort,
+                )
             )
-            await _log_sidecar_request(
-                api_key=api_key,
-                model=model,
-                started_at=started_at,
-                status="success" if completed else "error",
-                error_code=None if completed else "claude_sidecar_stream_incomplete",
-                usage=usage_to_settle,
-                reasoning_effort=reasoning_effort,
-                requested_reasoning_effort=requested_reasoning_effort,
-                cost=cost,
-            )
+
+
+async def _release_and_log_sidecar_request(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+    error_code: str,
+    error_message: str,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> None:
+    await _release_sidecar_reservation(reservation, api_key=api_key)
+    await _log_sidecar_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status="error",
+        error_code=error_code,
+        error_message=error_message,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
+
+
+async def _settle_and_log_sidecar_stream(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+    usage: SidecarUsage | None,
+    completed: bool,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> None:
+    cost = await _sidecar_request_cost(model, usage)
+    await _finalize_or_release_sidecar_reservation(
+        reservation,
+        api_key=api_key,
+        model=model,
+        usage=usage,
+        cost=cost,
+    )
+    await _log_sidecar_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status="success" if completed else "error",
+        error_code=None if completed else "claude_sidecar_stream_incomplete",
+        usage=usage,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+        cost=cost,
+    )
 
 
 def reference_cost_from_sidecar_usage(

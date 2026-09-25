@@ -1,10 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { RoutingSettings } from "@/features/settings/components/routing-settings";
 import type { DashboardSettings } from "@/features/settings/schemas";
 import { createAccountSummary, createDashboardSettings } from "@/test/mocks/factories";
+import { renderWithProviders } from "@/test/utils";
 
 if (!HTMLElement.prototype.hasPointerCapture) {
   HTMLElement.prototype.hasPointerCapture = () => false;
@@ -42,7 +43,7 @@ describe("RoutingSettings", () => {
   it("saves per-account capacity limits including zero for unlimited", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.clear(screen.getByRole("spinbutton", { name: "Response-create limit" }));
     await user.type(screen.getByRole("spinbutton", { name: "Response-create limit" }), "0");
@@ -64,7 +65,7 @@ describe("RoutingSettings", () => {
 
   it("rejects invalid account capacity limits before saving", async () => {
     const user = userEvent.setup();
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     const streamLimit = screen.getByRole("spinbutton", { name: "Stream limit" });
     const recoveryReserve = screen.getByRole("spinbutton", { name: "Stream recovery reserve" });
@@ -95,7 +96,7 @@ describe("RoutingSettings", () => {
   it("saves a new prompt-cache affinity ttl from the button and Enter key", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    const { rerender } = render(
+    const { rerender } = renderWithProviders(
       <RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />,
     );
 
@@ -127,7 +128,7 @@ describe("RoutingSettings", () => {
   it("disables ttl save for invalid values and saves sticky-thread toggles", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     const ttlInput = screen.getByRole("spinbutton", { name: "Prompt-cache affinity TTL" });
     const saveButton = screen.getByRole("button", { name: "Save TTL" });
@@ -147,7 +148,7 @@ describe("RoutingSettings", () => {
   it("saves the Fast Mode prohibition toggle", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("switch", { name: "Prohibit Fast Mode" }));
 
@@ -159,7 +160,7 @@ describe("RoutingSettings", () => {
   it("shows relative availability controls only for that strategy", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    const { rerender } = render(
+    const { rerender } = renderWithProviders(
       <RoutingSettings settings={{ ...BASE_SETTINGS, routingStrategy: "relative_availability" }} busy={false} onSave={onSave} />,
     );
 
@@ -182,7 +183,7 @@ describe("RoutingSettings", () => {
   it("saves additional quota routing policy overrides", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
@@ -220,7 +221,7 @@ describe("RoutingSettings", () => {
   it("renders known additional quota policies without saved overrides", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
@@ -255,7 +256,7 @@ describe("RoutingSettings", () => {
   it("rejects decimal relative availability top K values", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings settings={{ ...BASE_SETTINGS, routingStrategy: "relative_availability" }} busy={false} onSave={onSave} />,
     );
 
@@ -279,7 +280,7 @@ describe("RoutingSettings", () => {
   it("saves warmup model updates", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     const warmupModelInput = screen.getByLabelText("Warmup model");
     await user.clear(warmupModelInput);
@@ -294,7 +295,7 @@ describe("RoutingSettings", () => {
   });
 
   it("shows the configured upstream transport", () => {
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByText("Upstream stream transport")).toBeInTheDocument();
     expect(screen.getByText("Server default")).toBeInTheDocument();
@@ -303,7 +304,7 @@ describe("RoutingSettings", () => {
   it("shows account picker for single-account routing and saves the selected account", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, routingStrategy: "single_account" }}
         accounts={[
@@ -327,7 +328,7 @@ describe("RoutingSettings", () => {
   it("excludes hard-blocked accounts from single-account routing choices", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, routingStrategy: "single_account" }}
         accounts={[
@@ -371,7 +372,7 @@ describe("RoutingSettings", () => {
   it("saves an account together with single-account routing", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, routingStrategy: "capacity_weighted", singleAccountId: null }}
         accounts={[createAccountSummary({ accountId: "acc-one", email: "one@example.com", displayName: "one@example.com" })]}
@@ -389,7 +390,7 @@ describe("RoutingSettings", () => {
   });
 
   it("names limit warm-up controls for assistive technology", () => {
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true }}
         busy={false}
@@ -412,7 +413,7 @@ describe("RoutingSettings", () => {
   it("saves weekly pace working-day changes", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("checkbox", { name: "Use Sat in weekly pace" }));
 
@@ -424,7 +425,7 @@ describe("RoutingSettings", () => {
   it("keeps at least one weekly pace working day selected", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, weeklyPaceWorkingDays: "2" }}
         busy={false}
@@ -442,7 +443,7 @@ describe("RoutingSettings", () => {
   it("saves weekly pace smoothing changes", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("combobox", { name: "Pace gap average" }));
     await user.click(await screen.findByRole("option", { name: "2h" }));
@@ -455,7 +456,7 @@ describe("RoutingSettings", () => {
   it("does not silently truncate decimal warm-up cooldown values", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true }}
         busy={false}
@@ -473,7 +474,7 @@ describe("RoutingSettings", () => {
   it("saves warm-up exhausted threshold changes", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true }}
         busy={false}
@@ -497,7 +498,7 @@ describe("RoutingSettings", () => {
   it("rejects invalid warm-up exhausted thresholds", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true }}
         busy={false}
@@ -515,7 +516,7 @@ describe("RoutingSettings", () => {
   it("saves staggered idle warm-up idle threshold changes", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true, limitWarmupStaggeredIdleEnabled: true }}
         busy={false}
@@ -547,7 +548,7 @@ describe("RoutingSettings", () => {
       configurable: true,
       value: () => undefined,
     });
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("combobox", { name: "Reset preference window" }));
     await user.click(await screen.findByText("5h quota"));
@@ -560,7 +561,7 @@ describe("RoutingSettings", () => {
   it("renders and saves the HTTP client routing policy", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("combobox", { name: "HTTP client routing" }));
     await user.click(await screen.findByRole("option", { name: "Prefer persistent sessions" }));
@@ -571,7 +572,7 @@ describe("RoutingSettings", () => {
   });
 
   it("offers Fill first as a routing strategy option", () => {
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, routingStrategy: "fill_first" }}
         busy={false}
@@ -583,14 +584,14 @@ describe("RoutingSettings", () => {
   });
 
   it("explains routing strategy trade-offs and account-safety guidance", () => {
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByText(/Good default for compliant mixed-account pools/i)).toBeInTheDocument();
     expect(screen.getByText(/No strategy can guarantee account-safety outcomes/i)).toBeInTheDocument();
   });
 
   it("explains soft sticky routing versus hard Codex continuation affinity", () => {
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(
       screen.getByText(/does not disable hard Codex continuation affinity/i),
@@ -599,7 +600,7 @@ describe("RoutingSettings", () => {
   });
 
   it("explains primary versus secondary quota windows and threshold units", () => {
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByText("Primary vs secondary quota")).toBeInTheDocument();
     expect(
@@ -615,7 +616,7 @@ describe("RoutingSettings", () => {
 
   it("shows the remaining-percent equivalent for sticky thresholds", async () => {
     const user = userEvent.setup();
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     // Defaults: primary 95% used, secondary 100% used.
     expect(screen.getByText("95% used · 5% remaining in quota terms")).toBeInTheDocument();
@@ -635,7 +636,7 @@ describe("RoutingSettings", () => {
   });
 
   it("describes prefer-earlier-reset selection behavior", () => {
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(
       screen.getByText(/prefer those whose selected quota window resets sooner/i),
@@ -643,7 +644,7 @@ describe("RoutingSettings", () => {
   });
 
   it("describes what limit warm-up sends and that probes consume quota", () => {
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByText(/consume a small amount of quota/i)).toBeInTheDocument();
   });
@@ -651,7 +652,7 @@ describe("RoutingSettings", () => {
   it("saves staggered idle warm-up when limit warm-up is enabled", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{ ...BASE_SETTINGS, limitWarmupEnabled: true }}
         busy={false}
@@ -669,11 +670,11 @@ describe("RoutingSettings", () => {
   it("saves custom alias catalog context length overrides", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
-          modelAliases: { "north-mini-code": "or/cohere/north-mini-code" },
+          modelAliases: { "north-mini-code": { targets: ["or/cohere/north-mini-code"] } },
           customAliasCatalog: {},
         }}
         busy={false}
@@ -697,11 +698,11 @@ describe("RoutingSettings", () => {
   it("removes custom alias catalog rows when an alias is deleted", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
-          modelAliases: { "north-mini-code": "or/cohere/north-mini-code" },
+          modelAliases: { "north-mini-code": { targets: ["or/cohere/north-mini-code"] } },
           customAliasCatalog: {
             "north-mini-code": { contextLength: 1_000_000 },
           },
