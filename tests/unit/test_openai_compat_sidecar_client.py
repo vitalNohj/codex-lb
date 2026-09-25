@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -176,6 +177,82 @@ async def test_list_models_parses_pricing_under_the_endpoint_provider(monkeypatc
     registry = get_runtime_pricing_registry()
     assert registry.runtime_pricing_for_model("vendor/model-x", provider=PROVIDER_ID) is not None
     assert registry.runtime_pricing_for_model("vendor/model-y", provider=PROVIDER_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_list_models_reads_unlid_rates_in_usd_per_million(monkeypatch) -> None:
+    registry = get_runtime_pricing_registry()
+    registry.clear()
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "glm-5.3-flash-uncensored",
+                            "owned_by": "unlid",
+                            "unlid": {
+                                "pricing": {
+                                    "input_usd_per_m": 0.42,
+                                    "output_usd_per_m": 1.68,
+                                    "cached_input_usd_per_m": 0.216,
+                                    "checked_at": "2026-09-10",
+                                }
+                            },
+                        },
+                        {
+                            "id": "unlid/zero-cost",
+                            "unlid": {
+                                "pricing": {
+                                    "input_usd_per_m": 0,
+                                    "output_usd_per_m": "0",
+                                    "cached_input_usd_per_m": None,
+                                }
+                            },
+                        },
+                        {"id": "unlid/not-priced", "unlid": {"pricing": None}},
+                    ]
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr("app.core.clients.openai_compat_sidecar.lease_http_session", lambda: _Lease(session))
+
+    models = await OpenAICompatSidecarClient(_config()).list_models()
+
+    by_id = {model.id: model for model in models}
+    price = by_id["glm-5.3-flash-uncensored"].pricing
+    assert price == ModelPrice(input_per_1m=0.42, output_per_1m=1.68, cached_input_per_1m=0.216)
+    assert by_id["unlid/zero-cost"].pricing == ModelPrice(input_per_1m=0, output_per_1m=0)
+    assert by_id["unlid/not-priced"].pricing is None
+    assert registry.runtime_pricing_for_model("glm-5.3-flash-uncensored", provider=PROVIDER_ID) == price
+    assert reference_cost_from_sidecar_usage(
+        "glm-5.3-flash-uncensored", SidecarUsage(input_tokens=13, output_tokens=64), provider=PROVIDER_ID
+    ) == pytest.approx(0.00011298)
+
+
+@pytest.mark.asyncio
+async def test_invalid_unlid_rates_preserve_a_finite_runtime_reference_cost(monkeypatch) -> None:
+    registry = get_runtime_pricing_registry()
+    registry.clear()
+    model_id = "unlid/invalid"
+    old_price = ModelPrice(input_per_1m=1.0, output_per_1m=2.0)
+    registry.update_models([(model_id, old_price)], provider=PROVIDER_ID)
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            json.dumps(
+                {"data": [{"id": model_id, "unlid": {"pricing": {"input_usd_per_m": "NaN", "output_usd_per_m": 1.68}}}]}
+            ),
+        )
+    )
+    monkeypatch.setattr("app.core.clients.openai_compat_sidecar.lease_http_session", lambda: _Lease(session))
+
+    models = await OpenAICompatSidecarClient(_config()).list_models()
+
+    assert models[0].pricing is None
+    assert registry.runtime_pricing_for_model(model_id, provider=PROVIDER_ID) == old_price
 
 
 @pytest.mark.asyncio

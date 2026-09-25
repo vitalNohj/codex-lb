@@ -156,6 +156,8 @@ from app.core.resilience.overload import is_local_overload_error_code, merge_ret
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
+from app.core.utils.client_disconnect import ClientDisconnected, await_unless_client_disconnects
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.sse import (
@@ -165,7 +167,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
-from app.core.utils.stream_close import aclose_stream
+from app.core.utils.stream_close import ClosingStreamingResponse, aclose_stream
 from app.db.models import Account, AccountStatus, ModelSource
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
@@ -198,6 +200,8 @@ from app.modules.model_sources.catalog import (
 )
 from app.modules.model_sources.forwarding import (
     ModelSourceForwardingError,
+    SourceChatStream,
+    SourceResponsesStream,
     SourceTimings,
     SourceUsage,
     SourceUsageHolder,
@@ -246,6 +250,12 @@ from app.modules.proxy._service.support import (
     _strip_blank_html_comment_lines,
 )
 from app.modules.proxy.account_cache import get_account_selection_cache
+from app.modules.proxy.alias_pool_attempts import POOL_ATTEMPTS_HEADER, ChatRequestAttribution, PoolTargetUnavailable
+from app.modules.proxy.alias_pool_dispatch import (
+    AliasPoolUnavailable,
+    authorize_pool_targets,
+    dispatch_chat_with_failover,
+)
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import (
     claude_routing_entry,
@@ -286,6 +296,7 @@ from app.modules.proxy.model_aliasing import (
     append_discoverable_alias_models,
     load_model_aliases,
     resolve_request_model_alias,
+    resolve_request_model_alias_pool,
 )
 from app.modules.proxy.ollama_sidecar_dispatch import (
     load_ollama_sidecar_config,
@@ -370,6 +381,7 @@ from app.modules.proxy.schemas import (
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, prefix_variants, resolve_sidecar_route
+from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response, has_usable_sidecar_api_key
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
     RateLimitResetCreditsData,
@@ -381,12 +393,14 @@ from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaim
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.settings.repository import SettingsRepository
+from app.modules.settings.service import is_pool_capable_provider
 from app.modules.usage.mappers import usage_history_to_window_row
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import UsageUpdater
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
+_SourceStreamT = TypeVar("_SourceStreamT", SourceChatStream, SourceResponsesStream)
 
 _REASONING_SUMMARY_DELTA_TYPES = frozenset({"response.reasoning_summary_text.delta"})
 _REASONING_SUMMARY_DONE_TYPES = frozenset(
@@ -4962,10 +4976,26 @@ async def v1_chat_completions(
     settings = get_settings()
     cursor_compat_client = is_cursor_compat_client(request, api_key)
     requested_model = payload.model
-    aliased_model = await resolve_request_model_alias(payload.model)
-    if aliased_model is not None and aliased_model != payload.model:
-        payload.model = aliased_model
+    resolved_alias = await resolve_request_model_alias_pool(payload.model)
+    # Sidecar routing, the wire model, and pricing all operate on the real
+    # target, so ``payload.model`` is rewritten to the primary target exactly
+    # as before. Metering does not: request-limit reservation and the
+    # request-log ``model`` column key on the alias the client asked for, so a
+    # ``model_filter`` naming the alias applies and the dashboard shows the
+    # name the client uses.
+    if resolved_alias is not None and resolved_alias.primary != payload.model:
+        payload.model = resolved_alias.primary
     effective_model = _effective_model_for_api_key(api_key, payload.model)
+    # An enforced model replaces whatever the client asked for, alias included,
+    # so pooling and alias attribution apply only when the key enforces none.
+    alias_pool = (
+        resolved_alias
+        if resolved_alias is not None
+        and resolved_alias.alias is not None
+        and (api_key is None or api_key.enforced_model is None)
+        else None
+    )
+    metering_model = alias_pool.alias if alias_pool is not None and alias_pool.alias is not None else effective_model
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
 
@@ -4999,14 +5029,130 @@ async def v1_chat_completions(
         routing_entries.append(ollama_routing_entry(ollama_config))
 
     validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
+    if alias_pool is not None and alias_pool.is_pool:
+        # An alias with two or more targets. Per-target access comes first, so
+        # an allowlist naming the alias cannot reach a target the key may not
+        # use directly, and a key refused on every target holds no budget. Then
+        # meter once against the alias and try the allowed targets in order.
+        # The pool branch only runs when the key enforces no model, so each
+        # target is dispatched exactly as it was authorized.
+        authorized_pool = authorize_pool_targets(
+            alias=metering_model,
+            targets=alias_pool.targets,
+            api_key=api_key,
+            routing_entries=tuple(routing_entries),
+        )
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=metering_model,
+            request_service_tier=payload.service_tier,
+            request_usage_budget=None,
+        )
+
+        async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
+            target_decision = resolve_sidecar_route(target, tuple(routing_entries))
+            if target_decision is None or not is_pool_capable_provider(target_decision.provider):
+                raise PoolTargetUnavailable(
+                    target,
+                    reason="unroutable",
+                    provider=target_decision.provider if target_decision is not None else None,
+                )
+            # Credentials before anything is rewritten for this target: a keyless
+            # integration is skipped here, with the payload still untouched. The
+            # dispatchers keep their own gate for the direct path.
+            if target_decision.provider in ("openrouter", "orcarouter"):
+                provider_config = openrouter_config if target_decision.provider == "openrouter" else orcarouter_config
+                if provider_config is None or not has_usable_sidecar_api_key(provider_config.api_key):
+                    raise PoolTargetUnavailable(target, reason="not_configured", provider=target_decision.provider)
+            payload.model = target
+            if target_decision.provider == "openrouter":
+                assert openrouter_config is not None
+                return await proxy_chat_to_openrouter(
+                    request,
+                    payload,
+                    effective_model=target,
+                    api_key=api_key,
+                    reservation=reservation,
+                    rate_limit_headers=rate_limit_headers,
+                    sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                    client=OpenRouterSidecarClient(openrouter_config),
+                    cursor_compat=cursor_compat_client,
+                    wire_model=target_decision.wire_model,
+                    attribution=attribution,
+                    allow_failover=True,
+                )
+            if target_decision.provider == "orcarouter":
+                assert orcarouter_config is not None
+                return await proxy_chat_to_orcarouter(
+                    request,
+                    payload,
+                    effective_model=target,
+                    api_key=api_key,
+                    reservation=reservation,
+                    rate_limit_headers=rate_limit_headers,
+                    sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                    client=OrcaRouterSidecarClient(orcarouter_config),
+                    cursor_compat=cursor_compat_client,
+                    wire_model=target_decision.wire_model,
+                    attribution=attribution,
+                    allow_failover=True,
+                )
+            openai_compat_config = openai_compat_config_by_provider(openai_compat_configs, target_decision.provider)
+            if openai_compat_config is None:
+                raise PoolTargetUnavailable(target, reason="unroutable", provider=target_decision.provider)
+            return await proxy_chat_to_openai_compat(
+                request,
+                payload,
+                effective_model=target,
+                api_key=api_key,
+                reservation=reservation,
+                rate_limit_headers=rate_limit_headers,
+                sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+                client=OpenAICompatSidecarClient(openai_compat_config),
+                cursor_compat=cursor_compat_client,
+                wire_model=target_decision.wire_model,
+                attribution=attribution,
+                allow_failover=True,
+            )
+
+        try:
+            return await dispatch_chat_with_failover(request, authorized_pool, dispatch=_dispatch_pool_target)
+        except AliasPoolUnavailable as exc:
+            # No target could be attempted: each lost its route after the pool
+            # was saved (an integration was turned off) or has no API key.
+            # Nothing was sent anywhere. Operator configuration, surfaced as
+            # such rather than as a client error.
+            await _release_reservation(reservation)
+            logger.error(
+                "alias_pool_unavailable request_id=%s alias=%s reasons=%s",
+                get_request_id(),
+                exc.alias,
+                ",".join(sorted(exc.reasons)),
+            )
+            return _logged_error_json_response(
+                request,
+                503,
+                openai_error(
+                    "alias_pool_unavailable",
+                    f"No target of alias {exc.alias!r} can be served: each one's integration "
+                    "is turned off or has no API key configured",
+                    error_type="upstream_error",
+                ),
+                headers={**rate_limit_headers, "Retry-After": "60", POOL_ATTEMPTS_HEADER: "0"},
+            )
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
     if decision is not None:
         validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
         reservation = await _enforce_request_limits(
             api_key,
-            request_model=effective_model,
+            request_model=metering_model,
             request_service_tier=payload.service_tier,
             request_usage_budget=None,
+        )
+        attribution = (
+            ChatRequestAttribution.aliased(alias=metering_model, target=effective_model)
+            if alias_pool is not None
+            else None
         )
         if decision.provider == "claude":
             assert sidecar_config is not None
@@ -5035,6 +5181,7 @@ async def v1_chat_completions(
                 client=OpenRouterSidecarClient(openrouter_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
+                attribution=attribution,
             )
         if is_openai_compat_provider(decision.provider):
             openai_compat_config = openai_compat_config_by_provider(openai_compat_configs, decision.provider)
@@ -5050,6 +5197,7 @@ async def v1_chat_completions(
                 client=OpenAICompatSidecarClient(openai_compat_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
+                attribution=attribution,
             )
         if decision.provider == "orcarouter":
             assert orcarouter_config is not None
@@ -5064,6 +5212,7 @@ async def v1_chat_completions(
                 client=OrcaRouterSidecarClient(orcarouter_config),
                 cursor_compat=cursor_compat_client,
                 wire_model=decision.wire_model,
+                attribution=attribution,
             )
         if decision.provider == "opencode_go":
             assert opencode_go_config is not None
@@ -5606,6 +5755,57 @@ async def _source_audio_transcription_response(
     return Response(content=result.body, status_code=200, headers=headers)
 
 
+async def _open_source_stream_for_client(request: Request, opening: Awaitable[_SourceStreamT]) -> _SourceStreamT:
+    """Open a model-source stream, abandoned if the client disconnects while it waits.
+
+    Raises :class:`ClientDisconnected` once the open is cancelled and any stream
+    it managed to open is closed. The caller releases and logs.
+    """
+
+    async def _close(stream: _SourceStreamT) -> None:
+        if stream.upstream is not None:
+            await stream.upstream.aclose()
+
+    return await await_unless_client_disconnects(request.receive, opening, discard=_close)
+
+
+async def _abandon_source_stream_setup(
+    request: Request,
+    *,
+    source: ModelSource,
+    api_key: ApiKeyData | None,
+    model: str,
+    reservation: ApiKeyUsageReservationData | None,
+) -> None:
+    """Release and log a source stream whose client left before the upstream answered.
+
+    Every step finishes even under repeated cancellation. A cancellation is
+    left for the caller to re-raise.
+    """
+
+    if reservation is not None:
+        try:
+            await _release_reservation_deferring_cancellation(reservation)
+        except (Exception, asyncio.CancelledError):
+            logger.warning(
+                "Failed to release source stream setup reservation after client disconnect source_id=%s model=%s",
+                source.id,
+                model,
+                exc_info=True,
+            )
+    await _await_cleanup_deferring_cancellation(
+        _log_source_chat_completion(
+            request,
+            source=source,
+            api_key=api_key,
+            model=model,
+            status=CANCELLED_STATUS,
+            error_code=CLIENT_DISCONNECT_ERROR_CODE,
+            error_message="client disconnected during source stream setup",
+        )
+    )
+
+
 async def _source_responses_response(
     request: Request,
     payload: ResponsesRequest,
@@ -5671,7 +5871,14 @@ async def _source_responses_response(
 
     if payload.stream:
         try:
-            stream = await stream_source_responses(source, source_payload)
+            stream = await _open_source_stream_for_client(request, stream_source_responses(source, source_payload))
+        except (ClientDisconnected, asyncio.CancelledError) as exc:
+            await _abandon_source_stream_setup(
+                request, source=source, api_key=api_key, model=payload.model, reservation=reservation
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return client_disconnected_response()
         except ModelSourceForwardingError as exc:
             await _release_reservation(reservation)
             await _log_source_chat_completion(
@@ -5705,7 +5912,7 @@ async def _source_responses_response(
             model=payload.model,
             reservation=reservation,
         )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             body,
             media_type="text/event-stream",
             headers={
@@ -5988,7 +6195,16 @@ async def _source_chat_completion_response(
         else:
             source_payload["stream_options"] = {"include_usage": True}
         try:
-            stream = await stream_source_chat_completion(source, source_payload)
+            stream = await _open_source_stream_for_client(
+                request, stream_source_chat_completion(source, source_payload)
+            )
+        except (ClientDisconnected, asyncio.CancelledError) as exc:
+            await _abandon_source_stream_setup(
+                request, source=source, api_key=api_key, model=model, reservation=reservation
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return client_disconnected_response()
         except ModelSourceForwardingError as exc:
             await _release_reservation(reservation)
             await _log_source_chat_completion(
@@ -6002,32 +6218,6 @@ async def _source_chat_completion_response(
                 upstream_status_code=exc.upstream_status_code,
             )
             return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
-        except asyncio.CancelledError:
-            release_exc: BaseException | None = None
-            if reservation is not None:
-                try:
-                    await _release_reservation_deferring_cancellation(reservation)
-                except BaseException as exc:
-                    release_exc = exc
-            await _await_cleanup_deferring_cancellation(
-                _log_source_chat_completion(
-                    request,
-                    source=source,
-                    api_key=api_key,
-                    model=model,
-                    status="cancelled",
-                    error_code="client_disconnected",
-                    error_message="client disconnected during source stream setup",
-                )
-            )
-            if release_exc is not None:
-                logger.warning(
-                    "Failed to release source stream setup reservation after client disconnect source_id=%s model=%s",
-                    source.id,
-                    model,
-                    exc_info=release_exc,
-                )
-            raise
         except BaseException:
             if reservation is not None:
                 await _release_reservation_deferring_cancellation(reservation)
@@ -6052,7 +6242,7 @@ async def _source_chat_completion_response(
             model=model,
             reservation=reservation,
         )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **rate_limit_headers},
@@ -6365,7 +6555,7 @@ async def _buffered_limited_source_chat_stream_response(
         for chunk in chunks:
             yield chunk
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         body(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", **rate_limit_headers},

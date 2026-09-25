@@ -62,6 +62,8 @@ def to_request_log_entry(
         request_kind=log.request_kind,
         connection_request_kind=log.connection_request_kind,
         model=log.model,
+        upstream_model=log.upstream_model,
+        pool_attempts=log.pool_attempts,
         source=log.source,
         sidecar_account_label=sidecar_account_label,
         model_source_id=log.model_source_id,

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 
 from app.core.config.opencode_go_endpoint import OPENCODE_GO_BASE_URL_ERROR, is_opencode_go_base_url
+from app.modules.settings.model_alias_pools import (
+    MAX_ALIAS_LENGTH,
+    MAX_POOL_TARGETS,
+    MAX_TARGET_LENGTH,
+    normalize_pool_targets,
+)
 from app.modules.shared.schemas import DashboardModel
 
 _DEFAULT_WEEKLY_PACE_WORKING_DAYS = "0,1,2,3,4,5,6"
@@ -287,6 +294,59 @@ class CustomAliasCatalogEntrySchema(DashboardModel):
     context_length: int | None = Field(default=None, gt=0)
 
 
+class ModelAliasPoolSchema(DashboardModel):
+    """Ordered targets for one alias; ``targets[0]`` is preferred.
+
+    Emptiness is checked by ``_normalize_model_alias_pools`` rather than a
+    ``min_length`` here so ``[]`` and ``[""]`` produce the same alias-naming
+    error instead of one generic pydantic message and one friendly one.
+    """
+
+    targets: list[str] = Field(max_length=MAX_POOL_TARGETS)
+
+
+def _normalize_model_alias_pools(value: dict[str, Any] | None) -> dict[str, ModelAliasPoolSchema] | None:
+    """Accept ``{alias: "model"}`` or ``{alias: {"targets": [...]}}``; return the pool shape.
+
+    Blank aliases and empty pools are dropped here to match the stored-shape
+    parser; a pool that is *submitted* empty is reported by the service so the
+    operator learns about it rather than watching the alias vanish.
+    """
+
+    if value is None:
+        return None
+    pools: dict[str, ModelAliasPoolSchema] = {}
+    seen: set[str] = set()
+    for alias, raw in value.items():
+        normalized_alias = alias.strip()
+        if not normalized_alias:
+            continue
+        if len(normalized_alias) > MAX_ALIAS_LENGTH:
+            raise ValueError(f"model_aliases keys must be {MAX_ALIAS_LENGTH} characters or fewer")
+        key = normalized_alias.lower()
+        if key in seen:
+            continue
+        if isinstance(raw, ModelAliasPoolSchema):
+            targets = normalize_pool_targets(raw.targets)
+        elif isinstance(raw, str):
+            targets = normalize_pool_targets((raw,))
+        elif isinstance(raw, dict):
+            raw_targets = raw.get("targets")
+            if not isinstance(raw_targets, list):
+                raise ValueError(f"model_aliases['{normalized_alias}'] must be a model id or {{\"targets\": [...]}}")
+            targets = normalize_pool_targets(raw_targets)
+        else:
+            raise ValueError(f"model_aliases['{normalized_alias}'] must be a model id or {{\"targets\": [...]}}")
+        if not targets:
+            raise ValueError(f"model_aliases['{normalized_alias}'] has no targets")
+        for target in targets:
+            if len(target) > MAX_TARGET_LENGTH:
+                raise ValueError(f"model_aliases targets must be {MAX_TARGET_LENGTH} characters or fewer")
+        seen.add(key)
+        pools[normalized_alias] = ModelAliasPoolSchema(targets=list(targets))
+    return pools
+
+
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
     upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
@@ -338,7 +398,7 @@ class DashboardSettingsResponse(DashboardModel):
     request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
-    model_aliases: dict[str, str] = Field(default_factory=dict)
+    model_aliases: dict[str, ModelAliasPoolSchema] = Field(default_factory=dict)
     custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] = Field(default_factory=dict)
     additional_quota_policies: list[AdditionalQuotaPolicy] = Field(default_factory=list)
     claude_sidecar_enabled: bool = False
@@ -485,7 +545,9 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     sticky_reallocation_primary_budget_threshold_pct: float | None = Field(default=None, ge=0.0, le=100.0)
     sticky_reallocation_secondary_budget_threshold_pct: float | None = Field(default=None, ge=0.0, le=100.0)
     additional_quota_routing_policies: dict[str, str] | None = None
-    model_aliases: dict[str, str] | None = Field(default=None, max_length=256)
+    # Either value shape is accepted on write; ``_normalize_model_aliases``
+    # always yields the pool shape.
+    model_aliases: dict[str, str | ModelAliasPoolSchema] | None = Field(default=None, max_length=256)
     custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] | None = Field(default=None, max_length=256)
     warmup_model: str | None = Field(default=None, min_length=1)
     import_without_overwrite: bool | None = None
@@ -594,24 +656,10 @@ class DashboardSettingsUpdateRequest(DashboardModel):
 
     @field_validator("model_aliases")
     @classmethod
-    def _normalize_model_aliases(cls, value: dict[str, str] | None) -> dict[str, str] | None:
-        if value is None:
-            return None
-        aliases: dict[str, str] = {}
-        seen: set[str] = set()
-        for alias, target in value.items():
-            normalized_alias = alias.strip()
-            normalized_target = target.strip()
-            if not normalized_alias or not normalized_target:
-                continue
-            if len(normalized_alias) > 256 or len(normalized_target) > 256:
-                raise ValueError("model_aliases entries must be 256 characters or fewer")
-            key = normalized_alias.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            aliases[normalized_alias] = normalized_target
-        return aliases
+    def _normalize_model_aliases(
+        cls, value: dict[str, str | ModelAliasPoolSchema] | None
+    ) -> dict[str, ModelAliasPoolSchema] | None:
+        return _normalize_model_alias_pools(value)
 
     @field_validator("custom_alias_catalog")
     @classmethod
@@ -863,6 +911,26 @@ class DashboardSettingsUpdateRequest(DashboardModel):
 
 class RuntimeConnectAddressResponse(DashboardModel):
     connect_address: str
+
+
+class AliasPoolTargetHealth(DashboardModel):
+    """Failover state of one alias pool target on this replica.
+
+    ``state`` is ``healthy`` or ``cooling``; the remaining fields are set only
+    while cooling. Cooldowns are process-local, so a multi-replica deployment
+    reports the state of the replica that answered.
+    """
+
+    state: str
+    until: datetime | None = None
+    last_status: int | None = None
+    last_error: str | None = None
+
+
+class AliasPoolsHealthResponse(DashboardModel):
+    """``{alias: {target: health}}`` for every configured alias, pool or not."""
+
+    aliases: dict[str, dict[str, AliasPoolTargetHealth]]
 
 
 class UpstreamProxyEndpointCreateRequest(DashboardModel):

@@ -1259,6 +1259,21 @@ export const handlers = [
     return HttpResponse.json(state.settings);
   }),
 
+  http.get("*/api/settings/alias-pools/health", () => {
+    const aliases = Object.fromEntries(
+      Object.entries(state.settings.modelAliases ?? {}).map(([alias, pool]) => [
+        alias,
+        Object.fromEntries(
+          pool.targets.map((target) => [
+            target,
+            { state: "healthy", until: null, lastStatus: null, lastError: null },
+          ]),
+        ),
+      ]),
+    );
+    return HttpResponse.json({ aliases });
+  }),
+
   http.get("*/api/settings/telemetry", ({ request }) => {
     // include_preview=true is the on-demand path: the envelope is attached
     // regardless of consent state.

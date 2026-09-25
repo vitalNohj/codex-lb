@@ -1,7 +1,7 @@
 """fold the NVIDIA sidecar into the OpenAI-compat endpoint list
 
 Revision ID: 20260925_000000_fold_nvidia_into_openai_compat
-Revises: 20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads
+Revises: 20260923_020000_add_alias_pool_failover
 Create Date: 2026-09-25 00:00:00.000000
 
 The NVIDIA integration was a verbatim clone of a generic OpenAI-compatible
@@ -23,7 +23,7 @@ from alembic import op
 from sqlalchemy.engine import Connection
 
 revision = "20260925_000000_fold_nvidia_into_openai_compat"
-down_revision = "20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads"
+down_revision = "20260923_020000_add_alias_pool_failover"
 branch_labels = None
 depends_on = None
 

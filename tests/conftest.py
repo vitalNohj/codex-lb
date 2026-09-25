@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +14,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="codex-lb-tests-"))
+# One directory per pytest process (each xdist worker imports this module).
+# Removed when the process exits; left behind, they fill a quota-limited /tmp
+# until the database writes of later runs fail with "disk I/O error".
+atexit.register(shutil.rmtree, TEST_DB_DIR, ignore_errors=True)
 TEST_DB_PATH = TEST_DB_DIR / "codex-lb.db"
 
 os.environ["CODEX_LB_DATABASE_URL"] = os.environ.get(

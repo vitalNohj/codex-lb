@@ -20,6 +20,8 @@ __pycache__/
 
 # Build artifacts
 build/
+# Throwaway previews built by frontend/screenshots/*.config.ts
+frontend/.*-build/
 dist/
 site/
 app/static/

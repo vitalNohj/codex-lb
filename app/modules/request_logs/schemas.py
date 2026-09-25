@@ -26,6 +26,10 @@ class RequestLogEntry(DashboardModel):
     request_kind: str = "normal"
     connection_request_kind: str | None = None
     model: str
+    # Alias pool requests only: the target that served the request and how many
+    # targets were tried. Null for every other request.
+    upstream_model: str | None = None
+    pool_attempts: int | None = None
     source: str | None = None
     sidecar_account_label: str | None = None
     model_source_id: str | None = None

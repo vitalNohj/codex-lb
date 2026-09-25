@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -14,6 +15,17 @@ from app.modules.openai_compat.endpoints import (
     dump_openai_compat_endpoints,
     merge_openai_compat_endpoints,
     parse_openai_compat_endpoints,
+)
+from app.modules.proxy.sidecar_routing import SidecarRoutingDecision, SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.settings.model_alias_pools import (
+    MAX_ALIAS_LENGTH,
+    MAX_POOL_TARGETS,
+    MAX_TARGET_LENGTH,
+    ModelAliasPool,
+    ModelAliasPools,
+    dump_alias_pools_json,
+    normalize_alias_pools,
+    parse_alias_pools_json,
 )
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
@@ -61,7 +73,7 @@ class DashboardSettingsData:
     sticky_reallocation_primary_budget_threshold_pct: float
     sticky_reallocation_secondary_budget_threshold_pct: float
     additional_quota_routing_policies: dict[str, str]
-    model_aliases: dict[str, str]
+    model_aliases: ModelAliasPools
     custom_alias_catalog: dict[str, dict[str, int]]
     warmup_model: str
     import_without_overwrite: bool
@@ -203,7 +215,7 @@ class DashboardSettingsUpdateData:
     sticky_reallocation_primary_budget_threshold_pct: float
     sticky_reallocation_secondary_budget_threshold_pct: float
     additional_quota_routing_policies: dict[str, str]
-    model_aliases: dict[str, str]
+    model_aliases: ModelAliasPools
     custom_alias_catalog: dict[str, dict[str, int]]
     warmup_model: str
     import_without_overwrite: bool
@@ -315,6 +327,19 @@ class SidecarRoutingConflictError(ValueError):
         )
 
 
+class ModelAliasPoolError(ValueError):
+    """An alias pool the operator submitted cannot be saved.
+
+    Carries the alias and offending target so the dashboard can attach the
+    message to the right row instead of a page-level toast.
+    """
+
+    def __init__(self, message: str, *, alias: str, target: str | None = None) -> None:
+        self.alias = alias
+        self.target = target
+        super().__init__(message)
+
+
 class SettingsService:
     def __init__(self, repository: SettingsRepository) -> None:
         self._repository = repository
@@ -353,6 +378,7 @@ class SettingsService:
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
         _validate_unique_sidecar_routes(payload)
+        _validate_model_alias_pools(payload, stored_aliases=_parse_model_aliases(current.model_aliases_json))
         api_key_encrypted = current.claude_sidecar_api_key_encrypted
         if payload.claude_sidecar_clear_api_key:
             api_key_encrypted = None
@@ -797,40 +823,18 @@ def _dump_additional_quota_routing_policies(policies: dict[str, str]) -> str:
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
-def _parse_model_aliases(raw: str | None) -> dict[str, str]:
-    """Parse the stored alias map ``{alias: target_model}``.
+def _parse_model_aliases(raw: str | None) -> ModelAliasPools:
+    """Parse the stored alias map ``{alias: {"targets": [model, ...]}}``.
 
     Keyed by the alias the client sends (e.g. ``custom_r1``); the value is the
-    real upstream model id it resolves to (e.g. ``cc/claude``). Blank or
-    non-string entries are dropped; aliases are de-duplicated case-insensitively.
+    ordered list of real upstream model ids it resolves to. The legacy
+    ``{alias: "model"}`` shape is read as a one-target pool.
     """
 
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    aliases: dict[str, str] = {}
-    seen: set[str] = set()
-    for alias, target in parsed.items():
-        if not isinstance(alias, str) or not isinstance(target, str):
-            continue
-        normalized_alias = alias.strip()
-        normalized_target = target.strip()
-        if not normalized_alias or not normalized_target:
-            continue
-        key = normalized_alias.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        aliases[normalized_alias] = normalized_target
-    return aliases
+    return parse_alias_pools_json(raw)
 
 
-def parse_model_aliases(raw: str | None) -> dict[str, str]:
+def parse_model_aliases(raw: str | None) -> ModelAliasPools:
     return _parse_model_aliases(raw)
 
 
@@ -876,22 +880,270 @@ def _dump_custom_alias_catalog(catalog: dict[str, dict[str, int]]) -> str:
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
-def _dump_model_aliases(aliases: dict[str, str]) -> str:
-    normalized: dict[str, str] = {}
+def _dump_model_aliases(aliases: Mapping[str, ModelAliasPool]) -> str:
+    return dump_alias_pools_json(aliases)
+
+
+# Providers whose chat dispatch can open the upstream before committing the
+# client response, which is what makes a failed attempt retryable on another
+# target. A pool with two or more targets may only contain these. Native Codex
+# and the other sidecars remain valid as a pool's single target.
+POOL_CAPABLE_PROVIDERS: frozenset[str] = frozenset({"orcarouter", "openrouter"})
+_POOL_CAPABLE_PROVIDER_PREFIXES: tuple[str, ...] = ("openai_compat:",)
+
+_PROVIDER_LABELS: dict[str, str] = {
+    "claude": "CLIProxyAPI",
+    "openrouter": "OpenRouter",
+    "orcarouter": "OrcaRouter",
+    "opencode_go": "OpenCode Go",
+    "omniroute": "OmniRoute",
+    "ollama": "Ollama",
+}
+
+
+def is_pool_capable_provider(provider: str) -> bool:
+    if provider in POOL_CAPABLE_PROVIDERS:
+        return True
+    return any(provider.startswith(prefix) for prefix in _POOL_CAPABLE_PROVIDER_PREFIXES)
+
+
+def _provider_label(provider: str, payload: DashboardSettingsUpdateData) -> str:
+    label = _PROVIDER_LABELS.get(provider)
+    if label is not None:
+        return label
+    for endpoint in payload.openai_compat_endpoints:
+        if endpoint.id is not None and provider == f"openai_compat:{endpoint.id}":
+            return endpoint.name
+    return provider
+
+
+@dataclass(frozen=True, slots=True)
+class _PayloadRouting:
+    """Routing entries for the settings being saved.
+
+    ``enabled`` holds the integrations turned on, which is what the proxy
+    routes with; ``configured`` adds the ones turned off. Both are built from
+    the payload rather than the stored row, so validation sees the prefixes
+    and full models the request is about to persist.
+    """
+
+    enabled: tuple[SidecarRoutingEntry, ...]
+    configured: tuple[SidecarRoutingEntry, ...]
+
+    def pool_target_route(self, target: str) -> SidecarRoutingDecision | None:
+        """The route ``target`` takes now, else the one its turned-off owner gives it.
+
+        Turning an integration off is an operational switch (it ran out of
+        credit, say): a pool may keep, reorder, or gain a target on it, and
+        the proxy skips that target until it is back on. Only when no enabled
+        integration routes the target is the turned-off owner consulted, so a
+        target routed now is judged by that route. Integrations the product
+        itself disables stay out, by ``resolve_sidecar_route``'s capability
+        filter.
+        """
+
+        return resolve_sidecar_route(target, self.enabled) or resolve_sidecar_route(target, self.configured)
+
+
+def _routing_entries_from_payload(payload: DashboardSettingsUpdateData) -> _PayloadRouting:
+    enabled_entries: list[SidecarRoutingEntry] = []
+    configured_entries: list[SidecarRoutingEntry] = []
+
+    def add(provider: str, enabled: bool, prefixes: list[SidecarPrefix], full_models: list[str]) -> None:
+        entry = SidecarRoutingEntry(
+            provider=provider,
+            prefixes=tuple(prefixes),
+            full_models=tuple(full_models),
+        )
+        configured_entries.append(entry)
+        if enabled:
+            enabled_entries.append(entry)
+
+    add(
+        "claude",
+        payload.claude_sidecar_enabled,
+        payload.claude_sidecar_model_prefixes,
+        payload.claude_sidecar_full_models,
+    )
+    add(
+        "openrouter",
+        payload.openrouter_sidecar_enabled,
+        payload.openrouter_sidecar_model_prefixes,
+        payload.openrouter_sidecar_full_models,
+    )
+    for endpoint in payload.openai_compat_endpoints:
+        if endpoint.id is None:
+            continue
+        add(f"openai_compat:{endpoint.id}", endpoint.enabled, endpoint.prefixes, endpoint.full_models)
+    add(
+        "orcarouter",
+        payload.orcarouter_sidecar_enabled,
+        payload.orcarouter_sidecar_model_prefixes,
+        payload.orcarouter_sidecar_full_models,
+    )
+    add(
+        "opencode_go",
+        payload.opencode_go_sidecar_enabled,
+        payload.opencode_go_sidecar_model_prefixes,
+        payload.opencode_go_sidecar_full_models,
+    )
+    if omniroute_enabled():
+        add(
+            "omniroute",
+            payload.omniroute_sidecar_enabled,
+            payload.omniroute_sidecar_model_prefixes,
+            payload.omniroute_sidecar_full_models,
+        )
+    add(
+        "ollama",
+        payload.ollama_sidecar_enabled,
+        payload.ollama_sidecar_model_prefixes,
+        payload.ollama_sidecar_full_models,
+    )
+    return _PayloadRouting(enabled=tuple(enabled_entries), configured=tuple(configured_entries))
+
+
+def _validate_model_alias_pools(
+    payload: DashboardSettingsUpdateData,
+    *,
+    stored_aliases: Mapping[str, ModelAliasPool],
+) -> None:
+    """Reject the alias problems this save introduces.
+
+    Rules, each naming the alias and the offending target in the error:
+
+    1. no targets;
+    2. a repeated target (case-insensitive);
+    3. a target that is itself a configured alias (no chains, so no cycles);
+    4. two or more targets where any target routes to native Codex or to a
+       sidecar that is not pool-capable (see ``_PayloadRouting.pool_target_route``
+       for targets on an integration that is turned off);
+    5. more than ``MAX_POOL_TARGETS`` targets, or an alias/target over the
+       length cap.
+
+    Only what the save changes is judged: every save sends the whole alias map
+    back, so re-judging stored aliases would let old data block unrelated
+    saves. An alias whose targets match ``stored_aliases`` is skipped, and a
+    chain link is allowed only when it was stored and its alias is unchanged.
+    That keeps legacy single-step chains (legacy aliases could name another
+    alias, harmlessly, and the migration carries them over) while rejecting
+    any link a save creates, including one made by adding an alias under a
+    name another alias already targets. A stored pool target that a later
+    routing change leaves unroutable is skipped by the proxy at request time.
+
+    A one-target pool may point anywhere a legacy alias could, including native
+    Codex, so the migration cannot invalidate an existing alias.
+    """
+
+    pools = normalize_alias_pools(payload.model_aliases)
+    stored_targets = {alias.lower(): pool.targets for alias, pool in stored_aliases.items()}
+    changed_aliases: set[str] = set()
+    for alias, submitted in payload.model_aliases.items():
+        normalized_alias = alias.strip() if isinstance(alias, str) else ""
+        if normalized_alias and tuple(_submitted_targets(submitted)) != stored_targets.get(normalized_alias.lower()):
+            changed_aliases.add(normalized_alias.lower())
+
+    stored_links = _alias_chain_links(stored_aliases)
+    for (alias_key, target_key), (alias, target) in _alias_chain_links(pools).items():
+        if alias_key not in changed_aliases and (alias_key, target_key) in stored_links:
+            continue
+        raise ModelAliasPoolError(
+            f"Alias '{alias}' target '{target}' is itself an alias; aliases cannot chain",
+            alias=alias,
+            target=target,
+        )
+
+    routing = _routing_entries_from_payload(payload)
+    for alias, submitted in payload.model_aliases.items():
+        normalized_alias = alias.strip() if isinstance(alias, str) else ""
+        if normalized_alias.lower() not in changed_aliases:
+            continue
+        raw_targets = _submitted_targets(submitted)
+        if len(normalized_alias) > MAX_ALIAS_LENGTH:
+            raise ModelAliasPoolError(
+                f"Alias '{normalized_alias[:32]}...' is longer than {MAX_ALIAS_LENGTH} characters",
+                alias=normalized_alias,
+            )
+        pool = pools.get(normalized_alias)
+        if pool is None:
+            # ``normalize_alias_pools`` dropped it: no usable targets. A blank
+            # submission is a mistake worth reporting, not silently discarding.
+            raise ModelAliasPoolError(f"Alias '{normalized_alias}' has no targets", alias=normalized_alias)
+        if len(raw_targets) != len(pool.targets):
+            duplicate = _first_duplicate_target(raw_targets)
+            raise ModelAliasPoolError(
+                f"Alias '{normalized_alias}' lists target '{duplicate}' more than once",
+                alias=normalized_alias,
+                target=duplicate,
+            )
+        if len(pool.targets) > MAX_POOL_TARGETS:
+            raise ModelAliasPoolError(
+                f"Alias '{normalized_alias}' has more than {MAX_POOL_TARGETS} targets",
+                alias=normalized_alias,
+            )
+        for target in pool.targets:
+            if len(target) > MAX_TARGET_LENGTH:
+                raise ModelAliasPoolError(
+                    f"Alias '{normalized_alias}' target is longer than {MAX_TARGET_LENGTH} characters",
+                    alias=normalized_alias,
+                    target=target,
+                )
+        if not pool.is_pool:
+            continue
+        for target in pool.targets:
+            decision = routing.pool_target_route(target)
+            if decision is None:
+                raise ModelAliasPoolError(
+                    f"Alias '{normalized_alias}' target '{target}' routes to native Codex, "
+                    "which cannot be pooled; use it as the only target instead",
+                    alias=normalized_alias,
+                    target=target,
+                )
+            if not is_pool_capable_provider(decision.provider):
+                raise ModelAliasPoolError(
+                    f"Alias '{normalized_alias}' target '{target}' routes to "
+                    f"{_provider_label(decision.provider, payload)}, which does not support pooling yet; "
+                    "use it as the only target instead",
+                    alias=normalized_alias,
+                    target=target,
+                )
+
+
+def _alias_chain_links(pools: Mapping[str, ModelAliasPool]) -> dict[tuple[str, str], tuple[str, str]]:
+    """Every ``alias -> target`` link whose target is itself an alias.
+
+    Keyed case-insensitively, valued with the spelling to report.
+    """
+
+    alias_keys = {alias.lower() for alias in pools}
+    links: dict[tuple[str, str], tuple[str, str]] = {}
+    for alias, pool in pools.items():
+        for target in pool.targets:
+            if target.lower() in alias_keys:
+                links.setdefault((alias.lower(), target.lower()), (alias, target))
+    return links
+
+
+def _submitted_targets(value: object) -> list[str]:
+    if isinstance(value, ModelAliasPool):
+        return [target.strip() for target in value.targets if target.strip()]
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, Mapping):
+        raw = value.get("targets")
+        if isinstance(raw, list):
+            return [target.strip() for target in raw if isinstance(target, str) and target.strip()]
+    return []
+
+
+def _first_duplicate_target(targets: list[str]) -> str:
     seen: set[str] = set()
-    for alias, target in aliases.items():
-        if not isinstance(alias, str) or not isinstance(target, str):
-            continue
-        normalized_alias = alias.strip()
-        normalized_target = target.strip()
-        if not normalized_alias or not normalized_target:
-            continue
-        key = normalized_alias.lower()
+    for target in targets:
+        key = target.lower()
         if key in seen:
-            continue
+            return target
         seen.add(key)
-        normalized[normalized_alias] = normalized_target
-    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return targets[-1] if targets else ""
 
 
 def _parse_sidecar_model_prefixes(

@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
+from typing import Final, Literal
 
 from app.core.errors import ResponseFailedEvent
-from app.core.types import JsonValue
+from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_dict
+from app.core.utils.stream_close import aclose_stream
 
 type JsonPayload = Mapping[str, JsonValue] | ResponseFailedEvent
+
+# The data an OpenAI-style stream sends last, in place of a JSON chunk.
+SSE_DONE: Final = "[DONE]"
+
+type SseJsonEvent = JsonObject | Literal["[DONE]"]
 
 # The SSE spec delimits lines only by CR, LF, or CRLF. str.splitlines() also
 # breaks on other Unicode boundaries (VT, FF, FS/GS/RS, NEL, U+2028, U+2029),
@@ -59,10 +67,16 @@ async def inject_sse_keepalives(
     instead of hanging forever, and let aggressive intermediaries see traffic.
 
     A non-positive ``interval_seconds`` disables injection entirely.
+
+    Closing this generator closes ``source`` too, so the cleanup in the
+    source's ``finally`` runs now rather than at garbage collection.
     """
     if interval_seconds <= 0:
-        async for chunk in source:
-            yield chunk
+        try:
+            async for chunk in source:
+                yield chunk
+        finally:
+            await aclose_stream(source)
         return
 
     async def _next_chunk(it: AsyncIterator[str]) -> str:
@@ -90,12 +104,131 @@ async def inject_sse_keepalives(
             pending = None
             yield chunk
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-            try:
-                await pending
-            except BaseException:
-                pass
+        try:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except BaseException:
+                    pass
+        finally:
+            await aclose_stream(source)
+
+
+class SseDataDecoder:
+    """Split an SSE byte stream, fed in arbitrary chunks, into each event's ``data``.
+
+    Follows the event-stream parsing rules of the HTML standard, because real
+    upstreams differ exactly where those rules are precise:
+
+    * Chunks end at arbitrary byte offsets, so one incremental UTF-8 decoder
+      spans the stream and a character split across chunks decodes whole.
+      Invalid bytes become U+FFFD rather than vanishing; a leading BOM is
+      dropped.
+    * Lines end at CRLF, LF, or CR and nowhere else, including at a CRLF split
+      across chunks. (``str.splitlines`` also splits at U+2028, U+2029, and
+      U+0085, which JSON strings may hold unescaped.)
+    * An event ends at a blank line and its ``data`` lines join with LF.
+      Comments and other fields are skipped, and an event without ``data``
+      yields nothing.
+
+    One deliberate leniency: ``flush`` also yields a last event the stream did
+    not close with a blank line, since some upstreams end right after
+    ``data: [DONE]``.
+    """
+
+    def __init__(self) -> None:
+        # ``utf-8-sig`` drops a leading BOM, even one split across chunks.
+        self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
+        self._partial_line: list[str] = []
+        # The text so far ended in CR, so a leading LF completes that CRLF.
+        self._after_cr = False
+        self._data_lines: list[str] = []
+
+    def feed(self, chunk: bytes) -> list[str]:
+        return self._take_text(self._text.decode(chunk))
+
+    def flush(self) -> list[str]:
+        """End the stream: yield what is left, including an unclosed last event."""
+
+        payloads = self._take_text(self._text.decode(b"", final=True))
+        partial_line = "".join(self._partial_line)
+        self._partial_line = []
+        self._after_cr = False
+        if partial_line:
+            self._take_field(partial_line)
+        payload = self._dispatch()
+        if payload is not None:
+            payloads.append(payload)
+        return payloads
+
+    def _take_text(self, text: str) -> list[str]:
+        if self._after_cr and text:
+            self._after_cr = False
+            if text[0] == "\n":
+                text = text[1:]
+        if not text:
+            return []
+        pieces = _SSE_LINE_BOUNDARY.split(text)
+        self._partial_line.append(pieces[0])
+        if len(pieces) == 1:
+            return []
+        self._after_cr = text[-1] == "\r"
+        lines = ["".join(self._partial_line), *pieces[1:-1]]
+        self._partial_line = [pieces[-1]]
+        payloads: list[str] = []
+        for line in lines:
+            if line:
+                self._take_field(line)
+            elif (payload := self._dispatch()) is not None:
+                payloads.append(payload)
+        return payloads
+
+    def _take_field(self, line: str) -> None:
+        if line.startswith(":"):
+            return
+        field, _, value = line.partition(":")
+        if field == "data":
+            self._data_lines.append(value[1:] if value.startswith(" ") else value)
+
+    def _dispatch(self) -> str | None:
+        if not self._data_lines:
+            return None
+        payload = "\n".join(self._data_lines)
+        self._data_lines = []
+        return payload
+
+
+class SseJsonDataDecoder:
+    """``SseDataDecoder`` for OpenAI-style streams.
+
+    Each event is its data parsed as a JSON object, or ``SSE_DONE``; data that
+    is neither is skipped.
+    """
+
+    def __init__(self) -> None:
+        self._data = SseDataDecoder()
+
+    def feed(self, chunk: bytes) -> list[SseJsonEvent]:
+        return _json_events(self._data.feed(chunk))
+
+    def flush(self) -> list[SseJsonEvent]:
+        return _json_events(self._data.flush())
+
+
+def _json_events(payloads: list[str]) -> list[SseJsonEvent]:
+    events: list[SseJsonEvent] = []
+    for payload in payloads:
+        if payload.strip() == SSE_DONE:
+            events.append(SSE_DONE)
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if is_json_dict(parsed):
+            events.append(parsed)
+    return events
 
 
 def format_sse_event(payload: JsonPayload) -> str:
