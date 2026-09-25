@@ -24,6 +24,7 @@ const currencyFormatters = new Map<string, Intl.NumberFormat>();
 const preciseCurrencyFormatters = new Map<string, Intl.NumberFormat>();
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
 const timeFormatters = new Map<string, Intl.DateTimeFormat>();
+const clockFormatters = new Map<string, Intl.DateTimeFormat>();
 const chartDateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 
 function getCachedFormatter<TFormatter>(
@@ -91,6 +92,14 @@ function createTimeFormatter(locale: string, preference: TimeFormatPreference): 
   });
 }
 
+function createClockFormatter(locale: string, preference: TimeFormatPreference): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: preference === "12h" ? "h12" : "h23",
+  });
+}
+
 function createChartDateTimeFormatter(locale: string, preference: TimeFormatPreference): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
@@ -115,6 +124,12 @@ function getTimeFormatter(): Intl.DateTimeFormat {
   const locale = getIntlLocale();
   const preference = getTimeFormatPreference();
   return getCachedFormatter(timeFormatters, `${locale}:${preference}`, () => createTimeFormatter(locale, preference));
+}
+
+function getClockFormatter(): Intl.DateTimeFormat {
+  const locale = getIntlLocale();
+  const preference = getTimeFormatPreference();
+  return getCachedFormatter(clockFormatters, `${locale}:${preference}`, () => createClockFormatter(locale, preference));
 }
 
 function getChartDateTimeFormatter(): Intl.DateTimeFormat {
@@ -308,6 +323,25 @@ export function formatTimeLong(
     time: getTimeFormatter().format(date),
     date: getDateFormatter().format(date),
   };
+}
+
+/**
+ * Hour and minute only, for moments where seconds are noise (cooldown
+ * expiries, schedules). Honors the 12h/24h and ISO display preferences like
+ * `formatTimeLong`.
+ */
+export function formatClockTime(
+  iso: string | null | undefined,
+  displayFormat: DateDisplayFormat = getDateDisplayFormat(),
+): string {
+  const date = parseDate(iso);
+  if (!date) {
+    return "--";
+  }
+  if (displayFormat === "iso8601") {
+    return `${padTwo(date.getHours())}:${padTwo(date.getMinutes())}`;
+  }
+  return getClockFormatter().format(date);
 }
 
 export function formatConversationDuration(

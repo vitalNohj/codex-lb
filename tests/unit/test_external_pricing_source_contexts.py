@@ -18,6 +18,7 @@ from app.modules.proxy.external_pricing_sources import (
     _load_openrouter_context,
     _load_orcarouter_context,
 )
+from app.modules.settings.model_alias_pools import ModelAliasPool
 
 pytestmark = pytest.mark.unit
 
@@ -85,7 +86,12 @@ async def test_a_switched_off_integration_reports_itself_as_disabled(
         prefixes = (_Prefix(),)
 
     async def _aliases():
-        return {"local-model": "vendor/canonical-model"}
+        # A pool contributes its primary target: the resolver rewrites an alias
+        # to one id, and a pool request is priced by the target that served it.
+        return {
+            "local-model": ModelAliasPool(targets=("vendor/canonical-model",)),
+            "pooled/model": ModelAliasPool(targets=("vendor/primary", "vendor/secondary")),
+        }
 
     _patch_config(monkeypatch, module, provider, _DisabledConfig())
     monkeypatch.setattr(pricing_sources, "load_model_aliases", _aliases)
@@ -95,5 +101,5 @@ async def test_a_switched_off_integration_reports_itself_as_disabled(
     assert context is not None
     assert context.integration_enabled is False
     assert context.serving_catalog_missing is False, "a disabled integration has not failed to answer"
-    assert context.aliases == {"local-model": "vendor/canonical-model"}
+    assert context.aliases == {"local-model": "vendor/canonical-model", "pooled/model": "vendor/primary"}
     assert context.prefixes == (("routed/", True),)
