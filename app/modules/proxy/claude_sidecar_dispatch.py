@@ -338,6 +338,13 @@ async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) 
 # against OmniRoute's model-capability registry. Keys are canonical model ids
 # from ``canonical_sidecar_model()``.
 _SIDECAR_OUTPUT_FLOOR = 32_768
+# A client output cap at or below this value asks for (almost) no output: a
+# prompt-cache keep-warm replay such as pi's built-in warmer or the pi-keepwarm
+# extension sends ``max_tokens: 1``, and OpenAI Responses-style callers send
+# their 16-token minimum. Raising such a cap to the floor turns a ~1-token cache
+# read into a full answer on every refresh. Real agent turns send thousands, so
+# they keep the floor.
+_SIDECAR_MINIMAL_OUTPUT_MAX_TOKENS = 16
 # Rough chars-per-token ratio for the defensive input estimate (overestimating
 # input is safe: it only lowers the effective output ceiling).
 _SIDECAR_CHARS_PER_TOKEN = 4
@@ -906,7 +913,9 @@ def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: s
     exceed the model's context window, which would trip an upstream 400 on the
     smaller 200k-context models. Only mutates limits the client actually sent
     (``max_tokens`` / ``max_completion_tokens``); an absent field stays absent,
-    and a model with no configured bounds is forwarded unchanged.
+    and a model with no configured bounds is forwarded unchanged. A minimal cap
+    (at most ``_SIDECAR_MINIMAL_OUTPUT_MAX_TOKENS``) is also forwarded unchanged,
+    so prompt-cache keep-warm replays stay cache reads.
     """
     canonical = canonical_sidecar_model(wire_model)
     if canonical is None:
@@ -918,6 +927,9 @@ def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: s
     for field in _SIDECAR_MAX_TOKENS_FIELDS:
         value = body.get(field)
         if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value <= _SIDECAR_MINIMAL_OUTPUT_MAX_TOKENS:
+            # A deliberate minimal cap (cache keep-warm replay) is forwarded as-is.
             continue
         # Raise to the floor, clamp to the model cap, then let the context-window
         # headroom lower a raise only — never below the client's own value (also
