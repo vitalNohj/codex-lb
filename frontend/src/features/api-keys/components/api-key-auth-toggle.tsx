@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { Switch } from "@/components/ui/switch";
+import { SettingsRow } from "@/features/settings/components/settings-section";
 
 export type ApiKeyAuthToggleProps = {
   enabled: boolean;
@@ -11,12 +12,8 @@ export type ApiKeyAuthToggleProps = {
 export function ApiKeyAuthToggle({ enabled, disabled = false, onChange }: ApiKeyAuthToggleProps) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center justify-between rounded-lg border p-3">
-      <div className="space-y-1">
-        <p className="text-sm font-medium">{t("apiKeys.authToggle.title")}</p>
-        <p className="text-xs text-muted-foreground">{t("apiKeys.authToggle.description")}</p>
-      </div>
+    <SettingsRow label={t("apiKeys.authToggle.title")} description={t("apiKeys.authToggle.description")}>
       <Switch checked={enabled} disabled={disabled} onCheckedChange={onChange} />
-    </div>
+    </SettingsRow>
   );
 }

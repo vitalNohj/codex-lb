@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import AsyncIterator
+from functools import partial
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from app.modules.proxy.alias_pool_attempts import ChatRequestAttribution
 from app.modules.proxy.external_pricing_logging import ExternalRequestCost
+from app.modules.proxy.sidecar_upstream_errors import open_sidecar_stream, relay_sidecar_stream
 
 
 class _StreamContext:
@@ -125,13 +128,20 @@ async def test_reported_stream_charge_is_settled_once_for_every_termination(
     monkeypatch.setattr(module, finalize_name, _finalize)
     monkeypatch.setattr(module, log_name, _log)
 
+    # The dispatcher opens the upstream before the client response exists and
+    # hands the iterator the relay of that open stream; do the same here so the
+    # iterator under test sees exactly what it sees in production.
+    client = _StreamClient(mode, event)
+    open_stream = partial(client.stream_chat_completion, {})
+    opened = await open_sidecar_stream(open_stream, provider="Test", model="vendor/model-x")
     stream = getattr(module, iterator_name)(
-        {},
+        relay_sidecar_stream(opened, open_stream, provider="Test", model="vendor/model-x"),
         api_key=None,
         reservation=SimpleNamespace(reservation_id="reservation-1"),
         model="vendor/model-x",
+        attribution=ChatRequestAttribution.direct("vendor/model-x"),
         started_at=0,
-        client=_StreamClient(mode, event),
+        client=client,
     )
 
     if mode == "disconnect":

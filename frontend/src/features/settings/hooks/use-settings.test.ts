@@ -155,7 +155,7 @@ describe("useSettings", () => {
   it("does not retry collection patches after settings_conflict", async () => {
     const queryClient = createTestQueryClient();
     const loaded = createDashboardSettings({ version: 3 });
-    const afterConflict = createDashboardSettings({ version: 4, modelAliases: { other: "gpt-5.4" } });
+    const afterConflict = createDashboardSettings({ version: 4, modelAliases: { other: { targets: ["gpt-5.4"] } } });
     server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
 
     const conflict = new ApiError({
@@ -178,7 +178,7 @@ describe("useSettings", () => {
 
       await expect(
         result.current.updateSettingsMutation.mutateAsync({
-          modelAliases: { north: "gpt-5.4" },
+          modelAliases: { north: { targets: ["gpt-5.4"] } },
         }),
       ).rejects.toMatchObject({ code: "settings_conflict" });
 
@@ -251,7 +251,7 @@ describe("useSettings", () => {
 
       await expect(
         result.current.updateSettingsMutation.mutateAsync({
-          modelAliases: { north: "gpt-5.4" },
+          modelAliases: { north: { targets: ["gpt-5.4"] } },
           expectedVersion: 3,
         }),
       ).rejects.toMatchObject({ code: "settings_conflict" });
@@ -271,7 +271,7 @@ describe("useSettings", () => {
     const afterCollection = createDashboardSettings({
       version: 5,
       stickyThreadsEnabled: true,
-      modelAliases: { north: "gpt-5.4" },
+      modelAliases: { north: { targets: ["gpt-5.4"] } },
     });
     server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
 
@@ -290,13 +290,13 @@ describe("useSettings", () => {
       queryClient.setQueryData(["settings", "detail"], afterOwnSave);
 
       await result.current.updateSettingsMutation.mutateAsync({
-        modelAliases: { north: "gpt-5.4" },
+        modelAliases: { north: { targets: ["gpt-5.4"] } },
         expectedVersion: 3,
       });
 
       expect(updateSpy).toHaveBeenCalledTimes(2);
       expect(updateSpy).toHaveBeenNthCalledWith(2, {
-        modelAliases: { north: "gpt-5.4" },
+        modelAliases: { north: { targets: ["gpt-5.4"] } },
         expectedVersion: 4,
       });
     } finally {
@@ -306,8 +306,8 @@ describe("useSettings", () => {
 
   it("rejects a queued overlapping collection patch after this client's collection save", async () => {
     const queryClient = createTestQueryClient();
-    const loaded = createDashboardSettings({ version: 3, modelAliases: { north: "gpt-5.4" } });
-    const afterFirst = createDashboardSettings({ version: 4, modelAliases: { north: "gpt-5.4" } });
+    const loaded = createDashboardSettings({ version: 3, modelAliases: { north: { targets: ["gpt-5.4"] } } });
+    const afterFirst = createDashboardSettings({ version: 4, modelAliases: { north: { targets: ["gpt-5.4"] } } });
     server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
 
     const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
@@ -320,14 +320,14 @@ describe("useSettings", () => {
 
       await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
       await result.current.updateSettingsMutation.mutateAsync({
-        modelAliases: { north: "gpt-5.4" },
+        modelAliases: { north: { targets: ["gpt-5.4"] } },
         expectedVersion: 3,
       });
       queryClient.setQueryData(["settings", "detail"], afterFirst);
 
       await expect(
         result.current.updateSettingsMutation.mutateAsync({
-          modelAliases: { south: "gpt-5.4" },
+          modelAliases: { south: { targets: ["gpt-5.4"] } },
           expectedVersion: 3,
         }),
       ).rejects.toMatchObject({ code: "settings_conflict" });

@@ -2,6 +2,7 @@ import { get, post, put } from "@/lib/api-client";
 import {
   AccountProxyBindingRequestSchema,
   AccountProxyBindingSchema,
+  AliasPoolsHealthResponseSchema,
   ClaudeSidecarModelsResponseSchema,
   ClaudeSidecarQuotaResponseSchema,
   ClaudeSidecarRoutingResponseSchema,
@@ -53,6 +54,7 @@ const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
 const OLLAMA_SIDECAR_PATH = "/api/ollama-sidecar";
 const OPENCODE_GO_SIDECAR_PATH = "/api/opencode-go-sidecar";
 const TELEMETRY_PATH = `${SETTINGS_PATH}/telemetry`;
+const ALIAS_POOLS_HEALTH_PATH = `${SETTINGS_PATH}/alias-pools/health`;
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -63,6 +65,10 @@ export function updateSettings(payload: unknown) {
   return put(SETTINGS_PATH, DashboardSettingsSchema, {
     body: validated,
   });
+}
+
+export function getAliasPoolsHealth() {
+  return get(ALIAS_POOLS_HEALTH_PATH, AliasPoolsHealthResponseSchema);
 }
 
 export function getTelemetryConsent(options: { includePreview?: boolean } = {}) {

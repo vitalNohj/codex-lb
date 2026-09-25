@@ -12,7 +12,10 @@ from hypothesis import strategies as st
 from app.core.openai.parsing import _LIFECYCLE_EVENT_TYPES, classify_event_type, parse_sse_event
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
+    SSE_DONE,
     SSE_KEEPALIVE_FRAME,
+    SseDataDecoder,
+    SseJsonDataDecoder,
     extract_sse_data,
     format_sse_data,
     format_sse_event,
@@ -263,3 +266,102 @@ def test_sse_event_type_from_block_rejects_non_lf_framing_and_multiline_data():
 def test_sse_event_type_from_block_rejects_non_object_data_payloads():
     assert sse_event_type_from_block("event: done\ndata: [DONE]\n\n") is None
     assert sse_event_type_from_block("event: ping\ndata: \n\n") is None
+
+
+def _decode_in_chunks(stream: bytes, cuts: list[int]) -> list[str]:
+    decoder = SseDataDecoder()
+    payloads: list[str] = []
+    start = 0
+    for cut in sorted(set(cuts)):
+        payloads.extend(decoder.feed(stream[start:cut]))
+        start = cut
+    payloads.extend(decoder.feed(stream[start:]))
+    payloads.extend(decoder.flush())
+    return payloads
+
+
+def test_sse_data_decoder_splits_events_at_every_line_ending_style():
+    stream = b"data: lf\n\ndata: crlf\r\n\r\ndata: cr\r\rdata: mixed\r\n\n"
+
+    assert _decode_in_chunks(stream, []) == ["lf", "crlf", "cr", "mixed"]
+
+
+def test_sse_data_decoder_ends_a_line_not_an_event_at_one_crlf():
+    stream = b'data: {"a":\r\ndata: 1}\r\n\r\n'
+
+    assert _decode_in_chunks(stream, []) == ['{"a":\n1}']
+
+
+def test_sse_data_decoder_treats_crlf_split_across_chunks_as_one_line_ending():
+    # Read as CR then a separate LF, a CRLF between two data lines would end
+    # the event early and split it in two.
+    stream = b"data: x\r\ndata: y\r\n\r\ndata: z\r\n\r\n"
+
+    for cut in range(len(stream) + 1):
+        assert _decode_in_chunks(stream, [cut]) == ["x\ny", "z"], cut
+
+
+def test_sse_data_decoder_joins_a_character_split_across_chunks():
+    stream = "data: café 日本語 🚀\n\n".encode()
+
+    for cut in range(len(stream) + 1):
+        assert _decode_in_chunks(stream, [cut]) == ["café 日本語 🚀"], cut
+
+
+def test_sse_data_decoder_keeps_unicode_line_separators_inside_data():
+    payload = "one\u2028two\u2029three\x85four\x0bfive\x0csix"
+
+    assert _decode_in_chunks(f"data: {payload}\n\n".encode(), []) == [payload]
+
+
+def test_sse_data_decoder_skips_comments_other_fields_and_data_less_events():
+    stream = b": ping\n\nevent: x\nid: 7\nretry: 5\n\ndata\n\ndata:no-space\n\n"
+
+    assert _decode_in_chunks(stream, []) == ["", "no-space"]
+
+
+def test_sse_data_decoder_replaces_invalid_bytes_and_drops_a_leading_bom():
+    stream = b"\xef\xbb\xbfdata: a\xffb\n\n"
+
+    for cut in range(len(stream) + 1):
+        assert _decode_in_chunks(stream, [cut]) == ["a\ufffdb"], cut
+
+
+def test_sse_data_decoder_flush_yields_an_unclosed_last_event_once():
+    decoder = SseDataDecoder()
+
+    assert decoder.feed(b"data: [DONE]") == []
+    assert decoder.flush() == ["[DONE]"]
+    assert decoder.flush() == []
+
+
+def test_sse_data_decoder_flush_completes_a_character_cut_off_at_the_end():
+    decoder = SseDataDecoder()
+
+    assert decoder.feed(b"data: caf\xc3") == []
+    assert decoder.flush() == ["caf\ufffd"]
+
+
+_sse_data_lines = st.text(max_size=12).filter(lambda text: "\r" not in text and "\n" not in text)
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    events=st.lists(st.lists(_sse_data_lines, min_size=1, max_size=3), max_size=5),
+    line_ending=st.sampled_from(["\n", "\r\n", "\r"]),
+    cuts=st.lists(st.integers(min_value=0, max_value=400), max_size=8),
+)
+def test_sse_data_decoder_output_does_not_depend_on_chunking(events, line_ending, cuts):
+    stream = "".join("".join(f"data: {line}{line_ending}" for line in lines) + line_ending for lines in events).encode()
+
+    decoded = _decode_in_chunks(stream, [cut for cut in cuts if cut <= len(stream)])
+
+    assert decoded == ["\n".join(lines) for lines in events]
+
+
+def test_sse_json_data_decoder_yields_objects_and_done_and_skips_the_rest():
+    decoder = SseJsonDataDecoder()
+    stream = b'data: {"usage":{"prompt_tokens":1}}\r\n\r\ndata: [1]\n\ndata: not json\n\ndata:  [DONE] \n\n'
+
+    assert decoder.feed(stream) == [{"usage": {"prompt_tokens": 1}}, SSE_DONE]
+    assert decoder.flush() == []

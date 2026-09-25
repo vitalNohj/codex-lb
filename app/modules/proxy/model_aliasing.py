@@ -1,28 +1,35 @@
 """User-configurable model aliasing.
 
-A request may use an alias model name (e.g. ``custom_r1``) that resolves to a
-real upstream model id (e.g. ``cc/claude``). Resolving the alias to the real
-model *before* sidecar routing means the prefix/full-model matchers and the
-forwarded upstream model both operate on the real id, exactly as if the client
-had sent it directly.
+A request may use an alias model name (e.g. ``custom_r1``) that resolves to
+one or more real upstream model ids (e.g. ``cc/claude``). Resolving the alias
+to the real model *before* sidecar routing means the prefix/full-model
+matchers and the forwarded upstream model both operate on the real id, exactly
+as if the client had sent it directly.
+
+An alias with two or more targets is a *pool*: ``POST /v1/chat/completions``
+tries the targets in order and fails over on retryable upstream failures (see
+``alias_pool_dispatch.py``). Every other entry point uses the first target.
 
 Configured aliases are also advertised on ``GET /v1/models`` so discovery-only
 clients (for example Hermes) can select a neutral alias id instead of a
 provider-prefixed model name that the client may mis-route locally.
 
 The alias map is stored on ``DashboardSettings.model_aliases_json`` as
-    ``{alias: real_model}`` and is edited from the dashboard Routing settings.
+    ``{alias: {"targets": [real_model, ...]}}`` and is edited from the
+dashboard Routing settings.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import cast
 
 from app.core.config.settings_cache import get_settings_cache
 from app.core.types import JsonValue
 from app.core.utils.request_id import get_request_id
+from app.modules.settings.model_alias_pools import ModelAliasPool, find_alias_pool
 from app.modules.settings.service import parse_model_aliases
 
 logger = logging.getLogger(__name__)
@@ -31,27 +38,56 @@ DiscoverableAliasEntryFields = Callable[[], dict[str, JsonValue]]
 TargetVisibility = Callable[[str], bool]
 
 
-def resolve_model_alias(model: str | None, aliases: dict[str, str]) -> str | None:
-    """Return the real model for ``model`` or ``model`` itself when unaliased.
+@dataclass(frozen=True, slots=True)
+class ResolvedModelAlias:
+    """What a requested model name resolved to.
+
+    ``alias`` is the alias as configured (``None`` when the request named a
+    real model), ``targets`` is the ordered candidate list. An unaliased model
+    resolves to itself as the only target.
+    """
+
+    requested: str
+    alias: str | None
+    targets: tuple[str, ...]
+
+    @property
+    def primary(self) -> str:
+        return self.targets[0]
+
+    @property
+    def is_pool(self) -> bool:
+        return self.alias is not None and len(self.targets) > 1
+
+
+def resolve_model_alias(model: str | None, aliases: Mapping[str, ModelAliasPool]) -> str | None:
+    """Return the primary real model for ``model`` or ``model`` itself when unaliased.
 
     Matching is case-insensitive on the alias key. ``None`` in -> ``None`` out.
+    Single-target callers (Responses, catalog, pricing) use this; the chat path
+    uses :func:`resolve_model_alias_pool` to see every target.
     """
+
+    resolved = resolve_model_alias_pool(model, aliases)
+    return resolved.primary if resolved is not None else None
+
+
+def resolve_model_alias_pool(model: str | None, aliases: Mapping[str, ModelAliasPool]) -> ResolvedModelAlias | None:
+    """Resolve ``model`` to its ordered targets; unaliased models map to themselves."""
 
     if model is None:
         return None
-    if not aliases:
-        return model
     normalized = model.strip()
     if not normalized:
-        return model
-    lowered = normalized.lower()
-    for alias, target in aliases.items():
-        if alias.strip().lower() == lowered:
-            return target
-    return model
+        return ResolvedModelAlias(requested=model, alias=None, targets=(model,))
+    found = find_alias_pool(normalized, aliases)
+    if found is None:
+        return ResolvedModelAlias(requested=model, alias=None, targets=(model,))
+    alias, pool = found
+    return ResolvedModelAlias(requested=model, alias=alias, targets=pool.targets)
 
 
-async def load_model_aliases() -> dict[str, str]:
+async def load_model_aliases() -> dict[str, ModelAliasPool]:
     try:
         dashboard_settings = await get_settings_cache().get()
     except Exception:
@@ -61,16 +97,28 @@ async def load_model_aliases() -> dict[str, str]:
 
 
 async def resolve_request_model_alias(model: str | None) -> str | None:
+    """Resolve ``model`` to its primary target, logging rewrites.
+
+    Entry points without failover (Responses) use this; it is the pre-pool
+    behavior exactly.
+    """
+
+    resolved = await resolve_request_model_alias_pool(model)
+    return resolved.primary if resolved is not None else None
+
+
+async def resolve_request_model_alias_pool(model: str | None) -> ResolvedModelAlias | None:
     """Resolve ``model`` against the configured alias map, logging rewrites."""
 
     aliases = await load_model_aliases()
-    resolved = resolve_model_alias(model, aliases)
-    if resolved is not None and model is not None and resolved != model:
+    resolved = resolve_model_alias_pool(model, aliases)
+    if resolved is not None and resolved.alias is not None:
         logger.info(
-            "model_alias_resolved request_id=%s requested_model=%s resolved_model=%s",
+            "model_alias_resolved request_id=%s requested_model=%s resolved_model=%s targets=%d",
             get_request_id(),
             model,
-            resolved,
+            resolved.primary,
+            len(resolved.targets),
         )
     return resolved
 
@@ -80,7 +128,7 @@ def _existing_model_ids_lower(existing_entries: Mapping[str, Mapping[str, JsonVa
 
 
 def build_discoverable_alias_model_entries(
-    aliases: Mapping[str, str],
+    aliases: Mapping[str, ModelAliasPool],
     existing_entries: Mapping[str, Mapping[str, JsonValue]],
     *,
     created: int,
@@ -92,8 +140,9 @@ def build_discoverable_alias_model_entries(
     Each alias is advertised as its own model id so discovery-only clients
     (for example Hermes) can select a neutral name that resolves to the real
     upstream model on chat requests. Aliases never override an existing catalog
-    id (case-insensitive). An alias is listed when its target is visible for
-    the requesting API key.
+    id (case-insensitive). An alias is listed when any of its targets is
+    visible for the requesting API key; its metadata is cloned from the first
+    target, in pool order, that is present in ``existing_entries``.
     """
 
     if not aliases:
@@ -102,17 +151,22 @@ def build_discoverable_alias_model_entries(
     reserved_ids = _existing_model_ids_lower(existing_entries)
     entries: list[dict[str, JsonValue]] = []
 
-    for alias, target in aliases.items():
+    for alias, pool in aliases.items():
         normalized_alias = alias.strip()
-        normalized_target = target.strip()
-        if not normalized_alias or not normalized_target:
+        if not normalized_alias or not pool.targets:
             continue
         if normalized_alias.lower() in reserved_ids:
             continue
-        if not is_target_visible(normalized_target):
+        visible_targets = [target for target in pool.targets if is_target_visible(target)]
+        if not visible_targets:
             continue
 
-        target_entry = existing_entries.get(normalized_target)
+        target_entry: Mapping[str, JsonValue] | None = None
+        for target in pool.targets:
+            candidate = existing_entries.get(target)
+            if candidate is not None:
+                target_entry = candidate
+                break
         if target_entry is not None:
             entry = dict(target_entry)
         else:
@@ -132,7 +186,7 @@ def build_discoverable_alias_model_entries(
 
 def append_discoverable_alias_models(
     items: list[dict[str, JsonValue]],
-    aliases: Mapping[str, str],
+    aliases: Mapping[str, ModelAliasPool],
     *,
     created: int,
     is_target_visible: TargetVisibility,

@@ -13,10 +13,15 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
-from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix, parse_sidecar_per_token_usd
+from app.core.clients.claude_sidecar import SidecarModel, SidecarPrefix
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
-from app.core.usage.pricing import ModelPrice
+from app.core.usage.external_pricing.catalogs import (
+    OPENROUTER_RATE_FORMAT,
+    UNLID_RATE_FORMAT,
+    RateFormat,
+    parse_published_pricing,
+)
 from app.core.usage.runtime_pricing import get_runtime_pricing_registry
 from app.core.utils.json_guards import is_json_mapping
 
@@ -226,13 +231,14 @@ class OpenAICompatSidecarClient:
             created = entry.get("created")
             owned_by = entry.get("owned_by")
             created_at = int(created) if isinstance(created, int | float) and not isinstance(created, bool) else None
+            pricing_block, rate_format = published_pricing(entry)
             models.append(
                 SidecarModel(
                     id=model_id,
                     created=created_at,
                     owned_by=owned_by if isinstance(owned_by, str) else "openai_compat",
-                    raw=cast(Mapping[str, JsonValue], entry),
-                    pricing=_parse_openai_compat_pricing(entry.get("pricing")),
+                    raw=entry,
+                    pricing=parse_published_pricing(pricing_block, rate_format=rate_format),
                 )
             )
         get_runtime_pricing_registry().update_models(
@@ -359,19 +365,22 @@ def reset_openai_compat_sidecar_client_cache() -> None:
         _cached_clients = {}
 
 
-def _parse_openai_compat_pricing(pricing: JsonValue) -> ModelPrice | None:
-    if not is_json_mapping(pricing):
-        return None
-    input_per_1m = parse_sidecar_per_token_usd(pricing.get("prompt"))
-    output_per_1m = parse_sidecar_per_token_usd(pricing.get("completion"))
-    if input_per_1m is None or output_per_1m is None:
-        return None
-    cached_input_per_1m = parse_sidecar_per_token_usd(pricing.get("input_cache_read"))
-    return ModelPrice(
-        input_per_1m=input_per_1m,
-        output_per_1m=output_per_1m,
-        cached_input_per_1m=cached_input_per_1m,
-    )
+def published_pricing(entry: Mapping[str, JsonValue]) -> tuple[JsonValue, RateFormat]:
+    """Locate known /models pricing formats without inferring units from arbitrary fields.
+
+    The established top-level OpenRouter format wins when both are published.
+    A null top-level block does not hide a usable Unlid extension. A malformed
+    Unlid extension is passed through so the catalog reports it as unparseable
+    instead of permanently settling the model as not token priced.
+    """
+
+    top_level = entry.get("pricing")
+    if top_level is not None:
+        return top_level, OPENROUTER_RATE_FORMAT
+    unlid = entry.get("unlid")
+    if unlid is not None:
+        return (unlid.get("pricing") if is_json_mapping(unlid) else unlid), UNLID_RATE_FORMAT
+    return None, OPENROUTER_RATE_FORMAT
 
 
 async def _read_response_json(resp: aiohttp.ClientResponse) -> JsonValue:

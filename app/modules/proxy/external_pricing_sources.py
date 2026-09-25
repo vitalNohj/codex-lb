@@ -44,6 +44,7 @@ from app.core.usage.external_pricing.catalogs import (
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
+    catalog_from_published_models,
     catalog_from_sidecar_models,
 )
 from app.core.usage.external_pricing.service import (
@@ -53,12 +54,24 @@ from app.core.usage.external_pricing.service import (
 )
 from app.core.usage.pricing import ModelPrice
 from app.modules.proxy.model_aliasing import load_model_aliases
+from app.modules.settings.model_alias_pools import primary_targets
 
 logger = logging.getLogger(__name__)
 
 
 def _prefix_pairs(prefixes: tuple[SidecarPrefix, ...]) -> tuple[tuple[str, bool], ...]:
     return tuple((prefix.prefix, prefix.strip) for prefix in prefixes)
+
+
+async def _pricing_aliases() -> dict[str, str]:
+    """``{alias: primary_target}`` for the price resolver.
+
+    The resolver rewrites an alias to one id before catalog lookup. A pool's
+    primary is the right stand-in: a pool request is priced by the target that
+    served it, so this map only matters for ids that reach pricing as an alias.
+    """
+
+    return primary_targets(await load_model_aliases())
 
 
 def _catalog_rows(models: list[SidecarModel]) -> list[tuple[str, ModelPrice | None, JsonValue]]:
@@ -93,7 +106,7 @@ async def _load_orcarouter_context(_provider: str) -> ServingContext | None:
         # Switched off, not unreachable. Returning ``None`` here would make the
         # maintenance pass report a catalog failure that never happened.
         return ServingContext.disabled(
-            aliases=await load_model_aliases(),
+            aliases=await _pricing_aliases(),
             prefixes=_prefix_pairs(config.prefixes),
         )
     # ``list_models`` rather than ``list_models_cached``: the cached variant
@@ -107,7 +120,7 @@ async def _load_orcarouter_context(_provider: str) -> ServingContext | None:
             ORCAROUTER_PRICING_PROVIDER,
             _catalog_rows(list(models)),
         ),
-        aliases=await load_model_aliases(),
+        aliases=await _pricing_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
     )
 
@@ -124,7 +137,7 @@ async def _load_openrouter_context(_provider: str) -> ServingContext | None:
         return None
     if not config.enabled:
         return ServingContext.disabled(
-            aliases=await load_model_aliases(),
+            aliases=await _pricing_aliases(),
             prefixes=_prefix_pairs(config.prefixes),
         )
     models = await OpenRouterSidecarClient(config).list_models()
@@ -133,7 +146,7 @@ async def _load_openrouter_context(_provider: str) -> ServingContext | None:
             OPENROUTER_PRICING_PROVIDER,
             _catalog_rows(list(models)),
         ),
-        aliases=await load_model_aliases(),
+        aliases=await _pricing_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
     )
 
@@ -150,7 +163,7 @@ async def _load_nvidia_context(_provider: str) -> ServingContext | None:
         return None
     if not config.enabled:
         return ServingContext.disabled(
-            aliases=await load_model_aliases(),
+            aliases=await _pricing_aliases(),
             prefixes=_prefix_pairs(config.prefixes),
         )
     models = await NvidiaSidecarClient(config).list_models()
@@ -159,13 +172,13 @@ async def _load_nvidia_context(_provider: str) -> ServingContext | None:
             NVIDIA_PRICING_PROVIDER,
             _catalog_rows(list(models)),
         ),
-        aliases=await load_model_aliases(),
+        aliases=await _pricing_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
     )
 
 
 async def _load_openai_compat_context(provider: str) -> ServingContext | None:
-    from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
+    from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient, published_pricing
     from app.modules.proxy.openai_compat_dispatch import (
         load_openai_compat_configs,
         openai_compat_config_by_provider,
@@ -181,16 +194,16 @@ async def _load_openai_compat_context(provider: str) -> ServingContext | None:
         return None
     if not config.enabled:
         return ServingContext.disabled(
-            aliases=await load_model_aliases(),
+            aliases=await _pricing_aliases(),
             prefixes=_prefix_pairs(config.prefixes),
         )
     models = await OpenAICompatSidecarClient(config).list_models()
     return ServingContext(
-        catalog=catalog_from_sidecar_models(
+        catalog=catalog_from_published_models(
             config.provider_id,
-            _catalog_rows(list(models)),
+            [(model.id, *published_pricing(model.raw or {})) for model in models],
         ),
-        aliases=await load_model_aliases(),
+        aliases=await _pricing_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
     )
 
@@ -213,12 +226,12 @@ async def _load_cliproxy_context(_provider: str) -> ServingContext | None:
         return None
     if not config.enabled:
         return ServingContext.disabled(
-            aliases=await load_model_aliases(),
+            aliases=await _pricing_aliases(),
             prefixes=_prefix_pairs(config.prefixes),
         )
     return ServingContext(
         catalog=None,
-        aliases=await load_model_aliases(),
+        aliases=await _pricing_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
         # Not a fetch failure: this integration has no rates to publish. Saying so
         # explicitly is what lets maintenance treat the pricing reference as the
@@ -254,12 +267,12 @@ async def _load_opencode_go_context(_provider: str) -> ServingContext | None:
         return None
     if not config.enabled:
         return ServingContext.disabled(
-            aliases=await load_model_aliases(),
+            aliases=await _pricing_aliases(),
             prefixes=_prefix_pairs(config.prefixes),
         )
     return ServingContext(
         catalog=None,
-        aliases=await load_model_aliases(),
+        aliases=await _pricing_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
         # Not a fetch failure: this integration has no rates to publish.
         publishes_price_catalog=False,

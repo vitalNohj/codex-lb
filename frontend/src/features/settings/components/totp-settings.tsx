@@ -28,6 +28,7 @@ import {
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { getErrorMessage } from "@/utils/errors";
+import { SettingsRow, SettingsRowGroup, SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 // NOTE: validation message is intentionally a translation key resolved at render time;
 // keeping the schema decoupled from the i18n instance lets us continue to colocate it here.
@@ -119,31 +120,23 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
   };
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        {/* Status row */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Shield className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.totp.title")}</h3>
-              <p className="text-xs text-muted-foreground">
-                {settings.totpConfigured
-                  ? t("settings.totp.status.configured")
-                  : t("settings.totp.status.notConfigured")}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={Shield}
+        title={t("settings.totp.title")}
+        description={
+          settings.totpConfigured
+            ? t("settings.totp.status.configured")
+            : t("settings.totp.status.notConfigured")
+        }
+        actions={
+          <>
             {settings.totpConfigured ? (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-8 text-xs text-destructive hover:text-destructive"
+                className="h-9 text-xs text-destructive hover:text-destructive"
                 disabled={lock}
                 onClick={() => setActiveDialog("disable")}
               >
@@ -153,22 +146,22 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
               <Button
                 type="button"
                 size="sm"
-                className="h-8 text-xs"
+                className="h-9 text-xs"
                 disabled={lock}
                 onClick={handleOpenSetup}
               >
                 {t("settings.totp.actions.enable")}
               </Button>
             )}
-          </div>
-        </div>
+          </>
+        }
+      />
 
-        {/* Require on login toggle */}
-        <div className="flex items-center justify-between rounded-lg border p-3">
-          <div>
-            <p className="text-sm font-medium">{t("settings.totp.requireLogin.label")}</p>
-            <p className="text-xs text-muted-foreground">{t("settings.totp.requireLogin.description")}</p>
-          </div>
+      <SettingsRowGroup>
+        <SettingsRow
+          label={t("settings.totp.requireLogin.label")}
+          description={t("settings.totp.requireLogin.description")}
+        >
           <Switch
             checked={settings.totpRequiredOnLogin}
             disabled={lock}
@@ -176,8 +169,8 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
               void onSave({ totpRequiredOnLogin: checked })
             }
           />
-        </div>
-      </div>
+        </SettingsRow>
+      </SettingsRowGroup>
 
       {/* Setup dialog */}
       <Dialog open={activeDialog === "setup"} onOpenChange={(open) => !open && closeDialog()}>
@@ -307,6 +300,6 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
           </Form>
         </DialogContent>
       </Dialog>
-    </section>
+    </SettingsSection>
   );
 }
