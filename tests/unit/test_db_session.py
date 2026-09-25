@@ -1786,6 +1786,31 @@ def test_closing_the_connection_releases_an_unfinished_returning_write(tmp_path)
     del cursor
 
 
+def test_closing_the_connection_releases_an_unfinished_returning_write_made_by_execute(tmp_path) -> None:
+    """The ``execute`` shortcut's cursor is closed on close() like one from ``cursor()``.
+
+    aiosqlite's own ``Connection.execute`` uses this shortcut, which the C
+    implementation serves without calling ``cursor()``.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "unfetched-returning-execute.db"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("CREATE TABLE counter (value INTEGER)")
+    setup.execute("INSERT INTO counter VALUES (0)")
+    setup.commit()
+    setup.close()
+
+    connect_args = cast(dict[str, Any], session_module._sqlite_file_async_engine_kwargs()["connect_args"])
+    connection = sqlite3.connect(db_path, **connect_args)
+    cursor = connection.execute("UPDATE counter SET value = value + ? RETURNING value", (1,))
+    connection.close()
+
+    assert _sqlite_write_slot_is_free(db_path)
+    del cursor
+
+
 @pytest.mark.asyncio
 async def test_cancelling_a_returning_write_mid_statement_does_not_hold_the_write_lock(tmp_path) -> None:
     """Cancelling a task inside ``UPDATE ... RETURNING`` must release SQLite's writer slot.

@@ -181,7 +181,10 @@ class _CursorClosingSQLiteConnection(sqlite3.Connection):
     after the busy timeout, until a cyclic GC pass happens to collect it.
 
     Closing the cursors here releases the lock when the connection closes.
-    Only ``cursor()`` needs tracking: aiosqlite creates every cursor through it.
+    The SQLAlchemy adapter creates its cursors through ``cursor()``. The
+    ``execute`` shortcuts (used by aiosqlite's own ``Connection.execute``)
+    would create theirs in C, bypassing ``cursor()``, so they are routed
+    through it too.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -192,6 +195,15 @@ class _CursorClosingSQLiteConnection(sqlite3.Connection):
         cursor = super().cursor(*args, **kwargs)
         self._open_cursors.add(cursor)
         return cursor
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        return self.cursor().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        return self.cursor().executemany(sql, parameters)
+
+    def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
+        return self.cursor().executescript(sql_script)
 
     def close(self) -> None:
         for cursor in list(self._open_cursors):
