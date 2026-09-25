@@ -387,7 +387,7 @@ from app.modules.proxy.schemas import (
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, prefix_variants, resolve_sidecar_route
-from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response
+from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response, has_usable_sidecar_api_key
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
     RateLimitResetCreditsData,
@@ -5099,6 +5099,13 @@ async def v1_chat_completions(
                     reason="unroutable",
                     provider=target_decision.provider if target_decision is not None else None,
                 )
+            # Credentials before anything is rewritten for this target: a keyless
+            # integration is skipped here, with the payload still untouched. The
+            # dispatchers keep their own gate for the direct path.
+            if target_decision.provider in ("openrouter", "orcarouter"):
+                provider_config = openrouter_config if target_decision.provider == "openrouter" else orcarouter_config
+                if provider_config is None or not has_usable_sidecar_api_key(provider_config.api_key):
+                    raise PoolTargetUnavailable(target, reason="not_configured", provider=target_decision.provider)
             payload.model = target
             if target_decision.provider == "openrouter":
                 assert openrouter_config is not None
