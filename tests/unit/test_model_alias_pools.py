@@ -158,8 +158,8 @@ def test_migration_downgrade_names_the_aliases_blocking_it() -> None:
 
     assert migration._fallback_aliases(raw) == ["pooled"]
     assert migration._fallback_aliases(json.dumps({"dupes": {"targets": ["a", "A"]}})) == []
-    assert "alias 'pooled' has fallback targets" in migration._downgrade_refusal(["pooled"])
-    assert "'a9' and 2 more have" in migration._downgrade_refusal([f"a{i}" for i in range(12)])
+    assert "alias 'pooled' has fallback targets" in migration._downgrade_refusal(["pooled"], 1)
+    assert "'a9' and 2 more have" in migration._downgrade_refusal([f"a{i}" for i in range(10)], 12)
 
 
 def test_migration_downgrade_leaves_legacy_rows_untouched() -> None:

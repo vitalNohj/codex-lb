@@ -161,17 +161,31 @@ def _rewrite_alias_rows(bind: Connection, rewrite: Callable[[Any], str | None]) 
             bind.execute(update, changes)
 
 
-def _aliases_blocking_downgrade(bind: Connection) -> list[str]:
+def _aliases_blocking_downgrade(bind: Connection) -> tuple[list[str], int]:
+    """The first ``_MAX_NAMED_ALIASES`` aliases that block a downgrade, and how many there are.
+
+    Only the names the refusal message prints are kept, so memory stays bounded
+    by a batch no matter how many rows or aliases there are.
+    """
+
     if _ALIASES_COLUMN not in _columns(bind, _SETTINGS_TABLE):
-        return []
-    return [alias for batch in _alias_row_batches(bind) for _row_id, raw in batch for alias in _fallback_aliases(raw)]
+        return [], 0
+    named: list[str] = []
+    count = 0
+    for batch in _alias_row_batches(bind):
+        for _row_id, raw in batch:
+            for alias in _fallback_aliases(raw):
+                count += 1
+                if len(named) < _MAX_NAMED_ALIASES:
+                    named.append(alias)
+    return named, count
 
 
-def _downgrade_refusal(aliases: list[str]) -> str:
-    named = ", ".join(f"'{alias}'" for alias in aliases[:_MAX_NAMED_ALIASES])
-    if len(aliases) > _MAX_NAMED_ALIASES:
-        named += f" and {len(aliases) - _MAX_NAMED_ALIASES} more"
-    if len(aliases) == 1:
+def _downgrade_refusal(named_aliases: list[str], count: int) -> str:
+    named = ", ".join(f"'{alias}'" for alias in named_aliases)
+    if count > len(named_aliases):
+        named += f" and {count - len(named_aliases)} more"
+    if count == 1:
         subject, reduce = f"alias {named} has", "Reduce it"
     else:
         subject, reduce = f"aliases {named} have", "Reduce each"
@@ -203,9 +217,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     # Refuse before changing anything; see the module docstring.
-    blocking = _aliases_blocking_downgrade(bind)
-    if blocking:
-        raise RuntimeError(_downgrade_refusal(blocking))
+    named, count = _aliases_blocking_downgrade(bind)
+    if count:
+        raise RuntimeError(_downgrade_refusal(named, count))
 
     log_columns = _columns(bind, _LOGS_TABLE)
     present = [column for column in (_UPSTREAM_MODEL_COLUMN, _POOL_ATTEMPTS_COLUMN) if column in log_columns]
