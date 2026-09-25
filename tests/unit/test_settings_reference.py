@@ -69,7 +69,13 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # operator-selectable because startup invariant failures need two supported
 # modes: report-only by default for mixed/self-hosted environments, and
 # fail-fast when CI or strict operators want config drift to abort startup.
-MAX_SETTINGS_FIELDS = 131
+# 131 -> 179: fork catch-up. The cap was never raised as this fork added its
+# sidecar integrations (Claude/CLIProxyAPI, OpenRouter, OrcaRouter, OpenCode
+# Go, OmniRoute, Ollama: 48 *_SIDECAR_* fields, most of which seed the
+# dashboard settings row on first start) and its proxy/bridge tuning, so the
+# test had been red on main. Set to the current count so it ratchets again
+# from here; lower it when fields are removed.
+MAX_SETTINGS_FIELDS = 179
 
 
 def test_generated_settings_reference_matches_code() -> None:
