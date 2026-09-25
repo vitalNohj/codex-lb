@@ -372,3 +372,98 @@ async def test_a_configured_key_still_reaches_the_upstream(async_client, sinks, 
     assert response.status_code == 200, response.text
     assert [entry["authorization"] for entry in sink.chat_requests] == [f"Bearer {key}"]
     assert sink.leaked_prompt  # the configured path does send the prompt, to the right place
+
+
+async def _listed_model_ids(async_client) -> set[str]:
+    response = await async_client.get("/v1/models")
+    assert response.status_code == 200, response.text
+    return {entry["id"] for entry in response.json()["data"]}
+
+
+async def _configure_full_models(async_client) -> None:
+    body = {
+        "orcarouterSidecarFullModels": [ORCA_MODEL],
+        "openrouterSidecarFullModels": [OPENROUTER_MODEL],
+    }
+    response = await async_client.put("/api/settings", json=body)
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_integration_is_not_advertised(async_client, sinks):
+    """``/v1/models`` lists only what a request could be served by.
+
+    A keyless OrcaRouter or OpenRouter refuses every request, so listing its
+    models - or a pool alias whose every target is keyless - promises a route
+    that can only answer 503. Discovery must not poll the keyless upstream
+    either.
+    """
+
+    orcarouter, openrouter = sinks
+    await _configure(async_client, orcarouter, openrouter, orcarouter_key=None, openrouter_key=None)
+    await _configure_full_models(async_client)
+
+    listed = await _listed_model_ids(async_client)
+
+    assert ORCA_MODEL not in listed
+    assert OPENROUTER_MODEL not in listed
+    assert ALIAS not in listed
+    assert orcarouter.requests == [] and openrouter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_a_pool_alias_is_advertised_while_one_target_is_usable(async_client, sinks):
+    orcarouter, openrouter = sinks
+    await _configure(async_client, orcarouter, openrouter, orcarouter_key=None, openrouter_key="sk-or-synthetic")
+    await _configure_full_models(async_client)
+
+    listed = await _listed_model_ids(async_client)
+
+    assert ORCA_MODEL not in listed
+    assert OPENROUTER_MODEL in listed
+    assert ALIAS in listed
+    assert orcarouter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_picker_does_not_poll_or_offer_a_keyless_integration(async_client, sinks):
+    """The picker feeds aliases and API-key allowances, so an entry there is an offer to route."""
+
+    orcarouter, openrouter = sinks
+    await _configure(async_client, orcarouter, openrouter, orcarouter_key=None, openrouter_key=None)
+
+    response = await async_client.get("/api/models")
+
+    assert response.status_code == 200, response.text
+    assert orcarouter.requests == [] and openrouter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_picker_polls_a_configured_integration(async_client, sinks):
+    """Control for the picker test above."""
+
+    orcarouter, openrouter = sinks
+    await _configure(
+        async_client, orcarouter, openrouter, orcarouter_key="sk-orca-synthetic", openrouter_key="sk-or-synthetic"
+    )
+
+    response = await async_client.get("/api/models")
+
+    assert response.status_code == 200, response.text
+    assert [entry["method"] for entry in orcarouter.requests] == ["GET"]
+    assert [entry["method"] for entry in openrouter.requests] == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_configured_keys_are_advertised(async_client, sinks):
+    """Control: without it, a catalog that listed nothing would pass the tests above."""
+
+    orcarouter, openrouter = sinks
+    await _configure(
+        async_client, orcarouter, openrouter, orcarouter_key="sk-orca-synthetic", openrouter_key="sk-or-synthetic"
+    )
+    await _configure_full_models(async_client)
+
+    listed = await _listed_model_ids(async_client)
+
+    assert {ORCA_MODEL, OPENROUTER_MODEL, ALIAS} <= listed

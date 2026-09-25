@@ -30,8 +30,8 @@ from app.modules.proxy.opencode_go_sidecar_dispatch import (
     load_opencode_go_sidecar_config,
     opencode_go_is_usable,
 )
-from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config
-from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config
+from app.modules.proxy.openrouter_sidecar_dispatch import load_openrouter_sidecar_config, openrouter_is_usable
+from app.modules.proxy.orcarouter_sidecar_dispatch import load_orcarouter_sidecar_config, orcarouter_is_usable
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,10 @@ async def list_models() -> dict:
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}", "sourceOnly": False})
     openrouter_config = await load_openrouter_sidecar_config()
-    if openrouter_config is not None and openrouter_config.enabled:
+    # Usable credential required, as for OpenCode Go: the picker must not poll
+    # an upstream the deployment has no key for, nor offer models it would refuse.
+    if openrouter_is_usable(openrouter_config):
+        assert openrouter_config is not None
         try:
             openrouter_models = await OpenRouterSidecarClient(openrouter_config).list_models_cached()
         except Exception:
@@ -155,7 +158,8 @@ async def list_models() -> dict:
                 }
             )
     orcarouter_config = await load_orcarouter_sidecar_config()
-    if orcarouter_config is not None and orcarouter_config.enabled:
+    if orcarouter_is_usable(orcarouter_config):
+        assert orcarouter_config is not None
         try:
             # Config-keyed client so ``models_cache_ttl_seconds`` spans requests;
             # an inline client discards the TTL state on every model-picker load.

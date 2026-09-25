@@ -110,6 +110,18 @@ class OrcaRouterChatPayload:
     effective_reasoning_effort: str | None = None
 
 
+def orcarouter_is_usable(config: OrcaRouterSidecarConfig | None) -> bool:
+    """Can this configuration actually serve a request?
+
+    Enabled is not sufficient: OrcaRouter authenticates every request, so without a
+    usable key it can only refuse. Discovery uses this so a model that would
+    only ever answer ``orcarouter_not_configured`` is not advertised, and so a
+    keyless upstream is not polled for its catalog.
+    """
+
+    return config is not None and config.enabled and has_usable_sidecar_api_key(config.api_key)
+
+
 def orcarouter_routing_entry(config: OrcaRouterSidecarConfig) -> SidecarRoutingEntry:
     return SidecarRoutingEntry(
         provider="orcarouter",
