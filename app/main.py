@@ -870,8 +870,11 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
 
         init_tracing(service_name="codex-lb", endpoint=settings.otel_exporter_endpoint, app=app)
 
-    # Innermost: it must see every route-produced status, and it reads the API
-    # key the proxy auth dependency recorded on the request scope.
+    # Added first so it wraps the router and the exception handlers, sitting
+    # inside every other codex-lb middleware (OTel instrumentation, when enabled,
+    # wraps closer still; it does not change statuses). It must see every
+    # route-produced status, and it reads the API key the proxy auth dependency
+    # recorded on the request scope.
     add_rate_limit_payment_required_middleware(app)
     app.add_middleware(cast(Any, InFlightMiddleware))
     add_dashboard_gzip_middleware(app)

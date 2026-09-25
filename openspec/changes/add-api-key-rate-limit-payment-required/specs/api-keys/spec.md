@@ -18,6 +18,11 @@ Request logs MUST continue to record the original error code.
 The rewrite MUST NOT apply to requests authenticated by a key without the flag,
 to unauthenticated requests, to responses with any status other than `429`, or
 to rejections produced before the request's API key is authenticated.
+The authenticated key is recorded by the proxy API-key dependencies
+(`validate_proxy_api_key` and `validate_required_proxy_api_key`), which guard
+the model-serving routes. Routes that authenticate through other dependencies
+(the self-service usage, reset-credit, and fleet endpoints) and WebSocket
+routes are out of scope and keep their statuses.
 
 #### Scenario: Default key keeps 429
 
