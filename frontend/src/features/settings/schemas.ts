@@ -260,19 +260,6 @@ export const DashboardSettingsSchema = z
     openrouterSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     openrouterSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     openrouterSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
-    nvidiaSidecarEnabled: z.boolean().optional().default(false),
-    nvidiaSidecarBaseUrl: z.string().trim().min(1).optional().default("https://integrate.api.nvidia.com/v1"),
-    nvidiaSidecarApiKeyConfigured: z.boolean().optional().default(false),
-    nvidiaSidecarModelPrefixes: SidecarModelPrefixesSchema.optional().default([]),
-    nvidiaSidecarFullModels: SidecarFullModelsSchema.optional().default([]),
-    nvidiaSidecarConnectTimeoutSeconds: z.number().positive().optional().default(8),
-    nvidiaSidecarRequestTimeoutSeconds: z.number().positive().optional().default(600),
-    nvidiaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional().default(60),
-    nvidiaSidecarLastHealthStatus: z.string().nullable().optional().default(null),
-    nvidiaSidecarLastHealthMessage: z.string().nullable().optional().default(null),
-    nvidiaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
-    nvidiaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
-    nvidiaSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
     openaiCompatEndpoints: z.array(OpenAICompatEndpointResponseSchema).optional().default([]),
     orcarouterSidecarEnabled: z.boolean().optional().default(false),
     orcarouterSidecarBaseUrl: z.string().trim().min(1).optional().default("https://api.orcarouter.ai/v1"),
@@ -457,16 +444,6 @@ export const SettingsUpdateRequestSchema = z
     openrouterSidecarRequestTimeoutSeconds: z.number().positive().optional(),
     openrouterSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
     openrouterSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
-    nvidiaSidecarEnabled: z.boolean().optional(),
-    nvidiaSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
-    nvidiaSidecarApiKey: z.string().trim().max(4096).optional(),
-    nvidiaSidecarClearApiKey: z.boolean().optional(),
-    nvidiaSidecarModelPrefixes: SidecarModelPrefixesSchema.optional(),
-    nvidiaSidecarFullModels: SidecarFullModelsSchema.optional(),
-    nvidiaSidecarConnectTimeoutSeconds: z.number().positive().optional(),
-    nvidiaSidecarRequestTimeoutSeconds: z.number().positive().optional(),
-    nvidiaSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
-    nvidiaSidecarDefaultReasoningEffort: SidecarReasoningEffortSchema.nullable().optional(),
     openaiCompatEndpoints: z.array(OpenAICompatEndpointUpdateSchema).max(32).optional(),
     orcarouterSidecarEnabled: z.boolean().optional(),
     orcarouterSidecarBaseUrl: z.string().trim().min(1).max(2048).optional(),
@@ -600,32 +577,6 @@ export const OpenRouterSidecarTestResponseSchema = OpenRouterSidecarStatusRespon
 
 export const OpenRouterSidecarModelsResponseSchema = z.object({
   models: z.array(OpenRouterSidecarModelSummarySchema).default([]),
-});
-
-const NvidiaSidecarStatusValueSchema = ThirdPartySidecarStatusValueSchema;
-
-export const NvidiaSidecarModelSummarySchema = z.object({
-  id: z.string(),
-  created: z.number().int().nullable().optional(),
-  ownedBy: z.string().nullable().optional(),
-});
-
-export const NvidiaSidecarStatusResponseSchema = z.object({
-  enabled: z.boolean(),
-  configured: z.boolean(),
-  status: NvidiaSidecarStatusValueSchema,
-  message: z.string().nullable().optional(),
-  baseUrl: z.string(),
-  modelCount: z.number().int().nonnegative().nullable().optional(),
-  lastCheckedAt: z.string().datetime({ offset: true }).nullable().optional(),
-});
-
-export const NvidiaSidecarTestResponseSchema = NvidiaSidecarStatusResponseSchema.extend({
-  models: z.array(NvidiaSidecarModelSummarySchema).default([]),
-});
-
-export const NvidiaSidecarModelsResponseSchema = z.object({
-  models: z.array(NvidiaSidecarModelSummarySchema).default([]),
 });
 
 export const OpenAICompatModelSummarySchema = z.object({
@@ -884,23 +835,6 @@ type OpenRouterSidecarSettingsFields = Pick<
   | "openrouterSidecarDefaultReasoningEffort"
 >;
 
-type NvidiaSidecarSettingsFields = Pick<
-  ParsedDashboardSettings,
-  | "nvidiaSidecarEnabled"
-  | "nvidiaSidecarBaseUrl"
-  | "nvidiaSidecarApiKeyConfigured"
-  | "nvidiaSidecarModelPrefixes"
-  | "nvidiaSidecarFullModels"
-  | "nvidiaSidecarConnectTimeoutSeconds"
-  | "nvidiaSidecarRequestTimeoutSeconds"
-  | "nvidiaSidecarModelsCacheTtlSeconds"
-  | "nvidiaSidecarLastHealthStatus"
-  | "nvidiaSidecarLastHealthMessage"
-  | "nvidiaSidecarLastCheckedAt"
-  | "nvidiaSidecarLastModelCount"
-  | "nvidiaSidecarDefaultReasoningEffort"
->;
-
 type OpenAICompatEndpointsFields = Pick<ParsedDashboardSettings, "openaiCompatEndpoints">;
 
 type OrcaRouterSidecarSettingsFields = Pick<
@@ -1000,7 +934,6 @@ export type DashboardSettings = Omit<
   | keyof StickyThresholdValues
   | keyof ClaudeSidecarSettingsFields
   | keyof OpenRouterSidecarSettingsFields
-  | keyof NvidiaSidecarSettingsFields
   | keyof OpenAICompatEndpointsFields
   | keyof OrcaRouterSidecarSettingsFields
   | keyof OmniRouteSidecarSettingsFields
@@ -1011,7 +944,6 @@ export type DashboardSettings = Omit<
   Partial<StickyThresholdValues> &
   Partial<ClaudeSidecarSettingsFields> &
   Partial<OpenRouterSidecarSettingsFields> &
-  Partial<NvidiaSidecarSettingsFields> &
   Partial<OpenAICompatEndpointsFields> &
   Partial<OrcaRouterSidecarSettingsFields> &
   Partial<OmniRouteSidecarSettingsFields> &
@@ -1035,10 +967,6 @@ export type OpenRouterSidecarModelSummary = z.infer<typeof OpenRouterSidecarMode
 export type OpenRouterSidecarStatusResponse = z.infer<typeof OpenRouterSidecarStatusResponseSchema>;
 export type OpenRouterSidecarTestResponse = z.infer<typeof OpenRouterSidecarTestResponseSchema>;
 export type OpenRouterSidecarModelsResponse = z.infer<typeof OpenRouterSidecarModelsResponseSchema>;
-export type NvidiaSidecarModelSummary = z.infer<typeof NvidiaSidecarModelSummarySchema>;
-export type NvidiaSidecarStatusResponse = z.infer<typeof NvidiaSidecarStatusResponseSchema>;
-export type NvidiaSidecarTestResponse = z.infer<typeof NvidiaSidecarTestResponseSchema>;
-export type NvidiaSidecarModelsResponse = z.infer<typeof NvidiaSidecarModelsResponseSchema>;
 export type OpenAICompatEndpoint = z.infer<typeof OpenAICompatEndpointResponseSchema>;
 export type OpenAICompatEndpointUpdate = z.infer<typeof OpenAICompatEndpointUpdateSchema>;
 export type OpenAICompatModelSummary = z.infer<typeof OpenAICompatModelSummarySchema>;

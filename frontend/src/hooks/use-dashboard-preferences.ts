@@ -16,7 +16,6 @@ export type AccountTypeKey =
   | "codex"
   | "cliproxy"
   | "openrouter"
-  | "nvidia"
   | "orcarouter"
   | "omniroute"
   | "opencode_go"
@@ -34,7 +33,6 @@ export const ACCOUNT_TYPE_KEYS: AccountTypeKey[] = [
   "codex",
   "cliproxy",
   "openrouter",
-  "nvidia",
   "orcarouter",
   ...(OMNIROUTE_ENABLED ? (["omniroute"] as const) : []),
   "opencode_go",
@@ -46,7 +44,6 @@ function defaultAccountTypeVisibility(): AccountTypeVisibility {
     codex: true,
     cliproxy: true,
     openrouter: true,
-    nvidia: true,
     orcarouter: true,
     omniroute: true,
     opencode_go: true,

@@ -16,7 +16,6 @@ import {
   getOmniRouteSidecarStatus,
   getOpenCodeGoSidecarStatus,
   getOpenRouterSidecarStatus,
-  getNvidiaSidecarStatus,
   getOpenAICompatStatus,
   getOrcaRouterSidecarStatus,
   getSettings,
@@ -25,7 +24,6 @@ import {
   listOmniRouteSidecarModels,
   listOpenCodeGoSidecarModels,
   listOpenRouterSidecarModels,
-  listNvidiaSidecarModels,
   listOpenAICompatModels,
   listOrcaRouterSidecarModels,
   getTelemetryConsent,
@@ -40,7 +38,6 @@ import {
   testOmniRouteSidecarConnection,
   testOpenCodeGoSidecarConnection,
   testOpenRouterSidecarConnection,
-  testNvidiaSidecarConnection,
   testOpenAICompatConnection,
   testOrcaRouterSidecarConnection,
   testUpstreamProxyEndpoint,
@@ -88,8 +85,6 @@ const SETTINGS_COLLECTION_FIELDS = [
   "claudeSidecarAuthPlans",
   "openrouterSidecarModelPrefixes",
   "openrouterSidecarFullModels",
-  "nvidiaSidecarModelPrefixes",
-  "nvidiaSidecarFullModels",
   "openaiCompatEndpoints",
   "orcarouterSidecarModelPrefixes",
   "orcarouterSidecarFullModels",
@@ -359,7 +354,6 @@ export function useUpstreamProxyAdmin() {
 export type SidecarConnectionProvider =
   | "claude"
   | "openrouter"
-  | "nvidia"
   | "orcarouter"
   | "omniroute"
   | "ollama"
@@ -385,12 +379,6 @@ const SIDECAR_TEST_CONFIG: Record<
     testConnection: testOpenRouterSidecarConnection,
     successMessage: "OpenRouter sidecar tested",
     errorMessage: "OpenRouter sidecar test failed",
-  },
-  nvidia: {
-    queryKey: "nvidia-sidecar",
-    testConnection: testNvidiaSidecarConnection,
-    successMessage: "NVIDIA tested",
-    errorMessage: "NVIDIA test failed",
   },
   orcarouter: {
     queryKey: "orcarouter-sidecar",
@@ -591,20 +579,6 @@ export function useOpenRouterSidecar(options?: { modelsEnabled?: boolean }) {
     enabled: options?.modelsEnabled ?? true,
   });
   const testMutation = useSidecarConnectionTest("openrouter");
-  return { statusQuery, modelsQuery, testMutation };
-}
-
-export function useNvidiaSidecar(options?: { modelsEnabled?: boolean }) {
-  const statusQuery = useQuery({
-    queryKey: ["settings", "nvidia-sidecar", "status"],
-    queryFn: getNvidiaSidecarStatus,
-  });
-  const modelsQuery = useQuery({
-    queryKey: ["settings", "nvidia-sidecar", "models"],
-    queryFn: listNvidiaSidecarModels,
-    enabled: options?.modelsEnabled ?? true,
-  });
-  const testMutation = useSidecarConnectionTest("nvidia");
   return { statusQuery, modelsQuery, testMutation };
 }
 

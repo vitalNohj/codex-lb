@@ -73,18 +73,6 @@ def _normalize_openrouter_sidecar_base_url(value: str | None) -> str | None:
     return normalized
 
 
-def _normalize_nvidia_sidecar_base_url(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip().rstrip("/")
-    if not normalized:
-        raise ValueError("nvidia_sidecar_base_url must not be blank")
-    parsed = urlparse(normalized)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("nvidia_sidecar_base_url must be an http(s) URL")
-    return normalized
-
-
 def _normalize_orcarouter_sidecar_base_url(value: str | None) -> str | None:
     if value is None:
         return None
@@ -392,19 +380,6 @@ class DashboardSettingsResponse(DashboardModel):
     openrouter_sidecar_last_checked_at: datetime | None = None
     openrouter_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     openrouter_sidecar_default_reasoning_effort: str | None = None
-    nvidia_sidecar_enabled: bool = False
-    nvidia_sidecar_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", min_length=1)
-    nvidia_sidecar_api_key_configured: bool = False
-    nvidia_sidecar_model_prefixes: list[SidecarModelPrefix] = Field(default_factory=list, max_length=32)
-    nvidia_sidecar_full_models: list[str] = Field(default_factory=list, max_length=256)
-    nvidia_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
-    nvidia_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
-    nvidia_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
-    nvidia_sidecar_last_health_status: str | None = None
-    nvidia_sidecar_last_health_message: str | None = None
-    nvidia_sidecar_last_checked_at: datetime | None = None
-    nvidia_sidecar_last_model_count: int | None = Field(default=None, ge=0)
-    nvidia_sidecar_default_reasoning_effort: str | None = None
     openai_compat_endpoints: list[OpenAICompatEndpointResponse] = Field(default_factory=list, max_length=32)
     orcarouter_sidecar_enabled: bool = False
     orcarouter_sidecar_base_url: str = Field(default="https://api.orcarouter.ai/v1", min_length=1)
@@ -554,16 +529,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     openrouter_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
     openrouter_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
     openrouter_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
-    nvidia_sidecar_enabled: bool | None = None
-    nvidia_sidecar_base_url: str | None = Field(default=None, max_length=2048)
-    nvidia_sidecar_api_key: str | None = Field(default=None, max_length=4096)
-    nvidia_sidecar_clear_api_key: bool | None = None
-    nvidia_sidecar_model_prefixes: list[SidecarModelPrefix] | None = Field(default=None, max_length=32)
-    nvidia_sidecar_full_models: list[str] | None = Field(default=None, max_length=256)
-    nvidia_sidecar_connect_timeout_seconds: float | None = Field(default=None, gt=0)
-    nvidia_sidecar_request_timeout_seconds: float | None = Field(default=None, gt=0)
-    nvidia_sidecar_models_cache_ttl_seconds: float | None = Field(default=None, ge=0)
-    nvidia_sidecar_default_reasoning_effort: str | None = Field(default=None, max_length=16)
     openai_compat_endpoints: list[OpenAICompatEndpointUpdate] | None = Field(default=None, max_length=32)
     orcarouter_sidecar_enabled: bool | None = None
     orcarouter_sidecar_base_url: str | None = Field(default=None, max_length=2048)
@@ -759,36 +724,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
             return None
         return value.strip()
 
-    @field_validator("nvidia_sidecar_base_url")
-    @classmethod
-    def _normalize_nvidia_sidecar_base_url(cls, value: str | None) -> str | None:
-        return _normalize_nvidia_sidecar_base_url(value)
-
-    @field_validator("nvidia_sidecar_model_prefixes")
-    @classmethod
-    def _normalize_nvidia_sidecar_prefixes(
-        cls,
-        value: list[SidecarModelPrefix] | None,
-    ) -> list[SidecarModelPrefix] | None:
-        return _normalize_sidecar_model_prefixes(value, field_name="nvidia_sidecar_model_prefixes")
-
-    @field_validator("nvidia_sidecar_model_prefixes", mode="before")
-    @classmethod
-    def _coerce_nvidia_sidecar_prefixes(cls, value: object) -> object:
-        return _coerce_sidecar_model_prefixes(value)
-
-    @field_validator("nvidia_sidecar_full_models")
-    @classmethod
-    def _normalize_nvidia_sidecar_full_models(cls, value: list[str] | None) -> list[str] | None:
-        return _normalize_sidecar_full_models(value, field_name="nvidia_sidecar_full_models")
-
-    @field_validator("nvidia_sidecar_api_key")
-    @classmethod
-    def _normalize_nvidia_sidecar_api_key(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip()
-
     @field_validator("orcarouter_sidecar_base_url")
     @classmethod
     def _normalize_orcarouter_sidecar_base_url(cls, value: str | None) -> str | None:
@@ -917,7 +852,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     @field_validator(
         "claude_sidecar_default_reasoning_effort",
         "openrouter_sidecar_default_reasoning_effort",
-        "nvidia_sidecar_default_reasoning_effort",
         "orcarouter_sidecar_default_reasoning_effort",
         "omniroute_sidecar_default_reasoning_effort",
         "ollama_sidecar_default_reasoning_effort",

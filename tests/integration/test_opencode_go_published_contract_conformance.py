@@ -83,8 +83,8 @@ def test_existing_provider_order_is_not_disturbed_by_the_new_entry():
     Asserts the *relative* order of the providers this contract names, which is
     what the tiebreak actually depends on - not an exhaustive list of every
     provider that exists. An exact-list assertion also failed whenever an
-    unrelated integration was added between them (NVIDIA, inserted after
-    OpenRouter by ``add-nvidia-sidecar-routing``), reporting a reshuffle that had
+    unrelated integration was added between them (as happened when a provider
+    was once inserted after OpenRouter), reporting a reshuffle that had
     not happened while proving nothing extra about the ones that matter.
     """
     from app.modules.proxy.sidecar_routing import SIDECAR_PROVIDER_ORDER

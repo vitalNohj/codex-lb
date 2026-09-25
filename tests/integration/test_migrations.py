@@ -3251,3 +3251,121 @@ async def test_claude_opus_5_5_pin_replays_over_its_own_ownership_table(tmp_path
         assert await replay() == (unpinned, 1)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_fold_nvidia_into_openai_compat_migrates_a_configured_integration(tmp_path):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+    from app.modules.openai_compat.endpoints import decrypt_endpoint_api_key, parse_openai_compat_endpoints
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'fold-nvidia.sqlite'}"
+    parent_revision = "20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads"
+    fold_revision = "20260925_000000_fold_nvidia_into_openai_compat"
+    encryptor = TokenEncryptor()
+    ciphertext = encryptor.encrypt("nvapi-secret")
+    prefixes = '[{"prefix":"nim/","strip":true}]'
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE dashboard_settings SET nvidia_sidecar_enabled = 1, "
+                    "nvidia_sidecar_api_key_encrypted = :key, "
+                    "nvidia_sidecar_model_prefixes_json = :prefixes, "
+                    "nvidia_sidecar_full_models_json = :models, "
+                    "nvidia_sidecar_default_reasoning_effort = 'high', "
+                    "nvidia_sidecar_request_timeout_seconds = 42.0, "
+                    "openai_compat_endpoints_json = :existing WHERE id = 1"
+                ),
+                {
+                    "key": ciphertext,
+                    "prefixes": prefixes,
+                    "models": '["z-ai/glm-5.3"]',
+                    "existing": json.dumps(
+                        [
+                            {
+                                "id": "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a",
+                                "name": "nvidia",
+                                "enabled": False,
+                                "base_url": "https://example.test/v1",
+                            }
+                        ]
+                    ),
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO request_logs (request_id, requested_at, status, source, model) "
+                    "VALUES ('r1', :at, 'success', 'nvidia_sidecar', 'z-ai/glm-5.3')"
+                ),
+                {"at": utcnow()},
+            )
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, fold_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT openai_compat_endpoints_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+            columns = {
+                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
+            }
+            log_sources = [
+                row[0] for row in (await conn.execute(text("SELECT source FROM request_logs"))).fetchall()
+            ]
+        assert not any(column.startswith("nvidia_sidecar_") for column in columns)
+        endpoints = parse_openai_compat_endpoints(stored)
+        assert [endpoint.name for endpoint in endpoints] == ["nvidia", "NVIDIA (2)"]
+        folded = endpoints[1]
+        assert folded.enabled is True
+        assert folded.base_url == "https://integrate.api.nvidia.com/v1"
+        assert [(p.prefix, p.strip) for p in folded.prefixes] == [("nim/", True)]
+        assert folded.full_models == ("z-ai/glm-5.3",)
+        assert folded.default_reasoning_effort == "high"
+        assert folded.request_timeout_seconds == 42.0
+        assert folded.last_health_status is None
+        assert decrypt_endpoint_api_key(folded, encryptor) == "nvapi-secret"
+        assert log_sources == [f"openai_compat:{folded.id}"]
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        async with engine.connect() as conn:
+            columns = {
+                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
+            }
+            stored = (
+                await conn.execute(text("SELECT openai_compat_endpoints_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+            enabled = (
+                await conn.execute(text("SELECT nvidia_sidecar_enabled FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert "nvidia_sidecar_enabled" in columns
+        assert not enabled
+        assert [endpoint.name for endpoint in parse_openai_compat_endpoints(stored)] == ["nvidia", "NVIDIA (2)"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_fold_nvidia_into_openai_compat_skips_an_unconfigured_integration(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'fold-nvidia-empty.sqlite'}"
+    parent_revision = "20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads"
+    fold_revision = "20260925_000000_fold_nvidia_into_openai_compat"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    await to_thread.run_sync(lambda: run_upgrade(db_url, fold_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT openai_compat_endpoints_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+            columns = {
+                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
+            }
+        assert json.loads(stored) == []
+        assert not any(column.startswith("nvidia_sidecar_") for column in columns)
+    finally:
+        await engine.dispose()

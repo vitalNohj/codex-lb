@@ -14,7 +14,6 @@ const LABELS: Record<AccountTypeKey, string> = {
   codex: "Codex",
   cliproxy: "CLIProxy",
   openrouter: "OpenRouter",
-  nvidia: "NVIDIA",
   orcarouter: "OrcaRouter",
   omniroute: "Omniroute",
   opencode_go: "OpenCode Go",

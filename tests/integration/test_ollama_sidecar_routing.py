@@ -66,8 +66,6 @@ async def ollama_enabled(monkeypatch):
 _CATALOG_CONTROL_REFUSED: tuple[str, ...] = (
     "ClaudeSidecarClient",
     "OpenRouterSidecarClient",
-    "NvidiaSidecarClient",
-    "get_nvidia_sidecar_client",
     "OpenAICompatSidecarClient",
     "get_openai_compat_sidecar_client",
     "OrcaRouterSidecarClient",

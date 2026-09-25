@@ -11,9 +11,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.engine import Connection
 
-from app.core.config.settings import get_settings
-from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
-
 revision = "20260916_010000_add_nvidia_sidecar_dashboard_settings"
 down_revision = "20260916_000000_add_free_model_discovery_limit_scope"
 branch_labels = None
@@ -107,28 +104,11 @@ def upgrade() -> None:
         if "nvidia_sidecar_default_reasoning_effort" not in columns:
             batch_op.add_column(sa.Column("nvidia_sidecar_default_reasoning_effort", sa.String(), nullable=True))
 
-    _seed_fresh_install_prefixes(bind, previously_present=_PREFIX_COLUMN in columns)
-
-
-def _seed_fresh_install_prefixes(bind: Connection, *, previously_present: bool) -> None:
-    """Seed configured prefixes only when this migration creates the database.
-
-    Existing deployments keep an empty prefix list so the operator opts in from
-    the Settings UI. NVIDIA has no seeded prefix; ``CODEX_LB_NVIDIA_SIDECAR_MODEL_PREFIXES``
-    is empty by default. On a fresh install the seed comes from that env through
-    the same settings object ``SettingsRepository.get_or_create`` reads.
-    """
-
-    if previously_present:
-        return
-    config = op.get_context().config
-    if config is None or not bool(config.attributes.get("codex_lb_fresh_install")):
-        return
-    seed = dump_configured_sidecar_prefixes(get_settings().nvidia_sidecar_model_prefixes)
-    bind.execute(
-        sa.text(f"UPDATE {_TABLE_NAME} SET {_PREFIX_COLUMN} = :prefixes WHERE id = 1"),
-        {"prefixes": seed},
-    )
+    # The fresh-install prefix seed that used to live here read
+    # ``CODEX_LB_NVIDIA_SIDECAR_MODEL_PREFIXES``. That setting no longer exists
+    # (the integration was folded into the OpenAI-compat endpoint list by
+    # ``20260925_000000_fold_nvidia_into_openai_compat``) and its default was
+    # always empty, so the seed is dropped rather than kept as dead code.
 
 
 def downgrade() -> None:

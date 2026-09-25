@@ -1,4 +1,4 @@
-"""SSE framing and byte-boundary handling in the NVIDIA and OpenAI-compat decoders.
+"""SSE framing and byte-boundary handling in the OpenAI-compat decoder.
 
 Both decoders previously recognised only ``\\n\\n`` as an event delimiter and
 decoded each network chunk independently with ``errors="ignore"``. Reported on
@@ -17,13 +17,9 @@ from collections.abc import Callable
 
 import pytest
 
-from app.modules.proxy.nvidia_sidecar_dispatch import _SseUsageDecoder as NvidiaSseUsageDecoder
 from app.modules.proxy.openai_compat_dispatch import _SseUsageDecoder as OpenAICompatSseUsageDecoder
 
-_DECODERS: tuple[tuple[str, Callable[[], object]], ...] = (
-    ("nvidia", NvidiaSseUsageDecoder),
-    ("openai_compat", OpenAICompatSseUsageDecoder),
-)
+_DECODERS: tuple[tuple[str, Callable[[], object]], ...] = (("openai_compat", OpenAICompatSseUsageDecoder),)
 
 
 @pytest.fixture(params=_DECODERS, ids=[name for name, _ in _DECODERS])

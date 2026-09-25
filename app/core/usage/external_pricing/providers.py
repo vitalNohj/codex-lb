@@ -13,7 +13,6 @@ using the runtime overlay it always used.
 from __future__ import annotations
 
 PROVIDER_OPENROUTER = "openrouter"
-PROVIDER_NVIDIA = "nvidia"
 PROVIDER_ORCAROUTER = "orcarouter"
 PROVIDER_CLIPROXY = "cliproxy"
 OPENAI_COMPAT_PROVIDER_PREFIX = "openai_compat:"
@@ -25,7 +24,6 @@ PROVIDER_OPENCODE_GO = "opencode_go"
 EXTERNAL_PRICED_PROVIDERS: frozenset[str] = frozenset(
     {
         PROVIDER_OPENROUTER,
-        PROVIDER_NVIDIA,
         PROVIDER_ORCAROUTER,
         PROVIDER_CLIPROXY,
         PROVIDER_OPENCODE_GO,
@@ -64,7 +62,6 @@ PER_REQUEST_BILLED_PROVIDERS: frozenset[str] = frozenset(
 EXTERNAL_PRICED_LOG_SOURCES: frozenset[str] = frozenset(
     {
         "openrouter_sidecar",
-        "nvidia_sidecar",
         "orcarouter_sidecar",
         "claude_sidecar",
         "opencode_go_sidecar",
@@ -73,7 +70,6 @@ EXTERNAL_PRICED_LOG_SOURCES: frozenset[str] = frozenset(
 
 _LOG_SOURCE_PROVIDERS: dict[str, str] = {
     "openrouter_sidecar": PROVIDER_OPENROUTER,
-    "nvidia_sidecar": PROVIDER_NVIDIA,
     "orcarouter_sidecar": PROVIDER_ORCAROUTER,
     "claude_sidecar": PROVIDER_CLIPROXY,
     "opencode_go_sidecar": PROVIDER_OPENCODE_GO,

@@ -20,9 +20,6 @@ import {
   OpenRouterSidecarModelsResponseSchema,
   OpenRouterSidecarStatusResponseSchema,
   OpenRouterSidecarTestResponseSchema,
-  NvidiaSidecarModelsResponseSchema,
-  NvidiaSidecarStatusResponseSchema,
-  NvidiaSidecarTestResponseSchema,
   OpenAICompatModelsResponseSchema,
   OpenAICompatStatusResponseSchema,
   OpenAICompatTestResponseSchema,
@@ -46,7 +43,6 @@ const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
 const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
-const NVIDIA_SIDECAR_PATH = "/api/nvidia-sidecar";
 const OPENAI_COMPAT_PATH = "/api/openai-compat";
 const ORCAROUTER_SIDECAR_PATH = "/api/orcarouter-sidecar";
 const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
@@ -170,18 +166,6 @@ export function testOpenRouterSidecarConnection() {
 
 export function listOpenRouterSidecarModels() {
   return get(`${OPENROUTER_SIDECAR_PATH}/models`, OpenRouterSidecarModelsResponseSchema);
-}
-
-export function getNvidiaSidecarStatus() {
-  return get(`${NVIDIA_SIDECAR_PATH}/status`, NvidiaSidecarStatusResponseSchema);
-}
-
-export function testNvidiaSidecarConnection() {
-  return post(`${NVIDIA_SIDECAR_PATH}/test`, NvidiaSidecarTestResponseSchema);
-}
-
-export function listNvidiaSidecarModels() {
-  return get(`${NVIDIA_SIDECAR_PATH}/models`, NvidiaSidecarModelsResponseSchema);
 }
 
 export function getOpenAICompatStatus(endpointId: string) {

@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api-client";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
-import { NvidiaSidecarSettings } from "@/features/settings/components/nvidia-sidecar-settings";
 import { OpenAICompatEndpointSettings } from "@/features/settings/components/openai-compat-endpoint-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
@@ -65,14 +64,6 @@ const BASE_SETTINGS = {
   openrouterSidecarConnectTimeoutSeconds: 8,
   openrouterSidecarRequestTimeoutSeconds: 600,
   openrouterSidecarModelsCacheTtlSeconds: 60,
-  nvidiaSidecarEnabled: false,
-  nvidiaSidecarBaseUrl: "https://integrate.api.nvidia.com/v1",
-  nvidiaSidecarApiKeyConfigured: false,
-  nvidiaSidecarModelPrefixes: [],
-  nvidiaSidecarFullModels: [],
-  nvidiaSidecarConnectTimeoutSeconds: 8,
-  nvidiaSidecarRequestTimeoutSeconds: 600,
-  nvidiaSidecarModelsCacheTtlSeconds: 60,
   omnirouteSidecarEnabled: true,
   omnirouteSidecarBaseUrl: "http://127.0.0.1:20128/v1",
   omnirouteSidecarApiKeyConfigured: true,
@@ -192,24 +183,6 @@ describe("shared sidecar integration settings", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it("does not persist a NVIDIA full model while OpenRouter already owns it", async () => {
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithQueryClient(
-      <NvidiaSidecarSettings
-        settings={{
-          ...BASE_SETTINGS,
-          nvidiaSidecarFullModels: ["z-ai/glm-5.3"],
-          openrouterSidecarFullModels: ["z-ai/glm-5.3"],
-        }}
-        busy={false}
-        onSave={onSave}
-      />,
-    );
-
-    expect(screen.getByText("Full model z-ai/glm-5.3 is already used by OpenRouter.")).toBeInTheDocument();
-    expect(onSave).not.toHaveBeenCalled();
-  });
-
   it("does not persist an OpenAI-compat full model while OpenRouter already owns it", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
@@ -294,12 +267,6 @@ describe("shared sidecar integration settings", () => {
         Component: OrcaRouterSidecarSettings,
         label: "Enable OrcaRouter Integration",
         field: "orcarouterSidecarEnabled",
-      },
-      {
-        name: "NVIDIA",
-        Component: NvidiaSidecarSettings,
-        label: "Enable NVIDIA Integration",
-        field: "nvidiaSidecarEnabled",
       },
       {
         name: "OpenRouter",

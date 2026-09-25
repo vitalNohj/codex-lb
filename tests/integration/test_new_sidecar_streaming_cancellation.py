@@ -1,8 +1,8 @@
-"""Cancellation through the real NVIDIA and OpenAI-compat streaming stacks.
+"""Cancellation through the real OpenAI-compat streaming stack.
 
-The NVIDIA and generic OpenAI-compat streaming iterators were added as clones of
+The generic OpenAI-compat streaming iterator was added as a clone of
 the OpenRouter sidecar *before* PR 58 corrected that sidecar's settlement, so
-both shipped the defect PR 58 fixed: cost resolution, reservation settlement and
+it shipped the defect PR 58 fixed: cost resolution, reservation settlement and
 request logging awaited directly in the generator's ``finally``. A client
 disconnect cancels the request task, the first ``await`` in that ``finally``
 re-raises the pending ``CancelledError``, and the reservation stays ``reserved``
@@ -31,9 +31,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import SidecarPrefix
-from app.core.clients.nvidia_sidecar import NvidiaSidecarConfig
 from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarConfig
-from app.core.config.settings import get_settings
 from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -43,7 +41,6 @@ pytestmark = pytest.mark.integration
 
 ENDPOINT_ID = "2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a"
 OPENAI_COMPAT_SOURCE = f"openai_compat:{ENDPOINT_ID}"
-NVIDIA_SOURCE = "nvidia_sidecar"
 MODEL = "z-ai/glm-5.3"
 
 _DELTA = b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
@@ -53,7 +50,7 @@ _USAGE = (
 )
 # Same usage frame plus an echoed ``cost`` field. Neither of these two providers
 # is in ``PER_REQUEST_BILLED_PROVIDERS`` - the OpenSpec change explicitly refuses
-# to treat an NVIDIA/OpenAI-compat cost echo as billed spend - so this pins that
+# to treat an OpenAI-compat cost echo as billed spend - so this pins that
 # the cancellation fix did not quietly start charging it.
 _USAGE_WITH_COST = (
     b'data: {"id":"c2","object":"chat.completion.chunk","choices":[],'
@@ -105,41 +102,6 @@ class _FakeSidecarClient:
 
     def stream_chat_completion(self, payload):
         return _FakeStreamContext(self.chunks, self.gate, self.gate_after, self.gate_reached)
-
-
-@pytest.fixture
-def nvidia_enabled(monkeypatch):
-    monkeypatch.setenv("CODEX_LB_NVIDIA_SIDECAR_ENABLED", "true")
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-@pytest.fixture
-def fake_nvidia(monkeypatch):
-    config = NvidiaSidecarConfig(
-        enabled=True,
-        base_url="https://integrate.api.nvidia.com/v1",
-        api_key="nvidia-key",
-        prefixes=(SidecarPrefix(prefix="nvidia/", strip=True),),
-        connect_timeout_seconds=8.0,
-        request_timeout_seconds=600.0,
-        models_cache_ttl_seconds=60.0,
-        full_models=(MODEL,),
-    )
-    client = _FakeSidecarClient(config)
-
-    async def load_config():
-        return config
-
-    async def load_claude_disabled():
-        return None
-
-    monkeypatch.setattr("app.modules.proxy.api.load_nvidia_sidecar_config", load_config)
-    monkeypatch.setattr("app.modules.proxy.api.NvidiaSidecarClient", lambda _config: client)
-    monkeypatch.setattr("app.modules.proxy.api.get_nvidia_sidecar_client", lambda _config: client)
-    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_claude_disabled)
-    return client
 
 
 @pytest.fixture
@@ -198,21 +160,6 @@ async def _sidecar_logs(source: str) -> list[tuple[str, str | None]]:
     async with SessionLocal() as session:
         rows = list((await session.execute(select(RequestLog))).scalars().all())
     return [(r.status, r.error_code) for r in rows if r.source == source]
-
-
-async def _configure_nvidia(client: AsyncClient) -> None:
-    response = await client.put(
-        "/api/settings",
-        json={
-            "nvidiaSidecarEnabled": True,
-            "nvidiaSidecarApiKey": "nvidia-key",
-            "nvidiaSidecarModelPrefixes": [{"prefix": "nvidia/", "strip": True}],
-            "nvidiaSidecarFullModels": [MODEL],
-        },
-    )
-    assert response.status_code == 200, response.text
-    auth = await client.put("/api/settings", json={"apiKeyAuthEnabled": True})
-    assert auth.status_code == 200
 
 
 async def _configure_openai_compat(client: AsyncClient) -> None:
@@ -320,167 +267,6 @@ async def _cancel_midstream(app, key, *, chunks: list[bytes], gate_after: int, f
                 await task
     assert task is not None
     return outcome
-
-
-# --------------------------------------------------------------------------
-# NVIDIA
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_nvidia_control_completed_stream_finalizes_with_observed_usage(async_client, nvidia_enabled, fake_nvidia):
-    """Baseline: an uncancelled stream finalizes and charges the observed usage."""
-
-    await _configure_nvidia(async_client)
-    key = await _create_key("nvidia-control-complete")
-
-    async with async_client.stream(
-        "POST",
-        "/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key.key}"},
-        json={"model": MODEL, "messages": [{"role": "user", "content": "hi"}], "stream": True},
-    ) as response:
-        assert response.status_code == 200
-        body = await response.aread()
-    assert body.rstrip().endswith(b"data: [DONE]")
-
-    assert await _reservation_statuses() == ["finalized"]
-    # 10 prompt + 5 completion, as the fake provider reported.
-    assert await _limit_current_values() == [15]
-    assert await _sidecar_logs(NVIDIA_SOURCE) == [("success", None)]
-
-
-@pytest.mark.asyncio
-async def test_nvidia_injected_cancellation_before_any_usage_event(
-    app_instance, async_client, nvidia_enabled, fake_nvidia
-):
-    """Cancelled mid-stream before any usage/cost event was observed.
-
-    EXACT regression. Fails on the pre-fix code, where the cancellation was
-    raised out of ``external_response_settlement``'s price lookup before the
-    settlement helper ran, leaving ``['reserved']`` / ``[1000]``.
-    """
-
-    await _configure_nvidia(async_client)
-    key = await _create_key("nvidia-cancel-before-usage")
-
-    # No reservation exists until the request is admitted.
-    assert await _reservation_statuses() == []
-    assert await _limit_current_values() == [0]
-
-    # Gate immediately after the first content delta: no usage frame decoded.
-    outcome = await _cancel_midstream(app_instance, key, chunks=[_DELTA, _USAGE, _DONE], gate_after=0, fake=fake_nvidia)
-    assert outcome == "CancelledError", f"cancellation did not propagate: {outcome}"
-
-    await _settle_quiesced()
-
-    assert await _reservation_rows() == [("released", None, None, None)]
-    assert await _limit_current_values() == [0]
-
-
-@pytest.mark.asyncio
-async def test_nvidia_injected_cancellation_after_observable_usage(
-    app_instance, async_client, nvidia_enabled, fake_nvidia
-):
-    """Cancelled mid-stream AFTER a usage event was decoded.
-
-    Pins the CURRENT contract rather than a preference: ``completed=False``
-    suppresses settled token usage, and with no billed-cost field no charge
-    resolves, so the settlement helper takes its release branch. What the fix
-    changes is that the branch is *reached at all*.
-    """
-
-    await _configure_nvidia(async_client)
-    key = await _create_key("nvidia-cancel-after-usage")
-
-    outcome = await _cancel_midstream(
-        app_instance, key, chunks=[_DELTA, _USAGE, _DELTA, _DONE], gate_after=1, fake=fake_nvidia
-    )
-    assert outcome == "CancelledError", f"cancellation did not propagate: {outcome}"
-
-    await _settle_quiesced()
-
-    assert await _reservation_rows() == [("released", None, None, None)]
-    assert await _limit_current_values() == [0]
-
-
-@pytest.mark.asyncio
-async def test_nvidia_cancellation_does_not_charge_an_echoed_cost_as_billed_spend(
-    app_instance, async_client, nvidia_enabled, fake_nvidia
-):
-    """An echoed ``cost`` is not billed spend for NVIDIA, cancelled or not.
-
-    NVIDIA is deliberately absent from ``PER_REQUEST_BILLED_PROVIDERS`` (the
-    OpenSpec change refuses to invent NVIDIA per-token prices), so its cost echo
-    must not become a durable charge. Asserted on the cancellation path
-    specifically, because the fix is what makes settlement run there at all - and
-    a settlement that now runs must still take the *same* accounting decision it
-    took when it completed normally.
-    """
-
-    await _configure_nvidia(async_client)
-    key = await _create_key("nvidia-cancel-echoed-cost", with_cost_limit=True)
-
-    outcome = await _cancel_midstream(
-        app_instance, key, chunks=[_DELTA, _USAGE_WITH_COST, _DELTA, _DONE], gate_after=1, fake=fake_nvidia
-    )
-    await _settle_quiesced()
-    assert outcome == "CancelledError", f"cancellation did not propagate: {outcome}"
-
-    rows = await _reservation_rows()
-    assert len(rows) == 1
-    status, _input_tokens, _output_tokens, cost_microdollars = rows[0]
-    # Settled (the point of the fix), and settled as a release with no charge.
-    assert status == "released", f"an echoed cost must not finalize a charge, got {status!r}"
-    assert cost_microdollars in (None, 0)
-    assert (await _limit_values_by_type())["cost_usd"] == 0
-
-
-@pytest.mark.asyncio
-async def test_nvidia_a_settled_reservation_is_never_recorded_without_its_request_log(
-    app_instance, async_client, nvidia_enabled, fake_nvidia
-):
-    """Settlement and its request log are one deferred unit.
-
-    Re-raising the deferred cancellation between the two would settle the
-    reservation and then write no row explaining it, leaving the operator with
-    accounting that no request log accounts for.
-    """
-
-    await _configure_nvidia(async_client)
-    key = await _create_key("nvidia-settle-needs-log", with_cost_limit=True)
-
-    await _cancel_midstream(
-        app_instance, key, chunks=[_DELTA, _USAGE_WITH_COST, _DELTA, _DONE], gate_after=1, fake=fake_nvidia
-    )
-    await _settle_quiesced()
-
-    assert await _reservation_statuses() == ["released"]
-    assert len(await _sidecar_logs(NVIDIA_SOURCE)) == 1
-
-
-@pytest.mark.asyncio
-async def test_nvidia_settlement_happens_exactly_once_under_repeated_cancellation(
-    app_instance, async_client, nvidia_enabled, fake_nvidia
-):
-    """Re-delivered cancellation must not double-settle: settlement is a CAS on ``reserved``."""
-
-    await _configure_nvidia(async_client)
-    key = await _create_key("nvidia-cancel-twice")
-
-    await _cancel_midstream(
-        app_instance,
-        key,
-        chunks=[_DELTA, _USAGE, _DELTA, _DONE],
-        gate_after=1,
-        fake=fake_nvidia,
-        cancel_times=3,
-    )
-    await _settle_quiesced()
-
-    assert await _reservation_statuses() == ["released"]
-    assert await _limit_current_values() == [0]
-    assert len(await _sidecar_logs(NVIDIA_SOURCE)) == 1
 
 
 # --------------------------------------------------------------------------

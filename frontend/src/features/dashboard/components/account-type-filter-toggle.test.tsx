@@ -12,7 +12,6 @@ describe("AccountTypeFilterToggle", () => {
           codex: true,
           cliproxy: false,
           openrouter: true,
-          nvidia: true,
           omniroute: false,
           orcarouter: true,
           opencode_go: true,
@@ -34,10 +33,6 @@ describe("AccountTypeFilterToggle", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Hide NVIDIA accounts" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
     expect(screen.getByRole("button", { name: "Hide OrcaRouter accounts" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -51,7 +46,6 @@ describe("AccountTypeFilterToggle", () => {
           codex: true,
           cliproxy: true,
           openrouter: true,
-          nvidia: true,
           orcarouter: true,
           omniroute: true,
           opencode_go: true,
@@ -72,7 +66,6 @@ describe("AccountTypeFilterToggle", () => {
           codex: true,
           cliproxy: true,
           openrouter: true,
-          nvidia: true,
           orcarouter: true,
           omniroute: true,
           opencode_go: true,
@@ -86,7 +79,6 @@ describe("AccountTypeFilterToggle", () => {
       "Codex",
       "CLIProxy",
       "OpenRouter",
-      "NVIDIA",
       "OrcaRouter",
       "OpenCode Go",
       "OpenAI-compat",
@@ -102,7 +94,6 @@ describe("AccountTypeFilterToggle", () => {
           codex: true,
           cliproxy: true,
           openrouter: true,
-          nvidia: true,
           omniroute: true,
           orcarouter: true,
           opencode_go: true,
@@ -115,10 +106,6 @@ describe("AccountTypeFilterToggle", () => {
     await user.click(screen.getByRole("button", { name: "Hide OpenRouter accounts" }));
 
     expect(onToggle).toHaveBeenCalledWith("openrouter");
-
-    await user.click(screen.getByRole("button", { name: "Hide NVIDIA accounts" }));
-
-    expect(onToggle).toHaveBeenCalledWith("nvidia");
 
     await user.click(screen.getByRole("button", { name: "Hide OrcaRouter accounts" }));
 
