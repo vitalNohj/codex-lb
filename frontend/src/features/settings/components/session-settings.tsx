@@ -5,6 +5,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
+import { SettingsRow, SettingsRowGroup, SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 export type SessionSettingsProps = {
   settings: DashboardSettings;
@@ -40,29 +41,18 @@ export function SessionSettings({ settings, busy, onSave }: SessionSettingsProps
     void onSave({ dashboardSessionTtlSeconds: parsedSeconds });
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <TimerReset className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.session.title")}</h3>
-              <p className="text-xs text-muted-foreground">
-                {t("settings.session.description")}
-              </p>
-            </div>
-          </div>
-        </div>
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={TimerReset}
+        title={t("settings.session.title")}
+        description={t("settings.session.description")}
+      />
 
-        <div className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium">{t("settings.session.lifetime.label")}</p>
-            <p className="text-xs text-muted-foreground">
-              {t("settings.session.lifetime.description")}
-            </p>
-          </div>
+      <SettingsRowGroup>
+        <SettingsRow
+          label={t("settings.session.lifetime.label")}
+          description={t("settings.session.lifetime.description")}
+        >
           <div className="flex items-center gap-2">
             <Input
               type="number"
@@ -77,34 +67,34 @@ export function SessionSettings({ settings, busy, onSave }: SessionSettingsProps
                   save();
                 }
               }}
-              className="h-8 w-24 text-xs"
+              className="h-9 w-24 text-sm tabular-nums"
               aria-label={t("settings.session.lifetime.ariaLabel")}
             />
-            <span className="text-xs text-muted-foreground">{t("settings.session.lifetime.hoursSuffix")}</span>
+            <span className="text-sm text-muted-foreground">{t("settings.session.lifetime.hoursSuffix")}</span>
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="h-8 text-xs"
+              className="h-9 text-xs"
               disabled={busy || !changed}
               onClick={save}
             >
               {t("settings.session.lifetime.save")}
             </Button>
           </div>
-        </div>
+        </SettingsRow>
+      </SettingsRowGroup>
 
-        {showInvalidInputWarning ? (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
-            <Trans i18nKey="settings.session.lifetime.invalid" components={[<code key="0" />]} />
-          </div>
-        ) : null}
-        {showLongSessionWarning ? (
-          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs font-medium text-foreground">
-            {t("settings.session.lifetime.longWarning")}
-          </div>
-        ) : null}
-      </div>
-    </section>
+      {showInvalidInputWarning ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+          <Trans i18nKey="settings.session.lifetime.invalid" components={[<code key="0" />]} />
+        </div>
+      ) : null}
+      {showLongSessionWarning ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-900 dark:text-amber-200">
+          {t("settings.session.lifetime.longWarning")}
+        </div>
+      ) : null}
+    </SettingsSection>
   );
 }

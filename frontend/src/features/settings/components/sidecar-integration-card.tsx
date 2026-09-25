@@ -28,6 +28,7 @@ import type {
   ClaudeSidecarRoutingStrategy,
 } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
 import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 import { openaiCompatIntegrationId, isOpenAICompatIntegrationId } from "@/features/settings/openai-compat-endpoints";
 
@@ -711,14 +712,14 @@ function Frame({ children, bare = false }: { children: ReactNode; bare?: boolean
   const { meta } = useSidecarIntegration();
   if (bare) {
     return (
-      <div id={meta.sectionId} className="space-y-3">
+      <div id={meta.sectionId} className="scroll-mt-24 space-y-5">
         {children}
       </div>
     );
   }
   return (
-    <section id={meta.sectionId} className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">{children}</div>
+    <section id={meta.sectionId} className="scroll-mt-24 rounded-xl border bg-card p-5 shadow-[var(--shadow-sm)] sm:p-6">
+      <div className="space-y-5">{children}</div>
     </section>
   );
 }
@@ -727,14 +728,14 @@ function Header() {
   const { busy, meta, state, actions } = useSidecarIntegration();
   const Icon = meta.icon;
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-      <div className="flex items-center gap-2.5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-          <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary ring-1 ring-primary/20">
+          <Icon className="h-4 w-4" aria-hidden="true" />
         </div>
-        <div>
-          <h3 className="text-sm font-semibold">{meta.title}</h3>
-          <p className="text-xs text-muted-foreground">{meta.description}</p>
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold leading-tight tracking-tight">{meta.title}</h3>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{meta.description}</p>
         </div>
       </div>
       <div className="flex items-center gap-3">
@@ -746,8 +747,15 @@ function Header() {
             </a>
           </Button>
         ) : null}
-        <label className="flex items-center gap-2 text-xs font-medium" htmlFor={`${meta.sectionId}-enable`}>
-          {meta.enableLabel}
+        <label
+          className={`flex items-center gap-2.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+            state.enabled
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
+              : "bg-background/40 text-muted-foreground"
+          }`}
+          htmlFor={`${meta.sectionId}-enable`}
+        >
+          {state.enabled ? "Enabled" : "Disabled"}
           <Switch
             id={`${meta.sectionId}-enable`}
             aria-label={meta.enableLabel}
@@ -764,25 +772,54 @@ function Header() {
 function Callout() {
   const { meta } = useSidecarIntegration();
   return (
-    <div className="space-y-1.5 rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+    <div className="space-y-1 rounded-lg border border-primary/20 bg-primary/6 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
       <p className="font-medium text-foreground">{meta.enableDescription}</p>
       <p>{meta.callout}</p>
     </div>
   );
 }
 
+/**
+ * Two-column grid of {@link Panel}s on wide screens, single column below.
+ * Panels stretch to the row height so neighbours line up.
+ */
 function Fields({ children }: { children: ReactNode }) {
+  return <div className="@container grid gap-4 @3xl:grid-cols-2">{children}</div>;
+}
+
+/** Titled, bordered group inside {@link Fields}. `span="full"` takes the whole row. */
+function Panel({
+  title,
+  description,
+  span,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  span?: "full";
+  children: ReactNode;
+}) {
   return (
-    <div className="rounded-lg border">
-      <div className="space-y-3 p-3">{children}</div>
-    </div>
+    <section
+      aria-label={title}
+      className={cn(
+        "flex min-w-0 flex-col gap-4 rounded-lg border bg-background/40 p-4",
+        span === "full" && "@3xl:col-span-2",
+      )}
+    >
+      <div>
+        <h4 className="text-sm font-semibold">{title}</h4>
+        {description ? <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">{description}</p> : null}
+      </div>
+      {children}
+    </section>
   );
 }
 
 function BaseUrl() {
   const { busy, meta, state, actions } = useSidecarIntegration();
   return (
-    <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-base-url`}>
+    <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-base-url`}>
       Base URL
       <Input
         id={`${meta.sectionId}-base-url`}
@@ -797,7 +834,7 @@ function BaseUrl() {
         }}
         placeholder={meta.baseUrlPlaceholder}
         disabled={busy}
-        className="h-8 text-xs"
+        className="h-9 font-mono text-sm"
       />
     </label>
   );
@@ -806,8 +843,8 @@ function BaseUrl() {
 function Secrets({ showManagementKey = false }: { showManagementKey?: boolean }) {
   const { busy, meta, state, actions, form } = useSidecarIntegration();
   return (
-    <div className={showManagementKey ? "grid gap-2 sm:grid-cols-2" : "grid gap-2"}>
-      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-api-key`}>
+    <div className="grid gap-4">
+      <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-api-key`}>
         API key
         <div className="flex gap-2">
           <Input
@@ -823,23 +860,23 @@ function Secrets({ showManagementKey = false }: { showManagementKey?: boolean })
             }}
             placeholder={meta.apiKeyConfigured ? "Configured" : meta.apiKeyPlaceholder}
             disabled={busy}
-            className="h-8 text-xs"
+            className="h-9 text-sm"
           />
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-8 shrink-0 text-xs"
+            className="h-9 shrink-0 text-xs"
             disabled={busy || !state.apiKey.trim() || form.savePending}
             onClick={() => actions.addApiKey()}
           >
             Add API key
           </Button>
         </div>
-        <span className="block font-normal text-muted-foreground">Adding a key overwrites the stored key. Saved keys are encrypted and never shown again.</span>
+        <span className="block text-[13px] font-normal leading-relaxed text-muted-foreground">Adding a key overwrites the stored key. Saved keys are encrypted and never shown again.</span>
       </label>
       {showManagementKey ? (
-        <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-management-key`}>
+        <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-management-key`}>
           Management key
           <div className="flex gap-2">
             <Input
@@ -855,20 +892,22 @@ function Secrets({ showManagementKey = false }: { showManagementKey?: boolean })
               }}
               placeholder={meta.managementKeyConfigured ? "Configured" : "Not configured"}
               disabled={busy}
-              className="h-8 text-xs"
+              className="h-9 text-sm"
             />
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="h-8 shrink-0 text-xs"
+              className="h-9 shrink-0 text-xs"
               disabled={busy || !state.managementKey.trim() || form.savePending}
               onClick={() => actions.addManagementKey()}
             >
               Add management key
             </Button>
           </div>
-          <span className="block font-normal text-muted-foreground">Must match `remote-management.secret-key`.</span>
+          <span className="block text-[13px] font-normal leading-relaxed text-muted-foreground">
+            Must match <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">remote-management.secret-key</code>.
+          </span>
         </label>
       ) : null}
     </div>
@@ -878,10 +917,10 @@ function Secrets({ showManagementKey = false }: { showManagementKey?: boolean })
 function Prefixes() {
   const { busy, meta, state, actions } = useSidecarIntegration();
   return (
-    <div className="space-y-2 rounded-md border bg-muted/10 p-3">
+    <div className="space-y-3">
       <div>
-        <p className="text-sm font-medium">Model prefixes</p>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Model prefixes</p>
+        <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
           Full model names take precedence over prefixes across all integrations.
         </p>
       </div>
@@ -898,29 +937,29 @@ function Prefixes() {
           }}
           placeholder="provider/ or cp-"
           disabled={busy}
-          className="h-8 text-xs"
+          className="h-9 font-mono text-sm"
         />
         <Button
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 shrink-0 text-xs"
+          className="h-9 shrink-0 text-xs"
           disabled={busy || !state.manualPrefix.trim()}
           onClick={actions.addPrefix}
         >
           Add prefix
         </Button>
       </div>
-      {state.inlineError ? <p className="text-xs font-medium text-destructive">{state.inlineError}</p> : null}
+      {state.inlineError ? <p className="text-sm font-medium text-destructive">{state.inlineError}</p> : null}
       <div className="space-y-2">
         {state.prefixes.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No prefixes configured.</p>
+          <p className="text-[13px] text-muted-foreground">No prefixes configured.</p>
         ) : null}
         {state.prefixes.map((entry) => (
-          <div key={entry.prefix} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background/60 px-2 py-1.5">
-            <span className="font-mono text-xs">{entry.prefix}</span>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div key={entry.prefix} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-card px-3 py-2">
+            <span className="font-mono text-sm">{entry.prefix}</span>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
                 <Checkbox
                   aria-label={`Remove prefix ${entry.prefix} before forwarding`}
                   checked={entry.strip}
@@ -933,7 +972,7 @@ function Prefixes() {
                 type="button"
                 size="sm"
                 variant="ghost"
-                className="h-6 px-2 text-[11px]"
+                className="h-7 px-2 text-xs"
                 disabled={busy || (meta.id === "claude" && state.prefixes.length <= 1)}
                 onClick={() => actions.removePrefix(entry.prefix)}
               >
@@ -951,10 +990,10 @@ function Prefixes() {
 function FullModels() {
   const { busy, meta, state, actions, form } = useSidecarIntegration();
   return (
-    <div className="space-y-2 rounded-md border bg-muted/10 p-3" aria-label={`Configured full models for ${meta.title}`}>
+    <div className="space-y-3" aria-label={`Configured full models for ${meta.title}`}>
       <div>
-        <p className="text-sm font-medium">Full models</p>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Full models</p>
+        <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
           Exact model IDs route to this integration first and are forwarded unchanged.
         </p>
       </div>
@@ -971,27 +1010,27 @@ function FullModels() {
           }}
           placeholder="provider/model-id"
           disabled={busy}
-          className="h-8 text-xs"
+          className="h-9 font-mono text-sm"
         />
         <Button
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 shrink-0 text-xs"
+          className="h-9 shrink-0 text-xs"
           disabled={busy || !state.manualFullModel.trim()}
           onClick={() => actions.addFullModel()}
         >
           Add full model
         </Button>
       </div>
-      {form.conflictMessage ? <p className="text-xs font-medium text-destructive">{form.conflictMessage}</p> : null}
+      {form.conflictMessage ? <p className="text-sm font-medium text-destructive">{form.conflictMessage}</p> : null}
       {state.fullModels.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-2">
           {state.fullModels.map((modelId) => (
             <button
               key={modelId}
               type="button"
-              className="inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2 py-1 font-mono text-[11px]"
+              className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-2.5 py-1 font-mono text-xs text-foreground transition-colors hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
               onClick={() => actions.removeFullModel(modelId)}
               aria-label={`Remove ${modelId}`}
               disabled={busy}
@@ -1002,7 +1041,7 @@ function FullModels() {
           ))}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">No full models configured.</p>
+        <p className="text-[13px] text-muted-foreground">No full models configured.</p>
       )}
     </div>
   );
@@ -1037,9 +1076,9 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
     }
   };
   return (
-    <div className={showPollInterval ? "grid gap-2 sm:grid-cols-4" : "grid gap-2 sm:grid-cols-3"}>
+    <div className="grid gap-4 sm:grid-cols-2">
       {showPollInterval ? (
-        <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-poll-interval`}>
+        <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-poll-interval`}>
           Poll interval (s)
           <Input
             id={`${meta.sectionId}-poll-interval`}
@@ -1051,11 +1090,11 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
             onChange={(event) => actions.setPollInterval(event.target.value)}
             onBlur={() => actions.persistField()}
             onKeyDown={persistOnEnter}
-            className="h-8 text-xs"
+            className="h-9 text-sm tabular-nums"
           />
         </label>
       ) : null}
-      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-connect-timeout`}>
+      <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-connect-timeout`}>
         Connect timeout (s)
         <Input
           id={`${meta.sectionId}-connect-timeout`}
@@ -1067,10 +1106,10 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
           onChange={(event) => actions.setConnectTimeout(event.target.value)}
           onBlur={() => actions.persistField()}
           onKeyDown={persistOnEnter}
-          className="h-8 text-xs"
+          className="h-9 text-sm tabular-nums"
         />
       </label>
-      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-request-timeout`}>
+      <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-request-timeout`}>
         Request timeout (s)
         <Input
           id={`${meta.sectionId}-request-timeout`}
@@ -1082,10 +1121,10 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
           onChange={(event) => actions.setRequestTimeout(event.target.value)}
           onBlur={() => actions.persistField()}
           onKeyDown={persistOnEnter}
-          className="h-8 text-xs"
+          className="h-9 text-sm tabular-nums"
         />
       </label>
-      <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-cache-ttl`}>
+      <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-cache-ttl`}>
         Model cache TTL (s)
         <Input
           id={`${meta.sectionId}-cache-ttl`}
@@ -1097,7 +1136,7 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
           onChange={(event) => actions.setCacheTtl(event.target.value)}
           onBlur={() => actions.persistField()}
           onKeyDown={persistOnEnter}
-          className="h-8 text-xs"
+          className="h-9 text-sm tabular-nums"
         />
       </label>
     </div>
@@ -1107,7 +1146,7 @@ function Timeouts({ showPollInterval = false }: { showPollInterval?: boolean }) 
 function ReasoningEffort() {
   const { busy, meta, state, actions } = useSidecarIntegration();
   return (
-    <label className="space-y-1 text-xs font-medium" htmlFor={`${meta.sectionId}-default-effort`}>
+    <label className="block space-y-1.5 text-sm font-medium" htmlFor={`${meta.sectionId}-default-effort`}>
       Reasoning effort override
       <Select
         value={state.defaultReasoningEffort ?? REASONING_EFFORT_UNSET}
@@ -1117,7 +1156,7 @@ function ReasoningEffort() {
           )
         }
       >
-        <SelectTrigger id={`${meta.sectionId}-default-effort`} className="h-8 text-xs" disabled={busy}>
+        <SelectTrigger id={`${meta.sectionId}-default-effort`} className="h-9 w-full text-sm" disabled={busy}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -1129,7 +1168,7 @@ function ReasoningEffort() {
           ))}
         </SelectContent>
       </Select>
-      <span className="block font-normal text-muted-foreground">
+      <span className="block text-[13px] font-normal leading-relaxed text-muted-foreground">
         Forces this effort on every request, overriding what the client sends (an explicit model-name suffix still wins).
       </span>
     </label>
@@ -1210,21 +1249,15 @@ function Routing({
   onExcludedModelsChange,
 }: RoutingProps) {
   return (
-    <div className="space-y-3 rounded-md border bg-muted/10 p-3" aria-label="CLIProxyAPI routing controls">
-      <div>
-        <p className="text-sm font-medium">CLIProxyAPI routing</p>
-        <p className="text-xs text-muted-foreground">
-          Choose how CLIProxyAPI rotates Claude accounts and tune priority live. Higher number = preferred.
-        </p>
-      </div>
-      <label className="space-y-1 text-xs font-medium" htmlFor="claude-sidecar-routing-strategy">
+    <div className="space-y-3" aria-label="CLIProxyAPI routing controls">
+      <label className="block space-y-1.5 text-sm font-medium" htmlFor="claude-sidecar-routing-strategy">
         Routing strategy
         <Select
           value={strategy ?? undefined}
           onValueChange={(value) => onStrategyChange(value as ClaudeSidecarRoutingStrategy)}
           disabled={busy || isLoading || !strategy}
         >
-          <SelectTrigger id="claude-sidecar-routing-strategy" className="h-8 text-xs">
+          <SelectTrigger id="claude-sidecar-routing-strategy" className="h-9 w-full text-sm sm:max-w-sm">
             <SelectValue placeholder={isLoading ? "Loading routing..." : "Unknown strategy"} />
           </SelectTrigger>
           <SelectContent>
@@ -1234,11 +1267,11 @@ function Routing({
           </SelectContent>
         </Select>
       </label>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
         Fill first burns the highest-priority available account until it cools down. Round robin and weighted round robin mix within the top-priority group; weighted round robin uses each auth file's integer weight (omitted weights default to 1).
       </p>
-      {message ? <p className="text-xs text-muted-foreground">{message}</p> : null}
-      <div className="space-y-2">
+      {message ? <p className="text-[13px] text-muted-foreground">{message}</p> : null}
+      <div className="@container grid gap-2 @3xl:grid-cols-2">
         {isLoading ? <p className="text-xs text-muted-foreground">Loading accounts...</p> : null}
         {!isLoading && accounts.length === 0 ? (
           <p className="text-xs text-muted-foreground">No Claude accounts reported by CLIProxyAPI.</p>
@@ -1246,14 +1279,14 @@ function Routing({
         {accounts.map((account) => (
           <div
             key={account.name}
-            className="space-y-2 rounded-md border bg-background/60 px-2 py-1.5"
+            className="space-y-2 rounded-md border bg-card px-3 py-2.5"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
-              <p className={`truncate text-xs font-medium ${account.paused ? "text-muted-foreground line-through" : ""}`}>
+              <p className={`truncate text-sm font-medium ${account.paused ? "text-muted-foreground line-through" : ""}`}>
                 {account.email || account.name}
               </p>
-              <p className="truncate font-mono text-[11px] text-muted-foreground">
+              <p className="truncate font-mono text-xs text-muted-foreground">
                 {account.name}
                 {account.paused ? " | paused" : ""}
               </p>
@@ -1311,6 +1344,7 @@ export {
   Header,
   Callout,
   Fields,
+  Panel,
   BaseUrl,
   Secrets,
   Prefixes,

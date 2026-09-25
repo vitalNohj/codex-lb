@@ -13,6 +13,7 @@ import { ApiKeyTable } from "@/features/api-keys/components/api-key-table";
 import { useApiKeys } from "@/features/api-keys/hooks/use-api-keys";
 import type { ApiKey, ApiKeyCreateRequest, ApiKeyUpdateRequest } from "@/features/api-keys/schemas";
 import { getErrorMessageOrNull } from "@/utils/errors";
+import { SettingsRowGroup, SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 const ApiKeyCreateDialog = lazy(() =>
   import("@/features/api-keys/components/api-key-create-dialog").then((m) => ({ default: m.ApiKeyCreateDialog })),
@@ -81,33 +82,30 @@ export function ApiKeysSection({
   };
 
   return (
-    <section className="space-y-3 rounded-xl border bg-card p-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <KeySquare className="h-4 w-4 text-primary" aria-hidden="true" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold">{t("apiKeys.section.title")}</h3>
-            <p className="text-xs text-muted-foreground">{t("apiKeys.section.description")}</p>
-          </div>
-        </div>
-        <Button type="button" size="sm" className="h-8 text-xs" onClick={() => createDialog.show()} disabled={busy}>
-          {t("apiKeys.section.createKey")}
-        </Button>
-      </div>
-
-      <ApiKeyAuthToggle
-        enabled={apiKeyAuthEnabled}
-        disabled={busy}
-        onChange={onApiKeyAuthEnabledChange}
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={KeySquare}
+        title={t("apiKeys.section.title")}
+        description={t("apiKeys.section.description")}
+        actions={
+          <Button type="button" size="sm" className="h-9 text-xs" onClick={() => createDialog.show()} disabled={busy}>
+            {t("apiKeys.section.createKey")}
+          </Button>
+        }
       />
 
-      <ApiKeyQuotaPrivacyToggle
-        enabled={hideUpstreamQuotaFromApiKeys}
-        disabled={busy}
-        onChange={onHideUpstreamQuotaFromApiKeysChange}
-      />
+      <SettingsRowGroup>
+        <ApiKeyAuthToggle
+          enabled={apiKeyAuthEnabled}
+          disabled={busy}
+          onChange={onApiKeyAuthEnabledChange}
+        />
+        <ApiKeyQuotaPrivacyToggle
+          enabled={hideUpstreamQuotaFromApiKeys}
+          disabled={busy}
+          onChange={onHideUpstreamQuotaFromApiKeysChange}
+        />
+      </SettingsRowGroup>
 
       {mutationError ? <AlertMessage variant="error">{mutationError}</AlertMessage> : null}
 
@@ -159,6 +157,6 @@ export function ApiKeysSection({
           });
         }}
       />
-    </section>
+    </SettingsSection>
   );
 }
