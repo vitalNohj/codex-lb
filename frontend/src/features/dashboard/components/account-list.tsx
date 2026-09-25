@@ -30,6 +30,7 @@ import {
   formatSingleUnitRemaining,
   formatSlug,
 } from "@/utils/formatters";
+import { RESIZABLE_PANEL_TARGET_ATTR } from "@/components/resizable-panel";
 
 const ACCOUNT_LIST_VISIBLE_ROWS = 8;
 const ACCOUNT_LIST_ROW_HEIGHT_REM = 4.5;
@@ -325,8 +326,11 @@ export function AccountList({
       className="overflow-x-auto rounded-lg border bg-card"
     >
       <div
+        {...{ [RESIZABLE_PANEL_TARGET_ATTR]: "" }}
         className="min-w-[76rem] divide-y overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        style={{ maxHeight: `${ACCOUNT_LIST_VISIBLE_ROWS * ACCOUNT_LIST_ROW_HEIGHT_REM}rem` }}
+        // `--panel-height` is set by the surrounding ResizablePanel once the
+        // operator has dragged the grip; until then the eight-row default applies.
+        style={{ maxHeight: `var(--panel-height, ${ACCOUNT_LIST_VISIBLE_ROWS * ACCOUNT_LIST_ROW_HEIGHT_REM}rem)` }}
       >
         <div
           className="sticky top-0 z-10 grid gap-3 border-b bg-card/95 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-card/85"
