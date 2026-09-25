@@ -56,6 +56,32 @@ describe("ApiKeyCreateDialog", () => {
     expect(onSubmit.mock.calls[0][0].applyToCodexModel).toBe(true);
   });
 
+  it("creates keys with 429 by default and submits the 402 opt-in", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyCreateDialog
+        open
+        busy={false}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: "Send 402 instead of 429" });
+    expect(checkbox).not.toBeChecked();
+    await user.type(screen.getByLabelText("Name"), "Kodus");
+    await user.click(checkbox);
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSubmit.mock.calls[0][0].rateLimitAsPaymentRequired).toBe(true);
+  });
+
   it("submits opportunistic traffic class", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

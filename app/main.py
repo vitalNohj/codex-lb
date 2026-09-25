@@ -52,6 +52,7 @@ from app.core.middleware import (
 )
 from app.core.middleware.dashboard_gzip import add_dashboard_gzip_middleware
 from app.core.middleware.inflight import InFlightMiddleware
+from app.core.middleware.rate_limit_payment_required import add_rate_limit_payment_required_middleware
 from app.core.openai.model_refresh_scheduler import build_model_refresh_scheduler
 from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
@@ -869,6 +870,9 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
 
         init_tracing(service_name="codex-lb", endpoint=settings.otel_exporter_endpoint, app=app)
 
+    # Innermost: it must see every route-produced status, and it reads the API
+    # key the proxy auth dependency recorded on the request scope.
+    add_rate_limit_payment_required_middleware(app)
     app.add_middleware(cast(Any, InFlightMiddleware))
     add_dashboard_gzip_middleware(app)
     add_dashboard_auth_proxy_middleware(app)
