@@ -1,11 +1,12 @@
 # Model Pricing
 
-Requests routed through the OpenRouter, OrcaRouter, and CLIProxyAPI integrations
-get a cost in the request log by resolving the model against authoritative
-structured catalogs. OpenRouter and OrcaRouter publish their own rates;
-CLIProxyAPI publishes routing identities without rates, so its models resolve
-against the OpenRouter pricing reference. This page covers what the numbers mean
-and how to maintain them.
+Requests routed through participating external integrations get a cost in the
+request log by resolving the model against authoritative structured catalogs.
+OpenRouter, OrcaRouter, and OpenAI-compatible endpoints that publish prices (such
+as Unlid) supply their own rates. CLIProxyAPI and OpenCode Go publish routing
+identities without rates, so their models may resolve against the OpenRouter
+pricing reference. This page covers what the numbers mean and how to maintain
+them.
 
 Ollama and OmniRoute do not participate. Their request-log cost stays `--`:
 local inference has no published external rate, and OmniRoute's routing does not
@@ -73,7 +74,10 @@ Resolution stops at the first match:
 The serving provider's own catalog is checked before OpenRouter's, because
 providers list overlapping model ids at different prices. When a provider's own
 catalog cannot be reached, records it supplied keep its rates rather than being
-re-priced from OpenRouter's.
+re-priced from OpenRouter's. OpenAI-compatible endpoints can publish OpenRouter's
+top-level per-token `pricing` fields, or Unlid's `unlid.pricing` fields
+(`input_usd_per_m`, `output_usd_per_m`) in USD per million tokens. When both are
+present, the top-level format wins. Other pricing shapes are not guessed at.
 
 OpenRouter is used as a **pricing reference only**. A model's presence in or
 absence from OpenRouter never affects whether codex-lb considers it available or
@@ -130,7 +134,10 @@ rates it supplied are preserved; records supplied by OpenRouter are still
 refreshed as usual.
 
 Run it after a provider announces a price change, or when you see `!!` on a model
-you expect to be priced.
+you expect to be priced. If Unlid traffic was handled before support for its
+pricing format was installed, previously settled `not_token_priced` records
+will not retry automatically: run this refresh once after deploying the new
+version. It updates future request costs, not historical request-log rows.
 
 Three rules are worth knowing:
 
