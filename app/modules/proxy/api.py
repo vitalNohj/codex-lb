@@ -331,11 +331,13 @@ from app.modules.proxy.opencode_go_sidecar_dispatch import (
 )
 from app.modules.proxy.openrouter_sidecar_dispatch import (
     load_openrouter_sidecar_config,
+    openrouter_is_usable,
     openrouter_routing_entry,
     proxy_chat_to_openrouter,
 )
 from app.modules.proxy.orcarouter_sidecar_dispatch import (
     load_orcarouter_sidecar_config,
+    orcarouter_is_usable,
     orcarouter_routing_entry,
     proxy_chat_to_orcarouter,
 )
@@ -4283,7 +4285,12 @@ async def _build_models_response_body(
                     }
                 )
             )
-    if openrouter_config is not None and openrouter_config.enabled:
+    # Usable credential required, like OpenCode Go below: a keyless integration
+    # refuses every request, so its models are not advertised and its catalog
+    # is not polled. Routing above still claims them, so a request for one is
+    # refused by the dispatcher instead of falling through to another provider.
+    if openrouter_is_usable(openrouter_config):
+        assert openrouter_config is not None
         discovered_models = await OpenRouterSidecarClient(openrouter_config).list_models_cached()
         created_by_model = {model.id: model.created for model in discovered_models}
         raw_by_model = {model.id: model.raw for model in discovered_models}
@@ -4404,7 +4411,8 @@ async def _build_models_response_body(
                     }
                 )
             )
-    if orcarouter_config is not None and orcarouter_config.enabled:
+    if orcarouter_is_usable(orcarouter_config):
+        assert orcarouter_config is not None
         # Config-keyed client so ``models_cache_ttl_seconds`` actually spans
         # requests; an inline client resets the TTL state on every call.
         discovered_models = await get_orcarouter_sidecar_client(orcarouter_config).list_models_cached()
@@ -4521,6 +4529,18 @@ async def _build_models_response_body(
             )
     model_aliases = await load_model_aliases()
     catalog = await load_custom_alias_catalog()
+    # An alias is advertised only while some target could serve it. A target
+    # owned by an integration that has no key would be refused, so a pool whose
+    # every target is keyless is left out rather than listed and then 503'd.
+    keyless_providers = frozenset(
+        provider
+        for provider, usable in (
+            ("openrouter", openrouter_is_usable(openrouter_config)),
+            ("orcarouter", orcarouter_is_usable(orcarouter_config)),
+            ("opencode_go", opencode_go_is_usable(opencode_go_config)),
+        )
+        if not usable
+    )
     if model_aliases or catalog:
         serialized_items = [item.model_dump(mode="json") for item in items]
         if model_aliases:
@@ -4529,7 +4549,14 @@ async def _build_models_response_body(
                 serialized_items,
                 model_aliases,
                 created=created,
-                is_target_visible=lambda model: _model_visible_for_api_key(model, allowed_models),
+                is_target_visible=lambda model: (
+                    _model_visible_for_api_key(model, allowed_models)
+                    and not _routes_to_keyless_integration(
+                        model,
+                        routing_entry_tuple,
+                        unusable_providers=keyless_providers,
+                    )
+                ),
                 default_entry_fields=_sidecar_model_list_fields,
             )
             serialized_items[listed:] = _with_alias_context_window_overrides(serialized_items[listed:])
@@ -4537,6 +4564,16 @@ async def _build_models_response_body(
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
     return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
+
+
+def _routes_to_keyless_integration(
+    model: str,
+    routing_entries: tuple[SidecarRoutingEntry, ...],
+    *,
+    unusable_providers: frozenset[str],
+) -> bool:
+    decision = resolve_sidecar_route(model, routing_entries)
+    return decision is not None and decision.provider in unusable_providers
 
 
 async def _list_enabled_source_catalog_models(

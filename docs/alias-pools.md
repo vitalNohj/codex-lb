@@ -40,7 +40,9 @@ off while pools still list it: its targets are skipped until you turn it back
 on. The same goes for an OrcaRouter or OpenRouter integration that is on but
 has no API key: its targets are skipped, and the prompt is never sent to it.
 If no target of a pool can be used, the request fails with
-`alias_pool_unavailable` (HTTP 503) without contacting any upstream.
+`alias_pool_unavailable` (HTTP 503) without contacting any upstream. Such a
+pool is also left out of `GET /v1/models`, as are the keyless integration's own
+models, so clients are not offered a model that can only fail.
 
 A rejected save is shown on the offending row and your edited list stays in
 place so you can fix it rather than re-enter it.
