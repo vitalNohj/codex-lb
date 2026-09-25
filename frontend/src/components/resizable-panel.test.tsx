@@ -26,7 +26,32 @@ describe("ResizablePanel", () => {
     expect(screen.getByRole("separator", { name: "Resize list" })).toHaveAttribute("aria-valuenow", "420");
   });
 
-  it("reports a clamped height while the grip is dragged", () => {
+  it("previews the clamped height during a drag and commits it once on release", () => {
+    const onHeightChange = renderPanel(300);
+    const grip = screen.getByRole("separator", { name: "Resize list" });
+    const frame = screen.getByTestId("resizable-panel-frame");
+    vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({ height: 300 } as DOMRect);
+    Object.defineProperty(grip, "setPointerCapture", { value: vi.fn() });
+    Object.defineProperty(grip, "releasePointerCapture", { value: vi.fn() });
+    Object.defineProperty(grip, "hasPointerCapture", { value: () => true });
+
+    fireEvent.pointerDown(grip, { button: 0, pointerId: 1, clientY: 10 });
+    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 110 });
+    expect(frame.style.getPropertyValue("--panel-height")).toBe("400px");
+    expect(onHeightChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 2000 });
+    expect(frame.style.getPropertyValue("--panel-height")).toBe("800px");
+
+    fireEvent.pointerUp(grip, { pointerId: 1 });
+    expect(onHeightChange).toHaveBeenCalledTimes(1);
+    expect(onHeightChange).toHaveBeenCalledWith(800);
+
+    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 50 });
+    expect(onHeightChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits the in-flight height when pointer capture is lost", () => {
     const onHeightChange = renderPanel(300);
     const grip = screen.getByRole("separator", { name: "Resize list" });
     vi.spyOn(screen.getByTestId("resizable-panel-frame"), "getBoundingClientRect").mockReturnValue({
@@ -34,17 +59,14 @@ describe("ResizablePanel", () => {
     } as DOMRect);
     Object.defineProperty(grip, "setPointerCapture", { value: vi.fn() });
     Object.defineProperty(grip, "releasePointerCapture", { value: vi.fn() });
+    Object.defineProperty(grip, "hasPointerCapture", { value: () => false });
 
     fireEvent.pointerDown(grip, { button: 0, pointerId: 1, clientY: 10 });
-    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 110 });
-    expect(onHeightChange).toHaveBeenLastCalledWith(400);
+    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 60 });
+    fireEvent.lostPointerCapture(grip, { pointerId: 1 });
 
-    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 2000 });
-    expect(onHeightChange).toHaveBeenLastCalledWith(800);
-
-    fireEvent.pointerUp(grip, { pointerId: 1 });
-    fireEvent.pointerMove(grip, { pointerId: 1, clientY: 50 });
-    expect(onHeightChange).toHaveBeenCalledTimes(2);
+    expect(onHeightChange).toHaveBeenCalledTimes(1);
+    expect(onHeightChange).toHaveBeenCalledWith(350);
   });
 
   it("resets to the default on double-click and Home", () => {

@@ -1,5 +1,5 @@
 import { GripHorizontal } from "lucide-react";
-import { useRef, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,10 @@ export function ResizablePanel({
 }: ResizablePanelProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
+  // Live height while a drag is in flight. Only the final value goes through
+  // `onHeightChange`, so the caller (which persists to localStorage) is not
+  // written to on every pointermove.
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
 
   const measuredHeight = () => {
     const frame = frameRef.current;
@@ -72,16 +76,24 @@ export function ResizablePanel({
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
     }
-    onHeightChange(Math.round(clamp(drag.startHeight + (event.clientY - drag.startY), minHeight, maxHeight)));
+    setDragHeight(Math.round(clamp(drag.startHeight + (event.clientY - drag.startY), minHeight, maxHeight)));
   };
 
-  const onPointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+  const endDrag = (event: PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
     }
     dragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDragHeight((current) => {
+      if (current !== null) {
+        onHeightChange(current);
+      }
+      return null;
+    });
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -98,7 +110,9 @@ export function ResizablePanel({
     onHeightChange(Math.round(clamp(measuredHeight() + delta, minHeight, maxHeight)));
   };
 
-  const style: CSSProperties | undefined = height === null ? undefined : ({ "--panel-height": `${height}px` } as CSSProperties);
+  const effectiveHeight = dragHeight ?? height;
+  const style: CSSProperties | undefined =
+    effectiveHeight === null ? undefined : ({ "--panel-height": `${effectiveHeight}px` } as CSSProperties);
 
   return (
     <div className={cn("flex flex-col", className)}>
@@ -114,15 +128,16 @@ export function ResizablePanel({
         role="separator"
         aria-orientation="horizontal"
         aria-label={label}
-        aria-valuenow={height ?? undefined}
+        aria-valuenow={effectiveHeight ?? undefined}
         aria-valuemin={minHeight}
         aria-valuemax={Number.isFinite(maxHeight) ? maxHeight : undefined}
         title={`${label} (drag; double-click to reset)`}
         className="group mt-1.5 flex h-4 w-full cursor-ns-resize touch-none items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
         onDoubleClick={() => onHeightChange(null)}
         onKeyDown={onKeyDown}
       >
