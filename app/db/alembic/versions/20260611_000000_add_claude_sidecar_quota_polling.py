@@ -33,7 +33,9 @@ def upgrade() -> None:
         return
     with op.batch_alter_table(_TABLE_NAME) as batch_op:
         if "claude_sidecar_management_key_encrypted" not in columns:
-            batch_op.add_column(sa.Column("claude_sidecar_management_key_encrypted", sa.LargeBinary(), nullable=True))
+            batch_op.add_column(
+                sa.Column("claude_sidecar_management_key_encrypted", sa.LargeBinary(), nullable=True)
+            )
         if "claude_sidecar_quota_poll_interval_seconds" not in columns:
             batch_op.add_column(
                 sa.Column(

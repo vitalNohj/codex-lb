@@ -174,7 +174,11 @@ def upgrade() -> None:
             sa.text(f"SELECT id, claude_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
         ).mappings():
             bind.execute(
-                sa.text(f"UPDATE {_TABLE_NAME} SET claude_sidecar_model_prefixes_json = :prefixes WHERE id = :id"),
+                sa.text(
+                    f"UPDATE {_TABLE_NAME} "
+                    "SET claude_sidecar_model_prefixes_json = :prefixes "
+                    "WHERE id = :id"
+                ),
                 {
                     "id": row["id"],
                     "prefixes": _normalize_prefix_rows(
@@ -188,7 +192,11 @@ def upgrade() -> None:
             sa.text(f"SELECT id, openrouter_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
         ).mappings():
             bind.execute(
-                sa.text(f"UPDATE {_TABLE_NAME} SET openrouter_sidecar_model_prefixes_json = :prefixes WHERE id = :id"),
+                sa.text(
+                    f"UPDATE {_TABLE_NAME} "
+                    "SET openrouter_sidecar_model_prefixes_json = :prefixes "
+                    "WHERE id = :id"
+                ),
                 {
                     "id": row["id"],
                     "prefixes": _normalize_prefix_rows(row["openrouter_sidecar_model_prefixes_json"]),
@@ -215,7 +223,11 @@ def downgrade() -> None:
             sa.text(f"SELECT id, claude_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
         ).mappings():
             bind.execute(
-                sa.text(f"UPDATE {_TABLE_NAME} SET claude_sidecar_model_prefixes_json = :prefixes WHERE id = :id"),
+                sa.text(
+                    f"UPDATE {_TABLE_NAME} "
+                    "SET claude_sidecar_model_prefixes_json = :prefixes "
+                    "WHERE id = :id"
+                ),
                 {"id": row["id"], "prefixes": _collapse_prefix_rows(row["claude_sidecar_model_prefixes_json"])},
             )
     if "openrouter_sidecar_model_prefixes_json" in columns:
@@ -223,7 +235,11 @@ def downgrade() -> None:
             sa.text(f"SELECT id, openrouter_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
         ).mappings():
             bind.execute(
-                sa.text(f"UPDATE {_TABLE_NAME} SET openrouter_sidecar_model_prefixes_json = :prefixes WHERE id = :id"),
+                sa.text(
+                    f"UPDATE {_TABLE_NAME} "
+                    "SET openrouter_sidecar_model_prefixes_json = :prefixes "
+                    "WHERE id = :id"
+                ),
                 {"id": row["id"], "prefixes": _collapse_prefix_rows(row["openrouter_sidecar_model_prefixes_json"])},
             )
 

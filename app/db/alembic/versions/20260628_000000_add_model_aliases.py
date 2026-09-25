@@ -33,7 +33,9 @@ def upgrade() -> None:
     if not columns or _COLUMN_NAME in columns:
         return
     with op.batch_alter_table(_TABLE_NAME) as batch_op:
-        batch_op.add_column(sa.Column(_COLUMN_NAME, sa.Text(), server_default="{}", nullable=False))
+        batch_op.add_column(
+            sa.Column(_COLUMN_NAME, sa.Text(), server_default="{}", nullable=False)
+        )
 
 
 def downgrade() -> None:
