@@ -401,10 +401,6 @@ const orcarouterSidecarModels = [
   { id: "deepseek/deepseek-chat", created: 425, ownedBy: "deepseek" },
 ];
 
-const nvidiaSidecarModels = [
-  { id: "z-ai/glm-5.3", created: 523, ownedBy: "nvidia" },
-];
-
 const openaiCompatModels = [
   { id: "vast-llama", created: 623, ownedBy: "openai_compat" },
 ];
@@ -2376,35 +2372,6 @@ export const handlers = [
       modelCount: openrouterSidecarModels.length,
       lastCheckedAt: "2026-01-01T00:00:00Z",
       models: openrouterSidecarModels,
-    });
-  }),
-
-  http.get("*/api/nvidia-sidecar/status", () => {
-    return HttpResponse.json({
-      enabled: true,
-      configured: true,
-      status: "healthy",
-      message: "NVIDIA reachable",
-      baseUrl: "https://integrate.api.nvidia.com/v1",
-      modelCount: nvidiaSidecarModels.length,
-      lastCheckedAt: "2026-01-01T00:00:00Z",
-    });
-  }),
-
-  http.get("*/api/nvidia-sidecar/models", () => {
-    return HttpResponse.json({ models: nvidiaSidecarModels });
-  }),
-
-  http.post("*/api/nvidia-sidecar/test", () => {
-    return HttpResponse.json({
-      enabled: true,
-      configured: true,
-      status: "healthy",
-      message: "NVIDIA reachable",
-      baseUrl: "https://integrate.api.nvidia.com/v1",
-      modelCount: nvidiaSidecarModels.length,
-      lastCheckedAt: "2026-01-01T00:00:00Z",
-      models: nvidiaSidecarModels,
     });
   }),
 

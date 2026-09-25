@@ -68,8 +68,6 @@ export function AccountActions({
     const sidecarName =
       account.provider === "openrouter"
         ? "OpenRouter"
-        : account.provider === "nvidia"
-          ? "NVIDIA"
         : account.provider === "orcarouter"
           ? "OrcaRouter"
           : account.provider === "omniroute"

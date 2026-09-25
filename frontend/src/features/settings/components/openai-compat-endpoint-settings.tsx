@@ -105,22 +105,34 @@ export function OpenAICompatEndpointSettings({
       <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
         <SidecarIntegrationCard.Callout />
+        <SidecarIntegrationCard.Status />
         <SidecarIntegrationCard.Fields>
-          <SidecarIntegrationCard.BaseUrl />
-          <SidecarIntegrationCard.Secrets />
-          <SidecarIntegrationCard.Prefixes />
-          <SidecarIntegrationCard.FullModels />
-          <SidecarIntegrationCard.DiscoveredModels />
-          <SidecarIntegrationCard.ReasoningEffort />
-          <SidecarIntegrationCard.Timeouts />
-          <SidecarIntegrationCard.Status />
+          <SidecarIntegrationCard.Panel title="Connection" description="Where requests are sent and how they authenticate.">
+            <SidecarIntegrationCard.BaseUrl />
+            <SidecarIntegrationCard.Secrets />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel title="Request behavior" description="Applied to every request routed here.">
+            <SidecarIntegrationCard.ReasoningEffort />
+            <SidecarIntegrationCard.Timeouts />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel
+            title="Model routing"
+            description="Which model IDs land on this integration."
+            span="full"
+          >
+            <div className="@container/routing grid gap-4 @2xl/routing:grid-cols-2">
+              <SidecarIntegrationCard.Prefixes />
+              <SidecarIntegrationCard.FullModels />
+            </div>
+            <SidecarIntegrationCard.DiscoveredModels />
+          </SidecarIntegrationCard.Panel>
         </SidecarIntegrationCard.Fields>
-        <div className="flex justify-end border-t pt-3">
+        <div className="flex justify-end border-t pt-4">
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="h-8 text-xs text-destructive hover:text-destructive"
+            className="h-9 text-xs text-destructive hover:text-destructive"
             disabled={busy}
             onClick={() => void handleRemove()}
           >

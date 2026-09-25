@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel
-from app.core.clients.nvidia_sidecar import get_nvidia_sidecar_client
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openai_compat_sidecar import get_openai_compat_sidecar_client
 from app.core.clients.opencode_go_sidecar import get_opencode_go_sidecar_client
@@ -24,7 +23,6 @@ from app.modules.dashboard.schemas import (
 from app.modules.model_sources.catalog import source_models_to_upstream_models
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
-from app.modules.proxy.nvidia_sidecar_dispatch import load_nvidia_sidecar_config
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 from app.modules.proxy.openai_compat_dispatch import load_openai_compat_configs
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
@@ -118,20 +116,6 @@ async def list_models() -> dict:
                 continue
             seen_model_ids.add(sidecar_model.id)
             models.append({"id": sidecar_model.id, "name": f"OpenRouter: {sidecar_model.id}", "sourceOnly": False})
-    nvidia_config = await load_nvidia_sidecar_config()
-    if nvidia_config is not None and nvidia_config.enabled:
-        try:
-            # Config-keyed client so ``models_cache_ttl_seconds`` spans requests;
-            # an inline client discards the TTL state on every model-picker load.
-            nvidia_models = await get_nvidia_sidecar_client(nvidia_config).list_models_cached()
-        except Exception:
-            logger.warning("failed to append NVIDIA sidecar models to dashboard model list", exc_info=True)
-            nvidia_models = []
-        for sidecar_model in nvidia_models:
-            if sidecar_model.id in seen_model_ids:
-                continue
-            seen_model_ids.add(sidecar_model.id)
-            models.append({"id": sidecar_model.id, "name": f"NVIDIA: {sidecar_model.id}", "sourceOnly": False})
     openai_compat_configs = await load_openai_compat_configs()
     # Refresh the enabled endpoints concurrently, for the same reason
     # ``_build_models_response_body`` does: each endpoint carries its own

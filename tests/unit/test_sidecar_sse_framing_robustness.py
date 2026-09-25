@@ -1,4 +1,4 @@
-"""SSE framing and byte-boundary handling in the NVIDIA and OpenAI-compat decoders.
+"""SSE framing and byte-boundary handling in the OpenAI-compat decoder.
 
 Both decoders previously recognised only ``\\n\\n`` as an event delimiter and
 decoded each network chunk independently with ``errors="ignore"``. Reported on
@@ -12,7 +12,7 @@ this file holds the two decoders that still lacked them.
 
 OpenAI-compat (with OpenRouter and OrcaRouter) now decodes with the shared
 ``app.core.utils.sse.SseJsonDataDecoder``, specified in ``tests/unit/test_sse.py``;
-it stays here so both decoders keep meeting the same bar.
+it stays here so the shared decoder keeps meeting the same bar.
 """
 
 from __future__ import annotations
@@ -22,10 +22,8 @@ from collections.abc import Callable
 import pytest
 
 from app.core.utils.sse import SseJsonDataDecoder
-from app.modules.proxy.nvidia_sidecar_dispatch import _SseUsageDecoder as NvidiaSseUsageDecoder
 
 _DECODERS: tuple[tuple[str, Callable[[], object]], ...] = (
-    ("nvidia", NvidiaSseUsageDecoder),
     ("shared", SseJsonDataDecoder),
 )
 

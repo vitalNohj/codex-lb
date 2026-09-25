@@ -37,6 +37,7 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from typing import cast
 
@@ -47,7 +48,6 @@ from app.core.types import JsonValue
 from app.core.usage.external_pricing.providers import (
     EXTERNAL_PRICED_PROVIDERS,
     PROVIDER_CLIPROXY,
-    PROVIDER_NVIDIA,
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
@@ -64,7 +64,6 @@ __all__ = [
     "PROVIDER_CLIPROXY",
     "PROVIDER_OPENCODE_GO",
     "PROVIDER_OPENROUTER",
-    "PROVIDER_NVIDIA",
     "PROVIDER_ORCAROUTER",
     "OPENROUTER_REFERENCE_SOURCE",
     "ORCAROUTER_REFERENCE_SOURCE",
@@ -72,12 +71,17 @@ __all__ = [
     "CatalogEntry",
     "CatalogFetchError",
     "as_orcarouter_reference",
+    "catalog_from_published_models",
     "catalog_from_sidecar_models",
     "fetch_openrouter_catalog",
     "is_external_priced_provider",
     "order_catalogs",
     "parse_openai_style_catalog",
     "parse_per_token_pricing",
+    "parse_published_pricing",
+    "OPENROUTER_RATE_FORMAT",
+    "UNLID_RATE_FORMAT",
+    "RateFormat",
 ]
 
 # Broad pricing reference. Public, unauthenticated, and structured.
@@ -95,6 +99,21 @@ ORCAROUTER_REFERENCE_SOURCE = "orcarouter:reference"
 
 _PER_TOKEN_TO_PER_1M = 1_000_000.0
 _FETCH_TIMEOUT_SECONDS = 20.0
+
+
+@dataclass(frozen=True, slots=True)
+class RateFormat:
+    """Explicit field names and USD-to-per-1M scale of a published rate block."""
+
+    input_key: str
+    output_key: str
+    cached_input_key: str
+    per_1m_multiplier: float
+    unknown_fields_unparseable: bool = False
+
+
+OPENROUTER_RATE_FORMAT = RateFormat("prompt", "completion", "input_cache_read", _PER_TOKEN_TO_PER_1M)
+UNLID_RATE_FORMAT = RateFormat("input_usd_per_m", "output_usd_per_m", "cached_input_usd_per_m", 1.0, True)
 
 
 class CatalogFetchError(RuntimeError):
@@ -202,15 +221,17 @@ def _read_rate_field(raw_pricing: Mapping[str, JsonValue], key: str) -> _RateRea
     return _read_rate(raw_pricing[key])[0]
 
 
-def _unpriced_reason(price: ModelPrice | None, raw_pricing: JsonValue) -> UnpricedReason:
+def _unpriced_reason(
+    price: ModelPrice | None, raw_pricing: JsonValue, rate_format: RateFormat = OPENROUTER_RATE_FORMAT
+) -> UnpricedReason:
     """Whether an unpriced entry declares no token rate or carries unreadable ones.
 
-    Keyed on the published *values*, not on which keys exist. A catalog that omits
-    ``prompt``/``completion``, or publishes them as a negative sentinel, ``null``,
-    or an empty string, has said the model is not token priced -- a settled answer
-    that carries no retry state. Only a shape this build genuinely could not read,
-    or a half-published pair it cannot turn into a price, leaves the question open
-    so the prior rate stands and the source is re-read.
+    A standard catalog that omits ``prompt``/``completion``, or publishes them
+    as a negative sentinel, ``null``, or an empty string, has said the model is
+    not token priced -- a settled answer with no retry state. A nonempty Unlid
+    block with no recognized rate fields may instead be a renamed schema and
+    stays unparseable. An unreadable value or a half-published pair also leaves
+    the question open so the prior rate stands and the source is re-read.
     """
 
     if price is not None:
@@ -219,7 +240,15 @@ def _unpriced_reason(price: ModelPrice | None, raw_pricing: JsonValue) -> Unpric
         return UnpricedReason.NO_TOKEN_RATE
     if not is_json_mapping(raw_pricing):
         return UnpricedReason.UNPARSEABLE
-    readings = [_read_rate_field(raw_pricing, key) for key in ("prompt", "completion")]
+    readings = [_read_rate_field(raw_pricing, key) for key in (rate_format.input_key, rate_format.output_key)]
+    if (
+        rate_format.unknown_fields_unparseable
+        and raw_pricing
+        and all(reading is _RateReading.MISSING for reading in readings)
+    ):
+        # A nonempty vendor pricing block with entirely unknown fields may be
+        # a changed rate schema, not an authoritative no-token-price statement.
+        return UnpricedReason.UNPARSEABLE
     if _RateReading.UNREADABLE in readings:
         return UnpricedReason.UNPARSEABLE
     if _RateReading.DECLARED_NONE in readings:
@@ -243,21 +272,54 @@ def parse_per_token_pricing(pricing: JsonValue) -> ModelPrice | None:
     number for a published one.
     """
 
+    return parse_published_pricing(pricing, rate_format=OPENROUTER_RATE_FORMAT, include_cached=False)
+
+
+def parse_published_pricing(
+    pricing: JsonValue, *, rate_format: RateFormat, include_cached: bool = True
+) -> ModelPrice | None:
+    """Read a known pricing format without guessing units or an absent cache rate."""
+
     if not is_json_mapping(pricing):
         return None
-    input_per_1m = _parse_per_token_usd(pricing.get("prompt"))
-    output_per_1m = _parse_per_token_usd(pricing.get("completion"))
+    input_per_1m = _parse_rate_usd(pricing.get(rate_format.input_key), rate_format.per_1m_multiplier)
+    output_per_1m = _parse_rate_usd(pricing.get(rate_format.output_key), rate_format.per_1m_multiplier)
     if input_per_1m is None or output_per_1m is None:
         return None
-    return ModelPrice(input_per_1m=input_per_1m, output_per_1m=output_per_1m)
+    cached_input_per_1m = (
+        _parse_rate_usd(pricing.get(rate_format.cached_input_key), rate_format.per_1m_multiplier)
+        if include_cached
+        else None
+    )
+    return ModelPrice(
+        input_per_1m=input_per_1m,
+        output_per_1m=output_per_1m,
+        cached_input_per_1m=cached_input_per_1m,
+    )
 
 
-def _parse_per_token_usd(value: JsonValue) -> float | None:
-    reading, per_token = _read_rate(value)
-    if reading is not _RateReading.PARSED or per_token is None:
+def _parse_rate_usd(value: JsonValue, multiplier: float) -> float | None:
+    reading, amount = _read_rate(value)
+    if reading is not _RateReading.PARSED or amount is None:
         return None
-    per_1m = per_token * _PER_TOKEN_TO_PER_1M
+    per_1m = amount * multiplier
     return per_1m if math.isfinite(per_1m) else None
+
+
+def catalog_from_published_models(source: str, models: Sequence[tuple[str, JsonValue, RateFormat]]) -> Catalog:
+    """Build a serving catalog from rate blocks that may have different units."""
+
+    entries: list[CatalogEntry] = []
+    for model_id, raw_pricing, rate_format in models:
+        price = parse_published_pricing(raw_pricing, rate_format=rate_format, include_cached=False)
+        entries.append(
+            CatalogEntry(
+                model_id=model_id,
+                price=price,
+                unpriced_reason=_unpriced_reason(price, raw_pricing, rate_format),
+            )
+        )
+    return Catalog.from_entries(source, entries)
 
 
 def catalog_from_sidecar_models(

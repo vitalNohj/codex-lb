@@ -167,7 +167,6 @@ def trap_other_providers(monkeypatch) -> list[str]:
 
     for name in (
         "proxy_chat_to_sidecar",
-        "proxy_chat_to_nvidia",
         "proxy_chat_to_openai_compat",
         "proxy_chat_to_opencode_go",
         "proxy_chat_to_ollama",

@@ -48,7 +48,6 @@ _DISPATCH_MODULES = {
     "orcarouter": "app.modules.proxy.orcarouter_sidecar_dispatch",
     "openrouter": "app.modules.proxy.openrouter_sidecar_dispatch",
     "openai_compat": "app.modules.proxy.openai_compat_dispatch",
-    "nvidia": "app.modules.proxy.nvidia_sidecar_dispatch",
     "claude": "app.modules.proxy.claude_sidecar_dispatch",
 }
 # The providers that wait for the upstream's headers before responding.
@@ -101,7 +100,7 @@ class _HeldUpstream:
 
 @pytest_asyncio.fixture
 async def upstream(monkeypatch) -> AsyncIterator[_HeldUpstream]:
-    for provider in ("ORCAROUTER", "OPENROUTER", "NVIDIA", "CLAUDE"):
+    for provider in ("ORCAROUTER", "OPENROUTER", "CLAUDE"):
         monkeypatch.setenv(f"CODEX_LB_{provider}_SIDECAR_ENABLED", "true")
     get_settings.cache_clear()
     held = _HeldUpstream()
@@ -147,13 +146,6 @@ def _provider_settings(provider: str, base_url: str) -> tuple[dict[str, object],
             "openrouterSidecarApiKey": "sk-or-synthetic",
             "openrouterSidecarModelPrefixes": ["z-ai/"],
         }, "z-ai/glm-5.3"
-    if provider == "nvidia":
-        return {
-            "nvidiaSidecarEnabled": True,
-            "nvidiaSidecarBaseUrl": base_url,
-            "nvidiaSidecarApiKey": "nvapi-synthetic",
-            "nvidiaSidecarModelPrefixes": [{"prefix": "nv/", "strip": True}],
-        }, "nv/glm-5.3"
     if provider == "claude":
         return {
             "claudeSidecarEnabled": True,

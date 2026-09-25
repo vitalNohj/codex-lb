@@ -8,6 +8,7 @@ import { PasswordChangeDialog } from "@/features/settings/components/password-ch
 import { PasswordRemoveDialog } from "@/features/settings/components/password-remove-dialog";
 import { PasswordSetupDialog } from "@/features/settings/components/password-setup-dialog";
 import { PasswordVerifyDialog } from "@/features/settings/components/password-verify-dialog";
+import { SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 type PasswordDialog = "setup" | "change" | "remove" | "verify" | null;
 
@@ -43,27 +44,20 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
         : t("settings.password.status.notSet");
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <KeyRound className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.password.title")}</h3>
-              <p className="text-xs text-muted-foreground">{statusMessage}</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={KeyRound}
+        title={t("settings.password.title")}
+        description={statusMessage}
+        actions={
+          <>
             {!passwordManagementEnabled ? null : passwordRequired && passwordSessionActive ? (
               <>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-8 text-xs"
+                  className="h-9 text-xs"
                   disabled={lock}
                   onClick={() => setActiveDialog("change")}
                 >
@@ -73,7 +67,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-8 text-xs text-destructive hover:text-destructive"
+                  className="h-9 text-xs text-destructive hover:text-destructive"
                   disabled={lock}
                   onClick={() => setActiveDialog("remove")}
                 >
@@ -85,7 +79,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-8 text-xs"
+                className="h-9 text-xs"
                 disabled={disabled}
                 onClick={() => setActiveDialog("verify")}
               >
@@ -95,16 +89,16 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
               <Button
                 type="button"
                 size="sm"
-                className="h-8 text-xs"
+                className="h-9 text-xs"
                 disabled={lock}
                 onClick={() => setActiveDialog("setup")}
               >
                 {t("settings.password.actions.set")}
               </Button>
             ) : null}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <PasswordSetupDialog
         open={activeDialog === "setup"}
@@ -126,6 +120,6 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
         onOpenChange={closeIfMatches("verify")}
         disabled={disabled}
       />
-    </section>
+    </SettingsSection>
   );
 }

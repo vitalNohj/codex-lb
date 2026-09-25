@@ -55,14 +55,6 @@ const BASE_SETTINGS: DashboardSettings = {
   limitWarmupCooldownSeconds: 3600,
   limitWarmupMinAvailablePercent: 100,
   claudeSidecarEnabled: false,
-  nvidiaSidecarEnabled: false,
-  nvidiaSidecarBaseUrl: "https://integrate.api.nvidia.com/v1",
-  nvidiaSidecarApiKeyConfigured: true,
-  nvidiaSidecarModelPrefixes: [{ prefix: "nvidia/", strip: true }],
-  nvidiaSidecarFullModels: [],
-  nvidiaSidecarConnectTimeoutSeconds: 8,
-  nvidiaSidecarRequestTimeoutSeconds: 600,
-  nvidiaSidecarModelsCacheTtlSeconds: 60,
   orcarouterSidecarEnabled: false,
   orcarouterSidecarBaseUrl: "https://api.orcarouter.ai/v1",
   orcarouterSidecarApiKeyConfigured: false,
@@ -71,10 +63,6 @@ const BASE_SETTINGS: DashboardSettings = {
   orcarouterSidecarConnectTimeoutSeconds: 8,
   orcarouterSidecarRequestTimeoutSeconds: 600,
   orcarouterSidecarModelsCacheTtlSeconds: 60,
-  nvidiaSidecarLastHealthStatus: "healthy",
-  nvidiaSidecarLastHealthMessage: "NVIDIA reachable",
-  nvidiaSidecarLastCheckedAt: "2026-01-01T00:00:00Z",
-  nvidiaSidecarLastModelCount: 1,
   openaiCompatEndpoints: [VAST_ENDPOINT],
   guestAccessEnabled: false,
   prohibitFastMode: false,
@@ -195,7 +183,7 @@ describe("OpenAICompatEndpointSettings", () => {
     expect(within(screen.getByLabelText("Configured full models for Vast")).getByText("vast-llama")).toBeInTheDocument();
   });
 
-  it("keeps discovered models collapsed inside the configuration card above the timeout fields", async () => {
+  it("keeps discovered models collapsed inside the model routing panel", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
@@ -208,9 +196,7 @@ describe("OpenAICompatEndpointSettings", () => {
     );
 
     const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
-    const cacheTtlField = screen.getByLabelText(/Model cache TTL/);
-
-    expect(disclosure.compareDocumentPosition(cacheTtlField) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Model routing" })).toContainElement(disclosure);
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("Search models")).not.toBeInTheDocument();
 

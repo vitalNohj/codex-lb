@@ -14,14 +14,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
-import { FreeModelDiscoveryPanel } from "@/features/settings/components/free-model-discovery-panel";
 import { OllamaSidecarSettings } from "@/features/settings/components/ollama-sidecar-settings";
 import { OmniRouteSidecarSettings } from "@/features/settings/components/omniroute-sidecar-settings";
 import { OpenCodeGoSidecarSettings } from "@/features/settings/components/opencode-go-sidecar-settings";
-import { NvidiaSidecarSettings } from "@/features/settings/components/nvidia-sidecar-settings";
 import { OpenAICompatEndpointSettings } from "@/features/settings/components/openai-compat-endpoint-settings";
 import { OpenRouterSidecarSettings } from "@/features/settings/components/openrouter-sidecar-settings";
 import { OrcaRouterSidecarSettings } from "@/features/settings/components/orcarouter-sidecar-settings";
+import { SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 import {
   DEFAULT_OPENAI_COMPAT_CONNECT_TIMEOUT_SECONDS,
   DEFAULT_OPENAI_COMPAT_MODELS_CACHE_TTL_SECONDS,
@@ -109,13 +108,6 @@ export function SidecarIntegrationsCard({
       sectionId: "openrouter-sidecar",
       enabled: settings.openrouterSidecarEnabled ?? false,
       render: () => <OpenRouterSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
-    },
-    {
-      value: "nvidia",
-      label: "NVIDIA",
-      sectionId: "nvidia-sidecar",
-      enabled: settings.nvidiaSidecarEnabled ?? false,
-      render: () => <NvidiaSidecarSettings settings={settings} busy={busy} onSave={onSave} bare />,
     },
     {
       value: "orcarouter",
@@ -251,56 +243,24 @@ export function SidecarIntegrationsCard({
     }
   };
 
+  const enabledCount = tabs.filter((tab) => tab.enabled).length;
+
   return (
-    <section id="external-integrations" className="rounded-xl border bg-card p-5">
-      <div className="space-y-4">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Boxes className="h-4 w-4 text-primary" aria-hidden="true" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold">External Integrations</h2>
-            <p className="text-xs text-muted-foreground">
-              Route model requests to external providers running alongside codex-lb.
-            </p>
-          </div>
-        </div>
-
-        <FreeModelDiscoveryPanel settings={settings} />
-
-        <Tabs
-          value={activeTab}
-          onValueChange={(tab) => setSelection({ tab, hash: locationHash })}
-        >
-          {/*
-            Tab labels never wrap, so past a handful of integrations the row is
-            wider than a phone viewport. Scrolling the row keeps every label
-            readable and stops the card from forcing a horizontal page scroll.
-          */}
-          <div className="flex min-w-0 items-center gap-1">
-            <TabsList className="min-w-0 flex-1 justify-start overflow-x-auto">
-              {tabs.map((tab) => (
-                <TabsTrigger
-                  key={tab.value}
-                  value={tab.value}
-                  aria-label={tab.enabled ? `${tab.label} (enabled)` : tab.label}
-                >
-                  {tab.label}
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "ml-1 inline-block size-1.5 rounded-full",
-                      tab.enabled ? "bg-emerald-500" : "bg-transparent",
-                    )}
-                  />
-                </TabsTrigger>
-              ))}
-            </TabsList>
+    <SettingsSection id="external-integrations" className="space-y-6">
+      <SettingsSectionHeader
+        icon={Boxes}
+        title="External Integrations"
+        description="Route model requests to external providers running alongside codex-lb."
+        actions={
+          <>
+            <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+              {enabledCount} enabled
+            </span>
             <Button
               type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
               aria-label="Add OpenAI-compatible endpoint"
               title={
                 atEndpointCap
@@ -313,16 +273,53 @@ export function SidecarIntegrationsCard({
                 setAddOpen(true);
               }}
             >
-              <Plus className="h-4 w-4" aria-hidden="true" />
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              Add endpoint
             </Button>
-          </div>
+          </>
+        }
+      />
+
+      <Tabs
+        value={activeTab}
+        onValueChange={(tab) => setSelection({ tab, hash: locationHash })}
+        className="gap-5"
+      >
+        {/* Provider tiles wrap into rows, so every integration is one click away. */}
+        <TabsList
+          aria-label="Integration providers"
+          className="grid h-auto w-full grid-cols-2 gap-2 rounded-none bg-transparent p-0 sm:grid-cols-3 lg:grid-cols-4"
+        >
           {tabs.map((tab) => (
-            <TabsContent key={tab.value} value={tab.value} className="pt-2">
-              {tab.render()}
-            </TabsContent>
+            <TabsTrigger
+              key={tab.value}
+              value={tab.value}
+              aria-label={tab.enabled ? `${tab.label} (enabled)` : tab.label}
+              className={cn(
+                "h-auto min-w-0 flex-none justify-start gap-2.5 rounded-lg border bg-background/40 px-3 py-2.5 text-sm text-muted-foreground",
+                "hover:border-border hover:bg-accent/70 hover:text-foreground",
+                "data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:ring-1 data-[state=active]:ring-primary/30",
+                "dark:data-[state=active]:border-primary/50 dark:data-[state=active]:bg-primary/10",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "inline-block size-2 shrink-0 rounded-full ring-2",
+                  tab.enabled ? "bg-emerald-500 ring-emerald-500/25" : "bg-muted-foreground/30 ring-transparent",
+                )}
+              />
+              <span className="truncate">{tab.label}</span>
+            </TabsTrigger>
           ))}
-        </Tabs>
-      </div>
+        </TabsList>
+        {tabs.map((tab) => (
+          <TabsContent key={tab.value} value={tab.value} className="min-w-0 border-t pt-5">
+            {tab.render()}
+          </TabsContent>
+        ))}
+      </Tabs>
+
 
       <Dialog open={addOpen} onOpenChange={(open) => (open ? setAddOpen(true) : closeAddDialog())}>
         <DialogContent>
@@ -365,6 +362,6 @@ export function SidecarIntegrationsCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+    </SettingsSection>
   );
 }

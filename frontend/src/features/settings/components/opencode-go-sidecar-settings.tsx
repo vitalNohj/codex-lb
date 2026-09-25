@@ -129,38 +129,50 @@ export function OpenCodeGoSidecarSettings({
           status={status?.status ?? null}
           message={status?.message ?? null}
         />
+        <SidecarIntegrationCard.Status />
+        {clearError ? <AlertMessage variant="error">{clearError}</AlertMessage> : null}
         <SidecarIntegrationCard.Fields>
-          <SidecarIntegrationCard.BaseUrl />
-          <SidecarIntegrationCard.Secrets />
-          {/*
-            Clearing is the only path that removes a secret, and it is separate
-            from the ordinary save so an unchanged form can never wipe a stored
-            key by omission.
-          */}
-          <ClearStoredApiKey
-            apiKeyConfigured={sidecarApiKeyConfigured}
-            integrationName="OpenCode Go"
-            description="The stored OpenCode Go key is deleted immediately. Model discovery and routing fail until a new key is added. The key is never displayed, so it cannot be recovered from this page."
-            disabled={busy}
-            onClear={async () => {
-              setClearError(null);
-              await onSave({ opencodeGoSidecarClearApiKey: true });
-            }}
-            onError={setClearError}
-          />
-          {clearError ? <AlertMessage variant="error">{clearError}</AlertMessage> : null}
-          <SidecarIntegrationCard.Prefixes />
-          <SidecarIntegrationCard.FullModels />
-          {/*
-            No reasoning-effort override: the backend contract exposes no
-            `...DefaultReasoningEffort` field for OpenCode Go, and a control that
-            cannot be persisted would be a lie. If the backend adds one later,
-            drop `SidecarIntegrationCard.ReasoningEffort` in here.
-          */}
-          <SidecarIntegrationCard.DiscoveredModels />
-          <SidecarIntegrationCard.Timeouts />
-          <OpenCodeGoBalanceNote />
-          <SidecarIntegrationCard.Status />
+          <SidecarIntegrationCard.Panel title="Connection" description="Where requests are sent and how they authenticate.">
+            <SidecarIntegrationCard.BaseUrl />
+            <SidecarIntegrationCard.Secrets />
+            {/*
+              Clearing is the only path that removes a secret, and it is separate
+              from the ordinary save so an unchanged form can never wipe a stored
+              key by omission.
+            */}
+            <ClearStoredApiKey
+              apiKeyConfigured={sidecarApiKeyConfigured}
+              integrationName="OpenCode Go"
+              description="The stored OpenCode Go key is deleted immediately. Model discovery and routing fail until a new key is added. The key is never displayed, so it cannot be recovered from this page."
+              disabled={busy}
+              onClear={async () => {
+                setClearError(null);
+                await onSave({ opencodeGoSidecarClearApiKey: true });
+              }}
+              onError={setClearError}
+            />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel title="Request behavior" description="Applied to every request routed here.">
+            {/*
+              No reasoning-effort override: the backend contract exposes no
+              `...DefaultReasoningEffort` field for OpenCode Go, and a control that
+              cannot be persisted would be a lie. If the backend adds one later,
+              drop `SidecarIntegrationCard.ReasoningEffort` in here.
+            */}
+            <SidecarIntegrationCard.Timeouts />
+            <OpenCodeGoBalanceNote />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel
+            title="Model routing"
+            description="Which model IDs land on this integration."
+            span="full"
+          >
+            <div className="@container/routing grid gap-4 @2xl/routing:grid-cols-2">
+              <SidecarIntegrationCard.Prefixes />
+              <SidecarIntegrationCard.FullModels />
+            </div>
+            <SidecarIntegrationCard.DiscoveredModels />
+          </SidecarIntegrationCard.Panel>
         </SidecarIntegrationCard.Fields>
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>
@@ -253,9 +265,9 @@ function OpenCodeGoConnectionStatus({
  */
 function OpenCodeGoBalanceNote() {
   return (
-    <div className="space-y-1 rounded-md border bg-muted/10 p-3">
+    <div className="space-y-1 rounded-md border border-dashed bg-card px-3 py-2.5">
       <p className="text-sm font-medium">Spending beyond the Go limits</p>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
         OpenCode Go limits are per-model dollar caps (5-hour, weekly, and monthly). If the{" "}
         <strong>Use balance</strong> option is enabled in the{" "}
         <a
