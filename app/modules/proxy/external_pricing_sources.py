@@ -44,6 +44,7 @@ from app.core.usage.external_pricing.catalogs import (
     PROVIDER_OPENCODE_GO,
     PROVIDER_OPENROUTER,
     PROVIDER_ORCAROUTER,
+    catalog_from_published_models,
     catalog_from_sidecar_models,
 )
 from app.core.usage.external_pricing.service import (
@@ -165,7 +166,7 @@ async def _load_nvidia_context(_provider: str) -> ServingContext | None:
 
 
 async def _load_openai_compat_context(provider: str) -> ServingContext | None:
-    from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient
+    from app.core.clients.openai_compat_sidecar import OpenAICompatSidecarClient, published_pricing
     from app.modules.proxy.openai_compat_dispatch import (
         load_openai_compat_configs,
         openai_compat_config_by_provider,
@@ -186,9 +187,9 @@ async def _load_openai_compat_context(provider: str) -> ServingContext | None:
         )
     models = await OpenAICompatSidecarClient(config).list_models()
     return ServingContext(
-        catalog=catalog_from_sidecar_models(
+        catalog=catalog_from_published_models(
             config.provider_id,
-            _catalog_rows(list(models)),
+            [(model.id, *published_pricing(model.raw or {})) for model in models],
         ),
         aliases=await load_model_aliases(),
         prefixes=_prefix_pairs(config.prefixes),
