@@ -187,15 +187,13 @@ describe("OrcaRouterSidecarSettings", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps discovered models collapsed inside the configuration card above the timeout fields", async () => {
+  it("keeps discovered models collapsed inside the model routing panel", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(<OrcaRouterSidecarSettings settings={ENABLED_SETTINGS} busy={false} onSave={onSave} />);
 
     const disclosure = await screen.findByRole("button", { name: /Discovered models/i });
-    const cacheTtlField = screen.getByLabelText(/Model cache TTL/);
-
-    expect(disclosure.compareDocumentPosition(cacheTtlField) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Model routing" })).toContainElement(disclosure);
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("Search models")).not.toBeInTheDocument();
 

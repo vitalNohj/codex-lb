@@ -73,15 +73,27 @@ export function OpenRouterSidecarSettings({ settings, busy, onSave, bare = false
       <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
         <SidecarIntegrationCard.Callout />
+        <SidecarIntegrationCard.Status />
         <SidecarIntegrationCard.Fields>
-          <SidecarIntegrationCard.BaseUrl />
-          <SidecarIntegrationCard.Secrets />
-          <SidecarIntegrationCard.Prefixes />
-          <SidecarIntegrationCard.FullModels />
-          <SidecarIntegrationCard.DiscoveredModels />
-          <SidecarIntegrationCard.ReasoningEffort />
-          <SidecarIntegrationCard.Timeouts />
-          <SidecarIntegrationCard.Status />
+          <SidecarIntegrationCard.Panel title="Connection" description="Where requests are sent and how they authenticate.">
+            <SidecarIntegrationCard.BaseUrl />
+            <SidecarIntegrationCard.Secrets />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel title="Request behavior" description="Applied to every request routed here.">
+            <SidecarIntegrationCard.ReasoningEffort />
+            <SidecarIntegrationCard.Timeouts />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel
+            title="Model routing"
+            description="Which model IDs land on this integration."
+            span="full"
+          >
+            <div className="@container/routing grid gap-4 @2xl/routing:grid-cols-2">
+              <SidecarIntegrationCard.Prefixes />
+              <SidecarIntegrationCard.FullModels />
+            </div>
+            <SidecarIntegrationCard.DiscoveredModels />
+          </SidecarIntegrationCard.Panel>
         </SidecarIntegrationCard.Fields>
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { AccountCard, ClaudeAuthCard, type AccountCardProps } from "@/features/dashboard/components/account-card";
 import type { AccountSummary } from "@/features/dashboard/schemas";
 import { isClaudeSidecar } from "@/features/dashboard/utils";
+import { RESIZABLE_PANEL_TARGET_ATTR } from "@/components/resizable-panel";
 
 const ACCOUNT_CARD_VISIBLE_ROWS = 2;
 // Account cards can grow when the optional email row is rendered.
@@ -40,9 +41,12 @@ export function AccountCards({ accounts, readOnly = false, onAction }: AccountCa
   return (
     <div
       data-testid="dashboard-account-cards"
+      {...{ [RESIZABLE_PANEL_TARGET_ATTR]: "" }}
       className="grid gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:grid-cols-2 lg:grid-cols-3"
+      // `--panel-height` is set by the surrounding ResizablePanel once the
+      // operator has dragged the grip; until then the two-row default applies.
       style={{
-        maxHeight: `calc(${ACCOUNT_CARD_VISIBLE_ROWS} * ${ACCOUNT_CARD_ROW_HEIGHT_REM}rem + ${(ACCOUNT_CARD_VISIBLE_ROWS - 1) * ACCOUNT_CARD_ROW_GAP_REM}rem)`,
+        maxHeight: `var(--panel-height, calc(${ACCOUNT_CARD_VISIBLE_ROWS} * ${ACCOUNT_CARD_ROW_HEIGHT_REM}rem + ${(ACCOUNT_CARD_VISIBLE_ROWS - 1) * ACCOUNT_CARD_ROW_GAP_REM}rem))`,
       }}
     >
       {accounts.flatMap((account, index) => {

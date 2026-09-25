@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { TelemetryPayloadPreview } from "@/features/settings/components/telemetry-payload-preview";
 import { useTelemetryConsent, useTelemetryPreview } from "@/features/settings/hooks/use-settings";
+import { SettingsRow, SettingsRowGroup, SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 export type TelemetrySettingsProps = {
   disabled: boolean;
@@ -35,53 +36,46 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
   const previewEnvelope = telemetryPreviewQuery.data?.preview ?? null;
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Activity className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.telemetry.title")}</h3>
-              <p className="text-xs text-muted-foreground">{t("settings.telemetry.description")}</p>
-            </div>
-          </div>
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={Activity}
+        title={t("settings.telemetry.title")}
+        description={t("settings.telemetry.description")}
+        actions={
           <Switch
             aria-label={t("settings.telemetry.toggleAria")}
             checked={consent?.active ?? false}
             disabled={busy || envControlled}
             onCheckedChange={(checked) => updateTelemetryConsentMutation.mutate({ enabled: checked })}
           />
+        }
+      />
+
+      <p className="text-[13px] leading-relaxed text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
+
+      {envControlled ? (
+        <div className="rounded-lg border border-primary/25 bg-primary/8 px-4 py-3 text-sm font-medium text-foreground">
+          {t("settings.telemetry.envNotice")}
         </div>
+      ) : null}
 
-        <p className="text-xs text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
-
-        {envControlled ? (
-          <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
-            {t("settings.telemetry.envNotice")}
-          </div>
-        ) : null}
-
-        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-          <div>
-            <p className="text-sm font-medium">{t("settings.telemetry.collectedData.label")}</p>
-            <p className="text-xs text-muted-foreground">
-              {t("settings.telemetry.collectedData.description")}
-            </p>
-          </div>
+      <SettingsRowGroup>
+        <SettingsRow
+          label={t("settings.telemetry.collectedData.label")}
+          description={t("settings.telemetry.collectedData.description")}
+        >
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-8 text-xs"
+            className="h-9 text-xs"
             disabled={!consent}
             onClick={() => setPreviewOpen(true)}
           >
             {t("settings.telemetry.collectedData.view")}
           </Button>
-        </div>
-      </div>
+        </SettingsRow>
+      </SettingsRowGroup>
 
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         {previewOpen ? (
@@ -103,6 +97,6 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
           </DialogContent>
         ) : null}
       </Dialog>
-    </section>
+    </SettingsSection>
   );
 }

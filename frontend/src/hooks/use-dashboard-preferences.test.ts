@@ -283,4 +283,33 @@ describe("useDashboardPreferencesStore", () => {
     expect(useDashboardPreferencesStore.getState().accountListSort).toBeNull();
     expect(window.localStorage.getItem("codex-lb-dashboard-account-list-sort")).toBeNull();
   });
+
+  it("defaults the accounts panel height to null and persists a resize", async () => {
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+    expect(useDashboardPreferencesStore.getState().accountPanelHeight).toBeNull();
+
+    useDashboardPreferencesStore.getState().setAccountPanelHeight(640.4);
+    expect(useDashboardPreferencesStore.getState().accountPanelHeight).toBe(640);
+    expect(window.localStorage.getItem("codex-lb-dashboard-account-panel-height")).toBe("640");
+
+    useDashboardPreferencesStore.getState().setAccountPanelHeight(null);
+    expect(useDashboardPreferencesStore.getState().accountPanelHeight).toBeNull();
+    expect(window.localStorage.getItem("codex-lb-dashboard-account-panel-height")).toBeNull();
+  });
+
+  it("clamps a stored accounts panel height into bounds and drops garbage", async () => {
+    window.localStorage.setItem("codex-lb-dashboard-account-panel-height", "12");
+    const { useDashboardPreferencesStore, ACCOUNT_PANEL_MIN_HEIGHT_PX } = await import(
+      "@/hooks/use-dashboard-preferences"
+    );
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+    expect(useDashboardPreferencesStore.getState().accountPanelHeight).toBe(ACCOUNT_PANEL_MIN_HEIGHT_PX);
+
+    window.localStorage.setItem("codex-lb-dashboard-account-panel-height", "tall");
+    useDashboardPreferencesStore.getState().initializePreferences();
+    expect(useDashboardPreferencesStore.getState().accountPanelHeight).toBeNull();
+  });
 });

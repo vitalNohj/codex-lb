@@ -125,6 +125,10 @@ vi.mock("@/features/settings/components/sidecar-integrations", () => ({
   SidecarIntegrationsCard: () => <div>Sidecar Integrations</div>,
 }));
 
+vi.mock("@/features/settings/components/free-model-discovery-panel", () => ({
+  FreeModelDiscoveryPanel: () => <div>Free Model Discovery</div>,
+}));
+
 describe("SettingsPage", () => {
   const settings = createDashboardSettings();
   const upstreamAdmin = { endpoints: [], pools: [], bindings: [], routingEnabled: false, defaultPoolId: null };
@@ -196,6 +200,46 @@ describe("SettingsPage", () => {
     const user = userEvent.setup({ delay: null });
     await user.click(screen.getByRole("button", { name: "Show advanced settings" }));
   }
+
+  it("offers section navigation and puts integrations first", () => {
+    renderSettings();
+
+    const navigation = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(navigation.querySelector('a[href="#external-integrations-group"]')).toBeInTheDocument();
+    expect(navigation.querySelector('a[href="#appearance-settings"]')).toBeInTheDocument();
+    expect(navigation.querySelector('a[href="#api-keys-settings"]')).toBeInTheDocument();
+    expect(screen.getByText("Sidecar Integrations").compareDocumentPosition(screen.getByText("Appearance Settings")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("scrolls to a section from the navigation without writing the location hash", async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(scrollIntoView);
+    renderSettings();
+
+    const link = screen.getByRole("link", { name: "Appearance" });
+    await user.click(link);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.instances[0]).toHaveAttribute("id", "appearance-settings");
+    expect(window.location.hash).toBe("");
+
+    // A modifier click is left to the browser (open in new tab), not intercepted.
+    await user.keyboard("{Control>}");
+    await user.click(link);
+    await user.keyboard("{/Control}");
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    scrollSpy.mockRestore();
+  });
+
+  it("opens advanced sections from the section navigation in one interaction", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Advanced settings", exact: true }));
+
+    expect(screen.getByText("Routing Settings")).toBeInTheDocument();
+  });
 
   it("keeps advanced sections collapsed and unmounted by default", () => {
     renderSettings();

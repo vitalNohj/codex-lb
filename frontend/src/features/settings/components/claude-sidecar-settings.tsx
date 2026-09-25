@@ -95,36 +95,54 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
       <SidecarIntegrationCard.Frame bare={bare}>
         <SidecarIntegrationCard.Header />
         <SidecarIntegrationCard.Callout />
+        <SidecarIntegrationCard.Status />
         <SidecarIntegrationCard.Fields>
-          <SidecarIntegrationCard.BaseUrl />
-          <SidecarIntegrationCard.Secrets showManagementKey />
+          <SidecarIntegrationCard.Panel title="Connection" description="Where requests are sent and how they authenticate.">
+            <SidecarIntegrationCard.BaseUrl />
+            <SidecarIntegrationCard.Secrets showManagementKey />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel title="Request behavior" description="Applied to every request routed here.">
+            <SidecarIntegrationCard.ReasoningEffort />
+            <SidecarIntegrationCard.Timeouts showPollInterval />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel
+            title="Model routing"
+            description="Which model IDs land on this integration."
+            span="full"
+          >
+            <div className="@container/routing grid gap-4 @2xl/routing:grid-cols-2">
+              <SidecarIntegrationCard.Prefixes />
+              <SidecarIntegrationCard.FullModels />
+            </div>
+            <SidecarIntegrationCard.DiscoveredModels />
+          </SidecarIntegrationCard.Panel>
           {managementKeyConfigured ? (
-            <SidecarIntegrationCard.Routing
-              strategy={routingQuery.data?.strategy ?? null}
-              accounts={routingQuery.data?.accounts ?? []}
-              busy={
-                busy ||
-                strategyMutation.isPending ||
-                priorityMutation.isPending ||
-                pausedMutation.isPending ||
-                excludedModelsMutation.isPending
-              }
-              isLoading={routingQuery.isLoading || routingQuery.isFetching}
-              message={routingQuery.data?.status !== "healthy" ? routingQuery.data?.message : null}
-              onStrategyChange={(strategy: ClaudeSidecarRoutingStrategy) => strategyMutation.mutate(strategy)}
-              onPriorityChange={(name: string, priority: number) => priorityMutation.mutate({ name, priority })}
-              onPausedChange={(name: string, paused: boolean) => pausedMutation.mutate({ name, paused })}
-              onExcludedModelsChange={(name: string, excludedModels: string[]) =>
-                excludedModelsMutation.mutate({ name, excludedModels })
-              }
-            />
+            <SidecarIntegrationCard.Panel
+              title="CLIProxyAPI routing"
+              description="Choose how CLIProxyAPI rotates Claude accounts and tune priority live. Higher number = preferred."
+              span="full"
+            >
+              <SidecarIntegrationCard.Routing
+                strategy={routingQuery.data?.strategy ?? null}
+                accounts={routingQuery.data?.accounts ?? []}
+                busy={
+                  busy ||
+                  strategyMutation.isPending ||
+                  priorityMutation.isPending ||
+                  pausedMutation.isPending ||
+                  excludedModelsMutation.isPending
+                }
+                isLoading={routingQuery.isLoading || routingQuery.isFetching}
+                message={routingQuery.data?.status !== "healthy" ? routingQuery.data?.message : null}
+                onStrategyChange={(strategy: ClaudeSidecarRoutingStrategy) => strategyMutation.mutate(strategy)}
+                onPriorityChange={(name: string, priority: number) => priorityMutation.mutate({ name, priority })}
+                onPausedChange={(name: string, paused: boolean) => pausedMutation.mutate({ name, paused })}
+                onExcludedModelsChange={(name: string, excludedModels: string[]) =>
+                  excludedModelsMutation.mutate({ name, excludedModels })
+                }
+              />
+            </SidecarIntegrationCard.Panel>
           ) : null}
-          <SidecarIntegrationCard.Prefixes />
-          <SidecarIntegrationCard.FullModels />
-          <SidecarIntegrationCard.DiscoveredModels />
-          <SidecarIntegrationCard.ReasoningEffort />
-          <SidecarIntegrationCard.Timeouts showPollInterval />
-          <SidecarIntegrationCard.Status />
         </SidecarIntegrationCard.Fields>
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>

@@ -21,8 +21,11 @@ describe("AccountCards", () => {
       />,
     );
 
-    // jsdom 30 simplifies calc(2 * 16rem + 1rem) during serialization.
-    expect(screen.getByTestId("dashboard-account-cards").style.maxHeight).toBe("calc(33rem)");
+    // The two-row default is the var() fallback; the surrounding
+    // ResizablePanel overrides it via --panel-height once the operator drags.
+    expect(screen.getByTestId("dashboard-account-cards").style.maxHeight).toBe(
+      "var(--panel-height, calc(2 * 16rem + 1rem))",
+    );
   });
 
   it("keeps the scrollbar hidden on the dashboard account grid", () => {
