@@ -732,10 +732,16 @@ async def test_codex_goal_restart_cannot_retire_owner_outside_api_key_scope(
             )
         )
 
+    # The owner is out of scope, so selection answers hard_affinity_saturated
+    # and the proxy waits one 2 s recovery window before failing closed. The
+    # budget must outlast the first selection (DB reads) or the request times
+    # out inside it as upstream_request_timeout instead; 0.05 s did under
+    # parallel load. 2 s covers exactly one recovery window, so the request
+    # still ends after one wait rather than the default 75 s.
     _install_proxy_settings_cache(
         monkeypatch,
         sticky_threads_enabled=False,
-        proxy_request_budget_seconds=0.05,
+        proxy_request_budget_seconds=2.0,
     )
 
     async def fail_stream(*args, **kwargs):
