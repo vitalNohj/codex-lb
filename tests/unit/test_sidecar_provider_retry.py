@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -182,6 +183,13 @@ def _completion() -> dict[str, JsonValue]:
     }
 
 
+async def _connected_client_receive() -> dict[str, object]:
+    """``receive`` of a client that stays connected: nothing arrives after the body."""
+
+    await asyncio.Event().wait()
+    raise AssertionError("unreachable")
+
+
 async def _read_stream(response: StreamingResponse) -> bytes:
     chunks: list[bytes] = []
     async for chunk in response.body_iterator:
@@ -191,7 +199,7 @@ async def _read_stream(response: StreamingResponse) -> bytes:
 
 async def _proxy_openrouter(client: object, *, stream: bool):
     return await proxy_chat_to_openrouter(
-        cast(Request, SimpleNamespace()),
+        cast(Request, SimpleNamespace(receive=_connected_client_receive)),
         _chat_request(stream=stream),
         effective_model="vendor/model",
         api_key=None,
@@ -204,7 +212,7 @@ async def _proxy_openrouter(client: object, *, stream: bool):
 
 async def _proxy_nvidia(client: object, *, stream: bool):
     return await proxy_chat_to_nvidia(
-        cast(Request, SimpleNamespace()),
+        cast(Request, SimpleNamespace(receive=_connected_client_receive)),
         _chat_request(stream=stream),
         effective_model="vendor/model",
         api_key=None,
@@ -217,7 +225,7 @@ async def _proxy_nvidia(client: object, *, stream: bool):
 
 async def _proxy_compat(client: object, *, stream: bool):
     return await proxy_chat_to_openai_compat(
-        cast(Request, SimpleNamespace()),
+        cast(Request, SimpleNamespace(receive=_connected_client_receive)),
         _chat_request(stream=stream),
         effective_model="vendor/model",
         api_key=None,
@@ -397,7 +405,7 @@ class _PoolCapableSidecar:
 
     async def proxy(self, client: object, *, stream: bool, allow_failover: bool = False):
         return await self.dispatch(
-            cast(Request, SimpleNamespace()),
+            cast(Request, SimpleNamespace(receive=_connected_client_receive)),
             _chat_request(stream=stream),
             effective_model="vendor/model",
             api_key=None,

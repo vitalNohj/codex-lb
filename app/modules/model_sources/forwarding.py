@@ -95,6 +95,9 @@ class SourceChatStream:
     body: AsyncIterator[bytes]
     usage_holder: "SourceUsageHolder"
     upstream_status_code: int
+    #: Owns the upstream response. Closing it releases the connection even when
+    #: ``body`` never started, which closing ``body`` alone would not.
+    upstream: AsyncExitStack | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,9 @@ class SourceResponsesStream:
     body: AsyncIterator[bytes]
     usage_holder: "SourceUsageHolder"
     upstream_status_code: int
+    #: Owns the upstream response. Closing it releases the connection even when
+    #: ``body`` never started, which closing ``body`` alone would not.
+    upstream: AsyncExitStack | None = None
 
 
 @dataclass(slots=True)
@@ -212,7 +218,9 @@ async def stream_chat_completion(
             # leak the pooled HTTP session lease.
             await _await_cleanup_deferring_cancellation(stack.aclose())
 
-    return SourceChatStream(body=body(), usage_holder=usage_holder, upstream_status_code=response.status)
+    return SourceChatStream(
+        body=body(), usage_holder=usage_holder, upstream_status_code=response.status, upstream=stack
+    )
 
 
 async def forward_responses(
@@ -364,7 +372,9 @@ async def stream_responses(
             # leak the pooled HTTP session lease.
             await _await_cleanup_deferring_cancellation(stack.aclose())
 
-    return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=response.status)
+    return SourceResponsesStream(
+        body=body(), usage_holder=usage_holder, upstream_status_code=response.status, upstream=stack
+    )
 
 
 async def _open_source_stream(

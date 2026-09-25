@@ -19,8 +19,12 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from typing import TypeVar, cast
 
+from starlette.responses import Response
+from starlette.types import Receive
+
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.types import JsonValue
+from app.core.utils.client_disconnect import await_unless_client_disconnects
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 
@@ -32,6 +36,9 @@ SIDECAR_UPSTREAM_AUTH_STATUS_CODES = frozenset({401, 403})
 SIDECAR_UPSTREAM_AUTH_RETRY_AFTER_SECONDS = 60
 SIDECAR_UPSTREAM_UNAVAILABLE_CODE = "sidecar_upstream_unavailable"
 SIDECAR_UPSTREAM_UNAVAILABLE_MESSAGE = "Upstream provider temporarily unavailable; retry later."
+
+#: nginx's "client closed request". Never sent: the client has gone.
+CLIENT_CLOSED_REQUEST_STATUS = 499
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +138,44 @@ async def open_sidecar_stream(
         return OpenedSidecarStream(chunks=chunks, exit_stack=exit_stack, retry_used=attempts > 1)
 
     return await call_with_sidecar_provider_retry(open_once, provider=provider, model=model)
+
+
+async def open_sidecar_stream_for_client(
+    receive: Receive,
+    open_stream: SidecarStreamOpener,
+    *,
+    provider: str,
+    model: str,
+) -> OpenedSidecarStream:
+    """``open_sidecar_stream``, abandoned if the client disconnects while it waits.
+
+    The open waits for the upstream's response headers, which for a slow model
+    can take as long as the whole answer. A client that leaves meanwhile would
+    otherwise keep the upstream request running, and its quota reserved, for a
+    response nobody reads. Raises :class:`ClientDisconnected` once the open is
+    cancelled and any stream it managed to open is closed. The caller settles
+    the reservation and logs the request.
+    """
+
+    return await await_unless_client_disconnects(
+        receive,
+        open_sidecar_stream(open_stream, provider=provider, model=model),
+        discard=_close_opened_stream,
+    )
+
+
+async def _close_opened_stream(opened: OpenedSidecarStream) -> None:
+    await opened.exit_stack.aclose()
+
+
+def client_disconnected_response() -> Response:
+    """The response for a client that already left: nobody reads it, the server drops it.
+
+    ``499`` is not a real status. It only keeps the request out of the success
+    counts: an alias pool does not mark the target healthy on it.
+    """
+
+    return Response(status_code=CLIENT_CLOSED_REQUEST_STATUS)
 
 
 async def relay_sidecar_stream(

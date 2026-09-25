@@ -157,6 +157,8 @@ from app.core.resilience.overload import is_local_overload_error_code, merge_ret
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
+from app.core.utils.client_disconnect import ClientDisconnected, await_unless_client_disconnects
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.sse import (
@@ -166,7 +168,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
-from app.core.utils.stream_close import aclose_stream
+from app.core.utils.stream_close import ClosingStreamingResponse, aclose_stream
 from app.db.models import Account, AccountStatus, ModelSource
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
@@ -199,6 +201,8 @@ from app.modules.model_sources.catalog import (
 )
 from app.modules.model_sources.forwarding import (
     ModelSourceForwardingError,
+    SourceChatStream,
+    SourceResponsesStream,
     SourceTimings,
     SourceUsage,
     SourceUsageHolder,
@@ -383,6 +387,7 @@ from app.modules.proxy.schemas import (
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, prefix_variants, resolve_sidecar_route
+from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
     RateLimitResetCreditsData,
@@ -401,6 +406,7 @@ from app.modules.usage.updater import UsageUpdater
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
+_SourceStreamT = TypeVar("_SourceStreamT", SourceChatStream, SourceResponsesStream)
 
 _REASONING_SUMMARY_DELTA_TYPES = frozenset({"response.reasoning_summary_text.delta"})
 _REASONING_SUMMARY_DONE_TYPES = frozenset(
@@ -5798,6 +5804,57 @@ async def _source_audio_transcription_response(
     return Response(content=result.body, status_code=200, headers=headers)
 
 
+async def _open_source_stream_for_client(request: Request, opening: Awaitable[_SourceStreamT]) -> _SourceStreamT:
+    """Open a model-source stream, abandoned if the client disconnects while it waits.
+
+    Raises :class:`ClientDisconnected` once the open is cancelled and any stream
+    it managed to open is closed. The caller releases and logs.
+    """
+
+    async def _close(stream: _SourceStreamT) -> None:
+        if stream.upstream is not None:
+            await stream.upstream.aclose()
+
+    return await await_unless_client_disconnects(request.receive, opening, discard=_close)
+
+
+async def _abandon_source_stream_setup(
+    request: Request,
+    *,
+    source: ModelSource,
+    api_key: ApiKeyData | None,
+    model: str,
+    reservation: ApiKeyUsageReservationData | None,
+) -> None:
+    """Release and log a source stream whose client left before the upstream answered.
+
+    Every step finishes even under repeated cancellation. A cancellation is
+    left for the caller to re-raise.
+    """
+
+    if reservation is not None:
+        try:
+            await _release_reservation_deferring_cancellation(reservation)
+        except (Exception, asyncio.CancelledError):
+            logger.warning(
+                "Failed to release source stream setup reservation after client disconnect source_id=%s model=%s",
+                source.id,
+                model,
+                exc_info=True,
+            )
+    await _await_cleanup_deferring_cancellation(
+        _log_source_chat_completion(
+            request,
+            source=source,
+            api_key=api_key,
+            model=model,
+            status=CANCELLED_STATUS,
+            error_code=CLIENT_DISCONNECT_ERROR_CODE,
+            error_message="client disconnected during source stream setup",
+        )
+    )
+
+
 async def _source_responses_response(
     request: Request,
     payload: ResponsesRequest,
@@ -5863,7 +5920,14 @@ async def _source_responses_response(
 
     if payload.stream:
         try:
-            stream = await stream_source_responses(source, source_payload)
+            stream = await _open_source_stream_for_client(request, stream_source_responses(source, source_payload))
+        except (ClientDisconnected, asyncio.CancelledError) as exc:
+            await _abandon_source_stream_setup(
+                request, source=source, api_key=api_key, model=payload.model, reservation=reservation
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return client_disconnected_response()
         except ModelSourceForwardingError as exc:
             await _release_reservation(reservation)
             await _log_source_chat_completion(
@@ -5897,7 +5961,7 @@ async def _source_responses_response(
             model=payload.model,
             reservation=reservation,
         )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             body,
             media_type="text/event-stream",
             headers={
@@ -6180,7 +6244,16 @@ async def _source_chat_completion_response(
         else:
             source_payload["stream_options"] = {"include_usage": True}
         try:
-            stream = await stream_source_chat_completion(source, source_payload)
+            stream = await _open_source_stream_for_client(
+                request, stream_source_chat_completion(source, source_payload)
+            )
+        except (ClientDisconnected, asyncio.CancelledError) as exc:
+            await _abandon_source_stream_setup(
+                request, source=source, api_key=api_key, model=model, reservation=reservation
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return client_disconnected_response()
         except ModelSourceForwardingError as exc:
             await _release_reservation(reservation)
             await _log_source_chat_completion(
@@ -6194,32 +6267,6 @@ async def _source_chat_completion_response(
                 upstream_status_code=exc.upstream_status_code,
             )
             return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
-        except asyncio.CancelledError:
-            release_exc: BaseException | None = None
-            if reservation is not None:
-                try:
-                    await _release_reservation_deferring_cancellation(reservation)
-                except BaseException as exc:
-                    release_exc = exc
-            await _await_cleanup_deferring_cancellation(
-                _log_source_chat_completion(
-                    request,
-                    source=source,
-                    api_key=api_key,
-                    model=model,
-                    status="cancelled",
-                    error_code="client_disconnected",
-                    error_message="client disconnected during source stream setup",
-                )
-            )
-            if release_exc is not None:
-                logger.warning(
-                    "Failed to release source stream setup reservation after client disconnect source_id=%s model=%s",
-                    source.id,
-                    model,
-                    exc_info=release_exc,
-                )
-            raise
         except BaseException:
             if reservation is not None:
                 await _release_reservation_deferring_cancellation(reservation)
@@ -6244,7 +6291,7 @@ async def _source_chat_completion_response(
             model=model,
             reservation=reservation,
         )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **rate_limit_headers},
@@ -6557,7 +6604,7 @@ async def _buffered_limited_source_chat_stream_response(
         for chunk in chunks:
             yield chunk
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         body(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", **rate_limit_headers},

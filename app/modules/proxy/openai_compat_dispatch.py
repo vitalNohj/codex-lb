@@ -12,7 +12,7 @@ from typing import TypeVar, cast
 
 import anyio
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from app.core.clients.openai_compat_sidecar import (
     OpenAICompatSidecarClient,
@@ -26,9 +26,13 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
+from app.core.utils.cancellation import complete_despite_cancellation
+from app.core.utils.client_disconnect import ClientDisconnected
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
+from app.core.utils.stream_close import ClosingStreamingResponse
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -77,8 +81,9 @@ from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
 from app.modules.proxy.sidecar_upstream_errors import (
     call_with_sidecar_provider_retry,
+    client_disconnected_response,
     client_facing_sidecar_error,
-    open_sidecar_stream,
+    open_sidecar_stream_for_client,
     relay_sidecar_stream,
 )
 from app.modules.request_logs.repository import RequestLogsRepository
@@ -216,7 +221,25 @@ async def proxy_chat_to_openai_compat(
         ensure_stream_usage_requested(sidecar_payload.body)
         open_stream = partial(client.stream_chat_completion, sidecar_payload.body)
         try:
-            opened = await open_sidecar_stream(open_stream, provider=endpoint_name, model=effective_model)
+            opened = await open_sidecar_stream_for_client(
+                request.receive, open_stream, provider=endpoint_name, model=effective_model
+            )
+        except (ClientDisconnected, asyncio.CancelledError) as exc:
+            await complete_despite_cancellation(
+                _abandon_openai_compat_request(
+                    reservation,
+                    api_key=api_key,
+                    model=effective_model,
+                    attribution=attribution,
+                    started_at=requested_at,
+                    client=client,
+                    reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                    requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+                )
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return client_disconnected_response()
         except OpenAICompatSidecarError as exc:
             return await _openai_compat_open_error_response(
                 exc,
@@ -251,7 +274,7 @@ async def proxy_chat_to_openai_compat(
                 payload,
                 source="openai_compat_stream",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             inject_sse_keepalives(
                 stream,
                 sse_keepalive_interval_seconds,
@@ -792,6 +815,34 @@ async def _finalize_or_release_openai_compat_reservation(
             get_request_id(),
             exc_info=True,
         )
+
+
+async def _abandon_openai_compat_request(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    attribution: ChatRequestAttribution,
+    started_at: float,
+    client: OpenAICompatSidecarClient,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> None:
+    """Release and log a request whose client left before the upstream answered."""
+
+    await _release_openai_compat_reservation(reservation, api_key=api_key)
+    await _log_openai_compat_request(
+        api_key=api_key,
+        model=model,
+        attribution=attribution,
+        started_at=started_at,
+        status=CANCELLED_STATUS,
+        error_code=CLIENT_DISCONNECT_ERROR_CODE,
+        error_message="client disconnected before the upstream response started",
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+        client=client,
+    )
 
 
 async def _release_openai_compat_reservation(

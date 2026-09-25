@@ -10,6 +10,7 @@ from typing import Final, Literal
 from app.core.errors import ResponseFailedEvent
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_dict
+from app.core.utils.stream_close import aclose_stream
 
 type JsonPayload = Mapping[str, JsonValue] | ResponseFailedEvent
 
@@ -66,10 +67,16 @@ async def inject_sse_keepalives(
     instead of hanging forever, and let aggressive intermediaries see traffic.
 
     A non-positive ``interval_seconds`` disables injection entirely.
+
+    Closing this generator closes ``source`` too, so the cleanup in the
+    source's ``finally`` runs now rather than at garbage collection.
     """
     if interval_seconds <= 0:
-        async for chunk in source:
-            yield chunk
+        try:
+            async for chunk in source:
+                yield chunk
+        finally:
+            await aclose_stream(source)
         return
 
     async def _next_chunk(it: AsyncIterator[str]) -> str:
@@ -97,12 +104,15 @@ async def inject_sse_keepalives(
             pending = None
             yield chunk
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-            try:
-                await pending
-            except BaseException:
-                pass
+        try:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except BaseException:
+                    pass
+        finally:
+            await aclose_stream(source)
 
 
 class SseDataDecoder:
