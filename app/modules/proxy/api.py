@@ -6,9 +6,10 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from functools import partial
 from json import JSONDecodeError
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 from uuid import uuid4
@@ -167,7 +168,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
-from app.core.utils.stream_close import ClosingStreamingResponse, aclose_stream
+from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream, aclose_stream
 from app.db.models import Account, AccountStatus, ModelSource
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
@@ -5813,8 +5814,9 @@ async def _abandon_source_stream_setup(
     api_key: ApiKeyData | None,
     model: str,
     reservation: ApiKeyUsageReservationData | None,
+    error_message: str = "client disconnected during source stream setup",
 ) -> None:
-    """Release and log a source stream whose client left before the upstream answered.
+    """Release and log a source stream whose client left before its response started.
 
     Every step finishes even under repeated cancellation. A cancellation is
     left for the caller to re-raise.
@@ -5838,9 +5840,38 @@ async def _abandon_source_stream_setup(
             model=model,
             status=CANCELLED_STATUS,
             error_code=CLIENT_DISCONNECT_ERROR_CODE,
-            error_message="client disconnected during source stream setup",
+            error_message=error_message,
         )
     )
+
+
+async def _abandon_unstarted_source_stream(
+    upstream: AsyncExitStack | None,
+    request: Request,
+    *,
+    source: ModelSource,
+    api_key: ApiKeyData | None,
+    model: str,
+    reservation: ApiKeyUsageReservationData | None,
+) -> None:
+    """Close the upstream of a source stream whose body never started, then release and log.
+
+    The body's own ``finally`` would have closed it, but a body closed before
+    it starts never runs its ``finally``.
+    """
+
+    try:
+        if upstream is not None:
+            await _await_cleanup_deferring_cancellation(upstream.aclose())
+    finally:
+        await _abandon_source_stream_setup(
+            request,
+            source=source,
+            api_key=api_key,
+            model=model,
+            reservation=reservation,
+            error_message="client disconnected before the response started",
+        )
 
 
 async def _source_responses_response(
@@ -5940,14 +5971,25 @@ async def _source_responses_response(
                 usage_holder=stream.usage_holder,
                 rate_limit_headers=rate_limit_headers,
             )
-        body = _source_chat_stream_with_settlement(
-            stream.body,
-            usage_holder=stream.usage_holder,
-            request=request,
-            source=source,
-            api_key=api_key,
-            model=payload.model,
-            reservation=reservation,
+        body = SettlingStream(
+            _source_chat_stream_with_settlement(
+                stream.body,
+                usage_holder=stream.usage_holder,
+                request=request,
+                source=source,
+                api_key=api_key,
+                model=payload.model,
+                reservation=reservation,
+            ),
+            abandon=partial(
+                _abandon_unstarted_source_stream,
+                stream.upstream,
+                request,
+                source=source,
+                api_key=api_key,
+                model=payload.model,
+                reservation=reservation,
+            ),
         )
         return ClosingStreamingResponse(
             body,
@@ -5957,6 +5999,7 @@ async def _source_responses_response(
                 "X-Accel-Buffering": "no",
                 **rate_limit_headers,
             },
+            settling=body,
         )
 
     try:
@@ -6270,19 +6313,31 @@ async def _source_chat_completion_response(
                 usage_holder=stream.usage_holder,
                 rate_limit_headers=rate_limit_headers,
             )
-        body = _source_chat_stream_with_settlement(
-            stream.body,
-            usage_holder=stream.usage_holder,
-            request=request,
-            source=source,
-            api_key=api_key,
-            model=model,
-            reservation=reservation,
+        body = SettlingStream(
+            _source_chat_stream_with_settlement(
+                stream.body,
+                usage_holder=stream.usage_holder,
+                request=request,
+                source=source,
+                api_key=api_key,
+                model=model,
+                reservation=reservation,
+            ),
+            abandon=partial(
+                _abandon_unstarted_source_stream,
+                stream.upstream,
+                request,
+                source=source,
+                api_key=api_key,
+                model=model,
+                reservation=reservation,
+            ),
         )
         return ClosingStreamingResponse(
             body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **rate_limit_headers},
+            settling=body,
         )
 
     try:
@@ -6596,6 +6651,8 @@ async def _buffered_limited_source_chat_stream_response(
         body(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", **rate_limit_headers},
+        # Replays chunks that were settled and logged before the response.
+        settling=None,
     )
 
 
