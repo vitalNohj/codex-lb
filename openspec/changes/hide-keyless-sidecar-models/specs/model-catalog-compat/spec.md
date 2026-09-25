@@ -2,10 +2,7 @@
 
 ### Requirement: Discovery lists only models a key-required integration can serve
 
-When serving `GET /v1/models` or the dashboard `GET /api/models`, the system
-SHALL list OrcaRouter and OpenRouter models, and fetch those integrations'
-upstream model catalogs, only when the integration is enabled and has a usable
-API key. A usable key is one that is set, decrypts, and is not blank. On
+The system SHALL list OrcaRouter and OpenRouter models on `GET /v1/models` and the dashboard `GET /api/models`, and fetch those integrations' upstream model catalogs, only when the integration is enabled and has a usable API key. A usable key is one that is set, decrypts, and is not blank. On
 `GET /v1/models` the system MUST omit a model alias whose every target that is
 visible for the requesting API key is owned by an OrcaRouter, OpenRouter, or
 OpenCode Go integration without a usable key. Routing ownership MUST NOT change:
