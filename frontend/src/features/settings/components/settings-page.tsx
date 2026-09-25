@@ -118,6 +118,10 @@ function useActiveSection(ids: readonly string[], advancedOpen: boolean): string
 
 const NAV_IDS = [...SECTION_NAV.map((item) => item.id), "advanced-settings"] as const;
 
+function scrollToSection(id: string) {
+  document.getElementById(id)?.scrollIntoView({ block: "start" });
+}
+
 function SectionNav({ advancedOpen, onOpenAdvanced }: { advancedOpen: boolean; onOpenAdvanced: () => void }) {
   const { t } = useTranslation();
   const active = useActiveSection(NAV_IDS, advancedOpen);
@@ -130,6 +134,14 @@ function SectionNav({ advancedOpen, onOpenAdvanced }: { advancedOpen: boolean; o
         <a
           key={id}
           href={`#${id}`}
+          // Scroll without writing the hash: `location.hash` is a deep-link
+          // channel (integration Configure links, `#firewall`), and the
+          // integrations card discards a manual tab selection whenever it
+          // changes. The href stays for middle-click and screen readers.
+          onClick={(event) => {
+            event.preventDefault();
+            scrollToSection(id);
+          }}
           aria-current={active === id ? "location" : undefined}
           className={`${NAV_ITEM_CLASS} ${active === id ? NAV_ITEM_ACTIVE : NAV_ITEM_IDLE}`}
         >
@@ -233,9 +245,7 @@ export function SettingsPage() {
 
   const openAdvanced = () => {
     setAdvancedOpen(true);
-    window.requestAnimationFrame(() => {
-      document.getElementById("advanced-settings")?.scrollIntoView({ block: "start" });
-    });
+    window.requestAnimationFrame(() => scrollToSection("advanced-settings"));
   };
 
   return (
@@ -328,7 +338,10 @@ export function SettingsPage() {
               <AdvancedSettingsGroup
                 open={advancedOpen}
                 onOpenChange={setAdvancedOpen}
-                scrollToId={advancedScrollToId}
+                // Only an advanced deep link may drive the group's scroll. An
+                // integration hash (e.g. `#claude-sidecar`) must not pull the
+                // page back up after the nav's Advanced button opens the group.
+                scrollToId={expandAdvanced ? advancedScrollToId : undefined}
                 waitForQueryKeys={FIREWALL_LAYOUT_QUERY_KEYS}
               >
                 <RoutingSettings

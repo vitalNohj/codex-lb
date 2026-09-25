@@ -211,6 +211,21 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Sidecar Integrations").compareDocumentPosition(screen.getByText("Appearance Settings")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("scrolls to a section from the navigation without writing the location hash", async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(scrollIntoView);
+    renderSettings();
+
+    const link = screen.getByRole("link", { name: "Appearance" });
+    await user.click(link);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.instances[0]).toHaveAttribute("id", "appearance-settings");
+    expect(window.location.hash).toBe("");
+    scrollSpy.mockRestore();
+  });
+
   it("opens advanced sections from the section navigation in one interaction", async () => {
     const user = userEvent.setup();
     renderSettings();
