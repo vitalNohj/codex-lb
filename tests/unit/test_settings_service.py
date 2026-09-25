@@ -214,7 +214,6 @@ def _settings_update(
     *,
     claude_prefixes: list[SidecarPrefix] | None = None,
     openrouter_prefixes: list[SidecarPrefix] | None = None,
-    nvidia_prefixes: list[SidecarPrefix] | None = None,
     orcarouter_prefixes: list[SidecarPrefix] | None = None,
     opencode_go_prefixes: list[SidecarPrefix] | None = None,
     omniroute_prefixes: list[SidecarPrefix] | None = None,
@@ -222,7 +221,6 @@ def _settings_update(
     openai_compat_endpoints: list[OpenAICompatEndpointUpdateData] | None = None,
     claude_models: list[str] | None = None,
     openrouter_models: list[str] | None = None,
-    nvidia_models: list[str] | None = None,
     orcarouter_models: list[str] | None = None,
     opencode_go_models: list[str] | None = None,
     omniroute_models: list[str] | None = None,
@@ -300,16 +298,6 @@ def _settings_update(
         openrouter_sidecar_request_timeout_seconds=600.0,
         openrouter_sidecar_models_cache_ttl_seconds=60.0,
         openrouter_sidecar_default_reasoning_effort=None,
-        nvidia_sidecar_enabled=False,
-        nvidia_sidecar_base_url="https://integrate.api.nvidia.com/v1",
-        nvidia_sidecar_api_key=None,
-        nvidia_sidecar_clear_api_key=False,
-        nvidia_sidecar_model_prefixes=nvidia_prefixes or [],
-        nvidia_sidecar_full_models=nvidia_models or [],
-        nvidia_sidecar_connect_timeout_seconds=8.0,
-        nvidia_sidecar_request_timeout_seconds=600.0,
-        nvidia_sidecar_models_cache_ttl_seconds=60.0,
-        nvidia_sidecar_default_reasoning_effort=None,
         openai_compat_endpoints=openai_compat_endpoints or [],
         orcarouter_sidecar_enabled=False,
         orcarouter_sidecar_base_url="https://api.orcarouter.ai/v1",
@@ -438,10 +426,10 @@ def _openai_compat_endpoints(
     ]
 
 
-def test_sidecar_route_validator_rejects_nvidia_openrouter_duplicate_full_models() -> None:
+def test_sidecar_route_validator_rejects_orcarouter_openrouter_duplicate_full_models() -> None:
     payload = _settings_update(
         openrouter_models=["z-ai/glm-5.3"],
-        nvidia_models=["z-ai/glm-5.3"],
+        orcarouter_models=["z-ai/glm-5.3"],
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
@@ -450,12 +438,12 @@ def test_sidecar_route_validator_rejects_nvidia_openrouter_duplicate_full_models
     assert exc_info.value.conflict.kind == "full_model"
     assert exc_info.value.conflict.value == "z-ai/glm-5.3"
     assert exc_info.value.conflict.owner == "OpenRouter"
-    assert exc_info.value.conflict.challenger == "NVIDIA"
+    assert exc_info.value.conflict.challenger == "OrcaRouter"
 
 
-def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_full_models() -> None:
+def test_sidecar_route_validator_rejects_openai_compat_orcarouter_duplicate_full_models() -> None:
     payload = _settings_update(
-        nvidia_models=["z-ai/glm-5.3"],
+        orcarouter_models=["z-ai/glm-5.3"],
         openai_compat_endpoints=_openai_compat_endpoints(models=["z-ai/glm-5.3"]),
     )
 
@@ -464,8 +452,9 @@ def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_full_mod
 
     assert exc_info.value.conflict.kind == "full_model"
     assert exc_info.value.conflict.value == "z-ai/glm-5.3"
-    assert exc_info.value.conflict.owner == "NVIDIA"
-    assert exc_info.value.conflict.challenger == "Vast"
+    # Generic endpoints are validated before OrcaRouter, so the endpoint owns.
+    assert exc_info.value.conflict.owner == "Vast"
+    assert exc_info.value.conflict.challenger == "OrcaRouter"
 
 
 def test_sidecar_route_validator_rejects_two_openai_compat_endpoints_sharing_a_full_model() -> None:
@@ -487,9 +476,9 @@ def test_sidecar_route_validator_rejects_two_openai_compat_endpoints_sharing_a_f
     assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"Vast", "vLLM"}
 
 
-def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_prefixes() -> None:
+def test_sidecar_route_validator_rejects_openai_compat_orcarouter_duplicate_prefixes() -> None:
     payload = _settings_update(
-        nvidia_prefixes=[SidecarPrefix(prefix="vast/", strip=True)],
+        orcarouter_prefixes=[SidecarPrefix(prefix="vast/", strip=True)],
         openai_compat_endpoints=_openai_compat_endpoints(prefixes=[SidecarPrefix(prefix="vast/", strip=True)]),
     )
 
@@ -498,7 +487,7 @@ def test_sidecar_route_validator_rejects_openai_compat_nvidia_duplicate_prefixes
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "vast/"
-    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"NVIDIA", "Vast"}
+    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OrcaRouter", "Vast"}
 
 
 def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:

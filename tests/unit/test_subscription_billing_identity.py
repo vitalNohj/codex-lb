@@ -158,7 +158,6 @@ def test_the_billing_identity_predicate_normalizes_like_the_provider_keys() -> N
     assert reports_per_request_billed_cost("OpenRouter")
     assert reports_per_request_billed_cost("  orcarouter  ")
     assert not reports_per_request_billed_cost("cliproxy")
-    assert not reports_per_request_billed_cost("nvidia")
     assert is_external_priced_provider("openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a")
     assert not reports_per_request_billed_cost("openai_compat:2c9b8f3a-1e4d-4b7a-9c11-7a0e4d2b1c0a")
     assert not reports_per_request_billed_cost(None)

@@ -59,14 +59,6 @@ const BASE_SETTINGS = {
   openrouterSidecarConnectTimeoutSeconds: 8,
   openrouterSidecarRequestTimeoutSeconds: 600,
   openrouterSidecarModelsCacheTtlSeconds: 60,
-  nvidiaSidecarEnabled: false,
-  nvidiaSidecarBaseUrl: "https://integrate.api.nvidia.com/v1",
-  nvidiaSidecarApiKeyConfigured: false,
-  nvidiaSidecarModelPrefixes: [],
-  nvidiaSidecarFullModels: [],
-  nvidiaSidecarConnectTimeoutSeconds: 8,
-  nvidiaSidecarRequestTimeoutSeconds: 600,
-  nvidiaSidecarModelsCacheTtlSeconds: 60,
   omnirouteSidecarEnabled: false,
   omnirouteSidecarBaseUrl: "http://127.0.0.1:20128/v1",
   omnirouteSidecarApiKeyConfigured: true,
@@ -155,7 +147,6 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getByRole("heading", { name: "External Integrations" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /CLIProxyAPI/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OpenRouter/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /NVIDIA/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OrcaRouter/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Ollama/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /OpenCode Go/ })).toBeInTheDocument();
@@ -169,7 +160,6 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
       "CLIProxyAPI",
       "OpenRouter",
-      "NVIDIA",
       "OrcaRouter",
       "Ollama",
       "OpenCode Go",
@@ -268,7 +258,6 @@ describe("SidecarIntegrationsCard", () => {
   describe("deep links from the Accounts page", () => {
     it.each([
       ["#opencode-go-sidecar", "OpenCode Go", "Enable OpenCode Go Integration"],
-      ["#nvidia-sidecar", "NVIDIA", "Enable NVIDIA Integration"],
       ["#orcarouter-sidecar", "OrcaRouter", "Enable OrcaRouter Integration"],
       ["#ollama-sidecar", "Ollama", "Enable Ollama Integration"],
       ["#claude-sidecar", "CLIProxyAPI", "Enable CLI Proxy integration"],
@@ -384,7 +373,6 @@ describe("SidecarIntegrationsCard", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
       "CLIProxyAPI",
       "OpenRouter",
-      "NVIDIA",
       "OrcaRouter",
       "Ollama",
       "OpenCode Go",

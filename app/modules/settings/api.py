@@ -257,19 +257,6 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         openrouter_sidecar_last_checked_at=settings.openrouter_sidecar_last_checked_at,
         openrouter_sidecar_last_model_count=settings.openrouter_sidecar_last_model_count,
         openrouter_sidecar_default_reasoning_effort=settings.openrouter_sidecar_default_reasoning_effort,
-        nvidia_sidecar_enabled=settings.nvidia_sidecar_enabled,
-        nvidia_sidecar_base_url=settings.nvidia_sidecar_base_url,
-        nvidia_sidecar_api_key_configured=settings.nvidia_sidecar_api_key_configured,
-        nvidia_sidecar_model_prefixes=[asdict(prefix) for prefix in settings.nvidia_sidecar_model_prefixes],
-        nvidia_sidecar_full_models=settings.nvidia_sidecar_full_models,
-        nvidia_sidecar_connect_timeout_seconds=settings.nvidia_sidecar_connect_timeout_seconds,
-        nvidia_sidecar_request_timeout_seconds=settings.nvidia_sidecar_request_timeout_seconds,
-        nvidia_sidecar_models_cache_ttl_seconds=settings.nvidia_sidecar_models_cache_ttl_seconds,
-        nvidia_sidecar_last_health_status=settings.nvidia_sidecar_last_health_status,
-        nvidia_sidecar_last_health_message=settings.nvidia_sidecar_last_health_message,
-        nvidia_sidecar_last_checked_at=settings.nvidia_sidecar_last_checked_at,
-        nvidia_sidecar_last_model_count=settings.nvidia_sidecar_last_model_count,
-        nvidia_sidecar_default_reasoning_effort=settings.nvidia_sidecar_default_reasoning_effort,
         openai_compat_endpoints=[
             _openai_compat_endpoint_response(endpoint) for endpoint in settings.openai_compat_endpoints
         ],
@@ -1278,46 +1265,6 @@ async def update_settings(
                     if "openrouter_sidecar_default_reasoning_effort" in payload.model_fields_set
                     else current.openrouter_sidecar_default_reasoning_effort
                 ),
-                nvidia_sidecar_enabled=(
-                    payload.nvidia_sidecar_enabled
-                    if payload.nvidia_sidecar_enabled is not None
-                    else current.nvidia_sidecar_enabled
-                ),
-                nvidia_sidecar_base_url=payload.nvidia_sidecar_base_url or current.nvidia_sidecar_base_url,
-                nvidia_sidecar_api_key=(
-                    payload.nvidia_sidecar_api_key if "nvidia_sidecar_api_key" in payload.model_fields_set else None
-                ),
-                nvidia_sidecar_clear_api_key=payload.nvidia_sidecar_clear_api_key is True,
-                nvidia_sidecar_model_prefixes=(
-                    [_sidecar_prefix_data(prefix) for prefix in payload.nvidia_sidecar_model_prefixes]
-                    if payload.nvidia_sidecar_model_prefixes is not None
-                    else current.nvidia_sidecar_model_prefixes
-                ),
-                nvidia_sidecar_full_models=(
-                    payload.nvidia_sidecar_full_models
-                    if payload.nvidia_sidecar_full_models is not None
-                    else current.nvidia_sidecar_full_models
-                ),
-                nvidia_sidecar_connect_timeout_seconds=(
-                    payload.nvidia_sidecar_connect_timeout_seconds
-                    if payload.nvidia_sidecar_connect_timeout_seconds is not None
-                    else current.nvidia_sidecar_connect_timeout_seconds
-                ),
-                nvidia_sidecar_request_timeout_seconds=(
-                    payload.nvidia_sidecar_request_timeout_seconds
-                    if payload.nvidia_sidecar_request_timeout_seconds is not None
-                    else current.nvidia_sidecar_request_timeout_seconds
-                ),
-                nvidia_sidecar_models_cache_ttl_seconds=(
-                    payload.nvidia_sidecar_models_cache_ttl_seconds
-                    if payload.nvidia_sidecar_models_cache_ttl_seconds is not None
-                    else current.nvidia_sidecar_models_cache_ttl_seconds
-                ),
-                nvidia_sidecar_default_reasoning_effort=(
-                    payload.nvidia_sidecar_default_reasoning_effort
-                    if "nvidia_sidecar_default_reasoning_effort" in payload.model_fields_set
-                    else current.nvidia_sidecar_default_reasoning_effort
-                ),
                 openai_compat_endpoints=(
                     [_openai_compat_update_data(item) for item in payload.openai_compat_endpoints]
                     if payload.openai_compat_endpoints is not None
@@ -1650,19 +1597,6 @@ async def update_settings(
             "openrouter_sidecar_last_checked_at",
             "openrouter_sidecar_last_model_count",
             "openrouter_sidecar_default_reasoning_effort",
-            "nvidia_sidecar_enabled",
-            "nvidia_sidecar_base_url",
-            "nvidia_sidecar_api_key_configured",
-            "nvidia_sidecar_model_prefixes",
-            "nvidia_sidecar_full_models",
-            "nvidia_sidecar_connect_timeout_seconds",
-            "nvidia_sidecar_request_timeout_seconds",
-            "nvidia_sidecar_models_cache_ttl_seconds",
-            "nvidia_sidecar_last_health_status",
-            "nvidia_sidecar_last_health_message",
-            "nvidia_sidecar_last_checked_at",
-            "nvidia_sidecar_last_model_count",
-            "nvidia_sidecar_default_reasoning_effort",
             "openai_compat_endpoints",
             "orcarouter_sidecar_enabled",
             "orcarouter_sidecar_base_url",

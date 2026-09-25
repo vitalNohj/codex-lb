@@ -23,9 +23,6 @@ function testProviderFor(provider: string | null | undefined): SidecarConnection
   if (provider === "openrouter") {
     return "openrouter";
   }
-  if (provider === "nvidia") {
-    return "nvidia";
-  }
   if (provider === "orcarouter") {
     return "orcarouter";
   }
@@ -40,7 +37,6 @@ function testProviderFor(provider: string | null | undefined): SidecarConnection
 
 export function SyntheticAccountDetail({ account, busy }: { account: AccountSummary; busy: boolean }) {
   const isOpenRouter = account.provider === "openrouter";
-  const isNvidia = account.provider === "nvidia";
   const isOrcaRouter = account.provider === "orcarouter";
   const isOmniRoute = account.provider === "omniroute";
   const isOllama = account.provider === "ollama";
@@ -61,8 +57,6 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
   const settingsAnchor = isOpenRouter
     ? "/settings#openrouter-sidecar"
-    : isNvidia
-      ? "/settings#nvidia-sidecar"
     : isOrcaRouter
       ? "/settings#orcarouter-sidecar"
       : isOmniRoute
@@ -96,8 +90,6 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
         <p className="mt-0.5 text-xs text-muted-foreground">
           {isOpenRouter
             ? "Read-only OpenRouter sidecar account"
-            : isNvidia
-              ? "Read-only NVIDIA account"
             : isOrcaRouter
               ? "Read-only OrcaRouter account"
               : isOmniRoute

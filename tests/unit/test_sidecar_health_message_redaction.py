@@ -1,14 +1,14 @@
 """Credential redaction for the text sidecar health checks persist and serve.
 
-Reported on https://github.com/vitalNohj/codex-lb/pull/59: both the NVIDIA and
-the generic OpenAI-compat service replaced only the literal ``"Bearer "``
+Reported on https://github.com/vitalNohj/codex-lb/pull/59: the generic
+OpenAI-compat service (and the since-removed NVIDIA clone) replaced only the literal ``"Bearer "``
 prefix, so an upstream echoing the Authorization header produced
 ``Bearer [redacted]<the-key>`` - the key survived intact. That text is persisted
 to the recorded health message and returned verbatim by the status and test APIs,
 so the redaction is the only thing standing between an echoing upstream and an
 operator-visible credential.
 
-Both now delegate to the project's existing credential-aware sanitizer, which is
+The service now delegates to the project's existing credential-aware sanitizer, which is
 also what free-model discovery reuses for non-OrcaRouter providers (see
 ``app/modules/free_model_discovery/probe.redact_provider_text``).
 """
@@ -19,15 +19,11 @@ from collections.abc import Callable
 
 import pytest
 
-from app.modules.nvidia_sidecar.service import _sanitize_message as sanitize_nvidia_message
 from app.modules.openai_compat.service import _sanitize_message as sanitize_openai_compat_message
 
 pytestmark = pytest.mark.unit
 
-_SANITIZERS: tuple[tuple[str, Callable[..., str]], ...] = (
-    ("nvidia", sanitize_nvidia_message),
-    ("openai_compat", sanitize_openai_compat_message),
-)
+_SANITIZERS: tuple[tuple[str, Callable[..., str]], ...] = (("openai_compat", sanitize_openai_compat_message),)
 
 
 @pytest.fixture(params=_SANITIZERS, ids=[name for name, _ in _SANITIZERS])

@@ -265,7 +265,7 @@ describe("AccountListItem", () => {
   // The 5h/Weekly subscription bars are Claude-only, selected by an allowlist on
   // provider === "claude" rather than by excluding each known non-Claude
   // provider, so a provider added later cannot inherit them by default.
-  it.each(["openrouter", "nvidia", "orcarouter", "omniroute", "ollama", "newprovider"])(
+  it.each(["openrouter", "orcarouter", "omniroute", "ollama", "newprovider"])(
     "hides the Claude subscription quota bars for the synthetic %s account",
     (provider) => {
       renderSynthetic(provider);
@@ -296,7 +296,7 @@ describe("AccountListItem", () => {
     },
   );
 
-  it.each(["openrouter", "nvidia", "orcarouter", "omniroute"])(
+  it.each(["openrouter", "orcarouter", "omniroute"])(
     "hides the generic Quota and Models rows for the synthetic %s account",
     (provider) => {
       renderSynthetic(provider);
