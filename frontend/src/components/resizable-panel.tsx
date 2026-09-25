@@ -50,8 +50,11 @@ export function ResizablePanel({
   const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   // Live height while a drag is in flight. Only the final value goes through
   // `onHeightChange`, so the caller (which persists to localStorage) is not
-  // written to on every pointermove.
+  // written to on every pointermove. The ref mirrors the state so `endDrag`
+  // can read the last previewed value without a side effect inside a state
+  // updater (StrictMode double-invokes updaters).
   const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const dragHeightRef = useRef<number | null>(null);
 
   const measuredHeight = () => {
     const frame = frameRef.current;
@@ -76,7 +79,9 @@ export function ResizablePanel({
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
     }
-    setDragHeight(Math.round(clamp(drag.startHeight + (event.clientY - drag.startY), minHeight, maxHeight)));
+    const next = Math.round(clamp(drag.startHeight + (event.clientY - drag.startY), minHeight, maxHeight));
+    dragHeightRef.current = next;
+    setDragHeight(next);
   };
 
   const endDrag = (event: PointerEvent<HTMLButtonElement>) => {
@@ -88,12 +93,12 @@ export function ResizablePanel({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    setDragHeight((current) => {
-      if (current !== null) {
-        onHeightChange(current);
-      }
-      return null;
-    });
+    const committed = dragHeightRef.current;
+    dragHeightRef.current = null;
+    setDragHeight(null);
+    if (committed !== null) {
+      onHeightChange(committed);
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
