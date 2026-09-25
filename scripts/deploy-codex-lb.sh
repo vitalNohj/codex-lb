@@ -259,10 +259,17 @@ sync_git() {
 # Prints "changed" or "unchanged" for frontend/ between the last successfully
 # built SHA (from STAMP_FILE) and AFTER_SHA. The baseline is the stamp, not the
 # pre-pull HEAD: sync_git fast-forwards HEAD before the build, so a failed or
-# skipped build must not let the next run skip the rebuild. Missing/empty stamp
-# or any git error (including an invalid SHA) counts as changed so a bad
-# baseline can never skip a needed build. Diagnostics go to stderr because the
-# caller captures stdout.
+# skipped build must not let the next run skip the rebuild. Missing/empty stamp,
+# uncommitted edits under frontend/ (reachable with ALLOW_DIRTY=1), or any git
+# error (including an invalid SHA) count as changed so a bad baseline can never
+# skip a needed build. Diagnostics go to stderr because the caller captures
+# stdout.
+frontend_dirty() {
+  local status rc=0
+  status="$(git status --porcelain -- frontend/ 2>/dev/null)" || rc=$?
+  ((rc != 0)) || [[ -n "$status" ]]
+}
+
 frontend_change_state() {
   local stamp="" rc=0
   if [[ -s "$STAMP_FILE" ]]; then
@@ -270,6 +277,11 @@ frontend_change_state() {
   fi
   log "frontend baseline: ${stamp:-none} ($STAMP_FILE)" >&2
   if [[ -z "$stamp" ]]; then
+    echo changed
+    return 0
+  fi
+  if frontend_dirty; then
+    log "frontend/ has uncommitted changes; treating as changed" >&2
     echo changed
     return 0
   fi
@@ -294,6 +306,13 @@ build_frontend() {
     "$BUN_BIN" run build
   )
   [[ -f app/static/index.html ]] || die "frontend build missing app/static/index.html"
+  if frontend_dirty; then
+    # The bundle includes uncommitted edits, so AFTER_SHA does not describe it.
+    # Drop the stamp so the next deploy rebuilds even at the same HEAD.
+    rm -f "$STAMP_FILE"
+    log "frontend/ was dirty at build time; not recording build stamp"
+    return 0
+  fi
   printf '%s\n' "$AFTER_SHA" >"$STAMP_FILE.tmp"
   mv -f "$STAMP_FILE.tmp" "$STAMP_FILE"
   log "recorded frontend build stamp $AFTER_SHA -> $STAMP_FILE"
