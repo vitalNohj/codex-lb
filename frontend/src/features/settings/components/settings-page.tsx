@@ -139,6 +139,10 @@ function SectionNav({ advancedOpen, onOpenAdvanced }: { advancedOpen: boolean; o
           // integrations card discards a manual tab selection whenever it
           // changes. The href stays for middle-click and screen readers.
           onClick={(event) => {
+            // Modifier clicks keep native behaviour (open in a new tab).
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+              return;
+            }
             event.preventDefault();
             scrollToSection(id);
           }}

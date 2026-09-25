@@ -223,6 +223,12 @@ describe("SettingsPage", () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(scrollIntoView.mock.instances[0]).toHaveAttribute("id", "appearance-settings");
     expect(window.location.hash).toBe("");
+
+    // A modifier click is left to the browser (open in new tab), not intercepted.
+    await user.keyboard("{Control>}");
+    await user.click(link);
+    await user.keyboard("{/Control}");
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
     scrollSpy.mockRestore();
   });
 
