@@ -22,6 +22,7 @@ import type {
 import type { DashboardSettings } from "@/features/settings/schemas";
 import { formatDateTimeInline } from "@/utils/formatters";
 import { getErrorMessageOrNull } from "@/utils/errors";
+import { SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 export type FreeModelDiscoveryPanelProps = {
   settings: DashboardSettings;
@@ -111,21 +112,13 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
       : "Discover free models";
 
   return (
-    <section aria-label="Free model discovery" className="space-y-3 rounded-md border bg-background/50 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-2.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-            <Radar className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold">Free model discovery</h3>
-            <p className="text-xs text-muted-foreground">
-              Compare OpenRouter and OrcaRouter free models against the pinned lists, probe the ones you choose, and
-              pin every model that answers. Runs are paced to avoid rate limits and can take hours.
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+    <SettingsSection aria-label="Free model discovery">
+      <SettingsSectionHeader
+        icon={Radar}
+        title="Free model discovery"
+        description="Compare OpenRouter and OrcaRouter free models against the pinned lists, probe the ones you choose, and pin every model that answers. Runs are paced to avoid rate limits and can take hours."
+        actions={
+          <>
           {running && run ? (
             <Button
               type="button"
@@ -150,11 +143,12 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
           >
             {startButtonLabel}
           </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {!anyProviderUsable ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-[13px] text-muted-foreground">
           Enable OpenRouter or OrcaRouter with an API key to discover free models.
         </p>
       ) : null}
@@ -193,7 +187,7 @@ export function FreeModelDiscoveryPanel({ settings }: FreeModelDiscoveryPanelPro
           setDialogOpen(false);
         }}
       />
-    </section>
+    </SettingsSection>
   );
 }
 

@@ -8,6 +8,11 @@ const ACCOUNT_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-account-view-mode";
 const REQUEST_LOG_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-request-log-view-mode";
 const ACCOUNT_TYPE_VISIBILITY_STORAGE_KEY = "codex-lb-dashboard-account-type-visibility";
 const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
+const ACCOUNT_PANEL_HEIGHT_STORAGE_KEY = "codex-lb-dashboard-account-panel-height";
+
+/** Bounds for the operator-resized accounts panel, in px. */
+export const ACCOUNT_PANEL_MIN_HEIGHT_PX = 160;
+export const ACCOUNT_PANEL_MAX_HEIGHT_PX = 2400;
 
 export type DashboardAccountViewMode = "cards" | "list";
 export type DashboardRequestLogViewMode = "simplified" | "expanded";
@@ -57,6 +62,8 @@ type DashboardPreferencesState = {
   requestLogViewMode: DashboardRequestLogViewMode;
   accountTypeVisibility: AccountTypeVisibility;
   accountListSort: AccountListSort;
+  /** Operator-resized accounts panel height in px; `null` = component default. */
+  accountPanelHeight: number | null;
   initialized: boolean;
   initializePreferences: () => void;
   setAccountBurnrateEnabled: (enabled: boolean) => void;
@@ -64,6 +71,7 @@ type DashboardPreferencesState = {
   setRequestLogViewMode: (mode: DashboardRequestLogViewMode) => void;
   setAccountTypeVisibility: (key: AccountTypeKey, enabled: boolean) => void;
   setAccountListSort: (sort: AccountListSort) => void;
+  setAccountPanelHeight: (height: number | null) => void;
 };
 
 const ACCOUNT_LIST_SORT_KEYS: AccountListSortKey[] = [
@@ -133,6 +141,32 @@ function readStoredAccountListSort(): AccountListSort {
     return null;
   }
   return null;
+}
+
+function readStoredAccountPanelHeight(): number | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const stored = window.localStorage.getItem(ACCOUNT_PANEL_HEIGHT_STORAGE_KEY);
+  if (stored === null) {
+    return null;
+  }
+  const parsed = Number(stored);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.min(ACCOUNT_PANEL_MAX_HEIGHT_PX, Math.max(ACCOUNT_PANEL_MIN_HEIGHT_PX, Math.round(parsed)));
+}
+
+function persistAccountPanelHeight(height: number | null): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (height === null) {
+    window.localStorage.removeItem(ACCOUNT_PANEL_HEIGHT_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(ACCOUNT_PANEL_HEIGHT_STORAGE_KEY, String(height));
 }
 
 function persistAccountBurnrateEnabled(enabled: boolean): void {
@@ -207,6 +241,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   requestLogViewMode: "simplified",
   accountTypeVisibility: defaultAccountTypeVisibility(),
   accountListSort: null,
+  accountPanelHeight: null,
   initialized: false,
   initializePreferences: () => {
     const accountBurnrateEnabled = readStoredAccountBurnrateEnabled() ?? true;
@@ -214,6 +249,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
     const requestLogViewMode = readStoredRequestLogViewMode() ?? "simplified";
     const accountTypeVisibility = readStoredAccountTypeVisibility() ?? defaultAccountTypeVisibility();
     const accountListSort = readStoredAccountListSort();
+    const accountPanelHeight = readStoredAccountPanelHeight();
     persistAccountBurnrateEnabled(accountBurnrateEnabled);
     persistAccountViewMode(accountViewMode);
     persistRequestLogViewMode(requestLogViewMode);
@@ -225,6 +261,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
       requestLogViewMode,
       accountTypeVisibility,
       accountListSort,
+      accountPanelHeight,
       initialized: true,
     });
   },
@@ -248,5 +285,13 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   setAccountListSort: (sort) => {
     persistAccountListSort(sort);
     set({ accountListSort: sort, initialized: true });
+  },
+  setAccountPanelHeight: (height) => {
+    const next =
+      height === null
+        ? null
+        : Math.min(ACCOUNT_PANEL_MAX_HEIGHT_PX, Math.max(ACCOUNT_PANEL_MIN_HEIGHT_PX, Math.round(height)));
+    persistAccountPanelHeight(next);
+    set({ accountPanelHeight: next, initialized: true });
   },
 }));

@@ -39,6 +39,37 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
+def _isolate_lifespan_startup_database(monkeypatch: pytest.MonkeyPatch):
+    """Keep the lifespan's database-backed startup steps off the real database.
+
+    The lifespan tests here replace ``init_db`` and the session factories with
+    mocks, but startup still seeds the hard-sticky purge grace through
+    ``AccountsRepository`` and refreshes the routing-availability snapshot
+    through the real ``SessionLocal``. Run alone, those hit an unprovisioned
+    database ("no such table: runtime_sentinels"); run after other modules,
+    they race another test's SQLite writer. None of these tests is about
+    either step, so stub both for the whole module, as
+    ``test_lifespan_marks_bridge_membership_stale_for_hostname_shared_ids``
+    already did for its own lifespan (upstream #2066).
+    """
+    from app import main
+
+    class _AccountsRepository:
+        def __init__(self, _session: object) -> None:
+            pass
+
+        async def seed_hard_sticky_outage_grace_on_startup(self) -> int:
+            return 0
+
+    routing_availability_cache = SimpleNamespace(refresh_from_db=AsyncMock())
+    monkeypatch.setattr(main, "AccountsRepository", _AccountsRepository)
+    monkeypatch.setattr(
+        "app.modules.proxy.account_cache.get_routing_availability_cache",
+        lambda: routing_availability_cache,
+    )
+
+
+@pytest.fixture(autouse=True)
 def reset_otel_state(monkeypatch: pytest.MonkeyPatch):
     otel._otel_initialized = False
     for name in list(sys.modules):
@@ -1146,6 +1177,18 @@ async def test_lifespan_marks_bridge_membership_stale_for_hostname_shared_ids(
         stop=AsyncMock(),
     )
 
+    # This test owns the bridge-membership lifecycle only. Keep startup's
+    # unrelated database-backed seed and routing snapshot out of the mocked
+    # database lifecycle so they cannot race another test's SQLite writer.
+    routing_availability_cache = SimpleNamespace(refresh_from_db=AsyncMock())
+
+    class _AccountsRepository:
+        def __init__(self, _session: object) -> None:
+            pass
+
+        async def seed_hard_sticky_outage_grace_on_startup(self) -> int:
+            return 0
+
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(main, "get_settings_cache", lambda: settings_cache)
     monkeypatch.setattr(main, "ensure_auto_bootstrap_token", AsyncMock(return_value=None))
@@ -1162,6 +1205,7 @@ async def test_lifespan_marks_bridge_membership_stale_for_hostname_shared_ids(
     monkeypatch.setattr(main, "build_api_key_limit_reset_scheduler", lambda: api_key_limit_reset_scheduler)
     monkeypatch.setattr(main, "build_model_refresh_scheduler", lambda: model_scheduler)
     monkeypatch.setattr(main, "build_sticky_session_cleanup_scheduler", lambda: sticky_scheduler)
+    monkeypatch.setattr(main, "AccountsRepository", _AccountsRepository)
     monkeypatch.setattr(main, "RingMembershipService", lambda session_factory: ring_service)
     monkeypatch.setattr(main, "_wait_for_bridge_advertise_endpoint", AsyncMock())
     monkeypatch.setattr(main, "_validate_bridge_advertise_endpoint_for_multi_replica", AsyncMock())
@@ -1169,6 +1213,10 @@ async def test_lifespan_marks_bridge_membership_stale_for_hostname_shared_ids(
     monkeypatch.setattr(
         "app.core.cache.invalidation.CacheInvalidationPoller",
         lambda session_factory: cache_poller,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.account_cache.get_routing_availability_cache",
+        lambda: routing_availability_cache,
     )
 
     async with main.lifespan(main.app):

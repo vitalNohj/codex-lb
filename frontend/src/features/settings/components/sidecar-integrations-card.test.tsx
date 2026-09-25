@@ -131,6 +131,16 @@ function renderCard(settings: DashboardSettings, locationHash?: string) {
 }
 
 describe("SidecarIntegrationsCard", () => {
+  it("presents providers as a wrapping tile grid above the integration panel", () => {
+    renderCard(BASE_SETTINGS);
+
+    const tablist = screen.getByRole("tablist", { name: "Integration providers" });
+    expect(tablist).toHaveClass("grid", "lg:grid-cols-4");
+    expect(
+      tablist.compareDocumentPosition(screen.getByRole("tabpanel")) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("renders one unified card with a tab per integration", () => {
     renderCard(BASE_SETTINGS);
 

@@ -39,6 +39,7 @@ import {
   formatSlug,
   formatTimeLong,
 } from "@/utils/formatters";
+import { cn } from "@/lib/utils";
 
 // Statuses meaning "a lookup ran for this model and produced no published token
 // price". They are the only ones that earn a visible marker. Everything else
@@ -287,6 +288,41 @@ function formatCompactElapsed(ms: number | null | undefined): string | null {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+const HEAD_CLASS = "text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80";
+
+type RequestColumn = {
+  key: "time" | "account" | "plan" | "apiKey" | "model" | "transport" | "status" | "ttft" | "tps" | "tokens" | "cost" | "details";
+  /** Percentage width; each set sums to 100 so `table-fixed` never overflows the card. */
+  width: string;
+  className?: string;
+};
+
+const SIMPLIFIED_COLUMNS: RequestColumn[] = [
+  { key: "time", width: "w-[10%]", className: "pl-4" },
+  { key: "account", width: "w-[18%]" },
+  { key: "apiKey", width: "w-[14%]", className: "pr-8" },
+  { key: "model", width: "w-[16%]" },
+  { key: "tokens", width: "w-[10%]", className: "text-right" },
+  { key: "cost", width: "w-[8%]", className: "pr-8 text-right" },
+  { key: "status", width: "w-[10%]" },
+  { key: "details", width: "w-[14%]", className: "pr-4" },
+];
+
+const EXPANDED_COLUMNS: RequestColumn[] = [
+  { key: "time", width: "w-[7%]", className: "pl-4" },
+  { key: "account", width: "w-[13%]" },
+  { key: "plan", width: "w-[5%]" },
+  { key: "apiKey", width: "w-[9%]", className: "pr-4" },
+  { key: "model", width: "w-[15%]" },
+  { key: "transport", width: "w-[7%]" },
+  { key: "status", width: "w-[7%]" },
+  { key: "ttft", width: "w-[5%]", className: "text-right" },
+  { key: "tps", width: "w-[5%]", className: "text-right" },
+  { key: "tokens", width: "w-[7%]", className: "text-right" },
+  { key: "cost", width: "w-[6%]", className: "pr-4 text-right" },
+  { key: "details", width: "w-[14%]", className: "pr-4" },
+];
+
 export function RecentRequestsTable({
   requests,
   accounts,
@@ -343,32 +379,16 @@ export function RecentRequestsTable({
           className={
             viewMode === "simplified"
               ? "min-w-[960px] table-fixed"
-              : "min-w-[1440px] table-fixed"
+              : "min-w-[1280px] table-fixed"
           }
         >
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className={viewMode === "simplified" ? "w-[10%] pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-28 pl-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.time")}</TableHead>
-              <TableHead className={viewMode === "simplified" ? "w-[18%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-48 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.account")}</TableHead>
-              {viewMode === "expanded" ? (
-                <TableHead className="w-24 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">{t("dashboard.requests.columns.plan")}</TableHead>
-              ) : null}
-              <TableHead className={viewMode === "simplified" ? "w-[14%] pr-8 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-40 pr-8 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.apiKey")}</TableHead>
-              <TableHead className={viewMode === "simplified" ? "w-[16%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-56 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.model")}</TableHead>
-              {viewMode === "expanded" ? (
-                <>
-                  <TableHead className="w-32 pr-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">{t("dashboard.requests.columns.transport")}</TableHead>
-                  <TableHead className="w-24 pl-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">{t("dashboard.requests.columns.status")}</TableHead>
-                  <TableHead className="w-20 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">TTFT</TableHead>
-                  <TableHead className="w-20 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">TPS</TableHead>
-                </>
-              ) : null}
-              <TableHead className={viewMode === "simplified" ? "w-[10%] text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-24 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.tokens")}</TableHead>
-              <TableHead className={viewMode === "simplified" ? "w-[8%] pr-8 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-16 pr-8 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.cost")}</TableHead>
-              {viewMode === "simplified" ? (
-                <TableHead className="w-[10%] text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">{t("dashboard.requests.columns.status")}</TableHead>
-              ) : null}
-              <TableHead className={viewMode === "simplified" ? "w-[14%] pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80" : "w-72 pr-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80"}>{t("dashboard.requests.columns.details")}</TableHead>
+              {(viewMode === "simplified" ? SIMPLIFIED_COLUMNS : EXPANDED_COLUMNS).map((column) => (
+                <TableHead key={column.key} className={cn(HEAD_CLASS, column.width, column.className)}>
+                  {t(`dashboard.requests.columns.${column.key}`)}
+                </TableHead>
+              ))}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -443,7 +463,7 @@ export function RecentRequestsTable({
                       )}
                     </TableCell>
                   ) : null}
-                  <TableCell className="truncate align-top pr-8 text-xs text-muted-foreground">
+                  <TableCell className={cn("truncate align-top text-xs text-muted-foreground", viewMode === "simplified" ? "pr-8" : "pr-4")}>
                     {request.apiKeyName || "--"}
                   </TableCell>
                   <TableCell className="truncate align-top">
@@ -470,7 +490,7 @@ export function RecentRequestsTable({
                   </TableCell>
                   {viewMode === "expanded" ? (
                     <>
-                      <TableCell className="pr-3 align-top">
+                      <TableCell className="align-top">
                         {request.transport ? (
                           <div className="space-y-1">
                             <Badge
@@ -493,7 +513,7 @@ export function RecentRequestsTable({
                           <span className="text-xs text-muted-foreground">--</span>
                         )}
                       </TableCell>
-                      <TableCell className="pl-3 align-top">
+                      <TableCell className="align-top">
                         <Badge
                           variant="outline"
                           className={STATUS_CLASS_MAP[request.status] ?? STATUS_CLASS_MAP.error}
@@ -519,7 +539,7 @@ export function RecentRequestsTable({
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-right align-top pr-8 font-mono text-xs tabular-nums">
+                  <TableCell className={cn("text-right align-top font-mono text-xs tabular-nums", viewMode === "simplified" ? "pr-8" : "pr-4")}>
                     <RequestCost request={request} />
                   </TableCell>
                   {viewMode === "simplified" ? (
