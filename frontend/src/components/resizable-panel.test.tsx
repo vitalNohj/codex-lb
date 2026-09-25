@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ResizablePanel } from "@/components/resizable-panel";
+import { RESIZABLE_PANEL_TARGET_ATTR, ResizablePanel } from "@/components/resizable-panel";
 
 function renderPanel(height: number | null, onHeightChange = vi.fn()) {
   render(
@@ -70,5 +70,22 @@ describe("ResizablePanel", () => {
 
     expect(onHeightChange).toHaveBeenNthCalledWith(1, 332);
     expect(onHeightChange).toHaveBeenNthCalledWith(2, 268);
+  });
+
+  it("measures the tagged target rather than the frame when a child marks one", () => {
+    const onHeightChange = vi.fn();
+    render(
+      <ResizablePanel height={null} onHeightChange={onHeightChange} minHeight={100} maxHeight={800} label="Resize list">
+        <div style={{ border: "1px solid" }}>
+          <div {...{ [RESIZABLE_PANEL_TARGET_ATTR]: "" }} data-testid="target" />
+        </div>
+      </ResizablePanel>,
+    );
+    vi.spyOn(screen.getByTestId("resizable-panel-frame"), "getBoundingClientRect").mockReturnValue({ height: 340 } as DOMRect);
+    vi.spyOn(screen.getByTestId("target"), "getBoundingClientRect").mockReturnValue({ height: 300 } as DOMRect);
+
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize list" }), { key: "ArrowDown" });
+
+    expect(onHeightChange).toHaveBeenCalledWith(332);
   });
 });

@@ -21,13 +21,21 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Marks the element whose height `--panel-height` actually controls. */
+export const RESIZABLE_PANEL_TARGET_ATTR = "data-resizable-panel-target";
+
 /**
- * Vertically resizable container with a drag grip in the bottom-right corner.
+ * Vertically resizable container with a drag rail along its bottom edge.
  *
  * The panel itself renders no scroll region: the child owns overflow and reads
  * the resolved height through a CSS variable (`--panel-height`) so it can keep
  * its own default when the operator has not resized yet. Double-clicking the
- * grip restores that default.
+ * rail restores that default.
+ *
+ * The drag baseline must be the box the variable sizes, not the frame: a child
+ * may wrap its scroller in borders or a horizontal scrollbar, and measuring
+ * those would make the first drag pixel jump. Children tag that box with
+ * {@link RESIZABLE_PANEL_TARGET_ATTR}; without the tag the frame is measured.
  */
 export function ResizablePanel({
   height,
@@ -41,7 +49,14 @@ export function ResizablePanel({
   const frameRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
 
-  const measuredHeight = () => frameRef.current?.getBoundingClientRect().height ?? minHeight;
+  const measuredHeight = () => {
+    const frame = frameRef.current;
+    if (!frame) {
+      return minHeight;
+    }
+    const target = frame.querySelector<HTMLElement>(`[${RESIZABLE_PANEL_TARGET_ATTR}]`) ?? frame;
+    return target.getBoundingClientRect().height;
+  };
 
   const onPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) {
