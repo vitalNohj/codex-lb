@@ -3255,9 +3255,9 @@ async def test_claude_opus_5_5_pin_replays_over_its_own_ownership_table(tmp_path
 
 @pytest.mark.asyncio
 async def test_alias_pool_migration_upgrade_and_guarded_downgrade(tmp_path):
-    """Upgrade turns legacy aliases into one-target pools and adds the pool log
-    columns; downgrade refuses, changing nothing, while an alias has fallback
-    targets, and restores the legacy shape once none does."""
+    """Upgrade keeps legacy aliases as strings (an old replica still reads them)
+    and adds the pool log columns; downgrade refuses, changing nothing, while an
+    alias has fallback targets, and restores the legacy shape once none does."""
     from alembic import command
 
     from app.db.migrate import _build_alembic_config
@@ -3295,15 +3295,11 @@ async def test_alias_pool_migration_upgrade_and_guarded_downgrade(tmp_path):
         assert not pool_columns & await _log_columns()
 
         await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
-        assert await _aliases() == {
-            "custom_r1": {"targets": ["cc/claude-opus-4-8"]},
-            "fast": {"targets": ["custom_r1"]},
-        }
+        assert await _aliases() == legacy_aliases
         assert pool_columns <= await _log_columns()
 
         pooled = {
-            "custom_r1": {"targets": ["cc/claude-opus-4-8"]},
-            "fast": {"targets": ["custom_r1"]},
+            **legacy_aliases,
             "pooled/glm": {"targets": ["orcarouter/z-ai/glm-5.3", "z-ai/glm-5.3"]},
         }
         await _set_aliases(pooled)
@@ -3319,6 +3315,13 @@ async def test_alias_pool_migration_upgrade_and_guarded_downgrade(tmp_path):
 
         result = await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
         assert result.current_revision == _HEAD_REVISION
-        assert (await _aliases())["pooled/glm"] == {"targets": ["z-ai/glm-5.3"]}
+        assert await _aliases() == {**legacy_aliases, "pooled/glm": "z-ai/glm-5.3"}
+
+        # A one-target object (written by a pre-release build of this change)
+        # is stored as its string by the upgrade too.
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        await _set_aliases({"one": {"targets": ["x"]}, "pooled": {"targets": ["a", "b"]}, "legacy": "y"})
+        await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
+        assert await _aliases() == {"one": "x", "pooled": {"targets": ["a", "b"]}, "legacy": "y"}
     finally:
         await engine.dispose()

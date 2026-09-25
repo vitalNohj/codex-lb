@@ -124,11 +124,15 @@ Usage limits reserve once, against the alias, before the first attempt. Only
 the attempt that answers the client settles that reservation, from its own
 usage and cost, and a total failure releases it once.
 
-## Rolling back
+## Upgrading and rolling back
+
+Upgrading leaves your existing aliases as they are, so replicas still on the
+previous version keep reading and saving them during a rolling upgrade. Add
+fallback targets only after every replica runs this version: an older replica
+cannot see a pool, and its next settings save removes it.
 
 Versions before alias pools store one target per alias. Downgrading the
-database past this release turns every one-target alias back into that shape,
-but refuses, changing nothing, while any alias still has fallback targets: the
+database past this release keeps every one-target alias, but refuses, changing nothing, while any alias still has fallback targets: the
 error names them. Reduce each to the one target it should keep, then run the
 downgrade again.
 

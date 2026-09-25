@@ -60,8 +60,11 @@ resolves aliases before sidecar routing, so it is the right place to fail over.
   `app/db/models.py`, one Alembic revision, `frontend/src/features/settings/**`.
 - Database: `request_logs.upstream_model` (String, nullable) and
   `request_logs.pool_attempts` (Integer, nullable). `dashboard_settings.model_aliases_json`
-  keeps its column; the JSON value shape changes from `{alias: str}` to
-  `{alias: {"targets": [str, ...]}}` with a data migration.
+  keeps its column and its `{alias: str}` values; only an alias with fallback
+  targets is stored as `{alias: {"targets": [str, ...]}}`. Keeping single
+  aliases as strings lets a replica on the previous release read, and keep
+  across its own settings saves, every pre-upgrade alias during a rolling
+  upgrade.
 - No new `CODEX_LB_*` setting and no new required setup step (PRINCIPLES P1/P2).
   A deployment with no pools behaves byte-for-byte as before.
 - `/v1/responses` is unchanged: a pool alias on the Responses path resolves to

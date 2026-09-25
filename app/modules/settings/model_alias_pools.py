@@ -1,17 +1,23 @@
 """Model alias pools: one client-facing alias, an ordered list of real models.
 
-The dashboard alias map is stored on ``DashboardSettings.model_aliases_json``
-as ``{alias: {"targets": [model, ...]}}``. A one-target pool is the legacy
-single alias; a longer pool is tried in order by the chat failover loop.
+The dashboard alias map is stored on ``DashboardSettings.model_aliases_json``.
+A one-target pool is the legacy single alias and is stored exactly as before,
+``{alias: "model"}``; only a pool with fallback targets uses
+``{alias: {"targets": [model, ...]}}``. The chat failover loop tries a pool's
+targets in order.
+
+One-target pools keep the legacy string so a replica still running the previous
+release reads them during a rolling upgrade. That reader skips every non-string
+value, and its settings save writes back only what it read: had single aliases
+moved to the object shape, one unrelated save on an old replica would have
+erased them all. A pool with fallback targets cannot be expressed in the legacy
+shape, so an old replica ignores it and its next settings save drops it - which
+is why pools should be created only once every replica runs this release.
 
 This module is the only parser/serializer for that blob so settings, routing,
 pricing, and the dashboard API cannot drift. It has no app dependencies on
-purpose: both the settings service and the proxy import it.
-
-The legacy value shape ``{alias: "model"}`` is still accepted on read for one
-release so a replica on the previous version and a row written by this one can
-coexist during a rolling upgrade; the Alembic migration rewrites stored rows
-to the pool shape.
+purpose: both the settings service and the proxy import it. The dashboard API
+always speaks the object shape; only storage keeps the string.
 """
 
 from __future__ import annotations
@@ -125,10 +131,16 @@ def parse_alias_pools_json(raw: str | None) -> ModelAliasPools:
 
 
 def dump_alias_pools_json(pools: Mapping[str, ModelAliasPool | Mapping[str, Any] | str]) -> str:
-    """Serialize to the pool shape, sorted so equal maps produce equal bytes."""
+    """Serialize for storage, sorted so equal maps produce equal bytes.
+
+    A one-target pool is written as its target string, the shape the previous
+    release reads and preserves; see the module docstring.
+    """
 
     normalized = normalize_alias_pools(pools)
-    payload = {alias: {"targets": list(pool.targets)} for alias, pool in normalized.items()}
+    payload: dict[str, str | dict[str, list[str]]] = {
+        alias: {"targets": list(pool.targets)} if pool.is_pool else pool.primary for alias, pool in normalized.items()
+    }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 

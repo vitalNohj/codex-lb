@@ -19,7 +19,7 @@ pool *is* the star.
 | Surface | Value |
 | --- | --- |
 | Settings JSON column (existing) | `model_aliases_json` |
-| Stored value shape | `{ "<alias>": { "targets": ["<model>", ...] } }` |
+| Stored value shape | `{ "<alias>": { "targets": ["<model>", ...] } }` for an alias with fallback targets; `{ "<alias>": "<model>" }` (unchanged legacy form) for a single target |
 | Settings API field | `model_aliases: dict[str, ModelAliasPoolSchema]` |
 | Frontend field | `modelAliases: Record<string, { targets: string[] }>` |
 | Request-log columns (new) | `upstream_model` (String, nullable), `pool_attempts` (Integer, nullable) |

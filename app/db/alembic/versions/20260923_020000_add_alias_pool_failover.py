@@ -4,17 +4,21 @@ Revision ID: 20260923_020000_add_alias_pool_failover
 Revises: 20260923_010000_merge_gpt_6_sol_luna_and_opus_5_5_heads
 Create Date: 2026-09-23 00:00:00.000000
 
-``dashboard_settings.model_aliases_json`` moves from ``{alias: "model"}`` to
-``{alias: {"targets": ["model", ...]}}``. The column is neither renamed nor
-retyped; only the value shape changes. ``request_logs`` gains
+``dashboard_settings.model_aliases_json`` gains one value shape,
+``{alias: {"targets": ["model", ...]}}``, used only for an alias with fallback
+targets. A single-target alias stays ``{alias: "model"}``, so a replica still on
+the previous release keeps reading - and, on its next settings save, keeping -
+every alias that existed before the upgrade. Both directions therefore write
+the same canonical form: a one-target object, if a row holds one, becomes its
+string, and strings are left untouched. ``request_logs`` gains
 ``upstream_model`` (the pool target that served an alias request) and
 ``pool_attempts`` (how many targets were tried), both nullable and null for
 every non-pool request.
 
-Downgrade turns one-target pools back into strings and refuses, changing
-nothing, while an alias has fallback targets: the legacy shape holds one
-target per alias, and truncating a pool would discard targets an operator
-added after the upgrade, which this migration did not write.
+Downgrade refuses, changing nothing, while an alias has fallback targets: the
+legacy shape holds one target per alias, and truncating a pool would discard
+targets an operator added after the upgrade, which this migration did not
+write.
 """
 
 from __future__ import annotations
@@ -83,37 +87,6 @@ def _normalize_targets(raw_targets: list[Any]) -> list[str]:
     return targets
 
 
-def _to_pool_shape(raw: Any) -> str | None:
-    """Rewrite string values to one-target pools; ``None`` when nothing changes."""
-
-    parsed = _load_alias_map(raw)
-    if parsed is None:
-        return None
-    changed = False
-    pools: dict[str, dict[str, list[str]]] = {}
-    for alias, value in parsed.items():
-        if not isinstance(alias, str) or not alias.strip():
-            changed = True
-            continue
-        if isinstance(value, str):
-            targets = _normalize_targets([value])
-            changed = True
-        elif isinstance(value, dict) and isinstance(value.get("targets"), list):
-            targets = _normalize_targets(value["targets"])
-            if targets != value["targets"] or set(value) != {"targets"}:
-                changed = True
-        else:
-            changed = True
-            continue
-        if not targets:
-            changed = True
-            continue
-        pools[alias.strip()] = {"targets": targets}
-    if not changed:
-        return None
-    return json.dumps(pools, sort_keys=True, separators=(",", ":"))
-
-
 def _pool_targets(value: Any) -> list[str] | None:
     """A pool object's usable targets; ``None`` for anything else."""
 
@@ -135,8 +108,9 @@ def _to_legacy_shape(raw: Any) -> str | None:
     """Rewrite one-target pools to the string the previous version reads.
 
     ``None`` when nothing changes. Every other entry stays as it is: strings
-    already have the legacy shape, the previous version skips anything else,
-    and ``downgrade`` refuses to run while an alias has fallback targets.
+    already have the legacy shape, a pool with fallback targets has no string
+    form, and the previous version skips anything else. Both directions use
+    this rewrite; ``downgrade`` additionally refuses while a pool exists.
     """
 
     parsed = _load_alias_map(raw)
@@ -210,7 +184,7 @@ def _downgrade_refusal(aliases: list[str]) -> str:
 
 def upgrade() -> None:
     bind = op.get_bind()
-    _rewrite_alias_rows(bind, _to_pool_shape)
+    _rewrite_alias_rows(bind, _to_legacy_shape)
 
     log_columns = _columns(bind, _LOGS_TABLE)
     if not log_columns:

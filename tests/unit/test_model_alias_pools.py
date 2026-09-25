@@ -69,11 +69,38 @@ def test_parse_tolerates_garbage() -> None:
     assert parse_alias_pools_json("[1, 2]") == {}
 
 
-def test_dump_writes_pool_shape_sorted_and_compact() -> None:
-    dumped = dump_alias_pools_json({"b": ModelAliasPool(targets=("y",)), "a": "x"})
+def test_dump_writes_single_targets_as_strings_and_pools_as_objects_sorted_and_compact() -> None:
+    dumped = dump_alias_pools_json(
+        {"c": ModelAliasPool(targets=("p", "q")), "b": ModelAliasPool(targets=("y",)), "a": {"targets": ["x"]}}
+    )
 
-    assert dumped == '{"a":{"targets":["x"]},"b":{"targets":["y"]}}'
-    assert parse_alias_pools_json(dumped) == normalize_alias_pools({"a": "x", "b": "y"})
+    assert dumped == '{"a":"x","b":"y","c":{"targets":["p","q"]}}'
+    assert parse_alias_pools_json(dumped) == normalize_alias_pools({"a": "x", "b": "y", "c": {"targets": ["p", "q"]}})
+
+
+def _previous_release_parse(raw: str) -> dict[str, str]:
+    """The previous release's ``_parse_model_aliases``, verbatim in behavior."""
+
+    aliases: dict[str, str] = {}
+    seen: set[str] = set()
+    for alias, target in json.loads(raw).items():
+        if not isinstance(alias, str) or not isinstance(target, str):
+            continue
+        normalized_alias, normalized_target = alias.strip(), target.strip()
+        if not normalized_alias or not normalized_target or normalized_alias.lower() in seen:
+            continue
+        seen.add(normalized_alias.lower())
+        aliases[normalized_alias] = normalized_target
+    return aliases
+
+
+def test_a_previous_release_replica_reads_every_single_target_alias_this_release_stores() -> None:
+    # During a rolling upgrade an old replica reads the row and, on any
+    # settings save, writes back only what it read. A single alias it could
+    # not read would be erased by that save.
+    stored = dump_alias_pools_json({"custom_r1": "cc/claude", "fast": ModelAliasPool(targets=("gpt-5.4",))})
+
+    assert _previous_release_parse(stored) == {"custom_r1": "cc/claude", "fast": "gpt-5.4"}
 
 
 def test_plain_shape_round_trips() -> None:
@@ -91,25 +118,21 @@ def test_find_alias_pool_case_insensitive() -> None:
     assert find_alias_pool("  ", pools) is None
 
 
-def test_migration_upgrade_rewrites_legacy_strings_to_pools() -> None:
-    upgraded = migration._to_pool_shape(json.dumps({"custom_r1": "cc/claude", "b": " x "}))
-
-    assert upgraded is not None
-    assert json.loads(upgraded) == {"b": {"targets": ["x"]}, "custom_r1": {"targets": ["cc/claude"]}}
-
-
-def test_migration_upgrade_leaves_pool_shape_rows_untouched() -> None:
-    assert migration._to_pool_shape(json.dumps({"a": {"targets": ["x", "y"]}})) is None
-    assert migration._to_pool_shape("{}") is None
-    assert migration._to_pool_shape(None) is None
-    assert migration._to_pool_shape("not json") is None
+def test_migration_upgrade_leaves_legacy_and_pool_rows_untouched() -> None:
+    # Legacy strings are the stored form of a single-target alias, so an old
+    # replica still reads them after the upgrade.
+    assert migration._to_legacy_shape(json.dumps({"custom_r1": "cc/claude", "b": " x "})) is None
+    assert migration._to_legacy_shape(json.dumps({"a": {"targets": ["x", "y"]}})) is None
+    assert migration._to_legacy_shape("{}") is None
+    assert migration._to_legacy_shape(None) is None
+    assert migration._to_legacy_shape("not json") is None
 
 
-def test_migration_upgrade_drops_unusable_entries() -> None:
-    upgraded = migration._to_pool_shape(json.dumps({"a": "", "b": {"targets": []}, "c": 5, "d": "x"}))
+def test_migration_rewrites_a_one_target_object_to_its_string_in_both_directions() -> None:
+    rewritten = migration._to_legacy_shape(json.dumps({"one": {"targets": ["x"]}, "legacy": "y"}))
 
-    assert upgraded is not None
-    assert json.loads(upgraded) == {"d": {"targets": ["x"]}}
+    assert rewritten is not None
+    assert json.loads(rewritten) == {"legacy": "y", "one": "x"}
 
 
 def test_migration_downgrade_turns_one_target_pools_back_into_strings() -> None:

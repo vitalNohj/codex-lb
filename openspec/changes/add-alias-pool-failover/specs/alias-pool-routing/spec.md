@@ -37,7 +37,10 @@ MUST NOT match alias ids.
 The alias loader SHALL accept both the legacy `{alias: "target"}` value shape
 and the pool shape `{alias: {"targets": [...]}}`, normalizing a string value to a
 one-element pool. The settings API SHALL accept either shape on write and SHALL
-always return the pool shape. Blank aliases, blank targets, and non-string
+always return the pool shape. Storage SHALL write a single-target alias as its
+target string and only an alias with fallback targets as a pool object, so a
+replica on the previous release, which skips non-string values and writes back
+only what it read, never loses a single-target alias during a rolling upgrade. Blank aliases, blank targets, and non-string
 targets MUST be dropped; aliases MUST be de-duplicated case-insensitively.
 
 #### Scenario: Legacy string value is read as a one-element pool
