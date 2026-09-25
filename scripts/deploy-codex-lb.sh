@@ -14,9 +14,12 @@
 #   CODEX_LB_HEALTH_URL            Post-restart probe (default: http://127.0.0.1:2455/health/live)
 #   CODEX_LB_SKIP_FRONTEND         Set to 1 to skip bun install/build
 #   CODEX_LB_FORCE_FRONTEND        Set to 1 to build the frontend even when frontend/
-#                                  is unchanged since the previous deploy (default: skip
-#                                  the build when frontend/ is unchanged and
+#                                  is unchanged since the last successful build (default:
+#                                  skip the build when frontend/ is unchanged and
 #                                  app/static/index.html already exists)
+#   CODEX_LB_FRONTEND_STAMP        File recording the SHA of the last successful frontend
+#                                  build (default: $LOG_DIR/frontend-built.sha). Missing
+#                                  stamp forces a build.
 #   CODEX_LB_SKIP_RESTART          Set to 1 to pull/build only (no systemd restart)
 #   CODEX_LB_DEPLOY_LAUNCHER       Path to refresh after a successful pull
 #
@@ -33,6 +36,7 @@ SWITCH_BRANCH="${CODEX_LB_DEPLOY_SWITCH_BRANCH:-0}"
 HEALTH_URL="${CODEX_LB_HEALTH_URL:-http://127.0.0.1:2455/health/live}"
 SKIP_FRONTEND="${CODEX_LB_SKIP_FRONTEND:-0}"
 FORCE_FRONTEND="${CODEX_LB_FORCE_FRONTEND:-0}"
+STAMP_FILE="${CODEX_LB_FRONTEND_STAMP:-$LOG_DIR/frontend-built.sha}"
 SKIP_RESTART="${CODEX_LB_SKIP_RESTART:-0}"
 HEALTH_RETRIES="${CODEX_LB_HEALTH_RETRIES:-45}"
 HEALTH_SLEEP_SECS="${CODEX_LB_HEALTH_SLEEP_SECS:-2}"
@@ -73,6 +77,7 @@ dump_diagnostics() {
   log "--- deploy context ---"
   log "DEPLOY_DIR=$DEPLOY_DIR SERVICE=$SERVICE BRANCH=$BRANCH REMOTE=$REMOTE"
   log "SWITCH_BRANCH=$SWITCH_BRANCH SKIP_FRONTEND=$SKIP_FRONTEND FORCE_FRONTEND=$FORCE_FRONTEND SKIP_RESTART=$SKIP_RESTART"
+  log "STAMP_FILE=$STAMP_FILE"
   log "HEALTH_URL=$HEALTH_URL"
   log "LOG_FILE=$LOG_FILE"
   log "user=$(id -un) uid=$(id -u) HOME=$HOME"
@@ -251,16 +256,28 @@ sync_git() {
   git merge --ff-only "$REMOTE/$BRANCH"
 }
 
-# Prints "changed" or "unchanged" for frontend/ between BEFORE_SHA and AFTER_SHA.
-# A no-op deploy (same SHA) is unchanged. Any git error counts as changed so a
-# bad range can never skip a needed build.
+# Prints "changed" or "unchanged" for frontend/ between the last successfully
+# built SHA (from STAMP_FILE) and AFTER_SHA. The baseline is the stamp, not the
+# pre-pull HEAD: sync_git fast-forwards HEAD before the build, so a failed or
+# skipped build must not let the next run skip the rebuild. Missing/empty stamp
+# or any git error (including an invalid SHA) counts as changed so a bad
+# baseline can never skip a needed build. Diagnostics go to stderr because the
+# caller captures stdout.
 frontend_change_state() {
-  if [[ "$BEFORE_SHA" == "$AFTER_SHA" ]]; then
+  local stamp="" rc=0
+  if [[ -s "$STAMP_FILE" ]]; then
+    stamp="$(tr -d '[:space:]' <"$STAMP_FILE")"
+  fi
+  log "frontend baseline: ${stamp:-none} ($STAMP_FILE)" >&2
+  if [[ -z "$stamp" ]]; then
+    echo changed
+    return 0
+  fi
+  if [[ "$stamp" == "$AFTER_SHA" ]]; then
     echo unchanged
     return 0
   fi
-  local rc=0
-  git diff --quiet "$BEFORE_SHA" "$AFTER_SHA" -- frontend/ || rc=$?
+  git diff --quiet "$stamp" "$AFTER_SHA" -- frontend/ 2>/dev/null || rc=$?
   if ((rc == 0)); then
     echo unchanged
   else
@@ -277,6 +294,9 @@ build_frontend() {
     "$BUN_BIN" run build
   )
   [[ -f app/static/index.html ]] || die "frontend build missing app/static/index.html"
+  printf '%s\n' "$AFTER_SHA" >"$STAMP_FILE.tmp"
+  mv -f "$STAMP_FILE.tmp" "$STAMP_FILE"
+  log "recorded frontend build stamp $AFTER_SHA -> $STAMP_FILE"
 }
 
 log "=== codex-lb deploy start ==="
@@ -324,7 +344,7 @@ elif [[ "$FORCE_FRONTEND" == "1" ]]; then
   log "forcing frontend build (CODEX_LB_FORCE_FRONTEND=1)"
   build_frontend
 elif [[ "$(frontend_change_state)" == "unchanged" && -f app/static/index.html ]]; then
-  log "skipping frontend build (no changes in frontend/ since $BEFORE_SHA)"
+  log "skipping frontend build (no changes in frontend/ since last successful build)"
 else
   build_frontend
 fi
