@@ -1060,6 +1060,8 @@ class RequestLogsRepository:
         price_status: str | None = None,
         reference_cost_usd: float | None = None,
         archive_request_id: str | None = None,
+        upstream_model: str | None = None,
+        pool_attempts: int | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             # Telemetry write: this transaction only appends one request-log
@@ -1085,6 +1087,8 @@ class RequestLogsRepository:
                 request_id=resolved_request_id,
                 archive_request_id=resolved_archive_request_id,
                 model=model,
+                upstream_model=upstream_model,
+                pool_attempts=pool_attempts,
                 plan_type=resolved_plan_type,
                 source=source,
                 transport=transport,

@@ -9,6 +9,10 @@ LM Studio, llama.cpp, NIM, ...), so neither the line-ending dialect nor the
 chunk boundaries are ours to assume. The same properties are already covered for
 the OpenCode Go decoder in ``tests/unit/test_opencode_go_sidecar_dispatch.py``;
 this file holds the two decoders that still lacked them.
+
+OpenAI-compat (with OpenRouter and OrcaRouter) now decodes with the shared
+``app.core.utils.sse.SseJsonDataDecoder``, specified in ``tests/unit/test_sse.py``;
+it stays here so both decoders keep meeting the same bar.
 """
 
 from __future__ import annotations
@@ -17,12 +21,12 @@ from collections.abc import Callable
 
 import pytest
 
+from app.core.utils.sse import SseJsonDataDecoder
 from app.modules.proxy.nvidia_sidecar_dispatch import _SseUsageDecoder as NvidiaSseUsageDecoder
-from app.modules.proxy.openai_compat_dispatch import _SseUsageDecoder as OpenAICompatSseUsageDecoder
 
 _DECODERS: tuple[tuple[str, Callable[[], object]], ...] = (
     ("nvidia", NvidiaSseUsageDecoder),
-    ("openai_compat", OpenAICompatSseUsageDecoder),
+    ("shared", SseJsonDataDecoder),
 )
 
 

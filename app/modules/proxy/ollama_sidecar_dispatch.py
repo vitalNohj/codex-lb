@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from app.core.clients.ollama_sidecar import (
     OllamaSidecarClient,
@@ -21,9 +21,11 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.stream_close import ClosingStreamingResponse
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -174,7 +176,7 @@ async def proxy_chat_to_ollama(
                 payload,
                 source="ollama_sidecar_stream",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             inject_sse_keepalives(stream, sse_keepalive_interval_seconds),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
@@ -406,38 +408,50 @@ async def _ollama_stream_iterator(
         yield _error_sse(client_error.content)
         yield b"data: [DONE]\n\n"
     except BaseException as exc:
-        await _release_ollama_reservation(reservation, api_key=api_key)
-        await _log_ollama_request(
-            api_key=api_key,
-            model=model,
-            started_at=started_at,
-            status="error",
-            error_code="ollama_sidecar_stream_interrupted",
-            error_message=str(exc) or exc.__class__.__name__,
-            reasoning_effort=reasoning_effort,
-            requested_reasoning_effort=requested_reasoning_effort,
-        )
+        # A client disconnect lands here as a cancellation, inside a cancel scope
+        # that re-cancels every plain await - so the release and the log must
+        # finish shielded, or the reservation stays held with no log row.
         settled = True
-        raise
-    finally:
-        if not settled:
-            usage_to_settle = usage if completed else None
-            await _finalize_or_release_ollama_reservation(
-                reservation,
-                api_key=api_key,
-                model=model,
-                usage=usage_to_settle,
-            )
+        error_message = str(exc) or exc.__class__.__name__
+
+        async def _release_and_log() -> None:
+            await _release_ollama_reservation(reservation, api_key=api_key)
             await _log_ollama_request(
                 api_key=api_key,
                 model=model,
                 started_at=started_at,
-                status="success" if completed else "error",
-                error_code=None if completed else "ollama_sidecar_stream_incomplete",
-                usage=usage_to_settle,
+                status="error",
+                error_code="ollama_sidecar_stream_interrupted",
+                error_message=error_message,
                 reasoning_effort=reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
             )
+
+        await await_deferring_cancellation(_release_and_log())
+        raise
+    finally:
+        if not settled:
+
+            async def _settle_and_log() -> None:
+                usage_to_settle = usage if completed else None
+                await _finalize_or_release_ollama_reservation(
+                    reservation,
+                    api_key=api_key,
+                    model=model,
+                    usage=usage_to_settle,
+                )
+                await _log_ollama_request(
+                    api_key=api_key,
+                    model=model,
+                    started_at=started_at,
+                    status="success" if completed else "error",
+                    error_code=None if completed else "ollama_sidecar_stream_incomplete",
+                    usage=usage_to_settle,
+                    reasoning_effort=reasoning_effort,
+                    requested_reasoning_effort=requested_reasoning_effort,
+                )
+
+            await complete_despite_cancellation(_settle_and_log())
 
 
 def _ollama_message(message: Mapping[str, JsonValue]) -> JsonObject:

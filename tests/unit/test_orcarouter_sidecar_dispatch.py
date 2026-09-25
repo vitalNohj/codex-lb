@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -446,9 +447,16 @@ def _completion() -> dict[str, JsonValue]:
     }
 
 
+async def _connected_client_receive() -> dict[str, object]:
+    """``receive`` of a client that stays connected: nothing arrives after the body."""
+
+    await asyncio.Event().wait()
+    raise AssertionError("unreachable")
+
+
 async def _proxy(client: object, *, stream: bool):
     return await proxy_chat_to_orcarouter(
-        cast(Request, SimpleNamespace()),
+        cast(Request, SimpleNamespace(receive=_connected_client_receive)),
         _chat_request(stream=stream),
         effective_model="z-ai/glm-5.3-flash",
         api_key=None,

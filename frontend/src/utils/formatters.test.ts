@@ -6,6 +6,7 @@ import { useTimeFormatStore } from "@/hooks/use-time-format";
 import i18n from "@/i18n";
 import {
   formatChartDateTime,
+  formatClockTime,
   formatConversationDuration,
   formatDateTimeInline,
   formatAccessTokenLabel,
@@ -163,6 +164,25 @@ describe("formatters", () => {
 
     expect(formatTimeLong(iso)).toEqual({ time: expectedTime, date: expectedDate });
     expect(formatDateTimeInline(iso)).toBe(`${expectedDate} ${expectedTime}`);
+    expect(formatClockTime(iso)).toBe(expectedTime.slice(0, 5));
+  });
+
+  it("formats clock times without seconds in both hour cycles", () => {
+    const iso = "2026-01-01T13:05:45.000Z";
+    const local = new Date(iso);
+    const minute = String(local.getMinutes()).padStart(2, "0");
+
+    const twelveHour = formatClockTime(iso);
+    expect(twelveHour).toMatch(/AM|PM/);
+    expect(twelveHour).toContain(`:${minute}`);
+    expect(twelveHour).not.toContain(":45");
+
+    useTimeFormatStore.getState().setTimeFormat("24h");
+
+    const twentyFourHour = formatClockTime(iso);
+    expect(twentyFourHour).toBe(`${String(local.getHours()).padStart(2, "0")}:${minute}`);
+    expect(formatClockTime(null)).toBe("--");
+    expect(formatClockTime("bad-date")).toBe("--");
   });
 
   it("formats local timestamps as yyyy-mm-dd hh:mm:ss", () => {

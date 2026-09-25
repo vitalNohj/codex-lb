@@ -502,6 +502,11 @@ class RequestLog(Base):
     requested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     model: Mapped[str] = mapped_column(String, nullable=False)
+    # Alias pool requests only: the target that produced the response (or the
+    # last one tried on total failure) and how many targets were attempted.
+    # ``model`` stays the alias the client sent. Null for every other request.
+    upstream_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    pool_attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plan_type: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True)
     useragent: Mapped[str | None] = mapped_column(Text, nullable=True)
