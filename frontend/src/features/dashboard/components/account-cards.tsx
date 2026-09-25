@@ -41,8 +41,10 @@ export function AccountCards({ accounts, readOnly = false, onAction }: AccountCa
     <div
       data-testid="dashboard-account-cards"
       className="grid gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:grid-cols-2 lg:grid-cols-3"
+      // `--panel-height` is set by the surrounding ResizablePanel once the
+      // operator has dragged the grip; until then the two-row default applies.
       style={{
-        maxHeight: `calc(${ACCOUNT_CARD_VISIBLE_ROWS} * ${ACCOUNT_CARD_ROW_HEIGHT_REM}rem + ${(ACCOUNT_CARD_VISIBLE_ROWS - 1) * ACCOUNT_CARD_ROW_GAP_REM}rem)`,
+        maxHeight: `var(--panel-height, calc(${ACCOUNT_CARD_VISIBLE_ROWS} * ${ACCOUNT_CARD_ROW_HEIGHT_REM}rem + ${(ACCOUNT_CARD_VISIBLE_ROWS - 1) * ACCOUNT_CARD_ROW_GAP_REM}rem))`,
       }}
     >
       {accounts.flatMap((account, index) => {

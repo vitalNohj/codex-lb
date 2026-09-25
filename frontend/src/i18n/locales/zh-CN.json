@@ -682,6 +682,7 @@
   "dashboard.accounts.emptyAction": "添加账户",
   "dashboard.accounts.emptyDescription": "导入或认证账户即可开始。",
   "dashboard.accounts.emptyTitle": "尚未连接账户",
+  "dashboard.accounts.resizeLabel": "调整账户面板大小",
   "dashboard.accounts.enableWarmupFor": "为 {{account}} 启用 limit warm-up",
   "dashboard.accounts.subscriptionCredits": "订阅额度",
   "dashboard.accounts.purchasedCredits": "购买额度",

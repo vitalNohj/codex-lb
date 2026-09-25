@@ -682,6 +682,7 @@
   "dashboard.accounts.emptyAction": "Account 추가",
   "dashboard.accounts.emptyDescription": "시작하려면 Account를 import하거나 인증하세요.",
   "dashboard.accounts.emptyTitle": "연결된 Account가 없습니다",
+  "dashboard.accounts.resizeLabel": "계정 패널 크기 조절",
   "dashboard.accounts.enableWarmupFor": "{{account}}의 limit warm-up 켜기",
   "dashboard.accounts.subscriptionCredits": "구독 할당량",
   "dashboard.accounts.purchasedCredits": "구매 크레딧",

@@ -682,6 +682,7 @@
   "dashboard.accounts.emptyAction": "Add accounts",
   "dashboard.accounts.emptyDescription": "Import or authenticate an account to get started.",
   "dashboard.accounts.emptyTitle": "No accounts connected yet",
+  "dashboard.accounts.resizeLabel": "Resize accounts panel",
   "dashboard.accounts.enableWarmupFor": "Enable limit warm-up for {{account}}",
   "dashboard.accounts.subscriptionCredits": "Subscription quota",
   "dashboard.accounts.purchasedCredits": "Purchased credits",

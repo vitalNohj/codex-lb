@@ -10,6 +10,7 @@ import { SpinnerBlock } from "@/components/ui/spinner";
 import { useDialogState } from "@/hooks/use-dialog-state";
 import { useAccountMutations } from "@/features/accounts/hooks/use-accounts";
 import { ResetCreditConfirmDialog } from "@/features/accounts/components/reset-credit-confirm-dialog";
+import { ResizablePanel } from "@/components/resizable-panel";
 import { AccountCards } from "@/features/dashboard/components/account-cards";
 import { AccountList } from "@/features/dashboard/components/account-list";
 import { AccountSummaryLine } from "@/features/dashboard/components/account-summary-line";
@@ -39,7 +40,11 @@ import {
   type ConversationTimeframe,
   type OverviewTimeframe,
 } from "@/features/dashboard/schemas";
-import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences";
+import {
+  ACCOUNT_PANEL_MAX_HEIGHT_PX,
+  ACCOUNT_PANEL_MIN_HEIGHT_PX,
+  useDashboardPreferencesStore,
+} from "@/hooks/use-dashboard-preferences";
 import { useThemeStore } from "@/hooks/use-theme";
 import { isDisabledCapabilityAccount } from "@/lib/product-capabilities";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
@@ -64,6 +69,8 @@ export function DashboardPage() {
   const accountTypeVisibility = useDashboardPreferencesStore((s) => s.accountTypeVisibility);
   const setAccountTypeVisibility = useDashboardPreferencesStore((s) => s.setAccountTypeVisibility);
   const setAccountListSort = useDashboardPreferencesStore((s) => s.setAccountListSort);
+  const accountPanelHeight = useDashboardPreferencesStore((s) => s.accountPanelHeight);
+  const setAccountPanelHeight = useDashboardPreferencesStore((s) => s.setAccountPanelHeight);
   const canWrite = useAuthStore((state) => state.canWrite);
   const initialized = useAuthStore((state) => state.initialized);
   const role = useAuthStore((state) => state.role);
@@ -446,17 +453,25 @@ export function DashboardPage() {
               />
               <AccountViewModeToggle value={accountViewMode} onChange={setAccountViewMode} />
             </div>
-            {accountViewMode === "list" ? (
-              <AccountList
-                accounts={visibleAccounts}
-                readOnly={!canWrite}
-                sort={accountListSort}
-                onSortChange={setAccountListSort}
-                onAction={handleAccountAction}
-              />
-            ) : (
-              <AccountCards accounts={visibleAccounts} readOnly={!canWrite} onAction={handleAccountAction} />
-            )}
+            <ResizablePanel
+              height={accountPanelHeight}
+              onHeightChange={setAccountPanelHeight}
+              minHeight={ACCOUNT_PANEL_MIN_HEIGHT_PX}
+              maxHeight={ACCOUNT_PANEL_MAX_HEIGHT_PX}
+              label={t("dashboard.accounts.resizeLabel")}
+            >
+              {accountViewMode === "list" ? (
+                <AccountList
+                  accounts={visibleAccounts}
+                  readOnly={!canWrite}
+                  sort={accountListSort}
+                  onSortChange={setAccountListSort}
+                  onAction={handleAccountAction}
+                />
+              ) : (
+                <AccountCards accounts={visibleAccounts} readOnly={!canWrite} onAction={handleAccountAction} />
+              )}
+            </ResizablePanel>
           </section>
 
           <section className="space-y-4">
