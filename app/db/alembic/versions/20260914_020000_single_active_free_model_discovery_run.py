@@ -66,9 +66,7 @@ def upgrade() -> None:
     duplicate_ids = [
         row[0]
         for row in bind.execute(
-            sa.text(
-                f"SELECT id FROM {_RUNS_TABLE} WHERE status = 'running' ORDER BY started_at DESC"
-            )
+            sa.text(f"SELECT id FROM {_RUNS_TABLE} WHERE status = 'running' ORDER BY started_at DESC")
         ).fetchall()
     ]
     if len(duplicate_ids) > 1:

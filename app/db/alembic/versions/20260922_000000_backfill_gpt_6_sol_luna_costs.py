@@ -142,9 +142,7 @@ def _lock_rollup_state(bind: Connection) -> None:
     if bind.dialect.name == "postgresql":
         bind.execute(sa.select(state.c.folded_through).where(state.c.id == _ROLLUP_STATE_ID).with_for_update())
         return
-    bind.execute(
-        sa.update(state).where(state.c.id == _ROLLUP_STATE_ID).values(folded_through=state.c.folded_through)
-    )
+    bind.execute(sa.update(state).where(state.c.id == _ROLLUP_STATE_ID).values(folded_through=state.c.folded_through))
 
 
 def _read_watermark(bind: Connection) -> datetime | None:
