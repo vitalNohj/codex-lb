@@ -930,6 +930,36 @@ async def test_relax_commit_durability_emits_set_local_for_postgresql_sessions()
 
 
 @pytest.mark.asyncio
+async def test_sqlite_connect_pragmas_cap_wal_size(tmp_path) -> None:
+    """Every file-backed SQLite connection must carry the WAL tuning set,
+    including journal_size_limit: SQLite reuses rather than truncates the
+    -wal file after a checkpoint, so without the cap a WAL that once grew
+    large (a stale reader pinning the read mark) stays that size forever."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'pragmas.db'}",
+        poolclass=NullPool,
+        connect_args={"timeout": 5.0},
+    )
+    session_module._configure_sqlite_engine(engine.sync_engine, enable_wal=True)
+    try:
+        async with engine.connect() as connection:
+            journal_mode = (await connection.execute(sa_text("PRAGMA journal_mode"))).scalar_one()
+            journal_size_limit = (await connection.execute(sa_text("PRAGMA journal_size_limit"))).scalar_one()
+            synchronous = (await connection.execute(sa_text("PRAGMA synchronous"))).scalar_one()
+            foreign_keys = (await connection.execute(sa_text("PRAGMA foreign_keys"))).scalar_one()
+            busy_timeout = (await connection.execute(sa_text("PRAGMA busy_timeout"))).scalar_one()
+    finally:
+        await engine.dispose()
+
+    assert journal_mode == "wal"
+    assert journal_size_limit == session_module._SQLITE_JOURNAL_SIZE_LIMIT_BYTES == 64 * 1024 * 1024
+    # synchronous=NORMAL is reported as 1.
+    assert synchronous == 1
+    assert foreign_keys == 1
+    assert busy_timeout == session_module._SQLITE_BUSY_TIMEOUT_MS
+
+
+@pytest.mark.asyncio
 async def test_sqlite_long_write_watchdog_reports_the_holder(tmp_path, monkeypatch, caplog) -> None:
     """Issue #1682: a write transaction outliving the busy timeout is the
     holder that makes every other writer surface 'database is locked'. The
