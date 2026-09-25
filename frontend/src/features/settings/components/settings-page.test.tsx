@@ -125,6 +125,10 @@ vi.mock("@/features/settings/components/sidecar-integrations", () => ({
   SidecarIntegrationsCard: () => <div>Sidecar Integrations</div>,
 }));
 
+vi.mock("@/features/settings/components/free-model-discovery-panel", () => ({
+  FreeModelDiscoveryPanel: () => <div>Free Model Discovery</div>,
+}));
+
 describe("SettingsPage", () => {
   const settings = createDashboardSettings();
   const upstreamAdmin = { endpoints: [], pools: [], bindings: [], routingEnabled: false, defaultPoolId: null };
@@ -196,6 +200,25 @@ describe("SettingsPage", () => {
     const user = userEvent.setup({ delay: null });
     await user.click(screen.getByRole("button", { name: "Show advanced settings" }));
   }
+
+  it("offers section navigation and puts integrations first", () => {
+    renderSettings();
+
+    const navigation = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(navigation.querySelector('a[href="#external-integrations-group"]')).toBeInTheDocument();
+    expect(navigation.querySelector('a[href="#appearance-settings"]')).toBeInTheDocument();
+    expect(navigation.querySelector('a[href="#api-keys-settings"]')).toBeInTheDocument();
+    expect(screen.getByText("Sidecar Integrations").compareDocumentPosition(screen.getByText("Appearance Settings")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("opens advanced sections from the section navigation in one interaction", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Advanced settings", exact: true }));
+
+    expect(screen.getByText("Routing Settings")).toBeInTheDocument();
+  });
 
   it("keeps advanced sections collapsed and unmounted by default", () => {
     renderSettings();

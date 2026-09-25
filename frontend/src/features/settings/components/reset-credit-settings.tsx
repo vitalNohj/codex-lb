@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { Switch } from "@/components/ui/switch";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
+import { SettingsRow, SettingsRowGroup, SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
 export type ResetCreditSettingsProps = {
   settings: DashboardSettings;
@@ -15,20 +16,13 @@ export function ResetCreditSettings({ settings, busy, onSave }: ResetCreditSetti
   const save = (patch: Partial<SettingsUpdateRequest>) => void onSave(patch);
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <RotateCcw className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.resetCredits.title")}</h3>
-              <p className="text-xs text-muted-foreground">{t("settings.resetCredits.description")}</p>
-            </div>
-          </div>
-        </div>
-
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={RotateCcw}
+        title={t("settings.resetCredits.title")}
+        description={t("settings.resetCredits.description")}
+      />
+      <SettingsRowGroup>
         <ResetCreditSwitchRow
           label={t("settings.resetCredits.badges.label")}
           description={t("settings.resetCredits.badges.description")}
@@ -53,8 +47,8 @@ export function ResetCreditSettings({ settings, busy, onSave }: ResetCreditSetti
           disabled={busy}
           onCheckedChange={(checked) => save({ autoRedeemResetCreditsBeforeExpiry: checked })}
         />
-      </div>
-    </section>
+      </SettingsRowGroup>
+    </SettingsSection>
   );
 }
 
@@ -76,17 +70,13 @@ function ResetCreditSwitchRow({
   onCheckedChange,
 }: ResetCreditSwitchRowProps) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
+    <SettingsRow label={label} description={description}>
       <Switch
         aria-label={ariaLabel}
         checked={checked}
         disabled={disabled}
         onCheckedChange={onCheckedChange}
       />
-    </div>
+    </SettingsRow>
   );
 }
