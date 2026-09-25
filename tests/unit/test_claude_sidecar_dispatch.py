@@ -325,6 +325,39 @@ def test_build_sidecar_chat_payload_raises_cursor_max_tokens_to_model_floor() ->
     assert payload.body["max_tokens"] == 32_768
 
 
+@pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("minimal", [1, 16])
+def test_build_sidecar_chat_payload_keeps_minimal_cache_warm_cap(field: str, minimal: int) -> None:
+    # Prompt-cache keep-warm replays (pi's warmer, pi-keepwarm) send a 1-token
+    # cap, and Responses-style callers send their 16-token minimum. Raising it to
+    # the 32768 floor would turn every cache refresh into a full answer.
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-opus-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            field: minimal,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-opus-5-5", _config())
+
+    assert payload.body[field] == minimal
+
+
+def test_build_sidecar_chat_payload_raises_cap_just_above_minimal_to_floor() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-opus-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 17,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-opus-5-5", _config())
+
+    assert payload.body["max_tokens"] == 32_768
+
+
 def test_build_sidecar_chat_payload_forwards_opus_5_5_wire_model() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
