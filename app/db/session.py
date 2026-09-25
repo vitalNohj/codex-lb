@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 _SQLITE_BUSY_TIMEOUT_MS = 30_000
 _SQLITE_BUSY_TIMEOUT_SECONDS = _SQLITE_BUSY_TIMEOUT_MS / 1000
+# SQLite reuses rather than truncates the -wal file after a checkpoint, so a
+# WAL that once grew large (a stale reader pinning the read mark) keeps its
+# full size forever. journal_size_limit truncates it back to this cap after
+# the next checkpoint that resets it.
+_SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
 # A write transaction holding SQLite's single writer slot past the busy
 # timeout is exactly the holder that makes every other writer surface
 # "database is locked" (issue #1682); the watchdog below reports it with the
@@ -174,6 +179,7 @@ def _configure_sqlite_engine(engine: Engine, *, enable_wal: bool) -> None:
         try:
             if enable_wal:
                 cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute(f"PRAGMA journal_size_limit={_SQLITE_JOURNAL_SIZE_LIMIT_BYTES}")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
