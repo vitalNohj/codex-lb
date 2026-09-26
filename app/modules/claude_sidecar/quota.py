@@ -64,11 +64,26 @@ class SidecarAuthQuota:
 
 
 @dataclass(frozen=True, slots=True)
+class SidecarRateLimitHold:
+    """A pause this poller owns for one CLIProxyAPI auth file.
+
+    ``released`` is set when an operator resumes that auth before ``until``.
+    The next poll must not disable the auth again while the exhausted window
+    still ends at that same instant.
+    """
+
+    name: str
+    until: datetime
+    released: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SidecarQuotaSnapshot:
     checked_at: datetime
     status: SidecarQuotaStatus
     message: str | None
     accounts: tuple[SidecarAuthQuota, ...] = field(default_factory=tuple)
+    rate_limit_holds: tuple[SidecarRateLimitHold, ...] = ()
 
 
 def parse_auth_files(
@@ -398,6 +413,14 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
             }
             for account in snapshot.accounts
         ],
+        "rate_limit_holds": [
+            {
+                "name": hold.name,
+                "until": hold.until.isoformat(),
+                "released": hold.released,
+            }
+            for hold in snapshot.rate_limit_holds
+        ],
     }
     return json.dumps(payload, separators=(",", ":"))
 
@@ -474,4 +497,26 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
         status=status,  # type: ignore[arg-type]
         message=message,
         accounts=tuple(accounts),
+        rate_limit_holds=_rate_limit_holds_from_json(parsed.get("rate_limit_holds")),
     )
+
+
+def _rate_limit_holds_from_json(raw: JsonValue) -> tuple[SidecarRateLimitHold, ...]:
+    if not isinstance(raw, list):
+        return ()
+    holds: list[SidecarRateLimitHold] = []
+    for entry in raw:
+        if not is_json_mapping(entry):
+            continue
+        name = _str(entry.get("name"))
+        until = _parse_datetime(entry.get("until"))
+        if name is None or until is None:
+            continue
+        holds.append(
+            SidecarRateLimitHold(
+                name=name,
+                until=until,
+                released=entry.get("released") is True,
+            )
+        )
+    return tuple(holds)

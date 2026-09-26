@@ -22,6 +22,7 @@ from app.modules.claude_sidecar.quota import (
     snapshot_from_json,
     snapshot_to_json,
 )
+from app.modules.claude_sidecar.rate_limit_hold import holds_after_operator_change
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
     ClaudeSidecarModelSummary,
@@ -338,10 +339,18 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
+        account = next((auth for auth in snapshot.accounts if auth.name == name), None)
         updated = [replace(auth, disabled=paused) if auth.name == name else auth for auth in snapshot.accounts]
-        if updated == list(snapshot.accounts):
+        holds = holds_after_operator_change(
+            snapshot.rate_limit_holds,
+            name,
+            paused,
+            account,
+            datetime.now(timezone.utc),
+        )
+        if updated == list(snapshot.accounts) and holds == snapshot.rate_limit_holds:
             return
-        patched = replace(snapshot, accounts=tuple(updated))
+        patched = replace(snapshot, accounts=tuple(updated), rate_limit_holds=holds)
         await self._settings_repository.update_operational(
             claude_sidecar_quota_state_json=snapshot_to_json(patched),
         )
