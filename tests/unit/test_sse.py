@@ -9,9 +9,11 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from app.core import shutdown as shutdown_state
 from app.core.openai.parsing import _LIFECYCLE_EVENT_TYPES, classify_event_type, parse_sse_event
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
+    SHUTDOWN_SERVICE_UNAVAILABLE_FRAME,
     SSE_DONE,
     SSE_KEEPALIVE_FRAME,
     SseDataDecoder,
@@ -158,6 +160,54 @@ async def test_inject_sse_keepalives_can_emit_codex_event_frame():
     assert out[-1] == "a\n\n"
     assert CODEX_KEEPALIVE_FRAME in out
     assert out.count(CODEX_KEEPALIVE_FRAME) >= 2
+
+
+@pytest.mark.asyncio
+async def test_inject_sse_keepalives_shutdown_handoff_ends_with_retryable_error():
+    shutdown_state.reset()
+    shutdown_state.commit_shutdown(0.1)
+    source_closed = asyncio.Event()
+
+    async def source() -> AsyncIterator[str]:
+        try:
+            await asyncio.Event().wait()
+            yield "never\n\n"
+        finally:
+            source_closed.set()
+
+    try:
+        out = [
+            chunk
+            async for chunk in inject_sse_keepalives(
+                source(),
+                30,
+                shutdown_handoff_frame=SHUTDOWN_SERVICE_UNAVAILABLE_FRAME,
+            )
+        ]
+    finally:
+        shutdown_state.reset()
+
+    assert out == [SHUTDOWN_SERVICE_UNAVAILABLE_FRAME]
+    assert "503 service unavailable" in SHUTDOWN_SERVICE_UNAVAILABLE_FRAME
+    assert source_closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_inject_sse_keepalives_skips_shutdown_handoff_before_commit():
+    shutdown_state.reset()
+    try:
+        out = [
+            chunk
+            async for chunk in inject_sse_keepalives(
+                _agen(["a\n\n", "b\n\n"]),
+                5.0,
+                shutdown_handoff_frame=SHUTDOWN_SERVICE_UNAVAILABLE_FRAME,
+            )
+        ]
+    finally:
+        shutdown_state.reset()
+
+    assert out == ["a\n\n", "b\n\n"]
 
 
 @pytest.mark.asyncio

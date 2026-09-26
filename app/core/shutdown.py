@@ -199,6 +199,25 @@ def is_shutdown_committed() -> bool:
     return _shutdown_committed
 
 
+# Half a second is enough to flush one SSE error and end the response while
+# the request task can still write. The client's retry then starts as this
+# process is leaving, rather than at the beginning of the drain.
+STREAM_SHUTDOWN_HANDOFF_LEAD_SECONDS = 0.5
+
+
+async def wait_for_shutdown_stream_handoff() -> None:
+    """Wait until a committed drain is within the handoff lead of expiring."""
+
+    while True:
+        if is_shutdown_committed():
+            remaining = remaining_drain_timeout_seconds()
+            if remaining is None or remaining <= STREAM_SHUTDOWN_HANDOFF_LEAD_SECONDS:
+                return
+            await asyncio.sleep(min(remaining - STREAM_SHUTDOWN_HANDOFF_LEAD_SECONDS, 0.25))
+            continue
+        await asyncio.sleep(0.5)
+
+
 def stop_drain() -> bool:
     """Stop a reversible operator drain unless process shutdown has committed."""
 
