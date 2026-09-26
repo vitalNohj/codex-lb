@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import time
+import weakref
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from pathlib import Path
@@ -165,10 +166,61 @@ def _create_postgres_async_engine(url: str, *, role: _PostgresPooledEngineRole) 
     )
 
 
+class _CursorClosingSQLiteConnection(sqlite3.Connection):
+    """A sqlite3 connection whose ``close()`` first finalizes its open cursors.
+
+    ``sqlite3.Connection.close()`` does not finalize statements still held by
+    live cursors. A write statement that was stepped but never run to
+    completion, such as ``UPDATE ... RETURNING`` whose rows were not fetched,
+    keeps its write transaction, and with it SQLite's single writer slot,
+    until the cursor object is garbage-collected. The SQLAlchemy aiosqlite
+    adapter leaves exactly such a cursor behind when a task is cancelled
+    between ``execute`` and ``fetchall``: the connection is closed, but the
+    cursor sits in a reference cycle through the ``CancelledError``
+    traceback. Every other writer then fails with "database is locked"
+    after the busy timeout, until a cyclic GC pass happens to collect it.
+
+    Closing the cursors here releases the lock when the connection closes.
+    The SQLAlchemy adapter creates its cursors through ``cursor()``. The
+    ``execute`` shortcuts (used by aiosqlite's own ``Connection.execute``)
+    would create theirs in C, bypassing ``cursor()``, so they are routed
+    through it too.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._open_cursors: weakref.WeakSet[sqlite3.Cursor] = weakref.WeakSet()
+
+    def cursor(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        cursor = super().cursor(*args, **kwargs)
+        self._open_cursors.add(cursor)
+        return cursor
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        return self.cursor().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        return self.cursor().executemany(sql, parameters)
+
+    def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
+        return self.cursor().executescript(sql_script)
+
+    def close(self) -> None:
+        for cursor in list(self._open_cursors):
+            try:
+                cursor.close()
+            except sqlite3.Error:
+                pass
+        super().close()
+
+
 def _sqlite_file_async_engine_kwargs() -> dict[str, object]:
     return {
         "poolclass": NullPool,
-        "connect_args": {"timeout": _SQLITE_BUSY_TIMEOUT_SECONDS},
+        "connect_args": {
+            "timeout": _SQLITE_BUSY_TIMEOUT_SECONDS,
+            "factory": _CursorClosingSQLiteConnection,
+        },
     }
 
 

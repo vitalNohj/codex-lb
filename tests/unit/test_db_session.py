@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import subprocess
@@ -289,7 +290,10 @@ def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatc
     kwargs = session_module._sqlite_file_async_engine_kwargs()
 
     assert kwargs["poolclass"] is NullPool
-    assert kwargs["connect_args"] == {"timeout": 30.0}
+    assert kwargs["connect_args"] == {
+        "timeout": 30.0,
+        "factory": session_module._CursorClosingSQLiteConnection,
+    }
     assert "pool_size" not in kwargs
     assert "max_overflow" not in kwargs
     assert "pool_timeout" not in kwargs
@@ -1740,3 +1744,117 @@ async def test_close_db_bounds_the_wedged_teardown_drain(monkeypatch, caplog) ->
         session_module._wedged_teardown_cleanup_tasks.discard(stuck)
         never.set()
         await stuck
+
+
+def _sqlite_write_slot_is_free(db_path: Path) -> bool:
+    import sqlite3
+
+    probe = sqlite3.connect(db_path, timeout=0.2)
+    try:
+        probe.execute("UPDATE counter SET value = value + 1")
+        probe.commit()
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        probe.close()
+
+
+def test_closing_the_connection_releases_an_unfinished_returning_write(tmp_path) -> None:
+    """A stepped-but-unfetched ``UPDATE ... RETURNING`` must not outlive close().
+
+    The plain sqlite3 connection keeps the write lock until the cursor is
+    garbage-collected; the engine's connection factory closes it instead.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "unfetched-returning.db"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("CREATE TABLE counter (value INTEGER)")
+    setup.execute("INSERT INTO counter VALUES (0)")
+    setup.commit()
+    setup.close()
+
+    connect_args = cast(dict[str, Any], session_module._sqlite_file_async_engine_kwargs()["connect_args"])
+    connection = sqlite3.connect(db_path, **connect_args)
+    cursor = connection.cursor()
+    cursor.execute("UPDATE counter SET value = value + 1 RETURNING value")
+    connection.close()
+
+    assert _sqlite_write_slot_is_free(db_path)
+    del cursor
+
+
+def test_closing_the_connection_releases_an_unfinished_returning_write_made_by_execute(tmp_path) -> None:
+    """The ``execute`` shortcut's cursor is closed on close() like one from ``cursor()``.
+
+    aiosqlite's own ``Connection.execute`` uses this shortcut, which the C
+    implementation serves without calling ``cursor()``.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "unfetched-returning-execute.db"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("CREATE TABLE counter (value INTEGER)")
+    setup.execute("INSERT INTO counter VALUES (0)")
+    setup.commit()
+    setup.close()
+
+    connect_args = cast(dict[str, Any], session_module._sqlite_file_async_engine_kwargs()["connect_args"])
+    connection = sqlite3.connect(db_path, **connect_args)
+    cursor = connection.execute("UPDATE counter SET value = value + ? RETURNING value", (1,))
+    connection.close()
+
+    assert _sqlite_write_slot_is_free(db_path)
+    del cursor
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_returning_write_mid_statement_does_not_hold_the_write_lock(tmp_path) -> None:
+    """Cancelling a task inside ``UPDATE ... RETURNING`` must release SQLite's writer slot.
+
+    The aiosqlite adapter can be cancelled between ``execute`` and
+    ``fetchall``, leaving an unfinished statement on a cursor held only by the
+    CancelledError's reference cycle. Without closing that cursor on
+    connection close, the write lock survives teardown and every other writer
+    fails with "database is locked" until a cyclic GC pass.
+    """
+    import random
+    import sqlite3
+
+    db_path = tmp_path / "cancelled-returning.db"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("CREATE TABLE counter (value INTEGER)")
+    setup.execute("INSERT INTO counter VALUES (0)")
+    setup.commit()
+    setup.close()
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", **session_module._sqlite_file_async_engine_kwargs())
+    session_module._configure_sqlite_engine(engine.sync_engine, enable_wal=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def returning_write() -> None:
+        session = session_factory()
+        try:
+            await session.execute(sa_text("UPDATE counter SET value = value + 1 RETURNING value"))
+            await session.commit()
+        finally:
+            await session_module.close_session(session)
+
+    # The window between the statement step and its fetch is a few hundred
+    # microseconds; without the fix a few dozen random cancellations hit it.
+    rng = random.Random(1682)
+    try:
+        for attempt in range(200):
+            task = asyncio.create_task(returning_write())
+            await asyncio.sleep(rng.uniform(0, 0.004))
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0.01)
+            assert _sqlite_write_slot_is_free(db_path), f"write lock outlived a cancelled writer (attempt {attempt})"
+    finally:
+        await engine.dispose()

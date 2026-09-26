@@ -24,6 +24,7 @@ from starlette.types import Receive
 
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.types import JsonValue
+from app.core.utils.cancellation import complete_despite_cancellation
 from app.core.utils.client_disconnect import await_unless_client_disconnects
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
@@ -116,6 +117,11 @@ class OpenedSidecarStream:
     exit_stack: AsyncExitStack
     retry_used: bool
 
+    async def aclose(self) -> None:
+        """Close the upstream response. For a stream never handed to a relay."""
+
+        await self.exit_stack.aclose()
+
 
 async def open_sidecar_stream(
     open_stream: SidecarStreamOpener,
@@ -160,12 +166,8 @@ async def open_sidecar_stream_for_client(
     return await await_unless_client_disconnects(
         receive,
         open_sidecar_stream(open_stream, provider=provider, model=model),
-        discard=_close_opened_stream,
+        discard=OpenedSidecarStream.aclose,
     )
-
-
-async def _close_opened_stream(opened: OpenedSidecarStream) -> None:
-    await opened.exit_stack.aclose()
 
 
 def client_disconnected_response() -> Response:
@@ -209,6 +211,21 @@ async def relay_sidecar_stream(
     async with open_stream() as chunks:
         async for chunk in chunks:
             yield chunk
+
+
+async def abandon_unstarted_relay(opened: OpenedSidecarStream, settle: Callable[[], Awaitable[None]]) -> None:
+    """Clean up after a relay of ``opened`` that never started.
+
+    The client left before the response body ran, so the relay's ``finally``
+    never runs: close the upstream response it would have closed, then
+    ``settle`` (release the reservation and log). The settlement runs even if
+    the close fails.
+    """
+
+    try:
+        await complete_despite_cancellation(opened.aclose())
+    finally:
+        await complete_despite_cancellation(settle())
 
 
 def _provider_retry_status(exc: Exception, *, attempt: int, delivered: bool) -> int | None:

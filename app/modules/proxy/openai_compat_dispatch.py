@@ -32,7 +32,7 @@ from app.core.utils.client_disconnect import ClientDisconnected
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
-from app.core.utils.stream_close import ClosingStreamingResponse
+from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -80,6 +80,7 @@ from app.modules.proxy.external_pricing_logging import (
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
 from app.modules.proxy.sidecar_upstream_errors import (
+    abandon_unstarted_relay,
     call_with_sidecar_provider_retry,
     client_disconnected_response,
     client_facing_sidecar_error,
@@ -255,17 +256,36 @@ async def proxy_chat_to_openai_compat(
                 sidecar_payload=sidecar_payload,
                 started_at=requested_at,
             )
-        stream: AsyncIterator[bytes] = _openai_compat_stream_iterator(
-            relay_sidecar_stream(opened, open_stream, provider=endpoint_name, model=effective_model),
-            api_key=api_key,
-            reservation=reservation,
-            model=effective_model,
-            attribution=attribution,
-            started_at=requested_at,
-            client=client,
-            reasoning_effort=sidecar_payload.effective_reasoning_effort,
-            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        settling = SettlingStream(
+            _openai_compat_stream_iterator(
+                relay_sidecar_stream(opened, open_stream, provider=endpoint_name, model=effective_model),
+                api_key=api_key,
+                reservation=reservation,
+                model=effective_model,
+                attribution=attribution,
+                started_at=requested_at,
+                client=client,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            ),
+            abandon=partial(
+                abandon_unstarted_relay,
+                opened,
+                partial(
+                    _abandon_openai_compat_request,
+                    reservation,
+                    api_key=api_key,
+                    model=effective_model,
+                    attribution=attribution,
+                    started_at=requested_at,
+                    client=client,
+                    reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                    requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+                    error_message="client disconnected before the response started",
+                ),
+            ),
         )
+        stream: AsyncIterator[bytes] = settling
         if deepseek_scope is not None:
             stream = deepseek_observe_stream(deepseek_scope, stream)
         if cursor_compat:
@@ -281,6 +301,7 @@ async def proxy_chat_to_openai_compat(
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
+            settling=settling,
         )
 
     try:
@@ -827,8 +848,9 @@ async def _abandon_openai_compat_request(
     client: OpenAICompatSidecarClient,
     reasoning_effort: str | None,
     requested_reasoning_effort: str | None,
+    error_message: str = "client disconnected before the upstream response started",
 ) -> None:
-    """Release and log a request whose client left before the upstream answered."""
+    """Release and log a request whose client left before its response started."""
 
     await _release_openai_compat_reservation(reservation, api_key=api_key)
     await _log_openai_compat_request(
@@ -838,7 +860,7 @@ async def _abandon_openai_compat_request(
         started_at=started_at,
         status=CANCELLED_STATUS,
         error_code=CLIENT_DISCONNECT_ERROR_CODE,
-        error_message="client disconnected before the upstream response started",
+        error_message=error_message,
         reasoning_effort=reasoning_effort,
         requested_reasoning_effort=requested_reasoning_effort,
         client=client,

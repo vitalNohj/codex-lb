@@ -30,6 +30,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Coroutine, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import cast
 
 from fastapi import Request, Response
@@ -51,10 +52,11 @@ from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
-from app.core.utils.stream_close import ClosingStreamingResponse
+from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -380,19 +382,29 @@ async def proxy_chat_to_opencode_go(
 
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
-        stream: AsyncIterator[bytes] = _opencode_go_stream_iterator(
-            sidecar_payload.body,
-            api_key=api_key,
-            reservation=reservation,
-            model=effective_model,
-            started_at=requested_at,
-            client=client,
-            client_headers=client_headers,
+        settling = SettlingStream(
+            _opencode_go_stream_iterator(
+                sidecar_payload.body,
+                api_key=api_key,
+                reservation=reservation,
+                model=effective_model,
+                started_at=requested_at,
+                client=client,
+                client_headers=client_headers,
+            ),
+            abandon=partial(
+                _abandon_unstarted_opencode_go_stream,
+                reservation,
+                api_key=api_key,
+                model=effective_model,
+                started_at=requested_at,
+            ),
         )
         return ClosingStreamingResponse(
-            inject_sse_keepalives(stream, sse_keepalive_interval_seconds),
+            inject_sse_keepalives(settling, sse_keepalive_interval_seconds),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
+            settling=settling,
         )
 
     try:
@@ -552,21 +564,32 @@ async def proxy_responses_to_opencode_go(
 
     if payload.stream:
         ensure_stream_usage_requested(chat_body)
+        settling = SettlingStream(
+            _opencode_go_responses_stream_iterator(
+                chat_body,
+                api_key=api_key,
+                reservation=reservation,
+                model=effective_model,
+                started_at=requested_at,
+                client=client,
+                client_headers=client_headers,
+            ),
+            abandon=partial(
+                _abandon_unstarted_opencode_go_stream,
+                reservation,
+                api_key=api_key,
+                model=effective_model,
+                started_at=requested_at,
+            ),
+        )
         return ClosingStreamingResponse(
             inject_sse_keepalives(
-                _opencode_go_responses_stream_iterator(
-                    chat_body,
-                    api_key=api_key,
-                    reservation=reservation,
-                    model=effective_model,
-                    started_at=requested_at,
-                    client=client,
-                    client_headers=client_headers,
-                ),
+                settling,
                 sse_keepalive_interval_seconds,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
+            settling=settling,
         )
 
     try:
@@ -1036,6 +1059,29 @@ async def _opencode_go_request_cost(
         model=model,
         usage=usage_tokens_from_sidecar(usage),
         billed_cost_usd=billed_cost_usd if billed_cost_usd is not None else usage.cost_usd if usage else None,
+    )
+
+
+async def _abandon_unstarted_opencode_go_stream(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+) -> None:
+    """Release and log a streamed request whose client left before its body started.
+
+    The upstream is opened only once the body runs, so nothing was sent.
+    """
+
+    await _release_opencode_go_reservation(reservation, api_key=api_key)
+    await _log_opencode_go_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status=CANCELLED_STATUS,
+        error_code=CLIENT_DISCONNECT_ERROR_CODE,
+        error_message="client disconnected before the response started",
     )
 
 
