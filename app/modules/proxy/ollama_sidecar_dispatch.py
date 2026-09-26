@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import cast
 
 from fastapi import Request, Response
@@ -21,11 +22,12 @@ from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
+from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import inject_sse_keepalives
-from app.core.utils.stream_close import ClosingStreamingResponse
+from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -160,16 +162,28 @@ async def proxy_chat_to_ollama(
     requested_at = time.monotonic()
     if payload.stream:
         _ensure_ollama_stream_usage_requested(sidecar_payload.body)
-        stream: AsyncIterator[bytes] = _ollama_stream_iterator(
-            sidecar_payload.body,
-            api_key=api_key,
-            reservation=reservation,
-            model=effective_model,
-            started_at=requested_at,
-            client=client,
-            reasoning_effort=sidecar_payload.effective_reasoning_effort,
-            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        settling = SettlingStream(
+            _ollama_stream_iterator(
+                sidecar_payload.body,
+                api_key=api_key,
+                reservation=reservation,
+                model=effective_model,
+                started_at=requested_at,
+                client=client,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            ),
+            abandon=partial(
+                _abandon_unstarted_ollama_stream,
+                reservation,
+                api_key=api_key,
+                model=effective_model,
+                started_at=requested_at,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            ),
         )
+        stream: AsyncIterator[bytes] = settling
         if cursor_compat:
             stream = stream_bytes_with_cursor_usage_fallback(
                 stream,
@@ -180,6 +194,7 @@ async def proxy_chat_to_ollama(
             inject_sse_keepalives(stream, sse_keepalive_interval_seconds),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
+            settling=settling,
         )
 
     try:
@@ -707,6 +722,33 @@ def _sse(payload: JsonObject) -> bytes:
 def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
     data = json.dumps(error, ensure_ascii=True, separators=(",", ":"))
     return f"data: {data}\n\n".encode("utf-8")
+
+
+async def _abandon_unstarted_ollama_stream(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> None:
+    """Release and log a streamed request whose client left before its body started.
+
+    The upstream is opened only once the body runs, so nothing was sent.
+    """
+
+    await _release_ollama_reservation(reservation, api_key=api_key)
+    await _log_ollama_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status=CANCELLED_STATUS,
+        error_code=CLIENT_DISCONNECT_ERROR_CODE,
+        error_message="client disconnected before the response started",
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
 
 
 async def _log_ollama_request(
