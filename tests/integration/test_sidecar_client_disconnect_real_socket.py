@@ -253,12 +253,17 @@ async def test_leaving_during_the_header_wait_cancels_the_upstream_and_releases(
 async def test_leaving_before_the_response_starts_settles_without_waiting_for_gc(
     live_server: str, upstream: _HeldUpstream, monkeypatch, provider: str
 ) -> None:
+    """The client leaves while the response start is being sent, so the body never starts.
+
+    Python skips the ``finally`` of an async generator closed before it
+    starts, so nothing in the body can settle. The response must do it.
+    """
+
     response_built = threading.Event()
     client_gone = threading.Event()
+    start_blocked = threading.Event()
 
     class _StartsAfterTheClientLeft(ClosingStreamingResponse):
-        """Runs only once the client is gone, so the body is never started by a read."""
-
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             response_built.set()
@@ -266,7 +271,16 @@ async def test_leaving_before_the_response_starts_settles_without_waiting_for_gc
         async def __call__(self, scope, receive, send) -> None:
             while not client_gone.is_set():
                 await asyncio.sleep(0.02)
-            await super().__call__(scope, receive, send)
+
+            async def blocked_start_send(message):
+                # A slow socket: the response start is still being written
+                # when the disconnect is seen, which cancels the send.
+                if message["type"] == "http.response.start":
+                    start_blocked.set()
+                    await asyncio.sleep(30)
+                await send(message)
+
+            await super().__call__(scope, receive, blocked_start_send)
 
     dispatch = importlib.import_module(_DISPATCH_MODULES[provider])
     monkeypatch.setattr(dispatch, "ClosingStreamingResponse", _StartsAfterTheClientLeft)
@@ -280,10 +294,16 @@ async def test_leaving_before_the_response_starts_settles_without_waiting_for_gc
     writer.transport.abort()
     client_gone.set()
 
+    await _eventually(start_blocked.is_set)
     await _eventually(lambda: _reservation_is("released"))
     await _eventually(_log_rows)
-    [(status, _)] = await _log_rows()
-    assert status != "success"
+    assert await _log_rows() == [("cancelled", "client_disconnected")]
+    if provider in _OPENS_BEFORE_RESPONDING:
+        # The upstream response opened for the body is closed, not left for GC.
+        await asyncio.wait_for(upstream.request_cancelled.wait(), timeout=5)
+    else:
+        # The body opens the upstream, and it never ran.
+        assert not upstream.request_arrived.is_set()
 
 
 async def _reservation_is(status: str) -> bool:
