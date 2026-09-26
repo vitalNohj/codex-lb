@@ -2975,12 +2975,7 @@ The list order MUST be stable: `lastRequest DESC`, then normalized
 
 ### Requirement: Dashboard conversation activity uses the list eligibility scope
 
-The dashboard overview conversation metrics and per-bucket conversation trend
-MUST use the same eligible `request_logs` row scope as the conversation list:
-non-empty conversation IDs, request kinds other than `warmup` and
-`limit_warmup`, and `deleted_at IS NULL`. This scope MUST apply to both the
-distinct conversation count and conversation request count in the overview
-summary and to each conversation trend bucket.
+The dashboard overview conversation metrics and per-bucket conversation trend MUST use the same eligible `request_logs` row scope as the conversation list: non-empty conversation IDs, request kinds other than `warmup` and `limit_warmup`, and `deleted_at IS NULL`. This scope MUST apply to both the distinct conversation count and conversation request count in the overview summary and to each conversation trend bucket.
 
 #### Scenario: Soft-deleted-only conversations are absent from dashboard activity
 
@@ -2995,22 +2990,13 @@ summary and to each conversation trend bucket.
 
 ### Requirement: Conversation listing total is served from a short-TTL cache
 
+The conversation listing total MUST be served from the same short-TTL per-filter-signature cache as the request-log listing total (fixed 30 s TTL application constant; bounded LRU-ish eviction; per-instance). The cache signature MUST include every dimension that changes the grouped count: `search` and the semantic window identity MUST be included, using `("timeframe", timeframe)` for server-authoritative timeframe requests and `("since", effective_since)` for legacy `since` requests. `limit` and `offset` MUST be excluded from the signature because the total is page-independent. Two requests with different search text or window identities MUST NOT reuse one another's cached total.
+
 The grouped `total` returned by `GET /api/conversations` is display-only
 pagination metadata that tolerates short staleness, and the dashboard polls the
 endpoint every 30 seconds. Recomputing the grouped count over the full eligible
 `request_logs` history on every poll risks the same dashboard-induced
 database contention this repository has previously optimized away.
-
-The conversation listing total MUST be served from the same short-TTL
-per-filter-signature cache as the request-log listing total (fixed 30 s TTL
-application constant; bounded LRU-ish eviction; per-instance). The cache
-signature MUST include every dimension that changes the grouped count: `search`
-and the semantic window identity MUST be included, using
-`("timeframe", timeframe)` for server-authoritative timeframe requests and
-`("since", effective_since)` for legacy `since` requests. `limit` and `offset`
-MUST be excluded from the signature because the total is page-independent. Two
-requests with different search text or window identities MUST NOT reuse one
-another's cached total.
 
 #### Scenario: Repeated polls reuse the cached conversation total
 

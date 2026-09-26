@@ -67,14 +67,7 @@ When `upstream_stream_transport` is `"auto"` and the serialized request payload 
 
 ### Requirement: Clean upstream close before any response event fails fast
 
-When the HTTP Responses bridge observes an upstream WebSocket close with
-`close_code = 1000` before any `response.*` event has been surfaced for the
-pending request, the proxy MUST preserve its existing pre-visible replay
-guards. If the request has already used exactly one eligible pre-visible
-replay and the replacement upstream WebSocket also closes cleanly before any
-response event, the proxy MAY perform exactly one additional replay. The
-additional replay MUST be hard-capped at one per request, and the configured
-maximum MUST NOT raise that cap.
+When the HTTP Responses bridge observes an upstream WebSocket close with `close_code = 1000` before any `response.*` event has been surfaced for the pending request, the proxy MUST preserve its existing pre-visible replay guards. If the request has already used exactly one eligible pre-visible replay and the replacement upstream WebSocket also closes cleanly before any response event, the proxy MAY perform exactly one additional replay. The additional replay MUST be hard-capped at one per request, and the configured maximum MUST NOT raise that cap.
 
 The proxy MUST NOT replay after downstream-visible output, after a terminal
 response event, or when continuity-sensitive request state makes replay unsafe.
@@ -333,22 +326,7 @@ The proxy MUST configure direct and routed upstream Responses WebSocket transpor
 - **AND** the submitter cancellation is preserved after settlement completes
 
 ### Requirement: Upstream websocket drops penalize affected accounts
-When an upstream websocket closes while one or more streamed response requests
-are pending and have not reached a terminal event, the proxy MUST record a
-transient upstream error for the account before signaling failure for those
-pending requests, except when the close carries a classified process-wide
-network failure or upstream WebSocket liveness timeout, is a clean close
-(`close_code = 1000`) before any `response.*` event, or carries the classified
-per-socket `upstream_keepalive_timeout` transport error. Clean pre-response
-closes, keepalive timeouts, process-wide network failures, and liveness
-timeouts MUST remain account-neutral and use their classified error and bounded
-retry or retry-circuit handling. For other closes, the proxy MUST surface
-`stream_incomplete` to affected pending requests except when a direct Responses
-WebSocket request has already successfully emitted a finite integer
-`sequence_number`. For that sequenced direct-WebSocket case, the proxy MUST
-record the request outcome as `stream_incomplete` without emitting a synthetic
-terminal frame under the active response id, then MUST close the downstream
-WebSocket with code 1011.
+When an upstream websocket closes while one or more streamed response requests are pending and have not reached a terminal event, the proxy MUST record a transient upstream error for the account before signaling failure for those pending requests, except when the close carries a classified process-wide network failure or upstream WebSocket liveness timeout, is a clean close (`close_code = 1000`) before any `response.*` event, or carries the classified per-socket `upstream_keepalive_timeout` transport error. Clean pre-response closes, keepalive timeouts, process-wide network failures, and liveness timeouts MUST remain account-neutral and use their classified error and bounded retry or retry-circuit handling. For other closes, the proxy MUST surface `stream_incomplete` to affected pending requests except when a direct Responses WebSocket request has already successfully emitted a finite integer `sequence_number`. For that sequenced direct-WebSocket case, the proxy MUST record the request outcome as `stream_incomplete` without emitting a synthetic terminal frame under the active response id, then MUST close the downstream WebSocket with code 1011.
 
 #### Scenario: websocket closes before pending responses complete
 
@@ -3252,6 +3230,39 @@ Before HTTP output is committed, an upstream `usage_limit_reached` MUST surface 
 
 Regression coverage: `tests/integration/test_responses_quota_propagation.py`, `tests/unit/test_http_bridge_terminal_error_propagation.py`, and the capacity recovery and replay cases in `tests/unit/test_proxy_http_bridge.py` and `tests/unit/test_proxy_utils.py`.
 
+#### Scenario: A recovery hint that outlasts the silent-wait allowance fails fast
+
+- **WHEN** an HTTP bridge capacity wait would emit no downstream bytes and the account recovery hint (for example 300 seconds) exceeds the remaining cumulative 30-second allowance
+- **THEN** the proxy declines the wait and surfaces the capacity error with `Retry-After` from the recovery hint
+- **AND** it does not hold the downstream connection for the rest of the request budget
+
+#### Scenario: Consecutive short silent waits share one allowance
+
+- **WHEN** a request performs several capacity waits that each fit the allowance but emit no downstream bytes
+- **THEN** their durations accumulate against the same 30-second allowance
+- **AND** the first wait that no longer fits fails fast instead of sleeping
+
+#### Scenario: A short account switch still recovers in place
+
+- **WHEN** a capacity wait that fits the remaining allowance and the remaining request budget is needed
+- **THEN** the proxy waits and retries instead of failing fast
+
+#### Scenario: Gate contention does not spend the silent-wait allowance
+
+- **WHEN** a request waits on per-session `response_create_gate_timeout` contention
+- **THEN** that wait does not consume the cumulative silent-wait allowance
+
+#### Scenario: An exhausted replay surfaces the captured upstream quota error
+
+- **WHEN** pre-created replay fails or is declined after the upstream answered `usage_limit_reached`
+- **THEN** the terminal error keeps the upstream code, message, and type instead of `stream_incomplete`
+- **AND** before HTTP output is committed the response status is 429, not 502
+
+#### Scenario: A transport drop with no captured error keeps the 502 fallback
+
+- **WHEN** replay is exhausted by a transport drop that captured no specific upstream error
+- **THEN** the terminal error is `stream_incomplete` with HTTP status 502
+
 ### Requirement: Streaming Responses requests use a bounded retry budget
 When a streaming `/v1/responses` request encounters upstream instability, the proxy MUST enforce a configurable total request budget across selection, token refresh, account-capacity recovery waits, and upstream stream attempts. Each upstream stream attempt MUST clamp its connect timeout, idle timeout, and total request timeout to the remaining request budget.
 
@@ -4483,12 +4494,7 @@ current capability grant through the canonical selector.
 
 ### Requirement: Proof-gated recovery attempts are durably fenced
 
-When an HTTP bridge request has a verified, account-neutral, unanchored full
-resend body, the proxy MUST record that request fingerprint in the durable
-recovery journal before dispatching it upstream. The record MUST be owned by
-the current durable session owner epoch and MUST start in `unknown` state.
-Requests without that replay-safety proof MUST NOT create a recovery-journal
-record.
+When an HTTP bridge request has a verified, account-neutral, unanchored full resend body, the proxy MUST record that request fingerprint in the durable recovery journal before dispatching it upstream. The record MUST be owned by the current durable session owner epoch and MUST start in `unknown` state. Requests without that replay-safety proof MUST NOT create a recovery-journal record.
 
 #### Scenario: Safe resend is journaled before dispatch
 
@@ -4555,14 +4561,7 @@ MUST require the journal table.
 
 ### Requirement: Claimed HTTP bridge completed queues remain deliverable
 
-When HTTP bridge processing of `response.completed` removes a request from
-pending ownership, it MUST retain the request's downstream event queue for the
-remainder of that completed operation. Later asynchronous bookkeeping or
-request detachment MUST NOT revoke that claimed queue before the completed
-operation's selected terminal event and end-of-stream marker are enqueued. If
-fail-closed bookkeeping replaces the upstream completion with a terminal
-failure, that selected failure event is the terminal event governed by this
-requirement.
+When HTTP bridge processing of `response.completed` removes a request from pending ownership, it MUST retain the request's downstream event queue for the remainder of that completed operation. Later asynchronous bookkeeping or request detachment MUST NOT revoke that claimed queue before the completed operation's selected terminal event and end-of-stream marker are enqueued. If fail-closed bookkeeping replaces the upstream completion with a terminal failure, that selected failure event is the terminal event governed by this requirement.
 
 While the claimed completed-delivery operation remains active, ordinary stream
 idle accounting MUST NOT replace the upstream completion with a synthetic idle
@@ -4683,11 +4682,7 @@ For standard and compact Responses requests, the proxy MUST omit `namespace` fro
 
 ### Requirement: Responses-Lite replay proof tolerates only verified developer interleaving
 
-When a fresh durable HTTP bridge classifies a client-unanchored Responses-Lite
-full resend whose `additional_tools` bundle preserves developer messages inline,
-the replay proof MUST tolerate a developer message only in the historical and
-fresh positions defined below. Every other developer position or shape MUST
-remain fail-closed.
+When a fresh durable HTTP bridge classifies a client-unanchored Responses-Lite full resend whose `additional_tools` bundle preserves developer messages inline, the replay proof MUST tolerate a developer message only in the historical and fresh positions defined below. Every other developer position or shape MUST remain fail-closed.
 
 A tolerated fresh developer message MUST have `type` omitted or equal to `message`,
 MUST have role `developer`, MUST have no non-empty response-owned ID or phase,
@@ -5087,8 +5082,7 @@ operation retention continues.
 
 ### Requirement: Fresh indefinite-recovery spool
 
-Before dispatching a server-owned retry for a nonterminal operation, the system
-MUST atomically clear any partial event spool under the durable owner fence.
+Before dispatching a server-owned retry for a nonterminal operation, the system MUST atomically clear any partial event spool under the durable owner fence.
 
 #### Scenario: Retry starts with a clean transcript
 
@@ -5130,10 +5124,7 @@ cannot retain raw request data indefinitely.
 
 ### Requirement: Acknowledged alias persistence failure
 
-If upstream has acknowledged a response but local continuity-alias persistence
-fails, the downstream error MUST NOT transition the durable operation to a
-retryable failed state. The operation MUST remain acknowledged/ambiguous so an
-identical retry cannot dispatch a duplicate upstream turn.
+If upstream has acknowledged a response but local continuity-alias persistence fails, the downstream error MUST NOT transition the durable operation to a retryable failed state. The operation MUST remain acknowledged/ambiguous so an identical retry cannot dispatch a duplicate upstream turn.
 
 #### Scenario: Alias write failure remains fail-closed
 
@@ -5142,12 +5133,7 @@ identical retry cannot dispatch a duplicate upstream turn.
 
 ### Requirement: Cross-session nonterminal handoff
 
-When a scoped operation fingerprint is found under a different durable
-session, a nonterminal operation MUST be atomically rebound to the currently
-owned session before its event spool is reset or a recovery attempt is sent.
-Completed replayable operations MUST remain attached to their original session.
-The handoff MUST be refused while the prior session has an unexpired owner
-lease, preventing concurrent owners from dispatching the same turn.
+When a scoped operation fingerprint is found under a different durable session, a nonterminal operation MUST be atomically rebound to the currently owned session before its event spool is reset or a recovery attempt is sent. Completed replayable operations MUST remain attached to their original session. The handoff MUST be refused while the prior session has an unexpired owner lease, preventing concurrent owners from dispatching the same turn.
 
 #### Scenario: Active prior owner fences handoff
 
@@ -5215,9 +5201,7 @@ terminate normally rather than being resent indefinitely.
 
 ### Requirement: Retry reservation terminalization
 
-If reacquiring API-key usage limits for a recovery attempt fails, the proxy
-MUST settle the prior reservation and emit a terminal `response.failed` SSE
-event instead of aborting the already-started stream.
+If reacquiring API-key usage limits for a recovery attempt fails, the proxy MUST settle the prior reservation and emit a terminal `response.failed` SSE event instead of aborting the already-started stream.
 
 #### Scenario: Quota failure produces terminal SSE
 
@@ -5247,10 +5231,7 @@ durable repository supports it.
 
 ### Requirement: Partial disconnect acknowledgement
 
-When a bridge disconnects after an operation has emitted any response event but
-before a terminal event, the durable operation MUST remain acknowledged or
-ambiguous. It MUST NOT be classified as retryable failed solely because the
-disconnect was non-terminal.
+When a bridge disconnects after an operation has emitted any response event but before a terminal event, the durable operation MUST remain acknowledged or ambiguous. It MUST NOT be classified as retryable failed solely because the disconnect was non-terminal.
 
 #### Scenario: Partial output is never resent as a fresh turn
 
