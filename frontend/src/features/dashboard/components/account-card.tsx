@@ -19,6 +19,7 @@ import type { AccountSummary } from "@/features/dashboard/schemas";
 import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import {
+  claudeAuthBadgeStatus,
   normalizeStatus,
   quotaBarColor,
   quotaBarTrack,
@@ -316,7 +317,7 @@ export function ClaudeAuthCard({
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
   const title = auth.email ?? auth.name;
-  const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
+  const status = claudeAuthBadgeStatus(auth, account.status);
   const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
   const providerLabel = auth.provider === "claude"
     ? "Claude"
@@ -464,11 +465,18 @@ function SyntheticAccountCard({
               return (
                 <div key={`${auth.name}-${idx}`} className="space-y-2 rounded-lg border bg-muted/20 p-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className={cn("min-w-0 truncate text-xs font-medium", auth.paused && "text-muted-foreground line-through")}>
+                    <span
+                      className={cn(
+                        "min-w-0 truncate text-xs font-medium",
+                        auth.paused && auth.status !== "rate_limited" && "text-muted-foreground line-through",
+                      )}
+                    >
                       <span className={blurred ? "privacy-blur" : undefined}>{authLabel}</span> Usage
                     </span>
                     <div className="flex shrink-0 items-center gap-1.5">
-                      {auth.paused ? (
+                      {auth.status === "rate_limited" ? (
+                        <StatusBadge status="limited" />
+                      ) : auth.paused ? (
                         <Badge variant="outline" className="text-[11px] text-amber-600">Paused</Badge>
                       ) : null}
                       <Badge variant="outline" className="text-[11px]">{authUsageSource}</Badge>

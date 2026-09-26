@@ -64,11 +64,26 @@ class SidecarAuthQuota:
 
 
 @dataclass(frozen=True, slots=True)
+class SidecarRateLimitHold:
+    """A pause this poller owns for one CLIProxyAPI auth file.
+
+    ``released`` is set when an operator resumes that auth before ``until``.
+    The next poll must not disable the auth again while the exhausted window
+    still ends at that same instant.
+    """
+
+    name: str
+    until: datetime
+    released: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SidecarQuotaSnapshot:
     checked_at: datetime
     status: SidecarQuotaStatus
     message: str | None
     accounts: tuple[SidecarAuthQuota, ...] = field(default_factory=tuple)
+    rate_limit_holds: tuple[SidecarRateLimitHold, ...] = ()
 
 
 def parse_auth_files(
@@ -153,6 +168,25 @@ def dashboard_auth_status(auth: SidecarAuthQuota, *, now: datetime | None = None
     if _looks_like_reauth(auth, now=now):
         return "reauth_required"
     return auth.status
+
+
+def dashboard_status_for_auth(
+    auth: SidecarAuthQuota,
+    holds: Iterable[SidecarRateLimitHold] = (),
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Report an owned exhausted-window hold as `rate_limited`.
+
+    Re-auth still wins. A released hold does not force the badge, so an
+    operator pause keeps the auth's own status.
+    """
+    status = dashboard_auth_status(auth, now=now)
+    if status == "reauth_required":
+        return status
+    if any(hold.name == auth.name and not hold.released for hold in holds):
+        return "rate_limited"
+    return status
 
 
 # Substring-matched auth-death signals. These phrases are specific enough that a
@@ -398,6 +432,14 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
             }
             for account in snapshot.accounts
         ],
+        "rate_limit_holds": [
+            {
+                "name": hold.name,
+                "until": hold.until.isoformat(),
+                "released": hold.released,
+            }
+            for hold in snapshot.rate_limit_holds
+        ],
     }
     return json.dumps(payload, separators=(",", ":"))
 
@@ -474,4 +516,26 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
         status=status,  # type: ignore[arg-type]
         message=message,
         accounts=tuple(accounts),
+        rate_limit_holds=_rate_limit_holds_from_json(parsed.get("rate_limit_holds")),
     )
+
+
+def _rate_limit_holds_from_json(raw: JsonValue) -> tuple[SidecarRateLimitHold, ...]:
+    if not isinstance(raw, list):
+        return ()
+    holds: list[SidecarRateLimitHold] = []
+    for entry in raw:
+        if not is_json_mapping(entry):
+            continue
+        name = _str(entry.get("name"))
+        until = _parse_datetime(entry.get("until"))
+        if name is None or until is None:
+            continue
+        holds.append(
+            SidecarRateLimitHold(
+                name=name,
+                until=until,
+                released=entry.get("released") is True,
+            )
+        )
+    return tuple(holds)

@@ -30,6 +30,10 @@ from app.modules.claude_sidecar.quota import (
     snapshot_from_json,
     snapshot_to_json,
 )
+from app.modules.claude_sidecar.rate_limit_hold import (
+    apply_hold_results,
+    plan_rate_limit_holds,
+)
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
 
@@ -107,12 +111,14 @@ class ClaudeSidecarQuotaPoller:
         client = self._client_factory(config)
         previous_snapshot = snapshot_from_json(settings_row.claude_sidecar_quota_state_json)
         snapshot = await _classify_poll_result(client, previous_snapshot)
-        await self._persist_snapshot(snapshot)
+        await self._persist_snapshot(client, snapshot)
 
-    async def _persist_snapshot(self, snapshot: SidecarQuotaSnapshot) -> None:
+    async def _persist_snapshot(self, client: ClaudeSidecarClient, snapshot: SidecarQuotaSnapshot) -> None:
         try:
             async with exclusion_write_lock(), get_background_session() as session:
                 repo = SettingsRepository(session)
+                previous = snapshot_from_json((await repo.get_fresh()).claude_sidecar_quota_state_json)
+                snapshot = await _apply_rate_limit_holds(client, snapshot, previous)
                 snapshot = await asyncio.to_thread(_refresh_exclusions, snapshot)
                 await repo.update_operational(
                     claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
@@ -121,6 +127,53 @@ class ClaudeSidecarQuotaPoller:
             await get_settings_cache().invalidate()
         except Exception:
             logger.warning("failed to persist Claude sidecar quota snapshot", exc_info=True)
+
+
+async def _apply_rate_limit_holds(
+    client: ClaudeSidecarClient,
+    snapshot: SidecarQuotaSnapshot,
+    previous: SidecarQuotaSnapshot | None,
+) -> SidecarQuotaSnapshot:
+    """Disable an exhausted auth until its known reset, then enable it again.
+
+    Unhealthy polls keep the holds already stored and do not change ``disabled``.
+    A failed management update leaves that one transition uncommitted.
+    """
+    previous_holds = previous.rate_limit_holds if previous is not None else ()
+    if snapshot.status != "healthy":
+        return replace(snapshot, rate_limit_holds=previous_holds)
+
+    plan = plan_rate_limit_holds(snapshot.accounts, previous_holds, snapshot.checked_at)
+    failed_disables: set[str] = set()
+    failed_enables: set[str] = set()
+    for name in plan.disable_names:
+        if not await _patch_auth_disabled(client, name, True):
+            failed_disables.add(name)
+    for name in plan.enable_names:
+        if not await _patch_auth_disabled(client, name, False):
+            failed_enables.add(name)
+    accounts, holds = apply_hold_results(
+        snapshot.accounts,
+        previous_holds,
+        plan,
+        failed_disables=failed_disables,
+        failed_enables=failed_enables,
+    )
+    return replace(snapshot, accounts=accounts, rate_limit_holds=holds)
+
+
+async def _patch_auth_disabled(client: ClaudeSidecarClient, name: str, disabled: bool) -> bool:
+    try:
+        await client.patch_auth_file_disabled(name, disabled)
+    except ClaudeSidecarError:
+        logger.warning(
+            "failed to set CLIProxyAPI auth %s disabled=%s for a rate-limit hold",
+            name,
+            disabled,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _refresh_exclusions(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:

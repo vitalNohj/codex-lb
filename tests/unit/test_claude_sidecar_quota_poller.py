@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -18,8 +19,11 @@ from app.core.clients.claude_sidecar import (
 )
 from app.modules.claude_sidecar import quota_poller as quota_poller_module
 from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
     SidecarOAuthUsage,
     SidecarOAuthUsageBucket,
+    SidecarQuotaSnapshot,
+    SidecarRateLimitHold,
     snapshot_from_json,
     snapshot_to_json,
 )
@@ -119,12 +123,21 @@ class _FakeSettingsCache:
 @dataclass
 class _FakeRepo:
     last_kwargs: dict[str, Any] = field(default_factory=dict)
+    settings: _FakeSettings | None = None
+
+    async def get_fresh(self) -> _FakeSettings:
+        if self.settings is None:
+            raise RuntimeError("Claude sidecar quota poll has no settings row")
+        return self.settings
 
     async def update(self, **kwargs: Any) -> None:
         self.last_kwargs.update(kwargs)
 
     async def update_operational(self, **kwargs: Any) -> None:
         self.last_kwargs.update(kwargs)
+        raw = kwargs.get("claude_sidecar_quota_state_json")
+        if self.settings is not None and isinstance(raw, str):
+            self.settings.claude_sidecar_quota_state_json = raw
 
 
 @dataclass
@@ -160,7 +173,7 @@ def _patch_environment(
     monkeypatch.setattr(quota_poller_module, "get_background_session", _ctx)
 
     def _build_repo(session: _FakeSession) -> _FakeRepo:
-        repo = _FakeRepo()
+        repo = _FakeRepo(settings=settings)
         repo_holder.append(repo)
         return repo
 
@@ -502,3 +515,272 @@ async def test_poll_once_classifies_generic_error(monkeypatch) -> None:
     assert snapshot is not None
     assert snapshot.status == "error"
     assert snapshot.message == "bad gateway"
+
+
+_AUTH_NAME = "claude-a@example.com.json"
+_FUTURE = datetime(2099, 1, 1, tzinfo=timezone.utc)
+_LATER = datetime(2099, 6, 1, tzinfo=timezone.utc)
+
+
+def _usage(
+    five_hour: float,
+    seven_day: float,
+    *,
+    five_reset: datetime | None,
+    seven_reset: datetime | None = None,
+) -> SidecarOAuthUsage:
+    return SidecarOAuthUsage(
+        five_hour=SidecarOAuthUsageBucket(remaining_percent=five_hour, resets_at=five_reset),
+        seven_day=SidecarOAuthUsageBucket(remaining_percent=seven_day, resets_at=seven_reset),
+    )
+
+
+def _hold_snapshot_json(*holds: SidecarRateLimitHold) -> str:
+    account = SidecarAuthQuota(
+        name=_AUTH_NAME,
+        auth_index="1",
+        email="a@example.com",
+        status="active",
+        status_message=None,
+        disabled=True,
+        unavailable=False,
+        quota_exceeded=False,
+        next_recover_at=None,
+        model_states=(),
+        success=0,
+        failed=0,
+        last_refresh=None,
+    )
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(account,),
+        rate_limit_holds=holds,
+    )
+    return snapshot_to_json(snapshot)
+
+
+class _MutableAuthClient:
+    def __init__(self) -> None:
+        self.disabled = False
+        self.fail_disable = False
+        self.fail_enable = False
+        self.patches: list[tuple[str, bool]] = []
+
+    async def list_auth_files(self) -> list[Mapping[str, Any]]:
+        return [
+            {
+                "name": _AUTH_NAME,
+                "provider": "claude",
+                "email": "a@example.com",
+                "auth_index": "1",
+                "disabled": self.disabled,
+                "status": "error",
+                "status_message": "rate_limit_error",
+            }
+        ]
+
+    async def patch_auth_file_disabled(self, name: str, disabled: bool) -> None:
+        if disabled and self.fail_disable:
+            raise ClaudeSidecarError(503, "disable failed")
+        if not disabled and self.fail_enable:
+            raise ClaudeSidecarError(503, "enable failed")
+        self.patches.append((name, disabled))
+        self.disabled = disabled
+
+
+def _poll_with_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: _FakeSettings,
+    client: _MutableAuthClient,
+    usage: SidecarOAuthUsage,
+):
+    repo_holder: list[_FakeRepo] = []
+
+    def _factory(_config: ClaudeSidecarConfig) -> _MutableAuthClient:
+        return client
+
+    _patch_environment(monkeypatch, settings=settings, client_factory=_factory, repo_holder=repo_holder)
+
+    async def _fetch(_client: Any, auth_index: str) -> SidecarOAuthUsage:
+        assert auth_index == "1"
+        return usage
+
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch)
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_factory)
+    return repo_holder, poller
+
+
+@pytest.mark.asyncio
+async def test_poll_disables_auth_until_five_hour_reset(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(),
+        client,
+        _usage(0.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == [(_AUTH_NAME, True)]
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == (SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=False),)
+
+
+@pytest.mark.asyncio
+async def test_poll_enables_auth_when_owned_hold_expires(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = True
+    settings = _FakeSettings(
+        claude_sidecar_quota_state_json=_hold_snapshot_json(
+            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=False)
+        )
+    )
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        settings,
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == [(_AUTH_NAME, False)]
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is False
+    assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_leaves_operator_pause_disabled(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = True
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(),
+        client,
+        _usage(0.0, 0.0, five_reset=_FUTURE, seven_reset=_LATER),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_does_not_redisable_a_released_hold(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    settings = _FakeSettings(
+        claude_sidecar_quota_state_json=_hold_snapshot_json(
+            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True)
+        )
+    )
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        settings,
+        client,
+        _usage(0.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is False
+    assert snapshot.rate_limit_holds == (SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True),)
+
+
+@pytest.mark.asyncio
+async def test_poll_disables_again_when_reset_time_changes(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    settings = _FakeSettings(
+        claude_sidecar_quota_state_json=_hold_snapshot_json(
+            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True)
+        )
+    )
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        settings,
+        client,
+        _usage(0.0, 70.0, five_reset=_LATER),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == [(_AUTH_NAME, True)]
+    assert snapshot is not None
+    assert snapshot.rate_limit_holds == (SidecarRateLimitHold(name=_AUTH_NAME, until=_LATER, released=False),)
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_auth_enabled_when_disable_fails(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.fail_disable = True
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(),
+        client,
+        _usage(0.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is False
+    assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_owned_hold_when_enable_fails(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = True
+    client.fail_enable = True
+    hold = SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=False)
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json(hold)),
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == (hold,)
+
+
+@pytest.mark.asyncio
+async def test_poll_preserves_holds_when_listing_fails(monkeypatch) -> None:
+    hold = SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=False)
+    repo_holder: list[_FakeRepo] = []
+    _patch_environment(
+        monkeypatch,
+        settings=_FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json(hold)),
+        client_factory=_UnauthorizedClient,
+        repo_holder=repo_holder,
+    )
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_UnauthorizedClient)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    assert snapshot.status == "unauthorized"
+    assert snapshot.accounts == ()
+    assert snapshot.rate_limit_holds == (hold,)
