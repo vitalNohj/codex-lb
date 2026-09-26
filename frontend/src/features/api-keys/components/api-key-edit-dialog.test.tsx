@@ -73,6 +73,7 @@ describe("ApiKeyEditDialog", () => {
     const payload = onSubmit.mock.calls[0][0];
     expect(payload.name).toBe("Renamed key");
     expect(payload.applyToCodexModel).toBe(false);
+    expect(payload.rateLimitAsPaymentRequired).toBe(false);
     expect("assignedAccountIds" in payload).toBe(false);
     expect("limits" in payload).toBe(false);
   });
@@ -488,6 +489,60 @@ describe("ApiKeyEditDialog", () => {
     );
 
     expect(screen.getByRole("checkbox", { name: "Apply to codex /model" })).toBeChecked();
+  });
+
+  it("submits the 402-instead-of-429 checkbox value", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey()}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: "Send 402 instead of 429" });
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toHaveAccessibleDescription(/fallback model at once/);
+    await user.click(checkbox);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSubmit.mock.calls[0][0].rateLimitAsPaymentRequired).toBe(true);
+  });
+
+  it("keeps a stored 402-instead-of-429 flag on unrelated edits", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey({ rateLimitAsPaymentRequired: true })}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByRole("checkbox", { name: "Send 402 instead of 429" })).toBeChecked();
+    const nameInput = screen.getByLabelText("Name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Kodus");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSubmit.mock.calls[0][0].rateLimitAsPaymentRequired).toBe(true);
   });
 
   it("submits opportunistic traffic class", async () => {

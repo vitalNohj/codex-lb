@@ -200,9 +200,9 @@ advisory-lock behavior.
 
 ### Requirement: Telemetry write transactions relax commit durability on PostgreSQL
 
-A write transaction is classified as a **telemetry write** when it only appends observability rows whose loss on a database-server crash changes nothing about accounting semantics: request-log inserts (`request_logs`) and usage-history appends (`usage_history`, `additional_usage_history`). API-key usage-reservation accounting is explicitly NOT telemetry (see the reservation-durability requirement below).
-
 On PostgreSQL, every telemetry write transaction MUST execute `SET LOCAL synchronous_commit = off` within the transaction itself, so its commit does not wait for the synchronous WAL flush. The relaxation MUST be transaction-scoped (`SET LOCAL`, never `SET`): it reverts automatically at COMMIT or ROLLBACK and MUST NOT leak onto the pooled connection. Because PostgreSQL only emits a WARNING — and applies nothing — when `SET LOCAL` runs outside a transaction, the relaxation MUST be issued through the transaction's own session (SQLAlchemy autobegin opens the transaction at that statement when none is open yet). On SQLite and any other non-PostgreSQL dialect the relaxation MUST be a no-op.
+
+A write transaction is classified as a **telemetry write** when it only appends observability rows whose loss on a database-server crash changes nothing about accounting semantics: request-log inserts (`request_logs`) and usage-history appends (`usage_history`, `additional_usage_history`). API-key usage-reservation accounting is explicitly NOT telemetry (see the reservation-durability requirement below).
 
 The accepted loss contract is: after a PostgreSQL server crash, telemetry rows committed within the final unflushed WAL window (bounded by three times `wal_writer_delay` — up to ~600 ms at the default 200 ms setting) may be lost. Configuration writes — account, API-key, limit, and settings mutations, schema migrations, scheduler coordination state — MUST NOT relax commit durability.
 

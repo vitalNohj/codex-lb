@@ -92,6 +92,7 @@ class ApiKeysRepositoryProtocol(Protocol):
         enforced_service_tier: str | None | _Unset = ...,
         traffic_class: str | _Unset = ...,
         transport_policy_override: str | None | _Unset = ...,
+        rate_limit_as_payment_required: bool | _Unset = ...,
         usage_sections: str | _Unset = ...,
         account_assignment_scope_enabled: bool | _Unset = ...,
         source_assignment_scope_enabled: bool | _Unset = ...,
@@ -278,6 +279,7 @@ class ApiKeyCreateData:
     enforced_service_tier: str | None = None
     traffic_class: str = TRAFFIC_CLASS_FOREGROUND
     transport_policy_override: str | None = None
+    rate_limit_as_payment_required: bool = False
     usage_sections: str = "upstream_limits,account_pool_usage"
     expires_at: datetime | None = None
     assigned_account_ids: list[str] | None = None
@@ -305,6 +307,8 @@ class ApiKeyUpdateData:
     traffic_class_set: bool = False
     transport_policy_override: str | None = None
     transport_policy_override_set: bool = False
+    rate_limit_as_payment_required: bool | None = None
+    rate_limit_as_payment_required_set: bool = False
     usage_sections: str | None = None
     usage_sections_set: bool = False
     expires_at: datetime | None = None
@@ -337,6 +341,7 @@ class ApiKeyData:
     apply_to_codex_model: bool = False
     traffic_class: str = TRAFFIC_CLASS_FOREGROUND
     transport_policy_override: str | None = None
+    rate_limit_as_payment_required: bool = False
     usage_sections: str = "upstream_limits,account_pool_usage"
     limits: list[LimitRuleData] = field(default_factory=list)
     usage_summary: "ApiKeyUsageSummaryData | None" = None
@@ -501,6 +506,7 @@ class ApiKeysService:
             source_assignment_scope_enabled=bool(assigned_source_ids),
             traffic_class=traffic_class,
             transport_policy_override=transport_policy_override,
+            rate_limit_as_payment_required=bool(payload.rate_limit_as_payment_required),
             usage_sections=usage_sections,
             expires_at=expires_at,
             is_active=True,
@@ -641,6 +647,9 @@ class ApiKeysService:
         transport_policy_override_update: str | None | _Unset = _UNSET
         if payload.transport_policy_override_set:
             transport_policy_override_update = _normalize_transport_policy_override(payload.transport_policy_override)
+        rate_limit_as_payment_required_update: bool | _Unset = _UNSET
+        if payload.rate_limit_as_payment_required_set and payload.rate_limit_as_payment_required is not None:
+            rate_limit_as_payment_required_update = payload.rate_limit_as_payment_required
         usage_sections: str | _Unset = _UNSET
         if payload.usage_sections_set:
             usage_sections = _normalize_usage_sections(payload.usage_sections)
@@ -709,6 +718,7 @@ class ApiKeysService:
                 enforced_service_tier=(enforced_service_tier if payload.enforced_service_tier_set else _UNSET),
                 traffic_class=traffic_class_update,
                 transport_policy_override=transport_policy_override_update,
+                rate_limit_as_payment_required=rate_limit_as_payment_required_update,
                 usage_sections=usage_sections,
                 account_assignment_scope_enabled=account_assignment_scope_enabled,
                 source_assignment_scope_enabled=source_assignment_scope_enabled,
@@ -751,6 +761,7 @@ class ApiKeysService:
             or payload.enforced_service_tier_set
             or payload.traffic_class_set
             or payload.transport_policy_override_set
+            or payload.rate_limit_as_payment_required_set
             or payload.usage_sections_set
             or payload.expires_at_set
             or payload.is_active_set
@@ -1788,6 +1799,7 @@ def _to_created_data(data: ApiKeyData, key: str) -> ApiKeyCreatedData:
         enforced_service_tier=data.enforced_service_tier,
         traffic_class=data.traffic_class,
         transport_policy_override=data.transport_policy_override,
+        rate_limit_as_payment_required=data.rate_limit_as_payment_required,
         usage_sections=data.usage_sections,
         expires_at=data.expires_at,
         is_active=data.is_active,
@@ -1828,6 +1840,7 @@ def _to_api_key_data(
         transport_policy_override=_normalize_transport_policy_override_lenient(
             getattr(row, "transport_policy_override", None)
         ),
+        rate_limit_as_payment_required=bool(getattr(row, "rate_limit_as_payment_required", False)),
         usage_sections=_get_usage_sections_with_default(row),
         expires_at=row.expires_at,
         is_active=row.is_active,

@@ -19,6 +19,7 @@ from app.core.auth.dashboard_access import (
     guest_principal,
 )
 from app.core.auth.dashboard_mode import DashboardAuthMode, get_dashboard_request_auth
+from app.core.auth.request_api_key import set_authenticated_api_key
 from app.core.clients.proxy import CODEX_LB_REQUIRED_CAPABILITY_HEADER
 from app.core.clients.usage import UsageFetchError, fetch_usage
 from app.core.config.settings import get_settings
@@ -68,8 +69,11 @@ async def validate_proxy_api_key(
 
     authorization = None if credentials is None else f"Bearer {credentials.credentials}"
     if request.headers.getlist(CODEX_LB_REQUIRED_CAPABILITY_HEADER):
-        return await validate_required_proxy_api_key_authorization(authorization)
-    return await validate_proxy_api_key_authorization(authorization, request=request)
+        api_key: ApiKeyData | None = await validate_required_proxy_api_key_authorization(authorization)
+    else:
+        api_key = await validate_proxy_api_key_authorization(authorization, request=request)
+    record_authenticated_api_key(request, api_key)
+    return api_key
 
 
 async def validate_proxy_api_key_authorization(
@@ -130,7 +134,19 @@ async def validate_required_proxy_api_key(
     """Require a valid proxy API key regardless of the global auth setting."""
 
     authorization = None if credentials is None else f"Bearer {credentials.credentials}"
-    return await validate_required_proxy_api_key_authorization(authorization)
+    api_key = await validate_required_proxy_api_key_authorization(authorization)
+    record_authenticated_api_key(request, api_key)
+    return api_key
+
+
+def record_authenticated_api_key(request: HTTPConnection, api_key: ApiKeyData | None) -> None:
+    """Expose the proxy API key to response middleware that runs after the route.
+
+    ``RateLimitPaymentRequiredMiddleware`` reads it at ``http.response.start``
+    to apply per-key response policy without re-validating the credential.
+    """
+
+    set_authenticated_api_key(request.scope, api_key)
 
 
 # --- Self-service usage endpoint auth (always requires valid key) ---

@@ -711,12 +711,7 @@ The dashboard conversation activity metrics (`conversation_count`, `conversation
 - **THEN** the legacy full-raw query is used unchanged
 
 ### Requirement: Projection history bulk reads are index-covered on PostgreSQL
-The columns selected by the dashboard projections bulk usage-history fetch
-MUST be fully covered by an index matching each of its predicate shapes on
-PostgreSQL — the coalesced-primary window shape and the explicit raw-window
-shape — so the read can be planned as an index-only scan without per-row
-heap fetches. Non-PostgreSQL backends MUST keep the same-named indexes for
-schema parity but MAY omit the covering payload.
+The columns selected by the dashboard projections bulk usage-history fetch MUST be fully covered by an index matching each of its predicate shapes on PostgreSQL — the coalesced-primary window shape and the explicit raw-window shape — so the read can be planned as an index-only scan without per-row heap fetches. Non-PostgreSQL backends MUST keep the same-named indexes for schema parity but MAY omit the covering payload.
 
 #### Scenario: Primary-window bulk fetch plans as an index-only scan
 - **GIVEN** usage history rows exist for multiple accounts with `NULL` and `'primary'` windows
@@ -744,18 +739,9 @@ schema parity but MAY omit the covering payload.
 - **THEN** it MUST report the missing index by name
 
 ### Requirement: Append-heavy usage-history visibility is maintained for the covering path
-Covering indexes alone do not keep the bulk read heap-free: `usage_history`
-is append-heavy (high-frequency inserts, no updates or deletes), and with
-PostgreSQL's default insert-driven autovacuum trigger the freshly appended
-pages stay outside the visibility map long enough that "index-only" scans
-degrade into per-row heap fetches. The `usage_history` table on PostgreSQL
-MUST therefore carry per-table insert-driven autovacuum tuning
-(`autovacuum_vacuum_insert_scale_factor = 0.02`,
-`autovacuum_vacuum_insert_threshold = 50000`,
-`autovacuum_analyze_scale_factor = 0.02`, matching the tuning already
-applied to the other insert-heavy tables by `20260717_000000`) so the
-visibility map stays fresh and the covering read path remains index-only.
-Non-PostgreSQL backends MUST NOT be affected (no visibility map).
+The `usage_history` table on PostgreSQL MUST therefore carry per-table insert-driven autovacuum tuning (`autovacuum_vacuum_insert_scale_factor = 0.02`, `autovacuum_vacuum_insert_threshold = 50000`, `autovacuum_analyze_scale_factor = 0.02`, matching the tuning already applied to the other insert-heavy tables by `20260717_000000`) so the visibility map stays fresh and the covering read path remains index-only. Non-PostgreSQL backends MUST NOT be affected (no visibility map).
+
+Covering indexes alone do not keep the bulk read heap-free: `usage_history` is append-heavy (high-frequency inserts, no updates or deletes), and with PostgreSQL's default insert-driven autovacuum trigger the freshly appended pages stay outside the visibility map long enough that "index-only" scans degrade into per-row heap fetches.
 
 #### Scenario: Migration sets the insert-driven autovacuum parameters
 - **GIVEN** a PostgreSQL database migrated past the covering-index revision

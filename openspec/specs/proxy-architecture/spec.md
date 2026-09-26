@@ -26,12 +26,7 @@ increase, bypass, or remove them to make CI pass.
 
 ### Requirement: ProxyService remains a stable façade
 
-`app.modules.proxy.service.ProxyService` and the required compatibility exports
-SHALL remain available to existing consumers. Behavior extracted from
-`ProxyService` or `service.py` SHALL be owned by focused private modules under
-`app/modules/proxy/_service/`.
-Compatibility shims SHALL remain re-export-only and private service domains
-SHALL comply with the repository's explicit cross-domain dependency policy.
+`app.modules.proxy.service.ProxyService` and the required compatibility exports SHALL remain available to existing consumers. Behavior extracted from `ProxyService` or `service.py` SHALL be owned by focused private modules under `app/modules/proxy/_service/`. Compatibility shims SHALL remain re-export-only and private service domains SHALL comply with the repository's explicit cross-domain dependency policy.
 
 #### Scenario: Existing consumers import the proxy façade
 

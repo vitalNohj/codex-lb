@@ -358,6 +358,7 @@ class ApiKeysRepository:
         enforced_service_tier: str | None | _Unset = _UNSET,
         traffic_class: str | _Unset = _UNSET,
         transport_policy_override: str | None | _Unset = _UNSET,
+        rate_limit_as_payment_required: bool | _Unset = _UNSET,
         usage_sections: str | _Unset = _UNSET,
         account_assignment_scope_enabled: bool | _Unset = _UNSET,
         source_assignment_scope_enabled: bool | _Unset = _UNSET,
@@ -397,6 +398,9 @@ class ApiKeysRepository:
         if transport_policy_override is not _UNSET:
             assert transport_policy_override is None or isinstance(transport_policy_override, str)
             row.transport_policy_override = transport_policy_override
+        if rate_limit_as_payment_required is not _UNSET:
+            assert isinstance(rate_limit_as_payment_required, bool)
+            row.rate_limit_as_payment_required = rate_limit_as_payment_required
         if usage_sections is not _UNSET:
             assert isinstance(usage_sections, str)
             row.usage_sections = usage_sections
