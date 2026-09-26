@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 
 import pytest
@@ -206,6 +206,52 @@ async def _items() -> list[FreeModelDiscoveryRunItem]:
         return list((await session.execute(select(FreeModelDiscoveryRunItem))).scalars().all())
 
 
+async def _item(model_id: str) -> FreeModelDiscoveryRunItem:
+    async with SessionLocal() as session:
+        return (
+            await session.execute(
+                select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.model_id == model_id)
+            )
+        ).scalar_one()
+
+
+async def _eventually[T](check: Callable[[], Awaitable[T]], *, what: str, timeout: float = 10.0) -> T:
+    """Poll ``check`` until it returns something truthy, and return that.
+
+    The runner is driven concurrently, so how far it gets in a fixed sleep
+    depends on machine load. Waiting for the state under test keeps these
+    tests about behaviour rather than timing.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        result = await check()
+        if result:
+            return result
+        if loop.time() >= deadline:
+            raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+        await asyncio.sleep(0.02)
+
+
+def _untried_item_deferred(model_id: str) -> Callable[[], Awaitable[bool]]:
+    """Whether a shared-limit deferral has pushed an unprobed item into the future.
+
+    Items are created due at the run's start, so a deferral is a due time
+    later than now, not merely a set one.
+    """
+
+    async def _check() -> bool:
+        item = await _item(model_id)
+        return item.attempts == 0 and item.next_attempt_at is not None and item.next_attempt_at > utcnow()
+
+    return _check
+
+
+async def _run_body(async_client, run_id: str) -> dict:
+    return (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
+
+
 # --- success control -------------------------------------------------------
 
 
@@ -359,21 +405,11 @@ async def test_an_explicit_shared_limit_pauses_the_whole_group_once(async_client
     run_id = await _create_run(["m/a:free", "m/b:free", "m/c:free"], max_attempts=3)
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.15)
 
     # The remaining queue was deferred rather than each item spending an
     # attempt discovering the same provider-wide block.
-    async with SessionLocal() as session:
-        queued = (
-            (
-                await session.execute(
-                    select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.state == "queued")
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert all(item.next_attempt_at is not None for item in queued)
+    await _eventually(_untried_item_deferred("m/b:free"), what="m/b to be deferred")
+    await _eventually(_untried_item_deferred("m/c:free"), what="m/c to be deferred")
     assert http.posted.count("m/b:free") == 0, "untried models were not pushed through the block"
 
     await _stop(task)
@@ -388,12 +424,15 @@ async def test_a_shared_limit_surfaces_a_truthful_waiting_reason(async_client, s
     run_id = await _create_run(["m/a:free", "m/b:free"], max_attempts=3)
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.15)
-    body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
+
+    async def _paused_body() -> dict | None:
+        body = await _run_body(async_client, run_id)
+        return body if body["providers"][0]["providerPaused"] else None
+
+    body = await _eventually(_paused_body, what="the provider to be reported paused")
     await _stop(task)
 
     provider = body["providers"][0]
-    assert provider["providerPaused"] is True
     assert provider["limitScope"] == "shared"
     assert "Provider-wide limit reached" in (provider["waitingReason"] or "")
     # A real published wait is reported; no countdown is invented.
@@ -413,13 +452,17 @@ async def test_a_vendor_wait_longer_than_the_pacing_cap_is_not_shortened(async_c
 
     before = utcnow()
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.15)
+
+    async def _probed() -> FreeModelDiscoveryRunItem | None:
+        item = await _item("m/a:free")
+        return item if item.attempts > 0 else None
+
+    item = await _eventually(_probed, what="the limited item's probe to be recorded")
     await _stop(task)
 
-    items = await _items()
-    assert items[0].next_attempt_at is not None
+    assert item.next_attempt_at is not None
     # Deferred far beyond the 0.004s cap, honouring the 1800s instruction.
-    assert (items[0].next_attempt_at - before).total_seconds() > 60
+    assert (item.next_attempt_at - before).total_seconds() > 60
 
 
 @pytest.mark.asyncio
@@ -432,7 +475,9 @@ async def test_cancellation_interrupts_a_long_provider_wait(async_client, script
     run_id = await _create_run(["m/a:free", "m/b:free"], max_attempts=3)
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.1)
+
+    # Cancel once the provider-wide wait has begun, not before it.
+    await _eventually(_untried_item_deferred("m/b:free"), what="the provider-wide wait to begin")
     async with SessionLocal() as session:
         await FreeModelDiscoveryRepository(session).request_cancel(run_id)
 
@@ -451,7 +496,8 @@ async def test_a_deferred_wait_survives_a_restart(async_client, scripted):
     run_id = await _create_run(["m/a:free", "m/b:free"], max_attempts=3)
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.15)
+
+    await _eventually(_untried_item_deferred("m/b:free"), what="the group deferral to be persisted")
     await _stop(task)
 
     # A fresh runner reads the persisted deferral, not in-memory state.
@@ -532,8 +578,12 @@ async def test_counts_split_never_attempted_from_retrying(async_client, scripted
     run_id = await _create_run(["m/a:free", "m/b:free"], max_attempts=6)
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.1)
-    body = (await async_client.get(f"/api/free-model-discovery/runs/{run_id}")).json()
+
+    async def _retrying_body() -> dict | None:
+        body = await _run_body(async_client, run_id)
+        return body if body["counts"]["retrying"] >= 1 else None
+
+    body = await _eventually(_retrying_body, what="a probed item to be requeued")
     await _stop(task)
 
     counts = body["counts"]
@@ -662,15 +712,15 @@ async def test_scope_from_a_200_error_body_is_persisted(async_client, scripted):
     run_id = await _create_run(["m/a:free", "m/b:free"], max_attempts=2)
 
     task = asyncio.create_task(FreeModelDiscoveryRunner(enabled=True).drive_run(run_id))
-    await asyncio.sleep(0.15)
+
+    async def _probed() -> FreeModelDiscoveryRunItem | None:
+        item = await _item("m/a:free")
+        return item if item.attempts > 0 else None
+
+    await _eventually(_probed, what="the first probe to be recorded")
     await _stop(task)
 
-    async with SessionLocal() as session:
-        item = (
-            await session.execute(
-                select(FreeModelDiscoveryRunItem).where(FreeModelDiscoveryRunItem.model_id == "m/a:free")
-            )
-        ).scalar_one()
+    item = await _item("m/a:free")
     assert item.last_http_status == 200
     assert item.last_limit_scope == "shared", "scope must persist even without a 429 status"
 
