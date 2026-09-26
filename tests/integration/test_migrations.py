@@ -3384,12 +3384,8 @@ async def test_fold_nvidia_into_openai_compat_migrates_a_configured_integration(
             stored = (
                 await conn.execute(text("SELECT openai_compat_endpoints_json FROM dashboard_settings WHERE id = 1"))
             ).scalar_one()
-            columns = {
-                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
-            }
-            log_sources = [
-                row[0] for row in (await conn.execute(text("SELECT source FROM request_logs"))).fetchall()
-            ]
+            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()}
+            log_sources = [row[0] for row in (await conn.execute(text("SELECT source FROM request_logs"))).fetchall()]
         assert not any(column.startswith("nvidia_sidecar_") for column in columns)
         endpoints = parse_openai_compat_endpoints(stored)
         assert [endpoint.name for endpoint in endpoints] == ["nvidia", "NVIDIA (2)"]
@@ -3406,9 +3402,7 @@ async def test_fold_nvidia_into_openai_compat_migrates_a_configured_integration(
 
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
         async with engine.connect() as conn:
-            columns = {
-                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
-            }
+            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()}
             stored = (
                 await conn.execute(text("SELECT openai_compat_endpoints_json FROM dashboard_settings WHERE id = 1"))
             ).scalar_one()
@@ -3436,9 +3430,7 @@ async def test_fold_nvidia_into_openai_compat_skips_an_unconfigured_integration(
             stored = (
                 await conn.execute(text("SELECT openai_compat_endpoints_json FROM dashboard_settings WHERE id = 1"))
             ).scalar_one()
-            columns = {
-                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
-            }
+            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()}
         assert json.loads(stored) == []
         assert not any(column.startswith("nvidia_sidecar_") for column in columns)
     finally:

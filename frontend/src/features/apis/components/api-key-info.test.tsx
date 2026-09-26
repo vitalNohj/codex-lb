@@ -41,6 +41,17 @@ describe("ApiKeyInfo", () => {
     expect(screen.getByText("Opportunistic")).toBeInTheDocument();
   });
 
+  it("shows the 402-instead-of-429 status only when the key opts in", () => {
+    const { rerender } = render(<ApiKeyInfo apiKey={createApiKey()} />);
+
+    expect(screen.queryByText("Rate-limit status")).not.toBeInTheDocument();
+
+    rerender(<ApiKeyInfo apiKey={createApiKey({ rateLimitAsPaymentRequired: true })} />);
+
+    expect(screen.getByText("Rate-limit status")).toBeInTheDocument();
+    expect(screen.getByText("402 instead of 429")).toBeInTheDocument();
+  });
+
 	it("falls back to all models and never expiry when the key is unrestricted", () => {
 		render(
 			<ApiKeyInfo

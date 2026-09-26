@@ -169,31 +169,7 @@ When serving `GET /v1/models`, the system SHALL preserve upstream speed-tier met
 
 ### Requirement: GPT-5.6 bootstrap metadata matches the upstream bundled catalog
 
-The GPT-5.6 bootstrap catalog entries (`gpt-5.6-sol`, `gpt-5.6-terra`,
-`gpt-5.6-luna`) MUST mirror the upstream bundled catalog
-(`codex-rs/models-manager/models.json` at Codex release `rust-v0.145.0`)
-field-for-field for every metadata field codex-lb serves, with one tracked
-exception: `max_context_window`, which upstream raised from `272000` to
-`872000` in openai/codex commit
-`2eee483e49f88b868f67364134a658b3298e6c14` (openai/codex#39102) and which no
-`rust-v*` release tag carries as of `rust-v0.148.0-alpha.21`. In particular
-each entry MUST carry: `context_window` of `272000` and `max_context_window`
-of `872000`; `minimal_client_version` `"0.144.0"`; `tool_mode`
-`"code_mode_only"`; `use_responses_lite` `true`; `apply_patch_tool_type`
-`"freeform"`; `web_search_tool_type` `"text_and_image"`;
-`supports_image_detail_original` `true`; `truncation_policy` `{ "mode":
-"tokens", "limit": 10000 }`; `comp_hash` `"3000"`; `reasoning_summary_format`
-`"experimental"`; `default_reasoning_summary` `"none"`;
-`include_skills_usage_instructions` `false`; `experimental_supported_tools`
-`[]` (a field the Codex client's deserializer requires); `supports_search_tool`
-`true`; `additional_speed_tiers` `["fast"]`; the `priority`/`Fast` service tier
-entry; `shell_type` `"shell_command"`; `prefer_websockets` `true`; and the
-21-plan `available_in_plans` list upstream advertises (including `edu_plus`,
-`edu_pro`, `enterprise_cbp_automation`, and `sci`). `multi_agent_version` MUST
-be `"v2"` for Sol and Terra and `"v1"` for Luna. Sol MUST carry the upstream
-`availability_nux` message while Terra and Luna carry `null`. Default reasoning
-levels MUST be `low` for Sol and `medium` for Terra and Luna, and
-reasoning-level descriptions MUST be the verbatim upstream strings.
+The GPT-5.6 bootstrap catalog entries (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) MUST mirror the upstream bundled catalog (`codex-rs/models-manager/models.json` at Codex release `rust-v0.145.0`) field-for-field for every metadata field codex-lb serves, with one tracked exception: `max_context_window`, which upstream raised from `272000` to `872000` in openai/codex commit `2eee483e49f88b868f67364134a658b3298e6c14` (openai/codex#39102) and which no `rust-v*` release tag carries as of `rust-v0.148.0-alpha.21`. In particular each entry MUST carry: `context_window` of `272000` and `max_context_window` of `872000`; `minimal_client_version` `"0.144.0"`; `tool_mode` `"code_mode_only"`; `use_responses_lite` `true`; `apply_patch_tool_type` `"freeform"`; `web_search_tool_type` `"text_and_image"`; `supports_image_detail_original` `true`; `truncation_policy` `{ "mode": "tokens", "limit": 10000 }`; `comp_hash` `"3000"`; `reasoning_summary_format` `"experimental"`; `default_reasoning_summary` `"none"`; `include_skills_usage_instructions` `false`; `experimental_supported_tools` `[]` (a field the Codex client's deserializer requires); `supports_search_tool` `true`; `additional_speed_tiers` `["fast"]`; the `priority`/`Fast` service tier entry; `shell_type` `"shell_command"`; `prefer_websockets` `true`; and the 21-plan `available_in_plans` list upstream advertises (including `edu_plus`, `edu_pro`, `enterprise_cbp_automation`, and `sci`). `multi_agent_version` MUST be `"v2"` for Sol and Terra and `"v1"` for Luna. Sol MUST carry the upstream `availability_nux` message while Terra and Luna carry `null`. Default reasoning levels MUST be `low` for Sol and `medium` for Terra and Luna, and reasoning-level descriptions MUST be the verbatim upstream strings.
 
 `context_window` is the default input budget and `max_context_window` is the
 ceiling a client may opt into; the two MUST NOT be collapsed into one value
@@ -927,21 +903,7 @@ At startup every replica SHALL load the persisted model-registry snapshot into i
 
 ### Requirement: Every Codex-native catalog entry is wire-parseable
 
-Every model entry returned by `GET /backend-api/codex/models` or the equivalent
-`GET /v1/models?client_version=<version>` route MUST include the non-defaulted
-Codex wire fields `truncation_policy` and `experimental_supported_tools`, even
-when the entry comes from hidden retained bootstrap metadata or a persisted
-legacy registry snapshot. When either field is absent from stored raw metadata,
-the mapper MUST provide a conservative model-compatible default. Wire-valid
-values provided by a live upstream catalog or model source MUST remain
-authoritative and MUST NOT be overwritten by the compatibility defaults. When
-`experimental_supported_tools` is not a list, the mapper MUST emit an empty
-list. When it contains non-string members, the mapper MUST omit those members
-rather than failing the complete catalog. A wire-valid `truncation_policy` MUST
-use the `bytes` or `tokens` mode and a JSON integer representable by Codex's
-signed 64-bit `limit` field. When an explicit policy does not satisfy that wire
-shape, the mapper MUST emit the same conservative model-compatible policy used
-when the field is absent.
+Every model entry returned by `GET /backend-api/codex/models` or the equivalent `GET /v1/models?client_version=<version>` route MUST include the non-defaulted Codex wire fields `truncation_policy` and `experimental_supported_tools`, even when the entry comes from hidden retained bootstrap metadata or a persisted legacy registry snapshot. When either field is absent from stored raw metadata, the mapper MUST provide a conservative model-compatible default. Wire-valid values provided by a live upstream catalog or model source MUST remain authoritative and MUST NOT be overwritten by the compatibility defaults. When `experimental_supported_tools` is not a list, the mapper MUST emit an empty list. When it contains non-string members, the mapper MUST omit those members rather than failing the complete catalog. A wire-valid `truncation_policy` MUST use the `bytes` or `tokens` mode and a JSON integer representable by Codex's signed 64-bit `limit` field. When an explicit policy does not satisfy that wire shape, the mapper MUST emit the same conservative model-compatible policy used when the field is absent.
 
 #### Scenario: Hidden bootstrap metadata cannot invalidate the live catalog
 

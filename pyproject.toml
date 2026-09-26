@@ -115,6 +115,20 @@ line-length = 120
 target-version = "py313"
 extend-exclude = ["*.md"]
 
+[tool.ruff.format]
+# Merged Alembic migrations are never edited (project conventions,
+# "DB Migration Governance"). These seven merged unformatted, so they are kept
+# byte-for-byte and left out of `ruff format` only. `ruff check` still lints them.
+exclude = [
+    "app/db/alembic/versions/20260611_000000_add_claude_sidecar_quota_polling.py",
+    "app/db/alembic/versions/20260614_000000_backfill_openrouter_omniroute_request_log_costs.py",
+    "app/db/alembic/versions/20260618_040000_unify_sidecar_routing_settings.py",
+    "app/db/alembic/versions/20260628_000000_add_model_aliases.py",
+    "app/db/alembic/versions/20260706_000000_add_custom_alias_catalog.py",
+    "app/db/alembic/versions/20260914_020000_single_active_free_model_discovery_run.py",
+    "app/db/alembic/versions/20260922_000000_backfill_gpt_6_sol_luna_costs.py",
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 

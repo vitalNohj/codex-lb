@@ -8,6 +8,7 @@ import pytest
 from starlette.datastructures import Headers
 
 from app.core.auth import dependencies as auth_dependencies
+from app.core.auth.request_api_key import get_authenticated_api_key
 from app.core.clients.proxy import CODEX_LB_REQUIRED_CAPABILITY_HEADER
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.usage.models import UsagePayload
@@ -23,7 +24,7 @@ async def test_validate_proxy_api_key_requires_carrier_authentication(
     principal = object()
     request = cast(
         Any,
-        SimpleNamespace(headers=Headers({CODEX_LB_REQUIRED_CAPABILITY_HEADER: "trusted_cyber"})),
+        SimpleNamespace(headers=Headers({CODEX_LB_REQUIRED_CAPABILITY_HEADER: "trusted_cyber"}), scope={}),
     )
 
     async def required_auth(authorization: str | None) -> object:
@@ -42,6 +43,7 @@ async def test_validate_proxy_api_key_requires_carrier_authentication(
     )
 
     assert resolved is principal
+    assert get_authenticated_api_key(request.scope) is principal
 
 
 @pytest.mark.asyncio
@@ -49,7 +51,7 @@ async def test_validate_proxy_api_key_preserves_headerless_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     principal = object()
-    request = cast(Any, SimpleNamespace(headers=Headers()))
+    request = cast(Any, SimpleNamespace(headers=Headers(), scope={}))
 
     async def fail_required_auth(_authorization: str | None) -> None:
         pytest.fail("headerless provider request must retain ordinary authentication")
@@ -68,6 +70,7 @@ async def test_validate_proxy_api_key_preserves_headerless_authentication(
     )
 
     assert resolved is principal
+    assert get_authenticated_api_key(request.scope) is principal
 
 
 @pytest.mark.asyncio

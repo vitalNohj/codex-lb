@@ -58,6 +58,7 @@ describe("ApiKeySchema", () => {
 
     expect(parsed.limits).toEqual([]);
     expect(parsed.applyToCodexModel).toBe(false);
+    expect(parsed.rateLimitAsPaymentRequired).toBe(false);
     expect(parsed.pooledRemainingPercentPrimary).toBeNull();
     expect(parsed.pooledRemainingPercentSecondary).toBeNull();
     expect(parsed.pooledCapacityCreditsPrimary).toBe(0);
