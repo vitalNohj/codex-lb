@@ -327,8 +327,45 @@ describe("AccountCard", () => {
 
     renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
 
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.queryByText("Rate limited")).toBeNull();
     expect(screen.getByRole("button", { name: "Resume claude-one@example.com" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause claude-one@example.com" })).toBeNull();
+  });
+
+  it("shows Rate limited and Resume for a held CLI Proxy API auth card", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+    });
+    const auth = {
+      name: "claude-1",
+      authIndex: "0",
+      email: "claude-one@example.com",
+      status: "rate_limited",
+      paused: true,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      excludedModels: [],
+      excludedModelsState: "available",
+      success: 0,
+      failed: 0,
+      usageSource: "oauth_usage",
+      primaryRemainingPercent: 0,
+      secondaryRemainingPercent: 70,
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} />);
+
+    expect(screen.getByText("Rate limited")).toBeInTheDocument();
+    expect(screen.queryByText("Paused")).toBeNull();
+    expect(screen.getByRole("button", { name: "Resume claude-one@example.com" })).toBeInTheDocument();
   });
 
   it("shows Re-auth required badge for expired Claude OAuth auth", () => {

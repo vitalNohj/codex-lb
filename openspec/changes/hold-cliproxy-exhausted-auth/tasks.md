@@ -12,3 +12,7 @@
 
 - [x] 3.1 Unit tests for the planner, the poller transitions, resume, and snapshot compatibility.
 - [x] 3.2 `openspec validate hold-cliproxy-exhausted-auth --strict`.
+
+## 4. Rate limited badge
+
+- [x] 4.1 Report `rate_limited` for an unreleased hold and show the existing Rate limited badge. An operator pause stays Paused, and Resume stays the control while the auth is disabled.

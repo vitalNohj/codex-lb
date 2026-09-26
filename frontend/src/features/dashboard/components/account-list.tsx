@@ -22,7 +22,7 @@ import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { cn } from "@/lib/utils";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
-import { normalizeStatus, quotaBarColor, quotaBarTrack } from "@/utils/account-status";
+import { claudeAuthBadgeStatus, normalizeStatus, quotaBarColor, quotaBarTrack } from "@/utils/account-status";
 import {
   formatDateTimeInline,
   formatPercentNullable,
@@ -529,7 +529,7 @@ function ClaudeAuthListRow({
   const blurred = usePrivacyStore((s) => s.blurred);
   const pauseMutation = useClaudeSidecarAccountPause();
   const title = auth.email ?? auth.name;
-  const status = auth.paused ? "paused" : normalizeStatus(auth.status ?? account.status);
+  const status = claudeAuthBadgeStatus(auth, account.status);
   const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
   const providerLabel = auth.provider === "claude"
     ? "Claude"

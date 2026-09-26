@@ -170,6 +170,25 @@ def dashboard_auth_status(auth: SidecarAuthQuota, *, now: datetime | None = None
     return auth.status
 
 
+def dashboard_status_for_auth(
+    auth: SidecarAuthQuota,
+    holds: Iterable[SidecarRateLimitHold] = (),
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Report an owned exhausted-window hold as `rate_limited`.
+
+    Re-auth still wins. A released hold does not force the badge, so an
+    operator pause keeps the auth's own status.
+    """
+    status = dashboard_auth_status(auth, now=now)
+    if status == "reauth_required":
+        return status
+    if any(hold.name == auth.name and not hold.released for hold in holds):
+        return "rate_limited"
+    return status
+
+
 # Substring-matched auth-death signals. These phrases are specific enough that a
 # containing message still describes a dead credential.
 _AUTH_DEATH_SUBSTRINGS = (

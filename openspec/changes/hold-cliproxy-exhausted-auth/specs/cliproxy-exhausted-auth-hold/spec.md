@@ -120,3 +120,36 @@ codex-lb MUST persist each owned hold's auth-file name, reset time, and released
 - **GIVEN** a quota snapshot JSON has no holds field
 - **WHEN** that snapshot is loaded
 - **THEN** the loaded snapshot has no holds
+
+### Requirement: Show the Rate limited badge for an owned hold
+A Claude auth this poller disabled for an exhausted window MUST be reported with status rate_limited while that hold is unreleased, and the dashboard MUST show the same Rate limited badge used for Codex accounts. An operator pause with no unreleased hold MUST still show the Paused badge.
+
+#### Scenario: Held auth reports rate limited
+- **GIVEN** the quota snapshot records an unreleased hold for a Claude auth
+- **AND** that auth file is disabled
+- **AND** the auth is not a re-auth failure
+- **WHEN** the dashboard reads the Claude sidecar accounts
+- **THEN** that auth's status is rate_limited
+- **AND** that auth remains paused
+- **AND** the dashboard badge is Rate limited
+
+#### Scenario: One held auth marks the synthetic account rate limited
+- **GIVEN** one Claude auth has an unreleased hold
+- **AND** another Claude auth is enabled
+- **WHEN** the dashboard reads the Claude sidecar summary
+- **THEN** the synthetic account status is rate_limited
+- **AND** only the held auth's status is rate_limited
+
+#### Scenario: Released hold does not force rate limited
+- **GIVEN** the quota snapshot records a released hold for a Claude auth
+- **AND** the auth status is active
+- **WHEN** the dashboard reads the Claude sidecar accounts
+- **THEN** that auth's status is active
+
+#### Scenario: Operator pause stays paused
+- **GIVEN** a Claude auth file is disabled
+- **AND** the quota snapshot has no unreleased hold for that auth
+- **AND** the auth status is disabled
+- **WHEN** the dashboard reads the Claude sidecar accounts
+- **THEN** that auth's status is disabled
+- **AND** the dashboard badge is Paused

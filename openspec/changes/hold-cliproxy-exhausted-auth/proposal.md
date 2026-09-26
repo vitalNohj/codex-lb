@@ -23,5 +23,5 @@ A CLIProxyAPI Claude auth whose 5h or weekly window is at 0% remaining still has
 - Affected specs: `cliproxy-exhausted-auth-hold`
 - Affected backend code: `app/modules/claude_sidecar/quota.py`, `app/modules/claude_sidecar/quota_poller.py`, `app/modules/claude_sidecar/service.py`, and a new hold planner module under `app/modules/claude_sidecar/`
 - No migration. Holds live in the quota snapshot JSON.
-- No dashboard layout change. A held auth is paused, so the existing Pause/Resume control applies.
+- No dashboard layout change. A held auth uses the existing Rate limited badge. Resume stays available while the auth is disabled. An operator pause still shows Paused.
 - Codex account selection, reset credits, and the sidecar auth-unavailable cooldown stay as they are.

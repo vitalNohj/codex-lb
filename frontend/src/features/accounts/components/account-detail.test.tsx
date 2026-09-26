@@ -169,6 +169,55 @@ describe("AccountDetail", () => {
     expect(screen.getByText(/25 \/ 100 tok/)).toBeInTheDocument();
   });
 
+  it("labels a held sidecar auth Rate limited and keeps Resume", () => {
+    const account = createAccountSummary({
+      accountId: "claude-sidecar",
+      email: "cliproxyapi.local",
+      displayName: "Claude via CLIProxyAPI",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "claude",
+      healthStatus: "healthy",
+      baseUrl: "http://127.0.0.1:8317",
+      sidecarAuths: [
+        {
+          name: "claude-held.json",
+          email: "held@example.com",
+          status: "rate_limited",
+          paused: true,
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 1,
+          failed: 0,
+          primaryRemainingPercent: 0,
+          secondaryRemainingPercent: 70,
+        },
+        {
+          name: "claude-paused.json",
+          email: "paused@example.com",
+          status: "disabled",
+          paused: true,
+          quotaExceeded: false,
+          modelsExceeded: [],
+          success: 1,
+          failed: 0,
+        },
+      ],
+    });
+
+    renderWithClient(<AccountDetail account={account} busy={false} {...detailHandlers} />);
+
+    expect(screen.getByText("Rate limited")).toBeInTheDocument();
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume held@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume paused@example.com" })).toBeInTheDocument();
+    expect(screen.getByText("held@example.com").className).not.toMatch(/line-through/);
+    expect(screen.getByText("paused@example.com").className).toMatch(/line-through/);
+  });
+
   it("shows connection status and no provider badge for a synthetic account", () => {
     const account = createAccountSummary({
       accountId: "openrouter-sidecar",

@@ -14,13 +14,14 @@ Native Codex accounts leave the selector until their own reset. This change does
 - Remember pauses this poller owns so a restart does not resume an operator pause or forget an automatic one.
 - Honor explicit Resume for that same reset time.
 - Retry a failed disable or enable on the next poll.
+- Show an automatic hold with the existing Rate limited badge. Resume stays the control that puts the auth back early.
 
 **Non-Goals:**
 
 - Codex account selection, Codex reset buttons, and reset-credit behavior.
 - A background prompt to test whether the window has recovered.
 - A fixed 300 second cooldown.
-- A new dashboard badge. A held auth is paused, and the existing Resume control applies.
+- A new badge style. The Codex Rate limited pill is reused.
 - Changing the sidecar auth-unavailable cooldown.
 
 ## Decisions
@@ -52,7 +53,7 @@ An unhealthy poll (unauthorized, unreachable, or error) does not patch `disabled
 ## Risks / Trade-offs
 
 - A crash after a successful disable patch and before the snapshot commit looks like an operator pause on the next poll, so the auth stays out of rotation until Resume. The auth is not selected while exhausted. The window for that crash is the snapshot write.
-- The dashboard shows Paused for an automatic hold. Resume is the control that lets the auth back in before the reset, and the poller will not immediately undo that Resume.
+- The dashboard shows Rate limited for an automatic hold, and Paused for an operator pause. Resume is the control that lets the auth back in before the reset, and the poller will not immediately undo that Resume.
 - If the usage fetch fails, the poll keeps the previous buckets. A stored 0% remaining keeps the hold until that stored reset. A stored positive remaining does not create a new hold.
 - Rollback is a code rollback. Auths this version disabled stay disabled until an operator resumes them or a future poll with this behavior enables them.
 
