@@ -215,8 +215,8 @@ async def _item(model_id: str) -> FreeModelDiscoveryRunItem:
         ).scalar_one()
 
 
-async def _eventually[T](check: Callable[[], Awaitable[T]], *, what: str, timeout: float = 10.0) -> T:
-    """Poll ``check`` until it returns something truthy, and return that.
+async def _eventually[T](check: Callable[[], Awaitable[T | None]], *, what: str, timeout: float = 10.0) -> T:
+    """Poll ``check`` until it returns neither ``None`` nor ``False``, and return that.
 
     The runner is driven concurrently, so how far it gets in a fixed sleep
     depends on machine load. Waiting for the state under test keeps these
@@ -227,7 +227,7 @@ async def _eventually[T](check: Callable[[], Awaitable[T]], *, what: str, timeou
     deadline = loop.time() + timeout
     while True:
         result = await check()
-        if result:
+        if result is not None and result is not False:
             return result
         if loop.time() >= deadline:
             raise AssertionError(f"timed out after {timeout}s waiting for {what}")
