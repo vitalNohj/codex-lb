@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import time
+import weakref
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -279,6 +280,29 @@ def _required_continuity_owner_failure(
 SelectionInputs = _SelectionInputs
 
 
+_LIVE_LOAD_BALANCERS: weakref.WeakSet[LoadBalancer] = weakref.WeakSet()
+
+
+def clear_rate_limit_runtime(account_id: str) -> None:
+    """Drop this process's pre-reset 429 markers for one account.
+
+    Reset-credit consume clears persisted ``blocked_at`` before usage catches
+    up. Selection still holds the old marker in runtime and would persist it
+    back onto the row, pinning the account until the pre-reset ``reset_at``.
+    """
+    for balancer in list(_LIVE_LOAD_BALANCERS):
+        runtime = balancer._runtime.get(account_id)
+        if runtime is None:
+            continue
+        if runtime.blocked_at is None and runtime.cooldown_until is None and runtime.reset_at is None:
+            continue
+        runtime.blocked_at = None
+        runtime.cooldown_until = None
+        runtime.reset_at = None
+        runtime.version += 1
+        runtime.health_version += 1
+
+
 class LoadBalancer:
     def __init__(self, repo_factory: ProxyRepoFactory) -> None:
         self._repo_factory = repo_factory
@@ -287,6 +311,7 @@ class LoadBalancer:
         self._account_locks: dict[str, asyncio.Lock] = {}
         self._account_locks_registry_lock = asyncio.Lock()
         self._selection_inputs_cache = get_account_selection_cache()
+        _LIVE_LOAD_BALANCERS.add(self)
 
     async def release_account_lease(self, lease: AccountLease | None) -> None:
         if lease is None:
@@ -2522,7 +2547,13 @@ def _state_from_account(
         status = AccountStatus.RATE_LIMITED
         reset_at = float(account.reset_at)
 
-    if status == AccountStatus.QUOTA_EXCEEDED:
+    if account.blocked_at is None:
+        # Persisted null is authoritative. A runtime marker left from the 429
+        # that a reset credit just waived must not be written back onto the
+        # row, or the old reset_at keeps the account rate-limited until it
+        # elapses even after usage shows the window was reset.
+        next_blocked_at = None
+    elif status == AccountStatus.QUOTA_EXCEEDED:
         next_blocked_at = effective_blocked_at
     elif status == AccountStatus.RATE_LIMITED and account.status != AccountStatus.QUOTA_EXCEEDED:
         next_blocked_at = effective_blocked_at

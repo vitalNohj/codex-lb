@@ -29,6 +29,7 @@ from app.core.balancer.logic import DRAIN_PRIMARY_THRESHOLD_PCT, PROBE_QUIET_SEC
 from app.core.usage.quota import apply_usage_quota
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.proxy.load_balancer import (
+    LoadBalancer,
     RuntimeState,
     _additional_quota_applies_to_plan,
     _AdditionalLimitFilterResult,
@@ -39,6 +40,7 @@ from app.modules.proxy.load_balancer import (
     _state_above_sticky_budget_threshold,
     _state_from_account,
     background_recovery_state_from_account,
+    clear_rate_limit_runtime,
 )
 
 pytestmark = pytest.mark.unit
@@ -3576,6 +3578,71 @@ def test_state_from_account_rejected_reset_without_block_recovers_from_fresh_usa
     assert state.status == AccountStatus.ACTIVE
     assert state.reset_at is None
     assert state.blocked_at is None
+
+
+def test_state_from_account_does_not_restore_runtime_block_after_reset_credit_waive(monkeypatch):
+    # A reset credit clears persisted blocked_at while the process still holds
+    # the pre-reset 429 in runtime. Selection must not copy that marker back
+    # onto the row, or the old reset_at holds the account until it elapses.
+    now = 1_700_000_000.0
+    old_blocked_at = now - 3600
+    persisted_reset = int(now + 4 * 24 * 3600)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=persisted_reset,
+        blocked_at=None,
+    )
+    fresh_primary = _make_test_usage(
+        window="primary",
+        used_percent=0.0,
+        reset_at=int(now + 5 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+        window_minutes=300,
+    )
+    fresh_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=0.0,
+        reset_at=int(now + 7 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+        window_minutes=10080,
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=fresh_primary,
+        secondary_entry=fresh_secondary,
+        runtime=RuntimeState(
+            blocked_at=old_blocked_at,
+            cooldown_until=float(persisted_reset),
+            reset_at=float(persisted_reset),
+        ),
+    )
+
+    assert state.blocked_at is None
+
+
+def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=100.0,
+        cooldown_until=200.0,
+        reset_at=200.0,
+        version=3,
+        health_version=4,
+    )
+
+    clear_rate_limit_runtime("acc")
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at is None
+    assert runtime.cooldown_until is None
+    assert runtime.reset_at is None
+    assert runtime.version == 4
+    assert runtime.health_version == 5
 
 
 def test_state_from_account_preserves_elapsed_reset_for_selector_recovery(monkeypatch):
