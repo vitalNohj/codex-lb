@@ -23,9 +23,7 @@ import pytest
 
 from app.core.utils.sse import SseJsonDataDecoder
 
-_DECODERS: tuple[tuple[str, Callable[[], object]], ...] = (
-    ("shared", SseJsonDataDecoder),
-)
+_DECODERS: tuple[tuple[str, Callable[[], object]], ...] = (("shared", SseJsonDataDecoder),)
 
 
 @pytest.fixture(params=_DECODERS, ids=[name for name, _ in _DECODERS])
