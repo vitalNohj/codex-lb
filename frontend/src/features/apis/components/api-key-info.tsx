@@ -92,6 +92,12 @@ export function ApiKeyInfo({
 						<dd className="text-right font-medium">{allowedEfforts}</dd>
 					</div>
 				) : null}
+				{apiKey.rateLimitAsPaymentRequired ? (
+					<div className="flex items-center justify-between gap-2">
+						<dt className="text-muted-foreground">{t("apis.keyInfo.rateLimitStatus")}</dt>
+						<dd className="font-medium">{t("apis.keyInfo.rateLimitAsPaymentRequired")}</dd>
+					</div>
+				) : null}
 				<div className="flex items-center justify-between gap-2">
 					<dt className="text-muted-foreground">{t("apiKeys.table.expiry")}</dt>
 					<dd

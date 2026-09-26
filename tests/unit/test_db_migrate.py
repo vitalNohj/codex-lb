@@ -2323,6 +2323,83 @@ def test_api_key_reasoning_policy_migration_round_trips_from_current_parent(tmp_
         engine.dispose()
 
 
+def test_api_key_rate_limit_payment_required_migration_round_trips_from_current_parent(tmp_path: Path) -> None:
+    from alembic.script import ScriptDirectory
+
+    db_path = tmp_path / "api-key-rate-limit-payment-required.db"
+    url = _db_url(db_path)
+    parent_revision = "20260925_000000_fold_nvidia_into_openai_compat"
+    target_revision = "20260925_010000_add_api_key_rate_limit_payment_required"
+
+    run_upgrade(url, parent_revision, bootstrap_legacy=False)
+    config = _build_alembic_config(url)
+    script_directory = ScriptDirectory.from_config(config)
+    assert script_directory.get_revision(target_revision).down_revision == parent_revision
+    # Assert reachability from the single head rather than "is the head": every
+    # later migration would otherwise have to edit this test.
+    heads = script_directory.get_heads()
+    assert len(heads) == 1
+    assert target_revision in {revision.revision for revision in script_directory.iterate_revisions(heads[0], "base")}
+
+    engine = create_engine(to_sync_database_url(url))
+    try:
+        with engine.connect() as connection:
+            before = {column["name"] for column in inspect(connection).get_columns("api_keys")}
+            assert "rate_limit_as_payment_required" not in before
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO api_keys "
+                    "(id, name, key_hash, key_prefix, is_active, created_at) "
+                    "VALUES (:id, :name, :key_hash, :key_prefix, :is_active, CURRENT_TIMESTAMP)"
+                ),
+                {
+                    "id": "key_payment_required_migration",
+                    "name": "payment required migration",
+                    "key_hash": "hash_payment_required_migration",
+                    "key_prefix": "sk-migration",
+                    "is_active": True,
+                },
+            )
+
+        command.upgrade(config, target_revision)
+        with engine.connect() as connection:
+            columns = {column["name"] for column in inspect(connection).get_columns("api_keys")}
+            assert "rate_limit_as_payment_required" in columns
+            # An existing key keeps answering rate limits with 429.
+            assert connection.execute(
+                text("SELECT rate_limit_as_payment_required FROM api_keys WHERE id = :id"),
+                {"id": "key_payment_required_migration"},
+            ).scalar_one() in (0, False)
+            connection.execute(
+                text("UPDATE api_keys SET rate_limit_as_payment_required = :enabled WHERE id = :id"),
+                {"enabled": True, "id": "key_payment_required_migration"},
+            )
+            connection.commit()
+
+        command.downgrade(config, parent_revision)
+        with engine.connect() as connection:
+            columns = {column["name"] for column in inspect(connection).get_columns("api_keys")}
+            assert "rate_limit_as_payment_required" not in columns
+            assert (
+                connection.execute(
+                    text("SELECT key_hash FROM api_keys WHERE id = :id"),
+                    {"id": "key_payment_required_migration"},
+                ).scalar_one()
+                == "hash_payment_required_migration"
+            )
+
+        command.upgrade(config, target_revision)
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT rate_limit_as_payment_required FROM api_keys WHERE id = :id"),
+                {"id": "key_payment_required_migration"},
+            ).scalar_one() in (0, False)
+    finally:
+        engine.dispose()
+
+
 def test_http_bridge_operation_migrations_round_trip_existing_rows_and_rebuild_sqlite_defaults(
     tmp_path: Path,
 ) -> None:

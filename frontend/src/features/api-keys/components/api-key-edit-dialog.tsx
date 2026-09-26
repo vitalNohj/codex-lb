@@ -105,6 +105,7 @@ type ApiKeyEditDraft = {
   enforcedServiceTier: string;
   trafficClass: TrafficClass;
   transportPolicyOverride: TransportPolicyOverride | null;
+  rateLimitAsPaymentRequired: boolean;
 };
 
 function createApiKeyEditDraft(apiKey: ApiKey): ApiKeyEditDraft {
@@ -123,6 +124,7 @@ function createApiKeyEditDraft(apiKey: ApiKey): ApiKeyEditDraft {
     enforcedServiceTier: apiKey.enforcedServiceTier || "none",
     trafficClass: apiKey.trafficClass || "foreground",
     transportPolicyOverride: apiKey.transportPolicyOverride,
+    rateLimitAsPaymentRequired: apiKey.rateLimitAsPaymentRequired,
   };
 }
 
@@ -178,6 +180,7 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
       enforcedServiceTier: draft.enforcedServiceTier === "none" ? null : draft.enforcedServiceTier as ServiceTierType,
       trafficClass: draft.trafficClass,
       transportPolicyOverride: draft.transportPolicyOverride,
+      rateLimitAsPaymentRequired: draft.rateLimitAsPaymentRequired,
       usageSections: draft.usageSections,
       expiresAt: draft.expiresAt?.toISOString() ?? null,
       isActive: values.isActive,
@@ -378,6 +381,23 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-1 rounded-md border p-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="edit-api-key-rate-limit-as-payment-required"
+                  checked={draft.rateLimitAsPaymentRequired}
+                  aria-describedby="edit-api-key-rate-limit-as-payment-required-hint"
+                  onCheckedChange={(checked) => updateDraft({ rateLimitAsPaymentRequired: checked === true })}
+                />
+                <label htmlFor="edit-api-key-rate-limit-as-payment-required" className="cursor-pointer">
+                  {t("apiKeys.form.rateLimitAsPaymentRequired")}
+                </label>
+              </div>
+              <p id="edit-api-key-rate-limit-as-payment-required-hint" className="text-xs text-muted-foreground">
+                {t("apiKeys.form.rateLimitAsPaymentRequiredHint")}
+              </p>
             </div>
 
             <div className="space-y-1">
