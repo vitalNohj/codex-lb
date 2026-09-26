@@ -1094,6 +1094,8 @@ async def test_reset_credit_refresh_clears_block_when_usage_lags_then_periodic_r
 
     monkeypatch.setattr(usage_updater_module, "fetch_usage", _fetch_usage)
     monkeypatch.setattr(usage_updater_module, "resolve_upstream_route", AsyncMock(return_value=None))
+    cleared_runtime: list[str] = []
+    monkeypatch.setattr(usage_updater_module, "_clear_rate_limit_runtime", cleared_runtime.append)
 
     lagged = await updater.force_refresh_result(
         account,
@@ -1105,6 +1107,7 @@ async def test_reset_credit_refresh_clears_block_when_usage_lags_then_periodic_r
     assert account.status == AccountStatus.RATE_LIMITED
     assert account.blocked_at is None
     assert account.reset_at == now + 5 * 24 * 3600
+    assert cleared_runtime == [account.id]
 
     await updater._refresh_account(account, usage_account_id=account.chatgpt_account_id)
 

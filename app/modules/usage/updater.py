@@ -405,6 +405,9 @@ class UsageUpdater:
             # (still exhausted on this call) cannot pin the old cooldown after
             # restart. A later periodic refresh recovers once quota is available.
             await self._waive_persisted_block_after_reset_credit(account)
+            # Selection keeps the same 429 in process memory and would persist
+            # it back onto the row while the lagged snapshot is still exhausted.
+            _clear_rate_limit_runtime(account.id)
         settings = get_settings()
         if not settings.usage_refresh_enabled and not ignore_refresh_disabled:
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
@@ -1000,6 +1003,12 @@ class UsageUpdater:
         account.deactivation_reason = stored.deactivation_reason
         account.reset_at = stored.reset_at
         account.blocked_at = stored.blocked_at
+
+
+def _clear_rate_limit_runtime(account_id: str) -> None:
+    from app.modules.proxy.load_balancer import clear_rate_limit_runtime
+
+    clear_rate_limit_runtime(account_id)
 
 
 def build_background_usage_updater() -> UsageUpdater:
