@@ -1792,6 +1792,12 @@ class ApiKey(Base):
         server_default=false(),
         nullable=False,
     )
+    rate_limit_as_payment_required: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
     usage_sections: Mapped[str | None] = mapped_column(
         Text,
         nullable=False,
