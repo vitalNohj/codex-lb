@@ -12,7 +12,7 @@ See the [Responses capacity recovery contract](https://github.com/Soju06/codex-l
 ## Streaming
 
 **Codex CLI falls back to POST instead of WebSockets.**
-Run the [WebSocket verification steps](client-setup.md#verify-websocket-transport). If codex-lb sits behind a reverse proxy, make sure it forwards WebSocket upgrades — see [Remote Access](deployment/remote.md).
+Run the [WebSocket verification steps](client-setup.md#verify-websocket-transport). If verification passes but the CLI still falls back, restart the CLI so it re-reads the transport setting. If codex-lb sits behind a reverse proxy, make sure it forwards WebSocket upgrades — see [Remote Access](deployment/remote.md).
 
 ## Fast Mode, Ultrafast, and service tiers
 
