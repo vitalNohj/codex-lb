@@ -10,3 +10,5 @@
 
 - [x] 3.1 Cover a waived row whose runtime still holds the pre-reset 429.
 - [x] 3.2 Cover the forced refresh calling the runtime clear.
+- [x] 3.3 Cover a missed waiver leaving a newer runtime 429 in place.
+- [x] 3.4 Cover a runtime marker newer than the waived `blocked_at` surviving the clear.

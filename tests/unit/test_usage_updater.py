@@ -1094,8 +1094,12 @@ async def test_reset_credit_refresh_clears_block_when_usage_lags_then_periodic_r
 
     monkeypatch.setattr(usage_updater_module, "fetch_usage", _fetch_usage)
     monkeypatch.setattr(usage_updater_module, "resolve_upstream_route", AsyncMock(return_value=None))
-    cleared_runtime: list[str] = []
-    monkeypatch.setattr(usage_updater_module, "_clear_rate_limit_runtime", cleared_runtime.append)
+    cleared_runtime: list[tuple[str, float]] = []
+
+    async def _record_clear(account_id: str, *, waived_blocked_at: float) -> None:
+        cleared_runtime.append((account_id, waived_blocked_at))
+
+    monkeypatch.setattr(usage_updater_module, "_clear_rate_limit_runtime", _record_clear)
 
     lagged = await updater.force_refresh_result(
         account,
@@ -1107,13 +1111,63 @@ async def test_reset_credit_refresh_clears_block_when_usage_lags_then_periodic_r
     assert account.status == AccountStatus.RATE_LIMITED
     assert account.blocked_at is None
     assert account.reset_at == now + 5 * 24 * 3600
-    assert cleared_runtime == [account.id]
+    assert cleared_runtime == [(account.id, float(now - 60))]
 
     await updater._refresh_account(account, usage_account_id=account.chatgpt_account_id)
 
     assert account.status == AccountStatus.ACTIVE
     assert account.reset_at is None
     assert account.blocked_at is None
+
+
+@pytest.mark.asyncio
+async def test_reset_credit_refresh_keeps_runtime_when_newer_block_wins_compare_and_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accounts_repo = StubAccountsRepository()
+    usage_repo = StubUsageRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo)
+    account = _make_account("acc_reset_credit_race", "workspace_reset_credit_race")
+    account.status = AccountStatus.RATE_LIMITED
+    account.deactivation_reason = None
+    now = int(time.time())
+    account.blocked_at = now - 60
+    account.reset_at = now + 5 * 24 * 3600
+    stored = _make_account("acc_reset_credit_race", "workspace_reset_credit_race")
+    stored.status = AccountStatus.RATE_LIMITED
+    stored.deactivation_reason = None
+    stored.blocked_at = now
+    stored.reset_at = now + 3600
+    accounts_repo.accounts_by_id[account.id] = stored
+
+    async def _fetch_usage(**kwargs: object) -> UsagePayload:
+        del kwargs
+        return UsagePayload(
+            plan_type="plus",
+            rate_limit=RateLimitPayload(
+                primary_window=usage_updater_module.UsageWindow(used_percent=100.0, reset_at=now + 3600),
+                secondary_window=usage_updater_module.UsageWindow(used_percent=0.0, reset_at=now + 86400),
+            ),
+        )
+
+    monkeypatch.setattr(usage_updater_module, "fetch_usage", _fetch_usage)
+    monkeypatch.setattr(usage_updater_module, "resolve_upstream_route", AsyncMock(return_value=None))
+    cleared_runtime: list[tuple[str, float]] = []
+
+    async def _record_clear(account_id: str, *, waived_blocked_at: float) -> None:
+        cleared_runtime.append((account_id, waived_blocked_at))
+
+    monkeypatch.setattr(usage_updater_module, "_clear_rate_limit_runtime", _record_clear)
+
+    await updater.force_refresh_result(
+        account,
+        ignore_refresh_disabled=True,
+        ignore_persisted_cooldown=True,
+    )
+
+    assert cleared_runtime == []
+    assert account.blocked_at == now
+    assert account.status == AccountStatus.RATE_LIMITED
 
 
 @pytest.mark.asyncio

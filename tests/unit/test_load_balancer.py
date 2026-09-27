@@ -3625,7 +3625,8 @@ def test_state_from_account_does_not_restore_runtime_block_after_reset_credit_wa
     assert state.blocked_at is None
 
 
-def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
     balancer = LoadBalancer(repo_factory=lambda: None)
     balancer._runtime["acc"] = RuntimeState(
         blocked_at=100.0,
@@ -3635,7 +3636,7 @@ def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
         health_version=4,
     )
 
-    clear_rate_limit_runtime("acc")
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100.0)
 
     runtime = balancer._runtime["acc"]
     assert runtime.blocked_at is None
@@ -3643,6 +3644,65 @@ def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
     assert runtime.reset_at is None
     assert runtime.version == 4
     assert runtime.health_version == 5
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_keeps_newer_marker():
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=300.0,
+        cooldown_until=400.0,
+        reset_at=400.0,
+        version=3,
+        health_version=4,
+    )
+
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100.0)
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at == 300.0
+    assert runtime.cooldown_until == 400.0
+    assert runtime.reset_at == 400.0
+    assert runtime.version == 3
+    assert runtime.health_version == 4
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_keeps_marker_recorded_under_account_lock():
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=100.0,
+        cooldown_until=200.0,
+        reset_at=200.0,
+        version=1,
+        health_version=1,
+    )
+    lock = await balancer._get_account_lock("acc")
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
+    async def record_newer_while_holding_lock() -> None:
+        async with lock:
+            holding.set()
+            await release.wait()
+            runtime = balancer._runtime["acc"]
+            runtime.blocked_at = 300.0
+            runtime.cooldown_until = 400.0
+            runtime.reset_at = 400.0
+
+    holder = asyncio.create_task(record_newer_while_holding_lock())
+    await holding.wait()
+    clear_task = asyncio.create_task(clear_rate_limit_runtime("acc", waived_blocked_at=100.0))
+    await asyncio.sleep(0)
+    assert clear_task.done() is False
+    release.set()
+    await clear_task
+    await holder
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at == 300.0
+    assert runtime.cooldown_until == 400.0
+    assert runtime.reset_at == 400.0
 
 
 def test_state_from_account_preserves_elapsed_reset_for_selector_recovery(monkeypatch):

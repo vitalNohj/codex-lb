@@ -283,24 +283,18 @@ SelectionInputs = _SelectionInputs
 _LIVE_LOAD_BALANCERS: weakref.WeakSet[LoadBalancer] = weakref.WeakSet()
 
 
-def clear_rate_limit_runtime(account_id: str) -> None:
+async def clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: float) -> None:
     """Drop this process's pre-reset 429 markers for one account.
 
     Reset-credit consume clears persisted ``blocked_at`` before usage catches
     up. Selection still holds the old marker in runtime and would persist it
     back onto the row, pinning the account until the pre-reset ``reset_at``.
+    A runtime ``blocked_at`` newer than ``waived_blocked_at`` belongs to a 429
+    the waiver did not clear, so that marker stays. The account lock is the
+    same one ``mark_rate_limit`` holds while it records a 429.
     """
     for balancer in list(_LIVE_LOAD_BALANCERS):
-        runtime = balancer._runtime.get(account_id)
-        if runtime is None:
-            continue
-        if runtime.blocked_at is None and runtime.cooldown_until is None and runtime.reset_at is None:
-            continue
-        runtime.blocked_at = None
-        runtime.cooldown_until = None
-        runtime.reset_at = None
-        runtime.version += 1
-        runtime.health_version += 1
+        await balancer._drop_waived_rate_limit_runtime(account_id, waived_blocked_at=waived_blocked_at)
 
 
 class LoadBalancer:
@@ -312,6 +306,22 @@ class LoadBalancer:
         self._account_locks_registry_lock = asyncio.Lock()
         self._selection_inputs_cache = get_account_selection_cache()
         _LIVE_LOAD_BALANCERS.add(self)
+
+    async def _drop_waived_rate_limit_runtime(self, account_id: str, *, waived_blocked_at: float) -> None:
+        lock = await self._get_account_lock(account_id)
+        async with lock:
+            runtime = self._runtime.get(account_id)
+            if runtime is None:
+                return
+            if runtime.blocked_at is not None and runtime.blocked_at > waived_blocked_at:
+                return
+            if runtime.blocked_at is None and runtime.cooldown_until is None and runtime.reset_at is None:
+                return
+            runtime.blocked_at = None
+            runtime.cooldown_until = None
+            runtime.reset_at = None
+            runtime.version += 1
+            runtime.health_version += 1
 
     async def release_account_lease(self, lease: AccountLease | None) -> None:
         if lease is None:

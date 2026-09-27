@@ -404,10 +404,13 @@ class UsageUpdater:
             # 429 block marker before the fetch so a lagged /wham/usage sample
             # (still exhausted on this call) cannot pin the old cooldown after
             # restart. A later periodic refresh recovers once quota is available.
-            await self._waive_persisted_block_after_reset_credit(account)
-            # Selection keeps the same 429 in process memory and would persist
+            waived_blocked_at = await self._waive_persisted_block_after_reset_credit(account)
+            # Selection keeps the waived 429 in process memory and would persist
             # it back onto the row while the lagged snapshot is still exhausted.
-            _clear_rate_limit_runtime(account.id)
+            # A missed compare-and-set means a newer 429 owns the row. Leave
+            # that marker, and any runtime block newer than the waived one.
+            if waived_blocked_at is not None:
+                await _clear_rate_limit_runtime(account.id, waived_blocked_at=waived_blocked_at)
         settings = get_settings()
         if not settings.usage_refresh_enabled and not ignore_refresh_disabled:
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
@@ -858,21 +861,23 @@ class UsageUpdater:
         )
         return True
 
-    async def _waive_persisted_block_after_reset_credit(self, account: Account) -> None:
+    async def _waive_persisted_block_after_reset_credit(self, account: Account) -> float | None:
         """Clear the 429 ``blocked_at`` marker after a successful reset credit.
 
+        Returns the waived ``blocked_at`` when the compare-and-set clears it.
+        Returns None when there is nothing to waive or a newer 429 wins the row.
         ``blocked_at`` is what arms the persisted cooldown hold. Removing it
         leaves status and ``reset_at`` unchanged, so an exhausted snapshot
         stays out of rotation, while a later refresh that sees available quota
-        can recover without the pre-reset deadline. A newer 429 rewrites
-        ``blocked_at`` and the compare-and-set misses.
+        can recover without the pre-reset deadline.
         """
         if not self._auth_manager:
-            return
+            return None
         if account.status not in (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED):
-            return
+            return None
         if account.blocked_at is None:
-            return
+            return None
+        waived_blocked_at = float(account.blocked_at)
         repo = cast(AccountsRepositoryWithStatusComparePort, self._auth_manager._repo)
         updated = await repo.update_status_if_current(
             account.id,
@@ -887,8 +892,9 @@ class UsageUpdater:
         )
         if not updated:
             await self._sync_account_from_repo(account)
-            return
+            return None
         account.blocked_at = None
+        return waived_blocked_at
 
     async def _recover_quota_status_from_usage(
         self,
@@ -1005,10 +1011,10 @@ class UsageUpdater:
         account.blocked_at = stored.blocked_at
 
 
-def _clear_rate_limit_runtime(account_id: str) -> None:
+async def _clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: float) -> None:
     from app.modules.proxy.load_balancer import clear_rate_limit_runtime
 
-    clear_rate_limit_runtime(account_id)
+    await clear_rate_limit_runtime(account_id, waived_blocked_at=waived_blocked_at)
 
 
 def build_background_usage_updater() -> UsageUpdater:
