@@ -136,14 +136,19 @@ async def _apply_rate_limit_holds(
 ) -> SidecarQuotaSnapshot:
     """Disable an exhausted auth until its known reset, then enable it again.
 
-    Unhealthy polls keep the holds already stored and do not change ``disabled``.
-    A failed management update leaves that one transition uncommitted.
+    Unhealthy polls, and a failed auth listing under the write lock, keep the
+    holds already stored and do not change ``disabled``. A failed management
+    update leaves that one transition uncommitted. ``disabled`` used for planning
+    comes from the auth listing taken under the lock, not from the previous snapshot.
     """
     previous_holds = previous.rate_limit_holds if previous is not None else ()
     if snapshot.status != "healthy":
         return replace(snapshot, rate_limit_holds=previous_holds)
 
-    accounts = _accounts_with_stored_disabled(snapshot.accounts, previous)
+    live_disabled = await _live_disabled_by_name(client)
+    if live_disabled is None:
+        return replace(snapshot, rate_limit_holds=previous_holds)
+    accounts = _accounts_with_live_disabled(snapshot.accounts, live_disabled)
     plan = plan_rate_limit_holds(accounts, previous_holds, snapshot.checked_at)
     failed_disables: set[str] = set()
     failed_enables: set[str] = set()
@@ -163,22 +168,34 @@ async def _apply_rate_limit_holds(
     return replace(snapshot, accounts=accounts, rate_limit_holds=holds)
 
 
-def _accounts_with_stored_disabled(
-    accounts: tuple[SidecarAuthQuota, ...],
-    previous: SidecarQuotaSnapshot | None,
-) -> tuple[SidecarAuthQuota, ...]:
-    """Prefer ``disabled`` from the snapshot re-read under the write lock.
+async def _live_disabled_by_name(client: ClaudeSidecarClient) -> dict[str, bool] | None:
+    """Re-list auth files under the write lock and return each live ``disabled`` flag.
 
-    The auth listing is taken before that lock, so an operator pause or resume
-    that finished during the usage fetch is visible here and not in the listing.
+    Pause and Resume hold the same lock across their management PATCH, so this
+    listing already includes that change. A listing error returns None and the
+    caller leaves holds and ``disabled`` unchanged for this poll.
     """
-    if previous is None:
-        return accounts
-    stored = {auth.name: auth.disabled for auth in previous.accounts if auth.name}
-    if not stored:
-        return accounts
+    try:
+        raw_files = await client.list_auth_files()
+    except ClaudeSidecarError:
+        logger.warning("failed to re-list CLIProxyAPI auth files for a rate-limit hold", exc_info=True)
+        return None
+    parsed = await asyncio.to_thread(parse_auth_files, raw_files)
+    return {account.name: account.disabled for account in parsed if account.name}
+
+
+def _accounts_with_live_disabled(
+    accounts: tuple[SidecarAuthQuota, ...],
+    live_disabled: dict[str, bool],
+) -> tuple[SidecarAuthQuota, ...]:
+    """Replace ``disabled`` with the value from the locked auth listing.
+
+    The first listing is taken before the write lock. Names present in the
+    locked listing take that live value. Names absent from it keep the value
+    from the first listing. The previous snapshot's ``disabled`` flag is not used.
+    """
     return tuple(
-        replace(account, disabled=stored[account.name]) if account.name in stored else account
+        replace(account, disabled=live_disabled[account.name]) if account.name in live_disabled else account
         for account in accounts
     )
 

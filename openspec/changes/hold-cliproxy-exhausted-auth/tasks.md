@@ -19,6 +19,7 @@
 
 ## 5. Review fixes
 
-- [x] 5.1 Overlay stored `disabled` under the write lock, and hold that lock across an operator pause or resume.
+- [x] 5.1 Hold the write lock across an operator pause or resume. Under that lock, re-list auth files and store the live `disabled` value. Do not copy `disabled` from the previous snapshot.
 - [x] 5.2 Keep an unreleased hold when usage is missing and its reset is still in the future. Enable once that reset has passed. Resume without usage releases the stored reset.
 - [x] 5.3 Explicit pause removes any hold for that auth. A healthy poll keeps a hold whose auth is absent from the listing.
+- [x] 5.4 A failed auth listing under the write lock does not patch `disabled` and keeps the stored holds.

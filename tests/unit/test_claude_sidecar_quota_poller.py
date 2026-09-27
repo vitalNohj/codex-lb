@@ -566,9 +566,14 @@ class _MutableAuthClient:
         self.disabled = False
         self.fail_disable = False
         self.fail_enable = False
+        self.fail_after_lists: int | None = None
+        self.list_calls = 0
         self.patches: list[tuple[str, bool]] = []
 
     async def list_auth_files(self) -> list[Mapping[str, Any]]:
+        self.list_calls += 1
+        if self.fail_after_lists is not None and self.list_calls > self.fail_after_lists:
+            raise ClaudeSidecarError(503, "list failed")
         return [
             {
                 "name": _AUTH_NAME,
@@ -792,12 +797,20 @@ async def test_poll_preserves_holds_when_listing_fails(monkeypatch) -> None:
 async def test_poll_keeps_operator_pause_recorded_during_the_usage_fetch(monkeypatch) -> None:
     client = _MutableAuthClient()
     client.disabled = False
+    usage = _usage(0.0, 70.0, five_reset=_FUTURE)
     repo_holder, poller = _poll_with_usage(
         monkeypatch,
         _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json()),
         client,
-        _usage(0.0, 70.0, five_reset=_FUTURE),
+        usage,
     )
+
+    async def _fetch_then_pause(_client: object, auth_index: str) -> SidecarOAuthUsage:
+        assert auth_index == "1"
+        client.disabled = True
+        return usage
+
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_then_pause)
 
     await poller._poll_once()
 
@@ -833,6 +846,68 @@ async def test_poll_keeps_hold_when_usage_is_unknown_before_reset(monkeypatch) -
         raise ClaudeOAuthUsageError("Anthropic OAuth usage endpoint returned HTTP 429")
 
     monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_fails)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == (hold,)
+
+
+@pytest.mark.asyncio
+async def test_poll_stores_a_live_pause_over_an_enabled_snapshot(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = True
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json(disabled=False)),
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_stores_a_live_resume_over_a_disabled_snapshot(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = False
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json()),
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is False
+    assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_hold_when_locked_listing_fails(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = True
+    client.fail_after_lists = 1
+    hold = SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=False)
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json(hold)),
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
 
     await poller._poll_once()
 

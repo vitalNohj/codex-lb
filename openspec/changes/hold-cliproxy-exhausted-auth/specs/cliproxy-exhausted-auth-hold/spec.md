@@ -64,17 +64,49 @@ codex-lb MUST NOT enable a Claude auth that is already disabled unless the quota
 - **THEN** codex-lb leaves that auth file disabled
 
 ### Requirement: Keep an operator pause recorded during a quota poll
-When the quota snapshot re-read under the write lock shows a Claude auth disabled and records no unreleased hold for it, the quota poll MUST NOT record a hold for that auth and MUST NOT set its `disabled` field to false, even when the auth listing taken before the lock shows the auth enabled.
+A healthy Claude sidecar quota poll MUST read each auth's live `disabled` value under the write lock and MUST use that value for hold planning and for the snapshot it stores. A live disabled auth with no unreleased hold MUST NOT receive a new hold and MUST NOT be enabled, even when the auth listing taken before the lock showed the auth enabled.
 
 #### Scenario: Pause finishes during the usage fetch
 - **GIVEN** the auth listing taken before the write lock shows a Claude auth enabled
 - **AND** a usage window is exhausted with a reset time in the future
-- **AND** the snapshot re-read under the write lock shows that auth disabled
-- **AND** that snapshot has no unreleased hold for that auth
+- **AND** Pause set that auth file's `disabled` field to true before the poll acquired the write lock
+- **AND** the snapshot has no unreleased hold for that auth
 - **WHEN** the Claude sidecar quota poll commits
 - **THEN** codex-lb does not change that auth file's `disabled` field
 - **AND** the snapshot still has no hold for that auth
-- **AND** the stored auth stays disabled
+- **AND** the stored auth is disabled
+
+### Requirement: Store the live disabled value instead of the previous snapshot
+A healthy Claude sidecar quota poll MUST store the `disabled` value read from CLIProxyAPI under the write lock, and MUST NOT replace that value with the `disabled` flag from the previous snapshot.
+
+#### Scenario: External pause is stored
+- **GIVEN** the previous snapshot shows a Claude auth enabled
+- **AND** the auth file is disabled
+- **AND** the snapshot has no unreleased hold for that auth
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** the stored snapshot shows that auth disabled
+- **AND** the snapshot still has no hold for that auth
+- **AND** codex-lb does not set `disabled` back to false
+
+#### Scenario: External resume is stored
+- **GIVEN** the previous snapshot shows a Claude auth disabled
+- **AND** the snapshot has no hold for that auth
+- **AND** the auth file is enabled
+- **AND** neither usage window is exhausted
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** the stored snapshot shows that auth enabled
+- **AND** codex-lb does not set `disabled` to true
+
+### Requirement: Skip hold changes when the locked auth listing fails
+When the auth listing under the write lock fails, the quota poll MUST NOT change any CLIProxyAPI `disabled` field and MUST keep the holds already stored.
+
+#### Scenario: Locked listing fails
+- **GIVEN** the quota snapshot records an unreleased hold for a disabled Claude auth
+- **AND** the usage window is no longer exhausted
+- **AND** the auth listing under the write lock returns an error
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** codex-lb does not set that auth file's `disabled` field to false
+- **AND** the snapshot still records that unreleased hold
 
 ### Requirement: Keep an owned hold when usage is unknown before its reset
 When a Claude sidecar quota poll has no usage reading for an auth and the snapshot records an unreleased hold whose reset time is still after the poll time, codex-lb MUST keep that hold and MUST NOT enable that auth.

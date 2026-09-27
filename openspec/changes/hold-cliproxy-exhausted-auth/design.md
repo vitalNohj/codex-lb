@@ -38,7 +38,7 @@ Alternative: probe the auth on a timer. Rejected because the probe spends the qu
 
 `released` false means this poller turned the auth off and must turn it back on when the window clears. `released` true means an operator resumed that same reset instant. The next poll must not disable it again until the computed deadline changes.
 
-An auth that is already disabled, with no owned hold, is an operator pause. The poller does not adopt it and does not enable it later. The auth listing is taken before the write lock, so the poll overlays `disabled` from the snapshot re-read under the lock. A pause or resume that finished during the usage fetch is the value the planner sees.
+An auth that is already disabled, with no owned hold, is an operator pause. The poller does not adopt it and does not enable it later. The first auth listing is taken before the write lock. Under the lock the poll lists the auth files again and uses that live `disabled` value for planning and for the snapshot it stores. Pause and Resume hold the same lock across their PATCH, so a pause or resume that finished during the usage fetch is already in that listing. The previous snapshot's `disabled` flag is not copied forward. If the locked listing fails, the poll does not patch `disabled` and keeps the stored holds.
 
 ### D3. Patch only on a transition
 
