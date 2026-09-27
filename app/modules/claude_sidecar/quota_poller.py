@@ -109,16 +109,27 @@ class ClaudeSidecarQuotaPoller:
         if not config.management_key:
             return
         client = self._client_factory(config)
-        previous_snapshot = snapshot_from_json(settings_row.claude_sidecar_quota_state_json)
-        snapshot = await _classify_poll_result(client, previous_snapshot)
-        await self._persist_snapshot(client, snapshot)
+        stored_before = snapshot_from_json(settings_row.claude_sidecar_quota_state_json)
+        snapshot = await _classify_poll_result(client, stored_before)
+        await self._persist_snapshot(client, snapshot, stored_before=stored_before)
 
-    async def _persist_snapshot(self, client: ClaudeSidecarClient, snapshot: SidecarQuotaSnapshot) -> None:
+    async def _persist_snapshot(
+        self,
+        client: ClaudeSidecarClient,
+        snapshot: SidecarQuotaSnapshot,
+        *,
+        stored_before: SidecarQuotaSnapshot | None = None,
+    ) -> None:
         try:
             async with exclusion_write_lock(), get_background_session() as session:
                 repo = SettingsRepository(session)
                 previous = snapshot_from_json((await repo.get_fresh()).claude_sidecar_quota_state_json)
-                snapshot = await _apply_rate_limit_holds(client, snapshot, previous)
+                snapshot = await _apply_rate_limit_holds(
+                    client,
+                    snapshot,
+                    previous,
+                    stored_before=stored_before,
+                )
                 snapshot = await asyncio.to_thread(_refresh_exclusions, snapshot)
                 await repo.update_operational(
                     claude_sidecar_quota_state_json=snapshot_to_json(snapshot),
@@ -133,15 +144,18 @@ async def _apply_rate_limit_holds(
     client: ClaudeSidecarClient,
     snapshot: SidecarQuotaSnapshot,
     previous: SidecarQuotaSnapshot | None,
+    *,
+    stored_before: SidecarQuotaSnapshot | None = None,
 ) -> SidecarQuotaSnapshot:
     """Disable an exhausted auth until its known reset, then enable it again.
 
     Unhealthy polls, and a failed auth listing under the write lock, keep the
-    holds already stored. A failed listing restores ``disabled`` from the
-    snapshot read under the lock, so a pause or resume saved during the usage
-    fetch is not overwritten by the pre-lock listing. A failed management
-    update leaves that one transition uncommitted. ``disabled`` used for planning
-    comes from the auth listing taken under the lock when that listing succeeds.
+    holds already stored. A failed listing keeps the first listing's ``disabled``
+    flags unless a pause or resume changed the stored snapshot during the usage
+    fetch. That change is the difference between the snapshot from before the
+    fetch and the snapshot read under the lock. A failed management update leaves
+    that one transition uncommitted. ``disabled`` used for planning comes from
+    the auth listing taken under the lock when that listing succeeds.
     """
     previous_holds = previous.rate_limit_holds if previous is not None else ()
     if snapshot.status != "healthy":
@@ -149,16 +163,10 @@ async def _apply_rate_limit_holds(
 
     live_disabled = await _live_disabled_by_name(client)
     if live_disabled is None:
-        stored_disabled = (
-            {auth.name: auth.disabled for auth in previous.accounts if auth.name}
-            if previous is not None
-            else {}
-        )
-        return replace(
-            snapshot,
-            accounts=_accounts_with_live_disabled(snapshot.accounts, stored_disabled),
-            rate_limit_holds=previous_holds,
-        )
+        accounts = snapshot.accounts
+        if _disabled_flags(previous) != _disabled_flags(stored_before):
+            accounts = _accounts_with_live_disabled(snapshot.accounts, _disabled_flags(previous))
+        return replace(snapshot, accounts=accounts, rate_limit_holds=previous_holds)
     accounts = _accounts_with_live_disabled(snapshot.accounts, live_disabled)
     plan = plan_rate_limit_holds(accounts, previous_holds, snapshot.checked_at)
     failed_disables: set[str] = set()
@@ -194,6 +202,14 @@ async def _live_disabled_by_name(client: ClaudeSidecarClient) -> dict[str, bool]
         return None
     parsed = await asyncio.to_thread(parse_auth_files, raw_files)
     return {account.name: account.disabled for account in parsed if account.name}
+
+
+def _disabled_flags(snapshot: SidecarQuotaSnapshot | None) -> dict[str, bool]:
+    """Return each named auth's ``disabled`` flag from a stored snapshot."""
+
+    if snapshot is None:
+        return {}
+    return {auth.name: auth.disabled for auth in snapshot.accounts if auth.name}
 
 
 def _accounts_with_live_disabled(

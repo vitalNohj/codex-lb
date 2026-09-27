@@ -946,3 +946,26 @@ async def test_poll_keeps_pause_saved_during_fetch_when_locked_listing_fails(mon
     assert snapshot is not None
     assert snapshot.accounts[0].disabled is True
     assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_first_listing_when_locked_listing_fails_without_a_local_pause(
+    monkeypatch,
+) -> None:
+    client = _MutableAuthClient()
+    client.disabled = True
+    client.fail_after_lists = 1
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json(disabled=False)),
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == ()
