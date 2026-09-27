@@ -18,10 +18,12 @@ from app.modules.claude_sidecar.oauth_usage_response import build_anthropic_oaut
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
-    dashboard_auth_status,
+    SidecarRateLimitHold,
+    dashboard_status_for_auth,
     snapshot_from_json,
     snapshot_to_json,
 )
+from app.modules.claude_sidecar.rate_limit_hold import holds_after_operator_change
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarModelsResponse,
     ClaudeSidecarModelSummary,
@@ -153,13 +155,15 @@ class ClaudeSidecarService:
             estimates_by_key = {
                 key: estimate for estimate in estimates.accounts if (key := _estimate_key(estimate)) is not None
             }
+        holds = snapshot.rate_limit_holds
         return ClaudeSidecarQuotaResponse(
             status=snapshot.status,
             message=snapshot.message,
             checked_at=snapshot.checked_at,
             accounts=await asyncio.to_thread(
                 lambda: [
-                    _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or "")) for auth in snapshot.accounts
+                    _to_auth_account(auth, estimates_by_key.get(_auth_key(auth) or ""), holds)
+                    for auth in snapshot.accounts
                 ]
             ),
         )
@@ -273,16 +277,19 @@ class ClaudeSidecarService:
             status, message = guarded
             return ClaudeSidecarRoutingResponse(status=status, message=message)
 
-        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        try:
-            await client.patch_auth_file_disabled(name, paused)
-        except ClaudeSidecarUnavailableError as exc:
-            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
-        except ClaudeSidecarError as exc:
-            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
-            message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
-            return ClaudeSidecarRoutingResponse(status=status, message=message)
-        await self._patch_snapshot_disabled(name, paused)
+        async with exclusion_write_lock():
+            client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+            try:
+                await client.patch_auth_file_disabled(name, paused)
+            except ClaudeSidecarUnavailableError as exc:
+                return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+            except ClaudeSidecarError as exc:
+                status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+                message = (
+                    "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
+                )
+                return ClaudeSidecarRoutingResponse(status=status, message=message)
+            await self._patch_snapshot_disabled_locked(name, paused)
         return await self.get_routing()
 
     async def set_account_excluded_models(
@@ -319,10 +326,6 @@ class ClaudeSidecarService:
         )
         return response
 
-    async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
-        async with exclusion_write_lock():
-            await self._patch_snapshot_disabled_locked(name, paused)
-
     async def _patch_snapshot_disabled_locked(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.
 
@@ -338,10 +341,18 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
+        account = next((auth for auth in snapshot.accounts if auth.name == name), None)
         updated = [replace(auth, disabled=paused) if auth.name == name else auth for auth in snapshot.accounts]
-        if updated == list(snapshot.accounts):
+        holds = holds_after_operator_change(
+            snapshot.rate_limit_holds,
+            name,
+            paused,
+            account,
+            datetime.now(timezone.utc),
+        )
+        if updated == list(snapshot.accounts) and holds == snapshot.rate_limit_holds:
             return
-        patched = replace(snapshot, accounts=tuple(updated))
+        patched = replace(snapshot, accounts=tuple(updated), rate_limit_holds=holds)
         await self._settings_repository.update_operational(
             claude_sidecar_quota_state_json=snapshot_to_json(patched),
         )
@@ -486,13 +497,14 @@ def _sanitize_message(message: str) -> str:
 def _to_auth_account(
     auth: SidecarAuthQuota,
     estimate: ClaudeAuthUsageEstimate | None = None,
+    holds: tuple[SidecarRateLimitHold, ...] = (),
 ) -> SidecarAuthAccount:
     patterns = excluded_models_from_auth_file(auth.credential_path)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
-        status=dashboard_auth_status(auth),
+        status=dashboard_status_for_auth(auth, holds),
         paused=auth.disabled,
         excluded_models=patterns or [],
         excluded_models_state="available" if patterns is not None else "unreadable",
