@@ -62,17 +62,21 @@ def plan_rate_limit_holds(
             continue
         seen.add(account.name)
         until = rate_limit_hold_until(account, now)
+        owned = _unreleased(existing_holds, account.name)
         if until is not None:
             if _released_for(existing_holds, account.name, until):
                 holds.append(SidecarRateLimitHold(name=account.name, until=until, released=True))
                 continue
-            if account.disabled and _unreleased(existing_holds, account.name) is None:
+            if account.disabled and owned is None:
                 continue
             holds.append(SidecarRateLimitHold(name=account.name, until=until, released=False))
             if not account.disabled:
                 disables.append(account.name)
             continue
-        if _unreleased(existing_holds, account.name) is not None and account.disabled:
+        if owned is not None and account.oauth_usage is None and _as_utc(owned.until) > _as_utc(now):
+            holds.append(owned)
+            continue
+        if owned is not None and account.disabled:
             enables.append(account.name)
     return RateLimitHoldPlan(
         holds=tuple(holds),
@@ -122,6 +126,9 @@ def apply_hold_results(
         planned = planned_by_name.get(account.name)
         if planned is not None:
             holds.append(planned)
+    for hold in existing_holds:
+        if hold.name and hold.name not in seen:
+            holds.append(hold)
     return tuple(updated_accounts), tuple(holds)
 
 
@@ -132,12 +139,22 @@ def holds_after_operator_change(
     account: SidecarAuthQuota | None,
     now: datetime,
 ) -> tuple[SidecarRateLimitHold, ...]:
-    """Pause leaves holds untouched. Resume releases the current deadline."""
-    if paused or not name:
+    """Pause drops any owned hold. Resume releases the current deadline.
+
+    A pause with a surviving unreleased hold would be enabled again once the
+    window cleared. A resume with no usage reading releases the stored reset
+    so the next poll does not disable that auth again.
+    """
+    if not name:
         return tuple(holds)
     kept = tuple(hold for hold in holds if hold.name != name)
-    if account is None:
+    if paused:
         return kept
+    owned = _unreleased(holds, name)
+    if account is None or account.oauth_usage is None:
+        if owned is None:
+            return kept
+        return kept + (SidecarRateLimitHold(name=name, until=owned.until, released=True),)
     until = rate_limit_hold_until(account, now)
     if until is None:
         return kept

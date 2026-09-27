@@ -143,7 +143,8 @@ async def _apply_rate_limit_holds(
     if snapshot.status != "healthy":
         return replace(snapshot, rate_limit_holds=previous_holds)
 
-    plan = plan_rate_limit_holds(snapshot.accounts, previous_holds, snapshot.checked_at)
+    accounts = _accounts_with_stored_disabled(snapshot.accounts, previous)
+    plan = plan_rate_limit_holds(accounts, previous_holds, snapshot.checked_at)
     failed_disables: set[str] = set()
     failed_enables: set[str] = set()
     for name in plan.disable_names:
@@ -153,13 +154,33 @@ async def _apply_rate_limit_holds(
         if not await _patch_auth_disabled(client, name, False):
             failed_enables.add(name)
     accounts, holds = apply_hold_results(
-        snapshot.accounts,
+        accounts,
         previous_holds,
         plan,
         failed_disables=failed_disables,
         failed_enables=failed_enables,
     )
     return replace(snapshot, accounts=accounts, rate_limit_holds=holds)
+
+
+def _accounts_with_stored_disabled(
+    accounts: tuple[SidecarAuthQuota, ...],
+    previous: SidecarQuotaSnapshot | None,
+) -> tuple[SidecarAuthQuota, ...]:
+    """Prefer ``disabled`` from the snapshot re-read under the write lock.
+
+    The auth listing is taken before that lock, so an operator pause or resume
+    that finished during the usage fetch is visible here and not in the listing.
+    """
+    if previous is None:
+        return accounts
+    stored = {auth.name: auth.disabled for auth in previous.accounts if auth.name}
+    if not stored:
+        return accounts
+    return tuple(
+        replace(account, disabled=stored[account.name]) if account.name in stored else account
+        for account in accounts
+    )
 
 
 async def _patch_auth_disabled(client: ClaudeSidecarClient, name: str, disabled: bool) -> bool:

@@ -6,7 +6,8 @@ A CLIProxyAPI Claude auth whose 5h or weekly window is at 0% remaining still has
 
 - On each Claude quota poll, when a usage window reports remaining percent at or below 0 and a reset time still in the future, set that auth file's `disabled` field until the later of those reset times, then clear `disabled` once the window is no longer exhausted.
 - Remember which pauses this poller owns inside the existing quota snapshot, so a restart does not resume an operator pause or leave an automatic pause in place after the reset.
-- An operator pause is left alone. An explicit Resume during a hold stays resumed for that same reset time, so the next poll does not immediately disable the auth again.
+- An operator pause is left alone, including a pause that lands while a poll is fetching usage. An explicit Pause drops an owned hold so a later poll does not enable the auth when the window recovers. An explicit Resume during a hold stays resumed for that same reset time, including when the snapshot has no usage reading, so the next poll does not immediately disable the auth again.
+- A poll with no usage reading keeps an unreleased hold until its stored reset, then enables the auth. A healthy poll that omits a held auth keeps that hold.
 - A failed disable or enable call is not recorded as done. The next poll retries it.
 - No live probe, no fixed 300s wait, and no Codex selector or reset-button changes.
 

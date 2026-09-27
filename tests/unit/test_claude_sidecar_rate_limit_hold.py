@@ -17,6 +17,7 @@ from app.modules.claude_sidecar.quota import (
     snapshot_to_json,
 )
 from app.modules.claude_sidecar.rate_limit_hold import (
+    apply_hold_results,
     plan_rate_limit_holds,
     rate_limit_hold_until,
 )
@@ -116,6 +117,43 @@ def test_plan_does_not_adopt_an_operator_pause() -> None:
     assert plan.holds == ()
 
 
+def test_plan_keeps_an_unreleased_hold_when_usage_is_unknown() -> None:
+    account = _auth(disabled=True)
+    hold = SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=False)
+
+    plan = plan_rate_limit_holds((account,), (hold,), _NOW)
+
+    assert plan.enable_names == ()
+    assert plan.disable_names == ()
+    assert plan.holds == (hold,)
+
+
+def test_plan_enables_unknown_usage_after_the_stored_reset() -> None:
+    account = _auth(disabled=True)
+    hold = SidecarRateLimitHold(name=_NAME, until=_PAST, released=False)
+
+    plan = plan_rate_limit_holds((account,), (hold,), _NOW)
+
+    assert plan.enable_names == (_NAME,)
+    assert plan.holds == ()
+
+
+def test_apply_keeps_a_hold_for_an_auth_missing_from_the_listing() -> None:
+    present = _auth(name="claude-b.json", five_hour=_bucket(50, _FUTURE), seven_day=_bucket(80, _LATER))
+    hold = SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=False)
+    plan = plan_rate_limit_holds((present,), (hold,), _NOW)
+
+    _accounts, holds = apply_hold_results(
+        (present,),
+        (hold,),
+        plan,
+        failed_disables=set(),
+        failed_enables=set(),
+    )
+
+    assert holds == (hold,)
+
+
 def test_plan_enables_only_an_owned_hold_after_the_window_clears() -> None:
     account = _auth(disabled=True, five_hour=_bucket(30, _FUTURE), seven_day=_bucket(70, _LATER))
     hold = SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=False)
@@ -171,6 +209,10 @@ async def test_resume_records_a_released_hold_for_the_current_reset(monkeypatch)
         "app.modules.claude_sidecar.service.get_settings_cache",
         lambda: SimpleNamespace(invalidate=AsyncMock()),
     )
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.service.datetime",
+        SimpleNamespace(now=lambda tz=None: _NOW),
+    )
 
     await ClaudeSidecarService(repo)._patch_snapshot_disabled_locked(_NAME, False)
 
@@ -184,7 +226,7 @@ async def test_resume_records_a_released_hold_for_the_current_reset(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_pause_leaves_an_existing_hold_in_place(monkeypatch) -> None:
+async def test_pause_drops_an_existing_hold(monkeypatch) -> None:
     from app.modules.claude_sidecar.service import ClaudeSidecarService
 
     hold = SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=False)
@@ -214,4 +256,39 @@ async def test_pause_leaves_an_existing_hold_in_place(monkeypatch) -> None:
     loaded = snapshot_from_json(settings.claude_sidecar_quota_state_json)
     assert loaded is not None
     assert loaded.accounts[0].disabled is True
-    assert loaded.rate_limit_holds == (hold,)
+    assert loaded.rate_limit_holds == ()
+
+    follow_up = plan_rate_limit_holds(loaded.accounts, loaded.rate_limit_holds, _NOW)
+    assert follow_up.enable_names == ()
+
+
+@pytest.mark.asyncio
+async def test_resume_without_usage_releases_the_stored_hold(monkeypatch) -> None:
+    from app.modules.claude_sidecar.service import ClaudeSidecarService
+
+    hold = SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=False)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=_NOW,
+        status="unreachable",
+        message="down",
+        accounts=(),
+        rate_limit_holds=(hold,),
+    )
+    settings = SimpleNamespace(claude_sidecar_quota_state_json=snapshot_to_json(snapshot))
+
+    async def update_operational(**kwargs):
+        settings.claude_sidecar_quota_state_json = kwargs["claude_sidecar_quota_state_json"]
+
+    repo = Mock(spec=SettingsRepository)
+    repo.get_fresh = AsyncMock(return_value=settings)
+    repo.update_operational = AsyncMock(side_effect=update_operational)
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.service.get_settings_cache",
+        lambda: SimpleNamespace(invalidate=AsyncMock()),
+    )
+
+    await ClaudeSidecarService(repo)._patch_snapshot_disabled_locked(_NAME, False)
+
+    loaded = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+    assert loaded is not None
+    assert loaded.rate_limit_holds == (SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=True),)

@@ -277,16 +277,19 @@ class ClaudeSidecarService:
             status, message = guarded
             return ClaudeSidecarRoutingResponse(status=status, message=message)
 
-        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        try:
-            await client.patch_auth_file_disabled(name, paused)
-        except ClaudeSidecarUnavailableError as exc:
-            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
-        except ClaudeSidecarError as exc:
-            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
-            message = "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
-            return ClaudeSidecarRoutingResponse(status=status, message=message)
-        await self._patch_snapshot_disabled(name, paused)
+        async with exclusion_write_lock():
+            client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+            try:
+                await client.patch_auth_file_disabled(name, paused)
+            except ClaudeSidecarUnavailableError as exc:
+                return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+            except ClaudeSidecarError as exc:
+                status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+                message = (
+                    "Claude sidecar account not found" if exc.status_code == 404 else _sanitize_message(exc.message)
+                )
+                return ClaudeSidecarRoutingResponse(status=status, message=message)
+            await self._patch_snapshot_disabled_locked(name, paused)
         return await self.get_routing()
 
     async def set_account_excluded_models(
@@ -322,10 +325,6 @@ class ClaudeSidecarService:
             name=name, excluded_models=patterns, excluded_models_state="available"
         )
         return response
-
-    async def _patch_snapshot_disabled(self, name: str, paused: bool) -> None:
-        async with exclusion_write_lock():
-            await self._patch_snapshot_disabled_locked(name, paused)
 
     async def _patch_snapshot_disabled_locked(self, name: str, paused: bool) -> None:
         """Reflect a pause/resume in the stored quota snapshot immediately.

@@ -38,7 +38,7 @@ Alternative: probe the auth on a timer. Rejected because the probe spends the qu
 
 `released` false means this poller turned the auth off and must turn it back on when the window clears. `released` true means an operator resumed that same reset instant. The next poll must not disable it again until the computed deadline changes.
 
-An auth that is already disabled, with no owned hold, is an operator pause. The poller does not adopt it and does not enable it later.
+An auth that is already disabled, with no owned hold, is an operator pause. The poller does not adopt it and does not enable it later. The auth listing is taken before the write lock, so the poll overlays `disabled` from the snapshot re-read under the lock. A pause or resume that finished during the usage fetch is the value the planner sees.
 
 ### D3. Patch only on a transition
 
@@ -46,15 +46,16 @@ The poller calls `PATCH /v0/management/auth-files/fields` only to disable an ena
 
 An unhealthy poll (unauthorized, unreachable, or error) does not patch `disabled` and copies the previous holds forward.
 
-### D4. Resume marks the current deadline released
+### D4. Pause drops a hold, and resume marks the deadline released
 
-`set_account_paused(name, false)` still clears `disabled`. It also records a released hold for the deadline computed from the snapshot's current usage. Pause does not create or remove a hold. A healthy operator pause therefore has no hold, and a released hold is not an automatic resume later.
+Pause and Resume hold `exclusion_write_lock` across the management PATCH and the snapshot write. Pause removes any hold for that auth, so a later poll that sees the window recovered does not enable it. Resume clears `disabled` and records a released hold for the deadline computed from the snapshot's current usage. When that snapshot has no usage reading, Resume releases the stored unreleased hold's reset time instead of dropping the hold. A released hold is not an automatic resume later.
 
 ## Risks / Trade-offs
 
 - A crash after a successful disable patch and before the snapshot commit looks like an operator pause on the next poll, so the auth stays out of rotation until Resume. The auth is not selected while exhausted. The window for that crash is the snapshot write.
 - The dashboard shows Rate limited for an automatic hold, and Paused for an operator pause. Resume is the control that lets the auth back in before the reset, and the poller will not immediately undo that Resume.
-- If the usage fetch fails, the poll keeps the previous buckets. A stored 0% remaining keeps the hold until that stored reset. A stored positive remaining does not create a new hold.
+- If the usage fetch fails and the previous snapshot still has buckets, the poll keeps those buckets. When the stored snapshot has no usage reading and an unreleased hold is still in the future, the poll keeps that hold and does not enable the auth. When that stored reset has passed, the poll enables the auth even without a usage reading.
+- A healthy poll that omits a held auth keeps that hold and does not enable the auth. The next listing that includes it can still enable it once the window is clear.
 - Rollback is a code rollback. Auths this version disabled stay disabled until an operator resumes them or a future poll with this behavior enables them.
 
 ## Migration Plan

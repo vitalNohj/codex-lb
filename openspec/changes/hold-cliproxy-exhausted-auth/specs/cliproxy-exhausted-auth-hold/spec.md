@@ -34,12 +34,13 @@ A Claude sidecar quota poll MUST disable a CLIProxyAPI Claude auth when one or m
 - **THEN** codex-lb does not change that auth file's `disabled` field
 
 ### Requirement: Enable an auth when its owned hold expires
-When a Claude sidecar quota poll no longer finds a future exhausted window for an auth that this poller disabled, codex-lb MUST set that auth file's `disabled` field to false and MUST drop the owned hold.
+When a Claude sidecar quota poll has a usage reading for an auth that this poller disabled, and that reading no longer has a future exhausted window, codex-lb MUST set that auth file's `disabled` field to false and MUST drop the owned hold.
 
 #### Scenario: Window has recovered
 - **GIVEN** the quota snapshot records an unreleased hold for a Claude auth
 - **AND** that auth file is disabled
-- **AND** the latest usage no longer has a window at or below 0 percent remaining with a reset time after the poll time
+- **AND** the poll has a usage reading for that auth
+- **AND** that reading no longer has a window at or below 0 percent remaining with a reset time after the poll time
 - **WHEN** the Claude sidecar quota poll runs
 - **THEN** codex-lb sets that auth file's `disabled` field to false
 - **AND** the snapshot no longer records a hold for that auth
@@ -62,8 +63,66 @@ codex-lb MUST NOT enable a Claude auth that is already disabled unless the quota
 - **WHEN** the Claude sidecar quota poll runs
 - **THEN** codex-lb leaves that auth file disabled
 
+### Requirement: Keep an operator pause recorded during a quota poll
+When the quota snapshot re-read under the write lock shows a Claude auth disabled and records no unreleased hold for it, the quota poll MUST NOT record a hold for that auth and MUST NOT set its `disabled` field to false, even when the auth listing taken before the lock shows the auth enabled.
+
+#### Scenario: Pause finishes during the usage fetch
+- **GIVEN** the auth listing taken before the write lock shows a Claude auth enabled
+- **AND** a usage window is exhausted with a reset time in the future
+- **AND** the snapshot re-read under the write lock shows that auth disabled
+- **AND** that snapshot has no unreleased hold for that auth
+- **WHEN** the Claude sidecar quota poll commits
+- **THEN** codex-lb does not change that auth file's `disabled` field
+- **AND** the snapshot still has no hold for that auth
+- **AND** the stored auth stays disabled
+
+### Requirement: Keep an owned hold when usage is unknown before its reset
+When a Claude sidecar quota poll has no usage reading for an auth and the snapshot records an unreleased hold whose reset time is still after the poll time, codex-lb MUST keep that hold and MUST NOT enable that auth.
+
+#### Scenario: Usage fetch fails before the stored reset
+- **GIVEN** the snapshot records an unreleased hold whose reset time is after the poll time
+- **AND** the auth file is disabled
+- **AND** this poll has no usage reading for that auth
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** codex-lb does not set that auth file's `disabled` field to false
+- **AND** the snapshot still records that unreleased hold
+
+#### Scenario: Unknown usage after the stored reset
+- **GIVEN** the snapshot records an unreleased hold whose reset time is not after the poll time
+- **AND** the auth file is disabled
+- **AND** this poll has no usage reading for that auth
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** codex-lb sets that auth file's `disabled` field to false
+- **AND** the snapshot no longer records a hold for that auth
+
+### Requirement: Drop an owned hold on explicit pause
+An explicit pause of a Claude auth MUST remove every hold recorded for that auth.
+
+#### Scenario: Pause while a hold is recorded
+- **GIVEN** the snapshot records an unreleased hold for a Claude auth
+- **WHEN** an operator pauses that auth
+- **THEN** the snapshot no longer records a hold for that auth
+- **AND** the auth file stays disabled
+
+#### Scenario: Later poll does not undo the pause
+- **GIVEN** an operator pause removed the hold for a Claude auth
+- **AND** that auth file is disabled
+- **AND** a later poll finds no future exhausted window
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** codex-lb leaves that auth file disabled
+
+### Requirement: Keep a hold for an auth missing from a healthy listing
+A healthy Claude sidecar quota poll MUST keep an existing hold whose auth-file name is absent from that poll's auth listing.
+
+#### Scenario: Held auth is missing from one listing
+- **GIVEN** the snapshot records a hold for a Claude auth
+- **AND** a healthy quota poll's auth listing does not include that auth
+- **WHEN** the Claude sidecar quota poll runs
+- **THEN** the snapshot still records that hold
+- **AND** codex-lb does not change that auth file's `disabled` field
+
 ### Requirement: Honor explicit resume for the same reset
-A successful resume of a Claude auth MUST record a released hold for the exhausted-window reset time shown by the current quota snapshot, and later quota polls MUST NOT disable that auth again while the computed reset time stays the same.
+A successful resume of a Claude auth MUST record a released hold for the exhausted-window reset time from the current usage reading, or from the stored unreleased hold when that reading is missing, and later quota polls MUST NOT disable that auth again while that reset time stays the same.
 
 #### Scenario: Resume during an exhausted window
 - **GIVEN** a Claude auth is disabled
@@ -72,6 +131,13 @@ A successful resume of a Claude auth MUST record a released hold for the exhaust
 - **THEN** codex-lb sets that auth file's `disabled` field to false
 - **AND** the snapshot records a released hold until that same reset time
 - **AND** the next quota poll does not set `disabled` back to true
+
+#### Scenario: Resume without a usage reading
+- **GIVEN** the snapshot records an unreleased hold for a Claude auth
+- **AND** the snapshot has no usage reading for that auth
+- **WHEN** an operator resumes that auth
+- **THEN** codex-lb sets that auth file's `disabled` field to false
+- **AND** the snapshot records a released hold until the same stored reset time
 
 #### Scenario: A new reset time can disable again
 - **GIVEN** the snapshot records a released hold until one reset time

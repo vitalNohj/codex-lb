@@ -535,14 +535,14 @@ def _usage(
     )
 
 
-def _hold_snapshot_json(*holds: SidecarRateLimitHold) -> str:
+def _hold_snapshot_json(*holds: SidecarRateLimitHold, disabled: bool = True) -> str:
     account = SidecarAuthQuota(
         name=_AUTH_NAME,
         auth_index="1",
         email="a@example.com",
         status="active",
         status_message=None,
-        disabled=True,
+        disabled=disabled,
         unavailable=False,
         quota_exceeded=False,
         next_recover_at=None,
@@ -681,7 +681,8 @@ async def test_poll_does_not_redisable_a_released_hold(monkeypatch) -> None:
     client = _MutableAuthClient()
     settings = _FakeSettings(
         claude_sidecar_quota_state_json=_hold_snapshot_json(
-            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True)
+            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True),
+            disabled=False,
         )
     )
     repo_holder, poller = _poll_with_usage(
@@ -705,7 +706,8 @@ async def test_poll_disables_again_when_reset_time_changes(monkeypatch) -> None:
     client = _MutableAuthClient()
     settings = _FakeSettings(
         claude_sidecar_quota_state_json=_hold_snapshot_json(
-            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True)
+            SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=True),
+            disabled=False,
         )
     )
     repo_holder, poller = _poll_with_usage(
@@ -783,4 +785,59 @@ async def test_poll_preserves_holds_when_listing_fails(monkeypatch) -> None:
     assert snapshot is not None
     assert snapshot.status == "unauthorized"
     assert snapshot.accounts == ()
+    assert snapshot.rate_limit_holds == (hold,)
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_operator_pause_recorded_during_the_usage_fetch(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = False
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json()),
+        client,
+        _usage(0.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == ()
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_hold_when_usage_is_unknown_before_reset(monkeypatch) -> None:
+    from app.modules.claude_sidecar.oauth_usage import ClaudeOAuthUsageError
+
+    hold = SidecarRateLimitHold(name=_AUTH_NAME, until=_FUTURE, released=False)
+    stored = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
+        status="unreachable",
+        message="down",
+        accounts=(),
+        rate_limit_holds=(hold,),
+    )
+    client = _MutableAuthClient()
+    client.disabled = True
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=snapshot_to_json(stored)),
+        client,
+        _usage(0.0, 70.0, five_reset=_FUTURE),
+    )
+
+    async def _fetch_fails(_client: object, _auth_index: str) -> SidecarOAuthUsage:
+        raise ClaudeOAuthUsageError("Anthropic OAuth usage endpoint returned HTTP 429")
+
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_fails)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
     assert snapshot.rate_limit_holds == (hold,)
