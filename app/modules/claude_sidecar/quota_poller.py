@@ -151,11 +151,10 @@ async def _apply_rate_limit_holds(
 
     Unhealthy polls, and a failed auth listing under the write lock, keep the
     holds already stored. A failed listing keeps the first listing's ``disabled``
-    flags unless a pause or resume changed the stored snapshot during the usage
-    fetch. That change is the difference between the snapshot from before the
-    fetch and the snapshot read under the lock. A failed management update leaves
-    that one transition uncommitted. ``disabled`` used for planning comes from
-    the auth listing taken under the lock when that listing succeeds.
+    flags, except for auths whose stored flag changed during the usage fetch.
+    Those auths take the snapshot read under the lock. A failed management
+    update leaves that one transition uncommitted. ``disabled`` used for planning
+    comes from the auth listing taken under the lock when that listing succeeds.
     """
     previous_holds = previous.rate_limit_holds if previous is not None else ()
     if snapshot.status != "healthy":
@@ -163,9 +162,10 @@ async def _apply_rate_limit_holds(
 
     live_disabled = await _live_disabled_by_name(client)
     if live_disabled is None:
-        accounts = snapshot.accounts
-        if _disabled_flags(previous) != _disabled_flags(stored_before):
-            accounts = _accounts_with_live_disabled(snapshot.accounts, _disabled_flags(previous))
+        changed = _changed_disabled_flags(stored_before, previous)
+        accounts = (
+            _accounts_with_live_disabled(snapshot.accounts, changed) if changed else snapshot.accounts
+        )
         return replace(snapshot, accounts=accounts, rate_limit_holds=previous_holds)
     accounts = _accounts_with_live_disabled(snapshot.accounts, live_disabled)
     plan = plan_rate_limit_holds(accounts, previous_holds, snapshot.checked_at)
@@ -191,9 +191,10 @@ async def _live_disabled_by_name(client: ClaudeSidecarClient) -> dict[str, bool]
     """Re-list auth files under the write lock and return each live ``disabled`` flag.
 
     Pause and Resume hold the same lock across their management PATCH, so this
-    listing already includes that change. A listing error returns None and the
-    caller keeps the stored holds and the ``disabled`` flags from the snapshot
-    read under the lock.
+    listing already includes that change. A listing error returns None. The
+    caller then keeps the stored holds and the first listing's ``disabled``
+    flags, except where a pause or resume changed the stored snapshot during
+    the usage fetch.
     """
     try:
         raw_files = await client.list_auth_files()
@@ -210,6 +211,17 @@ def _disabled_flags(snapshot: SidecarQuotaSnapshot | None) -> dict[str, bool]:
     if snapshot is None:
         return {}
     return {auth.name: auth.disabled for auth in snapshot.accounts if auth.name}
+
+
+def _changed_disabled_flags(
+    before: SidecarQuotaSnapshot | None,
+    after: SidecarQuotaSnapshot | None,
+) -> dict[str, bool]:
+    """Return ``disabled`` flags that changed while the usage fetch was in flight."""
+
+    before_flags = _disabled_flags(before)
+    after_flags = _disabled_flags(after)
+    return {name: disabled for name, disabled in after_flags.items() if before_flags.get(name) != disabled}
 
 
 def _accounts_with_live_disabled(

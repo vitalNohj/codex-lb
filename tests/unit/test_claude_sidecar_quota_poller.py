@@ -569,6 +569,7 @@ class _MutableAuthClient:
         self.fail_after_lists: int | None = None
         self.list_calls = 0
         self.patches: list[tuple[str, bool]] = []
+        self.extra_files: list[Mapping[str, Any]] = []
 
     async def list_auth_files(self) -> list[Mapping[str, Any]]:
         self.list_calls += 1
@@ -583,7 +584,8 @@ class _MutableAuthClient:
                 "disabled": self.disabled,
                 "status": "error",
                 "status_message": "rate_limit_error",
-            }
+            },
+            *self.extra_files,
         ]
 
     async def patch_auth_file_disabled(self, name: str, disabled: bool) -> None:
@@ -968,4 +970,70 @@ async def test_poll_keeps_first_listing_when_locked_listing_fails_without_a_loca
     assert client.patches == []
     assert snapshot is not None
     assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == ()
+
+
+_OTHER_AUTH_NAME = "claude-b@example.com.json"
+
+
+def _two_auth_snapshot_json(*, disabled: bool) -> str:
+    primary = snapshot_from_json(_hold_snapshot_json(disabled=disabled))
+    assert primary is not None
+    other = replace(
+        primary.accounts[0],
+        name=_OTHER_AUTH_NAME,
+        auth_index="2",
+        email="b@example.com",
+        disabled=disabled,
+    )
+    return snapshot_to_json(replace(primary, accounts=(primary.accounts[0], other)))
+
+
+@pytest.mark.asyncio
+async def test_poll_pause_during_fetch_does_not_reset_another_auth_when_listing_fails(
+    monkeypatch,
+) -> None:
+    client = _MutableAuthClient()
+    client.disabled = False
+    client.fail_after_lists = 1
+    client.extra_files = [
+        {
+            "name": _OTHER_AUTH_NAME,
+            "provider": "claude",
+            "email": "b@example.com",
+            "auth_index": "2",
+            "disabled": True,
+            "status": "error",
+            "status_message": "rate_limit_error",
+        }
+    ]
+    settings = _FakeSettings(claude_sidecar_quota_state_json=_two_auth_snapshot_json(disabled=False))
+    usage = _usage(40.0, 70.0, five_reset=_FUTURE)
+    repo_holder, poller = _poll_with_usage(monkeypatch, settings, client, usage)
+
+    async def _fetch_then_pause_primary(_client: object, auth_index: str) -> SidecarOAuthUsage:
+        if auth_index != "1":
+            return usage
+        stored = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        assert stored is not None
+        settings.claude_sidecar_quota_state_json = snapshot_to_json(
+            replace(
+                stored,
+                accounts=tuple(
+                    replace(auth, disabled=True) if auth.name == _AUTH_NAME else auth
+                    for auth in stored.accounts
+                ),
+            )
+        )
+        client.disabled = True
+        return usage
+
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_then_pause_primary)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    disabled_by_name = {auth.name: auth.disabled for auth in snapshot.accounts}
+    assert disabled_by_name == {_AUTH_NAME: True, _OTHER_AUTH_NAME: True}
     assert snapshot.rate_limit_holds == ()
