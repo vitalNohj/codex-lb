@@ -10,7 +10,9 @@ from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarModelQuota,
     SidecarQuotaSnapshot,
+    SidecarRateLimitHold,
     dashboard_auth_status,
+    dashboard_status_for_auth,
     oauth_expired_from_auth_file,
     parse_auth_files,
     snapshot_from_json,
@@ -431,6 +433,39 @@ def test_paused_account_with_lapsed_expiry_keeps_pause_label() -> None:
     auth = _auth(status="disabled", disabled=True, expired=_NOW - timedelta(days=2))
 
     assert dashboard_auth_status(auth, now=_NOW) == "disabled"
+    assert dashboard_status_for_auth(auth, now=_NOW) == "disabled"
+
+
+def test_unreleased_hold_reports_rate_limited() -> None:
+    auth = _auth(status="error", disabled=True)
+    hold = SidecarRateLimitHold(name=auth.name, until=datetime(2099, 1, 1, tzinfo=timezone.utc), released=False)
+
+    assert dashboard_status_for_auth(auth, (hold,), now=_NOW) == "rate_limited"
+
+
+def test_released_hold_keeps_auth_status() -> None:
+    auth = _auth(status="active", disabled=False)
+    hold = SidecarRateLimitHold(name=auth.name, until=datetime(2099, 1, 1, tzinfo=timezone.utc), released=True)
+
+    assert dashboard_status_for_auth(auth, (hold,), now=_NOW) == "active"
+
+
+def test_hold_for_another_auth_does_not_apply() -> None:
+    auth = _auth(status="error", disabled=True)
+    hold = SidecarRateLimitHold(
+        name="claude-other.json",
+        until=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        released=False,
+    )
+
+    assert dashboard_status_for_auth(auth, (hold,), now=_NOW) == "error"
+
+
+def test_reauth_wins_over_hold_while_the_auth_stays_enabled() -> None:
+    auth = _auth(status="error", status_message="unauthorized", unavailable=True, disabled=False)
+    hold = SidecarRateLimitHold(name=auth.name, until=datetime(2099, 1, 1, tzinfo=timezone.utc), released=False)
+
+    assert dashboard_status_for_auth(auth, (hold,), now=_NOW) == "reauth_required"
 
 
 def test_quota_cooldown_with_lapsed_expiry_is_not_reauth() -> None:
