@@ -329,6 +329,49 @@ describe("AccountList", () => {
     expect(screen.getByText("two@example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume two@example.com" })).toBeInTheDocument();
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+  });
+
+  it("shows Rate limited and Resume for a held CLI Proxy API auth row", () => {
+    renderWithProviders(
+      <AccountList
+        accounts={[
+          createAccountSummary({
+            accountId: "claude-sidecar",
+            displayName: "CLI Proxy API",
+            planType: "claude",
+            status: "rate_limited",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "claude",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "claude-1",
+                authIndex: "0",
+                email: "held@example.com",
+                status: "rate_limited",
+                paused: true,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                excludedModels: [],
+                excludedModelsState: "available",
+                success: 0,
+                failed: 0,
+                usageSource: "oauth_usage",
+                primaryRemainingPercent: 0,
+                secondaryRemainingPercent: 70,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Rate limited")).toBeInTheDocument();
+    expect(screen.queryByText("Paused")).toBeNull();
+    expect(screen.getByRole("button", { name: "Resume held@example.com" })).toBeInTheDocument();
   });
 
   it("summarizes auth exclusions in the existing list-row subtitle", () => {

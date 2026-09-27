@@ -1,0 +1,25 @@
+## 1. Hold planner
+
+- [x] 1.1 Add the quota-snapshot hold record and JSON round trip, including older snapshots with no holds field.
+- [x] 1.2 Add the pure planner: exhausted 5h and weekly windows, operator pauses, released resumes, and failed-transition rollback.
+
+## 2. Poller and resume
+
+- [x] 2.1 Apply disable and enable transitions from the Claude quota poll under the existing exclusion lock.
+- [x] 2.2 Record a released hold when an operator resumes an auth whose current usage is still exhausted.
+
+## 3. Validation
+
+- [x] 3.1 Unit tests for the planner, the poller transitions, resume, and snapshot compatibility.
+- [x] 3.2 `openspec validate hold-cliproxy-exhausted-auth --strict`.
+
+## 4. Rate limited badge
+
+- [x] 4.1 Report `rate_limited` for an unreleased hold and show the existing Rate limited badge. An operator pause stays Paused, and Resume stays the control while the auth is disabled.
+
+## 5. Review fixes
+
+- [x] 5.1 Hold the write lock across an operator pause or resume. Under that lock, re-list auth files and store the live `disabled` value. Do not copy `disabled` from the previous snapshot.
+- [x] 5.2 Keep an unreleased hold when usage is missing and its reset is still in the future. Enable once that reset has passed. Resume without usage releases the stored reset.
+- [x] 5.3 Explicit pause removes any hold for that auth. A healthy poll keeps a hold whose auth is absent from the listing.
+- [x] 5.4 A failed auth listing under the write lock does not patch `disabled` and keeps the stored holds.

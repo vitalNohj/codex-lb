@@ -12,6 +12,19 @@ export function quotaBarTrack(percent: number): string {
   return "bg-red-500/15";
 }
 
+export function claudeAuthBadgeStatus(
+  auth: { paused?: boolean; status?: string | null },
+  fallbackStatus: string,
+): DashboardAccountStatus {
+  if (auth.status === "rate_limited") {
+    return "limited";
+  }
+  if (auth.paused) {
+    return "paused";
+  }
+  return normalizeStatus(auth.status ?? fallbackStatus);
+}
+
 export function normalizeStatus(status: string): DashboardAccountStatus {
   if (status === "paused") {
     return "paused";

@@ -14,6 +14,7 @@ from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
+    SidecarRateLimitHold,
     snapshot_to_json,
 )
 from app.modules.claude_sidecar.usage_estimates import (
@@ -172,12 +173,13 @@ def _claude_auth(**overrides) -> SidecarAuthQuota:
     return SidecarAuthQuota(**fields)
 
 
-def _summary_for(*accounts: SidecarAuthQuota):
+def _summary_for(*accounts: SidecarAuthQuota, holds: tuple[SidecarRateLimitHold, ...] = ()):
     snapshot = SidecarQuotaSnapshot(
         checked_at=datetime(2026, 9, 8, 21, 0, tzinfo=timezone.utc),
         status="healthy",
         message=None,
         accounts=accounts,
+        rate_limit_holds=holds,
     )
     settings = _settings(
         claude_sidecar_enabled=True,
@@ -272,6 +274,85 @@ def test_claude_paused_account_with_lapsed_expiry_keeps_pause_label() -> None:
     assert summary is not None
     assert summary.sidecar_auths[0].status == "disabled"
     assert summary.sidecar_auths[0].paused is True
+
+
+def test_claude_unreleased_hold_reports_rate_limited_while_paused() -> None:
+    auth = _claude_auth(status="error", disabled=True, unavailable=True)
+    summary = _summary_for(
+        auth,
+        holds=(
+            SidecarRateLimitHold(
+                name=auth.name,
+                until=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                released=False,
+            ),
+        ),
+    )
+
+    assert summary is not None
+    assert summary.status == "rate_limited"
+    assert summary.sidecar_auths[0].status == "rate_limited"
+    assert summary.sidecar_auths[0].paused is True
+
+
+def test_claude_parent_is_rate_limited_when_one_auth_is_held() -> None:
+    held = _claude_auth(name="claude-held.json", email="held@example.com", status="error", disabled=True)
+    ready = _claude_auth(name="claude-ready.json", email="ready@example.com", status="active")
+    summary = _summary_for(
+        held,
+        ready,
+        holds=(
+            SidecarRateLimitHold(
+                name=held.name,
+                until=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                released=False,
+            ),
+        ),
+    )
+
+    assert summary is not None
+    assert summary.status == "rate_limited"
+    by_name = {row.name: row.status for row in summary.sidecar_auths}
+    assert by_name == {"claude-held.json": "rate_limited", "claude-ready.json": "active"}
+
+
+def test_claude_released_hold_does_not_force_rate_limited() -> None:
+    auth = _claude_auth(status="active", disabled=False)
+    summary = _summary_for(
+        auth,
+        holds=(
+            SidecarRateLimitHold(
+                name=auth.name,
+                until=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                released=True,
+            ),
+        ),
+    )
+
+    assert summary is not None
+    assert summary.status == "active"
+    assert summary.sidecar_auths[0].status == "active"
+    assert summary.sidecar_auths[0].paused is False
+
+
+def test_claude_held_disabled_auth_stays_rate_limited() -> None:
+    """A hold disables the auth, and a disabled auth is not a re-auth badge."""
+    auth = _claude_auth(status="error", status_message="unauthorized", unavailable=True, disabled=True)
+    summary = _summary_for(
+        auth,
+        holds=(
+            SidecarRateLimitHold(
+                name=auth.name,
+                until=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                released=False,
+            ),
+        ),
+    )
+
+    assert summary is not None
+    assert summary.sidecar_auths[0].status == "rate_limited"
+    assert summary.sidecar_auths[0].paused is True
+    assert summary.status == "rate_limited"
 
 
 def test_claude_unauthorized_status_message_maps_to_reauth_with_fresh_token() -> None:

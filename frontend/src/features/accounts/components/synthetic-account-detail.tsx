@@ -137,20 +137,32 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                   <span
                     aria-hidden="true"
                     className={`inline-block h-2 w-2 rounded-full ${
-                      auth.paused ? "bg-zinc-400" : auth.quotaExceeded ? "bg-amber-500" : "bg-emerald-500"
+                      auth.status === "rate_limited"
+                        ? "bg-orange-500"
+                        : auth.paused
+                          ? "bg-zinc-400"
+                          : auth.quotaExceeded
+                            ? "bg-amber-500"
+                            : "bg-emerald-500"
                     }`}
                   />
                   <div className="min-w-0 leading-tight">
-                    <div className={`truncate text-sm font-medium ${auth.paused ? "text-muted-foreground line-through" : ""}`}>
+                    <div
+                      className={`truncate text-sm font-medium ${
+                        auth.paused && auth.status !== "rate_limited" ? "text-muted-foreground line-through" : ""
+                      }`}
+                    >
                       {auth.email ?? auth.name}
                     </div>
                     <div className="truncate text-[11px] text-muted-foreground">
                       {auth.authIndex ? `auth_index ${auth.authIndex} | ` : ""}
-                      {auth.paused
-                        ? "Paused"
-                        : auth.quotaExceeded
-                          ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
-                          : "Ready"}
+                      {auth.status === "rate_limited"
+                        ? "Rate limited"
+                        : auth.paused
+                          ? "Paused"
+                          : auth.quotaExceeded
+                            ? `Exhausted — recovers ${formatQuotaResetLabel(auth.nextRecoverAt ?? null)}`
+                            : "Ready"}
                       {auth.modelsExceeded && auth.modelsExceeded.length > 0
                         ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
                         : ""}

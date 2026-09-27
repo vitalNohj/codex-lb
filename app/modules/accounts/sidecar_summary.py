@@ -11,7 +11,8 @@ from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
-    dashboard_auth_status,
+    SidecarRateLimitHold,
+    dashboard_status_for_auth,
     snapshot_from_json,
 )
 from app.modules.claude_sidecar.usage_estimates import (
@@ -115,9 +116,13 @@ def _derive_quota_state(
         return ("active", None, snapshot.checked_at)
 
     exceeded = [acct for acct in accounts if acct.quota_exceeded]
+    held = _unreleased_hold_names(snapshot.rate_limit_holds)
     if exceeded and len(exceeded) == len(accounts):
         status = "quota_exceeded"
-    elif exceeded:
+    elif exceeded or any(
+        acct.name in held and dashboard_status_for_auth(acct, snapshot.rate_limit_holds) == "rate_limited"
+        for acct in accounts
+    ):
         status = "rate_limited"
     else:
         status = "active"
@@ -140,26 +145,35 @@ def _build_auth_rows(
         return [_auth_row_from_estimate(estimate) for estimate in estimates_by_key.values()]
     rows: list[SidecarAuthAccount] = []
     seen: set[str] = set()
+    holds = snapshot.rate_limit_holds
     for auth in snapshot.accounts:
         key = _auth_key(auth)
         estimate = estimates_by_key.get(key) if key is not None else None
         if key is not None:
             seen.add(key)
-        rows.append(_auth_row(auth, estimate))
+        rows.append(_auth_row(auth, estimate, holds))
     for key, estimate in estimates_by_key.items():
         if key not in seen:
             rows.append(_auth_row_from_estimate(estimate))
     return rows
 
 
-def _auth_row(auth: SidecarAuthQuota, estimate: ClaudeAuthUsageEstimate | None) -> SidecarAuthAccount:
+def _unreleased_hold_names(holds: tuple[SidecarRateLimitHold, ...]) -> set[str]:
+    return {hold.name for hold in holds if not hold.released}
+
+
+def _auth_row(
+    auth: SidecarAuthQuota,
+    estimate: ClaudeAuthUsageEstimate | None,
+    holds: tuple[SidecarRateLimitHold, ...] = (),
+) -> SidecarAuthAccount:
     patterns = excluded_models_from_auth_file(auth.credential_path)
     return SidecarAuthAccount(
         name=auth.name,
         auth_index=auth.auth_index,
         email=auth.email,
         provider=auth.provider,
-        status=dashboard_auth_status(auth),
+        status=dashboard_status_for_auth(auth, holds),
         paused=auth.disabled,
         excluded_models=patterns or [],
         excluded_models_state="available" if patterns is not None else "unreadable",
