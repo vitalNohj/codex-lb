@@ -137,9 +137,11 @@ async def _apply_rate_limit_holds(
     """Disable an exhausted auth until its known reset, then enable it again.
 
     Unhealthy polls, and a failed auth listing under the write lock, keep the
-    holds already stored and do not change ``disabled``. A failed management
+    holds already stored. A failed listing restores ``disabled`` from the
+    snapshot read under the lock, so a pause or resume saved during the usage
+    fetch is not overwritten by the pre-lock listing. A failed management
     update leaves that one transition uncommitted. ``disabled`` used for planning
-    comes from the auth listing taken under the lock, not from the previous snapshot.
+    comes from the auth listing taken under the lock when that listing succeeds.
     """
     previous_holds = previous.rate_limit_holds if previous is not None else ()
     if snapshot.status != "healthy":
@@ -147,7 +149,16 @@ async def _apply_rate_limit_holds(
 
     live_disabled = await _live_disabled_by_name(client)
     if live_disabled is None:
-        return replace(snapshot, rate_limit_holds=previous_holds)
+        stored_disabled = (
+            {auth.name: auth.disabled for auth in previous.accounts if auth.name}
+            if previous is not None
+            else {}
+        )
+        return replace(
+            snapshot,
+            accounts=_accounts_with_live_disabled(snapshot.accounts, stored_disabled),
+            rate_limit_holds=previous_holds,
+        )
     accounts = _accounts_with_live_disabled(snapshot.accounts, live_disabled)
     plan = plan_rate_limit_holds(accounts, previous_holds, snapshot.checked_at)
     failed_disables: set[str] = set()
@@ -173,7 +184,8 @@ async def _live_disabled_by_name(client: ClaudeSidecarClient) -> dict[str, bool]
 
     Pause and Resume hold the same lock across their management PATCH, so this
     listing already includes that change. A listing error returns None and the
-    caller leaves holds and ``disabled`` unchanged for this poll.
+    caller keeps the stored holds and the ``disabled`` flags from the snapshot
+    read under the lock.
     """
     try:
         raw_files = await client.list_auth_files()
@@ -191,8 +203,8 @@ def _accounts_with_live_disabled(
     """Replace ``disabled`` with the value from the locked auth listing.
 
     The first listing is taken before the write lock. Names present in the
-    locked listing take that live value. Names absent from it keep the value
-    from the first listing. The previous snapshot's ``disabled`` flag is not used.
+    supplied map take that value. Names absent from it keep the value from the
+    first listing.
     """
     return tuple(
         replace(account, disabled=live_disabled[account.name]) if account.name in live_disabled else account

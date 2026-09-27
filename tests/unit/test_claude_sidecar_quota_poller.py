@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -916,3 +916,33 @@ async def test_poll_keeps_hold_when_locked_listing_fails(monkeypatch) -> None:
     assert snapshot is not None
     assert snapshot.accounts[0].disabled is True
     assert snapshot.rate_limit_holds == (hold,)
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_pause_saved_during_fetch_when_locked_listing_fails(monkeypatch) -> None:
+    client = _MutableAuthClient()
+    client.disabled = False
+    client.fail_after_lists = 1
+    settings = _FakeSettings(claude_sidecar_quota_state_json=_hold_snapshot_json(disabled=False))
+    usage = _usage(40.0, 70.0, five_reset=_FUTURE)
+    repo_holder, poller = _poll_with_usage(monkeypatch, settings, client, usage)
+
+    async def _fetch_then_pause(_client: object, auth_index: str) -> SidecarOAuthUsage:
+        assert auth_index == "1"
+        stored = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        assert stored is not None
+        settings.claude_sidecar_quota_state_json = snapshot_to_json(
+            replace(stored, accounts=tuple(replace(auth, disabled=True) for auth in stored.accounts))
+        )
+        client.disabled = True
+        return usage
+
+    monkeypatch.setattr(quota_poller_module, "fetch_claude_oauth_usage", _fetch_then_pause)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert client.patches == []
+    assert snapshot is not None
+    assert snapshot.accounts[0].disabled is True
+    assert snapshot.rate_limit_holds == ()
