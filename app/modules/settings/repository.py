@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 from datetime import datetime
 
-from sqlalchemy import func, update
+from sqlalchemy import delete, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -16,10 +16,26 @@ from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
-from app.db.models import DashboardSettings
+from app.db.models import ClaudeOpus55PinOwnership, DashboardSettings
 
 _SETTINGS_ID = 1
 _UNSET = object()
+# Pinned onto the CLIProxyAPI full-model list by revision
+# 20260923_000000_pin_claude_opus_5_5_full_model.
+_CLAUDE_OPUS_5_5_PIN = "claude-opus-5-5"
+
+
+def _lists_claude_opus_5_5(full_models_json: str) -> bool:
+    """Whether the saved list holds the pin, matched the way the pin migration matches it."""
+    try:
+        entries = json.loads(full_models_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(entries, list):
+        return False
+    return any(isinstance(entry, str) and entry.strip().lower() == _CLAUDE_OPUS_5_5_PIN for entry in entries)
+
+
 _OPERATIONAL_JSON_COLUMNS = frozenset(
     {
         "openrouter_sidecar_full_models_json",
@@ -672,6 +688,16 @@ class SettingsRepository:
             settings.claude_sidecar_model_prefixes_json = claude_sidecar_model_prefixes_json
         if claude_sidecar_full_models_json is not None:
             settings.claude_sidecar_full_models_json = claude_sidecar_full_models_json
+            if not _lists_claude_opus_5_5(claude_sidecar_full_models_json):
+                # The migration's pin is gone, so it no longer owns this row. A
+                # pin the operator adds back later must survive its downgrade.
+                # No autoflush: the settings UPDATE and its version check must
+                # flush in commit_refresh, which turns a stale save into a 409.
+                # A conflict there rolls this delete back too.
+                with self._session.no_autoflush:
+                    await self._session.execute(
+                        delete(ClaudeOpus55PinOwnership).where(ClaudeOpus55PinOwnership.settings_id == settings.id)
+                    )
         if claude_sidecar_connect_timeout_seconds is not None:
             settings.claude_sidecar_connect_timeout_seconds = claude_sidecar_connect_timeout_seconds
         if claude_sidecar_request_timeout_seconds is not None:
