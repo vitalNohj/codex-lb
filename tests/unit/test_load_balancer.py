@@ -29,6 +29,7 @@ from app.core.balancer.logic import DRAIN_PRIMARY_THRESHOLD_PCT, PROBE_QUIET_SEC
 from app.core.usage.quota import apply_usage_quota
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.proxy.load_balancer import (
+    LoadBalancer,
     RuntimeState,
     _additional_quota_applies_to_plan,
     _AdditionalLimitFilterResult,
@@ -39,6 +40,7 @@ from app.modules.proxy.load_balancer import (
     _state_above_sticky_budget_threshold,
     _state_from_account,
     background_recovery_state_from_account,
+    clear_rate_limit_runtime,
 )
 
 pytestmark = pytest.mark.unit
@@ -3576,6 +3578,153 @@ def test_state_from_account_rejected_reset_without_block_recovers_from_fresh_usa
     assert state.status == AccountStatus.ACTIVE
     assert state.reset_at is None
     assert state.blocked_at is None
+
+
+def test_state_from_account_does_not_restore_runtime_block_after_reset_credit_waive(monkeypatch):
+    # A reset credit clears persisted blocked_at while the process still holds
+    # the pre-reset 429 in runtime. Selection must not copy that marker back
+    # onto the row, or the old reset_at holds the account until it elapses.
+    now = 1_700_000_000.0
+    old_blocked_at = now - 3600
+    persisted_reset = int(now + 4 * 24 * 3600)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=persisted_reset,
+        blocked_at=None,
+    )
+    fresh_primary = _make_test_usage(
+        window="primary",
+        used_percent=0.0,
+        reset_at=int(now + 5 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+        window_minutes=300,
+    )
+    fresh_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=0.0,
+        reset_at=int(now + 7 * 24 * 3600),
+        recorded_at=_epoch_to_naive_utc(now - 10),
+        window_minutes=10080,
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=fresh_primary,
+        secondary_entry=fresh_secondary,
+        runtime=RuntimeState(
+            blocked_at=old_blocked_at,
+            cooldown_until=float(persisted_reset),
+            reset_at=float(persisted_reset),
+        ),
+    )
+
+    assert state.blocked_at is None
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=100.0,
+        cooldown_until=200.0,
+        reset_at=200.0,
+        version=3,
+        health_version=4,
+    )
+
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100)
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at is None
+    assert runtime.cooldown_until is None
+    assert runtime.reset_at is None
+    assert runtime.version == 4
+    assert runtime.health_version == 5
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_forgets_marker_with_sub_second_precision():
+    # handle_rate_limit records time.time() in runtime, while the row stores
+    # int(blocked_at). The waiver only knows the persisted second, so the same
+    # 429 must still match when runtime carries the fraction.
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=100.7,
+        cooldown_until=200.0,
+        reset_at=200.0,
+        version=3,
+        health_version=4,
+    )
+
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100)
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at is None
+    assert runtime.cooldown_until is None
+    assert runtime.reset_at is None
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_keeps_newer_marker():
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=300.0,
+        cooldown_until=400.0,
+        reset_at=400.0,
+        version=3,
+        health_version=4,
+    )
+
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100)
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at == 300.0
+    assert runtime.cooldown_until == 400.0
+    assert runtime.reset_at == 400.0
+    assert runtime.version == 3
+    assert runtime.health_version == 4
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_keeps_marker_recorded_under_account_lock():
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=100.0,
+        cooldown_until=200.0,
+        reset_at=200.0,
+        version=1,
+        health_version=1,
+    )
+    lock = await balancer._get_account_lock("acc")
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
+    async def record_newer_while_holding_lock() -> None:
+        async with lock:
+            holding.set()
+            await release.wait()
+            runtime = balancer._runtime["acc"]
+            runtime.blocked_at = 300.0
+            runtime.cooldown_until = 400.0
+            runtime.reset_at = 400.0
+
+    holder = asyncio.create_task(record_newer_while_holding_lock())
+    await holding.wait()
+    clear_task = asyncio.create_task(clear_rate_limit_runtime("acc", waived_blocked_at=100))
+    await asyncio.sleep(0)
+    assert clear_task.done() is False
+    release.set()
+    await clear_task
+    await holder
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at == 300.0
+    assert runtime.cooldown_until == 400.0
+    assert runtime.reset_at == 400.0
 
 
 def test_state_from_account_preserves_elapsed_reset_for_selector_recovery(monkeypatch):
