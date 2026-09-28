@@ -31,7 +31,7 @@ from app.core.usage.runtime_pricing import calculate_reference_cost
 from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.sse import SHUTDOWN_SERVICE_UNAVAILABLE_FRAME, inject_sse_keepalives
 from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
@@ -1152,6 +1152,7 @@ async def proxy_chat_to_sidecar(
             inject_sse_keepalives(
                 stream,
                 sse_keepalive_interval_seconds,
+                shutdown_handoff_frame=SHUTDOWN_SERVICE_UNAVAILABLE_FRAME,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},

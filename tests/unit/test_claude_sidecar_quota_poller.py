@@ -1020,8 +1020,7 @@ async def test_poll_pause_during_fetch_does_not_reset_another_auth_when_listing_
             replace(
                 stored,
                 accounts=tuple(
-                    replace(auth, disabled=True) if auth.name == _AUTH_NAME else auth
-                    for auth in stored.accounts
+                    replace(auth, disabled=True) if auth.name == _AUTH_NAME else auth for auth in stored.accounts
                 ),
             )
         )

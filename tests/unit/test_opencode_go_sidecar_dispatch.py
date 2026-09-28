@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -496,11 +497,16 @@ async def test_stream_upstream_error_emits_error_event_then_done(_isolate_side_e
 
 @pytest.mark.asyncio
 async def test_stream_cancellation_still_settles_and_logs(_isolate_side_effects) -> None:
-    class _ExplodingStream:
+    # The upstream sends one chunk and then stalls, and the client leaves while
+    # the body waits on it. A disconnect reaches the body as a cancellation.
+    first_chunk_sent = asyncio.Event()
+
+    class _StallingStream:
         async def __aenter__(self):
             async def _iter():
                 yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
-                raise GeneratorExit
+                first_chunk_sent.set()
+                await asyncio.Event().wait()
 
             return _iter()
 
@@ -510,14 +516,22 @@ async def test_stream_cancellation_still_settles_and_logs(_isolate_side_effects)
     class _Client(_FakeClient):
         def stream_chat_completion(self, payload, *, client_headers=None):
             self.calls.append((dict(payload), None))
-            return _ExplodingStream()
+            return _StallingStream()
 
     response = await _dispatch(_Client(), "glm-5.3", stream=True)
-    with pytest.raises(BaseException):
-        async for _chunk in response.body_iterator:
-            pass
+    consumer = asyncio.create_task(_read_stream(response))
+    await asyncio.wait_for(first_chunk_sent.wait(), timeout=5)
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+    await response.body_iterator.aclose()
 
     # A cancelled stream must neither leak a reservation nor lose the log row.
+    # Settlement runs on a detached task, so let it finish.
+    for _ in range(50):
+        if _isolate_side_effects:
+            break
+        await asyncio.sleep(0.01)
     assert _isolate_side_effects[-1]["error_code"] == "opencode_go_sidecar_stream_interrupted"
 
 
