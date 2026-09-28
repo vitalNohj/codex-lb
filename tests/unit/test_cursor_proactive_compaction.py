@@ -461,3 +461,51 @@ async def test_aclose_stream_skips_iterators_without_aclose() -> None:
             raise StopAsyncIteration
 
     await aclose_stream(_NoClose())
+
+
+async def _rewrite_bytes(chunks: list[bytes], model: str = "gpt-5.5-extra") -> list[bytes]:
+    async def upstream():
+        for chunk in chunks:
+            yield chunk
+
+    return [
+        chunk
+        async for chunk in stream_bytes_with_cursor_usage_fallback(upstream(), _payload(model), source="stream_test")
+    ]
+
+
+_CONTENT_EVENT = 'data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"café"}}]}'
+
+
+@pytest.mark.asyncio
+async def test_sse_rewriter_keeps_a_character_split_across_chunks() -> None:
+    stream = f"{_CONTENT_EVENT}\n\ndata: [DONE]\n\n".encode()
+    cut = stream.index(b"\xc3") + 1
+
+    body = b"".join(await _rewrite_bytes([stream[:cut], stream[cut:]])).decode()
+
+    events = [block for block in body.split("\n\n") if block]
+    assert events[0] == _CONTENT_EVENT
+    assert events[-1] == "data: [DONE]"
+
+
+@pytest.mark.asyncio
+async def test_sse_rewriter_streams_crlf_framed_events_as_they_arrive() -> None:
+    """CRLF framing is valid SSE; each event must reach Cursor when it arrives, not at EOF."""
+
+    rewriter = CursorChatSseCompatRewriter(_payload("gpt-5.5-extra"), source="stream_test")
+
+    assert rewriter.feed(f": keepalive\r\n\r\n{_CONTENT_EVENT}\r\n\r\n".encode()) == [
+        b": keepalive\n\n",
+        f"{_CONTENT_EVENT}\n\n".encode(),
+    ]
+    [usage, done] = rewriter.feed(b"data: [DONE]\r\n\r\n")
+    assert json.loads(usage.decode().removeprefix("data: "))["usage"]["completion_tokens"] >= 1
+    assert done == b"data: [DONE]\n\n"
+
+
+def test_sse_rewriter_passes_through_data_json_loads_cannot_build() -> None:
+    rewriter = CursorChatSseCompatRewriter(_payload("gpt-5.5-extra"), source="stream_test")
+    oversize = b"data: " + b"[" * 100_000
+
+    assert rewriter.feed(oversize + b"\n\n") == [oversize + b"\n\n"]

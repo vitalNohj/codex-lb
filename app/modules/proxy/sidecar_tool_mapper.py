@@ -7,6 +7,7 @@ from typing import cast
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.sse import SseEventDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -201,33 +202,22 @@ def reverse_sidecar_tool_names_in_response(
 class SidecarSseToolNameRewriter:
     def __init__(self, reverse_tool_names: dict[str, str]) -> None:
         self._reverse_tool_names = reverse_tool_names
-        self._buffer = ""
+        self._events = SseEventDecoder()
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if not self._reverse_tool_names:
             return [chunk]
-        self._buffer += chunk.decode("utf-8", errors="ignore")
-        outputs: list[bytes] = []
-        while "\n\n" in self._buffer:
-            raw_event, self._buffer = self._buffer.split("\n\n", 1)
-            outputs.append(self._rewrite_event(raw_event))
-        return outputs
+        return [self._rewrite_event(raw_event) for raw_event in self._events.feed(chunk)]
 
     def flush(self) -> list[bytes]:
-        if not self._buffer:
-            return []
         if not self._reverse_tool_names:
-            pending = self._buffer.encode("utf-8")
-            self._buffer = ""
-            return [pending]
-        pending = self._rewrite_event(self._buffer)
-        self._buffer = ""
-        return [pending]
+            return []
+        return [self._rewrite_event(raw_event) for raw_event in self._events.flush()]
 
     def _rewrite_event(self, raw_event: str) -> bytes:
         data_lines: list[str] = []
         prefix_lines: list[str] = []
-        for raw_line in raw_event.splitlines():
+        for raw_line in raw_event.split("\n"):
             if not raw_line or raw_line.startswith(":"):
                 prefix_lines.append(raw_line)
                 continue
@@ -246,7 +236,7 @@ class SidecarSseToolNameRewriter:
 
         try:
             parsed = json.loads(data)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             return (raw_event + "\n\n").encode("utf-8")
 
         if is_json_mapping(parsed):

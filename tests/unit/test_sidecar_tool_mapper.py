@@ -244,3 +244,30 @@ def test_sidecar_sse_tool_name_rewriter_rewrites_stream_chunks() -> None:
     payload = json.loads(rewritten.decode("utf-8").split("data: ", 1)[1].strip())
 
     assert payload["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "Shell"
+
+
+def test_sidecar_sse_tool_name_rewriter_streams_crlf_framed_events_as_they_arrive() -> None:
+    rewriter = SidecarSseToolNameRewriter({"Bash": "Shell"})
+    event = 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"Bash","arguments":""}}]}}]}'
+
+    [rewritten] = rewriter.feed(f"{event}\r\n\r\n".encode())
+
+    payload = json.loads(rewritten.decode().removeprefix("data: "))
+    assert payload["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "Shell"
+
+
+def test_sidecar_sse_tool_name_rewriter_keeps_a_character_split_across_chunks() -> None:
+    rewriter = SidecarSseToolNameRewriter({"Bash": "Shell"})
+    stream = 'data: {"choices":[{"delta":{"content":"café"}}]}\n\n'.encode()
+    cut = stream.index(b"\xc3") + 1
+
+    body = b"".join([*rewriter.feed(stream[:cut]), *rewriter.feed(stream[cut:]), *rewriter.flush()])
+
+    assert json.loads(body.decode().removeprefix("data: "))["choices"][0]["delta"]["content"] == "café"
+
+
+def test_sidecar_sse_tool_name_rewriter_passes_through_data_json_loads_cannot_build() -> None:
+    rewriter = SidecarSseToolNameRewriter({"Bash": "Shell"})
+    oversize = b"data: " + b"[" * 100_000
+
+    assert rewriter.feed(oversize + b"\n\n") == [oversize + b"\n\n"]
