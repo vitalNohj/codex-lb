@@ -1373,7 +1373,7 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 
 The native price table MUST recognize Anthropic Claude Fable 5.1, including sidecar-prefixed and dotted ids such as `cc/claude-fable-5-1` and `cc/claude-fable-5.1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
 
-A recognized version MUST NOT remove pricing that a price table would otherwise supply. When a supplied price table has no entry for the resolved version, lookup MUST fall back to the legacy family alias so the request is still priced instead of silently losing its cost.
+A recognized version MUST NOT inherit a shorter family's price. When a supplied price table has no entry for the resolved version, lookup MUST return no price for that id.
 
 #### Scenario: Canonical Fable 5.1 model resolves pricing
 
@@ -1386,17 +1386,17 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **THEN** it resolves the distinct Fable 5.1 native price entry
 - **AND** the resolved canonical model is `claude-fable-5-1`
 
-#### Scenario: A price table without the version still prices the request
+#### Scenario: A price table without the version does not inherit the family price
 
 - **WHEN** native price lookup receives model `cc/claude-fable-5-1`
 - **AND** the supplied price table contains only `claude-fable-5`
-- **THEN** it resolves the `claude-fable-5` entry rather than returning no price
+- **THEN** it returns no price
 
 ### Requirement: Claude Opus 5.5 pricing is distinct from Opus 5
 
 The native price table MUST recognize Anthropic Claude Opus 5.5, including sidecar-prefixed and dotted ids such as `cc/claude-opus-5-5` and `claude-opus-5.5`. Its rates MUST remain distinct from Opus 5: $4 input, $0.20 cache-hit, and $20 output per 1M tokens. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
 
-A recognized version MUST NOT remove pricing that a price table would otherwise supply. When a supplied price table has no entry for the resolved version, lookup MUST fall back to the legacy family alias so the request is still priced instead of silently losing its cost.
+A recognized version MUST NOT inherit a shorter family's price. When a supplied price table has no entry for the resolved version, lookup MUST return no price for that id.
 
 #### Scenario: Canonical Opus 5.5 model resolves pricing
 
@@ -1414,16 +1414,16 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **WHEN** native price lookup receives model `claude-opus-5.5` or `claude-opus-5-5-20260922`
 - **THEN** the resolved canonical model is `claude-opus-5-5`
 
-#### Scenario: A price table without the version still prices the request
+#### Scenario: A price table without the version does not inherit the family price
 
 - **WHEN** native price lookup receives model `cc/claude-opus-5-5`
 - **AND** the supplied price table contains only `claude-opus-5`
-- **THEN** it resolves the `claude-opus-5` entry rather than returning no price
+- **THEN** it returns no price
 
 #### Scenario: An Opus 5.5 lookalike does not use the Opus 5.5 entry
 
 - **WHEN** native price lookup receives model `claude-opus-5-50` or `not-claude-opus-5-5`
-- **THEN** it does not resolve the canonical model `claude-opus-5-5`
+- **THEN** it does not resolve the canonical model `claude-opus-5-5` or `claude-opus-5`
 
 ### Requirement: An Opus 5 allowlist does not admit Opus 5.5
 
@@ -1448,7 +1448,7 @@ An API key whose `allowed_models` names only `claude-opus-5` MUST NOT gain acces
 
 The native price table MUST recognize Anthropic Claude Sonnet 5.5, including sidecar-prefixed and dotted ids such as `cc/claude-sonnet-5-5` and `claude-sonnet-5.5`. Its rates MUST be $2 input, $0.20 cache-hit, and $10 output per 1M tokens, and the resolved canonical model MUST be `claude-sonnet-5-5`. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
 
-A recognized version MUST NOT remove pricing that a price table would otherwise supply. When a supplied price table has no entry for the resolved version, lookup MUST fall back to the legacy family alias so the request is still priced instead of silently losing its cost.
+A recognized version MUST NOT inherit a shorter family's price. When a supplied price table has no entry for the resolved version, lookup MUST return no price for that id.
 
 #### Scenario: Canonical Sonnet 5.5 model resolves pricing
 
@@ -1467,16 +1467,16 @@ A recognized version MUST NOT remove pricing that a price table would otherwise 
 - **WHEN** native price lookup receives model `claude-sonnet-5.5` or `claude-sonnet-5-5-20260928`
 - **THEN** the resolved canonical model is `claude-sonnet-5-5`
 
-#### Scenario: A price table without the version still prices the request
+#### Scenario: A price table without the version does not inherit the family price
 
 - **WHEN** native price lookup receives model `cc/claude-sonnet-5-5`
 - **AND** the supplied price table contains only `claude-sonnet-5`
-- **THEN** it resolves the `claude-sonnet-5` entry rather than returning no price
+- **THEN** it returns no price
 
 #### Scenario: A Sonnet 5.5 lookalike does not use the Sonnet 5.5 entry
 
 - **WHEN** native price lookup receives model `claude-sonnet-5-50` or `not-claude-sonnet-5-5`
-- **THEN** it does not resolve the canonical model `claude-sonnet-5-5`
+- **THEN** it does not resolve the canonical model `claude-sonnet-5-5` or `claude-sonnet-5`
 
 ### Requirement: A Sonnet 5 allowlist does not admit Sonnet 5.5
 
@@ -1496,6 +1496,26 @@ An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain acc
 
 - **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `claude-sonnet-5.5` or `cc/claude-sonnet-5-5`
 - **THEN** the request is allowed
+
+### Requirement: Claude price lookup matches the same id after prefix, date, and effort decoration
+
+Native Claude price lookup MUST resolve a prefixed, date-stamped, or effort-suffixed spelling of an existing price key by exact match after removing one leading `cc/`, `cp-`, or `cp_` prefix, one trailing release date (`-YYYYMMDD` or `-YYYY-MM-DD`), and one trailing reasoning-effort suffix. A longer id MUST NOT inherit a shorter family's price. A supplied price table that lacks the resolved id MUST return no price for that id. An API key whose `allowed_models` names a Claude price key MUST admit those same decorated spellings and MUST NOT admit a longer id that merely contains the key.
+
+#### Scenario: Prefixed and dated spellings use the existing key
+
+- **WHEN** native price lookup receives `cp-claude-opus-4-7` or `claude-opus-4-5-20251101`
+- **THEN** it resolves `claude-opus-4-7` or `claude-opus-4-5` respectively
+
+#### Scenario: A longer sibling does not inherit the shorter price
+
+- **WHEN** native price lookup receives `cc/claude-sonnet-5-5`, `claude-sonnet-5-50`, or `not-claude-sonnet-5-5`
+- **AND** the supplied price table contains only `claude-sonnet-5`
+- **THEN** none of those ids resolve the `claude-sonnet-5` entry
+
+#### Scenario: A family grant rejects a longer lookalike
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5` requests `claude-sonnet-5-50` or `not-claude-sonnet-5-5`
+- **THEN** the request is refused as not allowed for that key
 
 ### Requirement: API-key model access does not collapse a separately priced version into its family
 

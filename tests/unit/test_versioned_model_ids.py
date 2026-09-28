@@ -78,13 +78,10 @@ def test_versioned_pricing_uses_supplied_rates_not_an_embedded_price() -> None:
     )
 
 
-def test_pricing_falls_back_to_the_family_when_the_version_is_absent() -> None:
-    """A catalog without the version must still price the request, not drop its cost."""
+def test_pricing_does_not_inherit_the_family_when_the_version_is_absent() -> None:
+    """A longer id is not the shorter family, even when only the family is priced."""
     family = ModelPrice(input_per_1m=7, output_per_1m=11)
-    assert get_pricing_for_model("cc/claude-fable-5-1", {"claude-fable-5": family}) == (
-        "claude-fable-5",
-        family,
-    )
+    assert get_pricing_for_model("cc/claude-fable-5-1", {"claude-fable-5": family}) is None
     assert get_pricing_for_model("gpt-6-astra", {"claude-fable-5": family}) is None
     pricing = get_pricing_for_model("cc/claude-fable-5-1", DEFAULT_PRICING_MODELS)
     assert pricing is not None
@@ -210,6 +207,14 @@ def test_sonnet_5_5_allowlist_rejects_hyphen_lookalike() -> None:
 
     with pytest.raises(ProxyModelNotAllowed):
         validate_model_access(cast(Any, key), "not-claude-sonnet-5-5")
+
+
+@pytest.mark.parametrize("requested", ["claude-sonnet-5-50", "not-claude-sonnet-5-5"])
+def test_sonnet_5_allowlist_rejects_longer_lookalikes(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
 
 
 def _two_provider_routing() -> tuple[SidecarRoutingEntry, ...]:

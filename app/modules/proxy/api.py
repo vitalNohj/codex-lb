@@ -4209,7 +4209,7 @@ async def _build_models_response_body(
             # A discovered id is advertisable only when dispatch would reach the
             # model the catalog names. Two rewrites stand between the two: the
             # resolver's ``strip=True`` prefix removal, and the dispatch-time
-            # model profile (alias mapping plus reasoning-effort suffix split)
+            # model profile (reasoning-effort suffix split)
             # that ``build_sidecar_chat_payload`` applies to the wire model.
             # Either one can silently redirect the request -- ``cp-claude-sonnet``
             # to ``claude-sonnet``, ``claude-opus-4-7-high`` to ``claude-opus-4-7`` --

@@ -1,23 +1,29 @@
 from __future__ import annotations
 
-import re
-
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.types import JsonValue
-from app.core.usage.model_ids import resolve_versioned_model_id
-from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
+from app.core.usage.model_ids import (
+    claude_model_identity,
+    resolve_versioned_model_id,
+    split_model_effort_suffix,
+    strip_known_sidecar_prefix,
+    strip_trailing_release_date,
+)
+from app.core.usage.pricing import DEFAULT_MODEL_ALIASES, DEFAULT_PRICING_MODELS
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.modules.proxy.sidecar_routing import prefix_variants
 
 _CLAUDE_MODEL_FAMILY_PREFIX = "claude-"
-_DATE_SUFFIX_PATTERN = re.compile(r"-\d{8}$")
-_REASONING_EFFORT_TOKENS: frozenset[str] = frozenset(
-    {"none", "auto", "minimal", "low", "medium", "high", "xhigh", "extra", "max"}
-)
-_MODEL_SUFFIX_REASONING_PATTERN = re.compile(
-    r"^(?P<base>.+?)(?:-(?P<effort>none|auto|minimal|low|medium|high|xhigh|extra|max))(?:-(?:thinking|reasoning))?$",
-    re.IGNORECASE,
-)
+
+
+def _matching_claude_price_key(model_id: str) -> str | None:
+    target = model_id.lower()
+    if not target.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        return None
+    for key in DEFAULT_PRICING_MODELS:
+        if key.lower() == target:
+            return key
+    return None
 
 
 def canonical_sidecar_model(model: str | None) -> str | None:
@@ -26,18 +32,20 @@ def canonical_sidecar_model(model: str | None) -> str | None:
     normalized = model.strip()
     if not normalized:
         return None
+    identity = claude_model_identity(normalized)
+    priced = _matching_claude_price_key(identity)
+    if priced is not None:
+        return priced
+    if identity.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        return identity
+    restored = _matching_claude_price_key(f"{_CLAUDE_MODEL_FAMILY_PREFIX}{identity}")
+    if restored is not None:
+        return restored
     pricing_alias = resolve_versioned_model_id(normalized) or resolve_pricing_model_alias(
         normalized, DEFAULT_MODEL_ALIASES
     )
     if pricing_alias is not None:
         return pricing_alias
-    if not normalized.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        candidate = f"{_CLAUDE_MODEL_FAMILY_PREFIX}{normalized}"
-        pricing_alias = resolve_versioned_model_id(candidate) or resolve_pricing_model_alias(
-            candidate, DEFAULT_MODEL_ALIASES
-        )
-        if pricing_alias is not None:
-            return pricing_alias
     return normalized
 
 
@@ -83,24 +91,29 @@ def apply_sidecar_model_profile_with_suffix_effort(
 def _resolve_sidecar_wire_model_and_effort(model: str) -> tuple[str, str | None]:
     if not model:
         return model, None
+    stripped = strip_known_sidecar_prefix(model.strip())
+    if not stripped:
+        return model, None
 
-    versioned = resolve_versioned_model_id(model)
-    if versioned is not None and versioned.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        _, effort = _split_model_reasoning_suffix(model)
-        return (model if _is_date_suffix_variant(model, versioned) else versioned), effort
+    versioned = resolve_versioned_model_id(stripped)
+    base, effort = split_model_effort_suffix(stripped)
+    if versioned is not None and versioned.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        undated = strip_trailing_release_date(base)
+        if undated.lower() == versioned.lower() and base.lower() != versioned.lower():
+            return base, effort
+        return versioned, effort
 
-    pricing_alias = resolve_pricing_model_alias(model, DEFAULT_MODEL_ALIASES)
-    if pricing_alias is not None and pricing_alias.lower() != model.lower():
-        if not _is_date_suffix_variant(model, pricing_alias):
-            effort = _extract_reasoning_effort_suffix(model, pricing_alias)
-            return pricing_alias, effort
-
-    base_model, suffix_effort = _split_model_reasoning_suffix(model)
-    if not base_model.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        candidate = f"{_CLAUDE_MODEL_FAMILY_PREFIX}{base_model}"
-        if _is_known_claude_model_id(candidate):
-            return candidate, suffix_effort
-    return base_model, suffix_effort
+    undated = strip_trailing_release_date(base)
+    if undated.lower() != base.lower():
+        return base, effort
+    if not undated.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        restored = _matching_claude_price_key(f"{_CLAUDE_MODEL_FAMILY_PREFIX}{undated}")
+        if restored is not None:
+            return restored, effort
+    priced = _matching_claude_price_key(undated)
+    if priced is not None:
+        return priced, effort
+    return undated, effort
 
 
 def is_known_claude_sidecar_model(model: str | None) -> bool:
@@ -109,59 +122,10 @@ def is_known_claude_sidecar_model(model: str | None) -> bool:
     normalized = model.strip()
     if not normalized:
         return False
-    alias = resolve_pricing_model_alias(normalized, DEFAULT_MODEL_ALIASES)
-    if alias is not None and alias.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        return True
     canonical = canonical_sidecar_model(normalized)
-    if canonical is None or not canonical.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+    if canonical is None:
         return False
-    return resolve_pricing_model_alias(canonical, DEFAULT_MODEL_ALIASES) is not None
-
-
-def _is_known_claude_model_id(model_id: str) -> bool:
-    return is_known_claude_sidecar_model(model_id)
-
-
-def _is_date_suffix_variant(model: str, canonical: str) -> bool:
-    normalized = model.strip().lower()
-    canonical_normalized = canonical.strip().lower()
-    return normalized.startswith(f"{canonical_normalized}-") and _DATE_SUFFIX_PATTERN.search(normalized) is not None
-
-
-def _extract_reasoning_effort_suffix(model: str, canonical: str) -> str | None:
-    normalized = model.strip().lower()
-    canonical_normalized = canonical.strip().lower()
-    if not normalized.startswith(canonical_normalized):
-        return None
-    suffix = normalized[len(canonical_normalized) :].strip("-")
-    if not suffix:
-        return None
-    tokens = [token for token in suffix.split("-") if token]
-    for token in reversed(tokens):
-        effort = token
-        if effort == "extra":
-            effort = "xhigh"
-        if effort in _REASONING_EFFORT_TOKENS and effort not in {"thinking", "reasoning"}:
-            return effort
-    return None
-
-
-def _split_model_reasoning_suffix(model: str) -> tuple[str, str | None]:
-    match = _MODEL_SUFFIX_REASONING_PATTERN.match(model.strip())
-    if match is None:
-        return model, None
-    effort = match.group("effort")
-    if effort is None:
-        return model, None
-    normalized_effort = effort.lower()
-    if normalized_effort == "extra":
-        normalized_effort = "xhigh"
-    if normalized_effort not in _REASONING_EFFORT_TOKENS:
-        return model, None
-    base = match.group("base").rstrip("-")
-    if not base:
-        return model, None
-    return base, normalized_effort
+    return _matching_claude_price_key(canonical) is not None
 
 
 def _set_reasoning_effort(body: dict[str, JsonValue], effort: str) -> None:

@@ -22,7 +22,7 @@ def _config(*, prefixes: tuple[str, ...] = ("cp-",)) -> ClaudeSidecarConfig:
     )
 
 
-def test_canonical_sidecar_model_strips_cp_prefix_via_pricing_alias() -> None:
+def test_canonical_sidecar_model_strips_sidecar_prefix() -> None:
     assert canonical_sidecar_model("cp-claude-opus-4-7") == "claude-opus-4-7"
     assert canonical_sidecar_model("cp-claude-opus-4-8") == "claude-opus-4-8"
     assert canonical_sidecar_model("cp-claude-fable-5") == "claude-fable-5"
@@ -32,6 +32,9 @@ def test_canonical_sidecar_model_strips_cp_prefix_via_pricing_alias() -> None:
     assert canonical_sidecar_model("claude-opus-5.5") == "claude-opus-5-5"
     assert canonical_sidecar_model("cc/claude-sonnet-5-5") == "claude-sonnet-5-5"
     assert canonical_sidecar_model("claude-sonnet-5.5") == "claude-sonnet-5-5"
+    assert canonical_sidecar_model("claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"
+    assert canonical_sidecar_model("claude-haiku-5-5") == "claude-haiku-5-5"
+    assert canonical_sidecar_model("claude-sonnet-5-50") == "claude-sonnet-5-50"
 
 
 def test_canonical_sidecar_model_restores_claude_family_prefix() -> None:
@@ -123,6 +126,15 @@ def test_apply_sidecar_model_profile_keeps_sonnet_5_5_off_sonnet_5() -> None:
     sonnet_5_body: dict[str, JsonValue] = {}
     sonnet_5_wire = apply_sidecar_model_profile(sonnet_5_body, stripped_model="cc/claude-sonnet-5")
     assert sonnet_5_wire == "claude-sonnet-5"
+
+    future_body: dict[str, JsonValue] = {}
+    future_wire = apply_sidecar_model_profile(future_body, stripped_model="claude-haiku-5-5-thinking-high")
+    assert future_wire == "claude-haiku-5-5"
+    assert future_body["reasoning_effort"] == "high"
+
+    lookalike_body: dict[str, JsonValue] = {}
+    lookalike_wire = apply_sidecar_model_profile(lookalike_body, stripped_model="claude-sonnet-5-50")
+    assert lookalike_wire == "claude-sonnet-5-50"
 
 
 def test_apply_sidecar_model_profile_preserves_existing_reasoning_effort() -> None:

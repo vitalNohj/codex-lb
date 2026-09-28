@@ -1156,7 +1156,7 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     Two independent rewrites sit between the advertised id and the wire model.
     CLIProxyAPI can report an id that itself begins with a configured
     ``strip=True`` prefix (here ``cp-``), which the resolver removes. Dispatch
-    then applies the model profile, which maps aliases and splits a
+    then applies the model profile, which splits a
     reasoning-effort suffix. Either one makes the catalog name a model the
     request never reaches: ``cp-claude-sonnet`` becomes ``claude-sonnet``,
     ``claude-opus-4-7-high`` becomes ``claude-opus-4-7``. A versioned id the
@@ -1181,13 +1181,13 @@ async def test_every_advertised_discovered_id_dispatches_to_the_model_it_names(
     expected_round_trip = (
         "claude-sonnet-4-5-20250929",
         "claude-fable-5-1",
+        "claude-3-5-sonnet-latest",
     )
     # Each of these is rewritten before dispatch, so none may be advertised:
-    # a strip-prefix id, a reasoning-effort suffix, a -latest.
+    # a strip-prefix id, and a reasoning-effort suffix.
     expected_omitted = (
         "cp-claude-sonnet",
         "claude-opus-4-7-high",
-        "claude-3-5-sonnet-latest",
     )
     discovered_ids = (*expected_round_trip, *expected_omitted)
     fake_sidecar.models = [_FakeModel(model_id) for model_id in discovered_ids]

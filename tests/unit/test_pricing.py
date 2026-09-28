@@ -127,6 +127,13 @@ def test_get_pricing_for_model_gpt_5_4_mini_alias():
     assert price.output_per_1m == 4.5
 
 
+def test_get_pricing_for_model_omniroute_claude_3_5_sonnet_keeps_dated_key():
+    result = get_pricing_for_model("claude-3-5-sonnet", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, _price = result
+    assert model == "claude-3-5-sonnet-20241022"
+
+
 def test_get_pricing_for_model_claude_canonical():
     result = get_pricing_for_model("claude-sonnet-4-6", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
@@ -211,15 +218,10 @@ def test_get_pricing_for_model_claude_opus_5_5_does_not_collapse_to_opus_5():
     assert dated[0] == "claude-opus-5-5"
 
     family = ModelPrice(input_per_1m=7, output_per_1m=11)
-    assert get_pricing_for_model("cc/claude-opus-5-5", {"claude-opus-5": family}) == ("claude-opus-5", family)
+    assert get_pricing_for_model("cc/claude-opus-5-5", {"claude-opus-5": family}) is None
 
-    lookalike = get_pricing_for_model("claude-opus-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert lookalike is not None
-    assert lookalike[0] == "claude-opus-5"
-
-    hyphen_lookalike = get_pricing_for_model("not-claude-opus-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert hyphen_lookalike is not None
-    assert hyphen_lookalike[0] == "claude-opus-5"
+    assert get_pricing_for_model("claude-opus-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    assert get_pricing_for_model("not-claude-opus-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
 
 
 def test_get_pricing_for_model_claude_opus_5_sidecar_slash_prefix():
@@ -259,15 +261,11 @@ def test_get_pricing_for_model_claude_sonnet_5_5_does_not_collapse_to_sonnet_5()
     assert dated[0] == "claude-sonnet-5-5"
 
     family = ModelPrice(input_per_1m=7, output_per_1m=11)
-    assert get_pricing_for_model("cc/claude-sonnet-5-5", {"claude-sonnet-5": family}) == ("claude-sonnet-5", family)
+    assert get_pricing_for_model("cc/claude-sonnet-5-5", {"claude-sonnet-5": family}) is None
 
-    lookalike = get_pricing_for_model("claude-sonnet-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert lookalike is not None
-    assert lookalike[0] == "claude-sonnet-5"
-
-    hyphen_lookalike = get_pricing_for_model("not-claude-sonnet-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert hyphen_lookalike is not None
-    assert hyphen_lookalike[0] == "claude-sonnet-5"
+    assert get_pricing_for_model("claude-sonnet-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    assert get_pricing_for_model("not-claude-sonnet-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    assert get_pricing_for_model("claude-haiku-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
 
 
 def test_get_pricing_for_model_claude_versioned_beats_family():
