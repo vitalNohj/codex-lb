@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, TypeVar, cast
 
@@ -37,6 +38,13 @@ from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
+from app.modules.claude_sidecar.capacity_hold import (
+    StoredSnapshotReader,
+    all_claude_auths_held_until,
+    is_unknown_provider_message,
+    no_claude_auth_enabled,
+)
+from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
     cursor_context_limit_usage_completion,
@@ -95,6 +103,22 @@ _CLAUDE_SIDECAR_COOLDOWN_MARKERS = ("auth_unavailable", "no auth available")
 # the cooling window and retry; emit at most one client error if it lasts.
 CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS = 75.0
 CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS = 2.0
+
+# When the quota poller holds every Claude auth, CLIProxyAPI has no provider
+# for any Claude model. A hold that lifts within this many seconds is waited
+# out (a streamed request keeps receiving keepalives meanwhile); a later one is
+# answered at once with 429 and Retry-After, so the client retries at the reset
+# instead of treating CLIProxyAPI's 400 "unknown provider" as a bad request.
+CLAUDE_SIDECAR_HOLD_WAIT_MAX_SECONDS = 120.0
+# Time the poller gets, past a hold's release instant, to enable the auth again
+# and store the new snapshot. It wakes about a second after the release.
+CLAUDE_SIDECAR_HOLD_RELEASE_GRACE_SECONDS = 30.0
+CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS = 1.0
+# Retry-After for a hold whose release has passed without the poller lifting
+# it, and for "no Claude account enabled": one default poll interval.
+CLAUDE_SIDECAR_NO_CAPACITY_RETRY_AFTER_SECONDS = 60
+CLAUDE_SIDECAR_CAPACITY_HELD_ERROR_CODE = "claude_sidecar_capacity_held"
+CLAUDE_SIDECAR_NO_ENABLED_ACCOUNT_ERROR_CODE = "claude_sidecar_no_enabled_account"
 _T = TypeVar("_T")
 
 _SIDECAR_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -239,6 +263,157 @@ class _ClaudeSidecarCooldownGate:
 
 
 _CLAUDE_SIDECAR_COOLDOWN_GATE = _ClaudeSidecarCooldownGate()
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeNoCapacity:
+    """Client answer for a request no Claude auth can serve right now."""
+
+    status_code: int
+    content: OpenAIErrorEnvelope
+    retry_after_seconds: int
+    log_error_code: str
+    log_error_message: str
+
+    def headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+        return {**dict(extra or {}), "Retry-After": str(self.retry_after_seconds)}
+
+
+class _ClaudeCapacityUnavailable(Exception):
+    def __init__(self, outcome: ClaudeNoCapacity) -> None:
+        super().__init__(outcome.log_error_message)
+        self.outcome = outcome
+
+
+_CLAUDE_QUOTA_SNAPSHOT_READER = StoredSnapshotReader()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _seconds_until(instant: datetime) -> float:
+    return (instant - _utcnow()).total_seconds()
+
+
+async def _stored_claude_quota_snapshot() -> SidecarQuotaSnapshot | None:
+    try:
+        settings = await get_settings_cache().get()
+    except Exception:
+        logger.warning("failed to load dashboard settings for the Claude capacity check", exc_info=True)
+        return None
+    return _CLAUDE_QUOTA_SNAPSHOT_READER.read(settings.claude_sidecar_quota_state_json)
+
+
+async def claude_capacity_held_until() -> datetime | None:
+    """Earliest release of the poller holds when no Claude auth is enabled."""
+    return all_claude_auths_held_until(await _stored_claude_quota_snapshot())
+
+
+def claude_capacity_held(until: datetime) -> ClaudeNoCapacity:
+    remaining = _seconds_until(until)
+    retry_after = math.ceil(remaining) if remaining > 0 else CLAUDE_SIDECAR_NO_CAPACITY_RETRY_AFTER_SECONDS
+    stamp = until.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    message = f"Every Claude account is rate limited; capacity returns at {stamp}."
+    return ClaudeNoCapacity(
+        status_code=429,
+        content=openai_error(
+            "rate_limit_exceeded",
+            message,
+            error_type="rate_limit_error",
+            resets_at=until.timestamp(),
+        ),
+        retry_after_seconds=max(1, retry_after),
+        log_error_code=CLAUDE_SIDECAR_CAPACITY_HELD_ERROR_CODE,
+        log_error_message=message,
+    )
+
+
+def claude_no_enabled_account() -> ClaudeNoCapacity:
+    message = "No Claude account is enabled."
+    return ClaudeNoCapacity(
+        status_code=503,
+        content=openai_error(
+            CLAUDE_SIDECAR_NO_ENABLED_ACCOUNT_ERROR_CODE,
+            message,
+            error_type="upstream_error",
+        ),
+        retry_after_seconds=CLAUDE_SIDECAR_NO_CAPACITY_RETRY_AFTER_SECONDS,
+        log_error_code=CLAUDE_SIDECAR_NO_ENABLED_ACCOUNT_ERROR_CODE,
+        log_error_message=message,
+    )
+
+
+def _claude_hold_lifts_within(until: datetime, budget_seconds: float) -> bool:
+    """Whether the poller is expected to lift ``until`` within ``budget_seconds``.
+
+    A release more than the grace period in the past is not coming: the poller
+    failed to enable the auth, and waiting would only hold the client longer.
+    """
+    remaining = _seconds_until(until)
+    return -CLAUDE_SIDECAR_HOLD_RELEASE_GRACE_SECONDS <= remaining <= budget_seconds
+
+
+async def _wait_out_claude_capacity_hold(until: datetime) -> datetime | None:
+    """Wait for a near hold to lift. ``None`` once an auth can serve, else the hold in force."""
+    deadline = time.monotonic() + max(0.0, _seconds_until(until)) + CLAUDE_SIDECAR_HOLD_RELEASE_GRACE_SECONDS
+    current = until
+    while True:
+        budget = deadline - time.monotonic()
+        if budget <= 0.0 or not _claude_hold_lifts_within(current, budget):
+            return current
+        await asyncio.sleep(min(CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS, budget))
+        held = await claude_capacity_held_until()
+        if held is None:
+            return None
+        current = held
+
+
+async def _claude_far_capacity_hold() -> ClaudeNoCapacity | None:
+    """Answer at once for a hold too far off to wait out; ``None`` to go ahead.
+
+    A near hold is left to :func:`_await_claude_capacity`, so a streamed request
+    can wait for it after its headers, with keepalives flowing.
+    """
+    until = await claude_capacity_held_until()
+    if until is None or _claude_hold_lifts_within(until, CLAUDE_SIDECAR_HOLD_WAIT_MAX_SECONDS):
+        return None
+    return claude_capacity_held(until)
+
+
+async def _await_claude_capacity() -> None:
+    """Return once no poller hold blocks every Claude auth, waiting out a near one.
+
+    Raises :class:`_ClaudeCapacityUnavailable` when the hold is not lifted in time.
+    """
+    until = await claude_capacity_held_until()
+    if until is None:
+        return
+    if _claude_hold_lifts_within(until, CLAUDE_SIDECAR_HOLD_WAIT_MAX_SECONDS):
+        logger.info("every Claude auth is held; waiting %.1fs for the next release", max(0.0, _seconds_until(until)))
+        remaining_hold = await _wait_out_claude_capacity_hold(until)
+        if remaining_hold is None:
+            return
+        until = remaining_hold
+    raise _ClaudeCapacityUnavailable(claude_capacity_held(until))
+
+
+async def claude_no_capacity_behind(exc: ClaudeSidecarError) -> ClaudeNoCapacity | None:
+    """Explain CLIProxyAPI's 400 "unknown provider" when no Claude auth is enabled.
+
+    That 400 also answers a model no auth has ever served, which stays a client
+    error; only a snapshot with every Claude auth disabled turns it into 429 or
+    503.
+    """
+    if exc.status_code != 400 or not is_unknown_provider_message(exc.message):
+        return None
+    snapshot = await _stored_claude_quota_snapshot()
+    until = all_claude_auths_held_until(snapshot)
+    if until is not None:
+        return claude_capacity_held(until)
+    if no_claude_auth_enabled(snapshot):
+        return claude_no_enabled_account()
+    return None
 
 
 def reset_claude_sidecar_cooldown_gate() -> None:
@@ -1114,6 +1289,20 @@ async def proxy_chat_to_sidecar(
     )
     requested_at = time.monotonic()
     if payload.stream:
+        # A far hold is answered before the stream opens, so the client gets a
+        # real 429 status and Retry-After header rather than an in-band error.
+        far_hold = await _claude_far_capacity_hold()
+        if far_hold is not None:
+            return await _claude_no_capacity_response(
+                far_hold,
+                reservation=reservation,
+                api_key=api_key,
+                model=effective_model,
+                started_at=requested_at,
+                rate_limit_headers=rate_limit_headers,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            )
         ensure_stream_usage_requested(sidecar_payload.body)
         settling = SettlingStream(
             _sidecar_stream_iterator(
@@ -1160,6 +1349,34 @@ async def proxy_chat_to_sidecar(
         )
 
     try:
+        await _await_claude_capacity()
+    except _ClaudeCapacityUnavailable as exc:
+        return await _claude_no_capacity_response(
+            exc.outcome,
+            reservation=reservation,
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            rate_limit_headers=rate_limit_headers,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        )
+    except asyncio.CancelledError:
+        # A client that leaves while the request waits for a hold to lift must
+        # not strand its reservation. Nothing was sent upstream.
+        await await_deferring_cancellation(
+            _abandon_unstarted_sidecar_stream(
+                reservation,
+                api_key=api_key,
+                model=effective_model,
+                started_at=requested_at,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            )
+        )
+        raise
+
+    try:
         response_body = await retry_claude_sidecar_cooldown(lambda: client.chat_completion(sidecar_payload.body))
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
@@ -1188,6 +1405,19 @@ async def proxy_chat_to_sidecar(
             return cursor_context_limit_usage_completion(
                 payload,
                 headers=dict(rate_limit_headers),
+            )
+        no_capacity = await claude_no_capacity_behind(exc)
+        if no_capacity is not None:
+            return await _claude_no_capacity_response(
+                no_capacity,
+                reservation=reservation,
+                api_key=api_key,
+                model=effective_model,
+                started_at=requested_at,
+                rate_limit_headers=rate_limit_headers,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+                failure_detail=exc.message,
             )
         await _release_sidecar_reservation(reservation, api_key=api_key)
         log_error = claude_sidecar_request_log_error(exc.message, model=effective_model)
@@ -1277,6 +1507,7 @@ async def _sidecar_stream_iterator(
     cooldown_deadline = time.monotonic() + wait_seconds
     last_cooldown_exc: ClaudeSidecarError | None = None
     try:
+        await _await_claude_capacity()
         while True:
             if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
                 raise last_cooldown_exc
@@ -1358,6 +1589,19 @@ async def _sidecar_stream_iterator(
             )
         )
         yield b"data: [DONE]\n\n"
+    except _ClaudeCapacityUnavailable as exc:
+        await _release_and_log_claude_no_capacity(
+            exc.outcome,
+            reservation=reservation,
+            api_key=api_key,
+            model=model,
+            started_at=started_at,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
+        )
+        settled = True
+        yield _error_sse(exc.outcome.content)
+        yield b"data: [DONE]\n\n"
     except ClaudeSidecarError as exc:
         if cursor_compat and _is_sidecar_context_length_error(exc):
             await _release_sidecar_reservation(reservation, api_key=api_key)
@@ -1365,6 +1609,22 @@ async def _sidecar_stream_iterator(
             completed = True
             for chunk in cursor_context_limit_usage_sse_chunks(request_payload):
                 yield chunk
+            return
+        no_capacity = None if yielded else await claude_no_capacity_behind(exc)
+        if no_capacity is not None:
+            await _release_and_log_claude_no_capacity(
+                no_capacity,
+                reservation=reservation,
+                api_key=api_key,
+                model=model,
+                started_at=started_at,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
+                failure_detail=exc.message,
+            )
+            settled = True
+            yield _error_sse(no_capacity.content)
+            yield b"data: [DONE]\n\n"
             return
         await _release_sidecar_reservation(reservation, api_key=api_key)
         log_error = claude_sidecar_request_log_error(exc.message, model=model)
@@ -1448,6 +1708,60 @@ async def _abandon_unstarted_sidecar_stream(
         error_message="client disconnected before the response started",
         reasoning_effort=reasoning_effort,
         requested_reasoning_effort=requested_reasoning_effort,
+    )
+
+
+async def _release_and_log_claude_no_capacity(
+    outcome: ClaudeNoCapacity,
+    *,
+    reservation: ApiKeyUsageReservationData | None,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+    failure_detail: str | None = None,
+) -> None:
+    await _release_sidecar_reservation(reservation, api_key=api_key)
+    await _log_sidecar_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status="error",
+        error_code=outcome.log_error_code,
+        error_message=outcome.log_error_message,
+        failure_detail=failure_detail,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
+
+
+async def _claude_no_capacity_response(
+    outcome: ClaudeNoCapacity,
+    *,
+    reservation: ApiKeyUsageReservationData | None,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+    rate_limit_headers: Mapping[str, str],
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+    failure_detail: str | None = None,
+) -> JSONResponse:
+    await _release_and_log_claude_no_capacity(
+        outcome,
+        reservation=reservation,
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+        failure_detail=failure_detail,
+    )
+    return JSONResponse(
+        status_code=outcome.status_code,
+        content=outcome.content,
+        headers=outcome.headers(rate_limit_headers),
     )
 
 

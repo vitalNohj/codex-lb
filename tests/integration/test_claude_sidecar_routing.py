@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -12,14 +13,23 @@ from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.config.settings import get_settings
+from app.core.config.settings_cache import get_settings_cache
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
 from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarQuotaSnapshot,
+    SidecarRateLimitHold,
+    snapshot_to_json,
+)
+from app.modules.proxy import claude_sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import reset_claude_sidecar_cooldown_gate
 from app.modules.proxy.cursor_chat_compat import CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -1583,3 +1593,275 @@ async def test_claude_sidecar_stream_auth_unavailable_retries_until_cooldown_cle
     logs = await _sidecar_logs()
     assert len(logs) == 1
     assert logs[0].status == "success"
+
+
+# --- Every Claude auth held by the quota poller ------------------------------
+
+_UNKNOWN_PROVIDER_MESSAGE = "unknown provider for model claude-sonnet-4-5-20250929"
+
+
+def _unknown_provider_error() -> ClaudeSidecarError:
+    return ClaudeSidecarError(
+        400,
+        _UNKNOWN_PROVIDER_MESSAGE,
+        body={
+            "error": {
+                "message": _UNKNOWN_PROVIDER_MESSAGE,
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+                "param": "model",
+            }
+        },
+    )
+
+
+def _held_auth(name: str, *, disabled: bool = True) -> SidecarAuthQuota:
+    return SidecarAuthQuota(
+        name=name,
+        auth_index=name,
+        email=f"{name}@example.com",
+        status="active",
+        status_message=None,
+        disabled=disabled,
+        unavailable=False,
+        quota_exceeded=False,
+        next_recover_at=None,
+        model_states=(),
+        success=0,
+        failed=0,
+        last_refresh=None,
+    )
+
+
+async def _store_quota_snapshot(
+    accounts: tuple[SidecarAuthQuota, ...],
+    holds: tuple[SidecarRateLimitHold, ...] = (),
+) -> None:
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime.now(timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=accounts,
+        rate_limit_holds=holds,
+    )
+    async with SessionLocal() as session:
+        repo = SettingsRepository(session)
+        await repo.get_or_create()
+        await repo.update_operational(claude_sidecar_quota_state_json=snapshot_to_json(snapshot))
+    await get_settings_cache().invalidate()
+
+
+async def _hold_every_auth_until(until: datetime) -> None:
+    await _store_quota_snapshot(
+        (_held_auth("a.json"), _held_auth("b.json")),
+        (
+            SidecarRateLimitHold(name="a.json", until=until, released=False),
+            SidecarRateLimitHold(name="b.json", until=until + timedelta(hours=1), released=False),
+        ),
+    )
+
+
+def _chat(*, stream: bool = False) -> dict:
+    body: dict = {"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]}
+    if stream:
+        body["stream"] = True
+    return body
+
+
+@pytest.mark.asyncio
+async def test_far_hold_on_every_claude_auth_answers_429_with_retry_after(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    until = datetime.now(timezone.utc) + timedelta(hours=2)
+    await _hold_every_auth_until(until)
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 429
+    retry_after = int(response.headers["Retry-After"])
+    assert 7100 <= retry_after <= 7201
+    error = response.json()["error"]
+    assert error["type"] == "rate_limit_error"
+    assert error["code"] == "rate_limit_exceeded"
+    assert error["resets_at"] == int(until.timestamp())
+    assert fake_sidecar.chat_payloads == []
+    logs = await _sidecar_logs()
+    assert [(log.status, log.error_code) for log in logs] == [("error", "claude_sidecar_capacity_held")]
+
+
+@pytest.mark.asyncio
+async def test_far_hold_answers_a_streamed_request_with_429_before_any_event(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(hours=2))
+
+    async with async_client.stream("POST", "/v1/chat/completions", json=_chat(stream=True)) as response:
+        await response.aread()
+
+    assert response.status_code == 429
+    assert "Retry-After" in response.headers
+    assert response.json()["error"]["type"] == "rate_limit_error"
+    assert fake_sidecar.stream_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_near_hold_is_waited_out_then_the_request_is_served(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS", 0.05)
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(seconds=30))
+    checks = 0
+    real_held_until = claude_sidecar_dispatch.claude_capacity_held_until
+
+    async def held_until_poller_lifts_it():
+        # The poller enables an auth again at the release; stand in for it by
+        # storing the post-release snapshot on the third check.
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            await _store_quota_snapshot((_held_auth("a.json", disabled=False), _held_auth("b.json")))
+        return await real_held_until()
+
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.claude_capacity_held_until",
+        held_until_poller_lifts_it,
+    )
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 200
+    assert len(fake_sidecar.chat_payloads) == 1
+    assert checks >= 3
+
+
+@pytest.mark.asyncio
+async def test_near_hold_is_waited_out_inside_a_stream(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS", 0.05)
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(seconds=30))
+    checks = 0
+    real_held_until = claude_sidecar_dispatch.claude_capacity_held_until
+
+    async def held_until_poller_lifts_it():
+        nonlocal checks
+        checks += 1
+        if checks == 4:
+            await _store_quota_snapshot((_held_auth("a.json", disabled=False), _held_auth("b.json")))
+        return await real_held_until()
+
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.claude_capacity_held_until",
+        held_until_poller_lifts_it,
+    )
+
+    async with async_client.stream("POST", "/v1/chat/completions", json=_chat(stream=True)) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    payloads = _chat_sse_payloads(body)
+    assert all("error" not in payload for payload in payloads)
+    assert len(fake_sidecar.stream_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_near_hold_the_poller_never_lifts_ends_in_429(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    # A release already past the grace period: the poller failed to enable the
+    # auth, so the request does not wait for it.
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_HOLD_RELEASE_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS", 0.05)
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(seconds=0.1))
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) == 60
+    assert fake_sidecar.chat_payloads == []
+    logs = await _sidecar_logs()
+    assert [log.error_code for log in logs] == ["claude_sidecar_capacity_held"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_with_every_auth_held_becomes_429(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    # The snapshot catches up with CLIProxyAPI only after the request was sent:
+    # the pre-check sees an enabled auth, the upstream already has none.
+    until = datetime.now(timezone.utc) + timedelta(hours=3)
+    real_held_until = claude_sidecar_dispatch.claude_capacity_held_until
+    first = True
+
+    async def first_check_sees_capacity():
+        nonlocal first
+        if first:
+            first = False
+            return None
+        return await real_held_until()
+
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.claude_capacity_held_until",
+        first_check_sees_capacity,
+    )
+    await _hold_every_auth_until(until)
+    fake_sidecar.chat_error = _unknown_provider_error()
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 429
+    assert response.json()["error"]["resets_at"] == int(until.timestamp())
+    logs = await _sidecar_logs()
+    assert [(log.error_code, log.failure_detail) for log in logs] == [
+        ("claude_sidecar_capacity_held", _UNKNOWN_PROVIDER_MESSAGE)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_with_every_auth_paused_by_an_operator_becomes_503(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    await _store_quota_snapshot((_held_auth("a.json"), _held_auth("b.json")))
+    fake_sidecar.stream_error = _unknown_provider_error()
+
+    async with async_client.stream("POST", "/v1/chat/completions", json=_chat(stream=True)) as response:
+        body = await response.aread()
+
+    errors = [payload["error"] for payload in _chat_sse_payloads(body) if "error" in payload]
+    assert [error["code"] for error in errors] == ["claude_sidecar_no_enabled_account"]
+    logs = await _sidecar_logs()
+    assert [log.error_code for log in logs] == ["claude_sidecar_no_enabled_account"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_with_an_enabled_auth_stays_a_400(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    await _store_quota_snapshot((_held_auth("a.json", disabled=False), _held_auth("b.json")))
+    fake_sidecar.chat_error = _unknown_provider_error()
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "model_not_found"
+    assert "Retry-After" not in response.headers
