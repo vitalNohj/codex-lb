@@ -3254,6 +3254,77 @@ async def test_claude_opus_5_5_pin_replays_over_its_own_ownership_table(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_claude_opus_5_5_pin_readded_by_the_operator_survives_downgrade(tmp_path):
+    """A pin the operator removed and then added back is theirs, not the migration's.
+
+    Downgrade removes ``claude-opus-5-5`` from rows listed in the ownership
+    table, and a replayed upgrade skips them. A save that re-adds the pin must
+    drop that row, or downgrade removes the operator's pin. A save that drops
+    the pin must keep it, or a replay pins the row again.
+    """
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+    from app.modules.settings.repository import SettingsRepository
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-opus-5-5-readded.sqlite'}"
+    parent_revision = "20260919_000000_add_openai_compat_endpoints"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def stored_models() -> list[str]:
+        async with engine.connect() as conn:
+            raw = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        return json.loads(raw)
+
+    async def save_models(models: list[str]) -> None:
+        async with sessions() as session:
+            await SettingsRepository(session).update(claude_sidecar_full_models_json=json.dumps(models))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": '["claude-opus-5"]'},
+            )
+        await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+        assert await stored_models() == ["claude-opus-5", "claude-opus-5-5"]
+
+        async def owners() -> int:
+            async with engine.connect() as conn:
+                return (await conn.execute(text("SELECT COUNT(*) FROM claude_opus_5_5_pin_ownership"))).scalar_one()
+
+        async def replay() -> None:
+            # Rewind only the bookkeeping, as the legacy-revision remap does.
+            await to_thread.run_sync(lambda: command.stamp(_build_alembic_config(db_url), parent_revision))
+            await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+
+        # A save that keeps the pin keeps the migration's ownership.
+        await save_models(["claude-opus-5", "claude-opus-5-5"])
+        assert await owners() == 1
+
+        # The operator drops the pin: a replay must not put it back.
+        await save_models(["claude-opus-5"])
+        await replay()
+        assert await stored_models() == ["claude-opus-5"]
+
+        # The operator adds it back: the pin is now theirs.
+        await save_models(["claude-opus-5", "Claude-Opus-5-5"])
+        assert await owners() == 0
+        await replay()
+        assert await stored_models() == ["claude-opus-5", "Claude-Opus-5-5"]
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        assert await stored_models() == ["claude-opus-5", "Claude-Opus-5-5"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_alias_pool_migration_upgrade_and_guarded_downgrade(tmp_path):
     """Upgrade keeps legacy aliases as strings (an old replica still reads them)
     and adds the pool log columns; downgrade refuses, changing nothing, while an
