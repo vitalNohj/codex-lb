@@ -163,9 +163,7 @@ async def _apply_rate_limit_holds(
     live_disabled = await _live_disabled_by_name(client)
     if live_disabled is None:
         changed = _changed_disabled_flags(stored_before, previous)
-        accounts = (
-            _accounts_with_live_disabled(snapshot.accounts, changed) if changed else snapshot.accounts
-        )
+        accounts = _accounts_with_live_disabled(snapshot.accounts, changed) if changed else snapshot.accounts
         return replace(snapshot, accounts=accounts, rate_limit_holds=previous_holds)
     accounts = _accounts_with_live_disabled(snapshot.accounts, live_disabled)
     plan = plan_rate_limit_holds(accounts, previous_holds, snapshot.checked_at)
