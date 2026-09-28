@@ -617,6 +617,71 @@ async def test_opus_5_5_survives_chat_forwarding(
         assert payload["reasoning_effort"] == effort
 
 
+def _use_live_sonnet_sidecar(fake_sidecar, monkeypatch) -> None:
+    """Route like production: ``cc/`` strips, and only the hyphen id is pinned."""
+    config = replace(
+        fake_sidecar.config,
+        prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+        full_models=("claude-sonnet-5-5",),
+    )
+    fake_sidecar.config = config
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "wire_model", "effort", "max_tokens"),
+    [
+        ("cc/claude-sonnet-5-5", "claude-sonnet-5-5", None, 32_768),
+        ("cc/claude-sonnet-5.5", "claude-sonnet-5-5", None, 32_768),
+        ("claude-sonnet-5-5", "claude-sonnet-5-5", None, 32_768),
+        ("cc/claude-sonnet-5-5-thinking-max", "claude-sonnet-5-5", "max", 32_768),
+        ("cc/claude-sonnet-5-5-20260928", "claude-sonnet-5-5-20260928", None, 32_768),
+        ("cc/claude-sonnet-5", "claude-sonnet-5", None, 32_768),
+    ],
+)
+async def test_sonnet_5_5_survives_chat_forwarding(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch, model, wire_model, effort, max_tokens
+):
+    _use_live_sonnet_sidecar(fake_sidecar, monkeypatch)
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
+    )
+
+    assert response.status_code == 200
+    payload = fake_sidecar.chat_payloads[0]
+    assert payload["model"] == wire_model
+    assert payload["max_tokens"] == max_tokens
+    if effort is not None:
+        assert payload["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5.5", "claude-sonnet-5-5-20260928"])
+def test_bare_sonnet_5_5_variants_without_cc_prefix_stay_off_the_sidecar(model):
+    """Dotted and dated ids match the live prefix, not the hyphen pin.
+
+    Production pins only ``claude-sonnet-5-5`` and strips ``cc/``. These bare
+    forms must stay unresolved. The same ids under ``cc/`` must still match,
+    and the hyphen pin must still match.
+    """
+
+    entry = SidecarRoutingEntry(
+        provider="claude",
+        prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+        full_models=("claude-sonnet-5-5",),
+    )
+    entries = (entry,)
+    assert resolve_sidecar_route("claude-sonnet-5-5", entries) is not None
+    assert resolve_sidecar_route(f"cc/{model}", entries) is not None
+    assert resolve_sidecar_route(model, entries) is None
+
+
 @pytest.mark.parametrize("model", ["claude-opus-5.5", "claude-opus-5-5-20260922"])
 def test_bare_opus_5_5_variants_without_cc_prefix_stay_off_the_sidecar(model):
     """Dotted and dated ids match the live prefix, not the hyphen pin.
@@ -1047,12 +1112,13 @@ async def test_sidecar_models_advertise_their_real_context_window(
 
     config = replace(
         fake_sidecar.config,
-        full_models=("claude-opus-5-5", "claude-sonnet-4-5-20250929"),
+        full_models=("claude-opus-5-5", "claude-sonnet-5-5", "claude-sonnet-4-5-20250929"),
         prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cc/", strip=True)),
     )
     fake_sidecar.config = config
     fake_sidecar.models = [
         _FakeModel("claude-opus-5-5"),
+        _FakeModel("claude-sonnet-5-5"),
         _FakeModel("claude-sonnet-4-5-20250929"),
         _FakeModel("claude-unreleased-9"),
     ]
@@ -1069,6 +1135,8 @@ async def test_sidecar_models_advertise_their_real_context_window(
     expected = {
         "claude-opus-5-5": 1_000_000,
         "cc/claude-opus-5-5": 1_000_000,
+        "claude-sonnet-5-5": 1_000_000,
+        "cc/claude-sonnet-5-5": 1_000_000,
         "claude-sonnet-4-5-20250929": 200_000,
         "claude-unreleased-9": 200_000,
     }

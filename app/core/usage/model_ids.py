@@ -22,9 +22,18 @@ _FABLE_5_1_ID = re.compile(
     re.IGNORECASE,
 )
 # Bare id, or a prefix this proxy actually routes: cc/, cp-, cp_.
-# A single separator such as "-" would also accept not-claude-opus-5-5.
+# A single separator such as "-" would also accept not-claude-opus-5-5
+# and not-claude-sonnet-5-5.
 _OPUS_5_5_ID = re.compile(
     r"^(?:cc/|cp[-_])?claude-opus-5[.-]5"
+    r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"
+    r"(?:-(?:thinking|reasoning))?"
+    r"(?:-(?:none|auto|minimal|low|medium|high|xhigh|extra|max))?"
+    r"(?:-(?:thinking|reasoning))?$",
+    re.IGNORECASE,
+)
+_SONNET_5_5_ID = re.compile(
+    r"^(?:cc/|cp[-_])?claude-sonnet-5[.-]5"
     r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"
     r"(?:-(?:thinking|reasoning))?"
     r"(?:-(?:none|auto|minimal|low|medium|high|xhigh|extra|max))?"
@@ -43,4 +52,6 @@ def resolve_versioned_model_id(model: str) -> str | None:
         return "claude-fable-5-1"
     if _OPUS_5_5_ID.search(normalized):
         return "claude-opus-5-5"
+    if _SONNET_5_5_ID.search(normalized):
+        return "claude-sonnet-5-5"
     return None

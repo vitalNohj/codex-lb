@@ -373,6 +373,21 @@ def test_build_sidecar_chat_payload_forwards_opus_5_5_wire_model() -> None:
     assert payload.body["max_tokens"] == 32_768
 
 
+def test_build_sidecar_chat_payload_forwards_sonnet_5_5_wire_model() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-sonnet-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-5-5", _config())
+
+    assert payload.body["model"] == "claude-sonnet-5-5"
+    assert payload.body["max_tokens"] == 32_768
+
+
 def test_build_sidecar_chat_payload_leaves_opus_5_max_tokens_unchanged() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
@@ -498,6 +513,7 @@ def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() ->
         ("claude-opus-4-7", 128_000),
         ("claude-opus-4-6", 128_000),
         ("claude-sonnet-5", 128_000),
+        ("claude-sonnet-5-5", 128_000),
         ("claude-sonnet-4-6", 64_000),
         ("claude-sonnet-4-5", 64_000),
         ("claude-haiku-4-5", 64_000),

@@ -46,6 +46,18 @@ pytestmark = pytest.mark.unit
         ("notclaude-opus-5-5", None),
         ("not-claude-opus-5-5", None),
         ("not/claude-opus-5-5", None),
+        ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+        ("cc/claude-sonnet-5.5", "claude-sonnet-5-5"),
+        ("cp_claude-sonnet-5-5", "claude-sonnet-5-5"),
+        ("cp-claude-sonnet-5.5", "claude-sonnet-5-5"),
+        ("claude-sonnet-5-5-thinking-max", "claude-sonnet-5-5"),
+        ("CLAUDE-SONNET-5-5-20260928", "claude-sonnet-5-5"),
+        ("claude-sonnet-5", None),
+        ("claude-sonnet-5-50", None),
+        ("claude-sonnet-55", None),
+        ("notclaude-sonnet-5-5", None),
+        ("not-claude-sonnet-5-5", None),
+        ("not/claude-sonnet-5-5", None),
         ("gpt-6-astra-pro", None),
         ("unrelated/gpt-6-astra", None),
         ("gpt-6-sol-pro", None),
@@ -164,6 +176,40 @@ def test_opus_5_5_allowlist_rejects_hyphen_lookalike() -> None:
 
     with pytest.raises(ProxyModelNotAllowed):
         validate_model_access(cast(Any, key), "not-claude-opus-5-5")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["cc/claude-sonnet-5-5", "claude-sonnet-5.5", "claude-sonnet-5-5-thinking-max"],
+)
+def test_sonnet_5_allowlist_does_not_admit_sonnet_5_5(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
+
+
+def test_sonnet_5_allowlist_still_admits_sonnet_5() -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), "cc/claude-sonnet-5")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["claude-sonnet-5.5", "cc/claude-sonnet-5-5", "claude-sonnet-5-5-20260928"],
+)
+def test_sonnet_5_5_allowlist_admits_bounded_ids(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), requested)
+
+
+def test_sonnet_5_5_allowlist_rejects_hyphen_lookalike() -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "not-claude-sonnet-5-5")
 
 
 def _two_provider_routing() -> tuple[SidecarRoutingEntry, ...]:

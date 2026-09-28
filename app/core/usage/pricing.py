@@ -453,6 +453,14 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=0.2,
         output_per_1m=10.0,
     ),
+    # Sonnet 5.5 stores the same $2 / $0.20 / $10 fields as Sonnet 5.
+    # Identity comes from resolve_versioned_model_id, not a new family glob:
+    # ``*claude-sonnet-5*`` already matches ``claude-sonnet-5-5``.
+    "claude-sonnet-5-5": ModelPrice(
+        input_per_1m=2.0,
+        cached_input_per_1m=0.2,
+        output_per_1m=10.0,
+    ),
     "claude-sonnet-4-6": ModelPrice(
         input_per_1m=3.0,
         cached_input_per_1m=0.3,
