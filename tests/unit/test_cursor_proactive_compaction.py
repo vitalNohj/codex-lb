@@ -502,3 +502,10 @@ async def test_sse_rewriter_streams_crlf_framed_events_as_they_arrive() -> None:
     [usage, done] = rewriter.feed(b"data: [DONE]\r\n\r\n")
     assert json.loads(usage.decode().removeprefix("data: "))["usage"]["completion_tokens"] >= 1
     assert done == b"data: [DONE]\n\n"
+
+
+def test_sse_rewriter_passes_through_data_json_loads_cannot_build() -> None:
+    rewriter = CursorChatSseCompatRewriter(_payload("gpt-5.5-extra"), source="stream_test")
+    oversize = b"data: " + b"[" * 100_000
+
+    assert rewriter.feed(oversize + b"\n\n") == [oversize + b"\n\n"]

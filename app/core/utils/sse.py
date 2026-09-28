@@ -242,6 +242,40 @@ class SseLineDecoder:
         return lines
 
 
+class SseEventDecoder:
+    """Split an SSE byte stream, fed in arbitrary chunks, into whole raw events.
+
+    For rewriters, which need every line of an event and not just its data.
+    Each event is its lines joined with LF, without the blank line that ended
+    it; lines are split by ``SseLineDecoder``. Like ``SseDataDecoder.flush``,
+    ``flush`` also yields a last event the stream did not close.
+    """
+
+    def __init__(self) -> None:
+        self._lines = SseLineDecoder()
+        self._event_lines: list[str] = []
+
+    def feed(self, chunk: bytes) -> list[str]:
+        return self._take_lines(self._lines.feed(chunk))
+
+    def flush(self) -> list[str]:
+        events = self._take_lines(self._lines.flush())
+        if self._event_lines:
+            events.append("\n".join(self._event_lines))
+            self._event_lines = []
+        return events
+
+    def _take_lines(self, lines: list[str]) -> list[str]:
+        events: list[str] = []
+        for line in lines:
+            if line:
+                self._event_lines.append(line)
+            elif self._event_lines:
+                events.append("\n".join(self._event_lines))
+                self._event_lines = []
+        return events
+
+
 class SseDataDecoder:
     """Split an SSE byte stream, fed in arbitrary chunks, into each event's ``data``.
 

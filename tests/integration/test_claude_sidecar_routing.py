@@ -845,15 +845,21 @@ async def test_claude_stream_routes_to_sidecar_and_requests_usage(async_client, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "user_agent",
+    ("user_agent", "tools"),
     [
-        pytest.param("test-client", id="plain"),
+        pytest.param("test-client", None, id="plain"),
         # Cursor's streams also pass through the usage-fallback rewriter.
-        pytest.param("Cursor/1.2", id="cursor"),
+        pytest.param("Cursor/1.2", None, id="cursor"),
+        # Declaring a mapped tool routes the stream through the tool-name rewriter.
+        pytest.param(
+            "test-client",
+            [{"type": "function", "function": {"name": "Shell", "parameters": {"type": "object"}}}],
+            id="mapped-tools",
+        ),
     ],
 )
 async def test_claude_stream_with_crlf_framing_and_split_characters_settles_with_usage(
-    async_client, sidecar_enabled, fake_sidecar, user_agent
+    async_client, sidecar_enabled, fake_sidecar, user_agent, tools
 ):
     """CLIProxyAPI's framing and chunk boundaries are not ours to choose.
 
@@ -883,13 +889,17 @@ async def test_claude_stream_with_crlf_framing_and_split_characters_settles_with
             "model": "claude-sonnet-4-5-20250929",
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
+            **({"tools": tools} if tools else {}),
         },
     ) as response:
         body = await response.aread()
 
     assert response.status_code == 200
-    assert "café".encode() in body
-    assert body.rstrip().endswith(b"data: [DONE]")
+    data = [line.removeprefix("data: ") for line in body.decode().splitlines() if line.startswith("data: ")]
+    assert data[-1] == "[DONE]"
+    content = [choice["delta"].get("content") for item in data[:-1] for choice in json.loads(item)["choices"]]
+    # Rewriters may re-serialize an event, so compare text, not bytes.
+    assert "café" in content
     async with SessionLocal() as session:
         logs = list((await session.execute(select(RequestLog))).scalars().all())
     sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]

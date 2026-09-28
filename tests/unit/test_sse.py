@@ -17,6 +17,7 @@ from app.core.utils.sse import (
     SSE_DONE,
     SSE_KEEPALIVE_FRAME,
     SseDataDecoder,
+    SseEventDecoder,
     SseJsonDataDecoder,
     extract_sse_data,
     format_sse_data,
@@ -440,6 +441,15 @@ def test_sse_json_data_decoder_skips_data_json_loads_cannot_build(data: bytes):
     decoder = SseJsonDataDecoder()
 
     assert decoder.feed(b"data: " + data + b'\n\ndata: {"ok":1}\n\n') == [{"ok": 1}]
+
+
+def test_sse_event_decoder_yields_each_raw_event_whatever_its_framing():
+    stream = b": ping\r\nevent: x\r\ndata: caf\xc3\xa9\r\n\r\ndata: [DONE]"
+
+    for cut in range(len(stream) + 1):
+        decoder = SseEventDecoder()
+        events = [*decoder.feed(stream[:cut]), *decoder.feed(stream[cut:]), *decoder.flush()]
+        assert events == [": ping\nevent: x\ndata: caf\u00e9", "data: [DONE]"], cut
 
 
 _sse_data_lines = st.text(max_size=12).filter(lambda text: "\r" not in text and "\n" not in text)
