@@ -1371,9 +1371,9 @@ A database migration MUST recompute `cost_usd` for existing `request_logs` rows 
 
 ### Requirement: Claude Fable 5.1 pricing is distinct from Fable 5
 
-The native price table MUST recognize Anthropic Claude Fable 5.1, including sidecar-prefixed and dotted ids such as `cc/claude-fable-5-1` and `cc/claude-fable-5.1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+The native price table MUST price `claude-fable-5-1`, including one leading `cc/`, `cp-`, or `cp_` prefix on that exact id, at the Fable 5.1 rates. It MUST NOT price dotted `claude-fable-5.1` as `claude-fable-5-1`. Its cache-read rate MUST remain distinct from Fable 5's. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
 
-A recognized version MUST NOT inherit a shorter family's price. When a supplied price table has no entry for the resolved version, lookup MUST return no price for that id.
+A longer id MUST NOT inherit a shorter family's price. When a supplied price table has no entry for that exact id, lookup MUST return no price.
 
 #### Scenario: Canonical Fable 5.1 model resolves pricing
 
@@ -1386,6 +1386,11 @@ A recognized version MUST NOT inherit a shorter family's price. When a supplied 
 - **THEN** it resolves the distinct Fable 5.1 native price entry
 - **AND** the resolved canonical model is `claude-fable-5-1`
 
+#### Scenario: A dotted Fable spelling does not use the hyphen entry
+
+- **WHEN** native price lookup receives model `claude-fable-5.1` or `cc/claude-fable-5.1`
+- **THEN** it does not resolve the canonical model `claude-fable-5-1`
+
 #### Scenario: A price table without the version does not inherit the family price
 
 - **WHEN** native price lookup receives model `cc/claude-fable-5-1`
@@ -1394,9 +1399,9 @@ A recognized version MUST NOT inherit a shorter family's price. When a supplied 
 
 ### Requirement: Claude Opus 5.5 pricing is distinct from Opus 5
 
-The native price table MUST recognize Anthropic Claude Opus 5.5, including sidecar-prefixed and dotted ids such as `cc/claude-opus-5-5` and `claude-opus-5.5`. Its rates MUST remain distinct from Opus 5: $4 input, $0.20 cache-hit, and $20 output per 1M tokens. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+The native price table MUST price `claude-opus-5-5`, including one leading `cc/`, `cp-`, or `cp_` prefix on that exact id, at rates distinct from Opus 5: $4 input, $0.20 cache-hit, and $20 output per 1M tokens. It MUST NOT price a dotted, dated, or effort-suffixed spelling as `claude-opus-5-5`. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
 
-A recognized version MUST NOT inherit a shorter family's price. When a supplied price table has no entry for the resolved version, lookup MUST return no price for that id.
+A longer id MUST NOT inherit a shorter family's price. When a supplied price table has no entry for that exact id, lookup MUST return no price.
 
 #### Scenario: Canonical Opus 5.5 model resolves pricing
 
@@ -1409,10 +1414,10 @@ A recognized version MUST NOT inherit a shorter family's price. When a supplied 
 - **THEN** it resolves the distinct Opus 5.5 native price entry
 - **AND** the resolved canonical model is `claude-opus-5-5`
 
-#### Scenario: Dotted and dated Opus 5.5 ids use the Opus 5.5 entry
+#### Scenario: Dotted and dated Opus 5.5 spellings do not use the hyphen entry
 
 - **WHEN** native price lookup receives model `claude-opus-5.5` or `claude-opus-5-5-20260922`
-- **THEN** the resolved canonical model is `claude-opus-5-5`
+- **THEN** it does not resolve the canonical model `claude-opus-5-5`
 
 #### Scenario: A price table without the version does not inherit the family price
 
@@ -1427,7 +1432,7 @@ A recognized version MUST NOT inherit a shorter family's price. When a supplied 
 
 ### Requirement: An Opus 5 allowlist does not admit Opus 5.5
 
-An API key whose `allowed_models` names only `claude-opus-5` MUST NOT gain access to Claude Opus 5.5. A key whose `allowed_models` names `claude-opus-5-5` MUST admit dotted and sidecar-prefixed Opus 5.5 ids. Lookalike ids that are not Opus 5.5 MUST NOT resolve to the Opus 5.5 identity.
+An API key whose `allowed_models` names only `claude-opus-5` MUST NOT gain access to Claude Opus 5.5. A key whose `allowed_models` names `claude-opus-5-5` MUST admit that exact id and the same id with one leading `cc/`, `cp-`, or `cp_` prefix. It MUST NOT admit a dotted, dated, or effort-suffixed spelling. Lookalike ids that are not Opus 5.5 MUST NOT resolve to the Opus 5.5 identity.
 
 #### Scenario: An Opus 5 allowlist rejects Opus 5.5
 
@@ -1439,16 +1444,21 @@ An API key whose `allowed_models` names only `claude-opus-5` MUST NOT gain acces
 - **WHEN** the same API key requests `cc/claude-opus-5`
 - **THEN** the request is allowed
 
-#### Scenario: An allowlist naming Opus 5.5 admits dotted and prefixed ids
+#### Scenario: An allowlist naming Opus 5.5 admits the prefixed id
 
-- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-5-5` requests `claude-opus-5.5` or `cc/claude-opus-5-5`
+- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-5-5` requests `cc/claude-opus-5-5`
 - **THEN** the request is allowed
+
+#### Scenario: An allowlist naming Opus 5.5 rejects a dotted spelling
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-5-5` requests `claude-opus-5.5`
+- **THEN** the request is refused as not allowed for that key
 
 ### Requirement: Claude Sonnet 5.5 pricing resolves the 5.5 identity
 
-The native price table MUST recognize Anthropic Claude Sonnet 5.5, including sidecar-prefixed and dotted ids such as `cc/claude-sonnet-5-5` and `claude-sonnet-5.5`. Its rates MUST be $2 input, $0.20 cache-hit, and $10 output per 1M tokens, and the resolved canonical model MUST be `claude-sonnet-5-5`. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
+The native price table MUST price `claude-sonnet-5-5`, including one leading `cc/`, `cp-`, or `cp_` prefix on that exact id, at $2 input, $0.20 cache-hit, and $10 output per 1M tokens. The resolved canonical model MUST be `claude-sonnet-5-5`. It MUST NOT price a dotted, dated, or effort-suffixed spelling as `claude-sonnet-5-5`. External integration request-log costs remain governed by [external-model-pricing](../external-model-pricing/spec.md): catalog prices and authoritative billed amounts MUST NOT be replaced with these native rates.
 
-A recognized version MUST NOT inherit a shorter family's price. When a supplied price table has no entry for the resolved version, lookup MUST return no price for that id.
+A longer id MUST NOT inherit a shorter family's price. When a supplied price table has no entry for that exact id, lookup MUST return no price.
 
 #### Scenario: Canonical Sonnet 5.5 model resolves pricing
 
@@ -1462,10 +1472,10 @@ A recognized version MUST NOT inherit a shorter family's price. When a supplied 
 - **THEN** it resolves the Sonnet 5.5 native price entry
 - **AND** the resolved canonical model is `claude-sonnet-5-5`
 
-#### Scenario: Dotted and dated Sonnet 5.5 ids use the Sonnet 5.5 entry
+#### Scenario: Dotted and dated Sonnet 5.5 spellings do not use the hyphen entry
 
 - **WHEN** native price lookup receives model `claude-sonnet-5.5` or `claude-sonnet-5-5-20260928`
-- **THEN** the resolved canonical model is `claude-sonnet-5-5`
+- **THEN** it does not resolve the canonical model `claude-sonnet-5-5`
 
 #### Scenario: A price table without the version does not inherit the family price
 
@@ -1480,7 +1490,7 @@ A recognized version MUST NOT inherit a shorter family's price. When a supplied 
 
 ### Requirement: A Sonnet 5 allowlist does not admit Sonnet 5.5
 
-An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain access to Claude Sonnet 5.5. A key whose `allowed_models` names `claude-sonnet-5-5` MUST admit dotted and sidecar-prefixed Sonnet 5.5 ids. Lookalike ids that are not Sonnet 5.5 MUST NOT resolve to the Sonnet 5.5 identity.
+An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain access to Claude Sonnet 5.5. A key whose `allowed_models` names `claude-sonnet-5-5` MUST admit that exact id and the same id with one leading `cc/`, `cp-`, or `cp_` prefix. It MUST NOT admit a dotted, dated, or effort-suffixed spelling. Lookalike ids that are not Sonnet 5.5 MUST NOT resolve to the Sonnet 5.5 identity.
 
 #### Scenario: A Sonnet 5 allowlist rejects Sonnet 5.5
 
@@ -1492,19 +1502,29 @@ An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain acc
 - **WHEN** the same API key requests `cc/claude-sonnet-5`
 - **THEN** the request is allowed
 
-#### Scenario: An allowlist naming Sonnet 5.5 admits dotted and prefixed ids
+#### Scenario: An allowlist naming Sonnet 5.5 admits the prefixed id
 
-- **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `claude-sonnet-5.5` or `cc/claude-sonnet-5-5`
+- **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `cc/claude-sonnet-5-5`
 - **THEN** the request is allowed
+
+#### Scenario: An allowlist naming Sonnet 5.5 rejects a dotted spelling
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `claude-sonnet-5.5`
+- **THEN** the request is refused as not allowed for that key
 
 ### Requirement: Claude price lookup matches the same id after prefix, date, and effort decoration
 
-Native Claude price lookup MUST resolve a prefixed, date-stamped, or effort-suffixed spelling of an existing price key by exact match after removing one leading `cc/`, `cp-`, or `cp_` prefix, one trailing release date (`-YYYYMMDD` or `-YYYY-MM-DD`), and one trailing reasoning-effort suffix. A longer id MUST NOT inherit a shorter family's price. A supplied price table that lacks the resolved id MUST return no price for that id. An API key whose `allowed_models` names a Claude price key MUST admit those same decorated spellings and MUST NOT admit a longer id that merely contains the key.
+Native Claude price lookup MUST exact-match a price key after removing at most one leading `cc/`, `cp-`, or `cp_` routing prefix. It MUST NOT remove a release date, a reasoning-effort suffix, or a thinking marker, and it MUST NOT map a dotted spelling onto a hyphenated key. A longer id MUST NOT inherit a shorter family's price. A supplied price table that lacks that exact id MUST return no price for that id. An API key whose `allowed_models` names a Claude price key MUST admit that key and the same id with one leading `cc/`, `cp-`, or `cp_` prefix, and MUST NOT admit a longer id, a dotted spelling, or an effort-suffixed spelling.
 
-#### Scenario: Prefixed and dated spellings use the existing key
+#### Scenario: A routing prefix uses the existing key
 
-- **WHEN** native price lookup receives `cp-claude-opus-4-7` or `claude-opus-4-5-20251101`
-- **THEN** it resolves `claude-opus-4-7` or `claude-opus-4-5` respectively
+- **WHEN** native price lookup receives `cp-claude-opus-4-7`
+- **THEN** it resolves `claude-opus-4-7`
+
+#### Scenario: A dated spelling does not use the undated key
+
+- **WHEN** native price lookup receives `claude-opus-4-5-20251101`
+- **THEN** it does not resolve `claude-opus-4-5`
 
 #### Scenario: A longer sibling does not inherit the shorter price
 
@@ -1519,7 +1539,7 @@ Native Claude price lookup MUST resolve a prefixed, date-stamped, or effort-suff
 
 ### Requirement: API-key model access does not collapse a separately priced version into its family
 
-`allowed_models` enforcement MUST use authoritative sidecar route resolution, including configured prefix stripping, before canonicalizing both requested and allowed model ids. Sidecar entry points MUST reject unauthorized routing identities before quota reservation or upstream dispatch. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family.
+`allowed_models` enforcement MUST use authoritative sidecar route resolution, including configured prefix stripping, before canonicalizing both requested and allowed model ids. Sidecar entry points MUST reject unauthorized routing identities before quota reservation or upstream dispatch. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family. A grant of an exact id MUST NOT admit a dotted spelling of that id.
 
 #### Scenario: A custom stripped prefix cannot bypass the family allowlist
 
@@ -1539,10 +1559,15 @@ Native Claude price lookup MUST resolve a prefixed, date-stamped, or effort-suff
 - **WHEN** the same API key requests `cc/claude-fable-5`
 - **THEN** the request is allowed
 
-#### Scenario: An allowlist naming the version admits it
+#### Scenario: An allowlist naming the version admits the prefixed id
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5-1` requests `cc/claude-fable-5-1`
+- **THEN** the request is allowed
+
+#### Scenario: An allowlist naming the version rejects a dotted spelling
 
 - **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5-1` requests `claude-fable-5.1`
-- **THEN** the request is allowed
+- **THEN** the request is refused as not allowed for that key
 
 ### Requirement: API-key model access does not treat distinct sidecar integrations as the same model
 

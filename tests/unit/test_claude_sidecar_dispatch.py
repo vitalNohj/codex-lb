@@ -284,14 +284,15 @@ def test_build_sidecar_chat_payload_override_replaces_nested_reasoning() -> None
     assert "reasoning" not in payload.body
 
 
-def test_build_sidecar_chat_payload_model_suffix_effort_beats_override() -> None:
+def test_build_sidecar_chat_payload_model_suffix_does_not_set_effort() -> None:
     request = ChatCompletionsRequest.model_validate(
         {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
     )
 
     payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5-high", _config(default_reasoning_effort="medium"))
 
-    assert payload.body["reasoning_effort"] == "high"
+    assert payload.body["model"] == "claude-sonnet-4-5-high"
+    assert payload.body["reasoning_effort"] == "medium"
 
 
 def test_build_sidecar_chat_payload_sends_unprefixed_model_for_custom_alias() -> None:
@@ -488,7 +489,7 @@ def test_build_sidecar_chat_payload_applies_bounds_to_max_completion_tokens() ->
     assert payload.body["max_completion_tokens"] == 32_768
 
 
-def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() -> None:
+def test_build_sidecar_chat_payload_does_not_borrow_bounds_for_a_suffixed_id() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "cp-claude-fable-5-high",
@@ -503,8 +504,8 @@ def test_build_sidecar_chat_payload_applies_bounds_with_suffix_effort_model() ->
         _config(prefixes=(SidecarPrefix(prefix="cp-", strip=True),)),
     )
 
-    assert payload.body["model"] == "claude-fable-5"
-    assert payload.body["max_tokens"] == 32_768
+    assert payload.body["model"] == "claude-fable-5-high"
+    assert payload.body["max_tokens"] == 4096
 
 
 @pytest.mark.parametrize(

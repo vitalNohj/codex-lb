@@ -2,13 +2,7 @@ from __future__ import annotations
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
 from app.core.types import JsonValue
-from app.core.usage.model_ids import (
-    claude_model_identity,
-    resolve_versioned_model_id,
-    split_model_effort_suffix,
-    strip_known_sidecar_prefix,
-    strip_trailing_release_date,
-)
+from app.core.usage.model_ids import resolve_versioned_model_id, strip_known_sidecar_prefix
 from app.core.usage.pricing import DEFAULT_MODEL_ALIASES, DEFAULT_PRICING_MODELS
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.modules.proxy.sidecar_routing import prefix_variants
@@ -27,26 +21,28 @@ def _matching_claude_price_key(model_id: str) -> str | None:
 
 
 def canonical_sidecar_model(model: str | None) -> str | None:
+    """The id after one known routing prefix, with no other renaming.
+
+    A dotted spelling, a release date, and an effort suffix stay. Bounds and
+    allowlists then exact-match that string against a known row.
+    """
     if model is None:
         return None
     normalized = model.strip()
     if not normalized:
         return None
-    identity = claude_model_identity(normalized)
-    priced = _matching_claude_price_key(identity)
+    stripped = strip_known_sidecar_prefix(normalized)
+    if not stripped:
+        return None
+    priced = _matching_claude_price_key(stripped)
     if priced is not None:
         return priced
-    if identity.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        return identity
-    restored = _matching_claude_price_key(f"{_CLAUDE_MODEL_FAMILY_PREFIX}{identity}")
-    if restored is not None:
-        return restored
-    pricing_alias = resolve_versioned_model_id(normalized) or resolve_pricing_model_alias(
-        normalized, DEFAULT_MODEL_ALIASES
-    )
+    if stripped.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
+        return stripped
+    pricing_alias = resolve_versioned_model_id(stripped) or resolve_pricing_model_alias(stripped, DEFAULT_MODEL_ALIASES)
     if pricing_alias is not None:
         return pricing_alias
-    return normalized
+    return stripped
 
 
 def sidecar_prefixed_model_ids(model_id: str, config: ClaudeSidecarConfig) -> tuple[str, ...]:
@@ -74,46 +70,17 @@ def apply_sidecar_model_profile(body: dict[str, JsonValue], *, stripped_model: s
 def apply_sidecar_model_profile_with_suffix_effort(
     body: dict[str, JsonValue], *, stripped_model: str
 ) -> tuple[str, bool]:
-    """Apply the canonical-model + suffix-effort profile.
+    """Forward the routed model id without renaming it.
 
-    Returns the resolved wire model and whether a model-name suffix effort was
-    applied. The boolean lets callers keep an explicit suffix as the highest
-    precedence (it must beat a configured override).
+    Routing already removed a configured prefix. A dotted spelling, a release
+    date, and a thinking or effort suffix stay on the id. The boolean is
+    always false: the model name is not an effort source, so the caller
+    applies the operator override on its own.
     """
 
-    wire_model, suffix_effort = _resolve_sidecar_wire_model_and_effort(stripped_model.strip())
+    wire_model = stripped_model.strip()
     body["model"] = wire_model
-    if suffix_effort is not None:
-        _set_reasoning_effort(body, suffix_effort)
-    return wire_model, suffix_effort is not None
-
-
-def _resolve_sidecar_wire_model_and_effort(model: str) -> tuple[str, str | None]:
-    if not model:
-        return model, None
-    stripped = strip_known_sidecar_prefix(model.strip())
-    if not stripped:
-        return model, None
-
-    versioned = resolve_versioned_model_id(stripped)
-    base, effort = split_model_effort_suffix(stripped)
-    if versioned is not None and versioned.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        undated = strip_trailing_release_date(base)
-        if undated.lower() == versioned.lower() and base.lower() != versioned.lower():
-            return base, effort
-        return versioned, effort
-
-    undated = strip_trailing_release_date(base)
-    if undated.lower() != base.lower():
-        return base, effort
-    if not undated.lower().startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
-        restored = _matching_claude_price_key(f"{_CLAUDE_MODEL_FAMILY_PREFIX}{undated}")
-        if restored is not None:
-            return restored, effort
-    priced = _matching_claude_price_key(undated)
-    if priced is not None:
-        return priced, effort
-    return undated, effort
+    return wire_model, False
 
 
 def is_known_claude_sidecar_model(model: str | None) -> bool:
@@ -126,19 +93,6 @@ def is_known_claude_sidecar_model(model: str | None) -> bool:
     if canonical is None:
         return False
     return _matching_claude_price_key(canonical) is not None
-
-
-def _set_reasoning_effort(body: dict[str, JsonValue], effort: str) -> None:
-    existing = body.get("reasoning_effort")
-    if isinstance(existing, str) and existing.strip():
-        return
-    reasoning = body.get("reasoning")
-    if isinstance(reasoning, dict):
-        reasoning_dict = reasoning
-        existing_effort = reasoning_dict.get("effort")
-        if isinstance(existing_effort, str) and existing_effort.strip():
-            return
-    body["reasoning_effort"] = effort
 
 
 def set_reasoning_effort_override(body: dict[str, JsonValue], effort: str | None) -> None:

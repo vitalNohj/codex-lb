@@ -7,7 +7,7 @@ from fnmatch import fnmatchcase
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
-from app.core.usage.model_ids import claude_model_identity, resolve_versioned_model_id
+from app.core.usage.model_ids import resolve_versioned_model_id, strip_known_sidecar_prefix
 from app.core.usage.types import UsageCostByModel, UsageCostSummary
 
 
@@ -388,8 +388,8 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     # Anthropic Claude pricing (August 2026 list prices, USD per 1M tokens).
     # ``cached_input_per_1m`` maps to Anthropic's cache-hit (read) rate.
     # These cover traffic proxied through the Claude sidecar. A request log
-    # may store a prefixed, dated, or effort-suffixed spelling of one of
-    # these keys; lookup peels that decoration and exact-matches the key.
+    # stores the client id, so one leading cc/, cp-, or cp_ prefix still
+    # finds the key. A dated or effort-suffixed spelling is a different id.
     "claude-fable-5": ModelPrice(
         input_per_1m=10.0,
         cached_input_per_1m=1.0,
@@ -411,7 +411,7 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         output_per_1m=25.0,
     ),
     # Opus 5.5 cache reads are $0.20 (5% of input), not Opus 5's $0.50.
-    # Dotted and prefixed spellings resolve through resolve_versioned_model_id.
+    # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
     "claude-opus-5-5": ModelPrice(
         input_per_1m=4.0,
         cached_input_per_1m=0.20,
@@ -453,7 +453,7 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         output_per_1m=10.0,
     ),
     # Sonnet 5.5 stores the same $2 / $0.20 / $10 fields as Sonnet 5.
-    # Dotted and prefixed spellings resolve through resolve_versioned_model_id.
+    # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
     "claude-sonnet-5-5": ModelPrice(
         input_per_1m=2.0,
         cached_input_per_1m=0.2,
@@ -704,19 +704,20 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
-    # Versioned identity, then a non-Claude alias. A Claude id that is only
-    # a prefix, date stamp, or effort suffix away from a key matches that
-    # key exactly. A longer id does not inherit a shorter key.
+    # Versioned identity, then a non-Claude alias. A Claude id matches a key
+    # only as that exact string, or after one leading cc/, cp-, or cp_ prefix.
+    # A longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
     for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
         if not alias:
             continue
         for key, value in pricing.items():
             if key.lower() == alias.lower():
                 return key, value
-    identity = claude_model_identity(normalized)
-    for key, value in pricing.items():
-        if key.lower() == identity.lower():
-            return key, value
+    routed = strip_known_sidecar_prefix(normalized)
+    if routed.lower() != normalized:
+        for key, value in pricing.items():
+            if key.lower() == routed.lower():
+                return key, value
     return None
 
 

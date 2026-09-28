@@ -71,4 +71,4 @@ If OpenRouter has prefix `orcarouter/` and OrcaRouter has full model `orcarouter
 
 - Streaming chunk mapping is validated in unit tests.
 - Integration tests cover include_usage and tool call finish reasons.
-- Claude Opus 5.5 (`claude-opus-5-5`) and Sonnet 5.5 (`claude-sonnet-5-5`) are separate CLIProxyAPI wire ids. Dotted `5.5` normalizes to the hyphen id. A trailing `-YYYYMMDD` stamp stays on the wire. The Claude sidecar forwards a catalog id as itself after prefix, effort, and dotted-version normalization. It does not fold a longer id into a shorter family. A future id has no price and no output floor until those rows exist.
+- Claude Opus 5.5 (`claude-opus-5-5`) and Sonnet 5.5 (`claude-sonnet-5-5`) are separate CLIProxyAPI wire ids. A configured strip prefix is removed and the rest of the id is forwarded as typed. Dotted spellings, release dates, and thinking or effort suffixes are not rewritten. A future id has no price and no output floor until those rows exist. Dashboard model aliasing connects a catalog id to a different upstream id.

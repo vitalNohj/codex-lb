@@ -26,38 +26,6 @@ pytestmark = pytest.mark.unit
         ("GPT-6-SOL-20260922", "gpt-6-sol"),
         ("codex/gpt-6-luna", "gpt-6-luna"),
         ("gpt-6-luna-20260922", "gpt-6-luna"),
-        ("cc/claude-fable-5.1-thinking-max", "claude-fable-5-1"),
-        ("cp_claude-fable-5-1", "claude-fable-5-1"),
-        ("claude-fable-5-1-20260901", "claude-fable-5-1"),
-        ("claude-fable-5", None),
-        ("claude-fable-5-10", None),
-        ("claude-fable-5.10", None),
-        ("claude-fable-5-1-unrelated", None),
-        ("notclaude-fable-5-1", None),
-        ("claude-opus-5-5", "claude-opus-5-5"),
-        ("cc/claude-opus-5.5", "claude-opus-5-5"),
-        ("cp_claude-opus-5-5", "claude-opus-5-5"),
-        ("cp-claude-opus-5.5", "claude-opus-5-5"),
-        ("claude-opus-5-5-thinking-max", "claude-opus-5-5"),
-        ("CLAUDE-OPUS-5-5-20260922", "claude-opus-5-5"),
-        ("claude-opus-5", None),
-        ("claude-opus-5-50", None),
-        ("claude-opus-55", None),
-        ("notclaude-opus-5-5", None),
-        ("not-claude-opus-5-5", None),
-        ("not/claude-opus-5-5", None),
-        ("claude-sonnet-5-5", "claude-sonnet-5-5"),
-        ("cc/claude-sonnet-5.5", "claude-sonnet-5-5"),
-        ("cp_claude-sonnet-5-5", "claude-sonnet-5-5"),
-        ("cp-claude-sonnet-5.5", "claude-sonnet-5-5"),
-        ("claude-sonnet-5-5-thinking-max", "claude-sonnet-5-5"),
-        ("CLAUDE-SONNET-5-5-20260928", "claude-sonnet-5-5"),
-        ("claude-sonnet-5", None),
-        ("claude-sonnet-5-50", None),
-        ("claude-sonnet-55", None),
-        ("notclaude-sonnet-5-5", None),
-        ("not-claude-sonnet-5-5", None),
-        ("not/claude-sonnet-5-5", None),
         ("gpt-6-astra-pro", None),
         ("unrelated/gpt-6-astra", None),
         ("gpt-6-sol-pro", None),
@@ -70,12 +38,28 @@ def test_versioned_identity_is_bounded(requested: str, canonical: str | None) ->
     assert resolve_versioned_model_id(requested) == canonical
 
 
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "claude-fable-5-1",
+        "cc/claude-fable-5.1",
+        "claude-opus-5-5",
+        "cc/claude-opus-5.5",
+        "claude-sonnet-5-5-thinking-max",
+        "CLAUDE-SONNET-5-5-20260928",
+    ],
+)
+def test_claude_ids_are_not_versioned_identities(requested: str) -> None:
+    assert resolve_versioned_model_id(requested) is None
+
+
 def test_versioned_pricing_uses_supplied_rates_not_an_embedded_price() -> None:
     price = ModelPrice(input_per_1m=2, output_per_1m=3)
-    assert get_pricing_for_model("cc/claude-fable-5.1", {"claude-fable-5-1": price}) == (
+    assert get_pricing_for_model("cc/claude-fable-5-1", {"claude-fable-5-1": price}) == (
         "claude-fable-5-1",
         price,
     )
+    assert get_pricing_for_model("cc/claude-fable-5.1", {"claude-fable-5-1": price}) is None
 
 
 def test_pricing_does_not_inherit_the_family_when_the_version_is_absent() -> None:
@@ -99,11 +83,17 @@ def test_family_allowlist_does_not_admit_a_separately_priced_version(requested: 
         validate_model_access(cast(Any, key), requested)
 
 
-@pytest.mark.parametrize("requested", ["cc/claude-fable-5-1", "claude-fable-5.1"])
-def test_an_allowlist_naming_the_version_still_admits_it(requested: str) -> None:
+def test_an_allowlist_naming_the_version_still_admits_the_prefixed_id() -> None:
     key = SimpleNamespace(allowed_models=["claude-fable-5-1"], allowed_reasoning_efforts=None)
 
-    validate_model_access(cast(Any, key), requested)
+    validate_model_access(cast(Any, key), "cc/claude-fable-5-1")
+
+
+def test_an_allowlist_naming_the_version_rejects_a_dotted_spelling() -> None:
+    key = SimpleNamespace(allowed_models=["claude-fable-5-1"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "claude-fable-5.1")
 
 
 @pytest.mark.parametrize(
@@ -161,11 +151,22 @@ def test_opus_5_allowlist_still_admits_opus_5() -> None:
     validate_model_access(cast(Any, key), "cc/claude-opus-5")
 
 
-@pytest.mark.parametrize("requested", ["claude-opus-5.5", "cc/claude-opus-5-5", "claude-opus-5-5-20260922"])
-def test_opus_5_5_allowlist_admits_bounded_ids(requested: str) -> None:
+@pytest.mark.parametrize("requested", ["claude-opus-5-5", "cc/claude-opus-5-5"])
+def test_opus_5_5_allowlist_admits_the_exact_id(requested: str) -> None:
     key = SimpleNamespace(allowed_models=["claude-opus-5-5"], allowed_reasoning_efforts=None)
 
     validate_model_access(cast(Any, key), requested)
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["claude-opus-5.5", "claude-opus-5-5-20260922", "claude-opus-5-5-thinking-max"],
+)
+def test_opus_5_5_allowlist_rejects_other_spellings(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-opus-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
 
 
 def test_opus_5_5_allowlist_rejects_hyphen_lookalike() -> None:
@@ -192,14 +193,22 @@ def test_sonnet_5_allowlist_still_admits_sonnet_5() -> None:
     validate_model_access(cast(Any, key), "cc/claude-sonnet-5")
 
 
-@pytest.mark.parametrize(
-    "requested",
-    ["claude-sonnet-5.5", "cc/claude-sonnet-5-5", "claude-sonnet-5-5-20260928"],
-)
-def test_sonnet_5_5_allowlist_admits_bounded_ids(requested: str) -> None:
+@pytest.mark.parametrize("requested", ["claude-sonnet-5-5", "cc/claude-sonnet-5-5"])
+def test_sonnet_5_5_allowlist_admits_the_exact_id(requested: str) -> None:
     key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
 
     validate_model_access(cast(Any, key), requested)
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["claude-sonnet-5.5", "claude-sonnet-5-5-20260928", "claude-sonnet-5-5-thinking-max"],
+)
+def test_sonnet_5_5_allowlist_rejects_other_spellings(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
 
 
 def test_sonnet_5_5_allowlist_rejects_hyphen_lookalike() -> None:

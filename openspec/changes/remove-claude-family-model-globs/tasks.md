@@ -1,15 +1,14 @@
-## 1. Identity peel
+## 1. Specs
 
-- [x] 1.1 Add prefix, effort, and release-date peeling in `app/core/usage/model_ids.py` without shortening a model version
-- [x] 1.2 Remove the Claude family block from `DEFAULT_MODEL_ALIASES` and resolve prices from the peeled id by exact key
+- [x] 1.1 Revise this change and the live `chat-completions-compat` and `api-keys` specs so a routed Claude id is forwarded unchanged
+- [x] 1.2 State that price, allowlist, and output bounds exact-match after one `cc/`, `cp-`, or `cp_` prefix
 
 ## 2. Wire path
 
-- [x] 2.1 Stop the Claude sidecar wire resolver from rewriting through pricing aliases
-- [x] 2.2 Keep effort-suffix peeling, dated wire ids, dotted version normalization, and `claude-` restoration only for an exact price key
+- [x] 2.1 Stop the Claude sidecar profile from renaming the model or reading effort from the model name
+- [x] 2.2 Remove Claude version regexes, date peeling, effort peeling, and `claude-` prefix restoration
 
-## 3. Specs and tests
+## 3. Tests
 
-- [x] 3.1 Sync the main `chat-completions-compat` and `api-keys` specs with this change
-- [x] 3.2 Update pricing, profile, allowlist, and discovered-catalog tests for lookalikes and a future catalog id
-- [x] 3.3 Validate the change with `openspec validate --strict` and the focused pytest modules
+- [x] 3.1 Update pricing, profile, allowlist, dispatch, and discovered-catalog tests for send-through
+- [x] 3.2 Validate with `openspec validate --strict` and the focused pytest modules

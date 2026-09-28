@@ -4047,8 +4047,9 @@ def _sidecar_dispatch_model(wire_model: str) -> str:
     """The model CLIProxyAPI would actually be asked for.
 
     Mirrors the dispatch-time resolution in ``build_sidecar_chat_payload`` so
-    the catalog can tell whether an advertised id survives it. The throwaway
-    body absorbs the reasoning-effort side effect, which is irrelevant here.
+    the catalog can tell whether an advertised id survives it. Routing has
+    already applied a configured strip prefix. The profile does not rename
+    the remaining id.
     """
     dispatched, _ = apply_sidecar_model_profile_with_suffix_effort({}, stripped_model=wire_model)
     return dispatched
@@ -4207,15 +4208,13 @@ async def _build_models_response_body(
             if decision is None or decision.provider != "claude":
                 continue
             # A discovered id is advertisable only when dispatch would reach the
-            # model the catalog names. Two rewrites stand between the two: the
-            # resolver's ``strip=True`` prefix removal, and the dispatch-time
-            # model profile (reasoning-effort suffix split)
-            # that ``build_sidecar_chat_payload`` applies to the wire model.
-            # Either one can silently redirect the request -- ``cp-claude-sonnet``
-            # to ``claude-sonnet``, ``claude-opus-4-7-high`` to ``claude-opus-4-7`` --
-            # so resolve the id the whole way and require it to come back
-            # unchanged. An id that does not survive stays out of the catalog
-            # rather than being published as a model it does not reach.
+            # model the catalog names. The resolver's ``strip=True`` prefix
+            # removal is the rewrite that can redirect a request:
+            # ``cp-claude-sonnet`` is sent as ``claude-sonnet``. The model
+            # profile does not rename the remaining id, so
+            # ``claude-opus-4-7-high`` round-trips. An id that does not survive
+            # stays out of the catalog rather than being published as a model
+            # it does not reach.
             #
             # Pinning is exempt: a configured full model is the operator's
             # explicit statement that the id is offered, and pinned advertising

@@ -278,9 +278,7 @@ When a Responses-shaped chat payload uses a flat Responses function tool, strict
 
 ### Requirement: Claude Fable 5.1 sidecar requests keep the 5.1 wire model
 
-The Claude sidecar chat-completions forward path MUST send Anthropic/CLIProxyAPI model id `claude-fable-5-1` when the client requested Fable 5.1, including dotted `5.1`, hyphen `5-1`, sidecar prefixes such as `cc/`, and reasoning-effort suffixes. It MUST NOT rewrite those ids to `claude-fable-5`. Unversioned Fable 5 ids MUST still forward as `claude-fable-5`. Canonical hyphenated ids with a trailing `-YYYYMMDD` release stamp MUST retain that stamp on the wire.
-
-Fable 5.1 MUST use the same output bounds as Fable 5: a 32,768-token floor, a 128,000-token cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
+The Claude sidecar chat-completions forward path MUST send `claude-fable-5-1` when routing produced that id, and MUST NOT rewrite it to `claude-fable-5`. A different spelling, including dotted `claude-fable-5.1` and a trailing thinking or effort suffix, MUST be forwarded as that spelling after routing. The exact id `claude-fable-5-1` MUST use a 32,768-token output floor, a 128,000-token output cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
 
 #### Scenario: Hyphen 5.1 id is forwarded as claude-fable-5-1
 
@@ -288,18 +286,18 @@ Fable 5.1 MUST use the same output bounds as Fable 5: a 32,768-token floor, a 12
 - **WHEN** the forwarded payload is built
 - **THEN** the forwarded `model` is `claude-fable-5-1`
 
-#### Scenario: Dotted 5.1 id is normalized to the Anthropic id
+#### Scenario: Dotted 5.1 id is forwarded as typed
 
 - **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-fable-5.1`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-fable-5-1`
+- **THEN** the forwarded `model` is `claude-fable-5.1`
 
-#### Scenario: Thinking suffix on 5.1 does not collapse to Fable 5
+#### Scenario: A thinking suffix stays on the forwarded id
 
 - **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-fable-5-1-thinking-max`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-fable-5-1`
-- **AND** the forwarded `reasoning_effort` is `max`
+- **THEN** the forwarded `model` is `claude-fable-5-1-thinking-max`
+- **AND** the payload does not set `reasoning_effort` from that suffix
 
 #### Scenario: Unversioned Fable 5 is unchanged
 
@@ -307,11 +305,15 @@ Fable 5.1 MUST use the same output bounds as Fable 5: a 32,768-token floor, a 12
 - **WHEN** the forwarded payload is built
 - **THEN** the forwarded `model` is `claude-fable-5`
 
+#### Scenario: The exact Fable 5.1 id raises output to the model floor
+
+- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `cc/claude-fable-5-1` and `max_tokens` 4096
+- **WHEN** the forwarded payload is built
+- **THEN** the forwarded `max_tokens` is `32768`
+
 ### Requirement: Claude Opus 5.5 sidecar requests keep the 5.5 wire model
 
-The Claude sidecar chat-completions forward path MUST send Anthropic/CLIProxyAPI model id `claude-opus-5-5` when the client requested Opus 5.5, including dotted `5.5`, hyphen `5-5`, sidecar prefixes such as `cc/`, and reasoning-effort suffixes. It MUST NOT rewrite those ids to `claude-opus-5`. Unversioned Opus 5 ids MUST still forward as `claude-opus-5`. Canonical hyphenated ids with a trailing `-YYYYMMDD` release stamp MUST retain that stamp on the wire.
-
-Opus 5.5 MUST use a 32,768-token output floor, a 128,000-token output cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
+The Claude sidecar chat-completions forward path MUST send `claude-opus-5-5` when routing produced that id, and MUST NOT rewrite it to `claude-opus-5`. A different spelling, including dotted `claude-opus-5.5`, a trailing `-YYYYMMDD` release stamp, and a trailing thinking or effort suffix, MUST be forwarded as that spelling after routing. The exact id `claude-opus-5-5` MUST use a 32,768-token output floor, a 128,000-token output cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
 
 #### Scenario: Hyphen 5.5 id is forwarded as claude-opus-5-5
 
@@ -319,18 +321,18 @@ Opus 5.5 MUST use a 32,768-token output floor, a 128,000-token output cap, and a
 - **WHEN** the forwarded payload is built
 - **THEN** the forwarded `model` is `claude-opus-5-5`
 
-#### Scenario: Dotted 5.5 id is normalized to the Anthropic id
+#### Scenario: Dotted 5.5 id is forwarded as typed
 
-- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-opus-5.5`
+- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `cc/claude-opus-5.5`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-opus-5-5`
+- **THEN** the forwarded `model` is `claude-opus-5.5`
 
-#### Scenario: Thinking suffix on 5.5 does not collapse to Opus 5
+#### Scenario: A thinking suffix stays on the forwarded id
 
-- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-opus-5-5-thinking-max`
+- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `cc/claude-opus-5-5-thinking-max`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-opus-5-5`
-- **AND** the forwarded `reasoning_effort` is `max`
+- **THEN** the forwarded `model` is `claude-opus-5-5-thinking-max`
+- **AND** the payload does not set `reasoning_effort` from that suffix
 
 #### Scenario: Dated Opus 5.5 keeps its release stamp
 
@@ -394,9 +396,7 @@ Upgrading dashboard settings MUST append `claude-opus-5-5` to the CLIProxyAPI fu
 
 ### Requirement: Claude Sonnet 5.5 sidecar requests keep the 5.5 wire model
 
-The Claude sidecar chat-completions forward path MUST send Anthropic/CLIProxyAPI model id `claude-sonnet-5-5` when the client requested Sonnet 5.5, including dotted `5.5`, hyphen `5-5`, sidecar prefixes such as `cc/`, and reasoning-effort suffixes. It MUST NOT rewrite those ids to `claude-sonnet-5`. Unversioned Sonnet 5 ids MUST still forward as `claude-sonnet-5`. Canonical hyphenated ids with a trailing `-YYYYMMDD` release stamp MUST retain that stamp on the wire.
-
-Sonnet 5.5 MUST use a 32,768-token output floor, a 128,000-token output cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
+The Claude sidecar chat-completions forward path MUST send `claude-sonnet-5-5` when routing produced that id, and MUST NOT rewrite it to `claude-sonnet-5`. A different spelling, including dotted `claude-sonnet-5.5`, a trailing `-YYYYMMDD` release stamp, and a trailing thinking or effort suffix, MUST be forwarded as that spelling after routing. The exact id `claude-sonnet-5-5` MUST use a 32,768-token output floor, a 128,000-token output cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
 
 #### Scenario: Hyphen 5.5 id is forwarded as claude-sonnet-5-5
 
@@ -404,18 +404,18 @@ Sonnet 5.5 MUST use a 32,768-token output floor, a 128,000-token output cap, and
 - **WHEN** the forwarded payload is built
 - **THEN** the forwarded `model` is `claude-sonnet-5-5`
 
-#### Scenario: Dotted 5.5 id is normalized to the Anthropic id
+#### Scenario: Dotted 5.5 id is forwarded as typed
 
-- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-sonnet-5.5`
+- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `cc/claude-sonnet-5.5`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-sonnet-5-5`
+- **THEN** the forwarded `model` is `claude-sonnet-5.5`
 
-#### Scenario: Thinking suffix on 5.5 does not collapse to Sonnet 5
+#### Scenario: A thinking suffix stays on the forwarded id
 
-- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-sonnet-5-5-thinking-max`
+- **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `cc/claude-sonnet-5-5-thinking-max`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-sonnet-5-5`
-- **AND** the forwarded `reasoning_effort` is `max`
+- **THEN** the forwarded `model` is `claude-sonnet-5-5-thinking-max`
+- **AND** the payload does not set `reasoning_effort` from that suffix
 
 #### Scenario: Dated Sonnet 5.5 keeps its release stamp
 
@@ -479,7 +479,7 @@ Upgrading dashboard settings MUST append `claude-sonnet-5-5` to the CLIProxyAPI 
 
 ### Requirement: Claude catalog ids are not folded into a shorter family
 
-The Claude sidecar chat-completions forward path MUST send the requested model id after only these normalizations: removal of one leading `cc/`, `cp-`, or `cp_` routing prefix; removal of a trailing reasoning-effort suffix, including an adjacent `thinking` or `reasoning` marker, into `reasoning_effort`; and dotted-version normalization already performed by `resolve_versioned_model_id`. It MUST NOT rewrite that id to a shorter family id through `DEFAULT_MODEL_ALIASES`. A trailing `-YYYYMMDD` release stamp MUST stay on the forwarded model. A model id outside those normalizations, including a longer sibling or a future catalog id, MUST be forwarded unchanged.
+The Claude sidecar chat-completions forward path MUST forward the model id produced by sidecar routing. Routing MUST remove a prefix only when that prefix is configured to strip, and MUST otherwise leave the requested id unchanged. The forward path MUST NOT rename that id, MUST NOT remove a release date, MUST NOT remove a reasoning-effort or thinking suffix, and MUST NOT map a dotted version onto a hyphenated id. A longer id MUST NOT be rewritten to a shorter family id. A discovered upstream id MUST be advertised on `GET /v1/models` when dispatch forwards that same id. A discovered id whose strip prefix would send a different id MUST stay out of that catalog. A full model pinned on the integration MUST stay advertised.
 
 #### Scenario: A future catalog id is forwarded as itself
 
@@ -487,12 +487,12 @@ The Claude sidecar chat-completions forward path MUST send the requested model i
 - **WHEN** the forwarded payload is built
 - **THEN** the forwarded `model` is `claude-haiku-5-5`
 
-#### Scenario: A thinking suffix peels effort without shortening the model version
+#### Scenario: A thinking suffix is forwarded as typed
 
 - **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-opus-4-7-thinking-high`
 - **WHEN** the forwarded payload is built
-- **THEN** the forwarded `model` is `claude-opus-4-7`
-- **AND** the forwarded `reasoning_effort` is `high`
+- **THEN** the forwarded `model` is `claude-opus-4-7-thinking-high`
+- **AND** the payload does not set `reasoning_effort` from that suffix
 
 #### Scenario: A dated release stamp stays on the wire
 
@@ -505,3 +505,16 @@ The Claude sidecar chat-completions forward path MUST send the requested model i
 - **GIVEN** a client calls `/v1/chat/completions` routed to the Claude sidecar with model `claude-sonnet-5-50`
 - **WHEN** the forwarded payload is built
 - **THEN** the forwarded `model` is `claude-sonnet-5-50`
+
+#### Scenario: A discovered suffixed id is advertised and dispatched as itself
+
+- **GIVEN** CLIProxyAPI model discovery returns `claude-opus-4-7-high`
+- **WHEN** a client lists models and then calls `/v1/chat/completions` with that id
+- **THEN** `GET /v1/models` includes `claude-opus-4-7-high`
+- **AND** the forwarded `model` is `claude-opus-4-7-high`
+
+#### Scenario: A strip-prefix discovered id stays out of the catalog
+
+- **GIVEN** the Claude routing prefix `cp-` strips and CLIProxyAPI model discovery returns `cp-claude-sonnet`
+- **WHEN** a client lists models
+- **THEN** `GET /v1/models` does not include `cp-claude-sonnet`

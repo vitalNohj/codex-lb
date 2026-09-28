@@ -335,8 +335,9 @@ async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) 
 # raise so ``estimated_input + max_tokens`` cannot exceed the model window and
 # trip an upstream 400 on the smaller 200k-context models. Values are the
 # authoritative per-model limits from Anthropic's models overview, cross-checked
-# against OmniRoute's model-capability registry. Keys are canonical model ids
-# from ``canonical_sidecar_model()``.
+# against OmniRoute's model-capability registry. Keys are exact model ids.
+# Lookup removes one leading cc/, cp-, or cp_ prefix and does not borrow a
+# row for a dotted, dated, or effort-suffixed spelling.
 _SIDECAR_OUTPUT_FLOOR = 32_768
 # A client output cap at or below this value asks for (almost) no output: a
 # prompt-cache keep-warm replay such as pi's built-in warmer or the pi-keepwarm
@@ -894,10 +895,10 @@ def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
 def claude_sidecar_context_window(model: str) -> int | None:
     """The published context window of a Claude sidecar model, if known.
 
-    Same canonical resolution and table as the output bounds below, so
-    ``/v1/models`` advertises exactly the window dispatch enforces: prefixed
-    (``cc/claude-opus-5-5``), dotted, dated and effort-suffixed ids all resolve
-    to their canonical model. ``None`` for a model with no published window.
+    Same lookup as the output bounds below. One leading ``cc/``, ``cp-``, or
+    ``cp_`` prefix is removed, then the id must exactly match a bounds row.
+    A dotted, dated, or effort-suffixed id does not borrow another model's
+    window. ``None`` when no row matches.
     """
     canonical = canonical_sidecar_model(model)
     if canonical is None:
@@ -962,16 +963,11 @@ def build_sidecar_chat_payload(
     # mutates it, so request logs can record requested-vs-effective.
     requested_reasoning_effort = read_reasoning_effort(body)
     # The unified resolver already produced the wire model (prefix stripped per
-    # the matched prefix's strip flag); apply the canonical-model + reasoning
-    # effort profile to that wire model.
-    wire_model, suffix_effort_applied = apply_sidecar_model_profile_with_suffix_effort(
-        body, stripped_model=effective_model
-    )
-    # The configured override forces the provider effort over any client-sent
-    # value, but an explicit model-name suffix is the highest precedence, so the
-    # override only applies when the model name carried no effort suffix.
-    if not suffix_effort_applied:
-        set_reasoning_effort_override(body, config.default_reasoning_effort)
+    # the matched prefix's strip flag). The profile forwards that id unchanged.
+    wire_model, _ = apply_sidecar_model_profile_with_suffix_effort(body, stripped_model=effective_model)
+    # The model name is not an effort source. The configured override forces
+    # the provider effort over any client-sent value.
+    set_reasoning_effort_override(body, config.default_reasoning_effort)
     apply_sidecar_max_tokens_bounds(body, wire_model=wire_model)
     sanitize_sidecar_forward_payload(body)
     effective_reasoning_effort = read_reasoning_effort(body)
