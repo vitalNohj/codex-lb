@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
 
 
 def _create_state_db(path: Path, providers: list[str]) -> None:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT)")
         conn.executemany(
             "INSERT INTO threads (id, model_provider) VALUES (?, ?)",
@@ -27,7 +28,7 @@ def _create_state_db(path: Path, providers: list[str]) -> None:
 
 
 def _read_state_providers(path: Path) -> list[str]:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         return [row[0] for row in conn.execute("SELECT model_provider FROM threads ORDER BY id").fetchall()]
 
 
@@ -248,7 +249,7 @@ def test_retag_skips_legacy_sqlite_without_model_provider_column(tmp_path: Path)
     session_file = codex_home / "sessions" / "2026" / "session.jsonl"
     codex_home.mkdir()
     _write_jsonl(session_file, [{"model_provider": "openai", "id": "a"}])
-    with sqlite3.connect(state_db) as conn:
+    with closing(sqlite3.connect(state_db)) as conn, conn:
         conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY)")
         conn.execute("INSERT INTO threads (id) VALUES ('thread-legacy')")
 
@@ -274,7 +275,7 @@ def test_sqlite_backup_consolidates_wal_rows(tmp_path: Path) -> None:
     codex_home = tmp_path / ".codex"
     state_db = codex_home / "state_5.sqlite"
     codex_home.mkdir()
-    with sqlite3.connect(state_db) as conn:
+    with closing(sqlite3.connect(state_db)) as conn, conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA wal_autocheckpoint=0")
         conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT)")
@@ -293,7 +294,7 @@ def test_sqlite_copy_fallback_uses_consolidated_backup_and_removes_sidecars(tmp_
     codex_home = tmp_path / ".codex"
     state_db = codex_home / "state_5.sqlite"
     codex_home.mkdir()
-    with sqlite3.connect(state_db) as conn:
+    with closing(sqlite3.connect(state_db)) as conn, conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA wal_autocheckpoint=0")
         conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT)")

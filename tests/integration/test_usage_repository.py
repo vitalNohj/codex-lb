@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 
 import pytest
@@ -581,7 +582,7 @@ async def test_bulk_history_since_covered_read_matches_non_covered_read_postgres
 def test_bulk_history_since_sqlite_cache_reuses_superset_and_picks_up_appends(tmp_path):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -617,7 +618,7 @@ def test_bulk_history_since_sqlite_cache_reuses_superset_and_picks_up_appends(tm
     )
     assert [row.id for row in first["acc1"]] == [1, 2]
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             insert into usage_history
@@ -642,7 +643,7 @@ def test_bulk_history_since_sqlite_cache_reuses_superset_and_picks_up_appends(tm
 
 def test_latest_by_account_sqlite_closes_direct_connection(tmp_path, monkeypatch):
     db_path = tmp_path / "usage.db"
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("create table accounts (id text primary key)")
         conn.execute(
             """
@@ -682,7 +683,7 @@ def test_latest_by_account_sqlite_closes_direct_connection(tmp_path, monkeypatch
 
 def test_additional_latest_by_account_sqlite_closes_direct_connection(tmp_path, monkeypatch):
     db_path = tmp_path / "usage.db"
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table additional_usage_history (
@@ -721,7 +722,7 @@ def test_additional_latest_by_account_sqlite_closes_direct_connection(tmp_path, 
 def test_bulk_history_since_sqlite_closes_direct_connection(tmp_path, monkeypatch):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -768,7 +769,7 @@ def test_bulk_history_since_sqlite_cache_hit_does_not_materialize_cached_rows(tm
         return conn
 
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -833,7 +834,7 @@ def test_bulk_history_since_sqlite_empty_cache_hit_does_not_materialize_rows(tmp
         return conn
 
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -881,7 +882,7 @@ def test_bulk_history_since_sqlite_empty_cache_hit_does_not_materialize_rows(tmp
 def test_bulk_history_since_sqlite_cache_detects_same_id_corrections(tmp_path):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -916,7 +917,7 @@ def test_bulk_history_since_sqlite_cache_detects_same_id_corrections(tmp_path):
     )
     assert [row.used_percent for row in first["acc1"]] == [10.0, 20.0]
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.executemany(
             """
             update usage_history
@@ -950,7 +951,7 @@ def test_bulk_history_since_sqlite_cache_detects_same_id_corrections(tmp_path):
 def test_bulk_history_since_sqlite_cache_detects_offsetting_corrections(tmp_path):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -986,7 +987,7 @@ def test_bulk_history_since_sqlite_cache_detects_offsetting_corrections(tmp_path
     )
     assert [row.used_percent for row in first["acc1"]] == [10.0, 20.0, 30.0]
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.executemany(
             """
             update usage_history
@@ -1016,7 +1017,7 @@ def test_bulk_history_since_sqlite_cache_detects_offsetting_corrections(tmp_path
 def test_bulk_history_since_sqlite_cache_detects_second_moment_collision_corrections(tmp_path):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -1053,7 +1054,7 @@ def test_bulk_history_since_sqlite_cache_detects_second_moment_collision_correct
     )
     assert [row.used_percent for row in first["acc1"]] == [10.0, 20.0, 30.0, 40.0]
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.executemany(
             """
             update usage_history
@@ -1084,7 +1085,7 @@ def test_bulk_history_since_sqlite_cache_detects_second_moment_collision_correct
 def test_bulk_history_since_sqlite_cache_detects_external_delete_and_id_reuse(tmp_path):
     db_path = tmp_path / "usage.db"
     _clear_bulk_history_since_sqlite_cache()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             """
             create table usage_history (
@@ -1119,7 +1120,7 @@ def test_bulk_history_since_sqlite_cache_detects_external_delete_and_id_reuse(tm
     )
     assert [row.used_percent for row in first["acc1"]] == [10.0, 20.0]
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("delete from usage_history")
         conn.execute(
             """

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import urllib.parse
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -389,7 +390,7 @@ async def test_dashboard_usage_sqlite_fast_path_decodes_percent_encoded_bind_url
     monkeypatch.chdir(tmp_path)
     decoded_db_path, encoded_url = _dashboard_fixture_path_and_url(tmp_path)
 
-    with sqlite3.connect(decoded_db_path) as conn:
+    with closing(sqlite3.connect(decoded_db_path)) as conn, conn:
         conn.execute("create table accounts (id text primary key)")
         conn.execute(
             """

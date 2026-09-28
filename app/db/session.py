@@ -224,7 +224,80 @@ def _sqlite_file_async_engine_kwargs() -> dict[str, object]:
     }
 
 
+async def _open_aiosqlite_connection(*cargs: Any, **cparams: Any) -> Any:
+    """Open an aiosqlite connection that still gets closed if the opener is cancelled.
+
+    aiosqlite 0.22.1 assigns the new sqlite3 connection only after the await
+    returns. A task cancelled while the worker thread is opening the database
+    stops the worker with nothing to close, so the sqlite3 connection (and its
+    file handle) stays open until garbage collection, which reports it as an
+    "unclosed database" ResourceWarning. Upstream fix: omnilib/aiosqlite#389.
+
+    The open runs in its own task shielded from the caller. When the caller is
+    cancelled first, the connection is stopped as soon as that task finishes
+    opening it, and ``close_db`` waits for that stop.
+    """
+    import aiosqlite
+
+    connection = aiosqlite.connect(*cargs, **cparams)
+    # Same as the SQLAlchemy dialect's own connect: a worker thread left
+    # running must not keep the interpreter from exiting.
+    connection._thread.daemon = True
+
+    async def open_connection() -> aiosqlite.Connection:
+        return await connection
+
+    opening = asyncio.ensure_future(open_connection())
+    try:
+        return await asyncio.shield(opening)
+    except asyncio.CancelledError:
+        _abandoned_sqlite_opens.add(opening)
+        opening.add_done_callback(_stop_abandoned_sqlite_open)
+        raise
+
+
+def _stop_abandoned_sqlite_open(opening: asyncio.Future[Any]) -> None:
+    _abandoned_sqlite_opens.discard(opening)
+    if opening.cancelled() or opening.exception() is not None:
+        # aiosqlite stops the worker itself when the open fails.
+        return
+    stopping = opening.result().stop()
+    if stopping is not None:
+        _abandoned_sqlite_opens.add(stopping)
+        stopping.add_done_callback(_abandoned_sqlite_opens.discard)
+
+
+# Opens abandoned by a cancelled caller, then the worker stops that close them.
+_abandoned_sqlite_opens: set[asyncio.Future[Any]] = set()
+
+
+async def _drain_abandoned_sqlite_opens(timeout: float) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while _abandoned_sqlite_opens:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "close_db left %d abandoned SQLite connection open(s) unfinished after %.1fs",
+                len(_abandoned_sqlite_opens),
+                timeout,
+            )
+            return
+        await asyncio.wait(tuple(_abandoned_sqlite_opens), timeout=remaining)
+        # The done callbacks that register the stop run via call_soon.
+        await asyncio.sleep(0)
+
+
 def _configure_sqlite_engine(engine: Engine, *, enable_wal: bool) -> None:
+    if engine.dialect.driver == "aiosqlite":
+
+        @event.listens_for(engine, "do_connect")
+        def _open_closing_on_cancel(
+            _dialect: object, _record: object, _cargs: list[Any], cparams: dict[str, Any]
+        ) -> None:
+            # The dialect awaits whatever this returns in place of aiosqlite.connect().
+            cparams["async_creator_fn"] = _open_aiosqlite_connection
+
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_connection: sqlite3.Connection, _: object) -> None:
         cursor: sqlite3.Cursor = dbapi_connection.cursor()
@@ -1034,6 +1107,7 @@ async def close_db() -> None:
             # deferred bookkeeping close) run via call_soon; yield once so
             # the registry reflects them before the next stability check.
             await asyncio.sleep(0)
+    await _drain_abandoned_sqlite_opens(_SQLITE_TEARDOWN_TIMEOUT_SECONDS)
     await engine.dispose()
     if _background_engine is not None:
         await _background_engine.dispose()

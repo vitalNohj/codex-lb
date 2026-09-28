@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -49,13 +50,13 @@ def _is_postgresql_database_url(url: str) -> bool:
 
 
 def _sqlite_alembic_revisions(db_path: Path) -> list[str]:
-    with sqlite3.connect(str(db_path)) as connection:
+    with closing(sqlite3.connect(str(db_path))) as connection, connection:
         rows = connection.execute("SELECT version_num FROM alembic_version").fetchall()
     return sorted(str(row[0]) for row in rows)
 
 
 def _sqlite_table_count(db_path: Path) -> int:
-    with sqlite3.connect(str(db_path)) as connection:
+    with closing(sqlite3.connect(str(db_path))) as connection, connection:
         rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     return len(rows)
 
