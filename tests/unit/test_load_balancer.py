@@ -3636,7 +3636,7 @@ async def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
         health_version=4,
     )
 
-    await clear_rate_limit_runtime("acc", waived_blocked_at=100.0)
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100)
 
     runtime = balancer._runtime["acc"]
     assert runtime.blocked_at is None
@@ -3644,6 +3644,28 @@ async def test_clear_rate_limit_runtime_forgets_pre_reset_markers():
     assert runtime.reset_at is None
     assert runtime.version == 4
     assert runtime.health_version == 5
+
+
+@pytest.mark.asyncio
+async def test_clear_rate_limit_runtime_forgets_marker_with_sub_second_precision():
+    # handle_rate_limit records time.time() in runtime, while the row stores
+    # int(blocked_at). The waiver only knows the persisted second, so the same
+    # 429 must still match when runtime carries the fraction.
+    balancer = LoadBalancer(repo_factory=lambda: None)
+    balancer._runtime["acc"] = RuntimeState(
+        blocked_at=100.7,
+        cooldown_until=200.0,
+        reset_at=200.0,
+        version=3,
+        health_version=4,
+    )
+
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100)
+
+    runtime = balancer._runtime["acc"]
+    assert runtime.blocked_at is None
+    assert runtime.cooldown_until is None
+    assert runtime.reset_at is None
 
 
 @pytest.mark.asyncio
@@ -3657,7 +3679,7 @@ async def test_clear_rate_limit_runtime_keeps_newer_marker():
         health_version=4,
     )
 
-    await clear_rate_limit_runtime("acc", waived_blocked_at=100.0)
+    await clear_rate_limit_runtime("acc", waived_blocked_at=100)
 
     runtime = balancer._runtime["acc"]
     assert runtime.blocked_at == 300.0
@@ -3692,7 +3714,7 @@ async def test_clear_rate_limit_runtime_keeps_marker_recorded_under_account_lock
 
     holder = asyncio.create_task(record_newer_while_holding_lock())
     await holding.wait()
-    clear_task = asyncio.create_task(clear_rate_limit_runtime("acc", waived_blocked_at=100.0))
+    clear_task = asyncio.create_task(clear_rate_limit_runtime("acc", waived_blocked_at=100))
     await asyncio.sleep(0)
     assert clear_task.done() is False
     release.set()

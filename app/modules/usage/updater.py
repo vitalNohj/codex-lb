@@ -861,7 +861,7 @@ class UsageUpdater:
         )
         return True
 
-    async def _waive_persisted_block_after_reset_credit(self, account: Account) -> float | None:
+    async def _waive_persisted_block_after_reset_credit(self, account: Account) -> int | None:
         """Clear the 429 ``blocked_at`` marker after a successful reset credit.
 
         Returns the waived ``blocked_at`` when the compare-and-set clears it.
@@ -877,7 +877,7 @@ class UsageUpdater:
             return None
         if account.blocked_at is None:
             return None
-        waived_blocked_at = float(account.blocked_at)
+        waived_blocked_at = account.blocked_at
         repo = cast(AccountsRepositoryWithStatusComparePort, self._auth_manager._repo)
         updated = await repo.update_status_if_current(
             account.id,
@@ -1011,7 +1011,7 @@ class UsageUpdater:
         account.blocked_at = stored.blocked_at
 
 
-async def _clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: float) -> None:
+async def _clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: int) -> None:
     from app.modules.proxy.load_balancer import clear_rate_limit_runtime
 
     await clear_rate_limit_runtime(account_id, waived_blocked_at=waived_blocked_at)

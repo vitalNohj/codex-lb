@@ -283,14 +283,16 @@ SelectionInputs = _SelectionInputs
 _LIVE_LOAD_BALANCERS: weakref.WeakSet[LoadBalancer] = weakref.WeakSet()
 
 
-async def clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: float) -> None:
+async def clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: int) -> None:
     """Drop this process's pre-reset 429 markers for one account.
 
     Reset-credit consume clears persisted ``blocked_at`` before usage catches
     up. Selection still holds the old marker in runtime and would persist it
     back onto the row, pinning the account until the pre-reset ``reset_at``.
     A runtime ``blocked_at`` newer than ``waived_blocked_at`` belongs to a 429
-    the waiver did not clear, so that marker stays. The account lock is the
+    the waiver did not clear, so that marker stays. Runtime keeps the
+    fractional ``time.time()`` of the 429 while the row stores whole seconds,
+    so the two are compared at the persisted precision. The account lock is the
     same one ``mark_rate_limit`` holds while it records a 429.
     """
     for balancer in list(_LIVE_LOAD_BALANCERS):
@@ -307,13 +309,13 @@ class LoadBalancer:
         self._selection_inputs_cache = get_account_selection_cache()
         _LIVE_LOAD_BALANCERS.add(self)
 
-    async def _drop_waived_rate_limit_runtime(self, account_id: str, *, waived_blocked_at: float) -> None:
+    async def _drop_waived_rate_limit_runtime(self, account_id: str, *, waived_blocked_at: int) -> None:
         lock = await self._get_account_lock(account_id)
         async with lock:
             runtime = self._runtime.get(account_id)
             if runtime is None:
                 return
-            if runtime.blocked_at is not None and runtime.blocked_at > waived_blocked_at:
+            if runtime.blocked_at is not None and int(runtime.blocked_at) > waived_blocked_at:
                 return
             if runtime.blocked_at is None and runtime.cooldown_until is None and runtime.reset_at is None:
                 return
