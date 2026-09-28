@@ -20,17 +20,22 @@ def _matching_claude_price_key(model_id: str) -> str | None:
     return None
 
 
-def canonical_sidecar_model(model: str | None) -> str | None:
+def canonical_sidecar_model(model: str | None, *, strip_prefix: bool = True) -> str | None:
     """The id after one known routing prefix, with no other renaming.
 
     A dotted spelling, a release date, and an effort suffix stay. Bounds and
-    allowlists then exact-match that string against a known row.
+    allowlists then exact-match that string against a known row. ``strip_prefix``
+    is false when routing already kept the id, so a preserved full model such as
+    ``cp-claude-opus-5-5`` does not collapse onto ``claude-opus-5-5``.
     """
     if model is None:
         return None
     normalized = model.strip()
     if not normalized:
         return None
+    if not strip_prefix:
+        priced = _matching_claude_price_key(normalized)
+        return priced if priced is not None else normalized
     stripped = strip_known_sidecar_prefix(normalized)
     if not stripped:
         return None

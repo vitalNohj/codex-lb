@@ -178,11 +178,18 @@ def _canonical_model_for_access(model: str | None, routing_entries: tuple[Sideca
 def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
     if model is None:
         return _AccessIdentity(None, None)
+    original = model.strip()
     provider: str | None = None
     route = resolve_sidecar_route(model, routing_entries)
     if route is not None:
         model = route.wire_model
         provider = route.provider
+        # A full-model match and a non-stripping prefix keep the requested id
+        # on the wire. Peeling cc/, cp-, or cp_ here would make that id the
+        # same allowlist identity as a different model.
+        if model.strip().lower() == original.lower():
+            preserved = canonical_sidecar_model(model, strip_prefix=False)
+            return _AccessIdentity(provider, preserved if preserved is not None else model.strip())
     # Pricing globs such as ``*claude-3-5-sonnet*`` price the old OmniRoute
     # name. They are not an access identity, so ``claude-3-5-sonnet-latest``
     # cannot spend a grant of the dated key.

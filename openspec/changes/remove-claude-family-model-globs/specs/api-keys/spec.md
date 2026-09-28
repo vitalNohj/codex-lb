@@ -207,6 +207,16 @@ Native Claude price lookup MUST exact-match a price key after removing at most o
 - **WHEN** an API key whose `allowed_models` is exactly `claude-fable-5-1` requests `claude-fable-5.1`
 - **THEN** the request is refused as not allowed for that key
 
+### Requirement: A preserved full-model id keeps its allowlist identity
+
+When sidecar routing forwards a model id unchanged, API-key access MUST use that id. It MUST NOT remove a leading `cc/`, `cp-`, or `cp_` from an id routing kept. A grant of full model `cp-claude-opus-5-5` MUST NOT admit `claude-opus-5-5` when both are full models on the same integration.
+
+#### Scenario: A preserved prefixed full model rejects the stripped id
+
+- **GIVEN** `cp-claude-opus-5-5` and `claude-opus-5-5` are both CLIProxyAPI full models
+- **WHEN** an API key whose `allowed_models` is exactly `cp-claude-opus-5-5` requests `claude-opus-5-5`
+- **THEN** the request is refused as not allowed for that key
+
 ### Requirement: Claude allowlists ignore pricing aliases
 
 API-key model access MUST treat a Claude id as that exact id after routing, and MUST NOT substitute a pricing alias. A grant of `claude-3-5-sonnet-20241022` MUST NOT admit `claude-3-5-sonnet-latest`. Native price lookup of the older bare name `claude-3-5-sonnet` remains the dated price key.
