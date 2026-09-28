@@ -1780,7 +1780,8 @@ class _HTTPBridgeUpstreamEventsMixin:
         # SSE-framing it as ``data: {text}`` kept only the first line, so the
         # error matched no request and the client waited 60s for a 502.
         payload = parse_websocket_json_text(text)
-        event_block = format_sse_data(payload) if payload is not None and "\n" in text else f"data: {text}\n\n"
+        multi_line = "\n" in text or "\r" in text
+        event_block = format_sse_data(payload) if payload is not None and multi_line else f"data: {text}\n\n"
         event_type = classify_event_type(payload)
         event = parse_sse_event_payload(payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
         completed_delivery_scope = _HTTPBridgeCompletedDeliveryScope() if event_type == "response.completed" else None

@@ -21564,8 +21564,10 @@ async def test_process_http_bridge_upstream_text_surfaces_exhausted_retry_usage_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"])
 async def test_process_http_bridge_upstream_text_settles_pretty_printed_error_frame(
     monkeypatch: pytest.MonkeyPatch,
+    line_break: str,
 ) -> None:
     """Upstream sends some request errors as multi-line JSON. The bridge must
     still match the error to the waiting request instead of dropping it and
@@ -21603,8 +21605,8 @@ async def test_process_http_bridge_upstream_text_settles_pretty_printed_error_fr
             "status": 400,
         },
         indent=2,
-    )
-    assert "\n" in pretty_error
+    ).replace("\n", line_break)
+    assert line_break in pretty_error
 
     await service._process_http_bridge_upstream_text(session, pretty_error)
 
