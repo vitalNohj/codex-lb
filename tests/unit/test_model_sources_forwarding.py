@@ -89,6 +89,17 @@ def test_chat_stream_usage_parser_reads_a_frame_holding_a_line_separator() -> No
     assert (holder.usage.input_tokens, holder.usage.output_tokens) == (4, 2)
 
 
+def test_stream_usage_parser_skips_a_frame_json_loads_cannot_build() -> None:
+    holder = SourceUsageHolder()
+    parser = SourceStreamUsageParser(holder, response_shape="chat")
+
+    parser.feed(b'data: {"n":' + b"1" * 5000 + b"}\n\n")
+    parser.feed(b'data: {"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n')
+
+    assert holder.usage is not None
+    assert holder.usage.input_tokens == 2
+
+
 def test_stream_usage_parser_reads_usage_after_an_oversize_frame() -> None:
     holder = SourceUsageHolder()
     parser = SourceStreamUsageParser(holder, response_shape="chat")

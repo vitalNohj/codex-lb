@@ -420,6 +420,28 @@ def test_sse_data_decoder_flush_drops_an_oversize_unclosed_event():
     assert decoder.flush() == []
 
 
+def test_sse_data_decoder_counts_empty_data_lines_toward_max_event_chars():
+    decoder = SseDataDecoder(max_event_chars=100)
+
+    for _ in range(10_000):
+        assert decoder.feed(b"data:\n") == []
+        assert len(decoder._data_lines) <= 100
+    assert decoder.feed(b"\ndata: ok\n\n") == ["ok"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b'{"n":' + b"1" * 5000 + b"}", id="integer-past-the-digit-limit"),
+        pytest.param(b"[" * 100_000, id="nesting-past-the-recursion-limit"),
+    ],
+)
+def test_sse_json_data_decoder_skips_data_json_loads_cannot_build(data: bytes):
+    decoder = SseJsonDataDecoder()
+
+    assert decoder.feed(b"data: " + data + b'\n\ndata: {"ok":1}\n\n') == [{"ok": 1}]
+
+
 _sse_data_lines = st.text(max_size=12).filter(lambda text: "\r" not in text and "\n" not in text)
 
 

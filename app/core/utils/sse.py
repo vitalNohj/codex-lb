@@ -271,7 +271,8 @@ class SseDataDecoder:
         if field == "data":
             data = value[1:] if value.startswith(" ") else value
             self._data_lines.append(data)
-            self._data_chars += len(data)
+            # Plus the LF that joins it, so even empty data lines count.
+            self._data_chars += len(data) + 1
 
     def _dispatch(self) -> str | None:
         data_lines = self._data_lines
@@ -310,7 +311,10 @@ def _json_events(payloads: list[str]) -> list[SseJsonEvent]:
             continue
         try:
             parsed = json.loads(payload)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # Not only malformed JSON: an integer past Python's digit limit
+            # raises plain ``ValueError``, and deep nesting ``RecursionError``.
+            # An upstream frame must not be able to abort the stream.
             continue
         if is_json_dict(parsed):
             events.append(parsed)
