@@ -6,6 +6,7 @@ import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.utils.sse import SseJsonDataDecoder
 from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _SIDECAR_MESSAGE_CONTINUATION,
@@ -13,7 +14,6 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     CLAUDE_SIDECAR_COOLDOWN_ERROR_CODE,
     SidecarUsage,
     _sidecar_request_cost,
-    _SseUsageDecoder,
     build_sidecar_chat_payload,
     claude_sidecar_request_log_error,
     ensure_stream_usage_requested,
@@ -1139,10 +1139,10 @@ def test_extract_usage_handles_missing_cost_field() -> None:
 
 
 def test_sse_decoder_extracts_usage_from_split_chunks() -> None:
-    decoder = _SseUsageDecoder()
+    decoder = SseJsonDataDecoder()
 
-    first = decoder.feed('data: {"id":"one","usage":{"prompt_tokens":')
-    second = decoder.feed('12,"completion_tokens":4}}\n\ndata: [DONE]\n\n')
+    first = decoder.feed(b'data: {"id":"one","usage":{"prompt_tokens":')
+    second = decoder.feed(b'12,"completion_tokens":4}}\n\ndata: [DONE]\n\n')
 
     assert first == []
     assert len(second) == 2

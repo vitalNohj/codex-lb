@@ -28,7 +28,7 @@ from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.sse import inject_sse_keepalives
+from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
 from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
@@ -310,10 +310,10 @@ async def _omniroute_stream_iterator(
     settled = False
     try:
         async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
+            decoder = SseJsonDataDecoder()
             async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
-                    if event == "[DONE]":
+                for event in decoder.feed(raw_chunk):
+                    if event == SSE_DONE:
                         completed = True
                         continue
                     event_usage = extract_usage(event)
@@ -321,7 +321,7 @@ async def _omniroute_stream_iterator(
                         usage = event_usage
                 yield raw_chunk
             for event in decoder.flush():
-                if event == "[DONE]":
+                if event == SSE_DONE:
                     completed = True
                     continue
                 event_usage = extract_usage(event)
@@ -414,53 +414,6 @@ async def _omniroute_stream_iterator(
                 )
 
             await complete_despite_cancellation(_settle_and_log())
-
-
-class _SseUsageDecoder:
-    def __init__(self) -> None:
-        self._buffer = ""
-
-    def feed(self, chunk: str) -> list[JsonObject | str]:
-        self._buffer += chunk
-        return self._drain_complete_events()
-
-    def flush(self) -> list[JsonObject | str]:
-        if not self._buffer:
-            return []
-        pending = self._buffer
-        self._buffer = ""
-        event = _parse_sse_event(pending)
-        return [event] if event is not None else []
-
-    def _drain_complete_events(self) -> list[JsonObject | str]:
-        events: list[JsonObject | str] = []
-        while "\n\n" in self._buffer:
-            raw_event, self._buffer = self._buffer.split("\n\n", 1)
-            event = _parse_sse_event(raw_event)
-            if event is not None:
-                events.append(event)
-        return events
-
-
-def _parse_sse_event(raw_event: str) -> JsonObject | str | None:
-    data_lines: list[str] = []
-    for raw_line in raw_event.splitlines():
-        if not raw_line or raw_line.startswith(":"):
-            continue
-        field, _, value = raw_line.partition(":")
-        if field != "data":
-            continue
-        data_lines.append(value[1:] if value.startswith(" ") else value)
-    if not data_lines:
-        return None
-    data = "\n".join(data_lines)
-    if data.strip() == "[DONE]":
-        return "[DONE]"
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        return None
-    return cast(JsonObject, parsed) if is_json_mapping(parsed) else None
 
 
 def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
@@ -735,10 +688,10 @@ async def _omniroute_responses_stream_iterator(
     synthesizer = ResponsesStreamSynthesizer(model=model)
     try:
         async with client.stream_chat_completion(payload) as chunks:
-            decoder = _SseUsageDecoder()
+            decoder = SseJsonDataDecoder()
             async for raw_chunk in chunks:
-                for event in decoder.feed(raw_chunk.decode("utf-8", errors="ignore")):
-                    if event == "[DONE]":
+                for event in decoder.feed(raw_chunk):
+                    if event == SSE_DONE:
                         completed = True
                     else:
                         event_usage = extract_usage(event)
@@ -747,7 +700,7 @@ async def _omniroute_responses_stream_iterator(
                     for responses_event in synthesizer.feed(event):
                         yield _responses_sse(responses_event)
             for event in decoder.flush():
-                if event == "[DONE]":
+                if event == SSE_DONE:
                     completed = True
                 else:
                     event_usage = extract_usage(event)

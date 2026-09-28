@@ -137,6 +137,8 @@ class _FakeSidecarClient:
         self.stream_errors: list[Exception] = []
         self.stream_include_usage = True
         self.stream_context_error = False
+        # When set, the stream sends exactly these byte chunks instead.
+        self.stream_raw_chunks: list[bytes] | None = None
         # CLIProxyAPI proxies other vendors and can echo their ``usage.cost``
         # straight back. It debits nothing of its own, so this is not spend.
         self.echoed_cost_usd: float | None = None
@@ -168,6 +170,7 @@ class _FakeSidecarClient:
             error,
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
+            raw_chunks=self.stream_raw_chunks,
         )
 
 
@@ -178,14 +181,25 @@ class _FakeStreamContext:
         *,
         include_usage: bool = True,
         context_error: bool = False,
+        raw_chunks: list[bytes] | None = None,
     ) -> None:
         self.error = error
         self.include_usage = include_usage
         self.context_error = context_error
+        self.raw_chunks = raw_chunks
 
     async def __aenter__(self):
         if self.error is not None:
             raise self.error
+
+        if self.raw_chunks is not None:
+            raw_chunks = self.raw_chunks
+
+            async def scripted():
+                for chunk in raw_chunks:
+                    yield chunk
+
+            return scripted()
 
         async def chunks():
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
@@ -827,6 +841,52 @@ async def test_claude_stream_routes_to_sidecar_and_requests_usage(async_client, 
     assert b"data: [DONE]" in body
     assert fake_sidecar.stream_payloads[0]["stream_options"]["include_usage"] is True
     assert await _reservation_statuses() == ["finalized"]
+
+
+@pytest.mark.asyncio
+async def test_claude_stream_with_crlf_framing_and_split_characters_settles_with_usage(
+    async_client, sidecar_enabled, fake_sidecar
+):
+    """CLIProxyAPI's framing and chunk boundaries are not ours to choose.
+
+    CRLF line endings are valid SSE, and a network chunk can end inside a
+    multi-byte character. The relayed bytes reach the client either way; what
+    must also hold is that the proxy reads the usage and ``[DONE]`` from them,
+    so the request is logged as a success with its tokens.
+    """
+
+    content = 'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"delta":{"content":"café"}}]}\r\n\r\n'
+    stream = (
+        content.encode()
+        + b'data: {"id":"c2","object":"chat.completion.chunk","choices":[],'
+        + b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\r\n\r\n'
+        + b"data: [DONE]\r\n\r\n"
+    )
+    cut = stream.index(b"\xc3") + 1
+    fake_sidecar.stream_raw_chunks = [stream[:cut], stream[cut:]]
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("sidecar-crlf-key")
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert "café".encode() in body
+    async with SessionLocal() as session:
+        logs = list((await session.execute(select(RequestLog))).scalars().all())
+    sidecar_logs = [log for log in logs if log.source == "claude_sidecar"]
+    assert len(sidecar_logs) == 1
+    assert sidecar_logs[0].status == "success"
+    assert (sidecar_logs[0].input_tokens, sidecar_logs[0].output_tokens) == (10, 5)
 
 
 @pytest.mark.asyncio

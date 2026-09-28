@@ -15,10 +15,10 @@ from app.core.clients.opencode_go_sidecar import (
 )
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
+from app.core.utils.sse import SseJsonDataDecoder
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     OPENCODE_GO_SIDECAR_SOURCE,
     _headers_with_retry_after,
-    _SseUsageDecoder,
     build_opencode_go_chat_payload,
     opencode_go_routing_entry,
     proxy_chat_to_opencode_go,
@@ -567,7 +567,7 @@ class TestSseFraming:
 
     @staticmethod
     def _events(*chunks: bytes) -> list:
-        decoder = _SseUsageDecoder()
+        decoder = SseJsonDataDecoder()
         out: list = []
         for chunk in chunks:
             out.extend(decoder.feed(chunk))
@@ -598,7 +598,7 @@ class TestSseFraming:
     def test_events_are_emitted_during_the_stream_not_only_at_eof(self) -> None:
         """A streamed event must surface when it arrives, not be buffered to EOF."""
 
-        decoder = _SseUsageDecoder()
+        decoder = SseJsonDataDecoder()
 
         first = decoder.feed(b'data: {"choices":[{"delta":{"content":"hi"}}]}\r\n\r\n')
 

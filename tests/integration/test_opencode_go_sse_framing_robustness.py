@@ -36,11 +36,11 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from app.core.config.settings import get_settings
+from app.core.utils.sse import SseJsonDataDecoder
 from app.db.models import RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService
-from app.modules.proxy.opencode_go_sidecar_dispatch import _SseUsageDecoder
 from tests.fixtures.opencode_go_upstream import FakeOpenCodeGoUpstream, build_sse_reader
 
 pytestmark = pytest.mark.integration
@@ -377,7 +377,7 @@ def test_every_event_of_a_multi_event_stream_is_decoded(separator):
     The decoder now takes bytes, so the whole stream is fed as the transport
     delivers it.
     """
-    decoder = _SseUsageDecoder()
+    decoder = SseJsonDataDecoder()
     stream = f'data: {{"n":1}}{separator}data: {{"n":2}}{separator}data: [DONE]{separator}'
 
     events = list(decoder.feed(stream.encode()))
@@ -395,7 +395,7 @@ def test_a_multi_byte_character_split_across_chunks_is_held_not_dropped():
     payload = 'data: {"t":"caf\u00e9"}\n\n'.encode()
     split_at = payload.index(b"\xc3") + 1  # inside the two-byte 'e-acute'
 
-    decoder = _SseUsageDecoder()
+    decoder = SseJsonDataDecoder()
     events = list(decoder.feed(payload[:split_at]))
     events.extend(decoder.feed(payload[split_at:]))
     events.extend(decoder.flush())
@@ -404,7 +404,7 @@ def test_a_multi_byte_character_split_across_chunks_is_held_not_dropped():
 
 
 def test_an_event_split_across_many_chunks_reassembles():
-    decoder = _SseUsageDecoder()
+    decoder = SseJsonDataDecoder()
     payload = 'data: {"usage":{"total_tokens":18}}\n\n'.encode()
     collected: list[object] = []
     for index in range(len(payload)):
@@ -414,5 +414,5 @@ def test_an_event_split_across_many_chunks_reassembles():
 
 
 def test_comment_lines_are_ignored_within_an_event():
-    decoder = _SseUsageDecoder()
+    decoder = SseJsonDataDecoder()
     assert list(decoder.feed(b': keepalive\ndata: {"ok":true}\n\n')) == [{"ok": True}]
