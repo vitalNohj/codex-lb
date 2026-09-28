@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Final, Literal
 
 from app.core.errors import ResponseFailedEvent
+from app.core.shutdown import wait_for_shutdown_stream_handoff
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_dict
 from app.core.utils.stream_close import aclose_stream
@@ -27,6 +28,13 @@ _SSE_LINE_BOUNDARY = re.compile(r"\r\n|\r|\n")
 
 SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
 CODEX_KEEPALIVE_FRAME = 'event: codex.keepalive\ndata: {"type":"codex.keepalive"}\n\n'
+
+# Chat clients retry "503" and "service unavailable". A restart sends this
+# while the socket can still write, instead of closing the stream with no error.
+SHUTDOWN_SERVICE_UNAVAILABLE_FRAME = (
+    'data: {"error":{"message":"503 service unavailable",'
+    '"type":"server_error","code":"service_unavailable"}}\n\n'
+)
 
 # The exact single-event shape ``format_sse_event`` emits (and the upstream
 # Codex backend sends): a leading ``event: <type>`` line, one JSON-object
@@ -58,6 +66,7 @@ async def inject_sse_keepalives(
     *,
     keepalive_frame: str = SSE_KEEPALIVE_FRAME,
     on_keepalive: Callable[[], None] | None = None,
+    shutdown_handoff_frame: str | None = None,
 ) -> AsyncIterator[str]:
     """Wrap an SSE event iterator and emit comment heartbeats on idle gaps.
 
@@ -68,10 +77,15 @@ async def inject_sse_keepalives(
 
     A non-positive ``interval_seconds`` disables injection entirely.
 
+    ``shutdown_handoff_frame``, when set, is yielded once and the source is
+    closed when process shutdown's drain is about to expire. That write
+    happens while this task can still send. Callers that omit it keep the
+    previous close-on-cancel behavior.
+
     Closing this generator closes ``source`` too, so the cleanup in the
     source's ``finally`` runs now rather than at garbage collection.
     """
-    if interval_seconds <= 0:
+    if interval_seconds <= 0 and shutdown_handoff_frame is None:
         try:
             async for chunk in source:
                 yield chunk
@@ -84,27 +98,61 @@ async def inject_sse_keepalives(
 
     iterator = source.__aiter__()
     pending: asyncio.Task[str] | None = None
+    handoff: asyncio.Task[None] | None = None
+    if shutdown_handoff_frame is not None:
+        handoff = asyncio.create_task(wait_for_shutdown_stream_handoff())
     try:
         while True:
             if pending is None:
                 pending = asyncio.create_task(_next_chunk(iterator))
-            try:
-                chunk = await asyncio.wait_for(
-                    asyncio.shield(pending),
-                    timeout=interval_seconds,
-                )
-            except asyncio.TimeoutError:
-                if on_keepalive is not None:
-                    on_keepalive()
-                yield keepalive_frame
-                continue
-            except StopAsyncIteration:
+            if handoff is None:
+                try:
+                    chunk = await asyncio.wait_for(
+                        asyncio.shield(pending),
+                        timeout=interval_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    if on_keepalive is not None:
+                        on_keepalive()
+                    yield keepalive_frame
+                    continue
+                except StopAsyncIteration:
+                    pending = None
+                    break
                 pending = None
-                break
-            pending = None
-            yield chunk
+                yield chunk
+                continue
+
+            waiters: set[asyncio.Future[object]] = {pending, handoff}
+            timeout = None if interval_seconds <= 0 else interval_seconds
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if handoff in done:
+                yield shutdown_handoff_frame
+                return
+            if pending in done:
+                try:
+                    chunk = pending.result()
+                except StopAsyncIteration:
+                    pending = None
+                    break
+                pending = None
+                yield chunk
+                continue
+            if on_keepalive is not None:
+                on_keepalive()
+            yield keepalive_frame
     finally:
         try:
+            if handoff is not None and not handoff.done():
+                handoff.cancel()
+                try:
+                    await handoff
+                except BaseException:
+                    pass
             if pending is not None and not pending.done():
                 pending.cancel()
                 try:
