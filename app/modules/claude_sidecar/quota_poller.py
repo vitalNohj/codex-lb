@@ -16,6 +16,7 @@ from app.core.clients.claude_sidecar import (
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.db.session import get_background_session
+from app.modules.claude_sidecar.capacity_hold import next_hold_release
 from app.modules.claude_sidecar.excluded_models import excluded_models_from_auth_file
 from app.modules.claude_sidecar.exclusion_lock import exclusion_write_lock
 from app.modules.claude_sidecar.oauth_usage import (
@@ -38,6 +39,10 @@ from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settin
 from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
+
+# How long after a hold's release instant the poller runs, so the usage API
+# already reports the reset window as renewed.
+_HOLD_RELEASE_POLL_DELAY_SECONDS = 1.0
 
 
 class _LeaderElectionLike(Protocol):
@@ -80,9 +85,29 @@ class ClaudeSidecarQuotaPoller:
         while not self._stop.is_set():
             await self._poll_once()
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_seconds)
+                await asyncio.wait_for(self._stop.wait(), timeout=await self._next_wait_seconds())
             except asyncio.TimeoutError:
                 continue
+
+    async def _next_wait_seconds(self) -> float:
+        """Sleep the poll interval, but wake just after the next hold release.
+
+        A held auth is enabled again by a poll. Waiting the full interval past
+        its reset would keep requests on 429 (or waiting) for up to that long
+        after capacity is back.
+        """
+        try:
+            settings_row = await get_settings_cache().get()
+        except Exception:
+            return self.interval_seconds
+        release = next_hold_release(
+            snapshot_from_json(settings_row.claude_sidecar_quota_state_json),
+            datetime.now(timezone.utc),
+        )
+        if release is None:
+            return self.interval_seconds
+        until_release = (release - datetime.now(timezone.utc)).total_seconds() + _HOLD_RELEASE_POLL_DELAY_SECONDS
+        return max(_HOLD_RELEASE_POLL_DELAY_SECONDS, min(self.interval_seconds, until_release))
 
     async def _poll_once(self) -> None:
         try:
