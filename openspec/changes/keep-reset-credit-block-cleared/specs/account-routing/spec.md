@@ -22,7 +22,7 @@ Account selection MUST NOT persist a runtime 429 `blocked_at` onto an account wh
 
 ### Requirement: Newer rate limits survive a missed reset-credit waiver
 
-A reset-credit forced refresh MUST drop in-process rate-limit markers only after the persisted block clear succeeds, and MUST leave a runtime marker whose `blocked_at` is newer than the waived marker in place.
+A reset-credit forced refresh MUST drop in-process rate-limit markers only after the persisted block clear succeeds, and MUST leave a runtime marker whose `blocked_at` is newer than the waived marker in place. Runtime and persisted `blocked_at` MUST be compared at persisted whole-second precision, so the runtime copy of the waived 429 is not treated as newer because of its sub-second part.
 
 #### Scenario: Missed waiver keeps the newer runtime marker
 
@@ -36,3 +36,10 @@ A reset-credit forced refresh MUST drop in-process rate-limit markers only after
 - **AND** this process holds a runtime `blocked_at` newer than the waived marker
 - **WHEN** the forced refresh drops in-process markers
 - **THEN** that newer runtime marker stays
+
+#### Scenario: Successful waiver clears the same 429 recorded with sub-second precision
+
+- **GIVEN** a reset-credit waiver that cleared persisted `blocked_at` of whole second T
+- **AND** this process holds a runtime `blocked_at` of T plus a fraction of a second for the same 429
+- **WHEN** the forced refresh drops in-process markers
+- **THEN** that runtime marker is cleared
