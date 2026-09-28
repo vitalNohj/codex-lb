@@ -226,8 +226,8 @@ class _FakeClient:
         header: Mapping[str, str],
     ) -> Any:
         return {
-            "five_hour": {"utilization": 0.25, "resets_at": None},
-            "seven_day": {"utilization": 0.5, "resets_at": None},
+            "five_hour": {"utilization": 25.0, "resets_at": None},
+            "seven_day": {"utilization": 50.0, "resets_at": None},
         }
 
 

@@ -44,7 +44,7 @@ def test_parse_claude_oauth_usage_converts_utilization_to_remaining_percent() ->
     usage = parse_claude_oauth_usage(
         {
             "five_hour": {
-                "utilization": 0.42,
+                "utilization": 42.0,
                 "resets_at": "2026-05-05T17:00:00Z",
             },
             "seven_day": {
@@ -61,12 +61,28 @@ def test_parse_claude_oauth_usage_converts_utilization_to_remaining_percent() ->
     assert usage.seven_day.remaining_percent == 39.0
 
 
+@pytest.mark.parametrize(
+    ("utilization", "remaining"),
+    [(0.0, 100.0), (0.5, 99.5), (1.0, 99.0), (1, 99.0), (9.0, 91.0), (100.0, 0.0), (104.0, 0.0), (-3.0, 100.0)],
+)
+def test_parse_claude_oauth_usage_reads_utilization_as_whole_percent(utilization: float, remaining: float) -> None:
+    # Anthropic reports whole percent. 1.0 is one percent used right after a
+    # reset, not an empty window. Reading it as a fraction disabled a healthy
+    # auth through the rate-limit hold.
+    usage = parse_claude_oauth_usage(
+        {"five_hour": {"utilization": utilization, "resets_at": "2026-09-28T12:09:59.850156+00:00"}}
+    )
+
+    assert usage.five_hour is not None
+    assert usage.five_hour.remaining_percent == remaining
+
+
 @pytest.mark.asyncio
 async def test_fetch_claude_oauth_usage_routes_through_api_call() -> None:
     client = _FakeClient(
         result={
-            "five_hour": {"utilization": 0.25, "resets_at": "2026-05-05T17:00:00Z"},
-            "seven_day": {"utilization": 0.5, "resets_at": "2026-05-12T12:00:00Z"},
+            "five_hour": {"utilization": 25.0, "resets_at": "2026-05-05T17:00:00Z"},
+            "seven_day": {"utilization": 50.0, "resets_at": "2026-05-12T12:00:00Z"},
         }
     )
 

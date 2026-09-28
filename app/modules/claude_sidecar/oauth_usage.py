@@ -60,17 +60,15 @@ def _parse_bucket(raw: JsonValue) -> SidecarOAuthUsageBucket | None:
         return None
     utilization = _float(raw.get("utilization"))
     resets_at = _parse_datetime(raw.get("resets_at"))
-    remaining_percent = None if utilization is None else max(0.0, 100.0 - _utilization_percent(utilization))
+    # Anthropic reports utilization in whole percent (1.0 is one percent used),
+    # so a value in [0, 1] is not a fraction.
+    remaining_percent = None if utilization is None else min(100.0, max(0.0, 100.0 - utilization))
     if remaining_percent is None and resets_at is None:
         return None
     return SidecarOAuthUsageBucket(
         remaining_percent=remaining_percent,
         resets_at=resets_at,
     )
-
-
-def _utilization_percent(value: float) -> float:
-    return value * 100.0 if 0.0 <= value <= 1.0 else value
 
 
 def _float(value: JsonValue) -> float | None:
