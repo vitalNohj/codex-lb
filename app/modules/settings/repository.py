@@ -5,6 +5,8 @@ from collections.abc import Callable
 from datetime import datetime
 
 from sqlalchemy import delete, func, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -687,17 +689,13 @@ class SettingsRepository:
         if claude_sidecar_model_prefixes_json is not None:
             settings.claude_sidecar_model_prefixes_json = claude_sidecar_model_prefixes_json
         if claude_sidecar_full_models_json is not None:
+            had_opus_5_5_pin = _lists_claude_opus_5_5(settings.claude_sidecar_full_models_json)
             settings.claude_sidecar_full_models_json = claude_sidecar_full_models_json
-            if not _lists_claude_opus_5_5(claude_sidecar_full_models_json):
-                # The migration's pin is gone, so it no longer owns this row. A
-                # pin the operator adds back later must survive its downgrade.
-                # No autoflush: the settings UPDATE and its version check must
-                # flush in commit_refresh, which turns a stale save into a 409.
-                # A conflict there rolls this delete back too.
-                with self._session.no_autoflush:
-                    await self._session.execute(
-                        delete(ClaudeOpus55PinOwnership).where(ClaudeOpus55PinOwnership.settings_id == settings.id)
-                    )
+            await self._track_claude_opus_5_5_pin(
+                settings.id,
+                had_pin=had_opus_5_5_pin,
+                has_pin=_lists_claude_opus_5_5(claude_sidecar_full_models_json),
+            )
         if claude_sidecar_connect_timeout_seconds is not None:
             settings.claude_sidecar_connect_timeout_seconds = claude_sidecar_connect_timeout_seconds
         if claude_sidecar_request_timeout_seconds is not None:
@@ -886,6 +884,40 @@ class SettingsRepository:
             on_committed=get_upstream_route_cache().clear if upstream_route_inputs_changed else None,
         )
         return settings
+
+    async def _track_claude_opus_5_5_pin(self, settings_id: int, *, had_pin: bool, has_pin: bool) -> None:
+        """Keep ``claude_opus_5_5_pin_ownership`` true to who placed the pin.
+
+        Revision 20260923_000000 reads an ownership row two ways. Its upgrade,
+        which a legacy-revision remap can replay, skips owned rows. Its
+        downgrade removes ``claude-opus-5-5`` from owned rows.
+
+        Only a save that removes or adds the pin changes the row:
+
+        - Removing it keeps (or adds) the row, so a replay does not pin it
+          again. Downgrade has no pin to remove there.
+        - Adding it back drops the row, so downgrade leaves the operator's
+          pin. A replay skips it because the pin is present.
+
+        No autoflush: the settings UPDATE and its version check must flush in
+        commit_refresh, which turns a stale save into a 409. A conflict there
+        rolls these statements back too.
+        """
+        if has_pin == had_pin:
+            return
+        with self._session.no_autoflush:
+            if has_pin:
+                await self._session.execute(
+                    delete(ClaudeOpus55PinOwnership).where(ClaudeOpus55PinOwnership.settings_id == settings_id)
+                )
+                return
+            dialect = self._session.get_bind().dialect.name
+            insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+            await self._session.execute(
+                insert_fn(ClaudeOpus55PinOwnership)
+                .values(settings_id=settings_id)
+                .on_conflict_do_nothing(index_elements=[ClaudeOpus55PinOwnership.settings_id])
+            )
 
     async def commit_refresh(
         self, settings: DashboardSettings, *, on_committed: Callable[[], None] | None = None

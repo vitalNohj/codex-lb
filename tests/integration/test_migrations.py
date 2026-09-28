@@ -3258,8 +3258,9 @@ async def test_claude_opus_5_5_pin_readded_by_the_operator_survives_downgrade(tm
     """A pin the operator removed and then added back is theirs, not the migration's.
 
     Downgrade removes ``claude-opus-5-5`` from rows listed in the ownership
-    table. A settings save whose full-model list no longer holds the pin must
-    drop that row, or a later re-add by the operator is removed on downgrade.
+    table, and a replayed upgrade skips them. A save that re-adds the pin must
+    drop that row, or downgrade removes the operator's pin. A save that drops
+    the pin must keep it, or a replay pins the row again.
     """
     from alembic import command
 
@@ -3293,14 +3294,29 @@ async def test_claude_opus_5_5_pin_readded_by_the_operator_survives_downgrade(tm
         await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
         assert await stored_models() == ["claude-opus-5", "claude-opus-5-5"]
 
+        async def owners() -> int:
+            async with engine.connect() as conn:
+                return (await conn.execute(text("SELECT COUNT(*) FROM claude_opus_5_5_pin_ownership"))).scalar_one()
+
+        async def replay() -> None:
+            # Rewind only the bookkeeping, as the legacy-revision remap does.
+            await to_thread.run_sync(lambda: command.stamp(_build_alembic_config(db_url), parent_revision))
+            await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+
         # A save that keeps the pin keeps the migration's ownership.
         await save_models(["claude-opus-5", "claude-opus-5-5"])
-        async with engine.connect() as conn:
-            owners = (await conn.execute(text("SELECT COUNT(*) FROM claude_opus_5_5_pin_ownership"))).scalar_one()
-        assert owners == 1
+        assert await owners() == 1
 
+        # The operator drops the pin: a replay must not put it back.
         await save_models(["claude-opus-5"])
+        await replay()
+        assert await stored_models() == ["claude-opus-5"]
+
+        # The operator adds it back: the pin is now theirs.
         await save_models(["claude-opus-5", "Claude-Opus-5-5"])
+        assert await owners() == 0
+        await replay()
+        assert await stored_models() == ["claude-opus-5", "Claude-Opus-5-5"]
 
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
         assert await stored_models() == ["claude-opus-5", "Claude-Opus-5-5"]
