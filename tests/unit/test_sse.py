@@ -409,7 +409,7 @@ def test_sse_data_decoder_holds_no_more_than_max_event_chars_without_a_boundary(
 
     for _ in range(200):
         assert decoder.feed(b"x" * 4096) == []
-        assert sum(map(len, decoder._partial_line)) + sum(map(len, decoder._data_lines)) <= 1000
+        assert decoder.held_chars <= 1000
     assert decoder.feed(b"\n\ndata: ok\n\n") == ["ok"]
 
 
@@ -425,7 +425,7 @@ def test_sse_data_decoder_counts_empty_data_lines_toward_max_event_chars():
 
     for _ in range(10_000):
         assert decoder.feed(b"data:\n") == []
-        assert len(decoder._data_lines) <= 100
+        assert decoder.held_chars <= 100
     assert decoder.feed(b"\ndata: ok\n\n") == ["ok"]
 
 

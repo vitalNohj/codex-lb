@@ -13,7 +13,7 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import ChatCompletion, ChatCompletionUsage
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
-from app.core.utils.sse import format_sse_event, parse_sse_data_json
+from app.core.utils.sse import SseLineDecoder, format_sse_event, parse_sse_data_json
 from app.core.utils.stream_close import aclose_stream
 from app.modules.api_keys.service import ApiKeyData
 
@@ -448,31 +448,45 @@ class CursorChatSseCompatRewriter:
         self._source = source
         self._prompt_tokens = estimate_cursor_prompt_tokens(payload)
         self._completion_chars = 0
-        self._buffer = ""
+        self._lines = SseLineDecoder()
+        # Lines of the event in progress, without line endings.
+        self._event_lines: list[str] = []
         self._usage_emitted = False
         self.terminated = False
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if self.terminated:
             return []
-        self._buffer += chunk.decode("utf-8", errors="ignore")
-        outputs: list[bytes] = []
-        while "\n\n" in self._buffer and not self.terminated:
-            raw_event, self._buffer = self._buffer.split("\n\n", 1)
-            outputs.extend(self._rewrite_event(raw_event))
-        return outputs
+        return self._take_lines(self._lines.feed(chunk))
 
     def flush(self) -> list[bytes]:
-        if self.terminated or not self._buffer:
+        if self.terminated:
             return []
-        pending = self._rewrite_event(self._buffer)
-        self._buffer = ""
-        return pending
+        outputs = self._take_lines(self._lines.flush())
+        if self._event_lines and not self.terminated:
+            outputs.extend(self._rewrite_event("\n".join(self._event_lines)))
+        self._event_lines = []
+        return outputs
+
+    def _take_lines(self, lines: list[str]) -> list[bytes]:
+        outputs: list[bytes] = []
+        for line in lines:
+            if line:
+                self._event_lines.append(line)
+                continue
+            if not self._event_lines:
+                continue
+            raw_event = "\n".join(self._event_lines)
+            self._event_lines = []
+            outputs.extend(self._rewrite_event(raw_event))
+            if self.terminated:
+                break
+        return outputs
 
     def _rewrite_event(self, raw_event: str) -> list[bytes]:
         data_lines: list[str] = []
         prefix_lines: list[str] = []
-        for raw_line in raw_event.splitlines():
+        for raw_line in raw_event.split("\n"):
             if not raw_line or raw_line.startswith(":"):
                 prefix_lines.append(raw_line)
                 continue
@@ -508,7 +522,7 @@ class CursorChatSseCompatRewriter:
                 self._payload.model,
             )
             self.terminated = True
-            self._buffer = ""
+            self._event_lines = []
             return cursor_context_limit_usage_sse_chunks(self._payload)
 
         self._completion_chars += chat_completion_delta_chars(payload_dict)

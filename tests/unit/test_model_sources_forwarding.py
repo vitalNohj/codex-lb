@@ -118,10 +118,7 @@ def test_stream_usage_parser_bounds_buffer_without_frame_boundaries() -> None:
     for _ in range(600):
         parser.feed(b"x" * 4096)
 
-    held = parser._events._data
-    assert sum(map(len, held._partial_line)) + sum(map(len, held._data_lines)) <= (
-        SourceStreamUsageParser._MAX_BUFFER_CHARS
-    )
+    assert parser._events.held_chars <= SourceStreamUsageParser._MAX_BUFFER_CHARS
 
 
 def test_chat_stream_usage_parser_rejects_negative_tokens() -> None:

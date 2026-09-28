@@ -162,8 +162,8 @@ async def inject_sse_keepalives(
             await aclose_stream(source)
 
 
-class SseDataDecoder:
-    """Split an SSE byte stream, fed in arbitrary chunks, into each event's ``data``.
+class SseLineDecoder:
+    """Split an SSE byte stream, fed in arbitrary chunks, into its lines.
 
     Follows the event-stream parsing rules of the HTML standard, because real
     upstreams differ exactly where those rules are precise:
@@ -175,55 +175,49 @@ class SseDataDecoder:
     * Lines end at CRLF, LF, or CR and nowhere else, including at a CRLF split
       across chunks. (``str.splitlines`` also splits at U+2028, U+2029, and
       U+0085, which JSON strings may hold unescaped.)
-    * An event ends at a blank line and its ``data`` lines join with LF.
-      Comments and other fields are skipped, and an event without ``data``
-      yields nothing.
 
-    One deliberate leniency: ``flush`` also yields a last event the stream did
-    not close with a blank line, since some upstreams end right after
-    ``data: [DONE]``.
-
-    ``max_event_chars`` bounds memory for a reader that only needs small
-    events: an event that grows past it is dropped, up to the blank line that
-    ends it, rather than held. By default nothing is dropped.
+    Lines come without their line ending; an empty line ends an event.
     """
 
-    def __init__(self, *, max_event_chars: int | None = None) -> None:
+    def __init__(self) -> None:
         # ``utf-8-sig`` drops a leading BOM, even one split across chunks.
         self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
         self._partial_line: list[str] = []
+        self._partial_chars = 0
         # The text so far ended in CR, so a leading LF completes that CRLF.
         self._after_cr = False
-        self._data_lines: list[str] = []
-        self._max_event_chars = max_event_chars
-        # Characters held for the event in progress, in its data lines and in
-        # the partial line. Kept as running counts so feeding stays linear.
-        self._data_chars = 0
-        self._partial_chars = 0
-        # The event in progress outgrew ``max_event_chars``; skip to its end.
-        self._dropping = False
-        # The line in progress was cut from ``_partial_line`` by that limit.
-        # Its remainder is not a blank line, so it must not end the event.
-        self._partial_line_dropped = False
+        # The line in progress was dropped; skip the rest of it.
+        self._skipping_line = False
+
+    @property
+    def partial_chars(self) -> int:
+        """Characters held for the line in progress."""
+
+        return self._partial_chars
 
     def feed(self, chunk: bytes) -> list[str]:
         return self._take_text(self._text.decode(chunk))
 
     def flush(self) -> list[str]:
-        """End the stream: yield what is left, including an unclosed last event."""
+        """End the stream: yield what is left, including an unterminated last line."""
 
-        payloads = self._take_text(self._text.decode(b"", final=True))
+        lines = self._take_text(self._text.decode(b"", final=True))
         partial_line = "".join(self._partial_line)
+        if partial_line and not self._skipping_line:
+            lines.append(partial_line)
         self._partial_line = []
-        self._after_cr = False
-        if partial_line and not self._partial_line_dropped:
-            self._take_field(partial_line)
         self._partial_chars = 0
-        self._partial_line_dropped = False
-        payload = self._dispatch()
-        if payload is not None:
-            payloads.append(payload)
-        return payloads
+        self._after_cr = False
+        self._skipping_line = False
+        return lines
+
+    def drop_partial_line(self) -> None:
+        """Discard the line in progress, including the rest of it still to come."""
+
+        if self._partial_chars:
+            self._partial_line = []
+            self._partial_chars = 0
+            self._skipping_line = True
 
     def _take_text(self, text: str) -> list[str]:
         if self._after_cr and text:
@@ -236,33 +230,82 @@ class SseDataDecoder:
         self._partial_line.append(pieces[0])
         self._partial_chars += len(pieces[0])
         if len(pieces) == 1:
-            self._enforce_event_limit()
             return []
         self._after_cr = text[-1] == "\r"
         first_line = "".join(self._partial_line)
-        lines = pieces[1:-1] if self._partial_line_dropped else [first_line, *pieces[1:-1]]
-        self._partial_line_dropped = False
+        # The rest of a dropped line is not a line of its own: it must not
+        # end the event as an empty line would.
+        lines = pieces[1:-1] if self._skipping_line else [first_line, *pieces[1:-1]]
+        self._skipping_line = False
         self._partial_line = [pieces[-1]]
+        self._partial_chars = len(pieces[-1])
+        return lines
+
+
+class SseDataDecoder:
+    """Split an SSE byte stream, fed in arbitrary chunks, into each event's ``data``.
+
+    Lines are split by ``SseLineDecoder``. An event ends at a blank line and
+    its ``data`` lines join with LF, per the HTML standard. Comments and other
+    fields are skipped, and an event without ``data`` yields nothing.
+
+    One deliberate leniency: ``flush`` also yields a last event the stream did
+    not close with a blank line, since some upstreams end right after
+    ``data: [DONE]``.
+
+    ``max_event_chars`` bounds memory for a reader that only needs small
+    events: an event that grows past it is dropped, up to the blank line that
+    ends it, rather than held. By default nothing is dropped.
+    """
+
+    def __init__(self, *, max_event_chars: int | None = None) -> None:
+        self._lines = SseLineDecoder()
+        self._data_lines: list[str] = []
+        self._max_event_chars = max_event_chars
+        # Characters held in the data lines of the event in progress. Kept as
+        # a running count so feeding stays linear.
+        self._data_chars = 0
+        # The event in progress outgrew ``max_event_chars``; skip to its end.
+        self._dropping = False
+
+    @property
+    def held_chars(self) -> int:
+        """Characters held for the event in progress; at most ``max_event_chars``."""
+
+        return self._data_chars + self._lines.partial_chars
+
+    def feed(self, chunk: bytes) -> list[str]:
+        payloads = self._take_lines(self._lines.feed(chunk))
+        self._enforce_event_limit()
+        return payloads
+
+    def flush(self) -> list[str]:
+        """End the stream: yield what is left, including an unclosed last event."""
+
+        payloads = self._take_lines(self._lines.flush())
+        payload = self._dispatch()
+        if payload is not None:
+            payloads.append(payload)
+        return payloads
+
+    def _take_lines(self, lines: list[str]) -> list[str]:
         payloads: list[str] = []
         for line in lines:
             if line:
                 self._take_field(line)
             elif (payload := self._dispatch()) is not None:
                 payloads.append(payload)
-        self._partial_chars = len(pieces[-1])
-        self._enforce_event_limit()
         return payloads
 
     def _enforce_event_limit(self) -> None:
-        if self._max_event_chars is None or self._data_chars + self._partial_chars <= self._max_event_chars:
+        if self._max_event_chars is None:
+            return
+        if self.held_chars <= self._max_event_chars:
             return
         self._dropping = True
         self._data_lines = []
         self._data_chars = 0
-        if self._partial_chars:
-            self._partial_line = []
-            self._partial_chars = 0
-            self._partial_line_dropped = True
+        self._lines.drop_partial_line()
 
     def _take_field(self, line: str) -> None:
         if self._dropping or line.startswith(":"):
@@ -295,6 +338,10 @@ class SseJsonDataDecoder:
 
     def __init__(self, *, max_event_chars: int | None = None) -> None:
         self._data = SseDataDecoder(max_event_chars=max_event_chars)
+
+    @property
+    def held_chars(self) -> int:
+        return self._data.held_chars
 
     def feed(self, chunk: bytes) -> list[SseJsonEvent]:
         return _json_events(self._data.feed(chunk))
