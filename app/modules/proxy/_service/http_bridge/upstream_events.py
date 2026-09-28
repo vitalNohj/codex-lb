@@ -931,6 +931,50 @@ def _archive_http_bridge_upstream_message(
         reset_request_id(token)
 
 
+# Frame types the pre-created frame log may name. Anything else is logged as
+# ``other`` so an unexpected upstream ``type`` string never reaches the log.
+_HTTP_BRIDGE_LOGGED_FRAME_TYPES = frozenset(
+    {
+        "codex.rate_limits",
+        "codex.response.metadata",
+        "error",
+        "response.created",
+        "response.in_progress",
+        "response.failed",
+        "response.incomplete",
+        "response.completed",
+    }
+)
+
+
+def _log_http_bridge_upstream_frame(session: "_HTTPBridgeSession", message: UpstreamWebSocketMessage) -> None:
+    # Diagnostic for requests that never see response.created: log each frame
+    # the reader receives while a request is still waiting for it. Streaming
+    # deltas after response.created are not logged. Only the frame kind, a
+    # known event type, the text length and close/error codes are written,
+    # never payload text.
+    if not any(request_state.awaiting_response_created for request_state in session.pending_requests):
+        return
+    frame_type: str | None = None
+    if message.kind == "text" and message.text is not None:
+        payload = parse_sse_data_json(f"data: {message.text}\n\n")
+        event_type = classify_event_type(payload) if payload is not None else None
+        if payload is None:
+            frame_type = "unparsed"
+        else:
+            frame_type = event_type if event_type in _HTTP_BRIDGE_LOGGED_FRAME_TYPES else "other"
+    logger.info(
+        "http_bridge_precreated_frame bridge_key=%s account_id=%s kind=%s type=%s chars=%s close_code=%s error_code=%s",
+        _hash_identifier(session.key.affinity_key),
+        session.account.id,
+        message.kind,
+        frame_type,
+        len(message.text) if message.text is not None else None,
+        message.close_code,
+        message.error_code,
+    )
+
+
 async def _http_bridge_receive_timeout_with_eventless_deadline(
     session: "_HTTPBridgeSession",
     receive_timeout: _WebSocketReceiveTimeout | None,
@@ -1563,6 +1607,7 @@ class _HTTPBridgeUpstreamEventsMixin:
 
                 if message is None:
                     raise RuntimeError("HTTP bridge upstream receive completed without a message")
+                _log_http_bridge_upstream_frame(session, message)
                 if message.kind == "text" and message.text is not None:
                     session.last_upstream_close_code = None
                     if EVENT_MARKER in message.text:

@@ -912,6 +912,73 @@ class _SilentEventlessUpstream:
         self.closed = True
 
 
+def _precreated_frame_log_session(*, awaiting: bool = True) -> proxy_service._HTTPBridgeSession:
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-frame-log",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        transport="http",
+        awaiting_response_created=awaiting,
+    )
+    return _make_bridge_session(key_value="frame-log", pending_requests=deque([request_state]))
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            UpstreamWebSocketMessage(
+                kind="text",
+                text='{"type":"error","error":{"message":"secret request detail"},"status":400}',
+            ),
+            "kind=text type=error chars=73 close_code=None error_code=None",
+        ),
+        (
+            UpstreamWebSocketMessage(kind="text", text='{"type":"secret request detail"}'),
+            "kind=text type=other chars=32 close_code=None error_code=None",
+        ),
+        (
+            UpstreamWebSocketMessage(kind="text", text="not json"),
+            "kind=text type=unparsed chars=8 close_code=None error_code=None",
+        ),
+        (
+            UpstreamWebSocketMessage(kind="close", close_code=1000),
+            "kind=close type=None chars=None close_code=1000 error_code=None",
+        ),
+    ],
+)
+def test_http_bridge_precreated_frame_log_names_known_types_without_payload(
+    caplog: pytest.LogCaptureFixture,
+    message: UpstreamWebSocketMessage,
+    expected: str,
+) -> None:
+    session = _precreated_frame_log_session()
+
+    with caplog.at_level(logging.INFO, logger="app.modules.proxy.service"):
+        http_bridge_upstream_events_module._log_http_bridge_upstream_frame(session, message)
+
+    assert "http_bridge_precreated_frame" in caplog.text
+    assert "account_id=acc-bridge" in caplog.text
+    assert expected in caplog.text
+    assert "frame-log" not in caplog.text
+    assert "secret request detail" not in caplog.text
+
+
+def test_http_bridge_precreated_frame_log_skips_frames_after_response_created(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _precreated_frame_log_session(awaiting=False)
+    delta = UpstreamWebSocketMessage(kind="text", text='{"type":"response.output_text.delta","delta":"hi"}')
+
+    with caplog.at_level(logging.INFO, logger="app.modules.proxy.service"):
+        http_bridge_upstream_events_module._log_http_bridge_upstream_frame(session, delta)
+
+    assert "http_bridge_precreated_frame" not in caplog.text
+
+
 def test_http_bridge_eventless_precreated_deadline_uses_current_send_and_client_safe_cap() -> None:
     request_state = _make_eventless_http_bridge_owner()
 

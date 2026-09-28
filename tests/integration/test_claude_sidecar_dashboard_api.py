@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError, SidecarModel
+from app.core.clients.claude_sidecar import (
+    ClaudeSidecarClient,
+    ClaudeSidecarError,
+    ClaudeSidecarUnavailableError,
+    SidecarModel,
+)
 from app.core.types import JsonValue
 from app.db.models import ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal
@@ -1066,7 +1072,8 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
 
     monkeypatch.setattr(SettingsRepository, "update_operational", delayed_update)
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60, enabled=True)
-    poll_task = asyncio.create_task(poller._persist_snapshot(snapshot))
+    client = cast(ClaudeSidecarClient, _FakeSidecarClient(None))
+    poll_task = asyncio.create_task(poller._persist_snapshot(client, snapshot))
     await asyncio.wait_for(entered.wait(), timeout=5)
     save_task = asyncio.create_task(
         async_client.put(
