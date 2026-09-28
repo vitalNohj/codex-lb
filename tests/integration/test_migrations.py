@@ -1973,6 +1973,135 @@ async def test_sidecar_free_model_cost_backfill_sets_zero_for_explicit_free_mode
 
 
 @pytest.mark.asyncio
+async def test_sidecar_cost_backfill_downgrade_keeps_every_cost(tmp_path):
+    """Rolling the backfill back must not blank costs the request path stored.
+
+    The migration keeps no record of which rows it priced, so a reversal keyed
+    on ``source`` would also erase costs written at insert time.
+    """
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'sidecar-cost-backfill-downgrade.sqlite'}"
+    parent_revision = "20260612_000000_add_omniroute_sidecar_dashboard_settings"
+    backfill_revision = "20260614_000000_backfill_openrouter_omniroute_request_log_costs"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _costs() -> dict[str, float | None]:
+        async with session_factory() as session:
+            return dict((await session.execute(text("SELECT request_id, cost_usd FROM request_logs"))).all())
+
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO request_logs (
+                        account_id, request_id, requested_at, model, source,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        latency_ms, status, cost_usd, request_kind
+                    )
+                    VALUES
+                      (NULL, 'req_backfilled', '2026-06-13 00:00:00',
+                       'anthropic/claude-sonnet-4.5', 'openrouter_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
+                      (NULL, 'req_priced_at_insert', '2026-06-13 00:01:00',
+                       'anthropic/claude-sonnet-4.5', 'omniroute_sidecar',
+                       1000000, 1000000, 0, 0, 100, 'success', 42.5, 'normal')
+                    """
+                )
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, backfill_revision, bootstrap_legacy=False))
+        after_upgrade = await _costs()
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        after_downgrade = await _costs()
+        await to_thread.run_sync(lambda: run_upgrade(db_url, backfill_revision, bootstrap_legacy=False))
+        after_reupgrade = await _costs()
+    finally:
+        await engine.dispose()
+
+    assert after_upgrade["req_backfilled"] == pytest.approx(18.0)
+    assert after_upgrade["req_priced_at_insert"] == pytest.approx(42.5)
+    assert after_downgrade == after_upgrade
+    assert after_reupgrade == after_upgrade
+
+
+@pytest.mark.asyncio
+async def test_sidecar_routing_migration_rewrites_every_settings_row_across_batches(tmp_path):
+    """Upgrade and downgrade page through settings rows and still reach every one."""
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'sidecar-routing-batches.sqlite'}"
+    parent_revision = "20260614_020000_add_request_log_reference_cost"
+    routing_revision = "20260618_040000_unify_sidecar_routing_settings"
+    # More than two pages of the migration's 100-row batches.
+    row_ids = list(range(1, 251))
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _prefixes() -> dict[int, tuple[object, object]]:
+        async with session_factory() as session:
+            rows = await session.execute(
+                text(
+                    "SELECT id, claude_sidecar_model_prefixes_json, openrouter_sidecar_model_prefixes_json "
+                    "FROM dashboard_settings ORDER BY id"
+                )
+            )
+            return {row[0]: (json.loads(row[1]), json.loads(row[2])) for row in rows}
+
+    try:
+        async with session_factory() as session:
+            columns = [row[1] for row in await session.execute(text("PRAGMA table_info(dashboard_settings)"))]
+            copied = ", ".join(column for column in columns if column != "id")
+            for row_id in row_ids[1:]:
+                await session.execute(
+                    text(
+                        f"INSERT INTO dashboard_settings (id, {copied}) "
+                        f"SELECT :row_id, {copied} FROM dashboard_settings WHERE id = 1"
+                    ),
+                    {"row_id": row_id},
+                )
+            await session.execute(
+                text(
+                    "UPDATE dashboard_settings SET claude_sidecar_model_prefixes_json = :claude, "
+                    "openrouter_sidecar_model_prefixes_json = :openrouter"
+                ),
+                {"claude": json.dumps(["Claude"]), "openrouter": json.dumps(["or-"])},
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, routing_revision, bootstrap_legacy=False))
+        after_upgrade = await _prefixes()
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        after_downgrade = await _prefixes()
+    finally:
+        await engine.dispose()
+
+    upgraded = (
+        [
+            {"prefix": "claude", "strip": False},
+            {"prefix": "cp-", "strip": True},
+            {"prefix": "cp_", "strip": True},
+        ],
+        [{"prefix": "or-", "strip": True}],
+    )
+    assert after_upgrade == {row_id: upgraded for row_id in row_ids}
+    assert after_downgrade == {row_id: (["claude", "cp-", "cp_"], ["or-"]) for row_id in row_ids}
+
+
+@pytest.mark.asyncio
 async def test_request_log_reference_cost_column_added_and_nullable(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'reference-cost-column.sqlite'}"
 

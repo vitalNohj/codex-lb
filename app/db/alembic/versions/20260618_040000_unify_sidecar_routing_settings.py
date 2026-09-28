@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -25,6 +27,10 @@ _DEFAULT_CLAUDE_PREFIXES = (
     {"prefix": "cp-", "strip": True},
     {"prefix": "cp_", "strip": True},
 )
+
+# Settings rows are read and rewritten this many at a time. The table holds a
+# single row today; the bound keeps the migration safe if that ever changes.
+_BATCH_SIZE = 100
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,31 @@ def _collapse_prefix_rows(raw: str | None) -> str:
     return json.dumps(prefixes, separators=(",", ":"))
 
 
+def _settings_row_batches(connection: Connection, column_names: Sequence[str]) -> Iterator[list[dict[str, Any]]]:
+    """Settings rows as ``{"id", *column_names}`` dicts, in id order, ``_BATCH_SIZE`` at a time."""
+
+    table = sa.table(_TABLE_NAME, sa.column("id"), *(sa.column(name) for name in column_names))
+    id_column = table.c.id
+    query = sa.select(id_column, *(table.c[name] for name in column_names)).order_by(id_column).limit(_BATCH_SIZE)
+    last_id: Any = None
+    while True:
+        page = query if last_id is None else query.where(id_column > last_id)
+        batch = [dict(row) for row in connection.execute(page).mappings()]
+        if not batch:
+            return
+        yield batch
+        last_id = batch[-1]["id"]
+
+
+def _rewrite_settings_column(connection: Connection, column_name: str, rewrite: Callable[[Any], str]) -> None:
+    """Replace ``column_name`` on every settings row with ``rewrite(value)``, one batch per statement."""
+
+    table = sa.table(_TABLE_NAME, sa.column("id"), sa.column(column_name))
+    update = sa.update(table).where(table.c.id == sa.bindparam("row_id")).values({column_name: sa.bindparam("value")})
+    for batch in _settings_row_batches(connection, (column_name,)):
+        connection.execute(update, [{"row_id": row["id"], "value": rewrite(row[column_name])} for row in batch])
+
+
 def _log_cross_integration_prefix_collisions(connection: Connection) -> None:
     columns = _columns(connection, _TABLE_NAME)
     if not columns or "id" not in columns:
@@ -106,8 +137,8 @@ def _log_cross_integration_prefix_collisions(connection: Connection) -> None:
     present = [(name, column) for name, column in prefix_columns if column in columns]
     if len(present) < 2:
         return
-    selected_columns = ", ".join(f"{column} AS {column}" for _, column in present)
-    for row in connection.execute(sa.text(f"SELECT id, {selected_columns} FROM {_TABLE_NAME}")).mappings():
+    rows = (row for batch in _settings_row_batches(connection, [column for _, column in present]) for row in batch)
+    for row in rows:
         owners: dict[str, str] = {}
         for provider, column in present:
             for entry in _load_json_list(row[column]):
@@ -170,44 +201,15 @@ def upgrade() -> None:
 
     columns = _columns(bind, _TABLE_NAME)
     if "claude_sidecar_model_prefixes_json" in columns:
-        for row in bind.execute(
-            sa.text(f"SELECT id, claude_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
-        ).mappings():
-            bind.execute(
-                sa.text(
-                    f"UPDATE {_TABLE_NAME} "
-                    "SET claude_sidecar_model_prefixes_json = :prefixes "
-                    "WHERE id = :id"
-                ),
-                {
-                    "id": row["id"],
-                    "prefixes": _normalize_prefix_rows(
-                        row["claude_sidecar_model_prefixes_json"],
-                        seed_claude_aliases=True,
-                    ),
-                },
-            )
+        _rewrite_settings_column(
+            bind,
+            "claude_sidecar_model_prefixes_json",
+            lambda raw: _normalize_prefix_rows(raw, seed_claude_aliases=True),
+        )
     if "openrouter_sidecar_model_prefixes_json" in columns:
-        for row in bind.execute(
-            sa.text(f"SELECT id, openrouter_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
-        ).mappings():
-            bind.execute(
-                sa.text(
-                    f"UPDATE {_TABLE_NAME} "
-                    "SET openrouter_sidecar_model_prefixes_json = :prefixes "
-                    "WHERE id = :id"
-                ),
-                {
-                    "id": row["id"],
-                    "prefixes": _normalize_prefix_rows(row["openrouter_sidecar_model_prefixes_json"]),
-                },
-            )
+        _rewrite_settings_column(bind, "openrouter_sidecar_model_prefixes_json", _normalize_prefix_rows)
     if "omniroute_sidecar_prefixes_json" in columns:
-        for row in bind.execute(sa.text(f"SELECT id, omniroute_sidecar_prefixes_json FROM {_TABLE_NAME}")).mappings():
-            bind.execute(
-                sa.text(f"UPDATE {_TABLE_NAME} SET omniroute_sidecar_prefixes_json = :prefixes WHERE id = :id"),
-                {"id": row["id"], "prefixes": _normalize_prefix_rows(row["omniroute_sidecar_prefixes_json"])},
-            )
+        _rewrite_settings_column(bind, "omniroute_sidecar_prefixes_json", _normalize_prefix_rows)
 
     _log_cross_integration_prefix_collisions(bind)
 
@@ -219,29 +221,9 @@ def downgrade() -> None:
         return
 
     if "claude_sidecar_model_prefixes_json" in columns:
-        for row in bind.execute(
-            sa.text(f"SELECT id, claude_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
-        ).mappings():
-            bind.execute(
-                sa.text(
-                    f"UPDATE {_TABLE_NAME} "
-                    "SET claude_sidecar_model_prefixes_json = :prefixes "
-                    "WHERE id = :id"
-                ),
-                {"id": row["id"], "prefixes": _collapse_prefix_rows(row["claude_sidecar_model_prefixes_json"])},
-            )
+        _rewrite_settings_column(bind, "claude_sidecar_model_prefixes_json", _collapse_prefix_rows)
     if "openrouter_sidecar_model_prefixes_json" in columns:
-        for row in bind.execute(
-            sa.text(f"SELECT id, openrouter_sidecar_model_prefixes_json FROM {_TABLE_NAME}")
-        ).mappings():
-            bind.execute(
-                sa.text(
-                    f"UPDATE {_TABLE_NAME} "
-                    "SET openrouter_sidecar_model_prefixes_json = :prefixes "
-                    "WHERE id = :id"
-                ),
-                {"id": row["id"], "prefixes": _collapse_prefix_rows(row["openrouter_sidecar_model_prefixes_json"])},
-            )
+        _rewrite_settings_column(bind, "openrouter_sidecar_model_prefixes_json", _collapse_prefix_rows)
 
     with op.batch_alter_table(_TABLE_NAME) as batch_op:
         for column_name in (
