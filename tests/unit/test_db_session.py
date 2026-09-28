@@ -1812,6 +1812,38 @@ def test_closing_the_connection_releases_an_unfinished_returning_write_made_by_e
 
 
 @pytest.mark.asyncio
+async def test_a_connection_whose_setup_fails_is_closed(tmp_path) -> None:
+    """A connection that fails while its connect-time setup runs must still close.
+
+    Setup runs the PRAGMAs in ``_configure_sqlite_engine``. A task cancelled
+    during them (shutdown cancelling the ring heartbeat, for one) used to leave
+    the new connection open with nothing referencing it: its worker thread and
+    file handle lived until garbage collection, which then failed because the
+    event loop was gone. SQLAlchemy closes it since 2.0.53.
+    """
+    db_path = tmp_path / "failed-setup.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", **session_module._sqlite_file_async_engine_kwargs())
+    session_module._configure_sqlite_engine(engine.sync_engine, enable_wal=True)
+    opened: list[Any] = []
+
+    @sa_event.listens_for(engine.sync_engine, "connect")
+    def _fail_after_the_pragmas(dbapi_connection: Any, _record: object) -> None:
+        opened.append(dbapi_connection.driver_connection)
+        raise RuntimeError("setup failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="setup failed"):
+            async with engine.connect() as connection:
+                await connection.execute(sa_text("SELECT 1"))
+    finally:
+        await engine.dispose()
+
+    [driver] = opened
+    driver._thread.join(timeout=5)
+    assert not driver._thread.is_alive(), "the connection's worker thread outlived the failed setup"
+
+
+@pytest.mark.asyncio
 async def test_cancelling_a_returning_write_mid_statement_does_not_hold_the_write_lock(tmp_path) -> None:
     """Cancelling a task inside ``UPDATE ... RETURNING`` must release SQLite's writer slot.
 
