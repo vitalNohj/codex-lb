@@ -1066,7 +1066,7 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
 
     monkeypatch.setattr(SettingsRepository, "update_operational", delayed_update)
     poller = ClaudeSidecarQuotaPoller(interval_seconds=60, enabled=True)
-    poll_task = asyncio.create_task(poller._persist_snapshot(snapshot))
+    poll_task = asyncio.create_task(poller._persist_snapshot(_FakeSidecarClient(None), snapshot))
     await asyncio.wait_for(entered.wait(), timeout=5)
     save_task = asyncio.create_task(
         async_client.put(
