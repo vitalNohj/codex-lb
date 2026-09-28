@@ -481,6 +481,47 @@ def test_recorder_observes_raw_chunks_and_commits() -> None:
     assert messages[1]["reasoning_content"] == "step 1 step 2"
 
 
+def test_recorder_reads_crlf_framing_and_characters_split_across_chunks() -> None:
+    """The sidecar's line endings and network chunk boundaries are not ours to choose.
+
+    CRLF framing is valid SSE, and a chunk can end inside a multi-byte
+    character. The cached reasoning must be exactly what the model streamed,
+    or the next turn replays altered reasoning to DeepSeek.
+    """
+
+    cache = DeepSeekReasoningCache()
+    recorder = DeepSeekReasoningRecorder(
+        outgoing_messages=[{"role": "user", "content": "weather in Paris?"}],
+        provider="claude",
+        model_family="deepseek-v4-flash",
+        api_key_digest="d",
+        cache=cache,
+    )
+    chunks = _tool_call_finish_stream()
+    # Unescaped, as upstreams send it, so the character is two raw bytes.
+    chunks[0] = f"data: {json.dumps(_chunk(reasoning='étape 1 '), ensure_ascii=False)}\n\n".encode()
+    stream = b"".join(chunks).replace(b"\n", b"\r\n")
+    cut = stream.index(b"\xc3") + 1
+    recorder.record(stream[:cut])
+    recorder.record(stream[cut:])
+    recorder.commit()
+    body: dict[str, JsonValue] = {
+        "messages": [
+            {"role": "user", "content": "weather in Paris?"},
+            _assistant_turn(reasoning=None),
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    }
+    reinject_reasoning_into_sidecar_body(
+        body, provider="claude", model_family="deepseek-v4-flash", api_key_digest="d", cache=cache
+    )
+    messages = body["messages"]
+    assert isinstance(messages, list)
+    assistant = messages[1]
+    assert isinstance(assistant, dict)
+    assert assistant["reasoning_content"] == "étape 1 step 2"
+
+
 def test_recorder_does_not_commit_on_interrupt() -> None:
     cache = DeepSeekReasoningCache()
     recorder = DeepSeekReasoningRecorder(

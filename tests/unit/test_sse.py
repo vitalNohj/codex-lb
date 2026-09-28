@@ -392,6 +392,56 @@ def test_sse_data_decoder_flush_completes_a_character_cut_off_at_the_end():
     assert decoder.flush() == ["caf\ufffd"]
 
 
+def test_sse_data_decoder_drops_an_event_past_max_event_chars_and_keeps_the_next():
+    decoder = SseDataDecoder(max_event_chars=8)
+
+    assert decoder.feed(b"data: 0123") == []
+    # The oversize event is dropped whether it grows in one line or several.
+    assert decoder.feed(b"456789 more") == []
+    assert decoder.feed(b"\ndata: tail\n") == []
+    assert decoder.feed(b"\ndata: short\n\n") == ["short"]
+    assert decoder.feed(b"data: a\ndata: b\n\n") == ["a\nb"]
+    assert decoder.flush() == []
+
+
+def test_sse_data_decoder_holds_no_more_than_max_event_chars_without_a_boundary():
+    decoder = SseDataDecoder(max_event_chars=1000)
+
+    for _ in range(200):
+        assert decoder.feed(b"x" * 4096) == []
+        assert sum(map(len, decoder._partial_line)) + sum(map(len, decoder._data_lines)) <= 1000
+    assert decoder.feed(b"\n\ndata: ok\n\n") == ["ok"]
+
+
+def test_sse_data_decoder_flush_drops_an_oversize_unclosed_event():
+    decoder = SseDataDecoder(max_event_chars=4)
+
+    assert decoder.feed(b"data: too long") == []
+    assert decoder.flush() == []
+
+
+def test_sse_data_decoder_counts_empty_data_lines_toward_max_event_chars():
+    decoder = SseDataDecoder(max_event_chars=100)
+
+    for _ in range(10_000):
+        assert decoder.feed(b"data:\n") == []
+        assert len(decoder._data_lines) <= 100
+    assert decoder.feed(b"\ndata: ok\n\n") == ["ok"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b'{"n":' + b"1" * 5000 + b"}", id="integer-past-the-digit-limit"),
+        pytest.param(b"[" * 100_000, id="nesting-past-the-recursion-limit"),
+    ],
+)
+def test_sse_json_data_decoder_skips_data_json_loads_cannot_build(data: bytes):
+    decoder = SseJsonDataDecoder()
+
+    assert decoder.feed(b"data: " + data + b'\n\ndata: {"ok":1}\n\n') == [{"ok": 1}]
+
+
 _sse_data_lines = st.text(max_size=12).filter(lambda text: "\r" not in text and "\n" not in text)
 
 

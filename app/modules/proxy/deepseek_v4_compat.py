@@ -34,6 +34,7 @@ from typing import cast
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
+from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, SseJsonEvent
 from app.core.utils.stream_close import aclose_stream
 
 logger = logging.getLogger(__name__)
@@ -467,7 +468,7 @@ class DeepSeekReasoningRecorder:
         self._model_family = model_family
         self._api_key_digest = api_key_digest
         self._cache = cache
-        self._buffer = ""
+        self._events = SseJsonDataDecoder()
         self._reasoning_parts: list[str] = []
         self._content_parts: list[str] = []
         self._tool_calls = _ToolCallAccumulator()
@@ -477,35 +478,16 @@ class DeepSeekReasoningRecorder:
 
     def record(self, chunk: bytes) -> None:
         try:
-            self._buffer += chunk.decode("utf-8", errors="ignore")
-            while "\n\n" in self._buffer:
-                raw_event, self._buffer = self._buffer.split("\n\n", 1)
-                self._observe_event(raw_event)
+            for event in self._events.feed(chunk):
+                self._observe_event(event)
         except Exception:
             logger.debug("deepseek_v4 stream observe error", exc_info=True)
 
-    def _observe_event(self, raw_event: str) -> None:
-        data_lines: list[str] = []
-        for raw_line in raw_event.splitlines():
-            if not raw_line or raw_line.startswith(":"):
-                continue
-            field, _, value = raw_line.partition(":")
-            if field != "data":
-                continue
-            data_lines.append(value[1:] if value.startswith(" ") else value)
-        if not data_lines:
-            return
-        data = "\n".join(data_lines)
-        if data.strip() == "[DONE]":
+    def _observe_event(self, event: SseJsonEvent) -> None:
+        if event == SSE_DONE:
             self._done = True
             return
-        try:
-            parsed = json.loads(data)
-        except json.JSONDecodeError:
-            return
-        if not is_json_mapping(parsed):
-            return
-        choices = parsed.get("choices")
+        choices = event.get("choices")
         if not is_json_list(choices):
             return
         for choice in choices:
@@ -527,6 +509,13 @@ class DeepSeekReasoningRecorder:
         if self._committed:
             return
         self._committed = True
+        try:
+            # Some upstreams end right after ``data: [DONE]``, without the
+            # blank line that closes the event.
+            for event in self._events.flush():
+                self._observe_event(event)
+        except Exception:
+            logger.debug("deepseek_v4 stream observe error", exc_info=True)
         if not (self._done and self._tool_call_finish):
             return
         reasoning = "".join(self._reasoning_parts)
