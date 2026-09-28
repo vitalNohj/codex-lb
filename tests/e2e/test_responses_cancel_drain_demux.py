@@ -13,33 +13,24 @@ from unittest.mock import AsyncMock
 import anyio
 import pytest
 
-from app.core.clients.proxy_websocket import UpstreamWebSocket
+from app.core.clients.proxy_websocket import UpstreamWebSocket, UpstreamWebSocketMessage
 from app.db.models import AccountStatus
 from app.modules.proxy import service as proxy_service
 
 pytestmark = pytest.mark.e2e
 
 
-class _FakeUpstreamMessage:
-    def __init__(self, kind: str, *, text: str | None = None, close_code: int | None = None) -> None:
-        self.kind = kind
-        self.text = text
-        self.close_code = close_code
-        self.error = None
-        self.data = None
-
-
 class _CancelThenRetryUpstreamWebSocket:
     def __init__(self) -> None:
         self.sent_text: list[str] = []
         self.closed = False
-        self._messages: asyncio.Queue[_FakeUpstreamMessage] = asyncio.Queue()
+        self._messages: asyncio.Queue[UpstreamWebSocketMessage] = asyncio.Queue()
 
     async def send_text(self, text: str) -> None:
         self.sent_text.append(text)
         if len(self.sent_text) == 1:
             await self._messages.put(
-                _FakeUpstreamMessage(
+                UpstreamWebSocketMessage(
                     "text",
                     text=json.dumps(
                         {
@@ -63,7 +54,7 @@ class _CancelThenRetryUpstreamWebSocket:
             # the HTTP bridge routes this into request #2 because request #2 is
             # the only unresolved pending request.
             await self._messages.put(
-                _FakeUpstreamMessage(
+                UpstreamWebSocketMessage(
                     "text",
                     text=json.dumps(
                         {
@@ -83,7 +74,7 @@ class _CancelThenRetryUpstreamWebSocket:
                 )
             )
             await self._messages.put(
-                _FakeUpstreamMessage(
+                UpstreamWebSocketMessage(
                     "text",
                     text=json.dumps(
                         {
@@ -101,7 +92,7 @@ class _CancelThenRetryUpstreamWebSocket:
                 )
             )
             await self._messages.put(
-                _FakeUpstreamMessage(
+                UpstreamWebSocketMessage(
                     "text",
                     text=json.dumps(
                         {
@@ -133,7 +124,7 @@ class _CancelThenRetryUpstreamWebSocket:
     async def send_bytes(self, data: bytes) -> None:
         raise AssertionError(f"Unexpected binary frame: {data!r}")
 
-    async def receive(self) -> _FakeUpstreamMessage:
+    async def receive(self) -> UpstreamWebSocketMessage:
         return await self._messages.get()
 
     async def close(self) -> None:
@@ -182,7 +173,7 @@ def _make_session(upstream: _CancelThenRetryUpstreamWebSocket) -> proxy_service.
 
 
 @pytest.mark.asyncio
-async def test_cancelled_http_bridge_stream_retires_before_retry_can_share_upstream() -> None:
+async def test_cancelled_http_bridge_stream_retires_before_retry_can_share_upstream(db_setup) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     service._finalize_websocket_request_state = cast(Any, AsyncMock())
     upstream = _CancelThenRetryUpstreamWebSocket()
