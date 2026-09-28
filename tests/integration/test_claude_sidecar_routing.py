@@ -1865,3 +1865,45 @@ async def test_unknown_provider_with_an_enabled_auth_stays_a_400(
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "model_not_found"
     assert "Retry-After" not in response.headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_hold_on_every_claude_auth_does_not_block_a_non_claude_sidecar_model(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    stream,
+):
+    # CLIProxyAPI serves other vendors' models from auths the Claude quota
+    # poller never holds; a Claude hold must not stop them.
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(hours=2))
+    body = {**_chat(stream=stream), "model": "cc/gemini-2.5-pro"}
+
+    if stream:
+        async with async_client.stream("POST", "/v1/chat/completions", json=body) as response:
+            await response.aread()
+        forwarded = fake_sidecar.stream_payloads
+    else:
+        response = await async_client.post("/v1/chat/completions", json=body)
+        forwarded = fake_sidecar.chat_payloads
+
+    assert response.status_code == 200
+    assert "Retry-After" not in response.headers
+    assert [payload["model"] for payload in forwarded] == ["gemini-2.5-pro"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_for_a_non_claude_model_stays_a_400_while_claude_is_held(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(hours=2))
+    fake_sidecar.chat_error = _unknown_provider_error()
+
+    response = await async_client.post("/v1/chat/completions", json={**_chat(), "model": "cc/gemini-2.5-pro"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "model_not_found"
+    assert "Retry-After" not in response.headers

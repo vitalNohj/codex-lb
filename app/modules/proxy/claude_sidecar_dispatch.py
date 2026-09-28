@@ -119,6 +119,8 @@ CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS = 1.0
 CLAUDE_SIDECAR_NO_CAPACITY_RETRY_AFTER_SECONDS = 60
 CLAUDE_SIDECAR_CAPACITY_HELD_ERROR_CODE = "claude_sidecar_capacity_held"
 CLAUDE_SIDECAR_NO_ENABLED_ACCOUNT_ERROR_CODE = "claude_sidecar_no_enabled_account"
+# Canonical Claude model ids start with this; only they are gated on Claude holds.
+_CLAUDE_MODEL_PREFIX = "claude"
 _T = TypeVar("_T")
 
 _SIDECAR_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -369,23 +371,42 @@ async def _wait_out_claude_capacity_hold(until: datetime) -> datetime | None:
         current = held
 
 
-async def _claude_far_capacity_hold() -> ClaudeNoCapacity | None:
+def _served_by_claude_auths(body: Mapping[str, JsonValue]) -> bool:
+    """Whether the forwarded model is a Claude model, served by the polled Claude auths.
+
+    The quota snapshot only tracks Claude auths. CLIProxyAPI may also serve
+    other vendors' models (``cc/gemini-2.5-pro``) from auths the poller never
+    holds, so a Claude hold says nothing about them.
+    """
+    model = body.get("model")
+    if not isinstance(model, str):
+        return False
+    # A prefix the resolver did not strip (``cc/claude-...``) is still forwarded.
+    canonical = canonical_sidecar_model(model.rsplit("/", 1)[-1])
+    return canonical is not None and canonical.casefold().startswith(_CLAUDE_MODEL_PREFIX)
+
+
+async def _claude_far_capacity_hold(body: Mapping[str, JsonValue]) -> ClaudeNoCapacity | None:
     """Answer at once for a hold too far off to wait out; ``None`` to go ahead.
 
     A near hold is left to :func:`_await_claude_capacity`, so a streamed request
     can wait for it after its headers, with keepalives flowing.
     """
+    if not _served_by_claude_auths(body):
+        return None
     until = await claude_capacity_held_until()
     if until is None or _claude_hold_lifts_within(until, CLAUDE_SIDECAR_HOLD_WAIT_MAX_SECONDS):
         return None
     return claude_capacity_held(until)
 
 
-async def _await_claude_capacity() -> None:
+async def _await_claude_capacity(body: Mapping[str, JsonValue]) -> None:
     """Return once no poller hold blocks every Claude auth, waiting out a near one.
 
     Raises :class:`_ClaudeCapacityUnavailable` when the hold is not lifted in time.
     """
+    if not _served_by_claude_auths(body):
+        return
     until = await claude_capacity_held_until()
     if until is None:
         return
@@ -398,14 +419,16 @@ async def _await_claude_capacity() -> None:
     raise _ClaudeCapacityUnavailable(claude_capacity_held(until))
 
 
-async def claude_no_capacity_behind(exc: ClaudeSidecarError) -> ClaudeNoCapacity | None:
+async def claude_no_capacity_behind(exc: ClaudeSidecarError, body: Mapping[str, JsonValue]) -> ClaudeNoCapacity | None:
     """Explain CLIProxyAPI's 400 "unknown provider" when no Claude auth is enabled.
 
     That 400 also answers a model no auth has ever served, which stays a client
-    error; only a snapshot with every Claude auth disabled turns it into 429 or
-    503.
+    error; only a Claude model with every Claude auth disabled turns it into
+    429 or 503.
     """
     if exc.status_code != 400 or not is_unknown_provider_message(exc.message):
+        return None
+    if not _served_by_claude_auths(body):
         return None
     snapshot = await _stored_claude_quota_snapshot()
     until = all_claude_auths_held_until(snapshot)
@@ -1291,7 +1314,7 @@ async def proxy_chat_to_sidecar(
     if payload.stream:
         # A far hold is answered before the stream opens, so the client gets a
         # real 429 status and Retry-After header rather than an in-band error.
-        far_hold = await _claude_far_capacity_hold()
+        far_hold = await _claude_far_capacity_hold(sidecar_payload.body)
         if far_hold is not None:
             return await _claude_no_capacity_response(
                 far_hold,
@@ -1349,7 +1372,7 @@ async def proxy_chat_to_sidecar(
         )
 
     try:
-        await _await_claude_capacity()
+        await _await_claude_capacity(sidecar_payload.body)
     except _ClaudeCapacityUnavailable as exc:
         return await _claude_no_capacity_response(
             exc.outcome,
@@ -1406,7 +1429,7 @@ async def proxy_chat_to_sidecar(
                 payload,
                 headers=dict(rate_limit_headers),
             )
-        no_capacity = await claude_no_capacity_behind(exc)
+        no_capacity = await claude_no_capacity_behind(exc, sidecar_payload.body)
         if no_capacity is not None:
             return await _claude_no_capacity_response(
                 no_capacity,
@@ -1507,7 +1530,7 @@ async def _sidecar_stream_iterator(
     cooldown_deadline = time.monotonic() + wait_seconds
     last_cooldown_exc: ClaudeSidecarError | None = None
     try:
-        await _await_claude_capacity()
+        await _await_claude_capacity(payload)
         while True:
             if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
                 raise last_cooldown_exc
@@ -1610,7 +1633,7 @@ async def _sidecar_stream_iterator(
             for chunk in cursor_context_limit_usage_sse_chunks(request_payload):
                 yield chunk
             return
-        no_capacity = None if yielded else await claude_no_capacity_behind(exc)
+        no_capacity = None if yielded else await claude_no_capacity_behind(exc, payload)
         if no_capacity is not None:
             await _release_and_log_claude_no_capacity(
                 no_capacity,
