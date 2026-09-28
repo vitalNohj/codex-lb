@@ -175,6 +175,19 @@ def _canonical_model_for_access(model: str | None, routing_entries: tuple[Sideca
     return _access_identity(model, routing_entries).canonical
 
 
+def _configured_full_model(model: str, provider: str, routing_entries: tuple[SidecarRoutingEntry, ...]) -> str | None:
+    """The operator's spelling of a full model, matched without regard to case."""
+    lowered = model.strip().lower()
+    for entry in routing_entries:
+        if entry.provider != provider:
+            continue
+        for full in entry.full_models:
+            configured = full.strip()
+            if configured.lower() == lowered:
+                return configured
+    return None
+
+
 def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
     if model is None:
         return _AccessIdentity(None, None)
@@ -188,8 +201,15 @@ def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEnt
         # on the wire. Peeling cc/, cp-, or cp_ here would make that id the
         # same allowlist identity as a different model.
         if model.strip().lower() == original.lower():
-            preserved = canonical_sidecar_model(model, strip_prefix=False)
-            return _AccessIdentity(provider, preserved if preserved is not None else model.strip())
+            # Full-model routing matches without regard to case, then forwards
+            # the caller's spelling. Allowlist identity uses the configured
+            # spelling so ``CP-CLAUDE-SONNET-4-5`` and ``cp-claude-sonnet-4-5``
+            # are the same grant, and the prefix stays on that id.
+            configured = _configured_full_model(original, provider, routing_entries) if provider is not None else None
+            preserved_source = configured if configured is not None else model
+            preserved = canonical_sidecar_model(preserved_source, strip_prefix=False)
+            identity = preserved if preserved is not None else preserved_source.strip()
+            return _AccessIdentity(provider, identity)
     # Pricing globs such as ``*claude-3-5-sonnet*`` price the old OmniRoute
     # name. They are not an access identity, so ``claude-3-5-sonnet-latest``
     # cannot spend a grant of the dated key.
