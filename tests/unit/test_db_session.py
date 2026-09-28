@@ -1844,6 +1844,55 @@ async def test_a_connection_whose_setup_fails_is_closed(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelling_a_connection_open_does_not_leave_the_database_open(tmp_path) -> None:
+    """A task cancelled while aiosqlite opens its connection must not leak the sqlite3 connection.
+
+    aiosqlite 0.22.1 only records the new connection after the open returns,
+    so cancelling the opener used to stop the worker with nothing to close:
+    the database stayed open until garbage collection reported it as an
+    "unclosed database" ResourceWarning.
+    """
+    import gc
+    import random
+    import warnings
+
+    db_path = tmp_path / "cancelled-open.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", **session_module._sqlite_file_async_engine_kwargs())
+    session_module._configure_sqlite_engine(engine.sync_engine, enable_wal=True)
+
+    async def query() -> None:
+        async with engine.connect() as connection:
+            await connection.execute(sa_text("SELECT 1"))
+
+    # The open takes a few hundred microseconds; without the fix roughly a
+    # quarter of these cancellations land inside it.
+    rng = random.Random(3)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            for _ in range(100):
+                task = asyncio.create_task(query())
+                await asyncio.sleep(rng.uniform(0, 0.001))
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            # Abandoned opens finish on their worker threads, then get stopped.
+            for _ in range(100):
+                if not getattr(session_module, "_abandoned_sqlite_opens", ()):
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            gc.collect()
+        await query()
+    finally:
+        await engine.dispose()
+
+    unclosed = [str(warning.message) for warning in caught if "unclosed database" in str(warning.message)]
+    assert unclosed == []
+    assert not getattr(session_module, "_abandoned_sqlite_opens", ())
+
+
+@pytest.mark.asyncio
 async def test_cancelling_a_returning_write_mid_statement_does_not_hold_the_write_lock(tmp_path) -> None:
     """Cancelling a task inside ``UPDATE ... RETURNING`` must release SQLite's writer slot.
 

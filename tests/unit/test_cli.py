@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import sys
+from contextlib import closing
 from types import SimpleNamespace
 from typing import Any
 
@@ -512,7 +513,7 @@ def test_codex_sessions_retag_yes_updates_jsonl_and_sqlite(capsys, tmp_path):
     session_file.parent.mkdir(parents=True)
     session_file.write_text(json.dumps({"model_provider": "openai"}) + "\n", encoding="utf-8")
     state_db = tmp_path / "state_5.sqlite"
-    with sqlite3.connect(state_db) as conn:
+    with closing(sqlite3.connect(state_db)) as conn, conn:
         conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT)")
         conn.execute("INSERT INTO threads (id, model_provider) VALUES ('thread-1', 'openai')")
 
@@ -535,7 +536,7 @@ def test_codex_sessions_retag_yes_updates_jsonl_and_sqlite(capsys, tmp_path):
     assert "Updated JSONL files: 1" in captured.out
     assert "Updated SQLite rows: 1" in captured.out
     assert json.loads(session_file.read_text(encoding="utf-8"))["model_provider"] == "codex-lb"
-    with sqlite3.connect(state_db) as conn:
+    with closing(sqlite3.connect(state_db)) as conn, conn:
         assert conn.execute("SELECT model_provider FROM threads").fetchone()[0] == "codex-lb"
 
 

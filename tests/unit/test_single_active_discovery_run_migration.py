@@ -85,11 +85,13 @@ def _run_upgrade(db_path: Path) -> None:
     from alembic.operations import Operations
 
     engine = sa.create_engine(f"sqlite:///{db_path}")
-    with engine.begin() as connection:
-        context = MigrationContext.configure(connection)
-        with Operations.context(context):
-            migration.upgrade()
-    engine.dispose()
+    try:
+        with engine.begin() as connection:
+            context = MigrationContext.configure(connection)
+            with Operations.context(context):
+                migration.upgrade()
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture()

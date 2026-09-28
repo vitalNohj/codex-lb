@@ -4,6 +4,8 @@ import importlib
 import json
 import sqlite3
 import sys
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,17 @@ from app.db.migrate import (
 from app.db.migration_url import to_sync_database_url
 from app.db.models import Base
 from app.modules.usage.additional_quota_keys import clear_additional_quota_registry_cache
+
+
+@contextmanager
+def _sync_connection(sync_url: str, *, begin: bool = False) -> Iterator[Connection]:
+    """Connect through a throwaway engine, disposing it so its pooled connection closes."""
+    engine = create_engine(sync_url, future=True)
+    try:
+        with engine.begin() if begin else engine.connect() as connection:
+            yield connection
+    finally:
+        engine.dispose()
 
 
 def _db_url(path: Path) -> str:
@@ -463,14 +476,14 @@ def test_request_logs_transport_stays_in_additive_migration_chain(tmp_path: Path
     run_upgrade(url, base_revision, bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("request_logs")}
         assert "transport" in columns
 
     result = run_upgrade(url, transport_revision, bootstrap_legacy=False)
     assert result.current_revision == transport_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("request_logs")}
         assert "transport" in columns
 
@@ -672,7 +685,7 @@ def test_request_logs_response_lookup_migration_handles_preexisting_session_id_c
     run_upgrade(url, pre_revision, bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("request_logs")}
         assert "session_id" not in columns
         connection.execute(text("ALTER TABLE request_logs ADD COLUMN session_id VARCHAR"))
@@ -681,7 +694,7 @@ def test_request_logs_response_lookup_migration_handles_preexisting_session_id_c
     result = run_upgrade(url, target_revision, bootstrap_legacy=False)
     assert result.current_revision == target_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("request_logs")}
         assert "session_id" in columns
         index_names = {index["name"] for index in inspect(connection).get_indexes("request_logs")}
@@ -698,7 +711,7 @@ def test_quota_planner_migration_repairs_preexisting_request_kind_column(tmp_pat
     run_upgrade(url, pre_revision, bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(text("ALTER TABLE request_logs ADD COLUMN source VARCHAR"))
         connection.execute(text("ALTER TABLE request_logs ADD COLUMN request_kind VARCHAR"))
         connection.execute(
@@ -722,7 +735,7 @@ def test_quota_planner_migration_repairs_preexisting_request_kind_column(tmp_pat
     result = run_upgrade(url, target_revision, bootstrap_legacy=False)
     assert result.current_revision == target_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         rows = connection.execute(text("SELECT request_id, request_kind FROM request_logs ORDER BY id")).fetchall()
         request_kind_column = next(
             column for column in inspect(connection).get_columns("request_logs") if column["name"] == "request_kind"
@@ -747,7 +760,7 @@ def test_automation_run_cycle_snapshot_migration_normalizes_legacy_manual_keys(t
 
     sync_url = to_sync_database_url(url)
     created_at = datetime(2026, 4, 19, 3, 0, 0)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(
             text(
                 """
@@ -943,7 +956,7 @@ def test_automation_run_cycle_snapshot_migration_normalizes_legacy_manual_keys(t
     result = run_upgrade(url, target_revision, bootstrap_legacy=False)
     assert result.current_revision == target_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         cycle_rows = connection.execute(
             text(
                 """
@@ -993,7 +1006,7 @@ def test_automation_run_cycle_repair_migration_normalizes_legacy_cycle_keys_for_
     scheduled_window_end = scheduled_due_slot + timedelta(minutes=60)
     scheduled_digest_a = "b32d81b774f1e6d05dfe"
     scheduled_digest_b = "53c9867d6d99b6ffc226"
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(
             text(
                 """
@@ -1363,7 +1376,7 @@ def test_automation_run_cycle_repair_migration_normalizes_legacy_cycle_keys_for_
     result = run_upgrade(url, target_revision, bootstrap_legacy=False)
     assert result.current_revision == target_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         run_rows = connection.execute(
             text(
                 """
@@ -1455,7 +1468,7 @@ def test_check_schema_drift_detects_rogue_table(tmp_path: Path) -> None:
     assert check_schema_drift(url) == ()
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(text("CREATE TABLE rogue_table (id INTEGER PRIMARY KEY)"))
         connection.commit()
 
@@ -1471,7 +1484,7 @@ def test_check_schema_drift_ignores_legacy_live_extra_request_log_column(tmp_pat
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(text("ALTER TABLE request_logs ADD COLUMN slim_summary_json TEXT"))
         connection.commit()
 
@@ -1525,7 +1538,7 @@ def test_check_schema_drift_detects_missing_manual_performance_index(tmp_path: P
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(text("DROP INDEX idx_usage_window_account_latest"))
         connection.execute(text("DROP INDEX idx_usage_window_raw_account_latest"))
         connection.commit()
@@ -1544,7 +1557,7 @@ def test_raw_usage_window_latest_index_migration_is_idempotent(tmp_path: Path) -
     run_upgrade(url, pre_revision, bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(
             text(
                 """
@@ -1558,7 +1571,7 @@ def test_raw_usage_window_latest_index_migration_is_idempotent(tmp_path: Path) -
     result = run_upgrade(url, target_revision, bootstrap_legacy=False)
     assert result.current_revision == target_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         index_names = {index["name"] for index in inspect(connection).get_indexes("usage_history")}
         assert "idx_usage_window_raw_account_latest" in index_names
 
@@ -1570,7 +1583,7 @@ def test_check_schema_drift_detects_missing_dashboard_read_indexes(tmp_path: Pat
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(text("DROP INDEX idx_usage_window_account_time"))
         connection.execute(text("DROP INDEX idx_logs_requested_at_model_tier"))
         connection.execute(text("DROP INDEX idx_logs_model_effort_time"))
@@ -1594,7 +1607,7 @@ def test_run_upgrade_auto_remaps_legacy_revision_ids(tmp_path: Path) -> None:
     assert initial.current_revision is not None
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(
             text("UPDATE alembic_version SET version_num = :legacy"),
             {"legacy": "013_add_dashboard_settings_routing_strategy"},
@@ -1612,7 +1625,7 @@ def test_run_upgrade_auto_remaps_legacy_routing_security_merge_head(tmp_path: Pa
     assert initial.current_revision is not None
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(
             text("UPDATE alembic_version SET version_num = :legacy"),
             {"legacy": "20260525_000000_merge_routing_settings_security_heads"},
@@ -1629,7 +1642,7 @@ def test_run_upgrade_without_auto_remap_fails_for_legacy_revision_ids(tmp_path: 
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(
             text("UPDATE alembic_version SET version_num = :legacy"),
             {"legacy": "013_add_dashboard_settings_routing_strategy"},
@@ -1647,7 +1660,7 @@ def test_run_upgrade_repairs_branched_legacy_revision_ids(tmp_path: Path) -> Non
     run_upgrade(url, ancestor, bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(text("ALTER TABLE api_keys ADD COLUMN enforced_model VARCHAR"))
         connection.execute(text("ALTER TABLE api_keys ADD COLUMN enforced_reasoning_effort VARCHAR"))
         connection.execute(
@@ -1658,7 +1671,7 @@ def test_run_upgrade_repairs_branched_legacy_revision_ids(tmp_path: Path) -> Non
     result = run_upgrade(url, "head", bootstrap_legacy=False)
     assert result.current_revision is not None
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         inspector = inspect(connection)
         dashboard_columns = {column["name"] for column in inspector.get_columns("dashboard_settings")}
         api_key_columns = {column["name"] for column in inspector.get_columns("api_keys")}
@@ -1678,7 +1691,7 @@ def test_run_upgrade_repairs_branched_legacy_revision_ids_with_parallel_head(tmp
     run_upgrade(url, "20260228_030000_add_api_firewall_allowlist", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(text("ALTER TABLE api_keys ADD COLUMN enforced_model VARCHAR"))
         connection.execute(text("ALTER TABLE api_keys ADD COLUMN enforced_reasoning_effort VARCHAR"))
         connection.execute(text("DELETE FROM alembic_version"))
@@ -1702,7 +1715,7 @@ def test_api_key_enforced_service_tier_column_exists_after_head_upgrade(tmp_path
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         api_key_columns = {column["name"] for column in inspect(connection).get_columns("api_keys")}
 
     assert "enforced_service_tier" in api_key_columns
@@ -1736,7 +1749,7 @@ def test_run_upgrade_backfills_additional_usage_quota_key_from_configured_regist
 
     sync_url = to_sync_database_url(url)
     recorded_at = datetime.now(timezone.utc)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(
             text(
                 """
@@ -1819,7 +1832,7 @@ def test_run_upgrade_backfills_additional_usage_quota_key_from_configured_regist
 
     run_upgrade(url, "head", bootstrap_legacy=False)
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         quota_key = connection.execute(text("SELECT quota_key FROM additional_usage_history")).scalar_one()
 
     assert quota_key == "spark_enterprise"
@@ -1869,7 +1882,7 @@ def test_run_upgrade_fails_for_unsupported_alembic_version_id(tmp_path: Path) ->
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).begin() as connection:
+    with _sync_connection(sync_url, begin=True) as connection:
         connection.execute(text("UPDATE alembic_version SET version_num = 'legacy_custom_999'"))
 
     with pytest.raises(MigrationBootstrapError, match="not known to this build"):
@@ -1907,7 +1920,7 @@ def test_check_migration_policy_reports_head_and_format_violations(monkeypatch, 
 
 def test_create_sqlite_pre_migration_backup_rotates_old_files(tmp_path: Path) -> None:
     db_path = tmp_path / "store.db"
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
         conn.execute("INSERT INTO items (name) VALUES ('alpha')")
 
@@ -1926,7 +1939,7 @@ def test_create_sqlite_pre_migration_backup_rotates_old_files(tmp_path: Path) ->
     assert len(backups) == 2
     assert backups == created[-2:]
     for backup in backups:
-        with sqlite3.connect(backup) as conn:
+        with closing(sqlite3.connect(backup)) as conn, conn:
             assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
             assert conn.execute("SELECT name FROM items").fetchall() == [("alpha",)]
         assert not Path(f"{backup}-wal").exists()
@@ -1934,7 +1947,7 @@ def test_create_sqlite_pre_migration_backup_rotates_old_files(tmp_path: Path) ->
 
 def test_create_sqlite_pre_migration_backup_consolidates_wal_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "store.db"
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
         conn.execute("INSERT INTO items (name) VALUES ('from-wal')")
@@ -1947,7 +1960,7 @@ def test_create_sqlite_pre_migration_backup_consolidates_wal_rows(tmp_path: Path
             now=datetime(2026, 2, 13, 12, 0, 0, tzinfo=timezone.utc),
         )
 
-    with sqlite3.connect(backup) as conn:
+    with closing(sqlite3.connect(backup)) as conn, conn:
         assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert conn.execute("SELECT name FROM items").fetchall() == [("from-wal",)]
     assert not Path(f"{backup}-wal").exists()
@@ -1955,7 +1968,7 @@ def test_create_sqlite_pre_migration_backup_consolidates_wal_rows(tmp_path: Path
 
 def test_create_sqlite_pre_migration_backup_preserves_source_mode(tmp_path: Path) -> None:
     db_path = tmp_path / "store.db"
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
     db_path.chmod(0o600)
 
@@ -2528,7 +2541,7 @@ def test_check_schema_drift_detects_missing_dashboard_hot_path_indexes(tmp_path:
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(text("DROP INDEX idx_logs_dash_usage_covering"))
         connection.execute(text("DROP INDEX ix_additional_usage_distinct_labels"))
         connection.commit()
@@ -2547,7 +2560,7 @@ def test_dashboard_hot_path_index_migration_is_idempotent(tmp_path: Path) -> Non
     run_upgrade(url, pre_revision, bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         connection.execute(
             text(
                 """
@@ -2570,7 +2583,7 @@ def test_dashboard_hot_path_index_migration_is_idempotent(tmp_path: Path) -> Non
     result = run_upgrade(url, target_revision, bootstrap_legacy=False)
     assert result.current_revision == target_revision
 
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         log_indexes = {str(row[1]) for row in connection.execute(text('PRAGMA index_list("request_logs")')).fetchall()}
         usage_indexes = {
             str(row[1]) for row in connection.execute(text('PRAGMA index_list("additional_usage_history")')).fetchall()
@@ -2605,7 +2618,7 @@ def test_dashboard_hot_path_index_migration_drops_redundant_indexes(tmp_path: Pa
     run_upgrade(url, "head", bootstrap_legacy=False)
 
     sync_url = to_sync_database_url(url)
-    with create_engine(sync_url, future=True).connect() as connection:
+    with _sync_connection(sync_url) as connection:
         log_indexes = {str(row[1]) for row in connection.execute(text('PRAGMA index_list("request_logs")')).fetchall()}
         usage_indexes = {
             str(row[1]) for row in connection.execute(text('PRAGMA index_list("additional_usage_history")')).fetchall()
