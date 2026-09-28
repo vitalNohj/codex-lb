@@ -8,6 +8,10 @@ OpenRouter and OmniRoute pricing was added to ``DEFAULT_PRICING_MODELS`` after
 sidecar traffic had already been logged; those rows persisted ``cost_usd = NULL``
 or ``0`` because no price resolved at insert time. Recompute the cost for
 historical sidecar rows so dollar reports cover past OpenRouter/OmniRoute usage.
+
+Downgrade leaves every cost in place: the migration does not record which rows
+it priced, so it cannot tell its own writes from costs the request path stored
+at insert time, and the costs it did write are correct under either revision.
 """
 
 from __future__ import annotations
@@ -120,16 +124,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    if not _has_table(bind, "request_logs"):
-        return
-    request_logs = sa.table(
-        "request_logs",
-        sa.column("cost_usd", sa.Float()),
-        sa.column("source", sa.String()),
-    )
-    bind.execute(
-        sa.update(request_logs)
-        .where(request_logs.c.source.in_(["openrouter_sidecar", "omniroute_sidecar"]))
-        .values(cost_usd=None)
-    )
+    """Keep every cost: see the module docstring for why this reversal is a no-op."""
