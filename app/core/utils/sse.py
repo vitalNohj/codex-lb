@@ -32,8 +32,7 @@ CODEX_KEEPALIVE_FRAME = 'event: codex.keepalive\ndata: {"type":"codex.keepalive"
 # Chat clients retry "503" and "service unavailable". A restart sends this
 # while the socket can still write, instead of closing the stream with no error.
 SHUTDOWN_SERVICE_UNAVAILABLE_FRAME = (
-    'data: {"error":{"message":"503 service unavailable",'
-    '"type":"server_error","code":"service_unavailable"}}\n\n'
+    'data: {"error":{"message":"503 service unavailable","type":"server_error","code":"service_unavailable"}}\n\n'
 )
 
 # The exact single-event shape ``format_sse_event`` emits (and the upstream
