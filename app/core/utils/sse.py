@@ -182,15 +182,29 @@ class SseDataDecoder:
     One deliberate leniency: ``flush`` also yields a last event the stream did
     not close with a blank line, since some upstreams end right after
     ``data: [DONE]``.
+
+    ``max_event_chars`` bounds memory for a reader that only needs small
+    events: an event that grows past it is dropped, up to the blank line that
+    ends it, rather than held. By default nothing is dropped.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_event_chars: int | None = None) -> None:
         # ``utf-8-sig`` drops a leading BOM, even one split across chunks.
         self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
         self._partial_line: list[str] = []
         # The text so far ended in CR, so a leading LF completes that CRLF.
         self._after_cr = False
         self._data_lines: list[str] = []
+        self._max_event_chars = max_event_chars
+        # Characters held for the event in progress, in its data lines and in
+        # the partial line. Kept as running counts so feeding stays linear.
+        self._data_chars = 0
+        self._partial_chars = 0
+        # The event in progress outgrew ``max_event_chars``; skip to its end.
+        self._dropping = False
+        # The line in progress was cut from ``_partial_line`` by that limit.
+        # Its remainder is not a blank line, so it must not end the event.
+        self._partial_line_dropped = False
 
     def feed(self, chunk: bytes) -> list[str]:
         return self._take_text(self._text.decode(chunk))
@@ -202,8 +216,10 @@ class SseDataDecoder:
         partial_line = "".join(self._partial_line)
         self._partial_line = []
         self._after_cr = False
-        if partial_line:
+        if partial_line and not self._partial_line_dropped:
             self._take_field(partial_line)
+        self._partial_chars = 0
+        self._partial_line_dropped = False
         payload = self._dispatch()
         if payload is not None:
             payloads.append(payload)
@@ -218,10 +234,14 @@ class SseDataDecoder:
             return []
         pieces = _SSE_LINE_BOUNDARY.split(text)
         self._partial_line.append(pieces[0])
+        self._partial_chars += len(pieces[0])
         if len(pieces) == 1:
+            self._enforce_event_limit()
             return []
         self._after_cr = text[-1] == "\r"
-        lines = ["".join(self._partial_line), *pieces[1:-1]]
+        first_line = "".join(self._partial_line)
+        lines = pieces[1:-1] if self._partial_line_dropped else [first_line, *pieces[1:-1]]
+        self._partial_line_dropped = False
         self._partial_line = [pieces[-1]]
         payloads: list[str] = []
         for line in lines:
@@ -229,21 +249,40 @@ class SseDataDecoder:
                 self._take_field(line)
             elif (payload := self._dispatch()) is not None:
                 payloads.append(payload)
+        self._partial_chars = len(pieces[-1])
+        self._enforce_event_limit()
         return payloads
 
+    def _enforce_event_limit(self) -> None:
+        if self._max_event_chars is None or self._data_chars + self._partial_chars <= self._max_event_chars:
+            return
+        self._dropping = True
+        self._data_lines = []
+        self._data_chars = 0
+        if self._partial_chars:
+            self._partial_line = []
+            self._partial_chars = 0
+            self._partial_line_dropped = True
+
     def _take_field(self, line: str) -> None:
-        if line.startswith(":"):
+        if self._dropping or line.startswith(":"):
             return
         field, _, value = line.partition(":")
         if field == "data":
-            self._data_lines.append(value[1:] if value.startswith(" ") else value)
+            data = value[1:] if value.startswith(" ") else value
+            self._data_lines.append(data)
+            self._data_chars += len(data)
 
     def _dispatch(self) -> str | None:
-        if not self._data_lines:
-            return None
-        payload = "\n".join(self._data_lines)
+        data_lines = self._data_lines
         self._data_lines = []
-        return payload
+        self._data_chars = 0
+        if self._dropping:
+            self._dropping = False
+            return None
+        if not data_lines:
+            return None
+        return "\n".join(data_lines)
 
 
 class SseJsonDataDecoder:
@@ -253,8 +292,8 @@ class SseJsonDataDecoder:
     is neither is skipped.
     """
 
-    def __init__(self) -> None:
-        self._data = SseDataDecoder()
+    def __init__(self, *, max_event_chars: int | None = None) -> None:
+        self._data = SseDataDecoder(max_event_chars=max_event_chars)
 
     def feed(self, chunk: bytes) -> list[SseJsonEvent]:
         return _json_events(self._data.feed(chunk))

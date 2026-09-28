@@ -70,6 +70,36 @@ def test_chat_stream_usage_parser_handles_crlf_split_across_chunks() -> None:
     assert holder.usage.output_tokens == 1
 
 
+def test_chat_stream_usage_parser_reads_a_frame_holding_a_line_separator() -> None:
+    """JSON strings may hold U+2028 unescaped; SSE lines end only at CR or LF.
+
+    Splitting a frame with ``str.splitlines`` also broke it at U+2028, so the
+    data no longer parsed and usage sent on that frame was lost.
+    """
+
+    holder = SourceUsageHolder()
+    parser = SourceStreamUsageParser(holder, response_shape="chat")
+
+    parser.feed(
+        'data: {"choices":[{"delta":{"content":"a\u2028b"}}],'
+        '"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\n'.encode()
+    )
+
+    assert holder.usage is not None
+    assert (holder.usage.input_tokens, holder.usage.output_tokens) == (4, 2)
+
+
+def test_stream_usage_parser_reads_usage_after_an_oversize_frame() -> None:
+    holder = SourceUsageHolder()
+    parser = SourceStreamUsageParser(holder, response_shape="chat")
+
+    parser.feed(b"data: " + b"x" * (SourceStreamUsageParser._MAX_BUFFER_CHARS + 1) + b"\n\n")
+    parser.feed(b'data: {"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n')
+
+    assert holder.usage is not None
+    assert holder.usage.input_tokens == 2
+
+
 def test_stream_usage_parser_bounds_buffer_without_frame_boundaries() -> None:
     holder = SourceUsageHolder()
     parser = SourceStreamUsageParser(holder, response_shape="chat")
@@ -77,7 +107,10 @@ def test_stream_usage_parser_bounds_buffer_without_frame_boundaries() -> None:
     for _ in range(600):
         parser.feed(b"x" * 4096)
 
-    assert len(parser._buffer) <= SourceStreamUsageParser._MAX_BUFFER_CHARS
+    held = parser._events._data
+    assert sum(map(len, held._partial_line)) + sum(map(len, held._data_lines)) <= (
+        SourceStreamUsageParser._MAX_BUFFER_CHARS
+    )
 
 
 def test_chat_stream_usage_parser_rejects_negative_tokens() -> None:

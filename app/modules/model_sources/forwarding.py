@@ -16,6 +16,7 @@ from app.core.clients.http import lease_http_session
 from app.core.crypto import TokenEncryptor
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, SseJsonEvent
 from app.db.models import ModelSource
 
 _DEFAULT_SOURCE_TIMEOUT_SECONDS = 600
@@ -212,6 +213,7 @@ async def stream_chat_completion(
             async for chunk in response.content.iter_chunked(4096):
                 usage_parser.feed(chunk)
                 yield chunk
+            usage_parser.flush()
         finally:
             # A plain ``async with stack`` unwinds unshielded: repeated
             # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
@@ -366,6 +368,7 @@ async def stream_responses(
             async for chunk in response.content.iter_chunked(4096):
                 usage_parser.feed(chunk)
                 yield chunk
+            usage_parser.flush()
         finally:
             # A plain ``async with stack`` unwinds unshielded: repeated
             # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
@@ -747,51 +750,39 @@ def _is_json_content_type(content_type: str | None) -> bool:
 
 
 class SourceStreamUsageParser:
-    # A single SSE frame carrying usage is tiny; anything past this cap means
-    # the upstream is not producing frame boundaries we recognize, and the
-    # parser must not buffer the whole stream in memory.
+    # A single SSE frame carrying usage is tiny; a frame past this cap is
+    # skipped rather than buffered, so an upstream that never sends a frame
+    # boundary cannot hold the whole stream in memory.
     _MAX_BUFFER_CHARS = 1_048_576
 
     def __init__(self, usage_holder: SourceUsageHolder, *, response_shape: str) -> None:
         self._usage_holder = usage_holder
         self._response_shape = response_shape
-        self._buffer = ""
+        self._events = SseJsonDataDecoder(max_event_chars=self._MAX_BUFFER_CHARS)
 
     def feed(self, chunk: bytes) -> None:
-        # SSE permits CRLF (and bare CR) line endings; normalize so frame
-        # detection below only has to handle "\n\n".
-        text = chunk.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-        self._buffer += text
-        while "\n\n" in self._buffer:
-            frame, self._buffer = self._buffer.split("\n\n", 1)
-            self._capture_frame(frame)
-        if len(self._buffer) > self._MAX_BUFFER_CHARS:
-            self._buffer = self._buffer[-self._MAX_BUFFER_CHARS :]
+        for event in self._events.feed(chunk):
+            self._capture_event(event)
 
-    def _capture_frame(self, frame: str) -> None:
-        for line in frame.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("data:"):
-                continue
-            data = stripped.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                parsed = json.loads(data)
-            except ValueError:
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            if self._response_shape == "responses":
-                usage = _usage_from_responses_event(parsed)
-                timings = _timings_from_responses_event(parsed)
-            else:
-                usage = _usage_from_chat_payload(parsed)
-                timings = _timings_from_payload(parsed)
-            if usage is not None:
-                self._usage_holder.usage = usage
-            if timings is not None:
-                self._usage_holder.timings = timings
+    def flush(self) -> None:
+        """End the stream, reading a last frame the upstream did not close with a blank line."""
+
+        for event in self._events.flush():
+            self._capture_event(event)
+
+    def _capture_event(self, event: SseJsonEvent) -> None:
+        if event == SSE_DONE:
+            return
+        if self._response_shape == "responses":
+            usage = _usage_from_responses_event(event)
+            timings = _timings_from_responses_event(event)
+        else:
+            usage = _usage_from_chat_payload(event)
+            timings = _timings_from_payload(event)
+        if usage is not None:
+            self._usage_holder.usage = usage
+        if timings is not None:
+            self._usage_holder.timings = timings
 
 
 def _usage_from_responses_event(payload: Mapping[str, JsonValue]) -> SourceUsage | None:
