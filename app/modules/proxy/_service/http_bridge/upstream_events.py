@@ -931,6 +931,26 @@ def _archive_http_bridge_upstream_message(
         reset_request_id(token)
 
 
+def _log_http_bridge_upstream_frame(session: "_HTTPBridgeSession", message: UpstreamWebSocketMessage) -> None:
+    # Diagnostic: which upstream frames reach the bridge reader. Logs the frame
+    # type and size only, never the payload, so no request or response text is
+    # written to the log.
+    frame_type: str | None = None
+    if message.kind == "text" and message.text is not None:
+        payload = parse_sse_data_json(f"data: {message.text}\n\n")
+        frame_type = classify_event_type(payload) if payload is not None else "unparsed"
+    logger.info(
+        "http_bridge_upstream_frame bridge_key=%s account_id=%s kind=%s type=%s bytes=%s close_code=%s error_code=%s",
+        _hash_identifier(session.key.affinity_key),
+        session.account.id,
+        message.kind,
+        frame_type,
+        len(message.text) if message.text is not None else None,
+        message.close_code,
+        message.error_code,
+    )
+
+
 async def _http_bridge_receive_timeout_with_eventless_deadline(
     session: "_HTTPBridgeSession",
     receive_timeout: _WebSocketReceiveTimeout | None,
@@ -1563,6 +1583,7 @@ class _HTTPBridgeUpstreamEventsMixin:
 
                 if message is None:
                     raise RuntimeError("HTTP bridge upstream receive completed without a message")
+                _log_http_bridge_upstream_frame(session, message)
                 if message.kind == "text" and message.text is not None:
                     session.last_upstream_close_code = None
                     if EVENT_MARKER in message.text:
