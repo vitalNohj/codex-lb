@@ -410,6 +410,10 @@ def _user_messages_mention_json(input_items: list[JsonValue]) -> bool:
         if item_mapping is None or not _is_user_message(item_mapping):
             continue
         for part in _json_parts(item_mapping.get("content")):
+            # Count only text that is forwarded: input sanitization later drops
+            # reasoning-echo parts, so their text must not satisfy JSON mode.
+            if _sanitize_interleaved_reasoning_content_part(part) is None:
+                continue
             text = _responses_instruction_content_text(part)
             if text is not None and _mentions_json(text):
                 return True

@@ -962,6 +962,28 @@ def test_responses_json_object_note_leaves_later_user_json_mention_alone():
     ]
 
 
+def test_responses_json_object_note_ignores_dropped_reasoning_part_mention():
+    payload = {
+        "model": "gpt-5.1",
+        "input": [
+            {"role": "system", "content": "Answer in JSON."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "reasoning", "text": "plan the json"},
+                    {"type": "input_text", "text": "hi"},
+                ],
+            },
+        ],
+        "text": _JSON_OBJECT_TEXT,
+    }
+    request = ResponsesRequest.model_validate(payload)
+
+    assert request.input == [
+        {"role": "user", "content": [_JSON_MODE_NOTE_PART, {"type": "input_text", "text": "hi"}]},
+    ]
+
+
 def test_responses_json_object_note_without_user_message_is_appended():
     function_output: JsonValue = {"type": "function_call_output", "call_id": "call_1", "output": "done"}
     payload = {
