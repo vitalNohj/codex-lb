@@ -174,6 +174,32 @@ class TestDerivePromptCacheKey:
         key2 = _derive_prompt_cache_key(turn2, api_key)
         assert key1 == key2
 
+    def test_json_mode_note_keeps_same_session_key_and_separates_sessions(self):
+        def json_mode_turn(first_user: str, *later: JsonValue) -> ResponsesRequest:
+            return ResponsesRequest.model_validate(
+                {
+                    "model": "gpt-5.4",
+                    "input": [
+                        {"role": "system", "content": "Answer in JSON."},
+                        {"role": "user", "content": first_user},
+                        *later,
+                    ],
+                    "text": {"format": {"type": "json_object"}},
+                }
+            )
+
+        api_key = _make_api_key()
+        turn1 = json_mode_turn("review file a")
+        turn2 = json_mode_turn(
+            "review file a",
+            {"role": "assistant", "content": "{}"},
+            {"role": "user", "content": "continue"},
+        )
+        other_session = json_mode_turn("review file b")
+
+        assert _derive_prompt_cache_key(turn1, api_key) == _derive_prompt_cache_key(turn2, api_key)
+        assert _derive_prompt_cache_key(turn1, api_key) != _derive_prompt_cache_key(other_session, api_key)
+
     def test_parallel_sessions_produce_different_keys(self):
         session_a = ResponsesRequest(
             model="gpt-5.4",
