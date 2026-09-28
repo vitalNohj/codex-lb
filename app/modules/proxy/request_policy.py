@@ -183,6 +183,12 @@ def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEnt
     if route is not None:
         model = route.wire_model
         provider = route.provider
+    # Pricing globs such as ``*claude-3-5-sonnet*`` price the old OmniRoute
+    # name. They are not an access identity, so ``claude-3-5-sonnet-latest``
+    # cannot spend a grant of the dated key.
+    if model.lower().startswith("claude-"):
+        sidecar_alias = canonical_sidecar_model(model)
+        return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else model)
     # Access identities use the bounded matcher before legacy pricing aliases.
     # Pricing aliases intentionally include broad historical globs, but those
     # must not grant unrelated model ids that merely contain a priced name.

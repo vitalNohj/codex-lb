@@ -193,11 +193,42 @@ def test_sonnet_5_allowlist_still_admits_sonnet_5() -> None:
     validate_model_access(cast(Any, key), "cc/claude-sonnet-5")
 
 
-@pytest.mark.parametrize("requested", ["claude-sonnet-5-5", "cc/claude-sonnet-5-5"])
-def test_sonnet_5_5_allowlist_admits_the_exact_id(requested: str) -> None:
+def _claude_prefix_routing() -> tuple[SidecarRoutingEntry, ...]:
+    return (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(
+                SidecarPrefix(prefix="cc/", strip=True),
+                SidecarPrefix(prefix="cp-", strip=True),
+                SidecarPrefix(prefix="cp_", strip=True),
+            ),
+            full_models=(),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "grant"),
+    [
+        ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+        ("cc/claude-sonnet-5-5", "cc/claude-sonnet-5-5"),
+    ],
+)
+def test_sonnet_5_5_allowlist_admits_the_same_routed_id(requested: str, grant: str) -> None:
+    key = SimpleNamespace(allowed_models=[grant], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), requested, routing_entries=_claude_prefix_routing())
+
+
+def test_sonnet_5_5_bare_grant_does_not_admit_a_routed_prefix() -> None:
     key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
 
-    validate_model_access(cast(Any, key), requested)
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(
+            cast(Any, key),
+            "cc/claude-sonnet-5-5",
+            routing_entries=_claude_prefix_routing(),
+        )
 
 
 @pytest.mark.parametrize(

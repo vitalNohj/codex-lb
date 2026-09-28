@@ -306,6 +306,13 @@ def test_model_access_accepts_prefixed_request_for_a_same_integration_grant() ->
     validate_model_access(api_key, "cp-claude-opus-4-7", routing_entries=_strip_routing_entries())
 
 
+def test_model_access_rejects_latest_spelling_for_a_dated_sonnet_grant() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-3-5-sonnet-20241022"})))
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "claude-3-5-sonnet-latest")
+
+
 def test_model_access_rejects_sidecar_request_for_an_ambiguous_bare_grant() -> None:
     """A bare grant resolving no route is native, not a provider-agnostic wildcard."""
     api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-4-7"})))

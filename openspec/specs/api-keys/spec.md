@@ -1490,7 +1490,7 @@ A longer id MUST NOT inherit a shorter family's price. When a supplied price tab
 
 ### Requirement: A Sonnet 5 allowlist does not admit Sonnet 5.5
 
-An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain access to Claude Sonnet 5.5. A key whose `allowed_models` names `claude-sonnet-5-5` MUST admit that exact id and the same id with one leading `cc/`, `cp-`, or `cp_` prefix. It MUST NOT admit a dotted, dated, or effort-suffixed spelling. Lookalike ids that are not Sonnet 5.5 MUST NOT resolve to the Sonnet 5.5 identity.
+An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain access to Claude Sonnet 5.5. A key whose `allowed_models` names `claude-sonnet-5-5` MUST admit that exact id. When `cc/` resolves to the Claude integration, a key whose `allowed_models` names `cc/claude-sonnet-5-5` MUST admit that request, and a bare `claude-sonnet-5-5` grant MUST NOT. It MUST NOT admit a dotted, dated, or effort-suffixed spelling. Lookalike ids that are not Sonnet 5.5 MUST NOT resolve to the Sonnet 5.5 identity.
 
 #### Scenario: A Sonnet 5 allowlist rejects Sonnet 5.5
 
@@ -1502,14 +1502,30 @@ An API key whose `allowed_models` names only `claude-sonnet-5` MUST NOT gain acc
 - **WHEN** the same API key requests `cc/claude-sonnet-5`
 - **THEN** the request is allowed
 
-#### Scenario: An allowlist naming Sonnet 5.5 admits the prefixed id
+#### Scenario: An allowlist naming the routed Sonnet 5.5 id admits that request
 
-- **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `cc/claude-sonnet-5-5`
+- **GIVEN** the Claude routing prefix `cc/` strips
+- **WHEN** an API key whose `allowed_models` is exactly `cc/claude-sonnet-5-5` requests `cc/claude-sonnet-5-5`
 - **THEN** the request is allowed
+
+#### Scenario: A bare Sonnet 5.5 grant rejects the routed prefix
+
+- **GIVEN** the Claude routing prefix `cc/` strips
+- **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `cc/claude-sonnet-5-5`
+- **THEN** the request is refused as not allowed for that key
 
 #### Scenario: An allowlist naming Sonnet 5.5 rejects a dotted spelling
 
 - **WHEN** an API key whose `allowed_models` is exactly `claude-sonnet-5-5` requests `claude-sonnet-5.5`
+- **THEN** the request is refused as not allowed for that key
+
+### Requirement: Claude allowlists ignore pricing aliases
+
+API-key model access MUST treat a Claude id as that exact id after routing, and MUST NOT substitute a pricing alias. A grant of `claude-3-5-sonnet-20241022` MUST NOT admit `claude-3-5-sonnet-latest`. Native price lookup of the older bare name `claude-3-5-sonnet` remains the dated price key.
+
+#### Scenario: A dated Sonnet 3.5 grant rejects the latest spelling
+
+- **WHEN** an API key whose `allowed_models` is exactly `claude-3-5-sonnet-20241022` requests `claude-3-5-sonnet-latest`
 - **THEN** the request is refused as not allowed for that key
 
 ### Requirement: Claude price lookup matches the same id after prefix, date, and effort decoration
