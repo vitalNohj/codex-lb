@@ -21564,6 +21564,62 @@ async def test_process_http_bridge_upstream_text_surfaces_exhausted_retry_usage_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"])
+async def test_process_http_bridge_upstream_text_settles_pretty_printed_error_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    line_break: str,
+) -> None:
+    """Upstream sends some request errors as multi-line JSON. The bridge must
+    still match the error to the waiting request instead of dropping it and
+    timing out 60s later."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    monkeypatch.setattr(service, "_write_request_log", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-pretty-error",
+        model="gpt-5.5",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        request_text='{"type":"response.create","model":"gpt-5.5","input":"hello"}',
+        transport="http",
+    )
+    session = _make_bridge_session(
+        key_value="pretty-error",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    pretty_error = json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": None,
+                "message": "Response input messages must contain the word 'json' in some form to use "
+                "'text.format' of type 'json_object'.",
+                "param": "input",
+            },
+            "status": 400,
+        },
+        indent=2,
+    ).replace("\n", line_break)
+    assert line_break in pretty_error
+
+    await service._process_http_bridge_upstream_text(session, pretty_error)
+
+    assert list(session.pending_requests) == []
+    assert session.queued_request_count == 0
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    terminal = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+    assert terminal is not None
+    assert "must contain the word 'json'" in terminal
+
+
+@pytest.mark.asyncio
 async def test_process_http_bridge_upstream_text_preserves_raw_error_but_finalizes_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

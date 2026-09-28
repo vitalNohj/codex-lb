@@ -48,7 +48,7 @@ from app.core.types import JsonValue
 from app.core.usage.live_hub import publish_live_usage
 from app.core.usage.live_snapshots import EVENT_MARKER, parse_rate_limit_event_text
 from app.core.utils.request_id import reset_request_id, set_request_id
-from app.core.utils.sse import format_sse_event, parse_sse_data_json
+from app.core.utils.sse import format_sse_data, format_sse_event, parse_websocket_json_text
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -957,7 +957,7 @@ def _log_http_bridge_upstream_frame(session: "_HTTPBridgeSession", message: Upst
         return
     frame_type: str | None = None
     if message.kind == "text" and message.text is not None:
-        payload = parse_sse_data_json(f"data: {message.text}\n\n")
+        payload = parse_websocket_json_text(message.text)
         event_type = classify_event_type(payload) if payload is not None else None
         if payload is None:
             frame_type = "unparsed"
@@ -1775,8 +1775,13 @@ class _HTTPBridgeUpstreamEventsMixin:
         session: "_HTTPBridgeSession",
         text: str,
     ) -> None:
-        event_block = f"data: {text}\n\n"
-        payload = parse_sse_data_json(event_block)
+        # A websocket text frame is one JSON document and may span several
+        # lines (upstream pretty-prints some request errors). Parse it whole;
+        # SSE-framing it as ``data: {text}`` kept only the first line, so the
+        # error matched no request and the client waited 60s for a 502.
+        payload = parse_websocket_json_text(text)
+        multi_line = "\n" in text or "\r" in text
+        event_block = format_sse_data(payload) if payload is not None and multi_line else f"data: {text}\n\n"
         event_type = classify_event_type(payload)
         event = parse_sse_event_payload(payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
         completed_delivery_scope = _HTTPBridgeCompletedDeliveryScope() if event_type == "response.completed" else None
