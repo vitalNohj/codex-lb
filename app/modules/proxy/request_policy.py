@@ -175,14 +175,47 @@ def _canonical_model_for_access(model: str | None, routing_entries: tuple[Sideca
     return _access_identity(model, routing_entries).canonical
 
 
+def _configured_full_model(model: str, provider: str, routing_entries: tuple[SidecarRoutingEntry, ...]) -> str | None:
+    """The operator's spelling of a full model, matched without regard to case."""
+    lowered = model.strip().lower()
+    for entry in routing_entries:
+        if entry.provider != provider:
+            continue
+        for full in entry.full_models:
+            configured = full.strip()
+            if configured.lower() == lowered:
+                return configured
+    return None
+
+
 def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
     if model is None:
         return _AccessIdentity(None, None)
+    original = model.strip()
     provider: str | None = None
     route = resolve_sidecar_route(model, routing_entries)
     if route is not None:
         model = route.wire_model
         provider = route.provider
+        # A full-model match and a non-stripping prefix keep the requested id
+        # on the wire. Peeling cc/, cp-, or cp_ here would make that id the
+        # same allowlist identity as a different model.
+        if model.strip().lower() == original.lower():
+            # Full-model routing matches without regard to case, then forwards
+            # the caller's spelling. Allowlist identity uses the configured
+            # spelling so ``CP-CLAUDE-SONNET-4-5`` and ``cp-claude-sonnet-4-5``
+            # are the same grant, and the prefix stays on that id.
+            configured = _configured_full_model(original, provider, routing_entries) if provider is not None else None
+            preserved_source = configured if configured is not None else model
+            preserved = canonical_sidecar_model(preserved_source, strip_prefix=False)
+            identity = preserved if preserved is not None else preserved_source.strip()
+            return _AccessIdentity(provider, identity)
+    # Pricing globs such as ``*claude-3-5-sonnet*`` price the old OmniRoute
+    # name. They are not an access identity, so ``claude-3-5-sonnet-latest``
+    # cannot spend a grant of the dated key.
+    if model.lower().startswith("claude-"):
+        sidecar_alias = canonical_sidecar_model(model)
+        return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else model)
     # Access identities use the bounded matcher before legacy pricing aliases.
     # Pricing aliases intentionally include broad historical globs, but those
     # must not grant unrelated model ids that merely contain a priced name.
@@ -196,7 +229,10 @@ def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEnt
         return _AccessIdentity(provider, normalized)
     if pricing_alias is not None:
         return _AccessIdentity(provider, pricing_alias)
-    sidecar_alias = canonical_sidecar_model(normalized)
+    # Routing already removed one configured prefix. Stripping again would
+    # turn ``cp-cp-claude-opus-5-5`` into the grant ``claude-opus-5-5`` while
+    # dispatch still forwards ``cp-claude-opus-5-5``.
+    sidecar_alias = canonical_sidecar_model(normalized, strip_prefix=route is None)
     return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
 
 

@@ -306,6 +306,56 @@ def test_model_access_accepts_prefixed_request_for_a_same_integration_grant() ->
     validate_model_access(api_key, "cp-claude-opus-4-7", routing_entries=_strip_routing_entries())
 
 
+def test_preserved_full_model_does_not_authorize_the_stripped_id() -> None:
+    routing = (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(SidecarPrefix(prefix="cp-", strip=True),),
+            full_models=("cp-claude-opus-5-5", "claude-opus-5-5"),
+        ),
+    )
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cp-claude-opus-5-5"})))
+
+    validate_model_access(api_key, "cp-claude-opus-5-5", routing_entries=routing)
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "claude-opus-5-5", routing_entries=routing)
+
+
+def test_one_stripped_prefix_does_not_peel_a_second_prefix() -> None:
+    routing = (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(SidecarPrefix(prefix="cp-", strip=True),),
+            full_models=("claude-opus-5-5",),
+        ),
+    )
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-5-5"})))
+
+    validate_model_access(api_key, "cp-claude-opus-5-5", routing_entries=routing)
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "cp-cp-claude-opus-5-5", routing_entries=routing)
+
+
+def test_full_model_grant_matches_a_different_case() -> None:
+    routing = (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(SidecarPrefix(prefix="cp-", strip=True),),
+            full_models=("cp-claude-sonnet-4-5",),
+        ),
+    )
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"cp-claude-sonnet-4-5"})))
+
+    validate_model_access(api_key, "CP-CLAUDE-SONNET-4-5", routing_entries=routing)
+
+
+def test_model_access_rejects_latest_spelling_for_a_dated_sonnet_grant() -> None:
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-3-5-sonnet-20241022"})))
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "claude-3-5-sonnet-latest")
+
+
 def test_model_access_rejects_sidecar_request_for_an_ambiguous_bare_grant() -> None:
     """A bare grant resolving no route is native, not a provider-agnostic wildcard."""
     api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-4-7"})))

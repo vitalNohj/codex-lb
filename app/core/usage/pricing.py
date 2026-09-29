@@ -7,7 +7,7 @@ from fnmatch import fnmatchcase
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
-from app.core.usage.model_ids import resolve_versioned_model_id
+from app.core.usage.model_ids import resolve_versioned_model_id, strip_known_sidecar_prefix
 from app.core.usage.types import UsageCostByModel, UsageCostSummary
 
 
@@ -387,9 +387,9 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     ),
     # Anthropic Claude pricing (August 2026 list prices, USD per 1M tokens).
     # ``cached_input_per_1m`` maps to Anthropic's cache-hit (read) rate.
-    # These cover traffic proxied through the Claude sidecar; request logs
-    # may store prefixed model ids (e.g. ``cc/claude-opus-5``) which the
-    # alias patterns below resolve to these canonical entries.
+    # These cover traffic proxied through the Claude sidecar. A request log
+    # stores the client id, so one leading cc/, cp-, or cp_ prefix still
+    # finds the key. A dated or effort-suffixed spelling is a different id.
     "claude-fable-5": ModelPrice(
         input_per_1m=10.0,
         cached_input_per_1m=1.0,
@@ -411,8 +411,7 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         output_per_1m=25.0,
     ),
     # Opus 5.5 cache reads are $0.20 (5% of input), not Opus 5's $0.50.
-    # Identity comes from resolve_versioned_model_id, not a new family glob:
-    # ``*claude-opus-5*`` already matches ``claude-opus-5-5``.
+    # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
     "claude-opus-5-5": ModelPrice(
         input_per_1m=4.0,
         cached_input_per_1m=0.20,
@@ -449,6 +448,13 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         output_per_1m=75.0,
     ),
     "claude-sonnet-5": ModelPrice(
+        input_per_1m=2.0,
+        cached_input_per_1m=0.2,
+        output_per_1m=10.0,
+    ),
+    # Sonnet 5.5 stores the same $2 / $0.20 / $10 fields as Sonnet 5.
+    # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
+    "claude-sonnet-5-5": ModelPrice(
         input_per_1m=2.0,
         cached_input_per_1m=0.2,
         output_per_1m=10.0,
@@ -664,25 +670,6 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "*llama-3.1-405b*": "llama-3.1-405b",
     "*llama-3.1-70b*": "llama-3.1-70b",
     "*llama-3.1-8b*": "llama-3.1-8b",
-    # Claude aliases tolerate sidecar prefixes (``cp-claude-...``) and
-    # date-suffixed ids (``claude-opus-4-5-20251101``). The longest matching
-    # pattern wins, so version-specific patterns beat the family fallbacks.
-    "*claude-fable-5*": "claude-fable-5",
-    "*claude-mythos-5*": "claude-mythos-5",
-    "*claude-opus-5*": "claude-opus-5",
-    "*claude-opus-4-8*": "claude-opus-4-8",
-    "*claude-opus-4-7*": "claude-opus-4-7",
-    "*claude-opus-4-6*": "claude-opus-4-6",
-    "*claude-opus-4-5*": "claude-opus-4-5",
-    "*claude-opus-4-1*": "claude-opus-4-1",
-    "*claude-opus-4*": "claude-opus-4",
-    "*claude-sonnet-5*": "claude-sonnet-5",
-    "*claude-sonnet-4-6*": "claude-sonnet-4-6",
-    "*claude-sonnet-4-5*": "claude-sonnet-4-5",
-    "*claude-sonnet-4*": "claude-sonnet-4",
-    "*claude-3-7-sonnet*": "claude-3-7-sonnet",
-    "*claude-haiku-4-5*": "claude-haiku-4-5",
-    "*claude-3-5-haiku*": "claude-3-5-haiku",
 }
 
 
@@ -717,14 +704,19 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
-    # The versioned identity wins, but a caller-supplied pricing mapping that
-    # lacks its canonical key must still fall back to the legacy alias instead
-    # of dropping the cost entirely.
+    # Versioned identity, then a non-Claude alias. A Claude id matches a key
+    # only as that exact string, or after one leading cc/, cp-, or cp_ prefix.
+    # A longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
     for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
         if not alias:
             continue
         for key, value in pricing.items():
             if key.lower() == alias.lower():
+                return key, value
+    routed = strip_known_sidecar_prefix(normalized)
+    if routed.lower() != normalized:
+        for key, value in pricing.items():
+            if key.lower() == routed.lower():
                 return key, value
     return None
 

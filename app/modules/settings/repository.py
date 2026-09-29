@@ -18,24 +18,27 @@ from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
-from app.db.models import ClaudeOpus55PinOwnership, DashboardSettings
+from app.db.models import ClaudeOpus55PinOwnership, ClaudeSonnet55PinOwnership, DashboardSettings
 
 _SETTINGS_ID = 1
 _UNSET = object()
-# Pinned onto the CLIProxyAPI full-model list by revision
-# 20260923_000000_pin_claude_opus_5_5_full_model.
+# Pinned onto the CLIProxyAPI full-model list by
+# 20260923_000000_pin_claude_opus_5_5_full_model and
+# 20260928_000000_pin_claude_sonnet_5_5_full_model.
 _CLAUDE_OPUS_5_5_PIN = "claude-opus-5-5"
+_CLAUDE_SONNET_5_5_PIN = "claude-sonnet-5-5"
+_PinOwnership = type[ClaudeOpus55PinOwnership] | type[ClaudeSonnet55PinOwnership]
 
 
-def _lists_claude_opus_5_5(full_models_json: str) -> bool:
-    """Whether the saved list holds the pin, matched the way the pin migration matches it."""
+def _lists_full_model(full_models_json: str, model_id: str) -> bool:
+    """Whether the saved list holds ``model_id``, matched the way the pin migrations match it."""
     try:
         entries = json.loads(full_models_json)
     except json.JSONDecodeError:
         return False
     if not isinstance(entries, list):
         return False
-    return any(isinstance(entry, str) and entry.strip().lower() == _CLAUDE_OPUS_5_5_PIN for entry in entries)
+    return any(isinstance(entry, str) and entry.strip().lower() == model_id for entry in entries)
 
 
 _OPERATIONAL_JSON_COLUMNS = frozenset(
@@ -689,12 +692,19 @@ class SettingsRepository:
         if claude_sidecar_model_prefixes_json is not None:
             settings.claude_sidecar_model_prefixes_json = claude_sidecar_model_prefixes_json
         if claude_sidecar_full_models_json is not None:
-            had_opus_5_5_pin = _lists_claude_opus_5_5(settings.claude_sidecar_full_models_json)
+            previous_full_models = settings.claude_sidecar_full_models_json
             settings.claude_sidecar_full_models_json = claude_sidecar_full_models_json
-            await self._track_claude_opus_5_5_pin(
+            await self._track_full_model_pin(
                 settings.id,
-                had_pin=had_opus_5_5_pin,
-                has_pin=_lists_claude_opus_5_5(claude_sidecar_full_models_json),
+                ClaudeOpus55PinOwnership,
+                had_pin=_lists_full_model(previous_full_models, _CLAUDE_OPUS_5_5_PIN),
+                has_pin=_lists_full_model(claude_sidecar_full_models_json, _CLAUDE_OPUS_5_5_PIN),
+            )
+            await self._track_full_model_pin(
+                settings.id,
+                ClaudeSonnet55PinOwnership,
+                had_pin=_lists_full_model(previous_full_models, _CLAUDE_SONNET_5_5_PIN),
+                has_pin=_lists_full_model(claude_sidecar_full_models_json, _CLAUDE_SONNET_5_5_PIN),
             )
         if claude_sidecar_connect_timeout_seconds is not None:
             settings.claude_sidecar_connect_timeout_seconds = claude_sidecar_connect_timeout_seconds
@@ -885,12 +895,19 @@ class SettingsRepository:
         )
         return settings
 
-    async def _track_claude_opus_5_5_pin(self, settings_id: int, *, had_pin: bool, has_pin: bool) -> None:
-        """Keep ``claude_opus_5_5_pin_ownership`` true to who placed the pin.
+    async def _track_full_model_pin(
+        self,
+        settings_id: int,
+        ownership: _PinOwnership,
+        *,
+        had_pin: bool,
+        has_pin: bool,
+    ) -> None:
+        """Keep a pin-ownership row true to who placed that pin.
 
-        Revision 20260923_000000 reads an ownership row two ways. Its upgrade,
-        which a legacy-revision remap can replay, skips owned rows. Its
-        downgrade removes ``claude-opus-5-5`` from owned rows.
+        Revisions 20260923_000000 and 20260928_000000 each read their ownership
+        row two ways. Upgrade, which a legacy-revision remap can replay, skips
+        owned rows. Downgrade removes that revision's id from owned rows.
 
         Only a save that removes or adds the pin changes the row:
 
@@ -907,16 +924,14 @@ class SettingsRepository:
             return
         with self._session.no_autoflush:
             if has_pin:
-                await self._session.execute(
-                    delete(ClaudeOpus55PinOwnership).where(ClaudeOpus55PinOwnership.settings_id == settings_id)
-                )
+                await self._session.execute(delete(ownership).where(ownership.settings_id == settings_id))
                 return
             dialect = self._session.get_bind().dialect.name
             insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
             await self._session.execute(
-                insert_fn(ClaudeOpus55PinOwnership)
+                insert_fn(ownership)
                 .values(settings_id=settings_id)
-                .on_conflict_do_nothing(index_elements=[ClaudeOpus55PinOwnership.settings_id])
+                .on_conflict_do_nothing(index_elements=[ownership.settings_id])
             )
 
     async def commit_refresh(

@@ -26,26 +26,6 @@ pytestmark = pytest.mark.unit
         ("GPT-6-SOL-20260922", "gpt-6-sol"),
         ("codex/gpt-6-luna", "gpt-6-luna"),
         ("gpt-6-luna-20260922", "gpt-6-luna"),
-        ("cc/claude-fable-5.1-thinking-max", "claude-fable-5-1"),
-        ("cp_claude-fable-5-1", "claude-fable-5-1"),
-        ("claude-fable-5-1-20260901", "claude-fable-5-1"),
-        ("claude-fable-5", None),
-        ("claude-fable-5-10", None),
-        ("claude-fable-5.10", None),
-        ("claude-fable-5-1-unrelated", None),
-        ("notclaude-fable-5-1", None),
-        ("claude-opus-5-5", "claude-opus-5-5"),
-        ("cc/claude-opus-5.5", "claude-opus-5-5"),
-        ("cp_claude-opus-5-5", "claude-opus-5-5"),
-        ("cp-claude-opus-5.5", "claude-opus-5-5"),
-        ("claude-opus-5-5-thinking-max", "claude-opus-5-5"),
-        ("CLAUDE-OPUS-5-5-20260922", "claude-opus-5-5"),
-        ("claude-opus-5", None),
-        ("claude-opus-5-50", None),
-        ("claude-opus-55", None),
-        ("notclaude-opus-5-5", None),
-        ("not-claude-opus-5-5", None),
-        ("not/claude-opus-5-5", None),
         ("gpt-6-astra-pro", None),
         ("unrelated/gpt-6-astra", None),
         ("gpt-6-sol-pro", None),
@@ -58,21 +38,34 @@ def test_versioned_identity_is_bounded(requested: str, canonical: str | None) ->
     assert resolve_versioned_model_id(requested) == canonical
 
 
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "claude-fable-5-1",
+        "cc/claude-fable-5.1",
+        "claude-opus-5-5",
+        "cc/claude-opus-5.5",
+        "claude-sonnet-5-5-thinking-max",
+        "CLAUDE-SONNET-5-5-20260928",
+    ],
+)
+def test_claude_ids_are_not_versioned_identities(requested: str) -> None:
+    assert resolve_versioned_model_id(requested) is None
+
+
 def test_versioned_pricing_uses_supplied_rates_not_an_embedded_price() -> None:
     price = ModelPrice(input_per_1m=2, output_per_1m=3)
-    assert get_pricing_for_model("cc/claude-fable-5.1", {"claude-fable-5-1": price}) == (
+    assert get_pricing_for_model("cc/claude-fable-5-1", {"claude-fable-5-1": price}) == (
         "claude-fable-5-1",
         price,
     )
+    assert get_pricing_for_model("cc/claude-fable-5.1", {"claude-fable-5-1": price}) is None
 
 
-def test_pricing_falls_back_to_the_family_when_the_version_is_absent() -> None:
-    """A catalog without the version must still price the request, not drop its cost."""
+def test_pricing_does_not_inherit_the_family_when_the_version_is_absent() -> None:
+    """A longer id is not the shorter family, even when only the family is priced."""
     family = ModelPrice(input_per_1m=7, output_per_1m=11)
-    assert get_pricing_for_model("cc/claude-fable-5-1", {"claude-fable-5": family}) == (
-        "claude-fable-5",
-        family,
-    )
+    assert get_pricing_for_model("cc/claude-fable-5-1", {"claude-fable-5": family}) is None
     assert get_pricing_for_model("gpt-6-astra", {"claude-fable-5": family}) is None
     pricing = get_pricing_for_model("cc/claude-fable-5-1", DEFAULT_PRICING_MODELS)
     assert pricing is not None
@@ -90,11 +83,17 @@ def test_family_allowlist_does_not_admit_a_separately_priced_version(requested: 
         validate_model_access(cast(Any, key), requested)
 
 
-@pytest.mark.parametrize("requested", ["cc/claude-fable-5-1", "claude-fable-5.1"])
-def test_an_allowlist_naming_the_version_still_admits_it(requested: str) -> None:
+def test_an_allowlist_naming_the_version_still_admits_the_prefixed_id() -> None:
     key = SimpleNamespace(allowed_models=["claude-fable-5-1"], allowed_reasoning_efforts=None)
 
-    validate_model_access(cast(Any, key), requested)
+    validate_model_access(cast(Any, key), "cc/claude-fable-5-1")
+
+
+def test_an_allowlist_naming_the_version_rejects_a_dotted_spelling() -> None:
+    key = SimpleNamespace(allowed_models=["claude-fable-5-1"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "claude-fable-5.1")
 
 
 @pytest.mark.parametrize(
@@ -152,11 +151,22 @@ def test_opus_5_allowlist_still_admits_opus_5() -> None:
     validate_model_access(cast(Any, key), "cc/claude-opus-5")
 
 
-@pytest.mark.parametrize("requested", ["claude-opus-5.5", "cc/claude-opus-5-5", "claude-opus-5-5-20260922"])
-def test_opus_5_5_allowlist_admits_bounded_ids(requested: str) -> None:
+@pytest.mark.parametrize("requested", ["claude-opus-5-5", "cc/claude-opus-5-5"])
+def test_opus_5_5_allowlist_admits_the_exact_id(requested: str) -> None:
     key = SimpleNamespace(allowed_models=["claude-opus-5-5"], allowed_reasoning_efforts=None)
 
     validate_model_access(cast(Any, key), requested)
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["claude-opus-5.5", "claude-opus-5-5-20260922", "claude-opus-5-5-thinking-max"],
+)
+def test_opus_5_5_allowlist_rejects_other_spellings(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-opus-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
 
 
 def test_opus_5_5_allowlist_rejects_hyphen_lookalike() -> None:
@@ -164,6 +174,87 @@ def test_opus_5_5_allowlist_rejects_hyphen_lookalike() -> None:
 
     with pytest.raises(ProxyModelNotAllowed):
         validate_model_access(cast(Any, key), "not-claude-opus-5-5")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["cc/claude-sonnet-5-5", "claude-sonnet-5.5", "claude-sonnet-5-5-thinking-max"],
+)
+def test_sonnet_5_allowlist_does_not_admit_sonnet_5_5(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
+
+
+def test_sonnet_5_allowlist_still_admits_sonnet_5() -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5"], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), "cc/claude-sonnet-5")
+
+
+def _claude_prefix_routing() -> tuple[SidecarRoutingEntry, ...]:
+    return (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(
+                SidecarPrefix(prefix="cc/", strip=True),
+                SidecarPrefix(prefix="cp-", strip=True),
+                SidecarPrefix(prefix="cp_", strip=True),
+            ),
+            full_models=(),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "grant"),
+    [
+        ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+        ("cc/claude-sonnet-5-5", "cc/claude-sonnet-5-5"),
+    ],
+)
+def test_sonnet_5_5_allowlist_admits_the_same_routed_id(requested: str, grant: str) -> None:
+    key = SimpleNamespace(allowed_models=[grant], allowed_reasoning_efforts=None)
+
+    validate_model_access(cast(Any, key), requested, routing_entries=_claude_prefix_routing())
+
+
+def test_sonnet_5_5_bare_grant_does_not_admit_a_routed_prefix() -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(
+            cast(Any, key),
+            "cc/claude-sonnet-5-5",
+            routing_entries=_claude_prefix_routing(),
+        )
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["claude-sonnet-5.5", "claude-sonnet-5-5-20260928", "claude-sonnet-5-5-thinking-max"],
+)
+def test_sonnet_5_5_allowlist_rejects_other_spellings(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
+
+
+def test_sonnet_5_5_allowlist_rejects_hyphen_lookalike() -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), "not-claude-sonnet-5-5")
+
+
+@pytest.mark.parametrize("requested", ["claude-sonnet-5-50", "not-claude-sonnet-5-5"])
+def test_sonnet_5_allowlist_rejects_longer_lookalikes(requested: str) -> None:
+    key = SimpleNamespace(allowed_models=["claude-sonnet-5"], allowed_reasoning_efforts=None)
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested)
 
 
 def _two_provider_routing() -> tuple[SidecarRoutingEntry, ...]:

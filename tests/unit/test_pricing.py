@@ -127,6 +127,13 @@ def test_get_pricing_for_model_gpt_5_4_mini_alias():
     assert price.output_per_1m == 4.5
 
 
+def test_get_pricing_for_model_omniroute_claude_3_5_sonnet_keeps_dated_key():
+    result = get_pricing_for_model("claude-3-5-sonnet", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, _price = result
+    assert model == "claude-3-5-sonnet-20241022"
+
+
 def test_get_pricing_for_model_claude_canonical():
     result = get_pricing_for_model("claude-sonnet-4-6", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
@@ -138,7 +145,8 @@ def test_get_pricing_for_model_claude_canonical():
 
 
 def test_get_pricing_for_model_claude_date_suffixed():
-    result = get_pricing_for_model("claude-opus-4-5-20251101", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert get_pricing_for_model("claude-opus-4-5-20251101", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    result = get_pricing_for_model("claude-opus-4-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
     model, price = result
     assert model == "claude-opus-4-5"
@@ -172,8 +180,7 @@ def test_get_pricing_for_model_claude_fable_5_1_does_not_collapse_to_fable_5():
     assert price.output_per_1m == 50.0
 
     dotted = get_pricing_for_model("claude-fable-5.1", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert dotted is not None
-    assert dotted[0] == "claude-fable-5-1"
+    assert dotted is None
 
 
 def test_get_pricing_for_model_claude_sidecar_prefixed_opus():
@@ -203,23 +210,16 @@ def test_get_pricing_for_model_claude_opus_5_5_does_not_collapse_to_opus_5():
     assert price.output_per_1m == 20.0
 
     dotted = get_pricing_for_model("claude-opus-5.5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert dotted is not None
-    assert dotted[0] == "claude-opus-5-5"
+    assert dotted is None
 
     dated = get_pricing_for_model("claude-opus-5-5-20260922", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert dated is not None
-    assert dated[0] == "claude-opus-5-5"
+    assert dated is None
 
     family = ModelPrice(input_per_1m=7, output_per_1m=11)
-    assert get_pricing_for_model("cc/claude-opus-5-5", {"claude-opus-5": family}) == ("claude-opus-5", family)
+    assert get_pricing_for_model("cc/claude-opus-5-5", {"claude-opus-5": family}) is None
 
-    lookalike = get_pricing_for_model("claude-opus-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert lookalike is not None
-    assert lookalike[0] == "claude-opus-5"
-
-    hyphen_lookalike = get_pricing_for_model("not-claude-opus-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert hyphen_lookalike is not None
-    assert hyphen_lookalike[0] == "claude-opus-5"
+    assert get_pricing_for_model("claude-opus-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    assert get_pricing_for_model("not-claude-opus-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
 
 
 def test_get_pricing_for_model_claude_opus_5_sidecar_slash_prefix():
@@ -241,12 +241,36 @@ def test_get_pricing_for_model_claude_sonnet_5_sidecar_slash_prefix():
     assert price.output_per_1m == 10.0
 
 
+def test_get_pricing_for_model_claude_sonnet_5_5_does_not_collapse_to_sonnet_5():
+    result = get_pricing_for_model("cc/claude-sonnet-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-sonnet-5-5"
+    assert price.input_per_1m == 2.0
+    assert price.cached_input_per_1m == 0.2
+    assert price.output_per_1m == 10.0
+
+    dotted = get_pricing_for_model("claude-sonnet-5.5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert dotted is None
+
+    dated = get_pricing_for_model("claude-sonnet-5-5-20260928", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert dated is None
+
+    family = ModelPrice(input_per_1m=7, output_per_1m=11)
+    assert get_pricing_for_model("cc/claude-sonnet-5-5", {"claude-sonnet-5": family}) is None
+
+    assert get_pricing_for_model("claude-sonnet-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    assert get_pricing_for_model("not-claude-sonnet-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+    assert get_pricing_for_model("claude-haiku-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+
+
 def test_get_pricing_for_model_claude_versioned_beats_family():
-    result = get_pricing_for_model("claude-opus-4-1-20250805", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    result = get_pricing_for_model("claude-opus-4-1", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
     model, price = result
     assert model == "claude-opus-4-1"
     assert price.input_per_1m == 15.0
+    assert get_pricing_for_model("claude-opus-4-1-20250805", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
 
 
 def test_get_pricing_for_model_gpt_5_4_nano_alias():

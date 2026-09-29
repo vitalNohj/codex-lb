@@ -1,8 +1,10 @@
 """Bounded model identities shared by native pricing and sidecar routing.
 
-Do not add new substring globs to the legacy pricing alias table. These
-version-specific identities must win over its older family-level aliases.
-External integration prices remain owned by external_pricing catalogs.
+Routing prefixes are not model ids. ``cc/``, ``cp-``, and ``cp_`` peel off so
+a logged client id can find the same price key the router forwarded. A dotted
+spelling, a release date, and an effort suffix are different ids. Do not add
+substring globs for Claude model families. External integration prices remain
+owned by external_pricing catalogs.
 """
 
 from __future__ import annotations
@@ -13,34 +15,22 @@ _GPT6_NATIVE_ID = re.compile(
     r"(?:(?:codex|openai)/)?gpt-6-(astra|sol|luna)(?:-\d{4}-\d{2}-\d{2}|-\d{8})?",
     re.IGNORECASE,
 )
-_FABLE_5_1_ID = re.compile(
-    r"(?:^|[/:_-])claude-fable-5[.-]1"
-    r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"
-    r"(?:-(?:thinking|reasoning))?"
-    r"(?:-(?:none|auto|minimal|low|medium|high|xhigh|extra|max))?"
-    r"(?:-(?:thinking|reasoning))?$",
-    re.IGNORECASE,
-)
-# Bare id, or a prefix this proxy actually routes: cc/, cp-, cp_.
-# A single separator such as "-" would also accept not-claude-opus-5-5.
-_OPUS_5_5_ID = re.compile(
-    r"^(?:cc/|cp[-_])?claude-opus-5[.-]5"
-    r"(?:-\d{8}|-\d{4}-\d{2}-\d{2})?"
-    r"(?:-(?:thinking|reasoning))?"
-    r"(?:-(?:none|auto|minimal|low|medium|high|xhigh|extra|max))?"
-    r"(?:-(?:thinking|reasoning))?$",
-    re.IGNORECASE,
-)
+
+_KNOWN_SIDECAR_PREFIXES = ("cc/", "cp-", "cp_")
 
 
 def resolve_versioned_model_id(model: str) -> str | None:
-    """Recognize supported versions without swallowing other family versions."""
-    normalized = model.strip()
-    native = _GPT6_NATIVE_ID.fullmatch(normalized)
-    if native is not None:
-        return f"gpt-6-{native.group(1).lower()}"
-    if _FABLE_5_1_ID.search(normalized):
-        return "claude-fable-5-1"
-    if _OPUS_5_5_ID.search(normalized):
-        return "claude-opus-5-5"
-    return None
+    """Recognize supported native versions without swallowing other ids."""
+    native = _GPT6_NATIVE_ID.fullmatch(model.strip())
+    if native is None:
+        return None
+    return f"gpt-6-{native.group(1).lower()}"
+
+
+def strip_known_sidecar_prefix(model: str) -> str:
+    """Remove one leading ``cc/``, ``cp-``, or ``cp_`` routing prefix."""
+    lowered = model.lower()
+    for prefix in _KNOWN_SIDECAR_PREFIXES:
+        if lowered.startswith(prefix):
+            return model[len(prefix) :]
+    return model
