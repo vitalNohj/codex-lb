@@ -2239,6 +2239,7 @@ export const handlers = [
       status: "healthy",
       message: null,
       strategy: "fill_first",
+      sessionAffinity: false,
       accounts: [
         {
           name: "claude-a@example.com.json",
@@ -2259,6 +2260,17 @@ export const handlers = [
           excludedModelsState: "available",
         },
       ],
+    });
+  }),
+
+  http.put("*/api/claude-sidecar/routing/session-affinity", async ({ request }) => {
+    const body = (await request.json()) as { sessionAffinity?: boolean };
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      strategy: "fill_first",
+      sessionAffinity: body.sessionAffinity ?? false,
+      accounts: [],
     });
   }),
 

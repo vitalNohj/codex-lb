@@ -35,6 +35,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
     priorityMutation,
     pausedMutation,
     excludedModelsMutation,
+    sessionAffinityMutation,
     testMutation,
   } = useClaudeSidecar({
     routingEnabled: managementKeyConfigured,
@@ -124,17 +125,26 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
             >
               <SidecarIntegrationCard.Routing
                 strategy={routingQuery.data?.strategy ?? null}
+                sessionAffinity={
+                  sessionAffinityMutation.isPending && typeof sessionAffinityMutation.variables === "boolean"
+                    ? sessionAffinityMutation.variables
+                    : routingQuery.data?.status === "healthy"
+                      ? (routingQuery.data.sessionAffinity ?? null)
+                      : null
+                }
                 accounts={routingQuery.data?.accounts ?? []}
                 busy={
                   busy ||
                   strategyMutation.isPending ||
                   priorityMutation.isPending ||
                   pausedMutation.isPending ||
-                  excludedModelsMutation.isPending
+                  excludedModelsMutation.isPending ||
+                  sessionAffinityMutation.isPending
                 }
                 isLoading={routingQuery.isLoading || routingQuery.isFetching}
                 message={routingQuery.data?.status !== "healthy" ? routingQuery.data?.message : null}
                 onStrategyChange={(strategy: ClaudeSidecarRoutingStrategy) => strategyMutation.mutate(strategy)}
+                onSessionAffinityChange={(enabled: boolean) => sessionAffinityMutation.mutate(enabled)}
                 onPriorityChange={(name: string, priority: number) => priorityMutation.mutate({ name, priority })}
                 onPausedChange={(name: string, paused: boolean) => pausedMutation.mutate({ name, paused })}
                 onExcludedModelsChange={(name: string, excludedModels: string[]) =>

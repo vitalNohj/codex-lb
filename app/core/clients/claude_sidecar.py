@@ -12,6 +12,7 @@ from typing import cast
 
 import aiohttp
 
+from app.core.clients.cliproxy_routing_config import CliproxyRoutingConfigError, apply_session_affinity_yaml
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
 from app.core.usage.pricing import ModelPrice
@@ -234,6 +235,84 @@ class ClaudeSidecarClient:
         strategy = data.get("strategy")
         return strategy if isinstance(strategy, str) and strategy else value
 
+    async def get_session_affinity(self) -> bool:
+        data = await self._management_json("GET", "/v0/management/config", "fetch CLIProxyAPI config")
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, "Invalid response format from CLIProxyAPI config API")
+        routing = data.get("routing")
+        if routing is None:
+            return False
+        if not is_json_mapping(routing):
+            raise ClaudeSidecarError(502, "Invalid routing object in CLIProxyAPI config")
+        value = routing.get("session-affinity")
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        raise ClaudeSidecarError(502, "Invalid session-affinity value in CLIProxyAPI config")
+
+    async def set_session_affinity(self, enabled: bool) -> None:
+        current = await self._management_text(
+            "GET",
+            "/v0/management/config.yaml",
+            "fetch CLIProxyAPI config",
+            accept="application/yaml",
+        )
+        try:
+            updated = apply_session_affinity_yaml(current, enabled)
+        except CliproxyRoutingConfigError as exc:
+            raise ClaudeSidecarError(502, str(exc)) from exc
+        if updated == current:
+            return
+        await self._management_text(
+            "PUT",
+            "/v0/management/config.yaml",
+            "update CLIProxyAPI session affinity",
+            accept="application/json",
+            content_type="application/yaml; charset=utf-8",
+            body=updated,
+        )
+
+    async def _management_json(self, method: str, path: str, action: str) -> JsonValue:
+        text = await self._management_text(method, path, action, accept="application/json")
+        if not text:
+            return {}
+        try:
+            return cast(JsonValue, json.loads(text))
+        except json.JSONDecodeError:
+            raise ClaudeSidecarError(502, f"Invalid JSON from CLIProxyAPI while trying to {action}") from None
+
+    async def _management_text(
+        self,
+        method: str,
+        path: str,
+        action: str,
+        *,
+        accept: str,
+        content_type: str | None = None,
+        body: str | None = None,
+    ) -> str:
+        url = f"{self.base_url}{path}"
+        headers = self._management_headers()
+        headers["Accept"] = accept
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        try:
+            async with lease_http_session() as session:
+                if method == "GET":
+                    response_cm = session.get(url, headers=headers, timeout=self._timeout())
+                else:
+                    response_cm = session.put(url, headers=headers, data=body or "", timeout=self._timeout())
+                async with response_cm as resp:
+                    text = await resp.text()
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, _json_or_message(text))
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, action)) from exc
+        return text
+
     async def patch_auth_file_priority(self, name: str, priority: int) -> None:
         url = f"{self.base_url}/v0/management/auth-files/fields"
         try:
@@ -429,6 +508,15 @@ class ClaudeSidecarClient:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise ClaudeSidecarUnavailableError(_transport_message(exc, "stream Claude sidecar")) from exc
+
+
+def _json_or_message(text: str) -> JsonValue:
+    if not text:
+        return {}
+    try:
+        return cast(JsonValue, json.loads(text))
+    except json.JSONDecodeError:
+        return {"message": text[:200]}
 
 
 async def _read_response_json(resp: aiohttp.ClientResponse) -> JsonValue:

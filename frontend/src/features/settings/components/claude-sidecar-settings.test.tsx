@@ -393,6 +393,60 @@ describe("ClaudeSidecarSettings", () => {
     );
   });
 
+  it("turns session affinity on from the routing panel", async () => {
+    const user = userEvent.setup();
+    let received: boolean | undefined;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/session-affinity", async ({ request }) => {
+        const body = (await request.json()) as { sessionAffinity?: boolean };
+        received = body.sessionAffinity;
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          sessionAffinity: true,
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    const toggle = await screen.findByRole("switch", { name: "Session affinity" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await waitFor(() => expect(received).toBe(true));
+  });
+
+  it("shows session affinity on when the routing query says so", async () => {
+    server.use(
+      http.get("*/api/claude-sidecar/routing", () => {
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          sessionAffinity: true,
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Session affinity" })).toBeChecked());
+  });
+
   it("updates account priority on blur", async () => {
     const user = userEvent.setup();
     let receivedBody: unknown;

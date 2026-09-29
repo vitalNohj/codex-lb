@@ -62,12 +62,17 @@ class ClaudeSidecarRoutingResponse(DashboardModel):
     status: ClaudeSidecarRoutingStatus
     message: str | None = None
     strategy: ClaudeSidecarRoutingStrategy | None = None
+    session_affinity: bool | None = None
     accounts: list[ClaudeSidecarRoutingAccount] = Field(default_factory=list)
     saved_account: ClaudeSidecarRoutingAccount | None = None
 
 
 class ClaudeSidecarRoutingStrategyUpdate(DashboardModel):
     strategy: ClaudeSidecarRoutingStrategy
+
+
+class ClaudeSidecarSessionAffinityUpdate(DashboardModel):
+    session_affinity: bool
 
 
 class ClaudeSidecarAccountPriorityUpdate(DashboardModel):
