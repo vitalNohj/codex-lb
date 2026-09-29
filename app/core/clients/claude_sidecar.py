@@ -82,6 +82,16 @@ class ClaudeSidecarError(Exception):
         self.body = body
 
 
+_SESSION_AFFINITY_WRITE_ATTEMPTS = 3
+
+
+def _with_session_affinity(text: str, enabled: bool) -> str:
+    try:
+        return apply_session_affinity_yaml(text, enabled)
+    except CliproxyRoutingConfigError as exc:
+        raise ClaudeSidecarError(502, str(exc)) from exc
+
+
 class ClaudeSidecarUnavailableError(ClaudeSidecarError):
     def __init__(self, message: str) -> None:
         super().__init__(503, message, body=None)
@@ -252,25 +262,33 @@ class ClaudeSidecarClient:
         raise ClaudeSidecarError(502, "Invalid session-affinity value in CLIProxyAPI config")
 
     async def set_session_affinity(self, enabled: bool) -> None:
-        current = await self._management_text(
+        # CLIProxyAPI 7.3.15 has no session-affinity field route and no config
+        # version header. Two identical reads are the only check that the
+        # snapshot is still current before the full-document upload.
+        for _attempt in range(_SESSION_AFFINITY_WRITE_ATTEMPTS):
+            current = await self._fetch_config_yaml()
+            updated = _with_session_affinity(current, enabled)
+            if updated == current:
+                return
+            if await self._fetch_config_yaml() != current:
+                continue
+            await self._management_text(
+                "PUT",
+                "/v0/management/config.yaml",
+                "update CLIProxyAPI session affinity",
+                accept="application/json",
+                content_type="application/yaml; charset=utf-8",
+                body=updated,
+            )
+            return
+        raise ClaudeSidecarError(409, "CLIProxyAPI config changed while updating session affinity")
+
+    async def _fetch_config_yaml(self) -> str:
+        return await self._management_text(
             "GET",
             "/v0/management/config.yaml",
             "fetch CLIProxyAPI config",
             accept="application/yaml",
-        )
-        try:
-            updated = apply_session_affinity_yaml(current, enabled)
-        except CliproxyRoutingConfigError as exc:
-            raise ClaudeSidecarError(502, str(exc)) from exc
-        if updated == current:
-            return
-        await self._management_text(
-            "PUT",
-            "/v0/management/config.yaml",
-            "update CLIProxyAPI session affinity",
-            accept="application/json",
-            content_type="application/yaml; charset=utf-8",
-            body=updated,
         )
 
     async def _management_json(self, method: str, path: str, action: str) -> JsonValue:

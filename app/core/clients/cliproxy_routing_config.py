@@ -33,7 +33,7 @@ def apply_session_affinity_yaml(text: str, enabled: bool) -> str:
         if content.lstrip().startswith("#"):
             continue
         match = _AFFINITY_LINE.match(content)
-        if match is None:
+        if match is None or match.group("indent") != child_indent:
             continue
         if match.group("value").lower() == desired:
             return text
@@ -45,6 +45,8 @@ def apply_session_affinity_yaml(text: str, enabled: bool) -> str:
     if not enabled:
         return text
     ending = _line_ending(lines[routing_at])
+    if not lines[routing_at].endswith(("\n", "\r")):
+        lines[routing_at] += ending
     lines.insert(routing_at + 1, f"{child_indent}session-affinity: {desired}{ending}")
     return "".join(lines)
 

@@ -516,6 +516,10 @@ function useSessionAffinityMutation() {
   return useMutation({
     mutationFn: (sessionAffinity: boolean) => setClaudeSidecarSessionAffinity(sessionAffinity),
     onSuccess: (data) => {
+      if (data.status !== "healthy") {
+        toast.error(data.message || "Failed to update CLIProxyAPI session affinity");
+        return;
+      }
       queryClient.setQueryData(routingQueryKey, data);
     },
     onError: (error: Error) => {

@@ -28,7 +28,7 @@ codex-lb already reads and writes the routing strategy and per-account pause, pr
 
 `GET /v0/management/config` is the read path. A missing `routing.session-affinity` means false.
 
-The write path downloads `GET /v0/management/config.yaml`, changes only the `session-affinity` line inside the top-level `routing` block, and uploads it with `PUT /v0/management/config.yaml`. Replacing the file from the JSON config would drop comments and can rewrite secrets. A dedicated strategy-style route does not exist in this build, so the YAML document is the management API that can change this field.
+The write path downloads `GET /v0/management/config.yaml`, changes only the direct `routing.session-affinity` line, and uploads it with `PUT /v0/management/config.yaml`. A nested `session-affinity` key is not that flag. Replacing the file from the JSON config would drop comments and can rewrite secrets. A dedicated strategy-style route does not exist in this build, and `PUT /config.yaml` has no version or `If-Match` header, so the client reads the file twice and uploads only when both reads match. If they differ, it retries against the newer document. If three read pairs still disagree, it fails and uploads nothing.
 
 If the requested value is already in effect, including a missing key when the requested value is false, the client does not upload. That avoids a needless hot reload.
 

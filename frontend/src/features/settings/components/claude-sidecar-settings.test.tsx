@@ -2,7 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
 
 import { ClaudeSidecarSettings } from "@/features/settings/components/claude-sidecar-settings";
 import type { DashboardSettings } from "@/features/settings/schemas";
@@ -422,6 +427,37 @@ describe("ClaudeSidecarSettings", () => {
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     await waitFor(() => expect(received).toBe(true));
+  });
+
+  it("toasts when a session affinity write is not healthy", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.put("*/api/claude-sidecar/routing/session-affinity", () =>
+        HttpResponse.json({
+          status: "error",
+          message: "CLIProxyAPI config changed while updating session affinity",
+          strategy: null,
+          sessionAffinity: null,
+          accounts: [],
+        }),
+      ),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    const toggle = await screen.findByRole("switch", { name: "Session affinity" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    await user.click(toggle);
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("CLIProxyAPI config changed while updating session affinity"),
+    );
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Session affinity" })).not.toBeChecked());
   });
 
   it("shows session affinity on when the routing query says so", async () => {

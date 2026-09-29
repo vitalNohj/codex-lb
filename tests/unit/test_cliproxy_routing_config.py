@@ -63,6 +63,29 @@ def test_commented_flag_is_not_treated_as_the_setting() -> None:
     assert "\n  session-affinity: true\n" in updated
 
 
+def test_bare_routing_header_without_newline_stays_a_block() -> None:
+    updated = apply_session_affinity_yaml("routing:", True)
+
+    assert updated == "routing:\n  session-affinity: true\n"
+
+
 def test_inline_routing_is_rejected() -> None:
     with pytest.raises(CliproxyRoutingConfigError):
         apply_session_affinity_yaml("routing: {strategy: round-robin}\n", True)
+
+
+def test_nested_session_affinity_does_not_replace_the_routing_flag() -> None:
+    text = "routing:\n  nested:\n    session-affinity: false\n  session-affinity: false\n"
+    updated = apply_session_affinity_yaml(text, True)
+
+    assert "\n    session-affinity: false\n" in updated
+    assert "\n  session-affinity: true\n" in updated
+
+
+def test_missing_direct_flag_is_inserted_when_only_a_nested_key_exists() -> None:
+    text = "routing:\n  nested:\n    session-affinity: false\ndebug: true\n"
+    updated = apply_session_affinity_yaml(text, True)
+
+    assert "\n  session-affinity: true\n" in updated
+    assert "\n    session-affinity: false\n" in updated
+    assert updated.index("session-affinity: true") < updated.index("debug: true")

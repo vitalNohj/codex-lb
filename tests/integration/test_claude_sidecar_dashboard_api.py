@@ -670,6 +670,23 @@ async def test_put_session_affinity_rejects_an_account_payload(async_client, mon
 
 
 @pytest.mark.asyncio
+async def test_put_session_affinity_reports_a_config_conflict(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    await _configure_routing(async_client)
+    _FakeSidecarClient.error = ClaudeSidecarError(409, "CLIProxyAPI config changed while updating session affinity")
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/session-affinity",
+        json={"sessionAffinity": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
+    assert _FakeSidecarClient.session_affinity_updates == []
+
+
+@pytest.mark.asyncio
 async def test_put_routing_priority_round_trips(async_client, monkeypatch):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     _reset_fake_sidecar_client()
