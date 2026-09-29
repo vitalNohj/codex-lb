@@ -822,6 +822,7 @@ export const ClaudeSidecarRoutingResponseSchema = z.object({
   status: ClaudeSidecarRoutingStatusSchema,
   message: z.string().nullable().optional(),
   strategy: ClaudeSidecarRoutingStrategySchema.nullable().optional(),
+  sessionAffinity: z.boolean().nullable().optional(),
   accounts: z.array(ClaudeSidecarRoutingAccountSchema).default([]),
   savedAccount: ClaudeSidecarRoutingAccountSchema.nullable().optional(),
 });

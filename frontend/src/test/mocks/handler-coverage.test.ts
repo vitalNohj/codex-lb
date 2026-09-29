@@ -90,6 +90,7 @@ const EXPECTED_ENDPOINTS = [
 	"GET */api/claude-sidecar/quota",
 	"GET */api/claude-sidecar/routing",
 	"PUT */api/claude-sidecar/routing/strategy",
+	"PUT */api/claude-sidecar/routing/session-affinity",
 	"PUT */api/claude-sidecar/routing/priority",
 	"PUT */api/claude-sidecar/routing/paused",
 	"PUT */api/claude-sidecar/routing/excluded-models",

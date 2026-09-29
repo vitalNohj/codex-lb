@@ -20,9 +20,11 @@ function routing(priority: number, onPriorityChange: (name: string, priority: nu
   return (
     <SidecarIntegrationCard.Routing
       strategy="fill_first"
+      sessionAffinity={false}
       accounts={[account(priority)]}
       busy={false}
       onStrategyChange={vi.fn()}
+      onSessionAffinityChange={vi.fn()}
       onPriorityChange={onPriorityChange}
       onPausedChange={vi.fn()}
       onExcludedModelsChange={vi.fn()}

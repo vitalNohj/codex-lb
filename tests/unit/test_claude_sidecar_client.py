@@ -393,3 +393,129 @@ async def test_models_cache_serves_last_good_after_refresh_failure(monkeypatch) 
 
     assert [model.id for model in first] == ["claude-sonnet"]
     assert [model.id for model in second] == ["claude-sonnet"]
+
+
+_YAML = """\
+port: 8317
+routing:
+  strategy: "weighted-round-robin"
+  session-affinity: false
+  session-affinity-ttl: "1h"
+debug: true
+"""
+
+
+class _ConfigSession:
+    def __init__(self, *, config_json: str, config_yaml: str) -> None:
+        self.config_json = config_json
+        self.config_yaml = config_yaml
+        self.gets: list[str] = []
+        self.puts: list[tuple[str, dict[str, str], str]] = []
+
+    def get(self, url: str, *, headers, timeout):
+        self.gets.append(url)
+        if url.endswith("/config.yaml"):
+            return _FakeResponse(200, self.config_yaml)
+        return _FakeResponse(200, self.config_json)
+
+    def put(self, url: str, *, headers, data, timeout):
+        body = data.decode() if isinstance(data, bytes) else data
+        self.puts.append((url, headers, body))
+        return _FakeResponse(200, '{"ok": true, "changed": ["config"]}')
+
+
+@pytest.mark.asyncio
+async def test_get_session_affinity_missing_is_false(monkeypatch) -> None:
+    session = _ConfigSession(config_json='{"routing": {"strategy": "round-robin"}}', config_yaml=_YAML)
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    assert await client.get_session_affinity() is False
+    assert session.gets == ["http://127.0.0.1:8317/v0/management/config"]
+
+
+@pytest.mark.asyncio
+async def test_get_session_affinity_true(monkeypatch) -> None:
+    session = _ConfigSession(
+        config_json='{"routing": {"session-affinity": true}}',
+        config_yaml=_YAML,
+    )
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    assert await client.get_session_affinity() is True
+
+
+@pytest.mark.asyncio
+async def test_set_session_affinity_uploads_only_the_flag(monkeypatch) -> None:
+    session = _ConfigSession(config_json="{}", config_yaml=_YAML)
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    await client.set_session_affinity(True)
+
+    assert len(session.puts) == 1
+    url, headers, body = session.puts[0]
+    assert url == "http://127.0.0.1:8317/v0/management/config.yaml"
+    assert headers["Content-Type"] == "application/yaml; charset=utf-8"
+    assert headers["Authorization"] == "Bearer mgmt"
+    assert "session-affinity: true" in body
+    assert 'session-affinity-ttl: "1h"' in body
+    assert "debug: true" in body
+
+
+class _YamlSequenceSession(_ConfigSession):
+    def __init__(self, documents: list[str]) -> None:
+        super().__init__(config_json="{}", config_yaml="")
+        self.documents = documents
+        self.index = 0
+
+    def get(self, url: str, *, headers, timeout):
+        self.gets.append(url)
+        if url.endswith("/config.yaml"):
+            document = self.documents[min(self.index, len(self.documents) - 1)]
+            self.index += 1
+            return _FakeResponse(200, document)
+        return _FakeResponse(200, self.config_json)
+
+
+@pytest.mark.asyncio
+async def test_set_session_affinity_retries_when_the_config_changes(monkeypatch) -> None:
+    stale = "routing:\n  strategy: round-robin\n  debug: false\n"
+    fresh = "routing:\n  strategy: round-robin\n  debug: true\n"
+    session = _YamlSequenceSession([stale, fresh, fresh, fresh])
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    await client.set_session_affinity(True)
+
+    assert len(session.puts) == 1
+    body = session.puts[0][2]
+    assert "debug: true" in body
+    assert "debug: false" not in body
+    assert "session-affinity: true" in body
+
+
+@pytest.mark.asyncio
+async def test_set_session_affinity_does_not_upload_a_config_that_keeps_changing(monkeypatch) -> None:
+    documents = [f"routing:\n  strategy: round-robin\n  marker: {index}\n" for index in range(8)]
+    session = _YamlSequenceSession(documents)
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.set_session_affinity(True)
+
+    assert exc_info.value.status_code == 409
+    assert session.puts == []
+
+
+@pytest.mark.asyncio
+async def test_set_session_affinity_skips_upload_when_already_off(monkeypatch) -> None:
+    session = _ConfigSession(config_json="{}", config_yaml=_YAML)
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    await client.set_session_affinity(False)
+
+    assert session.puts == []

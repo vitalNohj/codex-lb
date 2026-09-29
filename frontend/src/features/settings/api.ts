@@ -144,6 +144,12 @@ export function setClaudeSidecarRoutingStrategy(strategy: ClaudeSidecarRoutingSt
   });
 }
 
+export function setClaudeSidecarSessionAffinity(sessionAffinity: boolean) {
+  return put(`${CLAUDE_SIDECAR_PATH}/routing/session-affinity`, ClaudeSidecarRoutingResponseSchema, {
+    body: { sessionAffinity },
+  });
+}
+
 export function setClaudeSidecarAccountPriority(name: string, priority: number) {
   return put(`${CLAUDE_SIDECAR_PATH}/routing/priority`, ClaudeSidecarRoutingResponseSchema, {
     body: { name, priority },

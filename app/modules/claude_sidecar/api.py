@@ -12,6 +12,7 @@ from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarQuotaResponse,
     ClaudeSidecarRoutingResponse,
     ClaudeSidecarRoutingStrategyUpdate,
+    ClaudeSidecarSessionAffinityUpdate,
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
 )
@@ -64,6 +65,14 @@ async def set_routing_strategy(
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
 ) -> ClaudeSidecarRoutingResponse:
     return await context.service.set_routing_strategy(body.strategy)
+
+
+@router.put("/routing/session-affinity", response_model=ClaudeSidecarRoutingResponse)
+async def set_session_affinity(
+    body: ClaudeSidecarSessionAffinityUpdate,
+    context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
+) -> ClaudeSidecarRoutingResponse:
+    return await context.service.set_session_affinity(body.session_affinity)
 
 
 @router.put("/routing/priority", response_model=ClaudeSidecarRoutingResponse)

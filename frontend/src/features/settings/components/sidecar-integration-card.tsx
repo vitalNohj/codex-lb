@@ -15,6 +15,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { DiscoveredModelsBrowser, type DiscoveredModelSummary } from "@/features/settings/components/discovered-models-browser";
 import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
+import { SessionAffinityToggle } from "@/features/settings/components/session-affinity-toggle";
 import {
   REASONING_EFFORT_OPTIONS,
   REASONING_EFFORT_UNSET,
@@ -1169,11 +1170,13 @@ function ReasoningEffort() {
 
 type RoutingProps = {
   strategy?: ClaudeSidecarRoutingStrategy | null;
+  sessionAffinity?: boolean | null;
   accounts: ClaudeSidecarRoutingAccount[];
   busy: boolean;
   isLoading?: boolean;
   message?: string | null;
   onStrategyChange: (strategy: ClaudeSidecarRoutingStrategy) => void;
+  onSessionAffinityChange: (enabled: boolean) => void;
   onPriorityChange: (name: string, priority: number) => void;
   onPausedChange: (name: string, paused: boolean) => void;
   onExcludedModelsChange: (name: string, excludedModels: string[]) => void;
@@ -1231,17 +1234,24 @@ function PriorityInput({ account, disabled, onCommit }: PriorityInputProps) {
 
 function Routing({
   strategy,
+  sessionAffinity = null,
   accounts,
   busy,
   isLoading = false,
   message,
   onStrategyChange,
+  onSessionAffinityChange,
   onPriorityChange,
   onPausedChange,
   onExcludedModelsChange,
 }: RoutingProps) {
   return (
     <div className="space-y-3" aria-label="CLIProxyAPI routing controls">
+      <SessionAffinityToggle
+        checked={sessionAffinity === true}
+        disabled={busy || isLoading || typeof sessionAffinity !== "boolean"}
+        onCheckedChange={onSessionAffinityChange}
+      />
       <label className="block space-y-1.5 text-sm font-medium" htmlFor="claude-sidecar-routing-strategy">
         Routing strategy
         <Select

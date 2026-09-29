@@ -218,8 +218,11 @@ class ClaudeSidecarService:
 
         client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
         try:
-            wire_strategy = await client.get_routing_strategy()
-            auth_files = await client.list_auth_files()
+            wire_strategy, session_affinity, auth_files = await asyncio.gather(
+                client.get_routing_strategy(),
+                client.get_session_affinity(),
+                client.list_auth_files(),
+            )
         except ClaudeSidecarUnavailableError as exc:
             return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
         except ClaudeSidecarError as exc:
@@ -229,8 +232,26 @@ class ClaudeSidecarService:
         return ClaudeSidecarRoutingResponse(
             status="healthy",
             strategy=_WIRE_TO_STRATEGY.get(wire_strategy),
+            session_affinity=session_affinity,
             accounts=await asyncio.to_thread(_routing_accounts, auth_files),
         )
+
+    async def set_session_affinity(self, enabled: bool) -> ClaudeSidecarRoutingResponse:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _routing_guard(settings)
+        if guarded is not None:
+            status, message = guarded
+            return ClaudeSidecarRoutingResponse(status=status, message=message)
+
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.set_session_affinity(enabled)
+        except ClaudeSidecarUnavailableError as exc:
+            return ClaudeSidecarRoutingResponse(status="unreachable", message=_sanitize_message(exc.message))
+        except ClaudeSidecarError as exc:
+            status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
+            return ClaudeSidecarRoutingResponse(status=status, message=_sanitize_message(exc.message))
+        return await self.get_routing()
 
     async def set_routing_strategy(
         self,

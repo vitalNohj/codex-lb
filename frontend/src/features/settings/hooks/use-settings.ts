@@ -33,6 +33,7 @@ import {
   setClaudeSidecarAccountPaused,
   setClaudeSidecarAccountPriority,
   setClaudeSidecarRoutingStrategy,
+  setClaudeSidecarSessionAffinity,
   testClaudeSidecarConnection,
   testOllamaSidecarConnection,
   testOmniRouteSidecarConnection,
@@ -509,6 +510,37 @@ export function useClaudeSidecarAccountExcludedModels() {
   });
 }
 
+function useSessionAffinityMutation() {
+  const queryClient = useQueryClient();
+  const routingQueryKey = ["settings", "claude-sidecar", "routing"] as const;
+  return useMutation({
+    mutationFn: (sessionAffinity: boolean) => setClaudeSidecarSessionAffinity(sessionAffinity),
+    onSuccess: (data) => {
+      if (data.status !== "healthy") {
+        toast.error(data.message || "Failed to update CLIProxyAPI session affinity");
+        return;
+      }
+      queryClient.setQueryData(routingQueryKey, data);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update CLIProxyAPI session affinity");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: routingQueryKey });
+    },
+  });
+}
+
+export function useClaudeSidecarSessionAffinity(enabled: boolean) {
+  const routingQuery = useQuery({
+    queryKey: ["settings", "claude-sidecar", "routing"],
+    queryFn: getClaudeSidecarRouting,
+    enabled,
+  });
+  const sessionAffinityMutation = useSessionAffinityMutation();
+  return { routingQuery, sessionAffinityMutation };
+}
+
 export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
   const queryClient = useQueryClient();
   const routingQueryKey = ["settings", "claude-sidecar", "routing"] as const;
@@ -546,6 +578,7 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
   });
   const pausedMutation = useClaudeSidecarAccountPause();
   const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
+  const sessionAffinityMutation = useSessionAffinityMutation();
   const testMutation = useSidecarConnectionTest("claude");
   return {
     statusQuery,
@@ -555,6 +588,7 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
     priorityMutation,
     pausedMutation,
     excludedModelsMutation,
+    sessionAffinityMutation,
     testMutation,
   };
 }

@@ -5,10 +5,12 @@ import { Button } from "@/components/ui/button";
 import { ClaudeSidecarQuotaEstimation } from "@/features/accounts/components/claude-sidecar-quota-estimation";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
+import { SessionAffinityToggle } from "@/features/settings/components/session-affinity-toggle";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import {
   useClaudeSidecarAccountExcludedModels,
   useClaudeSidecarAccountPause,
+  useClaudeSidecarSessionAffinity,
   useOpenAICompatSidecar,
   useSidecarConnectionTest,
   type SidecarConnectionProvider,
@@ -55,6 +57,12 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   const testMutation = isOpenAICompat ? openaiCompatSidecar.testMutation : sidecarTestMutation;
   const pauseMutation = useClaudeSidecarAccountPause();
   const excludedModelsMutation = useClaudeSidecarAccountExcludedModels();
+  const { routingQuery, sessionAffinityMutation } = useClaudeSidecarSessionAffinity(isClaude);
+  const sessionAffinity = sessionAffinityMutation.isPending && typeof sessionAffinityMutation.variables === "boolean"
+    ? sessionAffinityMutation.variables
+    : routingQuery.data?.status === "healthy"
+      ? (routingQuery.data.sessionAffinity ?? null)
+      : null;
   const settingsAnchor = isOpenRouter
     ? "/settings#openrouter-sidecar"
     : isOrcaRouter
@@ -122,6 +130,19 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
           value={`${formatPercentNullable(secondaryRemaining)} | resets ${formatQuotaResetLabel(account.resetAtSecondary ?? null)}`}
         />
       </div>
+      ) : null}
+
+      {isClaude ? (
+        <SessionAffinityToggle
+          checked={sessionAffinity === true}
+          disabled={
+            busy ||
+            routingQuery.isLoading ||
+            sessionAffinityMutation.isPending ||
+            typeof sessionAffinity !== "boolean"
+          }
+          onCheckedChange={(enabled) => sessionAffinityMutation.mutate(enabled)}
+        />
       ) : null}
 
       {account.sidecarAuths && account.sidecarAuths.length > 0 ? (

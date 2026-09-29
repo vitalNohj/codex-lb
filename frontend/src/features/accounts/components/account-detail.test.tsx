@@ -1,12 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import type { ReactElement } from "react";
 import { BrowserRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountDetail } from "@/features/accounts/components/account-detail";
+import { SyntheticAccountDetail } from "@/features/accounts/components/synthetic-account-detail";
 import { createAccountSummary, createUpstreamProxyAdmin } from "@/test/mocks/factories";
+import { server } from "@/test/mocks/server";
 
 const testMutateAsync = vi.fn().mockResolvedValue(undefined);
 
@@ -393,5 +396,82 @@ describe("AccountDetail", () => {
     );
 
     expect(screen.getByRole("button", { name: "Reset usage" })).toBeDisabled();
+  });
+
+  it("shows one global session affinity switch above Claude accounts", async () => {
+    const user = userEvent.setup();
+    let received: boolean | undefined;
+    server.use(
+      http.put("*/api/claude-sidecar/routing/session-affinity", async ({ request }) => {
+        const body = (await request.json()) as { sessionAffinity?: boolean };
+        received = body.sessionAffinity;
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          sessionAffinity: body.sessionAffinity ?? false,
+          accounts: [],
+        });
+      }),
+    );
+
+    renderWithClient(
+      <SyntheticAccountDetail
+        account={createAccountSummary({
+          accountId: "claude-sidecar",
+          email: "cliproxyapi.local",
+          displayName: "Claude via CLIProxyAPI",
+          planType: "claude",
+          status: "active",
+          synthetic: true,
+          readOnly: true,
+          kind: "sidecar",
+          provider: "claude",
+          healthStatus: "healthy",
+          baseUrl: "http://127.0.0.1:8317",
+          sidecarAuths: [
+            { name: "claude-a.json", email: "a@example.com" },
+            { name: "claude-b.json", email: "b@example.com" },
+          ],
+        })}
+        busy={false}
+      />,
+    );
+
+    const toggles = await screen.findAllByRole("switch", { name: "Session affinity" });
+    expect(toggles).toHaveLength(1);
+    await waitFor(() => expect(toggles[0]).toBeEnabled());
+    expect(toggles[0]).not.toBeChecked();
+    const accountList = screen.getByText("Sidecar accounts").parentElement;
+    expect(accountList).not.toBeNull();
+    expect(
+      within(accountList as HTMLElement).queryByRole("switch", { name: "Session affinity" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(toggles[0]);
+    await waitFor(() => expect(received).toBe(true));
+  });
+
+  it("does not show session affinity on a non-Claude sidecar account", () => {
+    renderWithClient(
+      <SyntheticAccountDetail
+        account={createAccountSummary({
+          accountId: "openrouter-sidecar",
+          email: "openrouter.ai",
+          displayName: "OpenRouter",
+          planType: "openrouter",
+          status: "active",
+          synthetic: true,
+          readOnly: true,
+          kind: "sidecar",
+          provider: "openrouter",
+          healthStatus: "healthy",
+          baseUrl: "https://openrouter.ai/api/v1",
+        })}
+        busy={false}
+      />,
+    );
+
+    expect(screen.queryByRole("switch", { name: "Session affinity" })).not.toBeInTheDocument();
   });
 });

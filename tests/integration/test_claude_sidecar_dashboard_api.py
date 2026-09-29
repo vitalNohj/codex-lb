@@ -30,6 +30,7 @@ class _FakeSidecarClient:
     error: Exception | None = None
     models = [SidecarModel(id="claude-sonnet", created=123, owned_by="anthropic")]
     routing_strategy = "fill-first"
+    session_affinity = False
     auth_files: list[dict[str, JsonValue]] = [
         {
             "name": "claude-a@example.com.json",
@@ -46,6 +47,7 @@ class _FakeSidecarClient:
         },
     ]
     strategy_updates: list[str] = []
+    session_affinity_updates: list[bool] = []
     priority_updates: list[tuple[str, int]] = []
     disabled_updates: list[tuple[str, bool]] = []
     excluded_models_updates: list[tuple[str, list[str]]] = []
@@ -73,6 +75,17 @@ class _FakeSidecarClient:
         self.__class__.routing_strategy = value
         return value
 
+    async def get_session_affinity(self):
+        if self.error is not None:
+            raise self.error
+        return self.session_affinity
+
+    async def set_session_affinity(self, enabled: bool):
+        if self.error is not None:
+            raise self.error
+        self.__class__.session_affinity_updates.append(enabled)
+        self.__class__.session_affinity = enabled
+
     async def list_auth_files(self):
         if self.error is not None:
             raise self.error
@@ -98,6 +111,7 @@ def _reset_fake_sidecar_client() -> None:
     _FakeSidecarClient.error = None
     _FakeSidecarClient.models = [SidecarModel(id="claude-sonnet", created=123, owned_by="anthropic")]
     _FakeSidecarClient.routing_strategy = "fill-first"
+    _FakeSidecarClient.session_affinity = False
     _FakeSidecarClient.auth_files = [
         {
             "name": "claude-a@example.com.json",
@@ -115,6 +129,7 @@ def _reset_fake_sidecar_client() -> None:
         },
     ]
     _FakeSidecarClient.strategy_updates = []
+    _FakeSidecarClient.session_affinity_updates = []
     _FakeSidecarClient.priority_updates = []
     _FakeSidecarClient.disabled_updates = []
     _FakeSidecarClient.excluded_models_updates = []
@@ -483,6 +498,7 @@ async def test_sidecar_routing_endpoint_reports_disabled_then_not_configured_the
     payload = response.json()
     assert payload["status"] == "healthy"
     assert payload["strategy"] == "fill_first"
+    assert payload["sessionAffinity"] is False
     assert payload["accounts"] == [
         {
             "name": "claude-a@example.com.json",
@@ -595,6 +611,79 @@ async def test_put_routing_strategy_rejects_invalid(async_client, monkeypatch):
 
     assert response.status_code == 422
     assert _FakeSidecarClient.strategy_updates == []
+
+
+async def _configure_routing(async_client) -> None:
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_get_routing_reports_session_affinity(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    _FakeSidecarClient.session_affinity = True
+    await _configure_routing(async_client)
+
+    response = await async_client.get("/api/claude-sidecar/routing")
+
+    assert response.status_code == 200
+    assert response.json()["sessionAffinity"] is True
+
+
+@pytest.mark.asyncio
+async def test_put_session_affinity_round_trips(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    await _configure_routing(async_client)
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/session-affinity",
+        json={"sessionAffinity": True},
+    )
+
+    assert response.status_code == 200
+    assert _FakeSidecarClient.session_affinity_updates == [True]
+    assert response.json()["sessionAffinity"] is True
+
+
+@pytest.mark.asyncio
+async def test_put_session_affinity_rejects_an_account_payload(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    await _configure_routing(async_client)
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/session-affinity",
+        json={"name": "claude-a@example.com.json"},
+    )
+
+    assert response.status_code == 422
+    assert _FakeSidecarClient.session_affinity_updates == []
+
+
+@pytest.mark.asyncio
+async def test_put_session_affinity_reports_a_config_conflict(async_client, monkeypatch):
+    monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
+    _reset_fake_sidecar_client()
+    await _configure_routing(async_client)
+    _FakeSidecarClient.error = ClaudeSidecarError(409, "CLIProxyAPI config changed while updating session affinity")
+
+    response = await async_client.put(
+        "/api/claude-sidecar/routing/session-affinity",
+        json={"sessionAffinity": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
+    assert _FakeSidecarClient.session_affinity_updates == []
 
 
 @pytest.mark.asyncio
