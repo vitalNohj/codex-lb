@@ -229,7 +229,10 @@ def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEnt
         return _AccessIdentity(provider, normalized)
     if pricing_alias is not None:
         return _AccessIdentity(provider, pricing_alias)
-    sidecar_alias = canonical_sidecar_model(normalized)
+    # Routing already removed one configured prefix. Stripping again would
+    # turn ``cp-cp-claude-opus-5-5`` into the grant ``claude-opus-5-5`` while
+    # dispatch still forwards ``cp-claude-opus-5-5``.
+    sidecar_alias = canonical_sidecar_model(normalized, strip_prefix=route is None)
     return _AccessIdentity(provider, sidecar_alias if sidecar_alias is not None else normalized)
 
 

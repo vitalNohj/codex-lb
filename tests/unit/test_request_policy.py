@@ -321,6 +321,21 @@ def test_preserved_full_model_does_not_authorize_the_stripped_id() -> None:
         validate_model_access(api_key, "claude-opus-5-5", routing_entries=routing)
 
 
+def test_one_stripped_prefix_does_not_peel_a_second_prefix() -> None:
+    routing = (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=(SidecarPrefix(prefix="cp-", strip=True),),
+            full_models=("claude-opus-5-5",),
+        ),
+    )
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"claude-opus-5-5"})))
+
+    validate_model_access(api_key, "cp-claude-opus-5-5", routing_entries=routing)
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(api_key, "cp-cp-claude-opus-5-5", routing_entries=routing)
+
+
 def test_full_model_grant_matches_a_different_case() -> None:
     routing = (
         SidecarRoutingEntry(

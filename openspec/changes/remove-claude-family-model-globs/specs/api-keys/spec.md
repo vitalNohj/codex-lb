@@ -177,7 +177,14 @@ Native Claude price lookup MUST exact-match a price key after removing at most o
 
 ### Requirement: API-key model access does not collapse a separately priced version into its family
 
-`allowed_models` enforcement MUST use authoritative sidecar route resolution, including configured prefix stripping, before canonicalizing both requested and allowed model ids. Sidecar entry points MUST reject unauthorized routing identities before quota reservation or upstream dispatch. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family. A grant of an exact id MUST NOT admit a dotted spelling of that id.
+`allowed_models` enforcement MUST use authoritative sidecar route resolution, including configured prefix stripping, before canonicalizing both requested and allowed model ids. Once that route has produced the wire id, access MUST NOT remove another leading `cc/`, `cp-`, or `cp_`. Sidecar entry points MUST reject unauthorized routing identities before quota reservation or upstream dispatch. A key whose `allowed_models` names only a model family MUST NOT gain access to a separately routed and separately priced version of that family. A grant of an exact id MUST NOT admit a dotted spelling of that id.
+
+#### Scenario: A second routing prefix stays on the routed id
+
+- **GIVEN** the Claude routing prefix `cp-` strips and `claude-opus-5-5` is a full model
+- **WHEN** an API key whose `allowed_models` is exactly `claude-opus-5-5` requests `cp-cp-claude-opus-5-5`
+- **THEN** the request is refused as not allowed for that key
+- **AND** the same key can still request `cp-claude-opus-5-5`
 
 #### Scenario: A custom stripped prefix cannot bypass the family allowlist
 
