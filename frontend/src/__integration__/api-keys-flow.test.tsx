@@ -28,7 +28,11 @@ describe("api keys flow integration", () => {
     // First test in the file: the app's module graph loads cold and the
     // throttled CI environment can exceed the default 1s find timeout before
     // the settings page finishes mounting.
-    const createButton = await screen.findByRole("button", { name: "Create key", timeout: 10_000 });
+    const createButton = await screen.findByRole(
+      "button",
+      { name: "Create key" },
+      { timeout: 10_000 },
+    );
     expect(createButton).toBeInTheDocument();
     await user.click(createButton);
     await user.type(screen.getByLabelText("Name"), createdName);
