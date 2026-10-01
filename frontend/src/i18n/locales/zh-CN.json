@@ -1523,5 +1523,7 @@
   "modelSources.fields.reasoningEfforts": "支持的推理级别",
   "modelSources.fields.reasoningEffortsDescription": "填写这个模型源接受的推理级别标识，并选择默认值。",
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
-  "modelSources.fields.defaultReasoningEffort": "默认推理级别"
+  "modelSources.fields.defaultReasoningEffort": "默认推理级别",
+  "dashboard.requests.aliasedFrom": "别名自 {{model}}",
+  "dashboard.requestDetails.aliasedFrom": "别名来源"
 }

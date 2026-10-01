@@ -1523,5 +1523,7 @@
   "modelSources.fields.reasoningEfforts": "지원되는 추론 수준",
   "modelSources.fields.reasoningEffortsDescription": "이 모델 소스가 허용하는 추론 수준 슬러그를 적고 기본값을 고르세요.",
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
-  "modelSources.fields.defaultReasoningEffort": "기본 추론 수준"
+  "modelSources.fields.defaultReasoningEffort": "기본 추론 수준",
+  "dashboard.requests.aliasedFrom": "aliased from {{model}}",
+  "dashboard.requestDetails.aliasedFrom": "별칭 출처"
 }

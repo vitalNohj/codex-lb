@@ -198,6 +198,7 @@ describe("RequestLogsResponseSchema", () => {
           archiveRequestId: "archive-req-1",
           connectionRequestKind: "prewarm",
           model: "gpt-5.1",
+          upstreamModel: null,
           transport: "websocket",
           upstreamProxyRouteMode: "account_bound",
           upstreamProxyPoolId: "pool-1",
@@ -238,6 +239,7 @@ describe("RequestLogsResponseSchema", () => {
     });
 
     expect(parsed.requests[0]?.apiKeyName).toBe("Key A");
+    expect(parsed.requests[0]?.upstreamModel).toBeNull();
     expect(parsed.requests[0]?.apiKeyId).toBe("key-1");
     expect(parsed.requests[0]?.archiveRequestId).toBe("archive-req-1");
     expect(parsed.requests[0]?.requestKind).toBe("normal");
