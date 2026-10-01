@@ -12,9 +12,9 @@ configuration.
 
 ## Setting up a pool
 
-In **Settings -> Advanced -> Routing -> Model aliasing**, each alias row lists
-its targets. Add a target with the input under the list, change the order
-with the arrows, and remove with the `x` (the last target cannot be removed;
+In **Settings -> Model aliasing**, each alias row lists its targets. Add a
+target with the input under the list, change the order with the arrows, and
+remove with the `x` (the last target cannot be removed;
 delete the alias instead). Every change is saved immediately.
 
 ![Alias pool editor with one target cooling](screenshots/routing-alias-pools-after.png)

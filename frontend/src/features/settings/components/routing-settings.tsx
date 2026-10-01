@@ -1,4 +1,4 @@
-import { useReducer, useState } from "react";
+import { useReducer } from "react";
 import { Route, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -15,16 +15,11 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { AccountSummary } from "@/features/accounts/schemas";
-import { useModels } from "@/features/api-keys/hooks/use-models";
-import { ModelAliasRow, type ModelAliasRowError } from "@/features/settings/components/model-alias-row";
-import { useAliasPoolsHealth } from "@/features/settings/hooks/use-alias-pools-health";
 import type {
   AdditionalQuotaRoutingPolicy,
   DashboardSettings,
-  ModelAliasPool,
   SettingsUpdateRequest,
 } from "@/features/settings/schemas";
-import { ApiError } from "@/lib/api-client";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import { isSingleAccountRoutingSelectable } from "@/utils/account-status";
 import { cn } from "@/lib/utils";
@@ -108,8 +103,6 @@ type RoutingSettingsDraft = {
   limitWarmupIdleThreshold: string;
   additionalQuotaKey: string;
   additionalQuotaPolicy: AdditionalQuotaRoutingPolicy;
-  modelAliasTarget: string;
-  modelAliasName: string;
 };
 
 function createRoutingSettingsDraft(settings: DashboardSettings): RoutingSettingsDraft {
@@ -131,8 +124,6 @@ function createRoutingSettingsDraft(settings: DashboardSettings): RoutingSetting
     limitWarmupIdleThreshold: String(settings.limitWarmupIdleThresholdPercent),
     additionalQuotaKey: "",
     additionalQuotaPolicy: "inherit",
-    modelAliasTarget: "",
-    modelAliasName: "",
   };
 }
 
@@ -141,43 +132,6 @@ function routingSettingsDraftReducer(
   patch: Partial<RoutingSettingsDraft>,
 ): RoutingSettingsDraft {
   return { ...state, ...patch };
-}
-
-const EMPTY_MODEL_ALIASES: Record<string, ModelAliasPool> = {};
-
-function without<T>(record: Record<string, T>, key: string): Record<string, T> {
-  if (!(key in record)) {
-    return record;
-  }
-  const next = { ...record };
-  delete next[key];
-  return next;
-}
-
-/**
- * Server rejection of a pool save, attributed to the alias row it names.
- *
- * The settings PUT reports pool problems as `model_alias_pool_invalid` with
- * the alias (and offending target when it has one) in `details`; anything
- * else is a page-level toast, which the mutation already shows.
- */
-function aliasPoolSaveError(error: unknown): { alias: string; error: ModelAliasRowError } | null {
-  if (!(error instanceof ApiError) || error.code !== "model_alias_pool_invalid") {
-    return null;
-  }
-  const envelope = error.details;
-  const details =
-    typeof envelope === "object" && envelope !== null && "details" in envelope
-      ? (envelope as { details?: unknown }).details
-      : envelope;
-  if (typeof details !== "object" || details === null) {
-    return null;
-  }
-  const { alias, target } = details as Record<string, unknown>;
-  if (typeof alias !== "string" || alias.length === 0) {
-    return null;
-  }
-  return { alias, error: { message: error.message, target: typeof target === "string" ? target : null } };
 }
 
 function parseNonnegativeInteger(value: string): number | null {
@@ -211,45 +165,10 @@ export function RoutingSettings({
     createRoutingSettingsDraft,
   );
 
-  // Unsaved pool edits (reorder, add, remove target) live here until the
-  // save round-trips; a server rejection keeps them so the operator can fix
-  // the list instead of re-entering it. Keyed by alias.
-  const [aliasDrafts, setAliasDrafts] = useState<Record<string, string[]>>({});
-  const [aliasErrors, setAliasErrors] = useState<Record<string, ModelAliasRowError>>({});
-  const savedModelAliases = settings.modelAliases ?? EMPTY_MODEL_ALIASES;
-  const modelsQuery = useModels();
-  const knownModelIds = modelsQuery.data?.map((model) => model.id) ?? [];
-  const aliasHealth = useAliasPoolsHealth({ enabled: Object.keys(savedModelAliases).length > 0 });
-
   const save = (patch: Partial<SettingsUpdateRequest>) =>
     void onSave(
       settings.version === undefined ? patch : { ...patch, expectedVersion: settings.version },
     );
-  const saveModelAliases = async (
-    aliasName: string,
-    modelAliases: Record<string, ModelAliasPool>,
-    extra: Partial<SettingsUpdateRequest> = {},
-  ) => {
-    const patch: Partial<SettingsUpdateRequest> = { modelAliases, ...extra };
-    try {
-      await onSave(
-        settings.version === undefined ? patch : { ...patch, expectedVersion: settings.version },
-      );
-      setAliasDrafts((current) => without(current, aliasName));
-      setAliasErrors((current) => without(current, aliasName));
-    } catch (error) {
-      // The mutation has already toasted; a pool rejection is additionally
-      // pinned to its row. Other failures leave the draft in place too.
-      const rowError = aliasPoolSaveError(error);
-      if (rowError !== null) {
-        setAliasErrors((current) => ({ ...current, [rowError.alias]: rowError.error }));
-      }
-    }
-  };
-  const updateModelAliasTargets = (aliasName: string, targets: string[]) => {
-    setAliasDrafts((current) => ({ ...current, [aliasName]: targets }));
-    void saveModelAliases(aliasName, { ...savedModelAliases, [aliasName]: { targets } });
-  };
   const saveAdditionalQuotaPolicy = (
     quotaKey: string,
     policy: AdditionalQuotaRoutingPolicy,
@@ -270,34 +189,6 @@ export function RoutingSettings({
     delete next[quotaKey];
     save({ additionalQuotaRoutingPolicies: next });
   };
-  const saveModelAlias = (targetModel: string, aliasName: string) => {
-    const normalizedTarget = targetModel.trim();
-    const normalizedAlias = aliasName.trim();
-    if (!normalizedTarget || !normalizedAlias) {
-      return;
-    }
-    void saveModelAliases(normalizedAlias, {
-      ...savedModelAliases,
-      [normalizedAlias]: { targets: [normalizedTarget] },
-    });
-  };
-  const saveModelAliasCatalog = (aliasName: string, contextLength: number | null) => {
-    const nextCatalog = { ...(settings.customAliasCatalog ?? {}) };
-    if (contextLength === null) {
-      delete nextCatalog[aliasName];
-    } else {
-      nextCatalog[aliasName] = { contextLength };
-    }
-    save({ customAliasCatalog: nextCatalog });
-  };
-  const removeModelAlias = (aliasName: string) => {
-    const next = { ...savedModelAliases };
-    delete next[aliasName];
-    const nextCatalog = { ...(settings.customAliasCatalog ?? {}) };
-    delete nextCatalog[aliasName];
-    void saveModelAliases(aliasName, next, { customAliasCatalog: nextCatalog });
-  };
-
   const parsedCacheAffinityTtl = Number.parseInt(draft.cacheAffinityTtl, 10);
   const cacheAffinityTtlValid = Number.isInteger(parsedCacheAffinityTtl) && parsedCacheAffinityTtl > 0;
   const cacheAffinityTtlChanged =
@@ -401,19 +292,6 @@ export function RoutingSettings({
       return rows;
     }, []),
   ];
-  const modelAliasRows = Object.entries(savedModelAliases)
-    .map(([alias, pool]) => ({ alias, targets: aliasDrafts[alias] ?? pool.targets }))
-    .sort((a, b) => a.alias.localeCompare(b.alias));
-  const trimmedModelAliasName = draft.modelAliasName.trim();
-  const trimmedModelAliasTarget = draft.modelAliasTarget.trim();
-  const modelAliasNameConflict = modelAliasRows.some(
-    (row) => row.alias.toLowerCase() === trimmedModelAliasName.toLowerCase(),
-  );
-  const modelAliasAddValid =
-    trimmedModelAliasName.length > 0 &&
-    trimmedModelAliasTarget.length > 0 &&
-    !modelAliasNameConflict;
-
   const parsedStickyPrimaryThreshold = Number.parseFloat(draft.stickyPrimaryThreshold);
   const stickyPrimaryThresholdValid =
     Number.isFinite(parsedStickyPrimaryThreshold) &&
@@ -1338,75 +1216,6 @@ export function RoutingSettings({
               </Button>
             </div>
           </div>
-
-          <div className="space-y-3 p-3" id="model-aliases">
-            <div>
-              <p className="text-sm font-medium">Model aliasing</p>
-              <p className="text-xs text-muted-foreground">
-                Map real upstream models (left) to an alias name (right). Requests for the alias resolve to the
-                real model before routing, so prefix and full-model matchers still apply. Aliases are also listed on
-                GET /v1/models so discovery-only clients can select them.
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {t("settings.routing.modelAliases.poolDescription")}
-              </p>
-            </div>
-            <div className="space-y-2">
-              {modelAliasRows.map(({ alias, targets }) => (
-                <ModelAliasRow
-                  key={alias}
-                  alias={alias}
-                  targets={targets}
-                  health={aliasHealth.data?.aliases[alias]}
-                  knownModelIds={knownModelIds}
-                  catalogEntry={settings.customAliasCatalog?.[alias]}
-                  error={aliasErrors[alias]}
-                  busy={busy}
-                  onTargetsChange={(next) => updateModelAliasTargets(alias, next)}
-                  onRemove={() => removeModelAlias(alias)}
-                  onContextLengthChange={(contextLength) => saveModelAliasCatalog(alias, contextLength)}
-                />
-              ))}
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Input
-                  value={draft.modelAliasTarget}
-                  disabled={busy}
-                  onChange={(event) => updateDraft({ modelAliasTarget: event.target.value })}
-                  className="h-8 flex-1 text-xs"
-                  aria-label="Real model"
-                  placeholder="Real model (e.g. cx/claude-opus-4.8)"
-                />
-                <span className="text-xs text-muted-foreground sm:px-1" aria-hidden="true">
-                  →
-                </span>
-                <Input
-                  value={draft.modelAliasName}
-                  disabled={busy}
-                  onChange={(event) => updateDraft({ modelAliasName: event.target.value })}
-                  className="h-8 flex-1 text-xs"
-                  aria-label="Alias name"
-                  placeholder="Alias (e.g. custom_r1)"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-8 text-xs sm:w-24"
-                  disabled={busy || !modelAliasAddValid}
-                  onClick={() => {
-                    saveModelAlias(draft.modelAliasTarget, draft.modelAliasName);
-                    updateDraft({ modelAliasTarget: "", modelAliasName: "" });
-                  }}
-                >
-                  Add alias
-                </Button>
-              </div>
-              {modelAliasNameConflict ? (
-                <p className="text-xs text-destructive">An alias with this name already exists.</p>
-              ) : null}
-            </div>
-          </div>
-
         </div>
       </div>
     </section>
