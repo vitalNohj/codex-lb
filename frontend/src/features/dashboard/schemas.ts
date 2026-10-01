@@ -179,6 +179,10 @@ export const RequestLogSchema = z.object({
   requestKind: z.enum(["normal", "warmup", "limit_warmup", "prewarm", "compaction", "realtime_live"]).optional().default("normal"),
   connectionRequestKind: z.enum(["normal", "prewarm"]).nullable().optional(),
   model: z.string(),
+  // Alias-pool / aliased requests only: the target that actually served the
+  // request. Null when the request was not aliased or the target equals the
+  // client-facing model.
+  upstreamModel: z.string().nullable().optional().default(null),
   source: z.string().nullable().optional().default(null),
   sidecarAccountLabel: z.string().nullable().optional(),
   modelSourceId: z.string().nullable().optional(),

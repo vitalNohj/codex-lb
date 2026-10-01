@@ -176,6 +176,24 @@ function isUnresolvedExternalPrice(request: RequestLog): boolean {
   );
 }
 
+/**
+ * The model that actually served an aliased request, or null when the row is
+ * not aliased.
+ *
+ * Aliased rows record the client-facing alias in `model` and the target that
+ * was dispatched in `upstreamModel` (null when the target equals the alias).
+ * The dashboard shows the effective route as the primary model and the alias
+ * beneath it, so the Model column answers what the request actually ran on
+ * while preserving what the client asked for.
+ */
+function routedModelFor(request: RequestLog | null): string | null {
+  const routed = request?.upstreamModel?.trim();
+  if (!routed || !request || routed === request.model) {
+    return null;
+  }
+  return routed;
+}
+
 function RequestCost({ request }: { request: RequestLog }) {
   const { t } = useTranslation();
 
@@ -340,6 +358,7 @@ export function RecentRequestsTable({
   const blurred = usePrivacyStore((s) => s.blurred);
   const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest, t);
   const selectedRequestError = visibleRequestError(selectedRequest);
+  const selectedRoutedModel = routedModelFor(selectedRequest);
 
   const accountLabelMap = useMemo(() => {
     const index = new Map<string, string>();
@@ -416,6 +435,7 @@ export function RecentRequestsTable({
               const planLabel = planType ? formatSlug(planType) : "--";
               const upstreamTransport = request.upstreamTransport;
               const generationSpeed = formatGenerationSpeed(request);
+              const routedModel = routedModelFor(request);
 
               return (
                 <TableRow key={request.requestId}>
@@ -469,8 +489,17 @@ export function RecentRequestsTable({
                   <TableCell className="truncate align-top">
                     <div className="leading-tight">
                       <span className="font-mono text-xs">
-                        {formatModelLabel(request.model, request.reasoningEffort, visibleServiceTier)}
+                        {routedModel
+                          ? formatModelLabel(routedModel, null)
+                          : formatModelLabel(request.model, request.reasoningEffort, visibleServiceTier)}
                       </span>
+                      {routedModel ? (
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          {t("dashboard.requests.aliasedFrom", {
+                            model: formatModelLabel(request.model, request.reasoningEffort, visibleServiceTier),
+                          })}
+                        </div>
+                      ) : null}
                       {request.requestKind === "warmup" || request.requestKind === "limit_warmup" ? (
                         <div className="mt-1 text-xs text-muted-foreground">
                           {REQUEST_KIND_LABELS.warmup}
@@ -624,7 +653,24 @@ export function RecentRequestsTable({
               />
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.status")} value={selectedRequest ? t(`dashboard.requestStatus.${selectedRequest.status}`, { defaultValue: REQUEST_STATUS_LABELS[selectedRequest.status] ?? selectedRequest.status }) : "—"} />
-                <RequestDetailField label={t("dashboard.requests.columns.model")} value={selectedRequest ? formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier) : "—"} mono />
+                <RequestDetailField
+                  label={t("dashboard.requests.columns.model")}
+                  value={
+                    selectedRequest
+                      ? (selectedRoutedModel
+                        ? formatModelLabel(selectedRoutedModel, null)
+                        : formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier))
+                      : "—"
+                  }
+                  mono
+                />
+                {selectedRequest && selectedRoutedModel ? (
+                  <RequestDetailField
+                    label={t("dashboard.requestDetails.aliasedFrom")}
+                    value={formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier)}
+                    mono
+                  />
+                ) : null}
                 {selectedRequest?.requestedReasoningEffort &&
                 selectedRequest.requestedReasoningEffort !== selectedRequest.reasoningEffort ? (
                   <RequestDetailField label="Requested effort" value={selectedRequest.requestedReasoningEffort} mono />

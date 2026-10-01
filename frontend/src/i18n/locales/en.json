@@ -1521,5 +1521,7 @@
   "modelSources.fields.reasoningEfforts": "Supported reasoning efforts",
   "modelSources.fields.reasoningEffortsDescription": "List the effort slugs this model source accepts and choose which one should be the default.",
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
-  "modelSources.fields.defaultReasoningEffort": "Default reasoning effort"
+  "modelSources.fields.defaultReasoningEffort": "Default reasoning effort",
+  "dashboard.requests.aliasedFrom": "aliased from {{model}}",
+  "dashboard.requestDetails.aliasedFrom": "Aliased from"
 }

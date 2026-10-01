@@ -1702,4 +1702,78 @@ describe("RecentRequestsTable", () => {
       expect(screen.getAllByText("$0.25").length).toBeGreaterThan(0);
     });
   });
+
+  describe("aliased routing provenance", () => {
+    const ALIASED_REQUEST: RequestLog = {
+      ...VIEW_MODE_REQUEST,
+      requestId: "req-aliased",
+      model: "cc/claude-opus-5-5",
+      upstreamModel: "z-ai/glm-5.3-flash",
+      source: "openrouter_sidecar",
+    };
+
+    it("prominently shows the routed model with the requested alias beneath it", () => {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[]}
+          requests={[ALIASED_REQUEST]}
+        />,
+      );
+
+      const table = screen.getByRole("table");
+      expect(within(table).getByText("z-ai/glm-5.3-flash")).toBeInTheDocument();
+      expect(within(table).getByText("aliased from cc/claude-opus-5-5")).toBeInTheDocument();
+    });
+
+    it("keeps the routed model and the requested alias consistent in request details", () => {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[]}
+          requests={[ALIASED_REQUEST]}
+        />,
+      );
+
+      const dialog = openRequestDetails();
+      const modelField = within(dialog)
+        .getByText("Model")
+        .closest("div.space-y-1");
+      expect(modelField).toHaveTextContent("z-ai/glm-5.3-flash");
+      const aliasedField = within(dialog)
+        .getByText("Aliased from")
+        .closest("div.space-y-1");
+      expect(aliasedField).toHaveTextContent("cc/claude-opus-5-5");
+    });
+
+    it("renders unaliased rows without alias provenance", () => {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[]}
+          requests={[VIEW_MODE_REQUEST]}
+        />,
+      );
+
+      const table = screen.getByRole("table");
+      expect(within(table).getByText("gpt-5.1")).toBeInTheDocument();
+      expect(within(table).queryByText(/aliased from/)).not.toBeInTheDocument();
+
+      const dialog = openRequestDetails();
+      expect(within(dialog).getByText("Model").closest("div.space-y-1")).toHaveTextContent("gpt-5.1");
+      expect(within(dialog).queryByText("Aliased from")).not.toBeInTheDocument();
+    });
+
+    it("treats an upstream model equal to the requested model as not aliased", () => {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[]}
+          requests={[{ ...VIEW_MODE_REQUEST, requestId: "req-same", upstreamModel: "gpt-5.1" }]}
+        />,
+      );
+
+      expect(screen.queryByText(/aliased from/)).not.toBeInTheDocument();
+    });
+  });
 });
