@@ -4,7 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { authSession, models, settings, upstreamProxyAdmin } from "./fixtures";
 
 /**
- * Captures the Routing settings alias section for the PR body (PRINCIPLES P5).
+ * Captures the Model aliasing settings card for the PR body (PRINCIPLES P5).
  *
  * The API is fully mocked: one pooled alias with two targets, one of which is
  * cooling after a 402, plus one ordinary single-target alias so both row
@@ -86,7 +86,7 @@ test("routing alias pools render targets with health", async ({ page }) => {
   await mockApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
 
-  await page.goto("http://localhost:4175/codex/settings?advanced=1#model-aliases");
+  await page.goto("http://localhost:4175/codex/settings#model-aliases");
 
   const section = page.locator("#model-aliases");
   await expect(section).toBeVisible();

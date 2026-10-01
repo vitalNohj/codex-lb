@@ -92,7 +92,7 @@ is tried first.
 
 ## Operational notes
 
-- Health: Routing settings chips, or `GET /api/settings/alias-pools/health`.
+- Health: Settings > Model aliasing chips, or `GET /api/settings/alias-pools/health`.
 - Logs: grep `alias_pool_attempt` by `request_id`.
 - Cooldowns are per process. After a restart every target is healthy.
 - A pool whose targets all live on one provider (two OpenRouter model ids) is

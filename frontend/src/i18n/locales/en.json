@@ -1181,6 +1181,8 @@
   "settings.routing.promptCacheTtl.label": "Prompt-cache affinity TTL",
   "settings.routing.promptCacheTtl.description": "Keep OpenAI-style prompt-cache mappings warm for a bounded number of seconds.",
   "settings.routing.promptCacheTtl.save": "Save TTL",
+  "settings.aliases.title": "Model aliasing",
+  "settings.aliases.description": "Map real upstream models (left) to an alias name (right). Requests for the alias resolve to the real model before routing, so prefix and full-model matchers still apply. Aliases are also listed on GET /v1/models so discovery-only clients can select them.",
   "settings.routing.modelAliases.poolDescription": "List more than one target to make the alias a failover pool: requests try targets in order and move to the next one when the upstream is unreachable, out of credit, rate limited, or failing. Only OrcaRouter, OpenRouter, and OpenAI-compatible targets can be pooled.",
   "settings.routing.modelAliases.targetsFor": "Targets for {{alias}}",
   "settings.routing.modelAliases.addTargetFor": "Add target to {{alias}}",

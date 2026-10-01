@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
-import { RoutingSettings } from "@/features/settings/components/routing-settings";
+import { AliasSettings } from "@/features/settings/components/alias-settings";
 import { ALIAS_POOLS_HEALTH_POLL_MS } from "@/features/settings/hooks/use-alias-pools-health";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
@@ -37,10 +37,10 @@ function renderEditor(initial: DashboardSettings) {
     const fields: Partial<SettingsUpdateRequest> = { ...patch };
     delete fields.expectedVersion;
     current = { ...current, ...(fields as Partial<DashboardSettings>) };
-    view.rerender(<RoutingSettings settings={current} busy={false} onSave={onSave} />);
+    view.rerender(<AliasSettings settings={current} busy={false} onSave={onSave} />);
     return current;
   });
-  const view = renderWithProviders(<RoutingSettings settings={current} busy={false} onSave={onSave} />);
+  const view = renderWithProviders(<AliasSettings settings={current} busy={false} onSave={onSave} />);
   return { onSave, view };
 }
 
@@ -96,7 +96,7 @@ describe("model alias pools", () => {
 
   it("offers known model ids as completions for a new target", () => {
     renderWithProviders(
-      <RoutingSettings settings={settingsWithPool([ORCA])} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />,
+      <AliasSettings settings={settingsWithPool([ORCA])} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />,
     );
 
     const input = row().getByRole("combobox", { name: `Add target to ${ALIAS}` });
@@ -109,7 +109,7 @@ describe("model alias pools", () => {
   it("rejects a duplicate target before saving", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithProviders(<RoutingSettings settings={settingsWithPool([ORCA])} busy={false} onSave={onSave} />);
+    renderWithProviders(<AliasSettings settings={settingsWithPool([ORCA])} busy={false} onSave={onSave} />);
 
     await user.type(row().getByRole("combobox", { name: `Add target to ${ALIAS}` }), ORCA.toUpperCase());
 
@@ -122,7 +122,7 @@ describe("model alias pools", () => {
   it("cannot remove the last target but can remove the alias", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    renderWithProviders(<RoutingSettings settings={settingsWithPool([ORCA])} busy={false} onSave={onSave} />);
+    renderWithProviders(<AliasSettings settings={settingsWithPool([ORCA])} busy={false} onSave={onSave} />);
 
     expect(row().getByRole("button", { name: `Remove target ${ORCA}` })).toBeDisabled();
     expect(row().queryByRole("button", { name: `Move ${ORCA} up` })).not.toBeInTheDocument();
@@ -139,7 +139,7 @@ describe("model alias pools", () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithProviders(
-      <RoutingSettings settings={settingsWithPool([ORCA, OPENROUTER])} busy={false} onSave={onSave} />,
+      <AliasSettings settings={settingsWithPool([ORCA, OPENROUTER])} busy={false} onSave={onSave} />,
     );
 
     await user.click(row().getByRole("button", { name: `Remove target ${ORCA}` }));
@@ -153,7 +153,7 @@ describe("model alias pools", () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithProviders(
-      <RoutingSettings settings={createDashboardSettings({ modelAliases: {} })} busy={false} onSave={onSave} />,
+      <AliasSettings settings={createDashboardSettings({ modelAliases: {} })} busy={false} onSave={onSave} />,
     );
 
     await user.type(screen.getByRole("textbox", { name: "Real model" }), ORCA);
@@ -169,7 +169,7 @@ describe("model alias pools", () => {
     const user = userEvent.setup();
     const message = `Alias '${ALIAS}' target 'cc/glm-5.3' routes to Claude, which does not support pooling yet`;
     const onSave = vi.fn().mockRejectedValue(poolInvalidError(message, "cc/glm-5.3"));
-    renderWithProviders(<RoutingSettings settings={settingsWithPool([ORCA])} busy={false} onSave={onSave} />);
+    renderWithProviders(<AliasSettings settings={settingsWithPool([ORCA])} busy={false} onSave={onSave} />);
 
     await user.type(row().getByRole("combobox", { name: `Add target to ${ALIAS}` }), "cc/glm-5.3{Enter}");
 
@@ -206,7 +206,7 @@ describe("model alias pools", () => {
       ),
     );
     renderWithProviders(
-      <RoutingSettings
+      <AliasSettings
         settings={settingsWithPool([ORCA, OPENROUTER])}
         busy={false}
         onSave={vi.fn().mockResolvedValue(undefined)}
@@ -231,7 +231,7 @@ describe("model alias pools", () => {
         }),
       );
       const view = renderWithProviders(
-        <RoutingSettings
+        <AliasSettings
           settings={settingsWithPool([ORCA, OPENROUTER])}
           busy={false}
           onSave={vi.fn().mockResolvedValue(undefined)}
@@ -259,7 +259,7 @@ describe("model alias pools", () => {
       }),
     );
     renderWithProviders(
-      <RoutingSettings
+      <AliasSettings
         settings={createDashboardSettings({ modelAliases: {} })}
         busy={false}
         onSave={vi.fn().mockResolvedValue(undefined)}

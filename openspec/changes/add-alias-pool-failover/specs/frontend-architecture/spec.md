@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Routing settings edit alias pools as ordered target lists
+### Requirement: Model aliasing settings edit alias pools as ordered target lists
 
-The Routing settings model alias section MUST render each alias as one row whose
+The Model aliasing settings section MUST render each alias as one row whose
 target side is an ordered list of target chips. Each row MUST offer: add a
 target (text input with a datalist of known model ids), remove a target, and
 move a target up or down. Removing the last target MUST be prevented; the row's
@@ -36,9 +36,9 @@ unsaved reorder.
 - **THEN** the server message is shown on the `pooled/glm-5.3` row
 - **AND** the two-target list remains in the editor
 
-### Requirement: Alias pool target health is visible in Routing settings
+### Requirement: Alias pool target health is visible in Model aliasing settings
 
-While the Routing section is mounted the dashboard MUST poll
+While the Model aliasing section is mounted the dashboard MUST poll
 `GET /api/settings/alias-pools/health` every 15 seconds and render each target
 chip's state: a neutral `healthy` state, or a `cooling` state showing the
 expiry time and the last upstream status. The poll MUST stop when the section
@@ -47,11 +47,11 @@ unmounts. Health MUST be display-only; it MUST NOT alter the saved pool.
 #### Scenario: Cooling chip
 
 - **GIVEN** health reports `orcarouter/z-ai/glm-5.3` as `cooling` with `last_status=402`
-- **WHEN** the Routing section renders
+- **WHEN** the Model aliasing section renders
 - **THEN** the `orcarouter/z-ai/glm-5.3` chip shows a cooling indicator with `402` and the expiry time
 
 #### Scenario: Poll stops on unmount
 
-- **GIVEN** the Routing section is mounted and polling
-- **WHEN** the operator collapses the Advanced settings group
+- **GIVEN** the Model aliasing section is mounted and polling
+- **WHEN** the operator leaves the Settings page
 - **THEN** no further health requests are issued

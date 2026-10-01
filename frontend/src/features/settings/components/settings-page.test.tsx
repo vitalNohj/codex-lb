@@ -22,6 +22,7 @@ const stickySessionsSectionMock = vi.fn();
 const modelSourcesSettingsMock = vi.fn();
 const dataRetentionSettingsMock = vi.fn();
 const telemetrySettingsMock = vi.fn();
+const aliasSettingsMock = vi.fn();
 
 vi.mock("@/features/settings/hooks/use-settings", () => ({
   useSettings: () => useSettingsMock(),
@@ -34,6 +35,13 @@ vi.mock("@/features/accounts/hooks/use-accounts", () => ({
 
 vi.mock("@/features/settings/components/appearance-settings", () => ({
   AppearanceSettings: () => <div>Appearance Settings</div>,
+}));
+
+vi.mock("@/features/settings/components/alias-settings", () => ({
+  AliasSettings: (props: unknown) => {
+    aliasSettingsMock(props);
+    return <div>Alias Settings</div>;
+  },
 }));
 
 vi.mock("@/features/settings/components/routing-settings", () => ({
@@ -181,6 +189,7 @@ describe("SettingsPage", () => {
     modelSourcesSettingsMock.mockReset();
     dataRetentionSettingsMock.mockReset();
     telemetrySettingsMock.mockReset();
+    aliasSettingsMock.mockReset();
   });
 
   function renderSettings(initialEntry = "/settings") {
@@ -230,6 +239,32 @@ describe("SettingsPage", () => {
     await user.keyboard("{/Control}");
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     scrollSpy.mockRestore();
+  });
+
+  it("gives model aliasing its own navigation entry and section outside Advanced", async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(scrollIntoView);
+    renderSettings();
+
+    const link = screen.getByRole("link", { name: "Model aliasing" });
+    expect(link).toHaveAttribute("href", "#alias-settings");
+    await user.click(link);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.instances[0]).toHaveAttribute("id", "alias-settings");
+    expect(window.location.hash).toBe("");
+    scrollSpy.mockRestore();
+
+    // Mounted with the core sections while Advanced stays collapsed.
+    expect(screen.getByRole("button", { name: "Show advanced settings" })).toBeInTheDocument();
+    expect(routingSettingsMock).not.toHaveBeenCalled();
+    const aliasSection = document.getElementById("alias-settings");
+    expect(aliasSection).toContainElement(screen.getByText("Alias Settings"));
+    expect(document.getElementById("advanced-settings")).not.toContainElement(screen.getByText("Alias Settings"));
+    expect(aliasSettingsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ settings, busy: false, onSave: expect.any(Function) }),
+    );
   });
 
   it("opens advanced sections from the section navigation in one interaction", async () => {
@@ -291,6 +326,7 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("Password Settings")).not.toBeInTheDocument();
     expect(screen.queryByText("Session Settings")).not.toBeInTheDocument();
     expect(importSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ busy: true }));
+    expect(aliasSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ busy: true }));
     expect(apiKeysSectionMock).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }));
     expect(telemetrySettingsMock).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }));
 
