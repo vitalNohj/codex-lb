@@ -1181,6 +1181,8 @@
   "settings.routing.promptCacheTtl.label": "Prompt 缓存亲和 TTL",
   "settings.routing.promptCacheTtl.description": "在指定秒数内保留 OpenAI 风格的 prompt 缓存映射。",
   "settings.routing.promptCacheTtl.save": "保存 TTL",
+  "settings.aliases.title": "模型别名",
+  "settings.aliases.description": "将真实上游模型（左）映射到别名（右）。对别名的请求会在路由前解析为真实模型，因此前缀和完整模型匹配规则仍然适用。别名也会列在 GET /v1/models 中，供仅依赖发现的客户端选择。",
   "settings.routing.modelAliases.poolDescription": "列出多个目标即可将别名变为故障转移池：请求按顺序尝试各目标，当上游无法访问、余额不足、被限流或失败时切换到下一个。只有 OrcaRouter、OpenRouter 和 OpenAI 兼容目标可以加入池。",
   "settings.routing.modelAliases.targetsFor": "{{alias}} 的目标",
   "settings.routing.modelAliases.addTargetFor": "为 {{alias}} 添加目标",

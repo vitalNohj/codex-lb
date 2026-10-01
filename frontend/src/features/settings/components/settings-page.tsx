@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import {
   Activity,
+  ArrowRightLeft,
   Boxes,
   KeySquare,
   Palette,
@@ -21,6 +22,7 @@ import { ModelSourcesSettings } from "@/features/model-sources/components/model-
 import { QuotaPlannerSection } from "@/features/quota-planner/components/quota-planner-section";
 import { shouldExpandAdvancedSettings } from "@/features/settings/advanced-settings-deeplink";
 import { AdvancedSettingsGroup } from "@/features/settings/components/advanced-settings-group";
+import { AliasSettings } from "@/features/settings/components/alias-settings";
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
 import { DataRetentionSettings } from "@/features/settings/components/data-retention-settings";
 import { FreeModelDiscoveryPanel } from "@/features/settings/components/free-model-discovery-panel";
@@ -58,6 +60,7 @@ type SectionNavItem = {
 
 const SECTION_NAV: SectionNavItem[] = [
   { id: "external-integrations-group", label: "Integrations", icon: Boxes },
+  { id: "alias-settings", label: "Model aliasing", icon: ArrowRightLeft },
   { id: "appearance-settings", label: "Appearance", icon: Palette },
   { id: "account-settings", label: "Accounts", icon: Activity },
   { id: "security-settings", label: "Security", icon: ShieldCheck },
@@ -292,6 +295,10 @@ export function SettingsPage() {
                 locationHash={location.hash}
               />
               <FreeModelDiscoveryPanel settings={settings} />
+            </SectionGroup>
+
+            <SectionGroup id="alias-settings" title="Model aliasing">
+              <AliasSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             </SectionGroup>
 
             <SectionGroup id="appearance-settings" title="Appearance">
