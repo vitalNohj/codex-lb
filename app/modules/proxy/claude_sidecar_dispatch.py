@@ -1968,9 +1968,11 @@ async def _sidecar_request_cost(model: str, usage: SidecarUsage | None) -> "Exte
     their ``usage.cost``/``usage.cost_usd`` back verbatim. Forwarding that as
     ``billed_cost_usd`` would record another party's debit as this request's
     authoritative actual spend, which the mapper and the savings arithmetic then
-    treat as final. The cost here is therefore always a catalog-calculated list
-    price, marked as such. Its per-account token attribution is collected
-    separately and is untouched.
+    treat as final. The cost here is therefore always a list price: the built-in
+    table's rate for a model it lists, which is the same price a native request
+    for that model pays, cache-read rate included, and otherwise a
+    catalog-calculated figure, marked as such. Its per-account token attribution
+    is collected separately and is untouched.
 
     Imported lazily for the same reason the rest of this file does it: the pricing
     module reaches back into this one for routing identity.

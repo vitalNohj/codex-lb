@@ -183,6 +183,21 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_cached_input_per_1m=0.40,
         long_context_output_per_1m=15.0,
     ),
+    "gpt-6.1-sol": ModelPrice(
+        input_per_1m=2.0,
+        cached_input_per_1m=0.10,
+        output_per_1m=10.0,
+        priority_input_per_1m=4.0,
+        priority_cached_input_per_1m=0.20,
+        priority_output_per_1m=20.0,
+        flex_input_per_1m=1.0,
+        flex_cached_input_per_1m=0.05,
+        flex_output_per_1m=5.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=4.0,
+        long_context_cached_input_per_1m=0.20,
+        long_context_output_per_1m=15.0,
+    ),
     "gpt-6-luna": ModelPrice(
         input_per_1m=0.10,
         cached_input_per_1m=0.01,
@@ -686,6 +701,45 @@ def resolve_model_alias(model: str, aliases: Mapping[str, str]) -> str | None:
     return max(matched, key=lambda item: item[0])[1]
 
 
+def _find_price_key(pricing: Mapping[str, ModelPrice], model_id: str) -> tuple[str, ModelPrice] | None:
+    target = model_id.lower()
+    for key, value in pricing.items():
+        if key.lower() == target:
+            return key, value
+    return None
+
+
+def get_listed_pricing_for_model(
+    model: str | None,
+    pricing: Mapping[str, ModelPrice] | None = None,
+) -> tuple[str, ModelPrice] | None:
+    """Return the table entry this exact model identity owns, if any.
+
+    The match is case-insensitive and exact: the id itself, its supported
+    versioned spelling, or the id after one leading cc/, cp-, or cp_ routing
+    prefix. Alias globs and the free-model heuristic are not identities, so a
+    longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
+    Every pricing path, native and sidecar, asks this question first, so a
+    listed model has one price everywhere.
+    """
+    if not model:
+        return None
+    pricing = pricing or DEFAULT_PRICING_MODELS
+    normalized = model.lower()
+    listed = _find_price_key(pricing, normalized)
+    if listed is not None:
+        return listed
+    versioned = resolve_versioned_model_id(normalized)
+    if versioned:
+        listed = _find_price_key(pricing, versioned)
+        if listed is not None:
+            return listed
+    routed = strip_known_sidecar_prefix(normalized)
+    if routed != normalized:
+        return _find_price_key(pricing, routed)
+    return None
+
+
 def get_pricing_for_model(
     model: str,
     pricing: Mapping[str, ModelPrice] | None = None,
@@ -700,24 +754,15 @@ def get_pricing_for_model(
     if is_known_free_model(normalized):
         return "free", FREE_MODEL_PRICE
 
-    for key, value in pricing.items():
-        if key.lower() == normalized:
-            return key, value
+    listed = get_listed_pricing_for_model(normalized, pricing)
+    if listed is not None:
+        return listed
 
-    # Versioned identity, then a non-Claude alias. A Claude id matches a key
-    # only as that exact string, or after one leading cc/, cp-, or cp_ prefix.
-    # A longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
-    for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
-        if not alias:
-            continue
-        for key, value in pricing.items():
-            if key.lower() == alias.lower():
-                return key, value
-    routed = strip_known_sidecar_prefix(normalized)
-    if routed.lower() != normalized:
-        for key, value in pricing.items():
-            if key.lower() == routed.lower():
-                return key, value
+    # Native ids may still reach a key through a non-Claude alias glob. Claude
+    # ids match a key only through get_listed_pricing_for_model above.
+    alias = resolve_model_alias(normalized, aliases)
+    if alias:
+        return _find_price_key(pricing, alias)
     return None
 
 

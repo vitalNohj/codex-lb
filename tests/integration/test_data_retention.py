@@ -4,18 +4,31 @@ from datetime import timedelta
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import app.core.retention.job as retention_job
 from app.core.config.settings import Settings, get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.retention.job import run_retention_pass
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, AdditionalUsageHistory, RequestLog, UsageHistory
+from app.db.models import (
+    Account,
+    AccountStatus,
+    AccountUsageRollupState,
+    AdditionalUsageHistory,
+    RequestLog,
+    RequestUsageHourlyRollup,
+    UsageHistory,
+)
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.usage_rollup import run_fold_pass
-from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
+from app.modules.accounts.usage_time_rollup import (
+    epoch_seconds,
+    floor_to_hour,
+    run_conversation_fold_pass,
+    run_hourly_fold_pass,
+)
 from app.modules.request_logs.repository import RequestLogsRepository
 
 pytestmark = pytest.mark.integration
@@ -356,6 +369,67 @@ async def test_request_log_pruning_skipped_while_conversation_backfill_behind(db
     async with SessionLocal() as session:
         presence = (await session.execute(sa_select(RequestConversationHourlyRollup))).scalars().all()
     assert [(row.conversation_id, row.request_count) for row in presence] == [("conv_gate", 1)]
+
+
+@pytest.mark.asyncio
+async def test_request_log_pruning_skipped_while_hourly_repair_pending(db_setup, monkeypatch):
+    """A pending hourly rollup repair must pause pruning until it finishes.
+
+    A migration that re-prices folded rows arms `upgrade_repair_from`, and the
+    repair rebuilds those hours from raw rows. If retention pruned a re-priced
+    row first, the repair could no longer reach its hour and the bucket would
+    keep the old cost for good. Once the repair clears the marker, pruning
+    resumes and the repaired bucket survives it.
+    """
+    now = utcnow()
+    # On an exact hour: the repair starts at the hour after the earliest
+    # surviving row, so a mid-hour row would put its own bucket out of reach.
+    repriced_hour = floor_to_hour(now - timedelta(days=35))
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+        await accounts_repo.upsert(_make_account("acc_repair", "repair@example.com"))
+        await _add_log(logs_repo, account_id="acc_repair", request_id="req_35d", requested_at=repriced_hour)
+        await _add_log(logs_repo, account_id="acc_repair", request_id="req_1d", requested_at=now - timedelta(days=1))
+
+    await run_fold_pass(now=now)
+    await run_hourly_fold_pass(now=now)
+    await run_conversation_fold_pass(now=now)
+
+    # What a re-pricing migration does: change the folded row's cost, then arm
+    # the repair at its hour.
+    async with SessionLocal() as session:
+        await session.execute(update(RequestLog).where(RequestLog.request_id == "req_35d").values(cost_usd=0.5))
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=repriced_hour))
+        await session.commit()
+
+    async def _bucket_cost() -> float:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(RequestUsageHourlyRollup.cost_usd).where(
+                        RequestUsageHourlyRollup.bucket_epoch == epoch_seconds(repriced_hour)
+                    )
+                )
+            ).scalars()
+            return sum(rows)
+
+    assert await _bucket_cost() == pytest.approx(0.01)
+
+    _set_retention(monkeypatch, request_logs=30)
+    assert (await run_retention_pass(now=now))["request_logs"] == 0
+    async with SessionLocal() as session:
+        remaining = (await session.execute(select(RequestLog.request_id))).scalars().all()
+    assert sorted(remaining) == ["req_1d", "req_35d"]
+
+    await run_hourly_fold_pass(now=now)
+    async with SessionLocal() as session:
+        marker = (await session.execute(select(AccountUsageRollupState.upgrade_repair_from))).scalar_one()
+    assert marker is None
+    assert await _bucket_cost() == pytest.approx(0.5)
+
+    assert (await run_retention_pass(now=now))["request_logs"] == 1
+    assert await _bucket_cost() == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio

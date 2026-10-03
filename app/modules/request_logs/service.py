@@ -6,6 +6,7 @@ from datetime import datetime
 from app.core.config.settings_cache import get_settings_cache
 from app.core.usage.external_pricing.providers import external_priced_provider_for_log_source
 from app.core.usage.external_pricing.store import normalize_lookup_key
+from app.db.models import CostSource
 from app.modules.openai_compat.endpoints import is_openai_compat_log_source, parse_openai_compat_endpoints
 from app.modules.request_logs.mappers import (
     QUOTA_CODES,
@@ -154,10 +155,14 @@ class RequestLogsService:
                     endpoint.provider_id: endpoint.name
                     for endpoint in parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
                 }
+        # A sidecar row priced from the built-in table never consulted the
+        # resolver, so a catalog record left over for the same id must not
+        # restate its price status.
         price_key_by_log_id = {
             log.id: normalize_lookup_key(provider, log.model)
             for log in logs
             if (provider := external_priced_provider_for_log_source(log.source)) is not None
+            and log.cost_source != CostSource.STATIC_TABLE.value
         }
         current_price_status_by_key = await self._repo.get_external_price_statuses(set(price_key_by_log_id.values()))
         requests = [

@@ -10,11 +10,22 @@ participating dispatch records them identically:
 Precedence is not a preference, it is a correctness rule. An amount the upstream
 reported as billed is authoritative actual spend and is stored verbatim: it folds
 in tiered pricing, peak multipliers, cache ratios, and rounding that are not
-reproducible from published rates. A catalog-calculated list price is used only
-when the upstream reported nothing, and is marked as such, because it is what the
-request would list at rather than what was debited.
+reproducible from published rates.
 
-The two never merge. A calculated figure never overwrites a billed one, and a
+When the upstream reported nothing, a model the built-in pricing table lists is
+priced from that table, exactly as a native request for the same model is. The
+table is the one price for every model it lists: it carries the cache-read,
+priority, flex, and long-context rates that a catalog input/output pair lacks, so
+pricing a listed model from a catalog would bill every cached token at the full
+input rate. The match is by exact identity (see
+:func:`app.core.usage.pricing.get_listed_pricing_for_model`), never by glob, so
+an id the table has never heard of is not priced at a lookalike's rate.
+
+Only an id the table does not list reaches the external price resolver. Its
+catalog-calculated list price is marked as such, because it is what the request
+would list at rather than what was debited.
+
+The figures never merge. A calculated figure never overwrites a billed one, and a
 billed one is never recomputed or reconciled against list pricing.
 
 That precedence is only sound while "reported as billed" is true, so it is gated
@@ -37,7 +48,12 @@ from typing import Generic, Protocol, TypeVar
 
 from app.core.usage.external_pricing import calculated_cost_for_request
 from app.core.usage.external_pricing.providers import reports_per_request_billed_cost
-from app.core.usage.pricing import UsageTokens
+from app.core.usage.pricing import (
+    ModelPrice,
+    UsageTokens,
+    calculate_cost_from_usage,
+    get_listed_pricing_for_model,
+)
 from app.db.models import CostSource, ExternalPriceStatus
 
 logger = logging.getLogger(__name__)
@@ -85,6 +101,25 @@ def validated_billed_cost(cost_usd: float | None) -> float | None:
     return cost_usd
 
 
+def _table_cost(usage: UsageTokens | None, price: ModelPrice, service_tier: str | None) -> float | None:
+    """The listed rate applied to this request's usage.
+
+    ``None`` when there is no usable usage to price. A non-finite or negative
+    count prices nothing rather than a nonsense figure, the same rule the
+    external price resolver applies.
+    """
+
+    if usage is None:
+        return None
+    counts = (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens)
+    if not all(isfinite(count) and count >= 0 for count in counts):
+        return None
+    cost = calculate_cost_from_usage(usage, price, service_tier=service_tier)
+    if cost is None or not _cost_is_representable(cost):
+        return None
+    return cost
+
+
 @dataclass(slots=True)
 class BilledCostAccumulator:
     value: float | None = None
@@ -110,6 +145,33 @@ async def external_request_cost(
     from persisted state and schedules any lookup in the background.
     """
 
+    # A provider that does not bill per request has no billed amount to report,
+    # whatever its response body says. Discarding the figure here rather than at
+    # each dispatch keeps one rule in one place: the alternative is every future
+    # integration remembering not to pass its own zero through.
+    valid_billed_cost = validated_billed_cost(billed_cost_usd) if reports_per_request_billed_cost(provider) else None
+
+    listed = get_listed_pricing_for_model(model)
+    if listed is not None:
+        # The table owns this model's price on every path, so the resolver is not
+        # consulted: no catalog lookup is scheduled, and no catalog figure can
+        # disagree with what a native request for the same model costs. Stating
+        # the source even when there is no usable usage keeps the log row as
+        # NULL as the quota charge, instead of letting the log writer price the
+        # same tokens again on its own.
+        if valid_billed_cost is not None:
+            return ExternalRequestCost(
+                cost_usd=valid_billed_cost,
+                cost_source=CostSource.UPSTREAM_BILLED.value,
+                price_status=None,
+            )
+        _, price = listed
+        return ExternalRequestCost(
+            cost_usd=_table_cost(usage, price, service_tier),
+            cost_source=CostSource.STATIC_TABLE.value,
+            price_status=None,
+        )
+
     try:
         calculated, status = await calculated_cost_for_request(
             provider=provider,
@@ -124,11 +186,6 @@ async def external_request_cost(
 
     status_value = status.value if status is not None else None
 
-    # A provider that does not bill per request has no billed amount to report,
-    # whatever its response body says. Discarding the figure here rather than at
-    # each dispatch keeps one rule in one place: the alternative is every future
-    # integration remembering not to pass its own zero through.
-    valid_billed_cost = validated_billed_cost(billed_cost_usd) if reports_per_request_billed_cost(provider) else None
     if valid_billed_cost is not None:
         return ExternalRequestCost(
             cost_usd=valid_billed_cost,

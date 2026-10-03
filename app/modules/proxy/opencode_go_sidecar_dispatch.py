@@ -947,11 +947,12 @@ async def _opencode_go_request_cost(
     """Resolve this request's cost once, for both the quota charge and the log.
 
     OpenCode Go is a flat $10/month subscription and reports no billed amount,
-    so in practice this resolves to a ``catalog_calculated`` figure - a
-    **list-price usage estimate, never spend**. The ``billed_cost_usd`` argument
-    is still honoured rather than dropped, so that if Go ever does publish a
-    per-request amount it is recorded as authoritative instead of being
-    shadowed by a computed one.
+    so in practice this resolves to a **list-price usage estimate, never
+    spend**: the built-in table's rate for a model it lists, otherwise a
+    ``catalog_calculated`` figure. The ``billed_cost_usd`` argument is still
+    passed through rather than dropped, so that if Go ever bills per request
+    and joins ``PER_REQUEST_BILLED_PROVIDERS``, its amount is recorded as
+    authoritative instead of being shadowed by a computed one.
     """
 
     return await external_request_cost(
