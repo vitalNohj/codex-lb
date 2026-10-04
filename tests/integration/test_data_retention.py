@@ -359,6 +359,54 @@ async def test_request_log_pruning_skipped_while_conversation_backfill_behind(db
 
 
 @pytest.mark.asyncio
+async def test_request_log_pruning_paused_while_upgrade_repair_pending(db_setup, monkeypatch):
+    """A pending post-upgrade repair pauses pruning even when every watermark
+    is current. The repair refolds buckets from raw rows and starts no earlier
+    than the first hour the surviving rows fully cover, so a row pruned first
+    would leave its bucket holding pre-repair figures for good. Once the
+    repair clears the marker, pruning resumes."""
+    from sqlalchemy import update
+
+    from app.db.models import AccountUsageRollupState
+    from app.modules.accounts.usage_time_rollup import floor_to_hour
+
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+        await accounts_repo.upsert(_make_account("acc_repair", "repair@example.com"))
+        await _add_log(logs_repo, account_id="acc_repair", request_id="req_60d", requested_at=now - timedelta(days=60))
+        await _add_log(logs_repo, account_id="acc_repair", request_id="req_1d", requested_at=now - timedelta(days=1))
+
+    await run_fold_pass(now=now)
+    await run_hourly_fold_pass(now=now)
+    await run_conversation_fold_pass(now=now)
+    # What a cost backfill migration leaves behind after repricing folded rows.
+    async with SessionLocal() as session:
+        await session.execute(
+            update(AccountUsageRollupState).values(upgrade_repair_from=floor_to_hour(now - timedelta(days=2)))
+        )
+        await session.commit()
+
+    _set_retention(monkeypatch, request_logs=30)
+    assert (await run_retention_pass(now=now))["request_logs"] == 0
+    async with SessionLocal() as session:
+        remaining = (await session.execute(select(RequestLog.request_id))).scalars().all()
+    assert sorted(remaining) == ["req_1d", "req_60d"]
+
+    # The next hourly pass completes the repair and clears the marker.
+    await run_hourly_fold_pass(now=now)
+    async with SessionLocal() as session:
+        marker = (await session.execute(select(AccountUsageRollupState.upgrade_repair_from))).scalar_one()
+    assert marker is None
+
+    assert (await run_retention_pass(now=now))["request_logs"] == 1
+    async with SessionLocal() as session:
+        remaining = (await session.execute(select(RequestLog.request_id))).scalars().all()
+    assert remaining == ["req_1d"]
+
+
+@pytest.mark.asyncio
 async def test_usage_history_protects_latest_by_recorded_at_not_insert_order(db_setup, monkeypatch):
     """Out-of-chronology inserts: the row the product treats as latest (max
     recorded_at) must survive even when a later-inserted row carries an older

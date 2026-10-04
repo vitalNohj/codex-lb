@@ -138,6 +138,9 @@ async def test_add_log_computes_cost_for_gpt_6_astra(db_setup) -> None:
         ("codex/gpt-6-sol", 10.22),
         ("gpt-6-luna", 0.511),
         ("openai/gpt-6-luna", 0.511),
+        # 6.1 Sol halves 6 Sol's cache-read rate: $0.10/M instead of $0.20/M.
+        ("gpt-6.1-sol", 10.21),
+        ("codex/gpt-6.1-sol-2026-10-01", 10.21),
     ],
 )
 async def test_add_log_computes_cost_for_gpt_6_sol_and_luna(db_setup, model: str, expected_cost: float) -> None:

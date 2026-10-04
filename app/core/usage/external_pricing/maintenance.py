@@ -35,6 +35,7 @@ from app.core.usage.external_pricing.service import (
     preserve_record_for_retry,
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore, PriceRecord
+from app.core.usage.pricing import ModelPrice
 from app.db.models import ExternalPriceStatus
 from app.db.session import get_background_session
 
@@ -281,7 +282,7 @@ async def _refresh_record(
             assert resolution.price is not None
             assert resolution.catalog_model is not None
             assert resolution.catalog_source is not None
-            changed = _rates_changed(record, resolution.price.input_per_1m, resolution.price.output_per_1m)
+            changed = _rates_changed(record, resolution.price)
             was_priced = record.is_priced
             applied = await store.record_resolved(
                 provider=record.provider,
@@ -298,8 +299,7 @@ async def _refresh_record(
                 provider=record.provider,
                 incoming_model=record.incoming_model,
                 description=(
-                    f"{resolution.catalog_source}:{resolution.catalog_model} "
-                    f"in={resolution.price.input_per_1m} out={resolution.price.output_per_1m}"
+                    f"{resolution.catalog_source}:{resolution.catalog_model} {_describe_rates(resolution.price)}"
                 ),
             )
             if not was_priced:
@@ -366,7 +366,16 @@ async def _refresh_record(
             report.unresolved.append(change)
 
 
-def _rates_changed(record: PriceRecord, input_per_1m: float, output_per_1m: float) -> bool:
+def _rates_changed(record: PriceRecord, price: ModelPrice) -> bool:
     if record.price is None:
         return True
-    return record.price.input_per_1m != input_per_1m or record.price.output_per_1m != output_per_1m
+    return (
+        record.price.input_per_1m != price.input_per_1m
+        or record.price.output_per_1m != price.output_per_1m
+        or record.price.cached_input_per_1m != price.cached_input_per_1m
+    )
+
+
+def _describe_rates(price: ModelPrice) -> str:
+    cached = "none published" if price.cached_input_per_1m is None else price.cached_input_per_1m
+    return f"in={price.input_per_1m} cached={cached} out={price.output_per_1m}"

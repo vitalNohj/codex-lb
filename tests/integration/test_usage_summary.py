@@ -44,6 +44,8 @@ def _make_account(account_id: str, email: str) -> Account:
         ("codex/gpt-6-sol", 2.0, 0.20, 10.0),
         ("gpt-6-luna", 0.10, 0.01, 0.50),
         ("openai/gpt-6-luna", 0.10, 0.01, 0.50),
+        ("gpt-6.1-sol", 2.0, 0.10, 10.0),
+        ("openai/gpt-6.1-sol-2026-10-01", 2.0, 0.10, 10.0),
         ("claude-fable-5-1", 10.0, 0.25, 50.0),
     ],
 )

@@ -43,6 +43,7 @@ The scheduler always starts and re-resolves the effective retention at the top o
 - On SQLite, the projections bulk-history cache is invalidated after usage-history pruning.
 - Per-API-key lifetime totals are folded into `api_key_usage_rollups` under the same watermark, so pruning never erodes them. Folded key sums intentionally persist when an account is deleted with `delete_history=True` (the legacy live aggregate would have shrunk).
 - Protected latest-row id sets are computed once per pass (not per batch); retention settings are capped at 3650 days.
+- Request-log pruning pauses while `upgrade_repair_from` is set. A migration arms that marker when it changes folded rows, and the hourly fold then rebuilds buckets from raw rows starting at the first hour the surviving rows fully cover. Pruning during that rebuild would delete rows it has not reached, and their buckets would keep pre-repair figures. Capping the cutoff at the marker would not help, because deleting the oldest rows moves the rebuild's start past the marker. The log line is `Retention: skipping request_logs pruning (hourly rollup repair pending from ...)`.
 
 ## Example
 

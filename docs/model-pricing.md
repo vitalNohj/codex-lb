@@ -76,8 +76,9 @@ providers list overlapping model ids at different prices. When a provider's own
 catalog cannot be reached, records it supplied keep its rates rather than being
 re-priced from OpenRouter's. OpenAI-compatible endpoints can publish OpenRouter's
 top-level per-token `pricing` fields, or Unlid's `unlid.pricing` fields
-(`input_usd_per_m`, `output_usd_per_m`) in USD per million tokens. When both are
-present, the top-level format wins. Other pricing shapes are not guessed at.
+(`input_usd_per_m`, `output_usd_per_m`, `cached_input_usd_per_m`) in USD per
+million tokens. When both are present, the top-level format wins. Other pricing
+shapes are not guessed at.
 
 OpenRouter is used as a **pricing reference only**. A model's presence in or
 absence from OpenRouter never affects whether codex-lb considers it available or
@@ -139,6 +140,13 @@ pricing format was installed, previously settled `not_token_priced` records
 will not retry automatically: run this refresh once after deploying the new
 version. It updates future request costs, not historical request-log rows.
 
+Run it once after upgrading to the version that stores cache-read rates, too.
+The upgrade seeds cache-read rates only for records it can match to a dated
+snapshot of OpenRouter's Claude prices. Every other stored record still has no
+cache-read rate until a refresh reads it. A refresh that adds, changes, or
+removes a cache-read rate counts the record under "Rates updated" and names the
+new value, for example `cached=0.2` or `cached=none published`.
+
 Three rules are worth knowing:
 
 - A stored price is sticky. A catalog outage, missing entry, ambiguous match,
@@ -180,9 +188,21 @@ price remains until that reference supplies another valid parsed price.
 
 ## Notes
 
-- Cached input tokens are priced at the full input rate. Not every catalog
-  publishes a cache-read rate, and codex-lb does not assume a discount it cannot
-  cite.
+- Cached input tokens are priced at the cache-read rate the catalog publishes.
+  When a catalog publishes none for a model, they cost the full input rate:
+  codex-lb does not assume a discount it cannot cite. A cache-read rate in a
+  shape codex-lb cannot read makes the whole entry unreadable, so a stored price
+  is kept rather than charging cached input at the input rate.
+- Cache writes are not recorded separately, so they cost the input rate even
+  where the provider bills a premium for them.
+- Versions before this rule charged every cached token the full input rate. The
+  upgrade corrects the stored costs it can prove came from that rule: request
+  logs priced from a matched OpenRouter Claude card, the lifetime totals, and the
+  hourly and 15-minute usage buckets that folded them. Request-log retention
+  pauses until the bucket repair finishes. Anything it cannot prove keeps its
+  stored figure. That includes requests retention already deleted: their usage
+  buckets do not record how they were priced, so their share of a bucket and of
+  the lifetime totals stays as it was.
 - A free model records a real `$0.00`. Zero is a published price, not a missing
   one.
 - Rows written before this feature shipped have no recorded provenance. They are

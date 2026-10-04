@@ -1,9 +1,11 @@
 """Catalog sources for external-integration price resolution.
 
 Each source is an authoritative structured endpoint published by the party that
-sets the price. A published input/output token rate multiplied by the recorded
-token usage is a calculated list price -- deterministic arithmetic, not an
-estimate -- and is kept separate from any amount the upstream reported as billed.
+sets the price. Published input, cache-read, and output token rates multiplied by
+the recorded token usage are a calculated list price -- deterministic arithmetic,
+not an estimate -- and are kept separate from any amount the upstream reported as
+billed. A catalog that publishes no cache-read rate for a model leaves cached
+input at the full input rate rather than assuming a discount.
 
 Two roles, deliberately distinct:
 
@@ -158,14 +160,7 @@ def parse_openai_style_catalog(payload: JsonValue, *, source: str) -> Catalog:
         if not isinstance(model_id, str) or not model_id.strip():
             continue
         raw_pricing = raw.get("pricing")
-        price = parse_per_token_pricing(raw_pricing)
-        entries.append(
-            CatalogEntry(
-                model_id=model_id.strip(),
-                price=price,
-                unpriced_reason=_unpriced_reason(price, raw_pricing),
-            )
-        )
+        entries.append(_catalog_entry(model_id.strip(), parse_per_token_pricing(raw_pricing), raw_pricing))
     if not entries:
         raise CatalogFetchError(f"{source} catalog listed no usable models")
     return Catalog.from_entries(source, entries)
@@ -264,21 +259,21 @@ def _unpriced_reason(
 
 
 def parse_per_token_pricing(pricing: JsonValue) -> ModelPrice | None:
-    """Parse per-token USD rates into per-1M rates, or ``None`` when absent.
+    """Parse per-token USD rates into per-1M rates, or ``None`` when absent."""
 
-    ``cached_input_per_1m`` is intentionally left unset so cached input prices at
-    the full input rate. The catalogs do not publish a cache-read rate for every
-    model, and assuming an undocumented discount would substitute an invented
-    number for a published one.
+    return parse_published_pricing(pricing, rate_format=OPENROUTER_RATE_FORMAT)
+
+
+def parse_published_pricing(pricing: JsonValue, *, rate_format: RateFormat) -> ModelPrice | None:
+    """Read a known pricing format without guessing units or an absent cache rate.
+
+    The cache-read rate is kept only when the catalog publishes a readable one.
+    Otherwise ``cached_input_per_1m`` stays unset and cached input prices at the
+    full input rate: assuming a discount the catalog does not publish would
+    substitute an invented number for a published one. A catalog entry whose
+    cache-read rate is present but unreadable is not priced this way: see
+    ``_catalog_entry``.
     """
-
-    return parse_published_pricing(pricing, rate_format=OPENROUTER_RATE_FORMAT, include_cached=False)
-
-
-def parse_published_pricing(
-    pricing: JsonValue, *, rate_format: RateFormat, include_cached: bool = True
-) -> ModelPrice | None:
-    """Read a known pricing format without guessing units or an absent cache rate."""
 
     if not is_json_mapping(pricing):
         return None
@@ -286,11 +281,7 @@ def parse_published_pricing(
     output_per_1m = _parse_rate_usd(pricing.get(rate_format.output_key), rate_format.per_1m_multiplier)
     if input_per_1m is None or output_per_1m is None:
         return None
-    cached_input_per_1m = (
-        _parse_rate_usd(pricing.get(rate_format.cached_input_key), rate_format.per_1m_multiplier)
-        if include_cached
-        else None
-    )
+    cached_input_per_1m = _parse_rate_usd(pricing.get(rate_format.cached_input_key), rate_format.per_1m_multiplier)
     return ModelPrice(
         input_per_1m=input_per_1m,
         output_per_1m=output_per_1m,
@@ -309,16 +300,15 @@ def _parse_rate_usd(value: JsonValue, multiplier: float) -> float | None:
 def catalog_from_published_models(source: str, models: Sequence[tuple[str, JsonValue, RateFormat]]) -> Catalog:
     """Build a serving catalog from rate blocks that may have different units."""
 
-    entries: list[CatalogEntry] = []
-    for model_id, raw_pricing, rate_format in models:
-        price = parse_published_pricing(raw_pricing, rate_format=rate_format, include_cached=False)
-        entries.append(
-            CatalogEntry(
-                model_id=model_id,
-                price=price,
-                unpriced_reason=_unpriced_reason(price, raw_pricing, rate_format),
-            )
+    entries = [
+        _catalog_entry(
+            model_id,
+            parse_published_pricing(raw_pricing, rate_format=rate_format),
+            raw_pricing,
+            rate_format,
         )
+        for model_id, raw_pricing, rate_format in models
+    ]
     return Catalog.from_entries(source, entries)
 
 
@@ -334,15 +324,50 @@ def catalog_from_sidecar_models(
     rate fields is not mistaken for one it listed with no rates at all.
     """
 
-    entries: list[CatalogEntry] = []
-    for model_id, price, raw_pricing in models:
-        valid_price = price
-        reason = _unpriced_reason(price, raw_pricing)
-        if price is not None and not (math.isfinite(price.input_per_1m) and math.isfinite(price.output_per_1m)):
-            valid_price = None
-            reason = UnpricedReason.UNPARSEABLE
-        entries.append(CatalogEntry(model_id=model_id, price=valid_price, unpriced_reason=reason))
+    entries = [_catalog_entry(model_id, price, raw_pricing) for model_id, price, raw_pricing in models]
     return Catalog.from_entries(source, entries)
+
+
+def _catalog_entry(
+    model_id: str,
+    price: ModelPrice | None,
+    raw_pricing: JsonValue,
+    rate_format: RateFormat = OPENROUTER_RATE_FORMAT,
+) -> CatalogEntry:
+    """One listed model, unparseable unless every rate it publishes was read.
+
+    A missing or declared-none cache-read rate is the catalog's answer, and
+    cached input then costs the full input rate. A cache-read rate this build
+    cannot read is not an answer. Pricing the entry without it would charge
+    cached input many times the published figure, and a refresh would replace a
+    stored cache-read rate with nothing. Marking the entry unparseable instead
+    keeps the stored price and retries the lookup, as for an unreadable input
+    or output rate.
+    """
+
+    if price is not None and not _published_rates_readable(price, raw_pricing, rate_format):
+        return CatalogEntry(model_id=model_id, price=None, unpriced_reason=UnpricedReason.UNPARSEABLE)
+    return CatalogEntry(
+        model_id=model_id,
+        price=price,
+        unpriced_reason=_unpriced_reason(price, raw_pricing, rate_format),
+    )
+
+
+def _published_rates_readable(price: ModelPrice, raw_pricing: JsonValue, rate_format: RateFormat) -> bool:
+    rates = (price.input_per_1m, price.output_per_1m, price.cached_input_per_1m)
+    if not all(rate is None or math.isfinite(rate) for rate in rates):
+        return False
+    # A sidecar parses its listing before this point and reads an unreadable
+    # cache-read rate as an absent one, so the raw field is checked here.
+    if not is_json_mapping(raw_pricing) or rate_format.cached_input_key not in raw_pricing:
+        return True
+    reading, amount = _read_rate(raw_pricing[rate_format.cached_input_key])
+    if reading is _RateReading.UNREADABLE:
+        return False
+    if reading is _RateReading.PARSED and amount is not None:
+        return math.isfinite(amount * rate_format.per_1m_multiplier)
+    return True
 
 
 async def _fetch_json(url: str, *, source: str) -> JsonValue:
