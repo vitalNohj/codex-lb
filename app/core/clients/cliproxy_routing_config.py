@@ -3,9 +3,7 @@ from __future__ import annotations
 import re
 
 _ROUTING_HEADER = re.compile(r"^routing:[ \t]*(?:#.*)?$")
-_AFFINITY_LINE = re.compile(
-    r"^(?P<indent>[ \t]+)session-affinity:[ \t]*(?P<value>\S+)(?P<trail>[ \t]*#.*)?[ \t]*$"
-)
+_AFFINITY_LINE = re.compile(r"^(?P<indent>[ \t]+)session-affinity:[ \t]*(?P<value>\S+)(?P<trail>[ \t]*#.*)?[ \t]*$")
 
 
 class CliproxyRoutingConfigError(ValueError):

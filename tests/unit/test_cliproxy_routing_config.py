@@ -41,12 +41,12 @@ def test_turn_on_rewrites_only_the_flag_line() -> None:
 
 
 def test_missing_flag_stays_unchanged_when_turning_off() -> None:
-    text = "routing:\n  strategy: round-robin\n  session-affinity-ttl: \"1h\"\n"
+    text = 'routing:\n  strategy: round-robin\n  session-affinity-ttl: "1h"\n'
     assert apply_session_affinity_yaml(text, False) == text
 
 
 def test_missing_flag_is_inserted_inside_the_routing_block() -> None:
-    text = "routing:\n  strategy: round-robin\n  session-affinity-ttl: \"1h\"\ndebug: true\n"
+    text = 'routing:\n  strategy: round-robin\n  session-affinity-ttl: "1h"\ndebug: true\n'
     updated = apply_session_affinity_yaml(text, True)
 
     assert "session-affinity: true" in updated
