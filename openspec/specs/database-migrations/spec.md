@@ -42,6 +42,15 @@ After startup migrations report success, the system SHALL verify that the live d
 - **THEN** the system logs the drift details as an error
 - **AND** it does not silently suppress the drift context
 
+#### Scenario: Column server defaults match metadata on every backend
+
+- **GIVEN** a database migrated to head on SQLite or PostgreSQL
+- **WHEN** the post-migration schema drift check runs
+- **THEN** `dashboard_settings.claude_sidecar_model_prefixes_json` has the server default declared in ORM metadata (`claude`, `cp-`, and `cp_`)
+- **AND** the check reports no `modify_default` diff for it
+- **AND** the check does not ignore `modify_default` diffs for the `dashboard_settings` sidecar prefix columns on SQLite
+- **AND** settings rows that already store prefixes keep them
+
 ### Requirement: Request-log account deletion preserves historical rows
 
 The database schema SHALL preserve historical `request_logs` rows when their parent account is deleted. The schema MUST support a nullable request-log soft-delete marker and MUST NOT use a cascading account foreign key that deletes request-log history.

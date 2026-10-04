@@ -183,6 +183,25 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_cached_input_per_1m=0.40,
         long_context_output_per_1m=15.0,
     ),
+    # Published list rates, USD per 1M tokens (developers.openai.com/api/docs/pricing).
+    # Standard short context is <=272K input tokens. Fast is the former priority
+    # tier. Flex long context is the shared 2x/2x/1.5x adjustment. Cache writes
+    # are not a usage field this table prices.
+    "gpt-6.1-sol": ModelPrice(
+        input_per_1m=2.0,
+        cached_input_per_1m=0.10,
+        output_per_1m=10.0,
+        priority_input_per_1m=4.0,
+        priority_cached_input_per_1m=0.20,
+        priority_output_per_1m=20.0,
+        flex_input_per_1m=1.0,
+        flex_cached_input_per_1m=0.05,
+        flex_output_per_1m=5.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=4.0,
+        long_context_cached_input_per_1m=0.20,
+        long_context_output_per_1m=15.0,
+    ),
     "gpt-6-luna": ModelPrice(
         input_per_1m=0.10,
         cached_input_per_1m=0.01,

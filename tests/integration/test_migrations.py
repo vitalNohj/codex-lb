@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 from collections.abc import Callable
+from datetime import datetime, timedelta
 
 import pytest
 from anyio import to_thread
@@ -1438,6 +1439,767 @@ async def test_gpt_6_sol_luna_cost_backfill_migration_populates_cost(tmp_path):
         await engine.dispose()
 
 
+_CACHE_READ_PARENT = "20260928_000000_pin_claude_sonnet_5_5_full_model"
+_CACHE_READ_REVISION = "20261003_000000_price_external_cache_reads"
+_CACHE_READ_WATERMARK = "2026-09-21 00:00:00"
+_ROLLUP_SENTINEL = "\x1f"
+# Per-request (input, cached input, output) tokens. Opus 5.5 is 4/20 per 1M with
+# cache reads at 0.2: 0.42 at the full input rate, 0.078 at the published one.
+# Opus 5 is 5/25 with cache reads at 0.5: 1.05 full, 0.24 published.
+_OPUS_5_5_SHAPE = (100_000, 90_000, 1_000)
+_OPUS_5_SHAPE = (200_000, 180_000, 2_000)
+_CACHE_READ_LOG_INSERT = (
+    "INSERT INTO request_logs (account_id, api_key_id, request_id, requested_at, model, source,"
+    " input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, latency_ms, status,"
+    " cost_usd, cost_source, request_kind, deleted_at)"
+    " VALUES (:account_id, :api_key_id, :request_id, :requested_at, :model, :source, :input_tokens,"
+    " :output_tokens, :cached_input_tokens, 0, 100, 'success', :cost_usd, :cost_source, :request_kind,"
+    " :deleted_at)"
+)
+_CACHE_READ_HOURLY_INSERT = (
+    "INSERT INTO request_usage_hourly_rollups (bucket_epoch, account_id, api_key_id, model, service_tier,"
+    " request_kind, is_deleted, request_count, error_count, input_tokens, output_tokens,"
+    " output_or_reasoning_tokens, cached_input_tokens, cached_input_tokens_clamped, cost_usd, cost_count)"
+    " VALUES (:epoch, :account_id, 'key_p', :model, :sentinel, :request_kind, 0, :request_count, :error_count,"
+    " :input_tokens, :output_tokens, :output_tokens, :cached_input_tokens, :cached_input_tokens, :cost_usd,"
+    " :cost_count)"
+)
+_CACHE_READ_QUARTER_INSERT = (
+    "INSERT INTO request_demand_quarter_rollups (slot_epoch, account_id, api_key_id, model, reasoning_effort,"
+    " request_kind, status, is_deleted, request_count, input_tokens, output_or_reasoning_tokens,"
+    " cached_input_tokens, cost_usd)"
+    " VALUES (:epoch, :sentinel, 'key_p', :model, :sentinel, 'normal', 'success', 0, :request_count,"
+    " :input_tokens, :output_tokens, :cached_input_tokens, :cost_usd)"
+)
+# Seeding outcome per ``provider model`` record.
+_CACHE_READ_SEEDED_RATES: dict[str, float | None] = {
+    "cliproxy cc/claude-opus-5-5": 0.2,
+    "cliproxy cc/claude-opus-5": 0.5,
+    "cliproxy cc/claude-sonnet-5": 0.2,
+    "cliproxy cc/claude-opus-4-8": None,
+    "openai_compat:ep1 cc/claude-sonnet-5": None,
+    "cliproxy cc/claude-opus-5-1": None,
+}
+
+
+def _cache_read_epoch(clock: str) -> int:
+    """Epoch seconds of ``HH:MM`` on 2026-09-20, naive UTC like the rollup tables."""
+
+    return int((datetime.fromisoformat(f"2026-09-20 {clock}:00") - datetime(1970, 1, 1)).total_seconds())
+
+
+def _cache_read_clock(epoch: int) -> str:
+    return (datetime(1970, 1, 1) + timedelta(seconds=epoch)).strftime("%H:%M")
+
+
+def _cache_read_log(
+    request_id: str,
+    requested_at: str,
+    cost_usd: float,
+    *,
+    model: str = "cc/claude-opus-5-5",
+    shape: tuple[int, int, int | None] = _OPUS_5_5_SHAPE,
+    account_id: str | None = None,
+    api_key_id: str = "key_b",
+    source: str = "claude_sidecar",
+    cost_source: str = "catalog_calculated",
+    request_kind: str = "normal",
+    deleted_at: str | None = None,
+) -> dict[str, object]:
+    input_tokens, cached_input_tokens, output_tokens = shape
+    return {
+        "account_id": account_id,
+        "api_key_id": api_key_id,
+        "request_id": request_id,
+        "requested_at": requested_at,
+        "model": model,
+        "source": source,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "cost_usd": cost_usd,
+        "cost_source": cost_source,
+        "request_kind": request_kind,
+        "deleted_at": deleted_at,
+    }
+
+
+def _cache_read_bucket(
+    clock: str,
+    requests: int,
+    cost_usd: float,
+    *,
+    model: str = "cc/claude-opus-5-5",
+    shape: tuple[int, int, int] = _OPUS_5_5_SHAPE,
+    account_id: str = _ROLLUP_SENTINEL,
+    request_kind: str = "normal",
+    cost_count: int | None = None,
+    failed: int = 0,
+) -> dict[str, object]:
+    """Bind values for ``_CACHE_READ_HOURLY_INSERT`` or ``_CACHE_READ_QUARTER_INSERT``.
+
+    Each of ``requests`` carries ``shape`` tokens. ``failed`` adds failed
+    requests, which are logged without tokens or cost.
+    """
+
+    input_tokens, cached_input_tokens, output_tokens = shape
+    return {
+        "epoch": _cache_read_epoch(clock),
+        "account_id": account_id,
+        "model": model,
+        "sentinel": _ROLLUP_SENTINEL,
+        "request_kind": request_kind,
+        "request_count": requests + failed,
+        "error_count": failed,
+        "input_tokens": input_tokens * requests,
+        "output_tokens": output_tokens * requests,
+        "cached_input_tokens": cached_input_tokens * requests,
+        "cost_usd": cost_usd,
+        "cost_count": requests if cost_count is None else cost_count,
+    }
+
+
+async def _seed_cache_read_prices(session) -> None:
+    columns = ("provider", "model", "status", "catalog_model", "catalog_source", "input", "output")
+    records = [
+        # Priced from the OpenRouter reference catalog at exactly the dated card: seeded.
+        ("cliproxy", "cc/claude-opus-5-5", "resolved", "anthropic/claude-opus-5.5", "openrouter:reference", 4.0, 20.0),
+        ("cliproxy", "cc/claude-opus-5", "resolved", "anthropic/claude-opus-5", "openrouter:reference", 5.0, 25.0),
+        ("cliproxy", "cc/claude-sonnet-5", "resolved", "anthropic/claude-sonnet-5", "openrouter:reference", 2.0, 10.0),
+        # Input rate differs from the card, so the card's cache-read rate may not apply.
+        ("cliproxy", "cc/claude-opus-4-8", "resolved", "anthropic/claude-opus-4.8", "openrouter:reference", 6.0, 25.0),
+        # Priced from the endpoint's own listing, not the reference catalog. It also
+        # makes the bare model ambiguous for rollup buckets.
+        (
+            "openai_compat:ep1",
+            "cc/claude-sonnet-5",
+            "resolved",
+            "anthropic/claude-sonnet-5",
+            "openai_compat:ep1",
+            2.0,
+            10.0,
+        ),
+        ("cliproxy", "cc/claude-opus-5-1", "unresolved", None, None, None, None),
+    ]
+    await session.execute(
+        text(
+            "INSERT INTO external_model_prices (provider, incoming_model, raw_incoming_model, status,"
+            " catalog_model, catalog_source, input_per_1m, output_per_1m)"
+            " VALUES (:provider, :model, :model, :status, :catalog_model, :catalog_source, :input, :output)"
+        ),
+        [dict(zip(columns, record, strict=True)) for record in records],
+    )
+
+
+async def _seed_cache_read_rollup_state(
+    session,
+    *,
+    accounts: dict[str, float],
+    api_keys: dict[str, float],
+    watermark: str = _CACHE_READ_WATERMARK,
+) -> None:
+    """Lifetime totals as folded so far, and every fold watermark at ``watermark``."""
+
+    for account_id, total in accounts.items():
+        await session.execute(
+            text(
+                "INSERT INTO account_usage_rollups (account_id, request_count, input_tokens,"
+                " output_tokens, cached_input_tokens, total_cost_usd) VALUES (:id, 0, 0, 0, 0, :total)"
+            ),
+            {"id": account_id, "total": total},
+        )
+    for api_key_id, total in api_keys.items():
+        await session.execute(
+            text(
+                "INSERT INTO api_keys (id, name, key_hash, key_prefix, is_active, created_at)"
+                " VALUES (:id, :id, :hash, :prefix, 1, '2026-09-20 00:00:00')"
+            ),
+            {"id": api_key_id, "hash": f"hash_{api_key_id}", "prefix": f"sk-{api_key_id}"},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO api_key_usage_rollups (api_key_id, request_count, input_tokens,"
+                " output_tokens, cached_input_tokens, total_cost_usd) VALUES (:id, 0, 0, 0, 0, :total)"
+            ),
+            {"id": api_key_id, "total": total},
+        )
+    await session.execute(
+        text(
+            "UPDATE account_usage_rollup_state SET folded_through = :wm, hourly_folded_through = :wm,"
+            " conversation_folded_through = :wm, upgrade_repair_from = NULL"
+        ),
+        {"wm": watermark},
+    )
+
+
+async def _cache_read_totals(session) -> dict[str, float]:
+    rows = (
+        await session.execute(
+            text(
+                "SELECT 'account:' || account_id, total_cost_usd FROM account_usage_rollups"
+                " UNION ALL SELECT 'key:' || api_key_id, total_cost_usd FROM api_key_usage_rollups"
+            )
+        )
+    ).all()
+    return {row[0]: float(row[1]) for row in rows}
+
+
+async def _cache_read_marker(session) -> str:
+    marker = (await session.execute(text("SELECT upgrade_repair_from FROM account_usage_rollup_state"))).scalar_one()
+    return str(marker)
+
+
+async def _cache_read_rates(session_factory) -> dict[str, float | None]:
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                text("SELECT provider, incoming_model, cached_input_per_1m FROM external_model_prices")
+            )
+        ).all()
+    return {f"{row[0]} {row[1]}": row[2] for row in rows}
+
+
+async def _downgrade_and_rerun_cache_read_migration(db_url: str, session_factory, snapshot) -> None:
+    """Downgrade drops the rate column and keeps every cost; a rerun changes nothing more."""
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    before = await snapshot()
+    await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), _CACHE_READ_PARENT))
+    async with session_factory() as session:
+        price_columns = {
+            row[1] for row in (await session.execute(text("PRAGMA table_info(external_model_prices)"))).all()
+        }
+    assert "cached_input_per_1m" not in price_columns
+    assert await snapshot() == before
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_REVISION, bootstrap_legacy=False))
+    assert await snapshot() == before
+    assert await _cache_read_rates(session_factory) == pytest.approx(_CACHE_READ_SEEDED_RATES)
+
+
+@pytest.mark.asyncio
+async def test_external_cache_read_pricing_migration_reprices_full_rate_rows(tmp_path):
+    """Rows charged the input rate for cache reads drop to the published rate; folded totals follow."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'external-cache-read-rows.sqlite'}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_PARENT, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await _seed_cache_read_prices(session)
+            await session.execute(
+                text(_CACHE_READ_LOG_INSERT),
+                [
+                    _cache_read_log("req_a", "2026-09-20 12:00:00", 0.42, account_id="acc_cr", api_key_id="key_a"),
+                    _cache_read_log(
+                        "req_b",
+                        "2026-09-20 12:05:00",
+                        1.05,
+                        model="cc/claude-opus-5",
+                        shape=_OPUS_5_SHAPE,
+                        account_id="acc_cr",
+                        api_key_id="key_a",
+                    ),
+                    _cache_read_log("req_upper", "2026-09-20 12:10:00", 0.42, model="CC/Claude-Opus-5-5"),
+                    # One request logged twice. The account rollup folded only the higher id.
+                    _cache_read_log("req_dup", "2026-09-20 13:00:00", 0.42, account_id="acc_cr", api_key_id="key_a"),
+                    _cache_read_log("req_dup", "2026-09-20 13:00:00", 0.42, account_id="acc_cr", api_key_id="key_a"),
+                    _cache_read_log(
+                        "req_deleted",
+                        "2026-09-20 13:05:00",
+                        0.42,
+                        account_id="acc_cr",
+                        api_key_id="key_a",
+                        deleted_at="2026-09-20 14:00:00",
+                    ),
+                    _cache_read_log(
+                        "req_warmup",
+                        "2026-09-20 13:10:00",
+                        0.42,
+                        account_id="acc_cr",
+                        api_key_id="key_a",
+                        request_kind="warmup",
+                    ),
+                    # Bucket-ambiguous model, but this row's own record is seeded.
+                    _cache_read_log("req_sonnet", "2026-09-20 13:15:00", 0.21, model="cc/claude-sonnet-5"),
+                    # After the fold watermark, so no rollup holds it yet.
+                    _cache_read_log("req_live", "2026-09-21 06:00:00", 0.42),
+                    _cache_read_log("req_published", "2026-09-20 14:00:00", 0.078),
+                    _cache_read_log("req_other_cost", "2026-09-20 14:05:00", 0.5),
+                    _cache_read_log("req_no_output", "2026-09-20 14:10:00", 0.4, shape=(100_000, 90_000, None)),
+                    _cache_read_log("req_billed", "2026-09-20 14:15:00", 0.42, cost_source="upstream_billed"),
+                    _cache_read_log("req_static", "2026-09-20 14:20:00", 0.42, cost_source="static_table"),
+                    _cache_read_log("req_changed_rate", "2026-09-20 14:25:00", 0.625, model="cc/claude-opus-4-8"),
+                    _cache_read_log("req_other_provider", "2026-09-20 14:30:00", 0.42, source="openrouter_sidecar"),
+                    _cache_read_log(
+                        "req_endpoint",
+                        "2026-09-20 14:35:00",
+                        0.21,
+                        model="cc/claude-sonnet-5",
+                        source="openai_compat:ep1",
+                    ),
+                    _cache_read_log("req_uncached", "2026-09-20 14:40:00", 0.42, shape=(100_000, 0, 1_000)),
+                ],
+            )
+            await _seed_cache_read_rollup_state(
+                session, accounts={"acc_cr": 40.0}, api_keys={"key_a": 100.0, "key_b": 50.0}
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_REVISION, bootstrap_legacy=False))
+
+        async def _snapshot():
+            async with session_factory() as session:
+                rows = (await session.execute(text("SELECT request_id, cost_usd FROM request_logs ORDER BY id"))).all()
+                return (
+                    {row[0]: row[1] for row in rows},
+                    [row[1] for row in rows if row[0] == "req_dup"],
+                    await _cache_read_totals(session),
+                    await _cache_read_marker(session),
+                )
+
+        costs, dup_costs, totals, marker = await _snapshot()
+        assert await _cache_read_rates(session_factory) == pytest.approx(_CACHE_READ_SEEDED_RATES)
+        assert costs == pytest.approx(
+            {
+                "req_a": 0.078,
+                "req_b": 0.24,
+                "req_upper": 0.078,
+                "req_dup": 0.078,
+                "req_deleted": 0.078,
+                "req_warmup": 0.078,
+                "req_sonnet": 0.048,
+                "req_live": 0.078,
+                "req_published": 0.078,
+                "req_other_cost": 0.5,
+                "req_no_output": 0.4,
+                "req_billed": 0.42,
+                "req_static": 0.42,
+                "req_changed_rate": 0.625,
+                "req_other_provider": 0.42,
+                "req_endpoint": 0.21,
+                "req_uncached": 0.42,
+            }
+        )
+        assert dup_costs == pytest.approx([0.078, 0.078])
+        # Opus 5.5 rows move by -0.342, the Opus 5 row by -0.81 and the Sonnet 5 row by
+        # -0.162. The API-key rollup counts every folded non-warmup row, soft-deleted
+        # included. The account rollup counts a duplicate group once and skips
+        # soft-deleted rows.
+        assert totals == pytest.approx(
+            {
+                "account:acc_cr": 40.0 - 0.342 * 2 - 0.81,
+                "key:key_a": 100.0 - 0.342 * 4 - 0.81,
+                "key:key_b": 50.0 - 0.342 - 0.162,
+            }
+        )
+        assert marker.startswith("2026-09-20 12:00:00")
+
+        await _downgrade_and_rerun_cache_read_migration(db_url, session_factory, _snapshot)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_external_cache_read_pricing_migration_corrects_buckets_below_refold_floor(tmp_path):
+    """Buckets the repair cannot refold are corrected only on proof; the rest keep their totals."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'external-cache-read-buckets.sqlite'}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_PARENT, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await _seed_cache_read_prices(session)
+            opus_5 = "cc/claude-opus-5"
+            # Retention pruned everything before 10:30, so the repair refolds from 11:00.
+            await session.execute(
+                text(_CACHE_READ_LOG_INSERT),
+                [
+                    _cache_read_log(
+                        "req_kept_1", "2026-09-20 10:30:00", 1.05, model=opus_5, shape=_OPUS_5_SHAPE, api_key_id="key_p"
+                    ),
+                    _cache_read_log(
+                        "req_kept_2", "2026-09-20 10:45:00", 1.05, model=opus_5, shape=_OPUS_5_SHAPE, api_key_id="key_p"
+                    ),
+                    # Neither figure, so its buckets' sums cannot be trusted.
+                    _cache_read_log("req_kept_other_cost", "2026-09-20 10:40:00", 0.5, api_key_id="key_p"),
+                    _cache_read_log("req_above_floor", "2026-09-20 12:10:00", 0.42, api_key_id="key_p"),
+                ],
+            )
+            await session.execute(
+                text(_CACHE_READ_HOURLY_INSERT),
+                [
+                    _cache_read_bucket("06:00", 2, 0.84, failed=1),  # a failed request has no cost to correct
+                    _cache_read_bucket("07:00", 1, 0.078),  # already at the published rate
+                    _cache_read_bucket("07:00", 1, 0.625, model="cc/claude-opus-4-8"),  # no seeded rate
+                    _cache_read_bucket("08:00", 3, 1.26),  # pruned, provably full rate
+                    _cache_read_bucket("08:00", 1, 0.42, request_kind="warmup"),  # outside the key total
+                    _cache_read_bucket("08:00", 1, 0.42, account_id="acc_p"),  # attributed to an account
+                    _cache_read_bucket("08:00", 1, 0.21, model="cc/claude-sonnet-5"),  # rate depends on provider
+                    _cache_read_bucket("09:00", 2, 0.42, cost_count=1),  # a successful request never priced
+                    _cache_read_bucket("10:00", 4, 4.2, model=opus_5, shape=_OPUS_5_SHAPE),  # two of its rows survive
+                    _cache_read_bucket("10:00", 2, 0.84),  # full-rate sum, holds the unverifiable row
+                    _cache_read_bucket("12:00", 1, 0.42),  # above the floor: the repair refolds it
+                ],
+            )
+            await session.execute(
+                text(_CACHE_READ_QUARTER_INSERT),
+                [
+                    _cache_read_bucket("06:00", 2, 0.84),  # its hour's only unpriced request failed
+                    _cache_read_bucket("08:00", 2, 0.84),
+                    _cache_read_bucket("08:15", 1, 0.42),
+                    _cache_read_bucket("09:00", 1, 0.42),  # its hour has an unpriced successful request
+                    *(
+                        _cache_read_bucket(slot, 1, 1.05, model=opus_5, shape=_OPUS_5_SHAPE)
+                        for slot in ("10:00", "10:15", "10:30", "10:45")
+                    ),
+                    _cache_read_bucket("10:00", 1, 0.34),
+                    _cache_read_bucket("10:30", 1, 0.5),  # holds the unverifiable row
+                    _cache_read_bucket("12:00", 1, 0.42),
+                ],
+            )
+            await _seed_cache_read_rollup_state(session, accounts={"acc_p": 30.0}, api_keys={"key_p": 200.0})
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_REVISION, bootstrap_legacy=False))
+
+        async def _snapshot():
+            async with session_factory() as session:
+                hourly = (
+                    await session.execute(
+                        text(
+                            "SELECT bucket_epoch, account_id, request_kind, model, cost_usd"
+                            " FROM request_usage_hourly_rollups"
+                        )
+                    )
+                ).all()
+                quarter = (
+                    await session.execute(
+                        text("SELECT slot_epoch, model, cost_usd FROM request_demand_quarter_rollups")
+                    )
+                ).all()
+                logs = (await session.execute(text("SELECT request_id, cost_usd FROM request_logs"))).all()
+                return (
+                    {
+                        (
+                            _cache_read_clock(row[0]),
+                            None if row[1] == _ROLLUP_SENTINEL else row[1],
+                            row[2],
+                            row[3],
+                        ): row[4]
+                        for row in hourly
+                    },
+                    {(_cache_read_clock(row[0]), row[1]): row[2] for row in quarter},
+                    {row[0]: row[1] for row in logs},
+                    await _cache_read_totals(session),
+                    await _cache_read_marker(session),
+                )
+
+        hourly, quarter, costs, totals, marker = await _snapshot()
+        assert hourly == pytest.approx(
+            {
+                ("06:00", None, "normal", "cc/claude-opus-5-5"): 0.156,
+                ("07:00", None, "normal", "cc/claude-opus-5-5"): 0.078,
+                ("07:00", None, "normal", "cc/claude-opus-4-8"): 0.625,
+                ("08:00", None, "normal", "cc/claude-opus-5-5"): 0.234,
+                ("08:00", None, "warmup", "cc/claude-opus-5-5"): 0.078,
+                ("08:00", "acc_p", "normal", "cc/claude-opus-5-5"): 0.42,
+                ("08:00", None, "normal", "cc/claude-sonnet-5"): 0.21,
+                ("09:00", None, "normal", "cc/claude-opus-5-5"): 0.42,
+                ("10:00", None, "normal", "cc/claude-opus-5"): 0.96,
+                ("10:00", None, "normal", "cc/claude-opus-5-5"): 0.84,
+                ("12:00", None, "normal", "cc/claude-opus-5-5"): 0.42,
+            }
+        )
+        assert quarter == pytest.approx(
+            {
+                ("06:00", "cc/claude-opus-5-5"): 0.156,
+                ("08:00", "cc/claude-opus-5-5"): 0.156,
+                ("08:15", "cc/claude-opus-5-5"): 0.078,
+                ("09:00", "cc/claude-opus-5-5"): 0.42,
+                ("10:00", "cc/claude-opus-5"): 0.24,
+                ("10:15", "cc/claude-opus-5"): 0.24,
+                ("10:30", "cc/claude-opus-5"): 0.24,
+                ("10:45", "cc/claude-opus-5"): 0.24,
+                ("10:00", "cc/claude-opus-5-5"): 0.34,
+                ("10:30", "cc/claude-opus-5-5"): 0.5,
+                ("12:00", "cc/claude-opus-5-5"): 0.42,
+            }
+        )
+        assert costs == pytest.approx(
+            {"req_kept_1": 0.24, "req_kept_2": 0.24, "req_kept_other_cost": 0.5, "req_above_floor": 0.078}
+        )
+        # Surviving rows move the key total by 2 x -0.81 and -0.342. Pruned rows of
+        # corrected buckets add the 06:00 bucket's 2 x -0.342, the 08:00 bucket's
+        # 3 x -0.342, and the other two requests of the 10:00 Opus 5 bucket,
+        # 2 x -0.81. Warmup traffic is outside the key total, and no account
+        # bucket is rewritten.
+        assert totals == pytest.approx(
+            {"account:acc_p": 30.0, "key:key_p": 200.0 - 0.81 * 2 - 0.342 - 0.342 * 2 - 0.342 * 3 - 0.81 * 2}
+        )
+        assert marker.startswith("2026-09-20 10:00:00")
+
+        await _downgrade_and_rerun_cache_read_migration(db_url, session_factory, _snapshot)
+    finally:
+        await engine.dispose()
+
+
+_GPT61_REVISION = "20261003_010000_backfill_gpt_6_1_sol_costs"
+_GPT61_WATERMARK = "2026-10-02 12:00:00"
+_GPT61_LOG_INSERT = (
+    "INSERT INTO request_logs (account_id, api_key_id, request_id, requested_at, model, service_tier,"
+    " input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, latency_ms, status, cost_usd,"
+    " cost_source, price_status, request_kind, deleted_at)"
+    " VALUES ('acc_61', 'key_61', :request_id, :requested_at, :model, :service_tier, :input_tokens,"
+    " :output_tokens, :cached_input_tokens, NULL, 100, :status, :cost_usd, :cost_source, :price_status,"
+    " :request_kind, :deleted_at)"
+)
+# Every seeded bucket holds two requests of ``acc_61`` / ``key_61`` with tier
+# ``default``, kind ``normal`` and no reasoning effort.
+_GPT61_HOURLY_INSERT = (
+    "INSERT INTO request_usage_hourly_rollups (bucket_epoch, account_id, api_key_id, model, service_tier,"
+    " request_kind, is_deleted, request_count, error_count, input_tokens, output_tokens,"
+    " output_or_reasoning_tokens, cached_input_tokens, cached_input_tokens_clamped, cost_usd, cost_count)"
+    " VALUES (:epoch, 'acc_61', 'key_61', :model, 'default', 'normal', 0, 2, 0, 0, 0, 0, 0, 0, :cost_usd,"
+    " :cost_count)"
+)
+_GPT61_QUARTER_INSERT = (
+    "INSERT INTO request_demand_quarter_rollups (slot_epoch, account_id, api_key_id, model, reasoning_effort,"
+    " request_kind, status, is_deleted, request_count, input_tokens, output_or_reasoning_tokens,"
+    " cached_input_tokens, cost_usd)"
+    " VALUES (:epoch, 'acc_61', 'key_61', :model, :sentinel, 'normal', 'success', 0, 2, 0, 0, 0, :cost_usd)"
+)
+
+
+def _gpt61_epoch(clock: str) -> int:
+    """Epoch seconds of ``HH:MM`` on 2026-10-01, naive UTC like the rollup tables."""
+
+    return int((datetime.fromisoformat(f"2026-10-01 {clock}:00") - datetime(1970, 1, 1)).total_seconds())
+
+
+def _gpt61_log(
+    request_id: str,
+    requested_at: str,
+    *,
+    model: str = "gpt-6.1-sol",
+    tokens: tuple[int, int, int] | None = (200_000, 0, 1_000_000),
+    service_tier: str = "default",
+    status: str = "success",
+    cost_usd: float | None = None,
+    cost_source: str | None = None,
+    price_status: str | None = None,
+    request_kind: str = "normal",
+    deleted_at: str | None = None,
+) -> dict[str, object]:
+    """Bind values for ``_GPT61_LOG_INSERT``. ``tokens`` is (input, cached input, output)."""
+
+    input_tokens, cached_input_tokens, output_tokens = tokens if tokens is not None else (None, None, None)
+    return {
+        "request_id": request_id,
+        "requested_at": requested_at,
+        "model": model,
+        "service_tier": service_tier,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "status": status,
+        "cost_usd": cost_usd,
+        "cost_source": cost_source,
+        "price_status": price_status,
+        "request_kind": request_kind,
+        "deleted_at": deleted_at,
+    }
+
+
+def test_gpt_6_1_sol_backfill_prefilter_lowers_model_for_postgres() -> None:
+    import sqlalchemy as sa
+    from sqlalchemy.dialects import postgresql
+
+    migration = importlib.import_module(f"app.db.alembic.versions.{_GPT61_REVISION}")
+    request_logs = sa.table("request_logs", sa.column("model", sa.String()))
+    compiled = str(
+        migration._model_match(request_logs).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "lower(request_logs.model) LIKE '%%gpt-6.1-sol%%'" in compiled
+
+
+@pytest.mark.asyncio
+async def test_gpt_6_1_sol_cost_backfill_prices_null_rows_and_the_rollups_that_folded_them(tmp_path):
+    """NULL GPT-6.1 Sol rows gain the list price, and each rollup that folded them gains the same amount."""
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gpt-6-1-sol-backfill.sqlite'}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_REVISION, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await _seed_cache_read_rollup_state(
+                session, accounts={"acc_61": 50.0}, api_keys={"key_61": 80.0}, watermark=_GPT61_WATERMARK
+            )
+            await session.execute(
+                text(_GPT61_LOG_INSERT),
+                [
+                    # The earliest surviving row, so the repair cannot refold its hour.
+                    _gpt61_log("req_below_floor", "2026-10-01 00:05:00"),
+                    _gpt61_log("req_std", "2026-10-01 05:00:00", tokens=(200_000, 100_000, 1_000_000)),
+                    _gpt61_log("req_snapshot", "2026-10-01 05:01:00", model="GPT-6.1-SOL-20261001"),
+                    _gpt61_log("req_openai", "2026-10-01 05:02:00", model="openai/gpt-6.1-sol"),
+                    _gpt61_log("req_cc", "2026-10-01 05:03:00", model="cc/gpt-6.1-sol"),
+                    _gpt61_log("req_flex", "2026-10-01 05:04:00", service_tier="flex"),
+                    _gpt61_log("req_priority", "2026-10-01 05:05:00", service_tier="priority"),
+                    _gpt61_log("req_long", "2026-10-01 05:06:00", tokens=(300_000, 0, 1_000_000)),
+                    # One duplicate group: the account rollup folds only its highest id.
+                    _gpt61_log("req_dup", "2026-10-01 05:07:00"),
+                    _gpt61_log("req_dup", "2026-10-01 05:07:00"),
+                    _gpt61_log("req_warmup", "2026-10-01 05:08:00", request_kind="warmup"),
+                    _gpt61_log("req_deleted", "2026-10-01 05:09:00", deleted_at="2026-10-02 00:00:00"),
+                    # After the lifetime watermark, so the next fold adds it.
+                    _gpt61_log("req_late", "2026-10-02 18:00:00"),
+                    # Another model, a price already settled, or nothing to price.
+                    _gpt61_log("req_pro", "2026-10-01 06:00:00", model="gpt-6.1-sol-pro"),
+                    _gpt61_log("req_unrelated", "2026-10-01 06:01:00", model="unrelated/gpt-6.1-sol"),
+                    _gpt61_log("req_priced", "2026-10-01 06:02:00", cost_usd=1.0, cost_source="static_table"),
+                    _gpt61_log("req_billed", "2026-10-01 06:03:00", cost_source="upstream_billed"),
+                    _gpt61_log("req_pending", "2026-10-01 06:04:00", price_status="pending"),
+                    _gpt61_log("req_error", "2026-10-01 06:05:00", tokens=None, status="error", service_tier="auto"),
+                ],
+            )
+            await session.execute(
+                text(_GPT61_HOURLY_INSERT),
+                [
+                    # Also holds a request retention has since pruned.
+                    {"epoch": _gpt61_epoch("00:00"), "model": "gpt-6.1-sol", "cost_usd": 0.0, "cost_count": 0},
+                    {"epoch": _gpt61_epoch("00:00"), "model": "gpt-6-sol", "cost_usd": 3.0, "cost_count": 2},
+                    {"epoch": _gpt61_epoch("05:00"), "model": "gpt-6.1-sol", "cost_usd": 0.0, "cost_count": 0},
+                ],
+            )
+            await session.execute(
+                text(_GPT61_QUARTER_INSERT),
+                [
+                    {
+                        "epoch": _gpt61_epoch(clock),
+                        "model": "gpt-6.1-sol",
+                        "sentinel": _ROLLUP_SENTINEL,
+                        "cost_usd": 0.0,
+                    }
+                    for clock in ("00:00", "05:00")
+                ],
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _GPT61_REVISION, bootstrap_legacy=False))
+
+        async def _snapshot():
+            async with session_factory() as session:
+                logs = (
+                    await session.execute(
+                        text("SELECT request_id, cost_usd, cost_source, price_status FROM request_logs ORDER BY id")
+                    )
+                ).all()
+                hourly = (
+                    await session.execute(
+                        text("SELECT bucket_epoch, model, cost_usd, cost_count FROM request_usage_hourly_rollups")
+                    )
+                ).all()
+                quarter = (
+                    await session.execute(
+                        text("SELECT slot_epoch, model, cost_usd FROM request_demand_quarter_rollups")
+                    )
+                ).all()
+                watermarks = (
+                    await session.execute(
+                        text("SELECT folded_through, hourly_folded_through FROM account_usage_rollup_state")
+                    )
+                ).one()
+                return (
+                    [tuple(row) for row in logs],
+                    {(_cache_read_clock(row[0]), row[1]): (row[2], row[3]) for row in hourly},
+                    {(_cache_read_clock(row[0]), row[1]): row[2] for row in quarter},
+                    await _cache_read_totals(session),
+                    (str(watermarks[0]), str(watermarks[1]), await _cache_read_marker(session)),
+                )
+
+        logs, hourly, quarter, totals, state = await _snapshot()
+        costs = {row[0]: row[1] for row in logs}
+        assert {request_id: cost for request_id, cost in costs.items() if cost is not None} == pytest.approx(
+            {
+                "req_below_floor": 10.4,
+                "req_std": 10.21,
+                "req_snapshot": 10.4,
+                "req_openai": 10.4,
+                "req_cc": 10.4,
+                "req_flex": 5.2,
+                "req_priority": 20.8,
+                "req_long": 16.2,
+                "req_dup": 10.4,
+                "req_warmup": 10.4,
+                "req_deleted": 10.4,
+                "req_late": 10.4,
+                "req_priced": 1.0,
+            }
+        )
+        assert [row[1] for row in logs if row[0] == "req_dup"] == pytest.approx([10.4, 10.4])
+        assert {request_id for request_id, cost in costs.items() if cost is None} == {
+            "req_pro",
+            "req_unrelated",
+            "req_billed",
+            "req_pending",
+            "req_error",
+        }
+        provenance = {row[0]: (row[2], row[3]) for row in logs}
+        assert {
+            provenance[request_id]
+            for request_id in costs
+            if request_id not in {"req_priced"} and costs[request_id] is not None
+        } == {("static_table", None)}
+        assert provenance["req_billed"] == ("upstream_billed", None)
+        assert provenance["req_pending"] == (None, "pending")
+        assert provenance["req_pro"] == (None, None)
+
+        # 00:00 is below the refold floor: its bucket and slot gain the surviving
+        # row, and the pruned request stays unpriced. Another model's bucket in
+        # that hour is untouched. 05:00 is left for the repair to refold.
+        assert {key: cost for key, (cost, _) in hourly.items()} == pytest.approx(
+            {("00:00", "gpt-6.1-sol"): 10.4, ("00:00", "gpt-6-sol"): 3.0, ("05:00", "gpt-6.1-sol"): 0.0}
+        )
+        assert {key: count for key, (_, count) in hourly.items()} == {
+            ("00:00", "gpt-6.1-sol"): 1,
+            ("00:00", "gpt-6-sol"): 2,
+            ("05:00", "gpt-6.1-sol"): 0,
+        }
+        assert quarter == pytest.approx({("00:00", "gpt-6.1-sol"): 10.4, ("05:00", "gpt-6.1-sol"): 0.0})
+
+        # Rows the lifetime rollups folded: 10.4 x 5 (below floor, snapshot,
+        # openai, cc, the duplicate group's highest id), 10.21, 5.2, 20.8 and
+        # 16.2. The API-key rollup also counts the duplicate's lower id and the
+        # soft-deleted row. Warmup traffic and the late row count in neither.
+        assert totals == pytest.approx({"account:acc_61": 50.0 + 104.41, "key:key_61": 80.0 + 104.41 + 10.4 * 2})
+        assert state[0].startswith(_GPT61_WATERMARK)
+        assert state[1].startswith(_GPT61_WATERMARK)
+        # The earliest priced hour. The repair itself starts at 01:00, the first
+        # hour the surviving rows fully cover.
+        assert state[2].startswith("2026-10-01 00:00:00")
+
+        before = await _snapshot()
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), _CACHE_READ_REVISION))
+        assert await _snapshot() == before
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _GPT61_REVISION, bootstrap_legacy=False))
+        assert await _snapshot() == before
+    finally:
+        await engine.dispose()
+
+
 async def _seed_astra_backfill_fixture(session_factory, *, watermark: str) -> None:
     """Duplicate group, external-provenance rows, and rows that must not move.
 
@@ -2008,10 +2770,10 @@ async def test_sidecar_cost_backfill_downgrade_keeps_every_cost(tmp_path):
                     )
                     VALUES
                       (NULL, 'req_backfilled', '2026-06-13 00:00:00',
-                       'anthropic/claude-sonnet-4.5', 'openrouter_sidecar',
+                       'anthropic/claude-3.5-sonnet', 'openrouter_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
                       (NULL, 'req_priced_at_insert', '2026-06-13 00:01:00',
-                       'anthropic/claude-sonnet-4.5', 'omniroute_sidecar',
+                       'anthropic/claude-3.5-sonnet', 'omniroute_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', 42.5, 'normal')
                     """
                 )
@@ -2027,6 +2789,8 @@ async def test_sidecar_cost_backfill_downgrade_keeps_every_cost(tmp_path):
     finally:
         await engine.dispose()
 
+    # The backfill prices rows from the live pricing table, so the fixture uses
+    # an exact key of it: $3/1M input plus $15/1M output.
     assert after_upgrade["req_backfilled"] == pytest.approx(18.0)
     assert after_upgrade["req_priced_at_insert"] == pytest.approx(42.5)
     assert after_downgrade == after_upgrade
@@ -2099,6 +2863,75 @@ async def test_sidecar_routing_migration_rewrites_every_settings_row_across_batc
     )
     assert after_upgrade == {row_id: upgraded for row_id in row_ids}
     assert after_downgrade == {row_id: (["claude", "cp-", "cp_"], ["or-"]) for row_id in row_ids}
+
+
+@pytest.mark.asyncio
+async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(tmp_path):
+    """The column default matches ORM metadata again; stored prefixes are left alone."""
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-prefix-default.sqlite'}"
+    parent_revision = "20261003_010000_backfill_gpt_6_1_sol_costs"
+    default_revision = "20261003_020000_restore_claude_sidecar_prefix_default"
+    declared = [
+        {"prefix": "claude", "strip": False},
+        {"prefix": "cp-", "strip": True},
+        {"prefix": "cp_", "strip": True},
+    ]
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _insert_without_prefixes(row_id: int) -> object:
+        """Copy settings row 1 but leave the prefix column to its server default."""
+
+        async with session_factory() as session:
+            columns = [row[1] for row in await session.execute(text("PRAGMA table_info(dashboard_settings)"))]
+            copied = ", ".join(
+                column for column in columns if column not in ("id", "claude_sidecar_model_prefixes_json")
+            )
+            await session.execute(
+                text(
+                    f"INSERT INTO dashboard_settings (id, {copied}) "
+                    f"SELECT :row_id, {copied} FROM dashboard_settings WHERE id = 1"
+                ),
+                {"row_id": row_id},
+            )
+            await session.commit()
+        return (await _stored_prefixes())[row_id]
+
+    async def _stored_prefixes() -> dict[int, object]:
+        async with session_factory() as session:
+            rows = await session.execute(text("SELECT id, claude_sidecar_model_prefixes_json FROM dashboard_settings"))
+            return {row[0]: json.loads(row[1]) for row in rows}
+
+    async def _drift() -> tuple[str, ...]:
+        return await to_thread.run_sync(lambda: check_schema_drift(db_url))
+
+    try:
+        drift = await _drift()
+        assert len(drift) == 1
+        assert "'modify_default'" in drift[0]
+        assert "claude_sidecar_model_prefixes_json" in drift[0]
+        assert await _insert_without_prefixes(2) == []
+        stored = await _stored_prefixes()
+        assert stored[1] == declared
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, default_revision, bootstrap_legacy=False))
+        assert await _drift() == ()
+        assert await _stored_prefixes() == stored
+        assert await _insert_without_prefixes(3) == declared
+        stored = await _stored_prefixes()
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        assert await _stored_prefixes() == stored
+        assert await _insert_without_prefixes(4) == []
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

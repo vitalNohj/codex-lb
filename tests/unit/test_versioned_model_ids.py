@@ -26,12 +26,19 @@ pytestmark = pytest.mark.unit
         ("GPT-6-SOL-20260922", "gpt-6-sol"),
         ("codex/gpt-6-luna", "gpt-6-luna"),
         ("gpt-6-luna-20260922", "gpt-6-luna"),
+        ("gpt-6.1-sol", "gpt-6.1-sol"),
+        ("codex/gpt-6.1-sol-2026-10-01", "gpt-6.1-sol"),
+        ("GPT-6.1-SOL-20261001", "gpt-6.1-sol"),
         ("gpt-6-astra-pro", None),
         ("unrelated/gpt-6-astra", None),
         ("gpt-6-sol-pro", None),
         ("unrelated/gpt-6-sol", None),
         ("gpt-6-luna-pro", None),
         ("unrelated/gpt-6-luna", None),
+        ("gpt-6.1-sol-pro", None),
+        ("unrelated/gpt-6.1-sol", None),
+        ("gpt-6.1-sol-high", None),
+        ("gpt-6-1-sol", None),
     ],
 )
 def test_versioned_identity_is_bounded(requested: str, canonical: str | None) -> None:
@@ -106,6 +113,10 @@ def test_an_allowlist_naming_the_version_rejects_a_dotted_spelling() -> None:
         ("gpt-6-luna", "gpt-6-luna"),
         ("gpt-6-luna", "gpt-6-luna-20260922"),
         ("gpt-6-luna", "codex/gpt-6-luna"),
+        ("gpt-6.1-sol", "gpt-6.1-sol"),
+        ("gpt-6.1-sol", "gpt-6.1-sol-2026-10-01"),
+        ("gpt-6.1-sol", "codex/gpt-6.1-sol"),
+        ("gpt-6.1-sol", "openai/gpt-6.1-sol"),
     ],
 )
 def test_sol_and_luna_grants_admit_bounded_ids(grant: str, requested: str) -> None:
@@ -122,6 +133,10 @@ def test_sol_and_luna_grants_admit_bounded_ids(grant: str, requested: str) -> No
         ("gpt-6-luna", "gpt-6-luna-pro"),
         ("gpt-6-luna", "unrelated/gpt-6-luna"),
         ("gpt-6-astra", "gpt-6-sol"),
+        ("gpt-6.1-sol", "gpt-6.1-sol-pro"),
+        ("gpt-6.1-sol", "unrelated/gpt-6.1-sol"),
+        ("gpt-6-sol", "gpt-6.1-sol"),
+        ("gpt-6.1-sol", "gpt-6-sol"),
     ],
 )
 def test_sol_and_luna_grants_reject_lookalikes(grant: str, requested: str) -> None:

@@ -170,9 +170,20 @@ stored price only with another valid parsed price from its owning source.
 
 ## Operational notes
 
-- **Cached input** is priced at the full input rate. No participating catalog
-  publishes a cache-read rate for every model, and assuming a discount ratio
-  would substitute an invented number for a published one.
+- **Cached input** is priced at the cache-read rate the owning catalog publishes
+  (`external_model_prices.cached_input_per_1m`), and at the full input rate only
+  when it publishes none. Assuming a discount ratio would substitute an invented
+  number for a published one, so a missing rate never becomes a guess.
+- **Full-rate history was a bug, not list price.** From 2026-09-02 until the
+  cache-read column existed, the parser read OpenRouter's `input_cache_read` and
+  dropped it. Claude through CLIProxyAPI is almost all cache reads, so one
+  deployment's 30-day cost card showed about four times the true figure. Revision
+  `20261003_000000_price_external_cache_reads` corrects what it can prove from a
+  dated card snapshot and leaves the rest. See
+  `openspec/changes/price-external-cache-reads/design.md`.
+- **An unreadable cache-read rate is unparseable**, not absent. Treating it as
+  absent would let one upstream schema change inflate costs and make a refresh
+  erase stored cache-read rates.
 - **Infrastructure failure is pre-lookup state.** A store read failure, catalog
   outage, or resolver exception costs a cost figure, never the request, and does
   not mark the model unresolved.

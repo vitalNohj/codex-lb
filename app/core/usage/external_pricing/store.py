@@ -169,6 +169,7 @@ class ExternalModelPriceStore:
             "catalog_source": None,
             "input_per_1m": None,
             "output_per_1m": None,
+            "cached_input_per_1m": None,
             "resolution_step": None,
             "detail": "lookup in progress",
             "retrieved_at": now,
@@ -223,6 +224,7 @@ class ExternalModelPriceStore:
             catalog_source=catalog_source,
             input_per_1m=price.input_per_1m,
             output_per_1m=price.output_per_1m,
+            cached_input_per_1m=price.cached_input_per_1m,
             resolution_step=resolution_step,
             detail=None,
             attempt_count=0,
@@ -258,6 +260,7 @@ class ExternalModelPriceStore:
             catalog_source=catalog_source,
             input_per_1m=None,
             output_per_1m=None,
+            cached_input_per_1m=None,
             resolution_step=resolution_step,
             detail=detail,
             attempt_count=0,
@@ -337,6 +340,7 @@ class ExternalModelPriceStore:
             ),
             input_per_1m=None,
             output_per_1m=None,
+            cached_input_per_1m=None,
             resolution_step=None,
             detail=detail,
             attempt_count=attempts,
@@ -379,6 +383,7 @@ class ExternalModelPriceStore:
             catalog_source=None,
             input_per_1m=None,
             output_per_1m=None,
+            cached_input_per_1m=None,
             resolution_step=resolution_step,
             detail=detail,
             attempt_count=attempts,
@@ -398,6 +403,7 @@ class ExternalModelPriceStore:
         catalog_source: str | None,
         input_per_1m: float | None,
         output_per_1m: float | None,
+        cached_input_per_1m: float | None,
         resolution_step: str | None,
         detail: str | None,
         attempt_count: int,
@@ -420,6 +426,7 @@ class ExternalModelPriceStore:
             "catalog_source": catalog_source,
             "input_per_1m": input_per_1m,
             "output_per_1m": output_per_1m,
+            "cached_input_per_1m": cached_input_per_1m,
             "resolution_step": resolution_step,
             "detail": detail,
             # A preserved rate keeps the retrieval time of the fetch that produced
@@ -533,11 +540,14 @@ class ExternalModelPriceStore:
 def _to_record(row: ExternalModelPrice) -> PriceRecord:
     price: ModelPrice | None = None
     if row.input_per_1m is not None and row.output_per_1m is not None:
-        # Cached input is deliberately priced at the full input rate: no
-        # participating catalog publishes a cache-read rate for every model, and
-        # inventing a discount ratio would be a fabricated number rather than a
-        # published one.
-        price = ModelPrice(input_per_1m=row.input_per_1m, output_per_1m=row.output_per_1m)
+        # The cache-read rate is the one the catalog published. When it published
+        # none, the rate stays unset and cached input prices at the full input
+        # rate rather than at an invented discount.
+        price = ModelPrice(
+            input_per_1m=row.input_per_1m,
+            output_per_1m=row.output_per_1m,
+            cached_input_per_1m=row.cached_input_per_1m,
+        )
     return PriceRecord(
         provider=row.provider,
         incoming_model=row.incoming_model,
