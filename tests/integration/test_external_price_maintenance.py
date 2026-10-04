@@ -17,6 +17,7 @@ from app.core.usage.external_pricing.catalogs import (
     OPENROUTER_REFERENCE_SOURCE,
     Catalog,
     CatalogEntry,
+    catalog_from_sidecar_models,
 )
 from app.core.usage.external_pricing.maintenance import run_maintenance_pass
 from app.core.usage.external_pricing.resolution import UnpricedReason
@@ -184,6 +185,90 @@ async def test_a_changed_catalog_rate_is_applied_and_reported(db_setup) -> None:
     assert record is not None and record.price is not None
     assert record.price.input_per_1m == pytest.approx(3.5)
     assert record.price.output_per_1m == pytest.approx(7.0)
+
+
+@pytest.mark.asyncio
+async def test_a_newly_published_cache_read_rate_is_applied_and_reported(db_setup) -> None:
+    """A record stored without a cache-read rate picks the published one up.
+
+    Its input and output rates are unchanged, so a comparison of those alone would
+    report it unchanged and keep charging cached input at the full input rate.
+    """
+
+    del db_setup
+    await _seed_resolved("vendor/model-x", ModelPrice(4.0, 20.0))
+    _install_catalog("orcarouter", {"vendor/model-x": ModelPrice(4.0, 20.0, cached_input_per_1m=0.2)})
+
+    first = await run_maintenance_pass()
+    second = await run_maintenance_pass()
+
+    assert [change.incoming_model for change in first.updated] == ["vendor/model-x"]
+    assert "cached=0.2" in first.updated[0].description
+    assert second.updated == []
+    assert second.unchanged == 1
+    record = await _record("vendor/model-x")
+    assert record is not None and record.price is not None
+    assert record.price.cached_input_per_1m == pytest.approx(0.2)
+    cost, _status = await calculated_cost_for_request(
+        provider="orcarouter",
+        model="vendor/model-x",
+        usage=UsageTokens(input_tokens=1_000_000, output_tokens=0, cached_input_tokens=1_000_000),
+    )
+    assert cost is not None
+    assert cost.cost_usd == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+async def test_a_cache_read_rate_the_owning_catalog_stops_publishing_is_removed(db_setup) -> None:
+    """A listed model with no cache-read rate is the catalog's answer, not a failure.
+
+    Cached input then costs the full input rate, the same as for a model whose
+    catalog never published a cache-read rate.
+    """
+
+    del db_setup
+    await _seed_resolved("vendor/model-x", ModelPrice(4.0, 20.0, cached_input_per_1m=0.2))
+    _install_catalog("orcarouter", {"vendor/model-x": ModelPrice(4.0, 20.0)})
+
+    report = await run_maintenance_pass()
+
+    assert [change.incoming_model for change in report.updated] == ["vendor/model-x"]
+    assert "cached=none published" in report.updated[0].description
+    record = await _record("vendor/model-x")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == ModelPrice(4.0, 20.0)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_cache_read_rate_keeps_the_stored_cache_read_rate(db_setup) -> None:
+    """A cache-read rate this build cannot read must not erase the stored one.
+
+    Reading it as "none published" would store the price without it, and every
+    cache read would cost the full input rate again.
+    """
+
+    del db_setup
+    stored = ModelPrice(4.0, 20.0, cached_input_per_1m=0.2)
+    await _seed_resolved("vendor/model-x", stored)
+    raw_pricing = {"prompt": "0.000004", "completion": "0.00002", "input_cache_read": "n/a"}
+
+    async def _loader(_provider: str) -> ServingContext:
+        # The sidecar client's own parser already read the unreadable field as
+        # absent, exactly as the OrcaRouter listing does.
+        catalog = catalog_from_sidecar_models("orcarouter", [("vendor/model-x", ModelPrice(4.0, 20.0), raw_pricing)])
+        return ServingContext(catalog=catalog, aliases={}, prefixes=())
+
+    register_serving_context_loader("orcarouter", _loader)
+
+    report = await run_maintenance_pass()
+
+    assert report.updated == []
+    assert len(report.preserved_unparseable) == 1
+    record = await _record("vendor/model-x")
+    assert record is not None
+    assert record.status is ExternalPriceStatus.RESOLVED
+    assert record.price == stored
 
 
 @pytest.mark.asyncio

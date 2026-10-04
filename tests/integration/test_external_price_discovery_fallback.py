@@ -26,6 +26,7 @@ import asyncio
 
 import pytest
 
+from app.core.types import JsonValue
 from app.core.usage.external_pricing import service as pricing_service
 from app.core.usage.external_pricing.catalogs import (
     OPENROUTER_REFERENCE_SOURCE,
@@ -400,6 +401,92 @@ async def test_reference_rates_are_converted_from_per_token_to_per_million(db_se
     assert cost is not None
     # 1M input at $0.60/1M plus 1M output at $2.20/1M.
     assert cost.cost_usd == pytest.approx(2.8)
+
+
+CACHE_HEAVY = UsageTokens(input_tokens=1_000_000, output_tokens=1_000, cached_input_tokens=900_000)
+
+
+@pytest.mark.asyncio
+async def test_a_published_cache_read_rate_prices_cached_input(db_setup, monkeypatch) -> None:
+    """Cached input costs the cache-read rate the reference publishes.
+
+    Agent traffic is mostly cache reads, so charging them at the full input rate
+    overstated every cache-heavy request several times over.
+    """
+
+    del db_setup
+    payload: JsonValue = {
+        "data": [
+            {
+                "id": "vendor/cached",
+                "pricing": {"prompt": "0.000004", "completion": "0.00002", "input_cache_read": "0.0000002"},
+            },
+        ]
+    }
+    _install_reference(monkeypatch, parse_openai_style_catalog(payload, source=OPENROUTER_REFERENCE_SOURCE))
+    _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False, prefixes=(("go/", True),))
+
+    cost, status = await _settle(CATALOGLESS_PROVIDER, "go/vendor/cached", usage=CACHE_HEAVY)
+
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    # 100k uncached input at $4/1M, 900k cache reads at $0.20/1M, 1k output at $20/1M.
+    assert cost.cost_usd == pytest.approx(0.4 + 0.18 + 0.02)
+    record = await _record(CATALOGLESS_PROVIDER, "go/vendor/cached")
+    assert record is not None and record.price is not None
+    assert record.price.cached_input_per_1m == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+async def test_without_a_published_cache_read_rate_cached_input_costs_the_input_rate(db_setup, monkeypatch) -> None:
+    """No published cache-read rate means no assumed discount."""
+
+    del db_setup
+    payload: JsonValue = {
+        "data": [{"id": "vendor/uncached", "pricing": {"prompt": "0.000004", "completion": "0.00002"}}]
+    }
+    _install_reference(monkeypatch, parse_openai_style_catalog(payload, source=OPENROUTER_REFERENCE_SOURCE))
+    _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False, prefixes=(("go/", True),))
+
+    cost, status = await _settle(CATALOGLESS_PROVIDER, "go/vendor/uncached", usage=CACHE_HEAVY)
+
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    # All 1M input tokens at $4/1M plus 1k output at $20/1M.
+    assert cost.cost_usd == pytest.approx(4.0 + 0.02)
+    record = await _record(CATALOGLESS_PROVIDER, "go/vendor/uncached")
+    assert record is not None and record.price is not None
+    assert record.price.cached_input_per_1m is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_cache_read_rate_is_not_priced_at_the_input_rate(db_setup, monkeypatch) -> None:
+    """An unreadable cache-read rate is a parse failure, not an absent one.
+
+    Charging the cache reads at the full input rate would store a figure about
+    six times the published one for this usage.
+    """
+
+    del db_setup
+    payload: JsonValue = {
+        "data": [
+            {
+                "id": "vendor/garbled",
+                "pricing": {"prompt": "0.000004", "completion": "0.00002", "input_cache_read": {"usd": "0.0000002"}},
+            },
+        ]
+    }
+    _install_reference(monkeypatch, parse_openai_style_catalog(payload, source=OPENROUTER_REFERENCE_SOURCE))
+    _install_serving(CATALOGLESS_PROVIDER, catalog=None, publishes_price_catalog=False, prefixes=(("go/", True),))
+
+    cost, status = await _settle(CATALOGLESS_PROVIDER, "go/vendor/garbled", usage=CACHE_HEAVY)
+
+    assert cost is None
+    assert status is not ExternalPriceStatus.RESOLVED
+    assert status is not ExternalPriceStatus.NOT_TOKEN_PRICED
+    record = await _record(CATALOGLESS_PROVIDER, "go/vendor/garbled")
+    assert record is not None and record.price is None
+    assert record.next_retry_at is not None
 
 
 @pytest.mark.asyncio
