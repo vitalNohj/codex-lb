@@ -36,8 +36,7 @@ def test_unlid_published_rates_are_read_without_scaling() -> None:
 
     entry = catalog.exact("glm-5.3-flash-uncensored")
     assert entry is not None
-    # The persistent external price store has input and output rates only.
-    assert entry.price == ModelPrice(input_per_1m=0.42, output_per_1m=1.68)
+    assert entry.price == ModelPrice(input_per_1m=0.42, output_per_1m=1.68, cached_input_per_1m=0.216)
     result = resolve_model_price("glm-5.3-flash-uncensored", catalogs=[catalog])
     assert result.outcome is ResolutionOutcome.RESOLVED
     assert result.catalog_source == "openai_compat:test"

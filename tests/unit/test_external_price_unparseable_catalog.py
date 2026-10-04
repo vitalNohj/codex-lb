@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.usage.external_pricing.catalogs import catalog_from_sidecar_models, parse_openai_style_catalog
+from app.core.usage.external_pricing.catalogs import (
+    UNLID_RATE_FORMAT,
+    catalog_from_published_models,
+    catalog_from_sidecar_models,
+    parse_openai_style_catalog,
+)
 from app.core.usage.external_pricing.resolution import (
     ResolutionOutcome,
     UnpricedReason,
@@ -114,6 +119,7 @@ def test_an_entry_whose_declared_token_rates_cannot_be_read_is_unparseable(prici
     [
         pytest.param(ModelPrice(float("nan"), 2.0), id="nan-input"),
         pytest.param(ModelPrice(1.0, float("inf")), id="infinite-output"),
+        pytest.param(ModelPrice(1.0, 2.0, cached_input_per_1m=float("inf")), id="infinite-cache-read"),
     ],
 )
 def test_a_non_finite_preparsed_sidecar_rate_is_unparseable(price: ModelPrice) -> None:
@@ -127,6 +133,104 @@ def test_a_non_finite_preparsed_sidecar_rate_is_unparseable(price: ModelPrice) -
     assert entry.price is None
     assert entry.unpriced_reason is UnpricedReason.UNPARSEABLE
     assert resolve_model_price("vendor/model-x", catalogs=[catalog]).outcome is ResolutionOutcome.PRICE_UNPARSEABLE
+
+
+_PRICED = {"prompt": "0.000004", "completion": "0.00002"}
+
+
+@pytest.mark.parametrize(
+    "cache_read",
+    [
+        pytest.param("not-a-number", id="unreadable-value"),
+        pytest.param({"per_token": "0.0000002"}, id="restructured-shape"),
+        pytest.param(True, id="boolean"),
+        pytest.param("NaN", id="nan"),
+        pytest.param("1e308", id="scaled-overflow"),
+        pytest.param(10**400, id="integer-overflow"),
+    ],
+)
+def test_an_unreadable_cache_read_rate_makes_the_entry_unparseable(cache_read: object) -> None:
+    """Pricing the entry without it would charge cache reads at the input rate.
+
+    For cache-heavy traffic that is a figure many times too high, and a refresh
+    would overwrite a stored cache-read rate with it.
+    """
+
+    catalog = parse_openai_style_catalog(
+        _payload("vendor/model-x", {**_PRICED, "input_cache_read": cache_read}),
+        source="openrouter",
+    )
+
+    entry = catalog.exact("vendor/model-x")
+    assert entry is not None
+    assert entry.price is None
+    assert entry.unpriced_reason is UnpricedReason.UNPARSEABLE
+    assert resolve_model_price("vendor/model-x", catalogs=[catalog]).outcome is ResolutionOutcome.PRICE_UNPARSEABLE
+
+
+@pytest.mark.parametrize(
+    "pricing",
+    [
+        pytest.param(_PRICED, id="absent"),
+        pytest.param({**_PRICED, "input_cache_read": None}, id="explicit-null"),
+        pytest.param({**_PRICED, "input_cache_read": ""}, id="empty-string"),
+        pytest.param({**_PRICED, "input_cache_read": "-1"}, id="negative-sentinel"),
+    ],
+)
+def test_a_catalog_without_a_cache_read_rate_still_prices_the_model(pricing: object) -> None:
+    """No published cache-read rate is an answer: cached input costs the input rate."""
+
+    catalog = parse_openai_style_catalog(_payload("vendor/model-x", pricing), source="openrouter")
+
+    resolution = resolve_model_price("vendor/model-x", catalogs=[catalog])
+
+    assert resolution.outcome is ResolutionOutcome.RESOLVED
+    assert resolution.price == ModelPrice(4.0, 20.0)
+
+
+def test_a_published_cache_read_rate_is_kept() -> None:
+    catalog = parse_openai_style_catalog(
+        _payload("vendor/model-x", {**_PRICED, "input_cache_read": "0.0000002"}),
+        source="openrouter",
+    )
+
+    resolution = resolve_model_price("vendor/model-x", catalogs=[catalog])
+
+    assert resolution.price is not None
+    assert resolution.price.cached_input_per_1m == pytest.approx(0.2)
+
+
+def test_a_sidecar_listing_with_an_unreadable_cache_read_rate_is_unparseable() -> None:
+    """The sidecar's own parser reads the unreadable field as absent.
+
+    Only the raw block it carries shows that a rate was published.
+    """
+
+    catalog = catalog_from_sidecar_models(
+        "orcarouter",
+        [("vendor/model-x", ModelPrice(4.0, 20.0), {**_PRICED, "input_cache_read": "n/a"})],
+    )
+
+    entry = catalog.exact("vendor/model-x")
+    assert entry is not None
+    assert entry.price is None
+    assert entry.unpriced_reason is UnpricedReason.UNPARSEABLE
+
+
+def test_a_published_rate_block_with_an_unreadable_cache_read_rate_is_unparseable() -> None:
+    readable = {"input_usd_per_m": 3.0, "output_usd_per_m": 15.0, "cached_input_usd_per_m": 0.3}
+    unreadable = {**readable, "cached_input_usd_per_m": {"usd": 0.3}}
+
+    catalog = catalog_from_published_models(
+        "openai_compat:endpoint",
+        [("vendor/good", readable, UNLID_RATE_FORMAT), ("vendor/bad", unreadable, UNLID_RATE_FORMAT)],
+    )
+
+    good = catalog.exact("vendor/good")
+    bad = catalog.exact("vendor/bad")
+    assert good is not None and good.price == ModelPrice(3.0, 15.0, cached_input_per_1m=0.3)
+    assert bad is not None and bad.price is None
+    assert bad.unpriced_reason is UnpricedReason.UNPARSEABLE
 
 
 def test_a_readable_price_is_unaffected_by_the_distinction() -> None:

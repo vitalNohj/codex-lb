@@ -102,6 +102,15 @@ async def _prune_request_logs(cutoff: datetime, *, now: datetime) -> int:
     fold lag - so rows a lag below a current watermark are safe; while the
     fold is catching up (initial backfill, stalled scheduler), skip
     entirely.
+
+    Pruning also pauses while a post-upgrade repair is pending
+    (``upgrade_repair_from`` set). The repair refolds hourly and demand
+    buckets from raw rows, starting no earlier than the first hour the
+    surviving rows fully cover. A row pruned before the repair reaches its
+    hour would leave that bucket holding the pre-repair figures for good, and
+    capping the cutoff at the marker is not enough: deleting the oldest rows
+    moves the repair's start past the marker. The repair clears the marker
+    when it finishes, and pruning resumes on the next pass.
     """
     total = 0
     while True:
@@ -117,22 +126,34 @@ async def _prune_request_logs(cutoff: datetime, *, now: datetime) -> int:
                 # lock held through the batch, the reset either commits
                 # first (this read sees the epoch watermark and pruning
                 # pauses) or waits until the batch's delete has committed.
-                watermarks = (
+                state = (
                     await session.execute(
                         select(
                             AccountUsageRollupState.folded_through,
                             AccountUsageRollupState.hourly_folded_through,
                             AccountUsageRollupState.conversation_folded_through,
+                            AccountUsageRollupState.upgrade_repair_from,
                         )
                         .where(AccountUsageRollupState.id == 1)
                         .with_for_update()
                     )
                 ).first()
-                watermark = min(watermarks) if watermarks is not None else None
-                if watermark is None:
+                if state is None:
                     if total == 0:
                         logger.info("Retention: skipping request_logs pruning (no rollup watermark yet)")
                     return total
+                if state.upgrade_repair_from is not None:
+                    if total == 0:
+                        logger.info(
+                            "Retention: skipping request_logs pruning (hourly rollup repair pending from %s)",
+                            state.upgrade_repair_from.isoformat(),
+                        )
+                    return total
+                watermark = min(
+                    state.folded_through,
+                    state.hourly_folded_through,
+                    state.conversation_folded_through,
+                )
                 if watermark < now - 2 * FOLD_LAG:
                     if total == 0:
                         logger.info(

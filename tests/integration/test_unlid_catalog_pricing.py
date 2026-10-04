@@ -127,6 +127,7 @@ async def test_unlid_catalog_rates_resolve_and_price_a_second_chat_request(async
     assert prices[0].catalog_source == PROVIDER
     assert prices[0].input_per_1m == pytest.approx(0.42)
     assert prices[0].output_per_1m == pytest.approx(1.68)
+    assert prices[0].cached_input_per_1m == pytest.approx(0.216)
     assert len(logs) == 2
     assert logs[0].cost_usd is None
     assert logs[0].price_status == ExternalPriceStatus.PENDING.value

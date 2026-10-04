@@ -152,6 +152,8 @@ class _FakeSidecarClient:
         # CLIProxyAPI proxies other vendors and can echo their ``usage.cost``
         # straight back. It debits nothing of its own, so this is not spend.
         self.echoed_cost_usd: float | None = None
+        # When set, non-streaming responses report this usage object instead.
+        self.chat_usage: dict[str, object] | None = None
 
     async def list_models_cached(self):
         return self.models
@@ -162,7 +164,11 @@ class _FakeSidecarClient:
             raise self.chat_errors.pop(0)
         if self.chat_error is not None:
             raise self.chat_error
-        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        usage: dict[str, object] = (
+            dict(self.chat_usage)
+            if self.chat_usage is not None
+            else {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        )
         if self.echoed_cost_usd is not None:
             usage["cost"] = self.echoed_cost_usd
         return {
@@ -817,6 +823,80 @@ async def test_a_dated_claude_id_is_priced_from_the_anthropic_reference_rate(
         assert charged["cost_usd"] == int(priced[-1].cost_usd * 1_000_000), (
             "a resolved model must resume accruing cost quota, and at the price it recorded"
         )
+    finally:
+        reset_serving_context_loaders()
+
+
+@pytest.mark.asyncio
+async def test_cache_reads_are_priced_at_the_published_cache_read_rate(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    """A cache-heavy Claude request costs what the pricing reference publishes.
+
+    Agent traffic is mostly cache reads. Charging them at the full input rate
+    recorded about five times the published cost for every cached Claude request.
+    """
+
+    from app.core.usage.external_pricing import service as pricing_service
+    from app.core.usage.external_pricing.catalogs import OPENROUTER_REFERENCE_SOURCE, parse_openai_style_catalog
+    from app.core.usage.external_pricing.service import get_lookup_coordinator, reset_serving_context_loaders
+    from app.db.models import CostSource, ExternalPriceStatus
+
+    reference = parse_openai_style_catalog(
+        {
+            "data": [
+                {
+                    "id": "anthropic/claude-opus-5.5",
+                    "pricing": {"prompt": "0.000004", "completion": "0.00002", "input_cache_read": "0.0000002"},
+                }
+            ]
+        },
+        source=OPENROUTER_REFERENCE_SOURCE,
+    )
+
+    async def _reference():
+        return reference
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+    reset_serving_context_loaders()
+    try:
+        from app.modules.proxy.external_pricing_sources import register_external_pricing_sources
+
+        register_external_pricing_sources()
+        monkeypatch.setattr(
+            "app.modules.proxy.claude_sidecar_dispatch.load_sidecar_config",
+            lambda: _resolved(fake_sidecar.config),
+        )
+        fake_sidecar.chat_usage = {
+            "prompt_tokens": 100_000,
+            "completion_tokens": 1_000,
+            "total_tokens": 101_000,
+            "prompt_tokens_details": {"cached_tokens": 90_000},
+        }
+
+        for _ in range(2):
+            response = await async_client.post(
+                "/v1/chat/completions",
+                json={"model": "cc/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200
+            await get_lookup_coordinator().drain()
+
+        async with SessionLocal() as session:
+            logs = list((await session.execute(select(RequestLog))).scalars().all())
+        sidecar_logs = sorted((log for log in logs if log.source == "claude_sidecar"), key=lambda log: log.id)
+        priced = [log for log in sidecar_logs if log.cost_usd is not None]
+        assert priced, "the second request must be priced from the stored reference rate"
+        log = priced[-1]
+        assert log.cached_input_tokens == 90_000
+        assert log.cost_source == CostSource.CATALOG_CALCULATED.value
+        assert log.price_status == ExternalPriceStatus.RESOLVED.value
+        # 10k uncached input at $4/1M, 90k cache reads at $0.20/1M, 1k output at
+        # $20/1M. Every input token at $4/1M would have recorded $0.42.
+        assert log.cost_usd == pytest.approx(0.04 + 0.018 + 0.02)
     finally:
         reset_serving_context_loaders()
 

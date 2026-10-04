@@ -585,7 +585,9 @@ class ExternalModelPrice(Base):
     the request path is a single indexed read and never re-derives a mapping it
     already made. The routed spelling is retained separately as provenance.
     Rates are whatever the authoritative catalog published; no per-model price
-    is declared in code.
+    is declared in code. ``cached_input_per_1m`` is the published cache-read
+    rate and stays NULL when the catalog published none, in which case cached
+    input prices at the full input rate.
 
     ``status`` distinguishes a usable rate from the three unusable outcomes that
     must not be retried on every request: nothing matched, several catalog models
@@ -615,6 +617,7 @@ class ExternalModelPrice(Base):
     catalog_source: Mapped[str | None] = mapped_column(String, nullable=True)
     input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     output_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cached_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Resolution step that produced the mapping (``alias``, ``prefix-exact``,
     # ``exact``...), retained so any recorded price is explainable.
     resolution_step: Mapped[str | None] = mapped_column(String, nullable=True)
