@@ -2008,10 +2008,10 @@ async def test_sidecar_cost_backfill_downgrade_keeps_every_cost(tmp_path):
                     )
                     VALUES
                       (NULL, 'req_backfilled', '2026-06-13 00:00:00',
-                       'anthropic/claude-sonnet-4.5', 'openrouter_sidecar',
+                       'anthropic/claude-3.5-sonnet', 'openrouter_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', NULL, 'normal'),
                       (NULL, 'req_priced_at_insert', '2026-06-13 00:01:00',
-                       'anthropic/claude-sonnet-4.5', 'omniroute_sidecar',
+                       'anthropic/claude-3.5-sonnet', 'omniroute_sidecar',
                        1000000, 1000000, 0, 0, 100, 'success', 42.5, 'normal')
                     """
                 )
@@ -2027,6 +2027,8 @@ async def test_sidecar_cost_backfill_downgrade_keeps_every_cost(tmp_path):
     finally:
         await engine.dispose()
 
+    # The backfill prices rows from the live pricing table, so the fixture uses
+    # an exact key of it: $3/1M input plus $15/1M output.
     assert after_upgrade["req_backfilled"] == pytest.approx(18.0)
     assert after_upgrade["req_priced_at_insert"] == pytest.approx(42.5)
     assert after_downgrade == after_upgrade

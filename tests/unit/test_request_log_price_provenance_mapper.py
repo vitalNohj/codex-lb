@@ -3,7 +3,7 @@
 ``add_log`` deliberately stores ``cost_usd = NULL`` with a ``price_status`` when a
 participating external integration's model stayed unresolved. The mapper used to
 recompute a cost from the static alias table whenever the persisted cost was NULL,
-so a model whose *name* happened to match a glob (``*gpt-4o*``, ``*claude-opus-4*``)
+so a model whose *name* happened to match a glob (``*gpt-4o*``, ``*anthropic/claude-3.5-sonnet*``)
 came back with another model's rate and never earned the ``!!`` marker.
 """
 
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.unit
 GLOB_MATCHING_MODELS = (
     "orcarouter/gpt-4o-lookalike",
     "openai/gpt-4o-mini-tts",
-    "anthropic/claude-opus-4.5",
+    "anthropic/claude-3.5-sonnet-lookalike",
 )
 
 
