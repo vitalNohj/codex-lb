@@ -51,8 +51,8 @@ Not repaired:
 * Rows priced by any other catalog. Without a dated, published cache-read rate
   for the card they were charged at, a corrected figure would be a guess.
 
-``downgrade()`` drops the column and deliberately keeps the corrected costs:
-see its docstring.
+``downgrade()`` keeps the column, its rates and the corrected costs: see its
+docstring.
 """
 
 from __future__ import annotations
@@ -345,75 +345,67 @@ def _card_rates(catalog_model: str | None) -> _Rates | None:
     return _Rates(_per_1m(prompt), _per_1m(completion), _per_1m(cache_read))
 
 
-def _seed_cached_rates(bind: Connection, report: _Report) -> None:
-    """Attach the dated OpenRouter cache-read rate to records charged at that card."""
+def _seed_cached_rates(bind: Connection, report: _Report) -> dict[tuple[str, str], _Rates]:
+    """Attach the dated OpenRouter cache-read rate to records charged at that card.
+
+    Returns the rates of the records this run seeded, keyed by ``(provider,
+    model)``. Only those may reprice history. A rate a record already holds was
+    written by an earlier run or by a price refresh, and a refreshed rate proves
+    nothing about what an old row was charged.
+    """
 
     prices = _prices_table()
-    rows = (
-        bind.execute(
-            sa.select(
-                prices.c.id,
-                prices.c.provider,
-                prices.c.incoming_model,
-                prices.c.catalog_model,
-                prices.c.catalog_source,
-                prices.c.input_per_1m,
-                prices.c.output_per_1m,
-            ).where(
-                prices.c.status == _RESOLVED,
-                prices.c[_CACHED_COLUMN].is_(None),
-                prices.c.input_per_1m.is_not(None),
-                prices.c.output_per_1m.is_not(None),
-            )
-        )
-        .mappings()
-        .all()
-    )
+    seeded: dict[tuple[str, str], _Rates] = {}
     unseeded: list[str] = []
-    for row in rows:
-        card = _card_rates(row["catalog_model"]) if row["catalog_source"] == _OPENROUTER_REFERENCE_SOURCE else None
-        if (
-            card is None
-            or not _same(float(row["input_per_1m"]), card.input_per_1m)
-            or not _same(float(row["output_per_1m"]), card.output_per_1m)
-        ):
-            unseeded.append(f"{row['provider']}:{row['incoming_model']}")
-            continue
-        bind.execute(
-            sa.update(prices).where(prices.c.id == row["id"]).values({_CACHED_COLUMN: card.cached_input_per_1m})
-        )
-        report.seeded += 1
-    report.unseeded = sorted(unseeded)
-
-
-def _priced_records(bind: Connection) -> dict[tuple[str, str], _Rates]:
-    """Rates per ``(provider, model)`` key of every resolved record with a cache-read rate."""
-
-    prices = _prices_table()
-    rows = (
-        bind.execute(
-            sa.select(
-                prices.c.provider,
-                prices.c.incoming_model,
-                prices.c.input_per_1m,
-                prices.c.output_per_1m,
-                prices.c[_CACHED_COLUMN],
-            ).where(
-                prices.c.status == _RESOLVED,
-                prices.c.input_per_1m.is_not(None),
-                prices.c.output_per_1m.is_not(None),
-                prices.c[_CACHED_COLUMN].is_not(None),
+    last_seen_id = 0
+    while True:
+        rows = (
+            bind.execute(
+                sa.select(
+                    prices.c.id,
+                    prices.c.provider,
+                    prices.c.incoming_model,
+                    prices.c.catalog_model,
+                    prices.c.catalog_source,
+                    prices.c.input_per_1m,
+                    prices.c.output_per_1m,
+                )
+                .where(
+                    prices.c.id > last_seen_id,
+                    prices.c.status == _RESOLVED,
+                    prices.c[_CACHED_COLUMN].is_(None),
+                    prices.c.input_per_1m.is_not(None),
+                    prices.c.output_per_1m.is_not(None),
+                )
+                .order_by(prices.c.id)
+                .limit(_BATCH_SIZE)
             )
+            .mappings()
+            .all()
         )
-        .mappings()
-        .all()
-    )
-    return {
-        (_lookup_key(row["provider"]), _lookup_key(row["incoming_model"])): _Rates(
-            float(row["input_per_1m"]), float(row["output_per_1m"]), float(row[_CACHED_COLUMN])
-        )
-        for row in rows
-    }
+        if not rows:
+            break
+        for row in rows:
+            card = _card_rates(row["catalog_model"]) if row["catalog_source"] == _OPENROUTER_REFERENCE_SOURCE else None
+            input_per_1m = float(row["input_per_1m"])
+            output_per_1m = float(row["output_per_1m"])
+            if (
+                card is None
+                or not _same(input_per_1m, card.input_per_1m)
+                or not _same(output_per_1m, card.output_per_1m)
+            ):
+                unseeded.append(f"{row['provider']}:{row['incoming_model']}")
+                continue
+            bind.execute(
+                sa.update(prices).where(prices.c.id == row["id"]).values({_CACHED_COLUMN: card.cached_input_per_1m})
+            )
+            seeded[(_lookup_key(row["provider"]), _lookup_key(row["incoming_model"]))] = _Rates(
+                input_per_1m, output_per_1m, card.cached_input_per_1m
+            )
+            report.seeded += 1
+        last_seen_id = int(rows[-1]["id"])
+    report.unseeded = sorted(unseeded)
+    return seeded
 
 
 def _lock_rollup_state(bind: Connection) -> None:
@@ -460,36 +452,42 @@ def _refold_floor(bind: Connection) -> datetime | None:
     return None if earliest is None else _ceil_to_hour(earliest)
 
 
-def _group_max_ids(bind: Connection, rows: list[dict[str, Any]]) -> dict[tuple[object, object, object], int]:
-    """True ``max(id)`` per ``(account_id, request_id, requested_at)`` over all rows.
+def _group_max_row_ids(bind: Connection, rows: list[dict[str, Any]]) -> set[int]:
+    """Ids of the rows that are their ``(account_id, request_id, requested_at)`` group's ``max(id)``.
 
-    Copied from ``20260922_000000_backfill_gpt_6_sol_luna_costs``: the account
-    rollup folds only each duplicate group's highest id, whatever its model.
+    The account rollup folds only each duplicate group's highest id, whatever
+    its model (the rule of ``20260922_000000_backfill_gpt_6_sol_luna_costs``).
+    Each query looks up the groups of at most ``_IN_CHUNK_SIZE`` row ids, so its
+    parameters and its result stay bounded by the chunk.
     """
 
-    request_ids = {row["request_id"] for row in rows if row["account_id"] and row["deleted_at"] is None}
-    request_ids.discard(None)
-    if not request_ids:
-        return {}
+    candidate_ids = sorted(
+        int(row["id"])
+        for row in rows
+        if row["account_id"] and row["request_id"] is not None and row["deleted_at"] is None
+    )
+    if not candidate_ids:
+        return set()
     logs = _request_logs_table()
-    max_ids: dict[tuple[object, object, object], int] = {}
-    ids = sorted(request_ids)
-    for chunk_start in range(0, len(ids), _IN_CHUNK_SIZE):
-        chunk = ids[chunk_start : chunk_start + _IN_CHUNK_SIZE]
-        grouped = bind.execute(
-            sa.select(logs.c.account_id, logs.c.request_id, logs.c.requested_at, sa.func.max(logs.c.id))
-            .where(
-                logs.c.request_id.in_(chunk),
-                logs.c.account_id.is_not(None),
-                logs.c.deleted_at.is_(None),
-                logs.c.request_kind.not_in(_EXCLUDED_REQUEST_KINDS),
-            )
-            .group_by(logs.c.account_id, logs.c.request_id, logs.c.requested_at)
-        ).all()
-        for account_id, request_id, requested_at, max_id in grouped:
-            if max_id is not None:
-                max_ids[(account_id, request_id, requested_at)] = int(max_id)
-    return max_ids
+    peers = logs.alias("peers")
+    group_max_id = (
+        sa.select(sa.func.max(peers.c.id))
+        .where(
+            peers.c.account_id == logs.c.account_id,
+            peers.c.request_id == logs.c.request_id,
+            peers.c.requested_at == logs.c.requested_at,
+            peers.c.deleted_at.is_(None),
+            peers.c.request_kind.not_in(_EXCLUDED_REQUEST_KINDS),
+        )
+        .scalar_subquery()
+    )
+    max_row_ids: set[int] = set()
+    for chunk_start in range(0, len(candidate_ids), _IN_CHUNK_SIZE):
+        chunk = candidate_ids[chunk_start : chunk_start + _IN_CHUNK_SIZE]
+        for row_id, max_id in bind.execute(sa.select(logs.c.id, group_max_id).where(logs.c.id.in_(chunk))).all():
+            if max_id is not None and int(max_id) == int(row_id):
+                max_row_ids.add(int(row_id))
+    return max_row_ids
 
 
 def _lifetime_deltas(bind: Connection, rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
@@ -505,13 +503,13 @@ def _lifetime_deltas(bind: Connection, rows: list[dict[str, Any]]) -> tuple[dict
     for row in countable:
         if row["api_key_id"]:
             key_deltas[str(row["api_key_id"])] += row["delta"]
-    group_max_ids = _group_max_ids(bind, countable)
+    group_max_row_ids = _group_max_row_ids(bind, countable)
     account_deltas: dict[str, float] = defaultdict(float)
     for row in countable:
         account_id = row["account_id"]
         if not account_id or row["deleted_at"] is not None:
             continue
-        if group_max_ids.get((account_id, row["request_id"], row["requested_at"])) != int(row["id"]):
+        if int(row["id"]) not in group_max_row_ids:
             continue
         account_deltas[str(account_id)] += row["delta"]
     return account_deltas, key_deltas
@@ -598,11 +596,14 @@ def _reprice_rows(
     hourly_watermark: datetime | None,
     refold_floor: datetime | None,
     report: _Report,
-) -> tuple[datetime | None, _BelowFloor]:
-    """Reprice full-rate rows; returns the earliest repriced time and the unrefoldable bucket deltas."""
+) -> datetime | None:
+    """Reprice full-rate rows; returns the earliest repriced time.
+
+    Each batch applies its own lifetime and below-floor bucket deltas, so
+    memory stays bounded by ``_BATCH_SIZE`` whatever the table size.
+    """
 
     logs = _request_logs_table()
-    below = _BelowFloor(defaultdict(float), defaultdict(float))
     earliest: datetime | None = None
     last_seen_id = 0
     while True:
@@ -642,6 +643,7 @@ def _reprice_rows(
             break
         updates: list[dict[str, Any]] = []
         folded: list[dict[str, Any]] = []
+        below = _BelowFloor(defaultdict(float), defaultdict(float))
         for row in rows:
             provider = _provider_for_source(row["source"])
             model = row["model"]
@@ -684,8 +686,9 @@ def _reprice_rows(
                 updates,
             )
         _apply_lifetime_deltas(bind, *_lifetime_deltas(bind, folded))
+        _patch_buckets_below_floor(bind, below, report)
         last_seen_id = int(rows[-1]["id"])
-    return earliest, below
+    return earliest
 
 
 _HOURLY_KEY_COLUMNS = (
@@ -767,7 +770,7 @@ def upgrade() -> None:
     _add_cached_rate_column(bind)
 
     report = _Report()
-    _seed_cached_rates(bind, report)
+    rates_by_key = _seed_cached_rates(bind, report)
     if report.unseeded:
         logger.info(
             "external cache-read pricing: no dated card for %d resolved records; "
@@ -777,14 +780,13 @@ def upgrade() -> None:
         )
     if not _has_table(bind, _LOGS_TABLE):
         return
-    rates_by_key = _priced_records(bind)
     if not rates_by_key:
-        logger.info("external cache-read pricing: no seeded records; nothing to reprice")
+        logger.info("external cache-read pricing: this run seeded no records; nothing to reprice")
         return
 
     _lock_rollup_state(bind)
     folded_through, hourly_watermark = _read_state(bind)
-    earliest, below = _reprice_rows(
+    earliest = _reprice_rows(
         bind,
         rates_by_key,
         folded_through=folded_through,
@@ -792,13 +794,12 @@ def upgrade() -> None:
         refold_floor=_refold_floor(bind),
         report=report,
     )
-    _patch_buckets_below_floor(bind, below, report)
     _arm_time_rollup_repair(bind, earliest, hourly_watermark)
 
     logger.info(
         "external cache-read pricing: seeded %d records; repriced %d request logs (%.2f USD); "
-        "left %d unverifiable; moved %d hourly buckets and %d demand slots below the refold floor "
-        "by their surviving rows' deltas",
+        "left %d unverifiable; applied %d hourly bucket and %d demand slot updates below the refold "
+        "floor from their surviving rows' deltas",
         report.seeded,
         report.repriced_rows,
         report.row_delta_usd,
@@ -809,16 +810,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the cache-read rate column. Corrected costs deliberately stay.
+    """Keep the cache-read column, its rates and the corrected costs.
 
-    Restoring the inflated figures would need the pre-upgrade costs, which
-    nothing records, and they were wrong: the published cache-read rate is what
-    those tokens cost. Every rollup stays consistent with the rows it folds,
-    and re-running ``upgrade()`` changes nothing more, because corrected rows
-    no longer match the full-rate figure.
+    A rate written by ``codex-lb model-prices refresh`` after the upgrade cannot
+    be told apart from a seeded one, so dropping the column could destroy rates
+    this revision never wrote. Restoring the inflated costs would need the
+    pre-upgrade figures, which nothing records, and they were wrong: the
+    published cache-read rate is what those tokens cost. Every rollup stays
+    consistent with the rows it folds. Running ``upgrade()`` again reuses the
+    column and reprices only rows of records that run seeds itself.
+
+    Code older than this revision does not declare the column, and its startup
+    schema check reports it as drift. Drop
+    ``external_model_prices.cached_input_per_1m`` by hand before starting such
+    code.
     """
 
-    bind = op.get_bind()
-    if _CACHED_COLUMN in _columns(bind, _PRICES_TABLE):
-        with op.batch_alter_table(_PRICES_TABLE) as batch_op:
-            batch_op.drop_column(_CACHED_COLUMN)
+    return

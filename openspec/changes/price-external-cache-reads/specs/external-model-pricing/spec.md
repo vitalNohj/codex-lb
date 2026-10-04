@@ -6,7 +6,7 @@ The upgrade that adds the stored cache-read rate MUST correct, once, the calcula
 
 The migration MUST carry a dated snapshot of the OpenRouter pricing reference's Claude cards: input, cache-read, and output rates as published on 2026-10-03. It MUST seed a record's cache-read rate from that snapshot only when the record is resolved, was priced from the OpenRouter pricing reference, and stores the same input and output rates as the snapshot card for its catalog model. Every other record MUST keep no cache-read rate until the maintenance command refreshes it.
 
-The migration MUST reprice a `catalog_calculated` request log only when its record was seeded and its stored cost equals, within floating-point tolerance, the full-input-rate figure for that record's rates and the row's tokens. The new cost MUST be the published-rate figure. A row with any other stored cost, missing token counts, or any other cost source MUST keep its cost.
+The migration MUST reprice a `catalog_calculated` request log only when the same run seeded its record and its stored cost equals, within floating-point tolerance, the full-input-rate figure for that record's rates and the row's tokens. The new cost MUST be the published-rate figure. A row with any other stored cost, missing token counts, or any other cost source MUST keep its cost. A cache-read rate a record already holds, from an earlier run or from a price refresh, MUST NOT reprice any row.
 
 Every rollup that already folded a repriced row MUST move by exactly that row's delta:
 
@@ -18,7 +18,7 @@ Hourly and demand buckets below the repair's floor cannot be refolded, because r
 
 The migration MUST NOT change the cost of a request that retention already removed, in a bucket or in a lifetime total. A bucket records neither which integration served its requests nor how they were priced, so a total that equals the full-input-rate figure can still include upstream-billed or operator-configured costs.
 
-`downgrade()` MUST drop the cache-read column and MUST NOT restore the replaced costs: nothing records them, and they were wrong. Running the upgrade again MUST change no cost and no rollup total. The migration does not correct the running `current_value` of a cost-based API-key limit; that counter restarts at each window reset.
+`downgrade()` MUST keep the cache-read column and its rates, because a rate a later refresh wrote cannot be told apart from a seeded one. It MUST NOT restore the replaced costs: nothing records them, and they were wrong. Running the upgrade again MUST change no cost and no rollup total. The migration does not correct the running `current_value` of a cost-based API-key limit; that counter restarts at each window reset.
 
 #### Scenario: A full-rate row is repriced and its rollups follow
 
@@ -51,6 +51,7 @@ The migration MUST NOT change the cost of a request that retention already remov
 - **GIVEN** the migration has run
 - **WHEN** it is downgraded and upgraded again
 - **THEN** no request-log cost and no rollup total changes
+- **AND** every record keeps its cache-read rate
 
 ## MODIFIED Requirements
 

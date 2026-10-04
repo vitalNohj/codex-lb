@@ -353,36 +353,42 @@ def _refold_floor(bind: Connection) -> datetime | None:
     return None if earliest is None else _ceil_to_hour(earliest)
 
 
-def _group_max_ids(bind: Connection, rows: list[dict[str, Any]]) -> dict[tuple[object, object, object], int]:
-    """True ``max(id)`` per ``(account_id, request_id, requested_at)`` over all rows.
+def _group_max_row_ids(bind: Connection, rows: list[dict[str, Any]]) -> set[int]:
+    """Ids of the rows that are their ``(account_id, request_id, requested_at)`` group's ``max(id)``.
 
-    Copied from ``20260922_000000_backfill_gpt_6_sol_luna_costs``: the account
-    rollup folds only each duplicate group's highest id, whatever its model.
+    The account rollup folds only each duplicate group's highest id, whatever
+    its model (the rule of ``20260922_000000_backfill_gpt_6_sol_luna_costs``).
+    Each query looks up the groups of at most ``_IN_CHUNK_SIZE`` row ids, so its
+    parameters and its result stay bounded by the chunk.
     """
 
-    request_ids = {row["request_id"] for row in rows if row["account_id"] and row["deleted_at"] is None}
-    request_ids.discard(None)
-    if not request_ids:
-        return {}
+    candidate_ids = sorted(
+        int(row["id"])
+        for row in rows
+        if row["account_id"] and row["request_id"] is not None and row["deleted_at"] is None
+    )
+    if not candidate_ids:
+        return set()
     logs = _request_logs_table()
-    max_ids: dict[tuple[object, object, object], int] = {}
-    ids = sorted(request_ids)
-    for chunk_start in range(0, len(ids), _IN_CHUNK_SIZE):
-        chunk = ids[chunk_start : chunk_start + _IN_CHUNK_SIZE]
-        grouped = bind.execute(
-            sa.select(logs.c.account_id, logs.c.request_id, logs.c.requested_at, sa.func.max(logs.c.id))
-            .where(
-                logs.c.request_id.in_(chunk),
-                logs.c.account_id.is_not(None),
-                logs.c.deleted_at.is_(None),
-                logs.c.request_kind.not_in(_EXCLUDED_REQUEST_KINDS),
-            )
-            .group_by(logs.c.account_id, logs.c.request_id, logs.c.requested_at)
-        ).all()
-        for account_id, request_id, requested_at, max_id in grouped:
-            if max_id is not None:
-                max_ids[(account_id, request_id, requested_at)] = int(max_id)
-    return max_ids
+    peers = logs.alias("peers")
+    group_max_id = (
+        sa.select(sa.func.max(peers.c.id))
+        .where(
+            peers.c.account_id == logs.c.account_id,
+            peers.c.request_id == logs.c.request_id,
+            peers.c.requested_at == logs.c.requested_at,
+            peers.c.deleted_at.is_(None),
+            peers.c.request_kind.not_in(_EXCLUDED_REQUEST_KINDS),
+        )
+        .scalar_subquery()
+    )
+    max_row_ids: set[int] = set()
+    for chunk_start in range(0, len(candidate_ids), _IN_CHUNK_SIZE):
+        chunk = candidate_ids[chunk_start : chunk_start + _IN_CHUNK_SIZE]
+        for row_id, max_id in bind.execute(sa.select(logs.c.id, group_max_id).where(logs.c.id.in_(chunk))).all():
+            if max_id is not None and int(max_id) == int(row_id):
+                max_row_ids.add(int(row_id))
+    return max_row_ids
 
 
 def _lifetime_deltas(bind: Connection, rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
@@ -398,13 +404,13 @@ def _lifetime_deltas(bind: Connection, rows: list[dict[str, Any]]) -> tuple[dict
     for row in countable:
         if row["api_key_id"]:
             key_deltas[str(row["api_key_id"])] += row["delta"]
-    group_max_ids = _group_max_ids(bind, countable)
+    group_max_row_ids = _group_max_row_ids(bind, countable)
     account_deltas: dict[str, float] = defaultdict(float)
     for row in countable:
         account_id = row["account_id"]
         if not account_id or row["deleted_at"] is not None:
             continue
-        if group_max_ids.get((account_id, row["request_id"], row["requested_at"])) != int(row["id"]):
+        if int(row["id"]) not in group_max_row_ids:
             continue
         account_deltas[str(account_id)] += row["delta"]
     return account_deltas, key_deltas
@@ -463,11 +469,14 @@ def _price_rows(
     hourly_watermark: datetime | None,
     refold_floor: datetime | None,
     report: _Report,
-) -> tuple[datetime | None, _BelowFloor]:
-    """Price NULL-cost rows; returns the earliest priced time and the unrefoldable bucket deltas."""
+) -> datetime | None:
+    """Price NULL-cost rows; returns the earliest priced time.
+
+    Each batch applies its own lifetime and below-floor bucket changes, so
+    memory stays bounded by ``_BATCH_SIZE`` whatever the table size.
+    """
 
     logs = _request_logs_table()
-    below = _BelowFloor()
     earliest: datetime | None = None
     last_seen_id = 0
     while True:
@@ -507,6 +516,7 @@ def _price_rows(
             break
         updates: list[dict[str, Any]] = []
         folded: list[dict[str, Any]] = []
+        below = _BelowFloor()
         for row in rows:
             cost = _calculate_cost(row)
             requested_at = _as_datetime(row["requested_at"])
@@ -538,8 +548,9 @@ def _price_rows(
                 updates,
             )
         _apply_lifetime_deltas(bind, *_lifetime_deltas(bind, folded))
+        _patch_buckets_below_floor(bind, below, report)
         last_seen_id = int(rows[-1]["id"])
-    return earliest, below
+    return earliest
 
 
 def _patch_buckets_below_floor(bind: Connection, below: _BelowFloor, report: _Report) -> None:
@@ -600,19 +611,18 @@ def upgrade() -> None:
     _lock_rollup_state(bind)
     folded_through, hourly_watermark = _read_state(bind)
     report = _Report()
-    earliest, below = _price_rows(
+    earliest = _price_rows(
         bind,
         folded_through=folded_through,
         hourly_watermark=hourly_watermark,
         refold_floor=_refold_floor(bind),
         report=report,
     )
-    _patch_buckets_below_floor(bind, below, report)
     _arm_time_rollup_repair(bind, earliest, hourly_watermark)
 
     logger.info(
         "gpt-6.1-sol cost backfill: priced %d request logs (%.2f USD); "
-        "patched %d hourly buckets and %d demand slots below the refold floor",
+        "applied %d hourly bucket and %d demand slot updates below the refold floor",
         report.priced_rows,
         report.priced_usd,
         report.hourly_buckets,

@@ -33,7 +33,7 @@ The request path, cost totals, and rollups were all consistent with each other. 
   Proving a whole bucket from its sums was rejected. Hourly and demand buckets do not record the integration or `cost_source` of their rows. A pruned upstream-billed or operator-configured cost that happens to equal the full-rate formula would be discounted, and its API-key lifetime total with it. No persisted provenance exists for pruned rows, so their cost is left as stored.
 - **Pause retention during the repair.** `_prune_request_logs` returns early while `upgrade_repair_from` is set. Pruning during the repair would delete rows the repair has not refolded yet, and those buckets would keep pre-repair figures. Capping the cutoff at the marker does not work, because deleting the oldest rows moves the repair's start past the marker.
 - **Alembic revision files cannot use dataclasses.** Alembic loads revision modules outside `sys.modules`, and `dataclasses` with string annotations then fails (`AttributeError: 'NoneType' object has no attribute '__dict__'`). The migration's value types are `NamedTuple`s and a plain class.
-- **Downgrade drops the column and keeps the corrected costs.** Nothing records the pre-upgrade figures, and they were wrong. Rollups stay consistent with their rows, and rerunning the upgrade changes nothing.
+- **Downgrade keeps the column, its rates and the corrected costs.** A rate a later refresh wrote cannot be told apart from a seeded one, and nothing records the pre-upgrade figures, which were wrong. Only records an upgrade run seeds itself may reprice history, so rerunning the upgrade changes nothing. Code older than this revision reports the kept column as schema drift, so rolling back that far means dropping it by hand.
 
 ## Risks / Trade-offs
 
@@ -46,7 +46,7 @@ The request path, cost totals, and rollups were all consistent with each other. 
 
 1. Deploy the code and revision. Startup runs the migration, and the next fold passes refold the marked range.
 2. Run `codex-lb model-prices refresh` once, so records without a seeded rate read their catalog's cache-read rate.
-3. Rollback is a code revert. Corrected costs stay, and the column is dropped by `downgrade()`.
+3. Rollback is a code revert. Corrected costs and the column stay. Drop `external_model_prices.cached_input_per_1m` by hand before starting code older than this revision.
 
 ## Open Questions
 

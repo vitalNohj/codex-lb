@@ -1650,7 +1650,7 @@ async def _cache_read_rates(session_factory) -> dict[str, float | None]:
 
 
 async def _downgrade_and_rerun_cache_read_migration(db_url: str, session_factory, snapshot) -> None:
-    """Downgrade drops the rate column and keeps every cost; a rerun changes nothing more."""
+    """Downgrade keeps the rate column, its rates and every cost; a rerun changes nothing more."""
     from alembic import command
 
     from app.db.migrate import _build_alembic_config
@@ -1661,8 +1661,9 @@ async def _downgrade_and_rerun_cache_read_migration(db_url: str, session_factory
         price_columns = {
             row[1] for row in (await session.execute(text("PRAGMA table_info(external_model_prices)"))).all()
         }
-    assert "cached_input_per_1m" not in price_columns
+    assert "cached_input_per_1m" in price_columns
     assert await snapshot() == before
+    assert await _cache_read_rates(session_factory) == pytest.approx(_CACHE_READ_SEEDED_RATES)
 
     await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_REVISION, bootstrap_legacy=False))
     assert await snapshot() == before

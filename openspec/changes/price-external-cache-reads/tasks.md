@@ -10,7 +10,7 @@
 - [x] 2.1 Alembic revision on `20260928_000000_pin_claude_sonnet_5_5_full_model` that adds the column and seeds records priced from the OpenRouter reference out of a dated 2026-10-03 card snapshot
 - [x] 2.2 Reprice `catalog_calculated` rows that provably store the full-rate figure, with exact lifetime account and API-key deltas
 - [x] 2.3 Arm `upgrade_repair_from` for refoldable buckets, and move buckets below the refold floor by their surviving rows' deltas only
-- [x] 2.4 Keep corrected costs on downgrade, and make a rerun change nothing
+- [x] 2.4 Keep the rate column and corrected costs on downgrade, and make a rerun change nothing
 - [x] 2.5 Pause request-log retention while `upgrade_repair_from` is set
 
 ## 3. Regression coverage
