@@ -20,7 +20,7 @@
 - Revision IDs use `YYYYMMDD_HHMMSS_slug` for readability and merge-conflict reduction.
 - Legacy IDs are auto-remapped at startup to avoid manual DB patching during cutover.
 - CI checks both policy (head/naming) and drift in one command path.
-- SQLite requires explicit handling for false-positive drift on modified server_defaults because `alter_column` does not drop them reliably on that backend.
+- A server default that differs from ORM metadata is real drift on every backend. A `modify_default` diff means a migration set a different default than the model declares. Fix it with a migration, not a drift ignore.
 - Schema upgrades and stamps are serialized across processes by a cross-process migration lock (see Operational Notes); losing replicas wait, re-inspect, and skip when the schema is already at head.
 - `alembic_version` revisions unknown to the running build are reported as schema-ahead ("not known to this build") rather than "behind Alembic head".
 
@@ -42,8 +42,9 @@
 - Drift between metadata and migrated schema:
   - Mitigation: CI unified migration check blocks merge.
   - Runtime mitigation: startup drift check logs explicit diffs and fails startup when `database_migrations_fail_fast=true`.
-- SQLite `alter_column` server_default drift detection false positives:
-  - Mitigation: The central schema drift helper ignores `modify_default` diffs on SQLite for modified columns when their constraints are managed correctly by data migrations.
+- A migration sets a column server default that differs from ORM metadata:
+  - Example: `20260618_040000_unify_sidecar_routing_settings` set `dashboard_settings.claude_sidecar_model_prefixes_json` to `'[]'` while the model declared the `claude`, `cp-`, and `cp_` prefixes. PostgreSQL startup failed on the drift check, and an SQLite-only ignore hid the same diff.
+  - Mitigation: `20261008_020000_restore_claude_sidecar_prefix_default` sets the declared default, and the SQLite ignore is gone. Run `codex-lb-db check` on PostgreSQL as well as SQLite before merging a migration that alters a default.
 
 ## Operational Notes
 
