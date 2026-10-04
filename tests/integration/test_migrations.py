@@ -2866,6 +2866,75 @@ async def test_sidecar_routing_migration_rewrites_every_settings_row_across_batc
 
 
 @pytest.mark.asyncio
+async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(tmp_path):
+    """The column default matches ORM metadata again; stored prefixes are left alone."""
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-prefix-default.sqlite'}"
+    parent_revision = "20261003_010000_backfill_gpt_6_1_sol_costs"
+    default_revision = "20261003_020000_restore_claude_sidecar_prefix_default"
+    declared = [
+        {"prefix": "claude", "strip": False},
+        {"prefix": "cp-", "strip": True},
+        {"prefix": "cp_", "strip": True},
+    ]
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _insert_without_prefixes(row_id: int) -> object:
+        """Copy settings row 1 but leave the prefix column to its server default."""
+
+        async with session_factory() as session:
+            columns = [row[1] for row in await session.execute(text("PRAGMA table_info(dashboard_settings)"))]
+            copied = ", ".join(
+                column for column in columns if column not in ("id", "claude_sidecar_model_prefixes_json")
+            )
+            await session.execute(
+                text(
+                    f"INSERT INTO dashboard_settings (id, {copied}) "
+                    f"SELECT :row_id, {copied} FROM dashboard_settings WHERE id = 1"
+                ),
+                {"row_id": row_id},
+            )
+            await session.commit()
+        return (await _stored_prefixes())[row_id]
+
+    async def _stored_prefixes() -> dict[int, object]:
+        async with session_factory() as session:
+            rows = await session.execute(text("SELECT id, claude_sidecar_model_prefixes_json FROM dashboard_settings"))
+            return {row[0]: json.loads(row[1]) for row in rows}
+
+    async def _drift() -> tuple[str, ...]:
+        return await to_thread.run_sync(lambda: check_schema_drift(db_url))
+
+    try:
+        drift = await _drift()
+        assert len(drift) == 1
+        assert "'modify_default'" in drift[0]
+        assert "claude_sidecar_model_prefixes_json" in drift[0]
+        assert await _insert_without_prefixes(2) == []
+        stored = await _stored_prefixes()
+        assert stored[1] == declared
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, default_revision, bootstrap_legacy=False))
+        assert await _drift() == ()
+        assert await _stored_prefixes() == stored
+        assert await _insert_without_prefixes(3) == declared
+        stored = await _stored_prefixes()
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        assert await _stored_prefixes() == stored
+        assert await _insert_without_prefixes(4) == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_request_log_reference_cost_column_added_and_nullable(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'reference-cost-column.sqlite'}"
 
