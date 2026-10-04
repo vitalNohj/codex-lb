@@ -1911,6 +1911,258 @@ async def test_external_cache_read_pricing_migration_moves_buckets_below_refold_
         await engine.dispose()
 
 
+_GPT61_REVISION = "20261003_010000_backfill_gpt_6_1_sol_costs"
+_GPT61_WATERMARK = "2026-10-02 12:00:00"
+_GPT61_LOG_INSERT = (
+    "INSERT INTO request_logs (account_id, api_key_id, request_id, requested_at, model, service_tier,"
+    " input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, latency_ms, status, cost_usd,"
+    " cost_source, price_status, request_kind, deleted_at)"
+    " VALUES ('acc_61', 'key_61', :request_id, :requested_at, :model, :service_tier, :input_tokens,"
+    " :output_tokens, :cached_input_tokens, NULL, 100, :status, :cost_usd, :cost_source, :price_status,"
+    " :request_kind, :deleted_at)"
+)
+# Every seeded bucket holds two requests of ``acc_61`` / ``key_61`` with tier
+# ``default``, kind ``normal`` and no reasoning effort.
+_GPT61_HOURLY_INSERT = (
+    "INSERT INTO request_usage_hourly_rollups (bucket_epoch, account_id, api_key_id, model, service_tier,"
+    " request_kind, is_deleted, request_count, error_count, input_tokens, output_tokens,"
+    " output_or_reasoning_tokens, cached_input_tokens, cached_input_tokens_clamped, cost_usd, cost_count)"
+    " VALUES (:epoch, 'acc_61', 'key_61', :model, 'default', 'normal', 0, 2, 0, 0, 0, 0, 0, 0, :cost_usd,"
+    " :cost_count)"
+)
+_GPT61_QUARTER_INSERT = (
+    "INSERT INTO request_demand_quarter_rollups (slot_epoch, account_id, api_key_id, model, reasoning_effort,"
+    " request_kind, status, is_deleted, request_count, input_tokens, output_or_reasoning_tokens,"
+    " cached_input_tokens, cost_usd)"
+    " VALUES (:epoch, 'acc_61', 'key_61', :model, :sentinel, 'normal', 'success', 0, 2, 0, 0, 0, :cost_usd)"
+)
+
+
+def _gpt61_epoch(clock: str) -> int:
+    """Epoch seconds of ``HH:MM`` on 2026-10-01, naive UTC like the rollup tables."""
+
+    return int((datetime.fromisoformat(f"2026-10-01 {clock}:00") - datetime(1970, 1, 1)).total_seconds())
+
+
+def _gpt61_log(
+    request_id: str,
+    requested_at: str,
+    *,
+    model: str = "gpt-6.1-sol",
+    tokens: tuple[int, int, int] | None = (200_000, 0, 1_000_000),
+    service_tier: str = "default",
+    status: str = "success",
+    cost_usd: float | None = None,
+    cost_source: str | None = None,
+    price_status: str | None = None,
+    request_kind: str = "normal",
+    deleted_at: str | None = None,
+) -> dict[str, object]:
+    """Bind values for ``_GPT61_LOG_INSERT``. ``tokens`` is (input, cached input, output)."""
+
+    input_tokens, cached_input_tokens, output_tokens = tokens if tokens is not None else (None, None, None)
+    return {
+        "request_id": request_id,
+        "requested_at": requested_at,
+        "model": model,
+        "service_tier": service_tier,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "status": status,
+        "cost_usd": cost_usd,
+        "cost_source": cost_source,
+        "price_status": price_status,
+        "request_kind": request_kind,
+        "deleted_at": deleted_at,
+    }
+
+
+def test_gpt_6_1_sol_backfill_prefilter_lowers_model_for_postgres() -> None:
+    import sqlalchemy as sa
+    from sqlalchemy.dialects import postgresql
+
+    migration = importlib.import_module(f"app.db.alembic.versions.{_GPT61_REVISION}")
+    request_logs = sa.table("request_logs", sa.column("model", sa.String()))
+    compiled = str(
+        migration._model_match(request_logs).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "lower(request_logs.model) LIKE '%%gpt-6.1-sol%%'" in compiled
+
+
+@pytest.mark.asyncio
+async def test_gpt_6_1_sol_cost_backfill_prices_null_rows_and_the_rollups_that_folded_them(tmp_path):
+    """NULL GPT-6.1 Sol rows gain the list price, and each rollup that folded them gains the same amount."""
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gpt-6-1-sol-backfill.sqlite'}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _CACHE_READ_REVISION, bootstrap_legacy=True))
+
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            await _seed_cache_read_rollup_state(
+                session, accounts={"acc_61": 50.0}, api_keys={"key_61": 80.0}, watermark=_GPT61_WATERMARK
+            )
+            await session.execute(
+                text(_GPT61_LOG_INSERT),
+                [
+                    # The earliest surviving row, so the repair cannot refold its hour.
+                    _gpt61_log("req_below_floor", "2026-10-01 00:05:00"),
+                    _gpt61_log("req_std", "2026-10-01 05:00:00", tokens=(200_000, 100_000, 1_000_000)),
+                    _gpt61_log("req_snapshot", "2026-10-01 05:01:00", model="GPT-6.1-SOL-20261001"),
+                    _gpt61_log("req_openai", "2026-10-01 05:02:00", model="openai/gpt-6.1-sol"),
+                    _gpt61_log("req_cc", "2026-10-01 05:03:00", model="cc/gpt-6.1-sol"),
+                    _gpt61_log("req_flex", "2026-10-01 05:04:00", service_tier="flex"),
+                    _gpt61_log("req_priority", "2026-10-01 05:05:00", service_tier="priority"),
+                    _gpt61_log("req_long", "2026-10-01 05:06:00", tokens=(300_000, 0, 1_000_000)),
+                    # One duplicate group: the account rollup folds only its highest id.
+                    _gpt61_log("req_dup", "2026-10-01 05:07:00"),
+                    _gpt61_log("req_dup", "2026-10-01 05:07:00"),
+                    _gpt61_log("req_warmup", "2026-10-01 05:08:00", request_kind="warmup"),
+                    _gpt61_log("req_deleted", "2026-10-01 05:09:00", deleted_at="2026-10-02 00:00:00"),
+                    # After the lifetime watermark, so the next fold adds it.
+                    _gpt61_log("req_late", "2026-10-02 18:00:00"),
+                    # Another model, a price already settled, or nothing to price.
+                    _gpt61_log("req_pro", "2026-10-01 06:00:00", model="gpt-6.1-sol-pro"),
+                    _gpt61_log("req_unrelated", "2026-10-01 06:01:00", model="unrelated/gpt-6.1-sol"),
+                    _gpt61_log("req_priced", "2026-10-01 06:02:00", cost_usd=1.0, cost_source="static_table"),
+                    _gpt61_log("req_billed", "2026-10-01 06:03:00", cost_source="upstream_billed"),
+                    _gpt61_log("req_pending", "2026-10-01 06:04:00", price_status="pending"),
+                    _gpt61_log("req_error", "2026-10-01 06:05:00", tokens=None, status="error", service_tier="auto"),
+                ],
+            )
+            await session.execute(
+                text(_GPT61_HOURLY_INSERT),
+                [
+                    # Also holds a request retention has since pruned.
+                    {"epoch": _gpt61_epoch("00:00"), "model": "gpt-6.1-sol", "cost_usd": 0.0, "cost_count": 0},
+                    {"epoch": _gpt61_epoch("00:00"), "model": "gpt-6-sol", "cost_usd": 3.0, "cost_count": 2},
+                    {"epoch": _gpt61_epoch("05:00"), "model": "gpt-6.1-sol", "cost_usd": 0.0, "cost_count": 0},
+                ],
+            )
+            await session.execute(
+                text(_GPT61_QUARTER_INSERT),
+                [
+                    {
+                        "epoch": _gpt61_epoch(clock),
+                        "model": "gpt-6.1-sol",
+                        "sentinel": _ROLLUP_SENTINEL,
+                        "cost_usd": 0.0,
+                    }
+                    for clock in ("00:00", "05:00")
+                ],
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _GPT61_REVISION, bootstrap_legacy=False))
+
+        async def _snapshot():
+            async with session_factory() as session:
+                logs = (
+                    await session.execute(
+                        text("SELECT request_id, cost_usd, cost_source, price_status FROM request_logs ORDER BY id")
+                    )
+                ).all()
+                hourly = (
+                    await session.execute(
+                        text("SELECT bucket_epoch, model, cost_usd, cost_count FROM request_usage_hourly_rollups")
+                    )
+                ).all()
+                quarter = (
+                    await session.execute(
+                        text("SELECT slot_epoch, model, cost_usd FROM request_demand_quarter_rollups")
+                    )
+                ).all()
+                watermarks = (
+                    await session.execute(
+                        text("SELECT folded_through, hourly_folded_through FROM account_usage_rollup_state")
+                    )
+                ).one()
+                return (
+                    [tuple(row) for row in logs],
+                    {(_cache_read_clock(row[0]), row[1]): (row[2], row[3]) for row in hourly},
+                    {(_cache_read_clock(row[0]), row[1]): row[2] for row in quarter},
+                    await _cache_read_totals(session),
+                    (str(watermarks[0]), str(watermarks[1]), await _cache_read_marker(session)),
+                )
+
+        logs, hourly, quarter, totals, state = await _snapshot()
+        costs = {row[0]: row[1] for row in logs}
+        assert {request_id: cost for request_id, cost in costs.items() if cost is not None} == pytest.approx(
+            {
+                "req_below_floor": 10.4,
+                "req_std": 10.21,
+                "req_snapshot": 10.4,
+                "req_openai": 10.4,
+                "req_cc": 10.4,
+                "req_flex": 5.2,
+                "req_priority": 20.8,
+                "req_long": 16.2,
+                "req_dup": 10.4,
+                "req_warmup": 10.4,
+                "req_deleted": 10.4,
+                "req_late": 10.4,
+                "req_priced": 1.0,
+            }
+        )
+        assert [row[1] for row in logs if row[0] == "req_dup"] == pytest.approx([10.4, 10.4])
+        assert {request_id for request_id, cost in costs.items() if cost is None} == {
+            "req_pro",
+            "req_unrelated",
+            "req_billed",
+            "req_pending",
+            "req_error",
+        }
+        provenance = {row[0]: (row[2], row[3]) for row in logs}
+        assert {
+            provenance[request_id]
+            for request_id in costs
+            if request_id not in {"req_priced"} and costs[request_id] is not None
+        } == {("static_table", None)}
+        assert provenance["req_billed"] == ("upstream_billed", None)
+        assert provenance["req_pending"] == (None, "pending")
+        assert provenance["req_pro"] == (None, None)
+
+        # 00:00 is below the refold floor: its bucket and slot gain the surviving
+        # row, and the pruned request stays unpriced. Another model's bucket in
+        # that hour is untouched. 05:00 is left for the repair to refold.
+        assert {key: cost for key, (cost, _) in hourly.items()} == pytest.approx(
+            {("00:00", "gpt-6.1-sol"): 10.4, ("00:00", "gpt-6-sol"): 3.0, ("05:00", "gpt-6.1-sol"): 0.0}
+        )
+        assert {key: count for key, (_, count) in hourly.items()} == {
+            ("00:00", "gpt-6.1-sol"): 1,
+            ("00:00", "gpt-6-sol"): 2,
+            ("05:00", "gpt-6.1-sol"): 0,
+        }
+        assert quarter == pytest.approx({("00:00", "gpt-6.1-sol"): 10.4, ("05:00", "gpt-6.1-sol"): 0.0})
+
+        # Rows the lifetime rollups folded: 10.4 x 5 (below floor, snapshot,
+        # openai, cc, the duplicate group's highest id), 10.21, 5.2, 20.8 and
+        # 16.2. The API-key rollup also counts the duplicate's lower id and the
+        # soft-deleted row. Warmup traffic and the late row count in neither.
+        assert totals == pytest.approx({"account:acc_61": 50.0 + 104.41, "key:key_61": 80.0 + 104.41 + 10.4 * 2})
+        assert state[0].startswith(_GPT61_WATERMARK)
+        assert state[1].startswith(_GPT61_WATERMARK)
+        # The earliest priced hour. The repair itself starts at 01:00, the first
+        # hour the surviving rows fully cover.
+        assert state[2].startswith("2026-10-01 00:00:00")
+
+        before = await _snapshot()
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), _CACHE_READ_REVISION))
+        assert await _snapshot() == before
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _GPT61_REVISION, bootstrap_legacy=False))
+        assert await _snapshot() == before
+    finally:
+        await engine.dispose()
+
+
 async def _seed_astra_backfill_fixture(session_factory, *, watermark: str) -> None:
     """Duplicate group, external-provenance rows, and rows that must not move.
 
