@@ -324,6 +324,9 @@ export const DashboardSettingsSchema = z
     ollamaSidecarLastCheckedAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
     ollamaSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
     ollamaSidecarDefaultReasoningEffort: SidecarDefaultReasoningEffortSchema,
+    // Lower-cased full model -> provider key of the integration starred as the
+    // model's default route; several cards may list the same model.
+    sidecarFullModelStars: z.record(z.string(), z.string()).optional().default({}),
     opencodeGoSidecarEnabled: z.boolean().optional().default(false),
     opencodeGoSidecarBaseUrl: z
       .string()
@@ -512,6 +515,8 @@ export const SettingsUpdateRequestSchema = z
     // alias), value = store the override.
     requestLogRetentionOverrideDays: z.number().int().min(0).max(3650).nullable().optional(),
     usageHistoryRetentionOverrideDays: z.number().int().min(0).max(3650).nullable().optional(),
+    // Tri-state star map: absent = keep the stored stars, present = replace.
+    sidecarFullModelStars: z.record(z.string(), z.string()).max(256).optional(),
   })
   .superRefine((settings, ctx) => {
     if (
