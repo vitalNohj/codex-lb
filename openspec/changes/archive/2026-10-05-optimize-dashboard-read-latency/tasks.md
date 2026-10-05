@@ -32,5 +32,5 @@
       dashboard/accounts/sidecar/request-log/usage test suites.
 - [x] 4.2 Benchmark the dashboard page-load request sequence against a
       snapshot of the production store before and after.
-- [ ] 4.3 Deploy to the shared instance and confirm the refresh in the
+- [x] 4.3 Deploy to the shared instance and confirm the refresh in the
       browser.
