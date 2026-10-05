@@ -165,7 +165,7 @@ describe("shared sidecar integration settings", () => {
     );
   });
 
-  it("does not persist a full model while a cross-integration conflict is unresolved", async () => {
+  it("allows a full model another card also carries (the star routes the bare id)", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
       <OpenRouterSidecarSettings
@@ -173,17 +173,19 @@ describe("shared sidecar integration settings", () => {
           ...BASE_SETTINGS,
           openrouterSidecarFullModels: ["orcarouter/auto"],
           orcarouterSidecarFullModels: ["orcarouter/auto"],
+          sidecarFullModelStars: { "orcarouter/auto": "orcarouter" },
         }}
         busy={false}
         onSave={onSave}
       />,
     );
 
-    expect(screen.getByText("Full model orcarouter/auto is already used by OrcaRouter.")).toBeInTheDocument();
-    expect(onSave).not.toHaveBeenCalled();
+    // Duplicates across cards are legal now; no conflict is reported and
+    // OpenRouter's copy simply is not the starred default route.
+    expect(screen.queryByText(/already used by/)).not.toBeInTheDocument();
   });
 
-  it("does not persist an OpenAI-compat full model while OpenRouter already owns it", async () => {
+  it("allows an OpenAI-compat full model OpenRouter also carries", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
       <OpenAICompatEndpointSettings
@@ -232,8 +234,7 @@ describe("shared sidecar integration settings", () => {
       />,
     );
 
-    expect(screen.getByText("Full model deepseek/deepseek-chat is already used by OpenRouter.")).toBeInTheDocument();
-    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.queryByText(/already used by/)).not.toBeInTheDocument();
   });
 
   it("never names OmniRoute as a conflicting owner while the capability is disabled", () => {

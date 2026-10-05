@@ -204,21 +204,31 @@ describe("OllamaSidecarSettings", () => {
     expect(screen.queryByRole("checkbox", { name: "Remove prefix deepseek/ before forwarding" })).not.toBeInTheDocument();
   });
 
-  it("rejects duplicate full models owned by another integration", async () => {
+  it("adds a full model another card carries, unstarred, without a conflict", async () => {
     const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
     renderWithQueryClient(
       <OllamaSidecarSettings
         settings={{ ...BASE_SETTINGS, orcarouterSidecarFullModels: ["orcarouter/auto"] }}
         busy={false}
-        onSave={vi.fn()}
+        onSave={onSave}
       />,
     );
 
     await user.type(screen.getByLabelText("New full model for Ollama Integration"), "orcarouter/auto");
     await user.click(screen.getByRole("button", { name: "Add full model" }));
 
-    expect(screen.getByText("Full model orcarouter/auto is already used by OrcaRouter.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Remove orcarouter/auto" })).not.toBeInTheDocument();
+    // Duplicates across cards are legal; Ollama's copy is unstarred, so
+    // OrcaRouter (the card that had it first) keeps the bare-id route.
+    expect(screen.queryByText(/already used by/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          ollamaSidecarFullModels: ["orcarouter/auto"],
+          sidecarFullModelStars: {},
+        }),
+      ),
+    );
   });
 
   it("accepts a full model that stored OmniRoute settings still claim", async () => {
