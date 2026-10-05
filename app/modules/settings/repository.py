@@ -563,6 +563,9 @@ class SettingsRepository:
         ollama_sidecar_connect_timeout_seconds: float | None = None,
         ollama_sidecar_request_timeout_seconds: float | None = None,
         ollama_sidecar_models_cache_ttl_seconds: float | None = None,
+        # Lower-cased full model -> provider key of the integration starred as
+        # the model's default route; ``None`` keeps the stored map.
+        sidecar_full_model_stars_json: str | None = None,
         ollama_sidecar_last_health_status: str | None | object = _UNSET,
         ollama_sidecar_last_health_message: str | None | object = _UNSET,
         ollama_sidecar_last_checked_at: datetime | None | object = _UNSET,
@@ -653,6 +656,8 @@ class SettingsRepository:
             settings.model_aliases_json = model_aliases_json
         if custom_alias_catalog_json is not None:
             settings.custom_alias_catalog_json = custom_alias_catalog_json
+        if sidecar_full_model_stars_json is not None:
+            settings.sidecar_full_model_stars_json = sidecar_full_model_stars_json
         if warmup_model is not None:
             settings.warmup_model = warmup_model
         if import_without_overwrite is not None:
