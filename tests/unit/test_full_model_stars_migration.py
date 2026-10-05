@@ -34,7 +34,7 @@ CREATE TABLE {_TABLE} (
     openrouter_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
     orcarouter_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
     opencode_go_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
-    omniroute_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
+    omniroute_sidecar_selected_models_json TEXT NOT NULL DEFAULT '[]',
     ollama_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
     openai_compat_endpoints_json TEXT NOT NULL DEFAULT '[]',
     {_STARS} TEXT NOT NULL DEFAULT '{{}}'
@@ -100,7 +100,7 @@ def test_upgrade_seeds_every_existing_full_model_with_its_current_card(tmp_path:
             orcarouter_sidecar_full_models_json=json.dumps(["ollama/cloud/gpt-oss"]),
             ollama_sidecar_full_models_json=json.dumps(["llama3:70b"]),
             openai_compat_endpoints_json=json.dumps(
-                [{"id": "ep-1", "name": "Vast", "full_models": json.dumps(["Qwen/Qwen2.5-7B"])}]
+                [{"id": "ep-1", "name": "Vast", "full_models": ["Qwen/Qwen2.5-7B"]}]
             ),
         )
         raw_con.commit()
@@ -118,6 +118,60 @@ def test_upgrade_seeds_every_existing_full_model_with_its_current_card(tmp_path:
         "llama3:70b": "ollama",
         "qwen/qwen2.5-7b": "openai_compat:ep-1",
     }
+
+
+def test_upgrade_stars_openai_compat_models_stored_as_an_embedded_list(tmp_path: Path) -> None:
+    """openai_compat endpoints are one JSON document, so ``full_models`` is a
+    parsed list inside it, not a JSON-encoded string.
+
+    The real persistence shape (settings/api.py serializes
+    ``full_models=list(endpoint.full_models)`` before the whole list is dumped)
+    must star those models, not silently skip them.
+    """
+
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(
+            raw_con,
+            "row-1",
+            openai_compat_endpoints_json=json.dumps(
+                [
+                    {"id": "ep-1", "name": "Vast", "full_models": ["Qwen/Qwen2.5-7B", "Mistral/Mixtral-8x7B"]},
+                    {"id": "ep-2", "name": "vLLM", "full_models": []},
+                ]
+            ),
+        )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {
+        "qwen/qwen2.5-7b": "openai_compat:ep-1",
+        "mistral/mixtral-8x7b": "openai_compat:ep-1",
+    }
+
+
+def test_upgrade_stars_omniroute_models_from_the_selected_models_column(tmp_path: Path) -> None:
+    """OmniRoute persists its list in ``omniroute_sidecar_selected_models_json``.
+
+    Reading a nonexistent ``omniroute_sidecar_full_models_json`` column left
+    every OmniRoute model unstarred after the upgrade.
+    """
+
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(raw_con, "row-1", omniroute_sidecar_selected_models_json=json.dumps(["z-ai/glm-5.3", "GLM-5.3"]))
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {"z-ai/glm-5.3": "omniroute", "glm-5.3": "omniroute"}
 
 
 def test_upgrade_keeps_an_existing_star_map_byte_identical(tmp_path: Path) -> None:

@@ -35,13 +35,14 @@ _STARS_COLUMN = "sidecar_full_model_stars_json"
 
 # Provider key -> the dashboard_settings column holding that integration's
 # full-model JSON list. openai_compat endpoints live in their own JSON column
-# and are handled separately.
+# and are handled separately. OmniRoute persists its list under the
+# ``selected_models`` column (service.py: _parse_omniroute_sidecar_selected_models).
 _CARD_FULL_MODEL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("claude", "claude_sidecar_full_models_json"),
     ("openrouter", "openrouter_sidecar_full_models_json"),
     ("orcarouter", "orcarouter_sidecar_full_models_json"),
     ("opencode_go", "opencode_go_sidecar_full_models_json"),
-    ("omniroute", "omniroute_sidecar_full_models_json"),
+    ("omniroute", "omniroute_sidecar_selected_models_json"),
     ("ollama", "ollama_sidecar_full_models_json"),
 )
 
@@ -100,7 +101,9 @@ def _openai_compat_cards(raw: object) -> list[tuple[str, list[str]]]:
         if not isinstance(endpoint_id, str) or not endpoint_id.strip():
             continue
         models_json = endpoint.get("full_models")
-        models = _load_str_list(models_json if isinstance(models_json, str) else None)
+        # The endpoints column is one JSON document, so ``full_models`` is
+        # already a parsed list inside it - not a JSON-encoded string.
+        models = _load_str_list(models_json)
         cards.append((f"openai_compat:{endpoint_id.strip()}", models))
     return cards
 
