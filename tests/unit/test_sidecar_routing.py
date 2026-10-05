@@ -8,6 +8,7 @@ from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     apply_full_model_stars,
     parse_explicit_pool_target,
+    resolve_sidecar_pool_target,
     resolve_sidecar_route,
 )
 
@@ -420,6 +421,56 @@ def test_double_colon_id_with_unknown_provider_prefix_falls_through_to_prefix_pa
     assert decision is not None
     assert decision.provider == "openrouter"
     assert decision.wire_model == "a::b/c"
+
+
+def test_pool_target_is_not_shadowed_by_another_cards_literal_full_model() -> None:
+    """A stored pool target resolves within the integration it names.
+
+    OrcaRouter lists the literal full model ``openrouter::foo``; the bare
+    exact-match rule would route the string there, but the pool target names
+    OpenRouter, so ``resolve_sidecar_pool_target`` applies the explicit rule
+    first. A bare request for the same string keeps the exact-match rule.
+    """
+
+    entries = (
+        _entry("openrouter", full_models=("foo",)),
+        _entry("orcarouter", full_models=("openrouter::foo",)),
+    )
+
+    target = resolve_sidecar_pool_target("openrouter::foo", entries)
+
+    assert target is not None
+    assert target.provider == "openrouter"
+    assert target.wire_model == "foo"
+
+    bare = resolve_sidecar_route("openrouter::foo", entries)
+
+    assert bare is not None
+    assert bare.provider == "orcarouter"
+    assert bare.wire_model == "openrouter::foo"
+
+
+def test_pool_target_without_separator_resolves_like_a_bare_model() -> None:
+    """A bare pool target (legacy configs) still resolves to the starred card."""
+
+    entries = (
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+    )
+    starred = apply_full_model_stars(entries, {"z-ai/glm-5.3": "orcarouter"})
+
+    decision = resolve_sidecar_pool_target("z-ai/glm-5.3", starred)
+
+    assert decision is not None
+    assert decision.provider == "orcarouter"
+
+
+def test_pool_target_for_known_but_absent_provider_is_unroutable() -> None:
+    entries = (_entry("openrouter", prefixes=(SidecarPrefix(prefix="orcarouter::", strip=True),)),)
+
+    decision = resolve_sidecar_pool_target("orcarouter::z-ai/glm-5.3", entries)
+
+    assert decision is None
 
 
 def test_parse_explicit_pool_target_splits_and_normalizes() -> None:

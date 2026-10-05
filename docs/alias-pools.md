@@ -92,6 +92,11 @@ not an integration name (e.g. `a::b/c`) is still resolved like any bare
 model, and a configured full-model ID containing `::` always wins its exact
 bare-model match first.
 
+Pool targets and bare requests therefore differ when a card literally lists a
+`<provider>::<model>` string as a full model: a **bare request** for that
+string resolves to the card that lists it exactly, while a stored **pool
+target** with the same string resolves within the integration it names.
+
 ## What failover covers
 
 Failover happens **before the first byte** of a response. Once an upstream has

@@ -21,7 +21,7 @@ from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     apply_full_model_stars,
     parse_full_model_stars,
-    resolve_sidecar_route,
+    resolve_sidecar_pool_target,
 )
 from app.modules.settings.model_alias_pools import (
     MAX_ALIAS_LENGTH,
@@ -960,11 +960,11 @@ class _PayloadRouting:
         the proxy skips that target until it is back on. Only when no enabled
         integration routes the target is the turned-off owner consulted, so a
         target routed now is judged by that route. Integrations the product
-        itself disables stay out, by ``resolve_sidecar_route``'s capability
-        filter.
+        itself disables stay out, by ``resolve_sidecar_pool_target``'s
+        capability filter.
         """
 
-        return resolve_sidecar_route(target, self.enabled) or resolve_sidecar_route(target, self.configured)
+        return resolve_sidecar_pool_target(target, self.enabled) or resolve_sidecar_pool_target(target, self.configured)
 
 
 def _routing_entries_from_payload(payload: DashboardSettingsUpdateData) -> _PayloadRouting:

@@ -27,6 +27,11 @@ could claim it. A ``::`` id whose leading segment names no known provider is
 resolved like any bare model, so real model ids containing ``::`` keep
 working.
 
+Alias pools resolve their stored targets through
+:func:`resolve_sidecar_pool_target` instead, which applies the explicit-target
+rule *first*: a literal full-model id on one card must not shadow a pool
+target that names another integration.
+
 Cross-integration prefix uniqueness (enforced on save) guarantees at most one
 owner per prefix value; the provider order below is a deterministic tiebreak
 that uniqueness makes unreachable in practice.
@@ -202,6 +207,34 @@ def apply_full_model_stars(
     return tuple(decorated)
 
 
+def resolve_sidecar_pool_target(
+    target: str,
+    entries: tuple[SidecarRoutingEntry, ...],
+) -> SidecarRoutingDecision | None:
+    """Resolve an alias-pool target, which names its integration explicitly.
+
+    Unlike a bare request, a target carrying ``<provider>::`` never lets the
+    full-model pass shadow it: another integration literally listing
+    ``<provider>::<model>`` cannot claim a target that names its integration.
+    A target without the separator, or one whose provider part names no known
+    integration, resolves like any bare model via :func:`resolve_sidecar_route`.
+    """
+
+    entries = tuple(entry for entry in entries if is_capability_enabled(entry.provider))
+    normalized = target.strip()
+    if not normalized:
+        return None
+    explicit = parse_explicit_pool_target(normalized)
+    if explicit is not None:
+        provider_key, model_part = explicit
+        for entry in entries:
+            if entry.provider.lower() == provider_key:
+                return _resolve_full_or_prefix(model_part, entry)
+        if provider_key in SIDECAR_PROVIDER_ORDER:
+            return None
+    return resolve_sidecar_route(normalized, entries)
+
+
 def resolve_sidecar_route(
     model: str,
     entries: tuple[SidecarRoutingEntry, ...],
@@ -245,14 +278,19 @@ def resolve_sidecar_route(
             return None
         return SidecarRoutingDecision(provider=full_matches[0].provider, wire_model=normalized)
 
-    # An explicit ``<provider>::<model>`` target resolves only within the
-    # integration it names. When that integration is enabled the target can
+    # An explicit ``<provider>::<model>`` id resolves only within the
+    # integration it names. When that integration is enabled the id can
     # never be served by another one; when the provider is a known integration
-    # that is not enabled the target stays unroutable instead of falling
+    # that is not enabled the id stays unroutable instead of falling
     # through to bare-model matching, where a prefix or duplicate id on another
-    # integration could claim the literal target. Only a ``::`` id whose
+    # integration could claim the literal id. Only a ``::`` id whose
     # leading segment names no known provider falls through, so real model ids
     # containing ``::`` keep working.
+    #
+    # This pass is subordinate to the exact full-model match above, which is
+    # the bare-request rule. Alias pools resolve their stored targets through
+    # :func:`resolve_sidecar_pool_target`, which applies this pass first so a
+    # literal full model on another card cannot shadow an explicit target.
     explicit = parse_explicit_pool_target(normalized)
     if explicit is not None:
         provider_key, model_part = explicit

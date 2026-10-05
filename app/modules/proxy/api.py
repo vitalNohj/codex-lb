@@ -388,6 +388,7 @@ from app.modules.proxy.sidecar_routing import (
     apply_full_model_stars,
     parse_full_model_stars,
     prefix_variants,
+    resolve_sidecar_pool_target,
     resolve_sidecar_route,
 )
 from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response, has_usable_sidecar_api_key
@@ -5116,7 +5117,12 @@ async def v1_chat_completions(
         )
 
         async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
-            target_decision = resolve_sidecar_route(target, tuple(routing_entries))
+            # A stored pool target names its integration when written
+            # ``<provider>::<model>``; resolving it with the pool-target rule
+            # keeps dispatch consistent with the per-target authorization
+            # above even when another card lists the same string as a literal
+            # full model.
+            target_decision = resolve_sidecar_pool_target(target, tuple(routing_entries))
             if target_decision is None or not is_pool_capable_provider(target_decision.provider):
                 raise PoolTargetUnavailable(
                     target,
