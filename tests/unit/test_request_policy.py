@@ -384,6 +384,62 @@ def test_model_access_rejects_unrouted_request_when_entry_is_bound_to_a_sidecar(
         validate_model_access(api_key, "custom-slug", routing_entries=_strip_routing_entries())
 
 
+def _pool_target_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
+    """OrcaRouter literally lists ``openrouter::foo``; OpenRouter lists ``foo``."""
+    return (
+        SidecarRoutingEntry(
+            provider="openrouter",
+            prefixes=(),
+            full_models=("foo",),
+        ),
+        SidecarRoutingEntry(
+            provider="orcarouter",
+            prefixes=(),
+            full_models=("openrouter::foo",),
+        ),
+    )
+
+
+def test_pool_target_exact_string_grant_does_not_bypass_the_provider_check() -> None:
+    """An allowlist string matching a pool target literally still resolves identities.
+
+    The grant ``openrouter::foo`` resolves (bare rule) to OrcaRouter's literal
+    full model, while the pool target ``openrouter::foo`` dispatches to
+    OpenRouter serving ``foo``. Exact-string membership must not approve the
+    request before those identities are compared.
+    """
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"openrouter::foo"})))
+
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(
+            api_key,
+            "openrouter::foo",
+            routing_entries=_pool_target_routing_entries(),
+            pool_target=True,
+        )
+
+
+def test_pool_target_grant_resolving_to_the_same_identity_still_authorizes() -> None:
+    """A grant of the explicit target authorizes it when no other card shadows the string."""
+    routing = (
+        SidecarRoutingEntry(
+            provider="openrouter",
+            prefixes=(),
+            full_models=("foo",),
+        ),
+    )
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"openrouter::foo"})))
+
+    validate_model_access(api_key, "openrouter::foo", routing_entries=routing, pool_target=True)
+
+
+def test_wire_model_grant_authorizes_the_matching_pool_target() -> None:
+    """Granting the wire model ``foo`` (bare rule: OpenRouter) covers the pool target."""
+    api_key = cast(ApiKeyData, SimpleNamespace(allowed_models=frozenset({"foo"})))
+
+    validate_model_access(api_key, "openrouter::foo", routing_entries=_pool_target_routing_entries(), pool_target=True)
+
+
 def test_reasoning_effort_allowlist_rejects_max_before_wire_normalization() -> None:
     request = ResponsesRequest.model_validate(
         {

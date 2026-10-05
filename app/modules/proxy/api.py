@@ -5212,9 +5212,24 @@ async def v1_chat_completions(
                 ),
                 headers={**rate_limit_headers, "Retry-After": "60", POOL_ATTEMPTS_HEADER: "0"},
             )
-    decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
+    # A single-target alias rewrite puts the stored pool target into
+    # ``payload.model``, so that string resolves by the pool-target rule: a
+    # literal full-model id on another card cannot shadow the integration the
+    # alias's target names. Bare (unaliased) requests keep the exact-match
+    # rule.
+    alias_resolved = resolved_alias is not None and resolved_alias.alias is not None
+    decision = (
+        resolve_sidecar_pool_target(effective_model, tuple(routing_entries))
+        if alias_resolved
+        else resolve_sidecar_route(effective_model, tuple(routing_entries))
+    )
     if decision is not None:
-        validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
+        validate_model_access(
+            api_key,
+            effective_model,
+            routing_entries=tuple(routing_entries),
+            pool_target=alias_resolved,
+        )
         reservation = await _enforce_request_limits(
             api_key,
             request_model=metering_model,

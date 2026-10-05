@@ -153,14 +153,20 @@ def validate_model_access(
     ``pool_target`` marks an alias-pool target being authorized as itself: its
     identity is then resolved with :func:`resolve_sidecar_pool_target`, the
     same rule the pool loop dispatches by, so a grant can never approve a
-    request that is then sent to another integration.
+    request that is then sent to another integration. Exact-string membership
+    in the allowlist is trusted only for bare requests: for a pool target even
+    a literal match goes through identity resolution, because the same string
+    can resolve to different integrations under the two rules (a card may list
+    ``<provider>::<model>`` as a literal full model).
     """
 
     if api_key is None:
         return
     if not api_key.allowed_models:
         return
-    if model is None or model in api_key.allowed_models:
+    if model is None:
+        return
+    if not pool_target and model in api_key.allowed_models:
         return
     requested = _access_identity(model, routing_entries, pool_target=pool_target)
     if any(
