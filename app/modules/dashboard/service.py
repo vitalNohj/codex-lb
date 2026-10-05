@@ -230,7 +230,7 @@ class DashboardService:
         estimates = None
         if self._claude_usage_repo is not None:
             now = utcnow()
-            events = await self._claude_usage_repo.list_events_since(now - SECONDARY_WINDOW)
+            events = await self._claude_usage_repo.list_estimate_events_since(now - SECONDARY_WINDOW)
             estimates = build_claude_usage_estimates(
                 events=events,
                 plans=parse_claude_sidecar_auth_plans(settings.claude_sidecar_auth_plans_json),

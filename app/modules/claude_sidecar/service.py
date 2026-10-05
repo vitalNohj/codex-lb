@@ -145,7 +145,7 @@ class ClaudeSidecarService:
         estimates_by_key: dict[str, ClaudeAuthUsageEstimate] = {}
         if self._usage_repository is not None:
             now = datetime.now(timezone.utc)
-            events = await self._usage_repository.list_events_since(now - SECONDARY_WINDOW)
+            events = await self._usage_repository.list_estimate_events_since(now - SECONDARY_WINDOW)
             estimates = build_claude_usage_estimates(
                 events=events,
                 plans=parse_claude_sidecar_auth_plans(settings.claude_sidecar_auth_plans_json),
@@ -198,7 +198,7 @@ class ClaudeSidecarService:
         now = datetime.now(timezone.utc)
         events = []
         if self._usage_repository is not None:
-            raw_events = await self._usage_repository.list_events_since(now - SECONDARY_WINDOW)
+            raw_events = await self._usage_repository.list_estimate_events_since(now - SECONDARY_WINDOW)
             events = [event for event in raw_events if _event_identity_key(event) in active_keys]
 
         estimates = build_claude_usage_estimates(

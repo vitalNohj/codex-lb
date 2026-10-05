@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
+from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.modules.claude_sidecar import usage_collector as usage_collector_module
 from app.modules.claude_sidecar.usage_collector import ClaudeSidecarUsageCollector
 from app.modules.claude_sidecar.usage_queue import ClaudeSidecarUsageRecord
@@ -32,10 +33,15 @@ class _FakeSettingsCache:
 @dataclass
 class _FakeRepo:
     inserted: list[ClaudeSidecarUsageRecord] = field(default_factory=list)
+    estimate_refreshes: list[datetime] = field(default_factory=list)
 
     async def insert_usage_events(self, records: list[ClaudeSidecarUsageRecord]) -> int:
         self.inserted.extend(records)
         return len(records)
+
+    async def list_estimate_events_since(self, since: datetime) -> list[object]:
+        self.estimate_refreshes.append(since)
+        return []
 
 
 @dataclass
@@ -66,6 +72,10 @@ class _UnauthorizedClient:
 
     async def pop_usage_queue(self, _count: int) -> list[dict[str, Any]]:
         raise ClaudeSidecarError(401, "unauthorized")
+
+
+def _as_client_factory(client: type) -> type[ClaudeSidecarClient]:
+    return cast(type[ClaudeSidecarClient], client)
 
 
 def _patch_environment(
@@ -121,13 +131,14 @@ async def test_collect_once_no_op_when_gated_off(monkeypatch) -> None:
         interval_seconds=15,
         enabled=True,
         batch_size=2,
-        _client_factory=_FakeClient,
+        _client_factory=_as_client_factory(_FakeClient),
     )
 
     await collector._collect_once()
 
     assert _FakeClient.calls == 0
     assert repo.inserted == []
+    assert repo.estimate_refreshes == []
 
 
 @pytest.mark.asyncio
@@ -143,13 +154,34 @@ async def test_collect_once_drains_until_short_batch(monkeypatch) -> None:
         interval_seconds=15,
         enabled=True,
         batch_size=2,
-        _client_factory=_FakeClient,
+        _client_factory=_as_client_factory(_FakeClient),
     )
 
     await collector._collect_once()
 
     assert _FakeClient.calls == 2
     assert [record.request_id for record in repo.inserted] == ["req_1", "req_2", "req_3"]
+
+
+@pytest.mark.asyncio
+async def test_collect_once_refreshes_estimate_cache_after_draining(monkeypatch) -> None:
+    repo = _FakeRepo()
+    _patch_environment(monkeypatch, settings=_FakeSettings(), repo=repo)
+    _FakeClient.calls = 0
+    _FakeClient.batches = [[_raw_record("req_1")]]
+    collector = ClaudeSidecarUsageCollector(
+        interval_seconds=15,
+        enabled=True,
+        batch_size=2,
+        _client_factory=_as_client_factory(_FakeClient),
+    )
+
+    before = usage_collector_module.utcnow()
+    await collector._collect_once()
+
+    assert [record.request_id for record in repo.inserted] == ["req_1"]
+    assert len(repo.estimate_refreshes) == 1
+    assert repo.estimate_refreshes[0] >= before - timedelta(days=7)
 
 
 @pytest.mark.asyncio
@@ -163,7 +195,7 @@ async def test_collect_once_stops_after_bounded_batches(monkeypatch) -> None:
         enabled=True,
         batch_size=2,
         max_batches_per_tick=3,
-        _client_factory=_FakeClient,
+        _client_factory=_as_client_factory(_FakeClient),
     )
 
     await collector._collect_once()
@@ -180,7 +212,7 @@ async def test_collect_once_swallows_unauthorized(monkeypatch) -> None:
         interval_seconds=15,
         enabled=True,
         batch_size=2,
-        _client_factory=_UnauthorizedClient,
+        _client_factory=_as_client_factory(_UnauthorizedClient),
     )
 
     await collector._collect_once()

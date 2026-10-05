@@ -15,9 +15,11 @@ from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal, engine
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.usage.repository import (
+    _BULK_HISTORY_SQLITE_CACHE,
     AdditionalUsageRepository,
     UsageRepository,
     _additional_latest_by_account_sqlite,
+    _bulk_history_cache_key,
     _bulk_history_since_sqlite,
     _clear_bulk_history_since_sqlite_cache,
     _latest_by_account_sqlite,
@@ -637,6 +639,70 @@ def test_bulk_history_since_sqlite_cache_reuses_superset_and_picks_up_appends(tm
     )
     assert [row.id for row in second["acc1"]] == [2, 4]
     assert [row.id for row in second["acc2"]] == [3]
+
+    _clear_bulk_history_since_sqlite_cache()
+
+
+def test_bulk_history_since_sqlite_cache_prunes_rows_behind_sliding_window(tmp_path):
+    db_path = tmp_path / "usage.db"
+    _clear_bulk_history_since_sqlite_cache()
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            create table usage_history (
+                id integer primary key,
+                account_id text not null,
+                used_percent real not null,
+                recorded_at text not null,
+                reset_at real,
+                window_minutes integer,
+                window text
+            )
+            """
+        )
+        conn.executemany(
+            """
+            insert into usage_history
+                (id, account_id, used_percent, recorded_at, reset_at, window_minutes, window)
+            values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "acc1", 10.0, "2026-01-01 00:00:00", 1000.0, 10080, "secondary"),
+                (2, "acc1", 20.0, "2026-01-01 00:30:00", 1000.0, 10080, "secondary"),
+                (3, "acc1", 30.0, "2026-01-01 01:00:00", 1000.0, 10080, "secondary"),
+            ],
+        )
+        conn.commit()
+
+    _bulk_history_since_sqlite(str(db_path), ["acc1"], "secondary", datetime(2026, 1, 1, 0, 0, 0))
+    cache_key = _bulk_history_cache_key(str(db_path), ["acc1"], "secondary")
+    assert [row.id for row in _BULK_HISTORY_SQLITE_CACHE[cache_key].rows_by_account["acc1"]] == [1, 2, 3]
+
+    # The window slid forward by more than the prune slack: rows behind it are
+    # dropped from the entry, not kept for the life of the process.
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            insert into usage_history
+                (id, account_id, used_percent, recorded_at, reset_at, window_minutes, window)
+            values (4, 'acc1', 40.0, '2026-01-01 01:30:00', 1000.0, 10080, 'secondary')
+            """
+        )
+        conn.commit()
+    slid = _bulk_history_since_sqlite(str(db_path), ["acc1"], "secondary", datetime(2026, 1, 1, 0, 45, 0))
+
+    assert [row.id for row in slid["acc1"]] == [3, 4]
+    entry = _BULK_HISTORY_SQLITE_CACHE[cache_key]
+    assert entry.since == datetime(2026, 1, 1, 0, 45, 0)
+    assert [row.id for row in entry.rows_by_account["acc1"]] == [3, 4]
+
+    # The pruned entry still validates and serves later reads, and a same-id
+    # correction inside the remaining window is still detected.
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("update usage_history set used_percent = 35.0 where id = 3")
+        conn.commit()
+    corrected = _bulk_history_since_sqlite(str(db_path), ["acc1"], "secondary", datetime(2026, 1, 1, 0, 50, 0))
+    assert [(row.id, row.used_percent) for row in corrected["acc1"]] == [(3, 35.0), (4, 40.0)]
 
     _clear_bulk_history_since_sqlite_cache()
 

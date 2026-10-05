@@ -14,7 +14,9 @@ from app.core.clients.claude_sidecar import (
 )
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
+from app.core.utils.time import utcnow
 from app.db.session import get_background_session
+from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW
 from app.modules.claude_sidecar.usage_queue import parse_usage_queue_records
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
@@ -94,6 +96,7 @@ class ClaudeSidecarUsageCollector:
             return
         client = self._client_factory(config)
         await self._drain_queue(client, int(settings_row.claude_sidecar_usage_queue_batch_size))
+        await _refresh_estimate_event_cache()
 
     async def _drain_queue(self, client: ClaudeSidecarClient, batch_size: int) -> None:
         batch_size = max(1, batch_size)
@@ -118,6 +121,19 @@ class ClaudeSidecarUsageCollector:
                     logger.warning("failed to persist Claude sidecar usage records", exc_info=True)
             if len(raw_records) < batch_size:
                 return
+
+
+async def _refresh_estimate_event_cache() -> None:
+    """Fold the rows just collected into the quota-estimate window cache.
+
+    Dashboard reads then find the cache current, so even the first read after
+    startup skips the full seven-day load.
+    """
+    try:
+        async with get_background_session() as session:
+            await ClaudeSidecarUsageRepository(session).list_estimate_events_since(utcnow() - SECONDARY_WINDOW)
+    except Exception:
+        logger.warning("failed to refresh the Claude usage estimate cache", exc_info=True)
 
 
 def build_claude_sidecar_usage_collector() -> ClaudeSidecarUsageCollector:

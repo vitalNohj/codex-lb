@@ -82,7 +82,7 @@ class _FakeUsageRepo:
     def __init__(self, events: list[object] | None = None) -> None:
         self._events = events or []
 
-    async def list_events_since(self, _since: datetime) -> list[object]:
+    async def list_estimate_events_since(self, _since: datetime) -> list[object]:
         return list(self._events)
 
 

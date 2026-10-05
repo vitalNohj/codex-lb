@@ -406,6 +406,12 @@ def _reset_global_state() -> None:
     except Exception:
         pass
     try:
+        from app.modules.claude_sidecar.usage_event_cache import get_claude_usage_event_cache
+
+        get_claude_usage_event_cache().clear()
+    except Exception:
+        pass
+    try:
         # Pending workspace-less plan-downgrade confirmations live in a
         # process-global fallback store when persistence is disabled, so a test
         # that leaves one behind would otherwise give the next test a head start

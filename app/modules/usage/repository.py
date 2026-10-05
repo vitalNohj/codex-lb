@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import Collection
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from threading import RLock
 from typing import Any, Callable, cast
@@ -112,6 +112,11 @@ class _BulkHistoryCacheEntry:
 
 _BULK_HISTORY_SQLITE_CACHE: dict[tuple[str, tuple[str, ...], str], _BulkHistoryCacheEntry] = {}
 _BULK_HISTORY_SQLITE_CACHE_LOCK = RLock()
+# Callers ask for a window that slides forward with the clock, so a cache entry
+# drops rows that fell out of the requested window once it lags by this much.
+# Without it the entry kept every row since its first fill: memory and the
+# per-hit digest validation grew for as long as the process ran.
+_BULK_HISTORY_PRUNE_SLACK = timedelta(minutes=15)
 _EMPTY_BULK_HISTORY_DIGEST = sha256().hexdigest()
 
 
@@ -502,7 +507,8 @@ def _bulk_history_since_sqlite(
                     max_id=cached.max_id,
                 )
                 if metadata != cached.metadata:
-                    grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, cached.since)
+                    grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, since)
+                    cached.since = since
                     cached.metadata = _bulk_history_metadata_from_grouped(grouped)
                     cached.max_id = cached.metadata.max_id
                     cached.rows_by_account = grouped
@@ -517,6 +523,15 @@ def _bulk_history_since_sqlite(
                 )
                 if new_rows:
                     _append_grouped_history(cached.rows_by_account, new_rows)
+                pruned = since - cached.since >= _BULK_HISTORY_PRUNE_SLACK
+                if pruned:
+                    # Rows below ``since`` can never be requested again. Any
+                    # row above the recomputed ``max_id`` that was dropped here
+                    # sits below the new ``since``, so the next append query
+                    # (bounded by ``since``) cannot pull it back in twice.
+                    cached.rows_by_account = _clone_filtered_history(cached.rows_by_account, since)
+                    cached.since = since
+                if new_rows or pruned:
                     cached.metadata = _bulk_history_metadata_from_grouped(cached.rows_by_account)
                     cached.max_id = cached.metadata.max_id
                 return _clone_filtered_history(cached.rows_by_account, since)

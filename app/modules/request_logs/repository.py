@@ -12,7 +12,8 @@ from sqlalchemy import exc as sa_exc
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, make_transient_to_detached
-from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import ColumnElement, UnaryExpression
 
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.logs import (
@@ -1532,15 +1533,13 @@ class RequestLogsRepository:
             # DISTINCT below is a full pass over request_logs, four times per
             # filter-panel load. Emulate the skip scan instead — one indexed
             # probe per distinct value.
+            conditions = self._skip_scan_conditions(filters.conditions)
+            api_key_conditions = self._skip_scan_conditions(api_key_facet_filters.conditions)
             return (
-                [value for value in await self._distinct_skip_scan(RequestLog.account_id, filters.conditions) if value],
-                await self._pair_facet_skip_scan(RequestLog.model, RequestLog.reasoning_effort, filters.conditions),
-                [
-                    value
-                    for value in await self._distinct_skip_scan(RequestLog.api_key_id, api_key_facet_filters.conditions)
-                    if value
-                ],
-                await self._pair_facet_skip_scan(RequestLog.status, RequestLog.error_code, filters.conditions),
+                [value for value in await self._distinct_skip_scan(RequestLog.account_id, conditions) if value],
+                await self._pair_facet_skip_scan(RequestLog.model, RequestLog.reasoning_effort, conditions),
+                [value for value in await self._distinct_skip_scan(RequestLog.api_key_id, api_key_conditions) if value],
+                await self._pair_facet_skip_scan(RequestLog.status, RequestLog.error_code, conditions),
             )
 
         account_stmt = select(RequestLog.account_id).distinct().order_by(RequestLog.account_id.asc())
@@ -1573,6 +1572,31 @@ class RequestLogsRepository:
         api_key_ids = [row[0] for row in api_key_rows.all() if row[0]]
         status_values = [(row[0], row[1]) for row in status_rows.all() if row[0]]
         return account_ids, model_options, api_key_ids, status_values
+
+    def _skip_scan_conditions(self, conditions: list) -> list:
+        """Keep the skip scan's own column index in charge of every probe.
+
+        The baseline filters (``deleted_at IS NULL``, the status allow-list)
+        match nearly every row, but SQLite's planner still prefers an
+        equality-indexed term such as ``deleted_at IS NULL`` over the facet
+        column's index, turning each per-value probe into a full pass over
+        request_logs (seconds per facet on a large table). Wrapping a term in
+        unary ``+`` is SQLite's documented way to disqualify it from index
+        selection without changing its value, so every probe walks the facet
+        column's index and filters the few rows it touches. PostgreSQL has no
+        unary ``+`` for booleans and needs no hint, so other dialects get the
+        conditions unchanged.
+        """
+        if self._session.get_bind().dialect.name != "sqlite":
+            return conditions
+        return [
+            UnaryExpression(
+                condition.self_group(),
+                operator=operators.custom_op("+"),
+                wraps_column_expression=False,
+            )
+            for condition in conditions
+        ]
 
     async def _distinct_skip_scan(
         self,

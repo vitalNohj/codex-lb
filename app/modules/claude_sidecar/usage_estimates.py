@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,11 +30,20 @@ PLAN_PRESETS: dict[str, ClaudeSidecarPlanPreset] = {
 
 
 class UsageEventLike(Protocol):
-    timestamp: datetime
-    auth_index: str | None
-    source: str | None
-    total_tokens: int
-    failed: bool
+    @property
+    def timestamp(self) -> datetime: ...
+
+    @property
+    def auth_index(self) -> str | None: ...
+
+    @property
+    def source(self) -> str | None: ...
+
+    @property
+    def total_tokens(self) -> int: ...
+
+    @property
+    def failed(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,13 +122,15 @@ def build_claude_usage_estimates(
         auth_index, email = auths_by_key.get(key, _split_key(key))
         source = _source_for_key(key, events_by_key.get(key, []), plan)
         primary_budget, secondary_budget, plan_type = _budgets_for_plan(plan)
-        auth_events = sorted(events_by_key.get(key, []), key=lambda event: _utc(event.timestamp))
-        primary_start = _active_window_start(auth_events, PRIMARY_WINDOW, reference_time)
-        secondary_start = _active_window_start(auth_events, SECONDARY_WINDOW, reference_time)
+        timeline = _AuthTimeline.from_events(
+            sorted(events_by_key.get(key, []), key=lambda event: _utc(event.timestamp))
+        )
+        primary_start = _active_window_start(timeline, PRIMARY_WINDOW, reference_time)
+        secondary_start = _active_window_start(timeline, SECONDARY_WINDOW, reference_time)
         primary_reset = primary_start + PRIMARY_WINDOW if primary_start else None
         secondary_reset = secondary_start + SECONDARY_WINDOW if secondary_start else None
-        primary_used = _used_tokens(auth_events, primary_start, primary_reset)
-        secondary_used = _used_tokens(auth_events, secondary_start, secondary_reset)
+        primary_used = _used_tokens(timeline, primary_start, primary_reset)
+        secondary_used = _used_tokens(timeline, secondary_start, secondary_reset)
         primary_remaining = _remaining_percent(primary_used, primary_budget)
         secondary_remaining = _remaining_percent(secondary_used, secondary_budget)
         usage_source = "usage_queue"
@@ -171,35 +183,75 @@ def _budgets_for_plan(plan: ClaudeSidecarAuthPlanData | None) -> tuple[int | Non
     return primary_budget, secondary_budget, plan.plan_type
 
 
+@dataclass(frozen=True, slots=True)
+class _AuthTimeline:
+    """One auth's events as sorted arrays, so window math is a bisect, not a scan.
+
+    The estimates run on every dashboard refresh over a week of events, so the
+    per-window passes must not each walk the whole history.
+    """
+
+    #: Every event's timestamp, ascending.
+    timestamps: list[datetime]
+    #: ``token_prefix[i]`` is the token total of the first ``i`` events.
+    token_prefix: list[int]
+    #: Timestamps of the events that did not fail, ascending.
+    succeeded: list[datetime]
+
+    @classmethod
+    def from_events(cls, events: Sequence[UsageEventLike]) -> _AuthTimeline:
+        """Build from events already sorted by timestamp."""
+        timestamps: list[datetime] = []
+        token_prefix = [0]
+        succeeded: list[datetime] = []
+        running_total = 0
+        for event in events:
+            timestamp = _utc(event.timestamp)
+            timestamps.append(timestamp)
+            running_total += max(0, int(event.total_tokens))
+            token_prefix.append(running_total)
+            if not event.failed:
+                succeeded.append(timestamp)
+        return cls(timestamps=timestamps, token_prefix=token_prefix, succeeded=succeeded)
+
+
 def _active_window_start(
-    events: Sequence[UsageEventLike],
+    timeline: _AuthTimeline,
     window: timedelta,
     now: datetime,
 ) -> datetime | None:
-    start: datetime | None = None
-    for event in events:
-        if event.failed:
-            continue
-        timestamp = _utc(event.timestamp)
-        if timestamp > now:
-            continue
-        if start is None or timestamp >= start + window:
-            start = timestamp
-    if start is None or now >= start + window:
+    """Return the start of the window still open at ``now``, if any.
+
+    Windows chain: the first successful event opens one, and the first
+    successful event at or after a window's end opens the next. Events after
+    ``now`` are ignored.
+    """
+    succeeded = timeline.succeeded
+    end = bisect.bisect_right(succeeded, now)
+    if end == 0:
+        return None
+    start = succeeded[0]
+    while True:
+        next_index = bisect.bisect_left(succeeded, start + window, 0, end)
+        if next_index >= end:
+            break
+        start = succeeded[next_index]
+    if now >= start + window:
         return None
     return start
 
 
 def _used_tokens(
-    events: Sequence[UsageEventLike],
+    timeline: _AuthTimeline,
     window_start: datetime | None,
     window_end: datetime | None,
 ) -> int:
+    """Sum the tokens of every event, failed or not, in ``[window_start, window_end)``."""
     if window_start is None or window_end is None:
         return 0
-    return sum(
-        max(0, int(event.total_tokens)) for event in events if window_start <= _utc(event.timestamp) < window_end
-    )
+    first = bisect.bisect_left(timeline.timestamps, window_start)
+    last = bisect.bisect_left(timeline.timestamps, window_end)
+    return timeline.token_prefix[last] - timeline.token_prefix[first]
 
 
 def _remaining_percent(used_tokens: int, budget_tokens: int | None) -> float | None:
@@ -318,6 +370,8 @@ def _earliest(values) -> datetime | None:
 
 
 def _utc(value: datetime) -> datetime:
+    if value.tzinfo is timezone.utc:
+        return value
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
