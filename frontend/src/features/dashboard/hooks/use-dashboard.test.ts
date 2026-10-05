@@ -105,4 +105,35 @@ describe("useDashboard", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
   });
+
+  it("keeps the previous overview while a new timeframe loads", async () => {
+    const queryClient = createTestQueryClient();
+    let releaseThirtyDays!: () => void;
+    const thirtyDaysGate = new Promise<void>((resolve) => {
+      releaseThirtyDays = resolve;
+    });
+    const { result, rerender } = renderHook(({ timeframe }) => useDashboard(timeframe), {
+      wrapper: createWrapper(queryClient),
+      initialProps: { timeframe: "7d" as "7d" | "30d" },
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const sevenDays = result.current.data;
+
+    server.use(
+      http.get("/api/dashboard/overview", async ({ request }) => {
+        if (new URL(request.url).searchParams.get("timeframe") === "30d") {
+          await thirtyDaysGate;
+        }
+        return HttpResponse.json(sevenDays);
+      }),
+    );
+    rerender({ timeframe: "30d" });
+
+    await waitFor(() => expect(result.current.isFetching).toBe(true));
+    expect(result.current.isPlaceholderData).toBe(true);
+    expect(result.current.data).toBe(sevenDays);
+
+    releaseThirtyDays();
+    await waitFor(() => expect(result.current.isPlaceholderData).toBe(false));
+  });
 });

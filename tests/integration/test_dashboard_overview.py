@@ -1456,3 +1456,29 @@ async def test_dashboard_overview_exposes_zero_previous_window_totals_when_full_
             "costUsd": 0.0,
         },
     }
+
+
+async def test_dashboard_sync_status_matches_overview_last_sync(async_client, db_setup):
+    now = utcnow().replace(microsecond=0)
+
+    empty = await async_client.get("/api/dashboard/sync-status")
+    assert empty.status_code == 200
+    assert empty.json() == {"lastSyncAt": None}
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        usage_repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc_sync_a", "sync-a@example.com"))
+        await accounts_repo.upsert(_make_account("acc_sync_b", "sync-b@example.com", plan_type="free"))
+        await usage_repo.add_entry("acc_sync_a", 10.0, window="primary", recorded_at=now - timedelta(minutes=9))
+        await usage_repo.add_entry("acc_sync_a", 30.0, window="secondary", recorded_at=now - timedelta(minutes=4))
+        await usage_repo.add_entry(
+            "acc_sync_b", 20.0, window="monthly", window_minutes=43200, recorded_at=now - timedelta(minutes=2)
+        )
+
+    sync = await async_client.get("/api/dashboard/sync-status")
+    overview = await async_client.get("/api/dashboard/overview")
+
+    assert sync.status_code == 200
+    assert sync.json() == {"lastSyncAt": (now - timedelta(minutes=2)).isoformat() + "Z"}
+    assert sync.json()["lastSyncAt"] == overview.json()["lastSyncAt"]

@@ -17,8 +17,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
     func,
+    inspect,
     literal_column,
     text,
     true,
@@ -221,6 +223,48 @@ class UsageHistory(Base):
     credits_has: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     credits_unlimited: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     credits_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class UsageHistoryMutationState(Base):
+    """Generation counter for in-place changes to ``usage_history``.
+
+    On SQLite, triggers bump the single row's ``generation`` on every UPDATE or
+    DELETE of a usage-history row (inserts do not fire them, so ingestion pays
+    nothing). The dashboard's bulk usage-history cache trusts an unchanged
+    generation, plus a matching row count and max id, instead of re-hashing
+    every cached row on each read; a changed generation, or missing triggers,
+    sends it back to the full content digest.
+    """
+
+    __tablename__ = "usage_history_mutation_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+
+#: Trigger names the bulk usage-history cache checks for before trusting the generation.
+USAGE_HISTORY_MUTATION_TRIGGERS = ("usage_history_mutation_after_update", "usage_history_mutation_after_delete")
+
+
+def _install_usage_history_mutation_triggers(target, connection, **kw) -> None:
+    """Give ``create_all`` (tests, fresh SQLite stores) the seed row and
+    triggers the migration installs. Runs after every table exists: the
+    triggers reference both tables, and ``usage_history`` sorts after the
+    state table because it depends on ``accounts``."""
+    if connection.dialect.name != "sqlite":
+        return
+    inspector = inspect(connection)
+    if not (inspector.has_table("usage_history") and inspector.has_table("usage_history_mutation_state")):
+        return
+    connection.exec_driver_sql("INSERT OR IGNORE INTO usage_history_mutation_state (id, generation) VALUES (1, 0)")
+    for name, operation in zip(USAGE_HISTORY_MUTATION_TRIGGERS, ("UPDATE", "DELETE"), strict=True):
+        connection.exec_driver_sql(
+            f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {operation} ON usage_history "
+            "BEGIN UPDATE usage_history_mutation_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+
+
+event.listen(Base.metadata, "after_create", _install_usage_history_mutation_triggers)
 
 
 class AccountUsageRollup(Base):

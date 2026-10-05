@@ -815,6 +815,12 @@ export const handlers = [
     );
   }),
 
+  http.get("/api/dashboard/sync-status", () => {
+    return HttpResponse.json({
+      lastSyncAt: createDashboardOverview({ accounts: state.accounts }).lastSyncAt,
+    });
+  }),
+
   http.get("/api/dashboard/projections", () => {
     return HttpResponse.json(createDashboardProjections());
   }),

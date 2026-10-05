@@ -4,8 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 
-import { getDashboardOverview } from "@/features/dashboard/api";
-import { DEFAULT_OVERVIEW_TIMEFRAME } from "@/features/dashboard/schemas";
+import { getDashboardSyncStatus } from "@/features/dashboard/api";
 import { getServiceReadiness } from "@/features/health/api";
 import { getRuntimeVersion } from "@/features/runtime/api";
 import { getSettings } from "@/features/settings/api";
@@ -99,9 +98,10 @@ export function StatusBar({ onHeightChange }: StatusBarProps = {}) {
     refetchIntervalInBackground: false,
     retry: false,
   });
+  // Only the sync time: the full overview is far heavier and this polls on every page.
   const { data: lastSyncAt = null } = useQuery({
-    queryKey: ["dashboard", "overview", DEFAULT_OVERVIEW_TIMEFRAME],
-    queryFn: () => getDashboardOverview({ timeframe: DEFAULT_OVERVIEW_TIMEFRAME }),
+    queryKey: ["dashboard", "sync-status"],
+    queryFn: getDashboardSyncStatus,
     refetchInterval: STATUS_REFRESH_INTERVAL_MS,
     refetchIntervalInBackground: false,
     select: (data) => data.lastSyncAt,

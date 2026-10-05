@@ -5,10 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { StatusBar, type StatusBarProps } from "@/components/layout/status-bar";
 import i18n from "@/i18n";
-import {
-  createDashboardOverview,
-  createDashboardSettings,
-} from "@/test/mocks/factories";
+import { createDashboardSettings } from "@/test/mocks/factories";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { formatTimeLong } from "@/utils/formatters";
 import { server } from "@/test/mocks/server";
@@ -38,16 +35,29 @@ function mockSettings(
 }
 
 describe("StatusBar", () => {
+  it("reads the sync time without fetching the dashboard overview", async () => {
+    const overviewRequests: string[] = [];
+    server.use(
+      http.get("/health/ready", () => HttpResponse.json({ status: "ok" })),
+      http.get("/api/dashboard/sync-status", () =>
+        HttpResponse.json({ lastSyncAt: new Date().toISOString() }),
+      ),
+      http.get("/api/dashboard/overview", ({ request }) => {
+        overviewRequests.push(request.url);
+        return HttpResponse.json({}, { status: 500 });
+      }),
+    );
+
+    renderStatusBar();
+
+    expect(await screen.findByText("Synced")).toBeInTheDocument();
+    expect(overviewRequests).toEqual([]);
+  });
+
   it("shows ready service independently from stale usage", async () => {
     server.use(
       http.get("/health/ready", () => HttpResponse.json({ status: "ok" })),
-      http.get("/api/dashboard/overview", () =>
-        HttpResponse.json(
-          createDashboardOverview({
-            lastSyncAt: new Date(Date.now() - 120_000).toISOString(),
-          }),
-        ),
-      ),
+      http.get("/api/dashboard/sync-status", () => HttpResponse.json({ lastSyncAt: new Date(Date.now() - 120_000).toISOString() })),
     );
 
     renderStatusBar();
@@ -61,13 +71,7 @@ describe("StatusBar", () => {
       http.get("/health/ready", () =>
         HttpResponse.json({ detail: "Service unavailable" }, { status: 503 }),
       ),
-      http.get("/api/dashboard/overview", () =>
-        HttpResponse.json(
-          createDashboardOverview({
-            lastSyncAt: new Date().toISOString(),
-          }),
-        ),
-      ),
+      http.get("/api/dashboard/sync-status", () => HttpResponse.json({ lastSyncAt: new Date().toISOString() })),
     );
 
     renderStatusBar();
@@ -80,9 +84,7 @@ describe("StatusBar", () => {
     const lastSyncAt = "2026-08-09T14:30:45.000Z";
     server.use(
       http.get("/health/ready", () => HttpResponse.json({ status: "ok" })),
-      http.get("/api/dashboard/overview", () =>
-        HttpResponse.json(createDashboardOverview({ lastSyncAt })),
-      ),
+      http.get("/api/dashboard/sync-status", () => HttpResponse.json({ lastSyncAt })),
     );
     useDateDisplayFormatStore.setState({ dateDisplayFormat: "default" });
 
@@ -111,13 +113,7 @@ describe("StatusBar", () => {
         await pendingReadiness;
         return HttpResponse.json({ status: "ok" });
       }),
-      http.get("/api/dashboard/overview", () =>
-        HttpResponse.json(
-          createDashboardOverview({
-            lastSyncAt: new Date().toISOString(),
-          }),
-        ),
-      ),
+      http.get("/api/dashboard/sync-status", () => HttpResponse.json({ lastSyncAt: new Date().toISOString() })),
     );
 
     renderStatusBar();

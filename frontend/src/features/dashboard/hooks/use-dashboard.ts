@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { getDashboardOverview, getDashboardProjections } from "@/features/dashboard/api";
 import {
@@ -11,6 +11,9 @@ export function useDashboard(timeframe: OverviewTimeframe = DEFAULT_OVERVIEW_TIM
     queryKey: ["dashboard", "overview", timeframe],
     queryFn: () => getDashboardOverview({ timeframe }),
     refetchOnWindowFocus: false,
+    // Switching timeframe keeps the current overview on screen (with the
+    // refresh spinner) instead of dropping back to the full-page skeleton.
+    placeholderData: keepPreviousData,
   });
 }
 

@@ -32,6 +32,7 @@ from app.modules.dashboard.schemas import (
     DashboardOverviewResponse,
     DashboardOverviewTimeframeKey,
     DashboardProjectionsResponse,
+    DashboardSyncStatusResponse,
     DashboardUsageWindows,
     DepletionResponse,
 )
@@ -308,6 +309,20 @@ class DashboardService:
             total_savings_usd=usage_summary.total_savings_usd,
         )
         return build_omniroute_sidecar_summary(settings, request_usage)
+
+    async def get_sync_status(self) -> DashboardSyncStatusResponse:
+        """The overview's ``last_sync_at`` without the rest of the overview.
+
+        The status bar polls this on every page; it used to fetch the whole
+        seven-day overview for this one field.
+        """
+        primary_usage = await self._repo.latest_usage_by_account("primary")
+        secondary_usage = await self._repo.latest_usage_by_account("secondary")
+        monthly_usage = await self._repo.latest_usage_by_account("monthly")
+        additional_ts = await self._repo.latest_additional_recorded_at()
+        return DashboardSyncStatusResponse(
+            last_sync_at=_latest_recorded_at(primary_usage, secondary_usage, monthly_usage, additional_ts),
+        )
 
     async def get_projections(self) -> DashboardProjectionsResponse:
         now = utcnow()
