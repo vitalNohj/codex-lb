@@ -26,6 +26,16 @@ from app.modules.settings.service import (
 pytestmark = pytest.mark.unit
 
 
+def _validate_routes(payload: DashboardSettingsUpdateData, stored_stars: dict[str, str] | None = None) -> dict[str, str]:
+    """Run the save-time route validation the way the service does.
+
+    Returns the effective star map so star-filtering assertions read like the
+    service's own return value.
+    """
+
+    return _validate_unique_sidecar_routes(payload, stored_full_model_stars=stored_stars or {})
+
+
 @pytest.mark.asyncio
 async def test_migrated_null_account_caps_inherit_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     row = DashboardSettings()
@@ -358,7 +368,7 @@ def test_sidecar_route_validator_rejects_duplicate_prefixes() -> None:
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
+        _validate_routes(payload)
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "cp-"
@@ -387,18 +397,44 @@ def test_dashboard_error_supports_sidecar_conflict_details() -> None:
     }
 
 
-def test_sidecar_route_validator_rejects_duplicate_full_models() -> None:
+def test_sidecar_route_validator_allows_duplicate_full_models_across_cards() -> None:
+    """Full models stopped being unique across cards; the star map routes them.
+
+    The historical conflict - adding ``glm-5.3`` to OpenRouter after OrcaRouter
+    - must save cleanly now, because a pool chains the same model across both
+    cards and the star decides which one owns the bare id.
+    """
+
     payload = _settings_update(
-        openrouter_models=["DeepSeek/Chat"],
-        ollama_models=["deepseek/chat"],
+        openrouter_models=["z-ai/glm-5.3"],
+        orcarouter_models=["z-ai/glm-5.3"],
     )
 
-    with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
+    _validate_routes(payload)
 
-    assert exc_info.value.conflict.kind == "full_model"
-    assert exc_info.value.conflict.owner == "OpenRouter"
-    assert exc_info.value.conflict.challenger == "Ollama"
+
+def test_sidecar_route_validator_allows_duplicate_full_models_across_openai_compat_cards() -> None:
+    payload = _settings_update(
+        orcarouter_models=["z-ai/glm-5.3"],
+        openai_compat_endpoints=_openai_compat_endpoints(models=["z-ai/glm-5.3"]),
+    )
+
+    _validate_routes(payload)
+
+
+def test_sidecar_route_validator_allows_two_openai_compat_endpoints_sharing_a_full_model() -> None:
+    payload = _settings_update(
+        openai_compat_endpoints=[
+            *_openai_compat_endpoints(models=["Qwen/Qwen2.5-7B"]),
+            *_openai_compat_endpoints(
+                name="vLLM",
+                endpoint_id="3d0c9e4b-2f5e-4c8b-8d22-8b1f5e3c2d1b",
+                models=["Qwen/Qwen2.5-7B"],
+            ),
+        ]
+    )
+
+    _validate_routes(payload)
 
 
 def _openai_compat_endpoints(
@@ -426,56 +462,6 @@ def _openai_compat_endpoints(
     ]
 
 
-def test_sidecar_route_validator_rejects_orcarouter_openrouter_duplicate_full_models() -> None:
-    payload = _settings_update(
-        openrouter_models=["z-ai/glm-5.3"],
-        orcarouter_models=["z-ai/glm-5.3"],
-    )
-
-    with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
-
-    assert exc_info.value.conflict.kind == "full_model"
-    assert exc_info.value.conflict.value == "z-ai/glm-5.3"
-    assert exc_info.value.conflict.owner == "OpenRouter"
-    assert exc_info.value.conflict.challenger == "OrcaRouter"
-
-
-def test_sidecar_route_validator_rejects_openai_compat_orcarouter_duplicate_full_models() -> None:
-    payload = _settings_update(
-        orcarouter_models=["z-ai/glm-5.3"],
-        openai_compat_endpoints=_openai_compat_endpoints(models=["z-ai/glm-5.3"]),
-    )
-
-    with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
-
-    assert exc_info.value.conflict.kind == "full_model"
-    assert exc_info.value.conflict.value == "z-ai/glm-5.3"
-    # Generic endpoints are validated before OrcaRouter, so the endpoint owns.
-    assert exc_info.value.conflict.owner == "Vast"
-    assert exc_info.value.conflict.challenger == "OrcaRouter"
-
-
-def test_sidecar_route_validator_rejects_two_openai_compat_endpoints_sharing_a_full_model() -> None:
-    payload = _settings_update(
-        openai_compat_endpoints=[
-            *_openai_compat_endpoints(models=["Qwen/Qwen2.5-7B"]),
-            *_openai_compat_endpoints(
-                name="vLLM",
-                endpoint_id="3d0c9e4b-2f5e-4c8b-8d22-8b1f5e3c2d1b",
-                models=["Qwen/Qwen2.5-7B"],
-            ),
-        ]
-    )
-
-    with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
-
-    assert exc_info.value.conflict.kind == "full_model"
-    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"Vast", "vLLM"}
-
-
 def test_sidecar_route_validator_rejects_openai_compat_orcarouter_duplicate_prefixes() -> None:
     payload = _settings_update(
         orcarouter_prefixes=[SidecarPrefix(prefix="vast/", strip=True)],
@@ -483,7 +469,7 @@ def test_sidecar_route_validator_rejects_openai_compat_orcarouter_duplicate_pref
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
+        _validate_routes(payload)
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "vast/"
@@ -497,7 +483,7 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
+        _validate_routes(payload)
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "cloud/"
@@ -505,18 +491,13 @@ def test_sidecar_route_validator_rejects_ollama_duplicate_prefixes() -> None:
     assert exc_info.value.conflict.challenger == "Ollama"
 
 
-def test_sidecar_route_validator_rejects_ollama_duplicate_full_models() -> None:
+def test_sidecar_route_validator_allows_duplicate_full_models_across_openrouter_and_ollama() -> None:
     payload = _settings_update(
         openrouter_models=["gpt-oss:120b-cloud"],
         ollama_models=["GPT-OSS:120B-CLOUD"],
     )
 
-    with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
-
-    assert exc_info.value.conflict.kind == "full_model"
-    assert exc_info.value.conflict.owner == "OpenRouter"
-    assert exc_info.value.conflict.challenger == "Ollama"
+    _validate_routes(payload)
 
 
 def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None:
@@ -526,7 +507,7 @@ def test_sidecar_route_validator_rejects_orcarouter_duplicate_prefixes() -> None
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
+        _validate_routes(payload)
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "orcarouter/"
@@ -547,24 +528,20 @@ def test_sidecar_route_validator_rejects_opencode_go_duplicate_prefixes() -> Non
     )
 
     with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
+        _validate_routes(payload)
 
     assert exc_info.value.conflict.kind == "prefix"
     assert exc_info.value.conflict.value == "opencode-go/"
     assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OpenCode Go", "OpenRouter"}
 
 
-def test_sidecar_route_validator_rejects_opencode_go_duplicate_full_models() -> None:
+def test_sidecar_route_validator_allows_duplicate_full_models_across_opencode_go_and_ollama() -> None:
     payload = _settings_update(
         opencode_go_models=["glm-5.3"],
         ollama_models=["GLM-5.3"],
     )
 
-    with pytest.raises(SidecarRoutingConflictError) as exc_info:
-        _validate_unique_sidecar_routes(payload)
-
-    assert exc_info.value.conflict.kind == "full_model"
-    assert {exc_info.value.conflict.owner, exc_info.value.conflict.challenger} == {"OpenCode Go", "Ollama"}
+    _validate_routes(payload)
 
 
 def test_sidecar_route_validator_accepts_the_default_payload() -> None:
@@ -574,7 +551,7 @@ def test_sidecar_route_validator_accepts_the_default_payload() -> None:
     colliding on the empty value.
     """
 
-    _validate_unique_sidecar_routes(_settings_update())
+    _validate_routes(_settings_update())
 
 
 def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence() -> None:
@@ -583,7 +560,71 @@ def test_sidecar_route_validator_allows_prefix_and_full_model_text_coincidence()
         ollama_models=["cp-"],
     )
 
-    _validate_unique_sidecar_routes(payload)
+    _validate_routes(payload)
+
+
+def test_sidecar_route_validator_keeps_stars_for_models_the_cards_still_list() -> None:
+    payload = _settings_update(
+        openrouter_models=["z-ai/glm-5.3"],
+        orcarouter_models=["z-ai/glm-5.3"],
+    )
+
+    effective = _validate_routes(payload, stored_stars={"z-ai/glm-5.3": "orcarouter"})
+
+    assert effective == {"z-ai/glm-5.3": "orcarouter"}
+
+
+def test_sidecar_route_validator_drops_a_star_whose_card_no_longer_lists_the_model() -> None:
+    """Deleting the starred entry leaves the model unrouted-by-default.
+
+    The star decays instead of blocking an unrelated save: the operator removed
+    the model from its starred card, so no card is the model's default route
+    until one is starred again.
+    """
+
+    payload = _settings_update(
+        openrouter_models=["z-ai/glm-5.3"],
+        orcarouter_models=[],
+    )
+
+    effective = _validate_routes(payload, stored_stars={"z-ai/glm-5.3": "orcarouter"})
+
+    assert effective == {}
+
+
+def test_sidecar_route_validator_drops_a_star_whose_provider_is_absent_from_the_save() -> None:
+    payload = _settings_update(
+        openrouter_models=["z-ai/glm-5.3"],
+    )
+
+    effective = _validate_routes(payload, stored_stars={"z-ai/glm-5.3": "unknown_provider"})
+
+    assert effective == {}
+
+
+def test_sidecar_route_validator_rekeys_and_normalizes_stars() -> None:
+    payload = _settings_update(
+        openrouter_models=["z-ai/glm-5.3"],
+        orcarouter_models=["GLM-5.3"],
+    )
+
+    effective = _validate_routes(payload, stored_stars={"  Z-AI/GLM-5.3 ": " openrouter ", " glm-5.3 ": "orcarouter"})
+
+    assert effective == {"z-ai/glm-5.3": "openrouter", "glm-5.3": "orcarouter"}
+
+
+def test_sidecar_route_validator_rejects_duplicate_prefixes_even_with_stars() -> None:
+    """Prefix uniqueness is untouched by the star map."""
+
+    payload = _settings_update(
+        openrouter_prefixes=[SidecarPrefix(prefix="cloud/", strip=False)],
+        ollama_prefixes=[SidecarPrefix(prefix="cloud/", strip=False)],
+    )
+
+    with pytest.raises(SidecarRoutingConflictError) as exc_info:
+        _validate_routes(payload, stored_stars={"cloud": "openrouter"})
+
+    assert exc_info.value.conflict.kind == "prefix"
 
 
 def test_settings_update_request_accepts_legacy_string_prefix_arrays() -> None:

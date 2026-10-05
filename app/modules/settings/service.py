@@ -321,7 +321,7 @@ class DashboardSettingsUpdateData:
     # model's default route. ``None`` keeps the stored stars, so a client that
     # predates stars cannot erase them by saving; a submitted map replaces the
     # stored one and is re-filtered against the cards in the same save.
-    sidecar_full_model_stars: dict[str, str] | None
+    sidecar_full_model_stars: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
