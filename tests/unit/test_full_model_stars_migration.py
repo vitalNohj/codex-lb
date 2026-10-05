@@ -221,3 +221,104 @@ def test_upgrade_adds_the_missing_column(tmp_path: Path) -> None:
     _run_upgrade(db_path)
 
     assert _stars(db_path, "row-1") == {}
+
+
+def test_upgrade_seeds_rows_across_page_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The upgrade pages by id, so seeding must survive batch boundaries.
+
+    With a batch size smaller than the row count, every row - including ones
+    in later pages - still gets its stars.
+    """
+
+    monkeypatch.setattr(migration, "_BATCH_SIZE", 2)
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        for index in range(5):
+            _seed_row(
+                raw_con,
+                f"row-{index}",
+                openrouter_sidecar_full_models_json=json.dumps([f"model-{index}"]),
+            )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    for index in range(5):
+        assert _stars(db_path, f"row-{index}") == {f"model-{index}": "openrouter"}
+
+
+def test_upgrade_processes_rows_in_batches_smaller_than_the_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No single SELECT or UPDATE ever spans the whole table.
+
+    With a batch size of 1, the paging loop still reaches every row, proving
+    the id-ordered pagination drives the seed rather than one bulk pass.
+    """
+
+    monkeypatch.setattr(migration, "_BATCH_SIZE", 1)
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        for index in range(3):
+            _seed_row(
+                raw_con,
+                f"row-{index}",
+                ollama_sidecar_full_models_json=json.dumps([f"llama{index}"]),
+            )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    for index in range(3):
+        assert _stars(db_path, f"row-{index}") == {f"llama{index}": "ollama"}
+
+
+def test_downgrade_preserves_the_stars_column(tmp_path: Path) -> None:
+    """Downgrade keeps the column: it holds routing preferences the
+    application keeps writing, and no provenance separates those from seeded
+    values, so dropping it would destroy live state.
+    """
+
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(
+            raw_con,
+            "row-1",
+            openrouter_sidecar_full_models_json=json.dumps(["z-ai/glm-5.3"]),
+            **{_STARS: json.dumps({"z-ai/glm-5.3": "openrouter"})},
+        )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as connection:
+            context = MigrationContext.configure(connection)
+            with Operations.context(context):
+                migration.downgrade()
+    finally:
+        engine.dispose()
+
+    con = sa.create_engine(f"sqlite:///{db_path}")
+    try:
+        with con.connect() as connection:
+            columns = {str(column["name"]) for column in sa.inspect(connection).get_columns(_TABLE)}
+            assert _STARS in columns
+            raw = connection.execute(
+                sa.text(f"SELECT {_STARS} FROM {_TABLE} WHERE id = :id"),
+                {"id": "row-1"},
+            ).scalar_one()
+        assert json.loads(raw) == {"z-ai/glm-5.3": "openrouter"}
+    finally:
+        con.dispose()

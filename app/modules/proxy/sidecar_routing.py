@@ -6,11 +6,26 @@ model and what wire model to forward. Resolution proceeds in two passes:
 1. **Full model name pass** -- case-insensitive exact match against any enabled
    integration's full-model list. The wire model is forwarded unchanged (never
    stripped). The same full model may be configured on several integrations;
-   the entry whose integration is *starred* for that model wins, and without a
-   star the provider order below is the deterministic tiebreak.
+   the entry whose integration is *starred* for that model wins. When several
+   enabled integrations list the model and none is starred, the bare id is
+   ambiguous and stays unrouted by default -- the star names the default
+   route, so without it bare requests refuse to guess and alias pools must
+   target the model explicitly via ``<provider>::<model>``. A model listed by
+   only one enabled integration keeps routing even starless, preserving
+   pre-stars behavior for starless rows.
 2. **Prefix pass** -- longest matching configured prefix across all enabled
-    integrations. The matched prefix is removed from the wire model only when the
+   integrations. The matched prefix is removed from the wire model only when the
    prefix's strip flag is set.
+
+An explicit ``<provider>::<model>`` pool target is parsed only after the
+full-model pass, so a configured full-model id that itself contains ``::``
+(e.g. ``openrouter::some-id``) still resolves as an exact bare model. A target
+whose provider names a known integration resolves only within that
+integration; when that integration is not enabled the target is unroutable
+rather than falling through to bare-model matching, where another integration
+could claim it. A ``::`` id whose leading segment names no known provider is
+resolved like any bare model, so real model ids containing ``::`` keep
+working.
 
 Cross-integration prefix uniqueness (enforced on save) guarantees at most one
 owner per prefix value; the provider order below is a deterministic tiebreak
@@ -39,10 +54,9 @@ SIDECAR_PROVIDER_ORDER: tuple[str, ...] = (
 # Separator of an explicit pool target ``<provider>::<model>``. A pool target
 # written this way names the integration it must be served by, which is how a
 # full model configured on more than one integration is picked for a pool:
-# ``orcarouter::z-ai/glm-5.3`` vs ``openrouter::z-ai/glm-5.3``. A target
-# without a ``<provider>::`` prefix that matches no configured integration is
-# resolved like any bare model, so real model ids containing ``::`` keep
-# working.
+# ``orcarouter::z-ai/glm-5.3`` vs ``openrouter::z-ai/glm-5.3``. A target whose
+# provider part names no known integration is resolved like any bare model, so
+# real model ids containing ``::`` keep working.
 EXPLICIT_TARGET_SEPARATOR = "::"
 
 
@@ -207,32 +221,46 @@ def resolve_sidecar_route(
         return None
     lowered = normalized.lower()
 
+    # Pass 1: full model name exact match (case-insensitive), forwarded as-is.
+    # The starred integration wins. When several enabled integrations list the
+    # model and none is starred, the bare id is ambiguous: it stays unrouted
+    # by default instead of silently redirecting by provider rank, and alias
+    # pools must target it via ``<provider>::<model>``. A model listed by only
+    # one enabled integration keeps routing even starless - the compatibility
+    # policy for starless rows (legacy data or a decayed star), matching
+    # pre-stars behavior where a full model routed to its only card.
+    # This pass also runs before explicit-target parsing, so a configured
+    # full-model id that itself contains ``::`` still resolves exactly here.
+    starred_match: SidecarRoutingEntry | None = None
+    full_matches: list[SidecarRoutingEntry] = []
+    for entry in entries:
+        if any(lowered == full.strip().lower() for full in entry.full_models):
+            full_matches.append(entry)
+            if starred_match is None and lowered in entry.starred_full_models:
+                starred_match = entry
+    if full_matches:
+        if starred_match is not None:
+            return SidecarRoutingDecision(provider=starred_match.provider, wire_model=normalized)
+        if len(full_matches) > 1:
+            return None
+        return SidecarRoutingDecision(provider=full_matches[0].provider, wire_model=normalized)
+
     # An explicit ``<provider>::<model>`` target resolves only within the
-    # integration it names. When no configured entry carries that provider the
-    # target falls through to bare-model resolution, which cannot route it and
-    # reports it unroutable like any unknown model.
+    # integration it names. When that integration is enabled the target can
+    # never be served by another one; when the provider is a known integration
+    # that is not enabled the target stays unroutable instead of falling
+    # through to bare-model matching, where a prefix or duplicate id on another
+    # integration could claim the literal target. Only a ``::`` id whose
+    # leading segment names no known provider falls through, so real model ids
+    # containing ``::`` keep working.
     explicit = parse_explicit_pool_target(normalized)
     if explicit is not None:
         provider_key, model_part = explicit
         for entry in entries:
             if entry.provider.lower() == provider_key:
                 return _resolve_full_or_prefix(model_part, entry)
-
-    # Pass 1: full model name exact match (case-insensitive), forwarded as-is.
-    # A starred integration wins over the provider-order tiebreak, which is
-    # what decides when the same full model is configured unstarred on two
-    # integrations.
-    full_match: SidecarRoutingEntry | None = None
-    starred_match: SidecarRoutingEntry | None = None
-    for entry in entries:
-        if any(lowered == full.strip().lower() for full in entry.full_models):
-            if starred_match is None and lowered in entry.starred_full_models:
-                starred_match = entry
-            if full_match is None or _provider_rank(entry.provider) < _provider_rank(full_match.provider):
-                full_match = entry
-    if full_match is not None:
-        chosen = starred_match if starred_match is not None else full_match
-        return SidecarRoutingDecision(provider=chosen.provider, wire_model=normalized)
+        if provider_key in SIDECAR_PROVIDER_ORDER:
+            return None
 
     # Pass 2: longest matching prefix across all integrations.
     best_entry: SidecarRoutingEntry | None = None

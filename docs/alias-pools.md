@@ -71,6 +71,11 @@ the star to it.
 - Removing the starred entry leaves the model **unrouted-by-default** — no
   card owns the bare id until you star one again. Cards that keep the model
   listed still serve explicit pool targets.
+- The same unrouted-by-default rule applies whenever several **enabled** cards
+  list a model and none is starred: a bare request refuses to guess instead
+  of silently falling back to a provider-rank winner. A model listed by only
+  one enabled card keeps routing even starless, so legacy or decayed-star
+  rows keep today's behavior.
 - Prefixes remain unique across cards; only full models may repeat.
 
 Pool targets that name a starred model explicitly pick their integration:
@@ -78,6 +83,14 @@ Pool targets that name a starred model explicitly pick their integration:
 `openrouter::z-ai/glm-5.3` within OpenRouter, regardless of the star. A bare
 target resolves to the starred card. The target picker lists both options,
 labeled with their integration.
+
+An explicit target resolves **only** within the integration it names. If that
+integration is known but not enabled, the target stays unroutable — it never
+falls back to bare-model matching, where another card's prefix or duplicate id
+could claim it. A model ID that itself contains `::` whose leading segment is
+not an integration name (e.g. `a::b/c`) is still resolved like any bare
+model, and a configured full-model ID containing `::` always wins its exact
+bare-model match first.
 
 ## What failover covers
 
@@ -173,9 +186,11 @@ downgrade again.
 The same release introduces the full-model star map. Upgrading seeds a star
 for every existing full model on the card that already owned it (before
 stars, at most one card could own each model), so no route changes on
-upgrade. Downgrade drops the star column; routing falls back to assuming
-each full model lives on one card, which holds as long as duplicates were
-only used through pool targets that name the integration explicitly.
+upgrade. The upgrade pages through the settings table in bounded batches, so
+memory stays flat on any table size. Downgrade keeps the star column in
+place — it holds routing preferences the application keeps writing, and no
+provenance separates those from seeded values, so dropping it would destroy
+live state. A later re-upgrade keeps an already-populated map untouched.
 
 ---
 

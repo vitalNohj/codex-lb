@@ -121,9 +121,12 @@ function targetOptions(knownModelIds: string[], integrationTargets: IntegrationM
  *
  * Free text stays commitable (bare ids, prefixes, custom targets); the list
  * overlays per-integration routes first, then bare model ids, filtered by a
- * case-insensitive substring over both labels. Arrow keys move the highlight,
- * Enter picks the highlighted option (or commits the typed text), Escape
- * closes. Handles long catalogs via a max-height scroll region.
+ * case-insensitive substring over both labels. Arrow keys explicitly move the
+ * highlight; Enter commits the typed text unless the user moved the highlight
+ * with the keyboard, so typing a custom id that partially matches a
+ * suggestion and pressing Enter saves what was typed, not the suggestion.
+ * Clicking an option always picks it. Escape closes. Handles long catalogs
+ * via a max-height scroll region.
  */
 function TargetPicker({
   value,
@@ -145,6 +148,9 @@ function TargetPicker({
   const listId = useId();
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  // True only after the user moved the highlight with the keyboard, so Enter
+  // commits typed free text unless a suggestion was deliberately highlighted.
+  const [navigated, setNavigated] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const query = value.trim().toLowerCase();
@@ -161,6 +167,7 @@ function TargetPicker({
 
   const pick = (option: TargetOption) => {
     onChange(option.value);
+    setNavigated(false);
     setOpen(false);
     inputRef.current?.focus();
   };
@@ -179,6 +186,7 @@ function TargetPicker({
           onChange={(event) => {
             onChange(event.target.value);
             setActiveIndex(0);
+            setNavigated(false);
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
@@ -186,12 +194,14 @@ function TargetPicker({
             if (event.key === "ArrowDown" && open && filtered.length > 0) {
               event.preventDefault();
               setActiveIndex((index) => Math.min(index + 1, filtered.length - 1));
+              setNavigated(true);
             } else if (event.key === "ArrowUp" && open && filtered.length > 0) {
               event.preventDefault();
               setActiveIndex((index) => Math.max(index - 1, 0));
+              setNavigated(true);
             } else if (event.key === "Enter") {
               event.preventDefault();
-              if (open && filtered[clampedActive]) {
+              if (open && navigated && filtered[clampedActive]) {
                 pick(filtered[clampedActive]);
               } else {
                 onCommit();

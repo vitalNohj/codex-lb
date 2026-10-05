@@ -32,6 +32,9 @@ depends_on = None
 
 _TABLE_NAME = "dashboard_settings"
 _STARS_COLUMN = "sidecar_full_model_stars_json"
+# Rows fetched and updated per statement during the seed, keeping memory and
+# the parameter batch bounded on any table size.
+_BATCH_SIZE = 250
 
 # Provider key -> the dashboard_settings column holding that integration's
 # full-model JSON list. openai_compat endpoints live in their own JSON column
@@ -149,21 +152,40 @@ def upgrade() -> None:
     select_keys = ["id", _STARS_COLUMN, *{name for _, name in _CARD_FULL_MODEL_COLUMNS if name in columns}]
     if "openai_compat_endpoints_json" in columns:
         select_keys.append("openai_compat_endpoints_json")
-    rows = bind.execute(sa.text(f"SELECT {', '.join(select_keys)} FROM {_TABLE_NAME}")).mappings()
-    updates: list[dict[str, object]] = []
-    for row in rows:
-        seeded = _seeded_stars(dict(row))
-        if seeded is not None:
-            updates.append({"row_id": row["id"], "stars": seeded})
-    if updates:
-        bind.execute(
-            sa.text(f"UPDATE {_TABLE_NAME} SET {_STARS_COLUMN} = :stars WHERE id = :row_id"),
-            updates,
+    # Page through the table by id so memory and the per-statement batch stay
+    # bounded regardless of how many settings rows exist.
+    last_id: object | None = None
+    while True:
+        where_clause = "" if last_id is None else "WHERE id > :last_id"
+        rows = (
+            bind.execute(
+                sa.text(
+                    f"SELECT {', '.join(select_keys)} FROM {_TABLE_NAME} {where_clause} ORDER BY id LIMIT :batch_size"
+                ),
+                {"last_id": last_id, "batch_size": _BATCH_SIZE},
+            )
+            .mappings()
+            .all()
         )
+        if not rows:
+            break
+        updates = []
+        for row in rows:
+            seeded = _seeded_stars(dict(row))
+            if seeded is not None:
+                updates.append({"row_id": row["id"], "stars": seeded})
+        if updates:
+            bind.execute(
+                sa.text(f"UPDATE {_TABLE_NAME} SET {_STARS_COLUMN} = :stars WHERE id = :row_id"),
+                updates,
+            )
+        last_id = rows[-1]["id"]
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    if _STARS_COLUMN in _columns(bind, _TABLE_NAME):
-        with op.batch_alter_table(_TABLE_NAME) as batch_op:
-            batch_op.drop_column(_STARS_COLUMN)
+    # The star map is routing state the application keeps writing after the
+    # upgrade, and no provenance distinguishes application-written stars from
+    # seeded ones - so the downgrade preserves the column rather than
+    # destroying those preferences. A later re-upgrade keeps them too: an
+    # already-populated map is left byte-identical.
+    return None

@@ -271,7 +271,15 @@ def test_starred_integration_wins_when_two_cards_list_the_same_full_model() -> N
     assert decision.wire_model == "Z-AI/GLM-5.3"
 
 
-def test_unstarred_duplicate_falls_back_to_provider_order() -> None:
+def test_unstarred_duplicate_is_unroutable_for_bare_requests() -> None:
+    """The same full model on several cards with no star is ambiguous.
+
+    The star names the integration a bare request goes to; without it the bare
+    id has no default route, so it stays unroutable instead of silently
+    redirecting to the provider-rank winner. Alias pools must target it
+    explicitly via ``<provider>::<model>``.
+    """
+
     entries = (
         _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
         _entry("openrouter", full_models=("z-ai/glm-5.3",)),
@@ -279,11 +287,18 @@ def test_unstarred_duplicate_falls_back_to_provider_order() -> None:
 
     decision = resolve_sidecar_route("z-ai/glm-5.3", entries)
 
-    assert decision is not None
-    assert decision.provider == "openrouter"
+    assert decision is None
 
 
-def test_star_only_applies_when_the_starred_card_lists_the_model() -> None:
+def test_star_that_names_a_card_not_listing_the_model_keeps_sole_card_routing() -> None:
+    """The star map is advisory: a star only applies to the card it names.
+
+    Here the star names orcarouter, which does not list the model, so the
+    openrouter copy stays unstarred - and because it is the only enabled card
+    listing the model, it keeps routing (the starless-sole-card compatibility
+    rule) instead of becoming unroutable.
+    """
+
     entries = (
         _entry("openrouter", full_models=("z-ai/glm-5.3",)),
         _entry("orcarouter", full_models=("other/model",)),
@@ -291,6 +306,23 @@ def test_star_only_applies_when_the_starred_card_lists_the_model() -> None:
     starred = apply_full_model_stars(entries, {"z-ai/glm-5.3": "orcarouter"})
 
     decision = resolve_sidecar_route("z-ai/glm-5.3", starred)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+
+
+def test_starless_duplicate_with_one_card_disabled_keeps_the_remaining_card() -> None:
+    """A sole remaining card routes even starless (compatibility rule)."""
+
+    entries = (
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+    )
+    # Simulate orcarouter being disabled: only openrouter remains enabled.
+    remaining = (_entry("openrouter", full_models=("z-ai/glm-5.3",)),)
+
+    assert resolve_sidecar_route("z-ai/glm-5.3", entries) is None
+    decision = resolve_sidecar_route("z-ai/glm-5.3", remaining)
 
     assert decision is not None
     assert decision.provider == "openrouter"
@@ -340,6 +372,54 @@ def test_explicit_pool_target_for_unknown_provider_is_unroutable() -> None:
     decision = resolve_sidecar_route("orcarouter::z-ai/glm-5.3", entries)
 
     assert decision is None
+
+
+def test_explicit_target_for_known_but_absent_provider_never_falls_through() -> None:
+    """A target naming a known integration without an enabled entry is unroutable.
+
+    Falling through to bare-model matching would let another integration claim
+    the literal target - here the openrouter prefix ``orcarouter::`` would
+    otherwise strip the target and serve it, defeating the explicit route.
+    """
+
+    entries = (_entry("openrouter", prefixes=(SidecarPrefix(prefix="orcarouter::", strip=True),)),)
+
+    decision = resolve_sidecar_route("orcarouter::z-ai/glm-5.3", entries)
+
+    assert decision is None
+
+
+def test_full_model_id_containing_the_separator_resolves_as_a_bare_model() -> None:
+    """A configured full-model id that itself contains ``::`` wins exactly.
+
+    The full-model pass runs before explicit-target parsing, so a bare request
+    for ``openrouter::weird/id`` resolves against the configured id instead of
+    being parsed as the pool target ``openrouter::weird/id`` (whose model part
+    matches nothing on the openrouter card).
+    """
+
+    entries = (
+        _entry("openrouter", full_models=("openrouter::weird/id",)),
+        _entry("orcarouter", prefixes=(SidecarPrefix(prefix="openrouter/", strip=True),)),
+    )
+
+    decision = resolve_sidecar_route("openrouter::weird/id", entries)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+    assert decision.wire_model == "openrouter::weird/id"
+
+
+def test_double_colon_id_with_unknown_provider_prefix_falls_through_to_prefix_pass() -> None:
+    """``::`` ids whose leading segment names no known provider stay bare ids."""
+
+    entries = (_entry("openrouter", prefixes=(SidecarPrefix(prefix="a", strip=False),)),)
+
+    decision = resolve_sidecar_route("a::b/c", entries)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+    assert decision.wire_model == "a::b/c"
 
 
 def test_parse_explicit_pool_target_splits_and_normalizes() -> None:

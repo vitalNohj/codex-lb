@@ -351,4 +351,47 @@ describe("per-integration alias pool targets", () => {
       }),
     );
   });
+
+  it("commits the typed value on Enter even when it partially matches a suggestion", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderEditor(settingsWithSharedModel());
+
+    // "z-ai/glm" is a substring of the shared model's suggestions, so the
+    // first option is highlighted by default; Enter must still commit the
+    // typed text, not silently save the suggestion instead.
+    const input = row().getByRole("combobox", { name: `Add target to ${ALIAS}` });
+    await user.type(input, "z-ai/glm{Enter}");
+
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelAliases: { [ALIAS]: { targets: [ORCA, "z-ai/glm"] } },
+      }),
+    );
+    const items = row().getAllByRole("listitem");
+    expect(items[1]).toHaveTextContent("z-ai/glm");
+  });
+
+  it("picks the keyboard-highlighted option on Enter", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderEditor(settingsWithSharedModel());
+
+    const { input, listbox } = await openPicker();
+    // The first option is highlighted by default; ArrowDown explicitly moves
+    // the highlight to the second option, and Enter commits it.
+    await user.keyboard("{ArrowDown}");
+    const options = within(listbox).getAllByRole("option");
+    const highlighted = options[1];
+    const expectedValue = highlighted.textContent?.endsWith("OrcaRouter")
+      ? `orcarouter::${SHARED}`
+      : `openrouter::${SHARED}`;
+    await user.keyboard("{Enter}");
+
+    expect(input).toHaveValue(expectedValue);
+    await user.click(row().getByRole("button", { name: "Add target" }));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelAliases: { [ALIAS]: { targets: [ORCA, expectedValue] } },
+      }),
+    );
+  });
 });
