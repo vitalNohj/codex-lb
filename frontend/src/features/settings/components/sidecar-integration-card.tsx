@@ -476,7 +476,7 @@ function SidecarIntegrationCardProvider({
   // The provider key, not the frontend id, is what the backend stores stars
   // under (``openai_compat:<id>`` and ``opencode_go`` differ from camelCase).
   const backendKey = backendProviderKey(meta.id);
-  const storedStars = settings.sidecarFullModelStars ?? {};
+  const storedStars = useMemo(() => settings.sidecarFullModelStars ?? {}, [settings.sidecarFullModelStars]);
   const starredFullModels = useMemo(() => {
     const starred = new Set<string>();
     for (const [model, provider] of Object.entries(storedStars)) {
