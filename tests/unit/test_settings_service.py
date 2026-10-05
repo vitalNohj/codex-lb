@@ -26,7 +26,9 @@ from app.modules.settings.service import (
 pytestmark = pytest.mark.unit
 
 
-def _validate_routes(payload: DashboardSettingsUpdateData, stored_stars: dict[str, str] | None = None) -> dict[str, str]:
+def _validate_routes(
+    payload: DashboardSettingsUpdateData, stored_stars: dict[str, str] | None = None
+) -> dict[str, str]:
     """Run the save-time route validation the way the service does.
 
     Returns the effective star map so star-filtering assertions read like the

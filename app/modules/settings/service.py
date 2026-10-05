@@ -1323,9 +1323,7 @@ def _validate_unique_sidecar_routes(
     # Full models may repeat across integrations; the star map, not uniqueness,
     # decides which card a bare full-model request routes to.
     return _validate_full_model_stars(
-        stars=stored_full_model_stars
-        if payload.sidecar_full_model_stars is None
-        else payload.sidecar_full_model_stars,
+        stars=stored_full_model_stars if payload.sidecar_full_model_stars is None else payload.sidecar_full_model_stars,
         payload=payload,
     )
 

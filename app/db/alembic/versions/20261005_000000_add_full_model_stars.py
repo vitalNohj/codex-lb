@@ -143,11 +143,6 @@ def upgrade() -> None:
             batch_op.add_column(sa.Column(_STARS_COLUMN, sa.Text(), nullable=False, server_default=sa.text("'{}'")))
     # Column names that are absent are skipped per row, so a partially migrated
     # schema still seeds what it can instead of failing outright.
-    present = {
-        column: row_key
-        for column in (*_CARD_FULL_MODEL_COLUMNS, ("openai_compat_endpoints_json", "openai_compat_endpoints_json"))
-        for row_key in (column,)
-    }
     select_keys = ["id", _STARS_COLUMN, *{name for _, name in _CARD_FULL_MODEL_COLUMNS if name in columns}]
     if "openai_compat_endpoints_json" in columns:
         select_keys.append("openai_compat_endpoints_json")

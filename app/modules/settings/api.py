@@ -1476,9 +1476,7 @@ async def update_settings(
                     and payload.usage_history_retention_override_days is None
                 ),
                 sidecar_full_model_stars=(
-                    payload.sidecar_full_model_stars
-                    if "sidecar_full_model_stars" in payload.model_fields_set
-                    else None
+                    payload.sidecar_full_model_stars if "sidecar_full_model_stars" in payload.model_fields_set else None
                 ),
             ),
             # CAS anchor: omitted fields above were merged from `current`
