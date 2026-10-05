@@ -308,6 +308,11 @@ class DashboardSettingsUpdateData:
     usage_history_retention_override_days: int | None
     clear_request_log_retention_override: bool
     clear_usage_history_retention_override: bool
+    # Lower-cased full model -> provider key of the integration starred as the
+    # model's default route. ``None`` keeps the stored stars, so a client that
+    # predates stars cannot erase them by saving; a submitted map replaces the
+    # stored one and is re-filtered against the cards in the same save.
+    sidecar_full_model_stars: dict[str, str] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,8 +382,14 @@ class SettingsService:
             )
         if payload.totp_required_on_login and current.totp_secret_encrypted is None:
             raise ValueError("Configure TOTP before enabling login enforcement")
-        _validate_unique_sidecar_routes(payload)
-        _validate_model_alias_pools(payload, stored_aliases=_parse_model_aliases(current.model_aliases_json))
+        effective_full_model_stars = _validate_unique_sidecar_routes(
+            payload,
+            stored_full_model_stars=_parse_full_model_stars(current.sidecar_full_model_stars_json),
+        )
+        _validate_model_alias_pools(
+            replace(payload, sidecar_full_model_stars=effective_full_model_stars),
+            stored_aliases=_parse_model_aliases(current.model_aliases_json),
+        )
         api_key_encrypted = current.claude_sidecar_api_key_encrypted
         if payload.claude_sidecar_clear_api_key:
             api_key_encrypted = None
@@ -571,6 +582,7 @@ class SettingsService:
             usage_history_retention_days=payload.usage_history_retention_override_days,
             clear_request_log_retention=payload.clear_request_log_retention_override,
             clear_usage_history_retention=payload.clear_usage_history_retention_override,
+            sidecar_full_model_stars_json=_dump_full_model_stars(effective_full_model_stars),
         )
         return self._to_data(row)
 
@@ -1272,9 +1284,12 @@ def _dump_sidecar_full_models(models: list[str]) -> str:
     return json.dumps(normalized, separators=(",", ":"))
 
 
-def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> None:
+def _validate_unique_sidecar_routes(
+    payload: DashboardSettingsUpdateData,
+    *,
+    stored_full_model_stars: dict[str, str],
+) -> dict[str, str]:
     omniroute_prefixes = (("OmniRoute", payload.omniroute_sidecar_model_prefixes),) if omniroute_enabled() else ()
-    omniroute_full_models = (("OmniRoute", payload.omniroute_sidecar_full_models),) if omniroute_enabled() else ()
     _validate_unique_sidecar_prefixes(
         (
             ("CLIProxyAPI", payload.claude_sidecar_model_prefixes),
@@ -1286,17 +1301,77 @@ def _validate_unique_sidecar_routes(payload: DashboardSettingsUpdateData) -> Non
             ("Ollama", payload.ollama_sidecar_model_prefixes),
         )
     )
-    _validate_unique_sidecar_full_models(
-        (
-            ("CLIProxyAPI", payload.claude_sidecar_full_models),
-            ("OpenRouter", payload.openrouter_sidecar_full_models),
-            *((endpoint.name, endpoint.full_models) for endpoint in payload.openai_compat_endpoints),
-            ("OrcaRouter", payload.orcarouter_sidecar_full_models),
-            ("OpenCode Go", payload.opencode_go_sidecar_full_models),
-            *omniroute_full_models,
-            ("Ollama", payload.ollama_sidecar_full_models),
-        )
+    # Full models may repeat across integrations; the star map, not uniqueness,
+    # decides which card a bare full-model request routes to.
+    return _validate_full_model_stars(
+        stars=stored_full_model_stars
+        if payload.sidecar_full_model_stars is None
+        else payload.sidecar_full_model_stars,
+        payload=payload,
     )
+
+
+def _validate_full_model_stars(
+    *,
+    stars: Mapping[str, str],
+    payload: DashboardSettingsUpdateData,
+) -> dict[str, str]:
+    """Filter the star map against the cards this save configures.
+
+    A star survives only when the provider it names is a card in the payload
+    that still lists the model. Everything else is dropped rather than
+    rejected: the star is advisory routing state, and dropping implements the
+    documented removal rule - deleting the starred entry leaves the model
+    unrouted-by-default, and a stale star (another client removed the card in
+    between) decays instead of blocking an unrelated save. Uniqueness per
+    model is structural: the map holds one provider per model by construction.
+    """
+
+    cards = _full_models_by_provider(payload)
+    filtered: dict[str, str] = {}
+    for raw_model, raw_provider in stars.items():
+        model = raw_model.strip().lower()
+        provider = raw_provider.strip()
+        if not model or not provider:
+            continue
+        models = cards.get(provider)
+        if models is None or not any(model == candidate.strip().lower() for candidate in models):
+            continue
+        filtered[model] = provider
+    return filtered
+
+
+def _full_models_by_provider(payload: DashboardSettingsUpdateData) -> dict[str, list[str]]:
+    providers: dict[str, list[str]] = {
+        "claude": payload.claude_sidecar_full_models,
+        "openrouter": payload.openrouter_sidecar_full_models,
+        "orcarouter": payload.orcarouter_sidecar_full_models,
+        "opencode_go": payload.opencode_go_sidecar_full_models,
+        "ollama": payload.ollama_sidecar_full_models,
+    }
+    if omniroute_enabled():
+        providers["omniroute"] = payload.omniroute_sidecar_full_models
+    for endpoint in payload.openai_compat_endpoints:
+        if endpoint.id is not None:
+            providers[f"openai_compat:{endpoint.id}"] = endpoint.full_models
+    return providers
+
+
+def _parse_full_model_stars(raw: str | None) -> dict[str, str]:
+    if not raw or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(value) for key, value in parsed.items() if isinstance(key, str) and isinstance(value, str)}
+
+
+def _dump_full_model_stars(stars: Mapping[str, str]) -> str:
+    normalized = {key.strip().lower(): value.strip() for key, value in stars.items() if key.strip() and value.strip()}
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 def _validate_unique_sidecar_prefixes(entries: tuple[tuple[str, list[SidecarPrefix]], ...]) -> None:
@@ -1317,27 +1392,6 @@ def _validate_unique_sidecar_prefixes(entries: tuple[tuple[str, list[SidecarPref
                     )
                 )
             owners[value] = integration
-
-
-def _validate_unique_sidecar_full_models(entries: tuple[tuple[str, list[str]], ...]) -> None:
-    owners: dict[str, tuple[str, str]] = {}
-    for integration, models in entries:
-        for model in models:
-            value = model.strip()
-            if not value:
-                continue
-            key = value.lower()
-            owner = owners.get(key)
-            if owner is not None and owner[0] != integration:
-                raise SidecarRoutingConflictError(
-                    SidecarRoutingConflict(
-                        kind="full_model",
-                        value=value,
-                        owner=owner[0],
-                        challenger=integration,
-                    )
-                )
-            owners[key] = (integration, value)
 
 
 def _parse_omniroute_sidecar_selected_models(raw: str | None) -> list[str]:
