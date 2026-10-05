@@ -1,5 +1,5 @@
 import { createContext, type ReactNode, use, useMemo, useRef, useState } from "react";
-import { ExternalLink, Pause, Play, X, type LucideIcon } from "lucide-react";
+import { ExternalLink, Pause, Play, Star, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
 import { Button } from "@/components/ui/button";
@@ -118,6 +118,8 @@ type SidecarIntegrationActions = {
   setPrefixStrip: (prefix: string, strip: boolean) => void;
   addFullModel: (modelId?: string) => void;
   removeFullModel: (modelId: string) => void;
+  /** Toggle this integration as the model's starred default route. */
+  toggleFullModelStar: (modelId: string) => void;
   setDefaultReasoningEffort: (effort: SidecarReasoningEffort | null) => void;
   persistField: () => void;
   addApiKey: () => void;
@@ -141,6 +143,8 @@ type SidecarIntegrationContextValue = {
     conflictMessage: string | null;
     savePending: boolean;
   };
+  /** Lower-cased full models this card is the starred default route for. */
+  starredFullModels: ReadonlySet<string>;
 };
 
 type SidecarIntegrationCardProviderProps = {
@@ -202,6 +206,18 @@ function ownerNameFor(id: SidecarIntegrationId, settings: DashboardSettings): st
     return settings.openaiCompatEndpoints?.find((endpoint) => endpoint.id === endpointId)?.name ?? "OpenAI-compat";
   }
   return INTEGRATION_NAMES[id];
+}
+
+/**
+ * The backend provider key this card's integration is stored under in the
+ * full-model star map (``openai_compat:<id>`` and ``opencode_go`` differ from
+ * the camelCase frontend ids).
+ */
+function backendProviderKey(id: SidecarIntegrationId): string {
+  if (isOpenAICompatIntegrationId(id)) {
+    return `openai_compat:${id.slice("openaiCompat:".length)}`;
+  }
+  return id === "opencodeGo" ? "opencode_go" : id;
 }
 
 const SidecarIntegrationContext = createContext<SidecarIntegrationContextValue | null>(null);
@@ -329,10 +345,10 @@ function findDuplicateOwner(params: {
     if (integration.id === params.currentId) {
       continue;
     }
-    const matches =
-      params.kind === "prefix"
-        ? integration.prefixes.some((entry) => entry.prefix.toLowerCase() === key)
-        : integration.fullModels.some((model) => model.toLowerCase() === key);
+    // Only prefixes stay unique across cards: the same full model may be
+    // configured on several integrations, with the star map deciding which
+    // card is the model's default route.
+    const matches = params.kind === "prefix" && integration.prefixes.some((entry) => entry.prefix.toLowerCase() === key);
     if (matches) {
       return integration.name;
     }
@@ -341,7 +357,7 @@ function findDuplicateOwner(params: {
 }
 
 function currentConflict(settings: DashboardSettings, current: IntegrationValues): {
-  kind: "prefix" | "full_model";
+  kind: "prefix";
   value: string;
   owner: string;
 } | null {
@@ -356,19 +372,6 @@ function currentConflict(settings: DashboardSettings, current: IntegrationValues
     });
     if (owner) {
       return { kind: "prefix", value: prefix.prefix, owner };
-    }
-  }
-  for (const model of current.fullModels) {
-    const owner = findDuplicateOwner({
-      settings,
-      currentId: current.id,
-      kind: "full_model",
-      value: model,
-      currentPrefixes: current.prefixes,
-      currentFullModels: current.fullModels,
-    });
-    if (owner) {
-      return { kind: "full_model", value: model, owner };
     }
   }
   return null;
