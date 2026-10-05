@@ -94,16 +94,21 @@ describe("model alias pools", () => {
     expect(row().getByRole("button", { name: `Move ${OPENROUTER} up` })).toBeEnabled();
   });
 
-  it("offers known model ids as completions for a new target", () => {
+  it("offers known model ids as completions for a new target", async () => {
+    const user = userEvent.setup();
     renderWithProviders(
       <AliasSettings settings={settingsWithPool([ORCA])} busy={false} onSave={vi.fn().mockResolvedValue(undefined)} />,
     );
 
     const input = row().getByRole("combobox", { name: `Add target to ${ALIAS}` });
-    return waitFor(() => {
-      const list = document.getElementById(input.getAttribute("list") ?? "");
-      expect(list?.querySelectorAll("option").length ?? 0).toBeGreaterThan(0);
+    await user.click(input);
+    const listbox = await waitFor(() => {
+      const id = input.getAttribute("aria-controls") ?? "";
+      const list = document.getElementById(id);
+      expect(list).not.toBeNull();
+      return list as HTMLElement;
     });
+    expect(listbox.querySelectorAll("[role='option']").length).toBeGreaterThan(0);
   });
 
   it("rejects a duplicate target before saving", async () => {
@@ -268,5 +273,82 @@ describe("model alias pools", () => {
 
     await screen.findByRole("button", { name: "Add alias" });
     expect(requests).toBe(0);
+  });
+});
+
+describe("per-integration alias pool targets", () => {
+  const SHARED = "z-ai/glm-5.3";
+
+  function settingsWithSharedModel(): DashboardSettings {
+    return createDashboardSettings({
+      modelAliases: { [ALIAS]: { targets: [ORCA] } },
+      customAliasCatalog: {},
+      openrouterSidecarFullModels: [SHARED],
+      orcarouterSidecarFullModels: [SHARED],
+    });
+  }
+
+  async function openPicker() {
+    const input = row().getByRole("combobox", { name: `Add target to ${ALIAS}` });
+    await userEvent.setup().click(input);
+    await waitFor(() => {
+      expect(input).toHaveAttribute("aria-expanded", "true");
+    });
+    const listId = input.getAttribute("aria-controls") ?? "";
+    return {
+      input,
+      listbox: document.getElementById(listId) as HTMLElement,
+    };
+  }
+
+  it("offers the same model once per integration and picks the named card", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderEditor(settingsWithSharedModel());
+
+    const { input, listbox } = await openPicker();
+    const options = within(listbox).getAllByRole("option");
+    const labels = options.map((option) => option.textContent);
+    // Both cards carrying glm-5.3 are offered, each labeled with its integration.
+    expect(labels).toContain(`${SHARED}OpenRouter`);
+    expect(labels).toContain(`${SHARED}OrcaRouter`);
+
+    await user.click(within(listbox).getByRole("option", { name: `${SHARED}OpenRouter` }));
+
+    expect(input).toHaveValue(`openrouter::${SHARED}`);
+    await user.click(row().getByRole("button", { name: "Add target" }));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelAliases: { [ALIAS]: { targets: [ORCA, `openrouter::${SHARED}`] } },
+      }),
+    );
+  });
+
+  it("filters options by integration name and model text", async () => {
+    const user = userEvent.setup();
+    renderEditor(settingsWithSharedModel());
+
+    const { input } = await openPicker();
+    await user.type(input, "orca");
+
+    // Re-query: the picker re-renders the list while typing.
+    const listbox = document.getElementById(input.getAttribute("aria-controls") ?? "") as HTMLElement;
+    const options = within(listbox).getAllByRole("option");
+    // The OpenRouter-labeled card is filtered out; OrcaRouter's route survives.
+    expect(options.some((option) => option.textContent?.includes("OpenRouter"))).toBe(false);
+    expect(options.some((option) => option.textContent?.includes("OrcaRouter"))).toBe(true);
+  });
+
+  it("keeps free-text commit working when the typed value matches no option", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderEditor(settingsWithPool([ORCA]));
+
+    const input = row().getByRole("combobox", { name: `Add target to ${ALIAS}` });
+    await user.type(input, "some/custom-target{Enter}");
+
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelAliases: { [ALIAS]: { targets: [ORCA, "some/custom-target"] } },
+      }),
+    );
   });
 });

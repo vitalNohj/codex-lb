@@ -516,7 +516,8 @@ export const SettingsUpdateRequestSchema = z
     requestLogRetentionOverrideDays: z.number().int().min(0).max(3650).nullable().optional(),
     usageHistoryRetentionOverrideDays: z.number().int().min(0).max(3650).nullable().optional(),
     // Tri-state star map: absent = keep the stored stars, present = replace.
-    sidecarFullModelStars: z.record(z.string(), z.string()).max(256).optional(),
+    // The 256-entry cap is the server's; zod records have no size check.
+    sidecarFullModelStars: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((settings, ctx) => {
     if (
