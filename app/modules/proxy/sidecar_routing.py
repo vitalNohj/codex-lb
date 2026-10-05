@@ -132,6 +132,29 @@ def _resolve_full_or_prefix(model: str, entry: SidecarRoutingEntry) -> SidecarRo
     return SidecarRoutingDecision(provider=entry.provider, wire_model=wire_model)
 
 
+def parse_full_model_stars(raw: str | None) -> dict[str, str]:
+    """Parse stored ``{full model: provider key}`` star-map JSON.
+
+    Keys are lower-cased full models, values the provider key of the starred
+    integration. Malformed or blank entries are dropped, never rejected: the
+    star map is advisory routing state.
+    """
+
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(key).strip().lower(): str(value).strip()
+        for key, value in parsed.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+
 def apply_full_model_stars(
     entries: tuple[SidecarRoutingEntry, ...],
     stars: Mapping[str, str],

@@ -299,6 +299,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         ollama_sidecar_last_checked_at=settings.ollama_sidecar_last_checked_at,
         ollama_sidecar_last_model_count=settings.ollama_sidecar_last_model_count,
         ollama_sidecar_default_reasoning_effort=settings.ollama_sidecar_default_reasoning_effort,
+        sidecar_full_model_stars=settings.sidecar_full_model_stars,
         guest_access_enabled=settings.guest_access_enabled,
         guest_password_configured=settings.guest_password_configured,
         limit_warmup_staggered_idle_enabled=settings.limit_warmup_staggered_idle_enabled,
@@ -1473,6 +1474,11 @@ async def update_settings(
                 clear_usage_history_retention_override=(
                     "usage_history_retention_override_days" in payload.model_fields_set
                     and payload.usage_history_retention_override_days is None
+                ),
+                sidecar_full_model_stars=(
+                    payload.sidecar_full_model_stars
+                    if "sidecar_full_model_stars" in payload.model_fields_set
+                    else None
                 ),
             ),
             # CAS anchor: omitted fields above were merged from `current`

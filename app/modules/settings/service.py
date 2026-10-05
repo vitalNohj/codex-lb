@@ -16,7 +16,13 @@ from app.modules.openai_compat.endpoints import (
     merge_openai_compat_endpoints,
     parse_openai_compat_endpoints,
 )
-from app.modules.proxy.sidecar_routing import SidecarRoutingDecision, SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.proxy.sidecar_routing import (
+    SidecarRoutingDecision,
+    SidecarRoutingEntry,
+    apply_full_model_stars,
+    parse_full_model_stars,
+    resolve_sidecar_route,
+)
 from app.modules.settings.model_alias_pools import (
     MAX_ALIAS_LENGTH,
     MAX_POOL_TARGETS,
@@ -176,6 +182,9 @@ class DashboardSettingsData:
     ollama_sidecar_last_checked_at: datetime | None
     ollama_sidecar_last_model_count: int | None
     ollama_sidecar_default_reasoning_effort: str | None
+    # Lower-cased full model -> provider key of the integration starred as the
+    # model's default route.
+    sidecar_full_model_stars: dict[str, str]
     guest_access_enabled: bool
     guest_password_configured: bool
     limit_warmup_staggered_idle_enabled: bool
@@ -384,7 +393,7 @@ class SettingsService:
             raise ValueError("Configure TOTP before enabling login enforcement")
         effective_full_model_stars = _validate_unique_sidecar_routes(
             payload,
-            stored_full_model_stars=_parse_full_model_stars(current.sidecar_full_model_stars_json),
+            stored_full_model_stars=parse_full_model_stars(current.sidecar_full_model_stars_json),
         )
         _validate_model_alias_pools(
             replace(payload, sidecar_full_model_stars=effective_full_model_stars),
@@ -750,6 +759,7 @@ class SettingsService:
             ollama_sidecar_last_checked_at=row.ollama_sidecar_last_checked_at,
             ollama_sidecar_last_model_count=row.ollama_sidecar_last_model_count,
             ollama_sidecar_default_reasoning_effort=row.ollama_sidecar_default_reasoning_effort,
+            sidecar_full_model_stars=parse_full_model_stars(row.sidecar_full_model_stars_json),
             guest_access_enabled=row.guest_access_enabled,
             guest_password_configured=row.guest_password_hash is not None,
             limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
@@ -1012,7 +1022,16 @@ def _routing_entries_from_payload(payload: DashboardSettingsUpdateData) -> _Payl
         payload.ollama_sidecar_model_prefixes,
         payload.ollama_sidecar_full_models,
     )
-    return _PayloadRouting(enabled=tuple(enabled_entries), configured=tuple(configured_entries))
+    enabled = tuple(enabled_entries)
+    configured = tuple(configured_entries)
+    # The star map decides which card a bare full model routes to when several
+    # list it; stars arrive on the payload already filtered to these cards (the
+    # caller replaces it with the effective map before validating pools).
+    stars = payload.sidecar_full_model_stars
+    if stars:
+        enabled = apply_full_model_stars(enabled, stars)
+        configured = apply_full_model_stars(configured, stars)
+    return _PayloadRouting(enabled=enabled, configured=configured)
 
 
 def _validate_model_alias_pools(
@@ -1355,18 +1374,6 @@ def _full_models_by_provider(payload: DashboardSettingsUpdateData) -> dict[str, 
         if endpoint.id is not None:
             providers[f"openai_compat:{endpoint.id}"] = endpoint.full_models
     return providers
-
-
-def _parse_full_model_stars(raw: str | None) -> dict[str, str]:
-    if not raw or not raw.strip():
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {str(key): str(value) for key, value in parsed.items() if isinstance(key, str) and isinstance(value, str)}
 
 
 def _dump_full_model_stars(stars: Mapping[str, str]) -> str:

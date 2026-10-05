@@ -502,6 +502,10 @@ class DashboardSettingsResponse(DashboardModel):
     ollama_sidecar_last_checked_at: datetime | None = None
     ollama_sidecar_last_model_count: int | None = Field(default=None, ge=0)
     ollama_sidecar_default_reasoning_effort: str | None = None
+    # Lower-cased full model -> provider key of the integration starred as the
+    # model's default route. Same full model may sit on several cards; the star
+    # decides which one owns the bare model id.
+    sidecar_full_model_stars: dict[str, str] = Field(default_factory=dict)
     guest_access_enabled: bool
     guest_password_configured: bool
     version: int = Field(ge=1)
@@ -639,6 +643,10 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     # value = store the override.
     request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
+    # Tri-state star map: absent = keep the stored stars (an older client
+    # saving without star knowledge cannot erase them), present map = replace
+    # the stored one, filtered against the cards this save configures.
+    sidecar_full_model_stars: dict[str, str] | None = Field(default=None, max_length=256)
 
     @field_validator("request_log_retention_override_days")
     @classmethod
@@ -653,6 +661,17 @@ class DashboardSettingsUpdateRequest(DashboardModel):
         if value is not None and value != 0 and value < 45:
             raise ValueError("usage_history_retention_override_days must be 0 (disabled) or >= 45")
         return value
+
+    @field_validator("sidecar_full_model_stars")
+    @classmethod
+    def _normalize_sidecar_full_model_stars(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        return {
+            model.strip().lower(): provider.strip()
+            for model, provider in value.items()
+            if model.strip() and provider.strip()
+        }
 
     @field_validator("model_aliases")
     @classmethod
