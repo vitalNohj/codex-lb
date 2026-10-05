@@ -30,4 +30,4 @@
 
 - [x] 5.1 Payload comparison against the previous build at a frozen clock on a
       production snapshot; benchmarks before and after.
-- [ ] 5.2 Deploy and confirm the dashboard in the browser.
+- [x] 5.2 Deploy and confirm the dashboard in the browser.

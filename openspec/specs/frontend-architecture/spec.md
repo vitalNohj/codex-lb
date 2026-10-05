@@ -2756,8 +2756,8 @@ UTC-converted filter boundaries.
 The fixed dashboard status bar MUST render independent `Service ready` and
 `Usage synced` signals. `Service ready` MUST use the existing `/health/ready`
 response and MUST treat a failed request or a non-`ok` status as not ready.
-`Usage synced` MUST remain derived only from the dashboard overview
-`lastSyncAt` value and MUST be fresh only while that timestamp is less than 60
+`Usage synced` MUST remain derived only from the dashboard `lastSyncAt` value,
+read from `GET /api/dashboard/sync-status` rather than the full overview, and MUST be fresh only while that timestamp is less than 60
 seconds old. The service-readiness signal MUST NOT use upstream account or
 provider health. The dashboard layout MUST reserve at least the status bar's
 rendered height so wrapped status rows do not cover page content.
@@ -2789,6 +2789,11 @@ rendered height so wrapped status rows do not cover page content.
 - **THEN** the dashboard updates its reserved bottom space to the rendered
   status-bar height
 - **AND** the fixed status bar does not cover page content
+
+#### Scenario: The status bar does not load the overview
+- **WHEN** the status bar renders on any page
+- **THEN** it reads `lastSyncAt` from `GET /api/dashboard/sync-status`
+- **AND** it does not request `GET /api/dashboard/overview`
 
 ### Requirement: Dashboard conversation listing
 
@@ -3362,4 +3367,14 @@ The x-axis tick format of the Account Trend and API Trend charts SHALL be `MM-DD
 
 - **WHEN** the API Trend chart renders with timestamp data
 - **THEN** the x-axis tick labels SHALL be in `MM-DD` format (e.g., `"08-09"`)
+
+### Requirement: Overview timeframe switches keep the current overview visible
+
+When the operator changes the dashboard overview timeframe, the dashboard MUST keep rendering the previously loaded overview, with the refresh indicator active, until the new timeframe's overview arrives, instead of replacing the page with the loading skeleton. The loading skeleton MUST appear only while no overview has loaded yet.
+
+#### Scenario: Switching from 7d to 30d
+- **GIVEN** the 7d overview is displayed
+- **WHEN** the operator selects 30d
+- **THEN** the 7d overview stays on screen with the refresh indicator spinning
+- **AND** it is replaced by the 30d overview once that response arrives
 
