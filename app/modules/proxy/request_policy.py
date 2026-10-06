@@ -33,7 +33,11 @@ from app.db.models import ModelSource
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.model_sources.catalog import source_model_reasoning_levels
 from app.modules.proxy.sidecar_model_profiles import canonical_sidecar_model
-from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
+from app.modules.proxy.sidecar_routing import (
+    SidecarRoutingEntry,
+    resolve_sidecar_pool_target,
+    resolve_sidecar_route,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +146,29 @@ def validate_model_access(
     model: str | None,
     *,
     routing_entries: tuple[SidecarRoutingEntry, ...] = (),
+    pool_target: bool = False,
 ) -> None:
+    """Authorize ``model`` against the key's allowlist.
+
+    ``pool_target`` marks an alias-pool target being authorized as itself: its
+    identity is then resolved with :func:`resolve_sidecar_pool_target`, the
+    same rule the pool loop dispatches by, so a grant can never approve a
+    request that is then sent to another integration. Exact-string membership
+    in the allowlist is trusted only for bare requests: for a pool target even
+    a literal match goes through identity resolution, because the same string
+    can resolve to different integrations under the two rules (a card may list
+    ``<provider>::<model>`` as a literal full model).
+    """
+
     if api_key is None:
         return
     if not api_key.allowed_models:
         return
-    if model is None or model in api_key.allowed_models:
+    if model is None:
         return
-    requested = _access_identity(model, routing_entries)
+    if not pool_target and model in api_key.allowed_models:
+        return
+    requested = _access_identity(model, routing_entries, pool_target=pool_target)
     if any(
         _access_identities_match(requested, _access_identity(allowed_model, routing_entries))
         for allowed_model in api_key.allowed_models
@@ -188,12 +207,21 @@ def _configured_full_model(model: str, provider: str, routing_entries: tuple[Sid
     return None
 
 
-def _access_identity(model: str | None, routing_entries: tuple[SidecarRoutingEntry, ...] = ()) -> _AccessIdentity:
+def _access_identity(
+    model: str | None,
+    routing_entries: tuple[SidecarRoutingEntry, ...] = (),
+    *,
+    pool_target: bool = False,
+) -> _AccessIdentity:
     if model is None:
         return _AccessIdentity(None, None)
     original = model.strip()
     provider: str | None = None
-    route = resolve_sidecar_route(model, routing_entries)
+    route = (
+        resolve_sidecar_pool_target(model, routing_entries)
+        if pool_target
+        else resolve_sidecar_route(model, routing_entries)
+    )
     if route is not None:
         model = route.wire_model
         provider = route.provider

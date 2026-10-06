@@ -1,5 +1,5 @@
 import { createContext, type ReactNode, use, useMemo, useRef, useState } from "react";
-import { ExternalLink, Pause, Play, X, type LucideIcon } from "lucide-react";
+import { ExternalLink, Pause, Play, Star, X, type LucideIcon } from "lucide-react";
 
 import { AlertMessage } from "@/components/alert-message";
 import { Button } from "@/components/ui/button";
@@ -118,6 +118,8 @@ type SidecarIntegrationActions = {
   setPrefixStrip: (prefix: string, strip: boolean) => void;
   addFullModel: (modelId?: string) => void;
   removeFullModel: (modelId: string) => void;
+  /** Toggle this integration as the model's starred default route. */
+  toggleFullModelStar: (modelId: string) => void;
   setDefaultReasoningEffort: (effort: SidecarReasoningEffort | null) => void;
   persistField: () => void;
   addApiKey: () => void;
@@ -141,6 +143,8 @@ type SidecarIntegrationContextValue = {
     conflictMessage: string | null;
     savePending: boolean;
   };
+  /** Lower-cased full models this card is the starred default route for. */
+  starredFullModels: ReadonlySet<string>;
 };
 
 type SidecarIntegrationCardProviderProps = {
@@ -202,6 +206,18 @@ function ownerNameFor(id: SidecarIntegrationId, settings: DashboardSettings): st
     return settings.openaiCompatEndpoints?.find((endpoint) => endpoint.id === endpointId)?.name ?? "OpenAI-compat";
   }
   return INTEGRATION_NAMES[id];
+}
+
+/**
+ * The backend provider key this card's integration is stored under in the
+ * full-model star map (``openai_compat:<id>`` and ``opencode_go`` differ from
+ * the camelCase frontend ids).
+ */
+function backendProviderKey(id: SidecarIntegrationId): string {
+  if (isOpenAICompatIntegrationId(id)) {
+    return `openai_compat:${id.slice("openaiCompat:".length)}`;
+  }
+  return id === "opencodeGo" ? "opencode_go" : id;
 }
 
 const SidecarIntegrationContext = createContext<SidecarIntegrationContextValue | null>(null);
@@ -310,7 +326,6 @@ function integrationValues(settings: DashboardSettings, current?: IntegrationVal
 function findDuplicateOwner(params: {
   settings: DashboardSettings;
   currentId: SidecarIntegrationId;
-  kind: "prefix" | "full_model";
   value: string;
   currentPrefixes?: SidecarModelPrefix[];
   currentFullModels?: string[];
@@ -329,11 +344,10 @@ function findDuplicateOwner(params: {
     if (integration.id === params.currentId) {
       continue;
     }
-    const matches =
-      params.kind === "prefix"
-        ? integration.prefixes.some((entry) => entry.prefix.toLowerCase() === key)
-        : integration.fullModels.some((model) => model.toLowerCase() === key);
-    if (matches) {
+    // Only prefixes stay unique across cards: the same full model may be
+    // configured on several integrations, with the star map deciding which
+    // card is the model's default route.
+    if (integration.prefixes.some((entry) => entry.prefix.toLowerCase() === key)) {
       return integration.name;
     }
   }
@@ -341,7 +355,7 @@ function findDuplicateOwner(params: {
 }
 
 function currentConflict(settings: DashboardSettings, current: IntegrationValues): {
-  kind: "prefix" | "full_model";
+  kind: "prefix";
   value: string;
   owner: string;
 } | null {
@@ -349,26 +363,12 @@ function currentConflict(settings: DashboardSettings, current: IntegrationValues
     const owner = findDuplicateOwner({
       settings,
       currentId: current.id,
-      kind: "prefix",
       value: prefix.prefix,
       currentPrefixes: current.prefixes,
       currentFullModels: current.fullModels,
     });
     if (owner) {
       return { kind: "prefix", value: prefix.prefix, owner };
-    }
-  }
-  for (const model of current.fullModels) {
-    const owner = findDuplicateOwner({
-      settings,
-      currentId: current.id,
-      kind: "full_model",
-      value: model,
-      currentPrefixes: current.prefixes,
-      currentFullModels: current.fullModels,
-    });
-    if (owner) {
-      return { kind: "full_model", value: model, owner };
     }
   }
   return null;
@@ -471,6 +471,22 @@ function SidecarIntegrationCardProvider({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savePending, setSavePending] = useState(false);
 
+  // The star map lives in dashboard settings; this card reads it through the
+  // settings prop and writes it by sending the whole map with its next save.
+  // The provider key, not the frontend id, is what the backend stores stars
+  // under (``openai_compat:<id>`` and ``opencode_go`` differ from camelCase).
+  const backendKey = backendProviderKey(meta.id);
+  const storedStars = useMemo(() => settings.sidecarFullModelStars ?? {}, [settings.sidecarFullModelStars]);
+  const starredFullModels = useMemo(() => {
+    const starred = new Set<string>();
+    for (const [model, provider] of Object.entries(storedStars)) {
+      if (provider === backendKey) {
+        starred.add(model);
+      }
+    }
+    return starred;
+  }, [backendKey, storedStars]);
+
   const parsedConnectTimeout = Number(connectTimeout);
   const parsedRequestTimeout = Number(requestTimeout);
   const parsedCacheTtl = Number(cacheTtl);
@@ -502,6 +518,8 @@ function SidecarIntegrationCardProvider({
     fullModels?: string[];
     apiKey?: string;
     managementKey?: string;
+    /** Replacement star map to submit with this save (absent = keep stored). */
+    sidecarFullModelStars?: Record<string, string>;
   };
 
   const persistConfig = async (overrides: PersistOverrides = {}) => {
@@ -526,6 +544,12 @@ function SidecarIntegrationCardProvider({
           cacheTtl: parsedCacheTtl,
           pollInterval: initial.pollInterval === undefined ? null : parsedPollInterval,
         }),
+        // A present map replaces the stored one server-side (filtered against
+        // the cards this save configures), so full-model and star edits ride
+        // the same save. Unrelated saves omit the field and keep stored stars.
+        ...(overrides.sidecarFullModelStars !== undefined
+          ? { sidecarFullModelStars: overrides.sidecarFullModelStars }
+          : {}),
         ...(localCollectionsVersion.current === undefined
           ? {}
           : { expectedVersion: localCollectionsVersion.current }),
@@ -565,7 +589,6 @@ function SidecarIntegrationCardProvider({
     const owner = findDuplicateOwner({
       settings,
       currentId: meta.id,
-      kind: "prefix",
       value: prefix,
       currentPrefixes: prefixes,
       currentFullModels: fullModels,
@@ -598,31 +621,60 @@ function SidecarIntegrationCardProvider({
     if (!fullModel) {
       return;
     }
-    const owner = findDuplicateOwner({
-      settings,
-      currentId: meta.id,
-      kind: "full_model",
-      value: fullModel,
-      currentPrefixes: prefixes,
-      currentFullModels: fullModels,
-    });
-    if (owner) {
-      setInlineError(conflictMessage("full_model", fullModel, owner));
-      return;
+    const key = fullModel.toLowerCase();
+    // Duplicates across cards are allowed; the star map routes them. A model
+    // no other card lists is starred here on arrival, so a first add keeps
+    // today's "new model routes to the card that got it" behavior; a model
+    // another card already carries lands unstarred and only joins pools.
+    const nextFullModels = normalizeFullModels([...fullModels, fullModel]);
+    const otherCardHasIt = integrationValues(settings, {
+      id: meta.id,
+      name: meta.conflictName,
+      prefixes,
+      fullModels: nextFullModels,
+    }).some(
+      (integration) =>
+        integration.id !== meta.id && integration.fullModels.some((model) => model.toLowerCase() === key),
+    );
+    const nextStars = { ...storedStars };
+    if (!otherCardHasIt && nextStars[key] === undefined) {
+      nextStars[key] = backendKey;
     }
     setInlineError(null);
-    const nextFullModels = normalizeFullModels([...fullModels, fullModel]);
     setFullModels(nextFullModels);
     if (!modelId) {
       setManualFullModel("");
     }
-    void persistConfig({ fullModels: nextFullModels });
+    void persistConfig({ fullModels: nextFullModels, sidecarFullModelStars: nextStars });
   };
 
   const removeFullModel = (modelId: string) => {
     const nextFullModels = fullModels.filter((candidate) => candidate !== modelId);
+    // Removing the starred entry leaves the model unrouted-by-default (the
+    // documented rule); a star another card holds survives untouched.
+    const key = modelId.trim().toLowerCase();
+    const nextStars = { ...storedStars };
+    if (nextStars[key] === backendKey) {
+      delete nextStars[key];
+    }
     setFullModels(nextFullModels);
-    void persistConfig({ fullModels: nextFullModels });
+    void persistConfig({ fullModels: nextFullModels, sidecarFullModelStars: nextStars });
+  };
+
+  const toggleFullModelStar = (modelId: string) => {
+    const key = modelId.trim().toLowerCase();
+    if (!key) {
+      return;
+    }
+    const nextStars = { ...storedStars };
+    if (nextStars[key] === backendKey) {
+      delete nextStars[key];
+    } else {
+      // Exactly one star per model: starring here moves the star off any
+      // other card, making this integration the model's default route.
+      nextStars[key] = backendKey;
+    }
+    void persistConfig({ sidecarFullModelStars: nextStars });
   };
 
   const persistField = () => {
@@ -684,6 +736,7 @@ function SidecarIntegrationCardProvider({
       setPrefixStrip,
       addFullModel,
       removeFullModel,
+      toggleFullModelStar,
       setDefaultReasoningEffort,
       persistField,
       addApiKey,
@@ -696,6 +749,7 @@ function SidecarIntegrationCardProvider({
       conflictMessage: conflictText,
       savePending,
     },
+    starredFullModels,
   };
 
   return <SidecarIntegrationContext value={value}>{children}</SidecarIntegrationContext>;
@@ -981,13 +1035,15 @@ function Prefixes() {
 }
 
 function FullModels() {
-  const { busy, meta, state, actions, form } = useSidecarIntegration();
+  const { busy, meta, state, actions, form, starredFullModels } = useSidecarIntegration();
   return (
     <div className="space-y-3" aria-label={`Configured full models for ${meta.title}`}>
       <div>
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Full models</p>
         <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
-          Exact model IDs route to this integration first and are forwarded unchanged.
+          Exact model IDs route to this integration first and are forwarded unchanged. The same model may sit on
+          several integrations; the starred one is its default route, and unstarred entries stay available to alias
+          pools.
         </p>
       </div>
       <div className="flex gap-2">
@@ -1019,19 +1075,45 @@ function FullModels() {
       {form.conflictMessage ? <p className="text-sm font-medium text-destructive">{form.conflictMessage}</p> : null}
       {state.fullModels.length > 0 ? (
         <div className="flex flex-wrap gap-2">
-          {state.fullModels.map((modelId) => (
-            <button
-              key={modelId}
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-2.5 py-1 font-mono text-xs text-foreground transition-colors hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => actions.removeFullModel(modelId)}
-              aria-label={`Remove ${modelId}`}
-              disabled={busy}
-            >
-              {modelId}
-              <X className="size-3" aria-hidden="true" />
-            </button>
-          ))}
+          {state.fullModels.map((modelId) => {
+            const starred = starredFullModels.has(modelId.trim().toLowerCase());
+            return (
+              <div
+                key={modelId}
+                className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-primary/8 py-1 pl-2 pr-1 font-mono text-xs text-foreground"
+              >
+                <button
+                  type="button"
+                  className="rounded-full p-0.5 transition-colors hover:text-amber-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+                  disabled={busy}
+                  aria-pressed={starred}
+                  aria-label={
+                    starred
+                      ? `Unstar ${modelId}: it stops being this integration's default route`
+                      : `Star ${modelId}: make this integration its default route`
+                  }
+                  title={starred ? "Default route (click to unstar)" : "Not the default route (click to star)"}
+                  onClick={() => actions.toggleFullModelStar(modelId)}
+                >
+                  <Star
+                    className={`size-3.5 shrink-0 ${starred ? "fill-amber-400 text-amber-500" : "text-muted-foreground"}`}
+                    aria-hidden="true"
+                  />
+                </button>
+                {/* Text, not a button: the model id is selectable and copyable. */}
+                <span className="select-all py-0.5">{modelId}</span>
+                <button
+                  type="button"
+                  className="rounded-full p-0.5 transition-colors hover:text-destructive focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-destructive"
+                  disabled={busy}
+                  aria-label={`Remove ${modelId}`}
+                  onClick={() => actions.removeFullModel(modelId)}
+                >
+                  <X className="size-3.5 shrink-0" aria-hidden="true" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <p className="text-[13px] text-muted-foreground">No full models configured.</p>

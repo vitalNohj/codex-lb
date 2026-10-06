@@ -383,7 +383,14 @@ from app.modules.proxy.schemas import (
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
-from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, prefix_variants, resolve_sidecar_route
+from app.modules.proxy.sidecar_routing import (
+    SidecarRoutingEntry,
+    apply_full_model_stars,
+    parse_full_model_stars,
+    prefix_variants,
+    resolve_sidecar_pool_target,
+    resolve_sidecar_route,
+)
 from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response, has_usable_sidecar_api_key
 from app.modules.proxy.types import (
     CreditStatusDetailsData,
@@ -1198,7 +1205,25 @@ async def _enabled_sidecar_routing_entries() -> tuple[SidecarRoutingEntry, ...]:
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
+    stars = await _full_model_stars()
+    if stars:
+        return apply_full_model_stars(tuple(routing_entries), stars)
     return tuple(routing_entries)
+
+
+async def _full_model_stars() -> dict[str, str]:
+    """Stored star map: full model -> provider key of its default route.
+
+    Empty on any settings-cache failure, which falls back to the plain
+    provider-order tiebreak instead of refusing to route.
+    """
+
+    try:
+        dashboard_settings = await get_settings_cache().get()
+    except Exception:
+        logger.warning("failed to load dashboard settings for full-model stars", exc_info=True)
+        return {}
+    return parse_full_model_stars(dashboard_settings.sidecar_full_model_stars_json)
 
 
 async def _opencode_go_responses_dispatch_or_none(
@@ -4192,7 +4217,8 @@ async def _build_models_response_body(
         routing_entries.append(omniroute_routing_entry(omniroute_config))
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
-    routing_entry_tuple = tuple(routing_entries)
+    stars = await _full_model_stars()
+    routing_entry_tuple = apply_full_model_stars(tuple(routing_entries), stars) if stars else tuple(routing_entries)
 
     if sidecar_config is not None and sidecar_config.enabled:
         discovered_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
@@ -5065,6 +5091,10 @@ async def v1_chat_completions(
     if ollama_config is not None and ollama_config.enabled:
         routing_entries.append(ollama_routing_entry(ollama_config))
 
+    stars = await _full_model_stars()
+    if stars:
+        routing_entries = list(apply_full_model_stars(tuple(routing_entries), stars))
+
     validate_model_access(api_key, requested_model, routing_entries=tuple(routing_entries))
     if alias_pool is not None and alias_pool.is_pool:
         # An alias with two or more targets. Per-target access comes first, so
@@ -5087,7 +5117,12 @@ async def v1_chat_completions(
         )
 
         async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
-            target_decision = resolve_sidecar_route(target, tuple(routing_entries))
+            # A stored pool target names its integration when written
+            # ``<provider>::<model>``; resolving it with the pool-target rule
+            # keeps dispatch consistent with the per-target authorization
+            # above even when another card lists the same string as a literal
+            # full model.
+            target_decision = resolve_sidecar_pool_target(target, tuple(routing_entries))
             if target_decision is None or not is_pool_capable_provider(target_decision.provider):
                 raise PoolTargetUnavailable(
                     target,
@@ -5177,9 +5212,26 @@ async def v1_chat_completions(
                 ),
                 headers={**rate_limit_headers, "Retry-After": "60", POOL_ATTEMPTS_HEADER: "0"},
             )
-    decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
+    # A single-target alias rewrite puts the stored pool target into
+    # ``payload.model``, so that string resolves by the pool-target rule: a
+    # literal full-model id on another card cannot shadow the integration the
+    # alias's target names. Bare (unaliased) requests keep the exact-match
+    # rule. An enforced model replaces the alias entirely, so it must take the
+    # exact-match rule too: ``alias_pool`` is cleared in that case, and
+    # ``resolved_alias`` alone cannot tell the two apart.
+    alias_resolved = alias_pool is not None
+    decision = (
+        resolve_sidecar_pool_target(effective_model, tuple(routing_entries))
+        if alias_resolved
+        else resolve_sidecar_route(effective_model, tuple(routing_entries))
+    )
     if decision is not None:
-        validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
+        validate_model_access(
+            api_key,
+            effective_model,
+            routing_entries=tuple(routing_entries),
+            pool_target=alias_resolved,
+        )
         reservation = await _enforce_request_limits(
             api_key,
             request_model=metering_model,

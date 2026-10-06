@@ -13,15 +13,21 @@ configuration.
 ## Setting up a pool
 
 In **Settings -> Model aliasing**, each alias row lists its targets. Add a
-target with the input under the list, change the order with the arrows, and
-remove with the `x` (the last target cannot be removed;
+target with the picker under the list — type to search across every
+integration's models and pick one, or commit free text — change the order
+with the arrows, and remove with the `x` (the last target cannot be removed;
 delete the alias instead). Every change is saved immediately.
 
 ![Alias pool editor with one target cooling](screenshots/routing-alias-pools-after.png)
 
 Targets are the same names you would send as `model` directly: a sidecar's
 prefixed id such as `orcarouter/z-ai/glm-5.3` or `or/z-ai/glm-5.3`, or a
-full-model match configured on that integration. The order is the priority
+full-model match configured on that integration. The picker also offers
+**explicit integration targets** written `integration::model` (for example
+`openrouter::z-ai/glm-5.3`), each labeled with the integration that serves
+them; use those when one model is configured on more than one integration
+(see [One model on several integrations](#one-model-on-several-integrations)).
+The order is the priority
 order; the first target is the pool's default and is what non-pooled paths
 (the Responses API, `GET /v1/models` metadata) use.
 
@@ -46,6 +52,55 @@ models, so clients are not offered a model that can only fail.
 
 A rejected save is shown on the offending row and your edited list stays in
 place so you can fix it rather than re-enter it.
+
+## One model on several integrations
+
+The same full model ID may be configured on more than one external
+integration card — say `z-ai/glm-5.3` on both OrcaRouter and OpenRouter. A
+**star** on the model's chip names the integration that is the model's
+**default route**: a bare request for `z-ai/glm-5.3` goes to the starred
+card. Exactly one card can be starred per model; starring a second card moves
+the star to it.
+
+- Models that existed before this feature are starred on the card that
+  already owned them, so upgrading changes no routing.
+- Adding a model no other card carries stars the card it was added to.
+- Adding a model another card already carries lands unstarred on the new
+  card: it is not that card's default route, but it becomes available to
+  alias pools.
+- Removing the starred entry leaves the model **unrouted-by-default** — no
+  card owns the bare id until you star one again. Cards that keep the model
+  listed still serve explicit pool targets.
+- The same unrouted-by-default rule applies whenever several **enabled** cards
+  list a model and none is starred: a bare request refuses to guess instead
+  of silently falling back to a provider-rank winner. A model listed by only
+  one enabled card keeps routing even starless, so legacy or decayed-star
+  rows keep today's behavior.
+- Prefixes remain unique across cards; only full models may repeat.
+
+Pool targets that name a starred model explicitly pick their integration:
+`orcarouter::z-ai/glm-5.3` always resolves within OrcaRouter and
+`openrouter::z-ai/glm-5.3` within OpenRouter, regardless of the star. A bare
+target resolves to the starred card. The target picker lists both options,
+labeled with their integration.
+
+An explicit target resolves **only** within the integration it names. If that
+integration is known but not enabled, the target stays unroutable — it never
+falls back to bare-model matching, where another card's prefix or duplicate id
+could claim it. A model ID that itself contains `::` whose leading segment is
+not an integration name (e.g. `a::b/c`) is still resolved like any bare
+model, and a configured full-model ID containing `::` always wins its exact
+bare-model match first.
+
+Pool targets and bare requests therefore differ when a card literally lists a
+`<provider>::<model>` string as a full model: a **bare request** for that
+string resolves to the card that lists it exactly, while a stored **pool
+target** with the same string resolves within the integration it names.
+
+The same holds when an API key enforces a model: enforcement replaces whatever
+the client asked for, alias included, so an enforced `<provider>::<model>`
+resolves by the bare-request rule — the card that lists it exactly — and never
+rides the alias's pool-target rule.
 
 ## What failover covers
 
@@ -137,6 +192,15 @@ Versions before alias pools store one target per alias. Downgrading the
 database past this release keeps every one-target alias, but refuses, changing nothing, while any alias still has fallback targets: the
 error names them. Reduce each to the one target it should keep, then run the
 downgrade again.
+
+The same release introduces the full-model star map. Upgrading seeds a star
+for every existing full model on the card that already owned it (before
+stars, at most one card could own each model), so no route changes on
+upgrade. The upgrade pages through the settings table in bounded batches, so
+memory stays flat on any table size. Downgrade keeps the star column in
+place — it holds routing preferences the application keeps writing, and no
+provenance separates those from seeded values, so dropping it would destroy
+live state. A later re-upgrade keeps an already-populated map untouched.
 
 ---
 

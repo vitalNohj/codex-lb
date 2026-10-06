@@ -121,7 +121,7 @@ def authorize_pool_targets(
     last_rejection: ProxyModelNotAllowed | None = None
     for target in targets:
         try:
-            validate_model_access(api_key, target, routing_entries=routing_entries)
+            validate_model_access(api_key, target, routing_entries=routing_entries, pool_target=True)
         except ProxyModelNotAllowed as exc:
             last_rejection = exc
             logger.info(

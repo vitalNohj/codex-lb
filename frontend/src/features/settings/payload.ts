@@ -47,6 +47,9 @@ export function buildSettingsUpdateRequest(
     additionalQuotaRoutingPolicies: settings.additionalQuotaRoutingPolicies ?? {},
     modelAliases: settings.modelAliases ?? {},
     customAliasCatalog: settings.customAliasCatalog ?? {},
+    // Sent on every save so the stored star map survives re-filtering; the
+    // server drops stars whose card or model the save no longer configures.
+    sidecarFullModelStars: settings.sidecarFullModelStars ?? {},
     importWithoutOverwrite: settings.importWithoutOverwrite,
     totpRequiredOnLogin: settings.totpRequiredOnLogin,
     apiKeyAuthEnabled: settings.apiKeyAuthEnabled,

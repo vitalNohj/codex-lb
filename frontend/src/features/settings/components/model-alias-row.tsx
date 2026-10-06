@@ -1,9 +1,10 @@
-import { useId, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -17,6 +18,7 @@ import {
   contextLengthValueFromSelection,
   type CustomAliasContextLengthSelection,
 } from "@/features/settings/components/model-alias-catalog-options";
+import type { IntegrationModelTarget } from "@/features/settings/integration-targets";
 import type { AliasPoolTargetHealth, CustomAliasCatalogEntry } from "@/features/settings/schemas";
 import { cn } from "@/lib/utils";
 import { formatClockTime } from "@/utils/formatters";
@@ -36,6 +38,8 @@ type ModelAliasRowProps = {
   health?: Record<string, AliasPoolTargetHealth>;
   /** Known model ids offered as completions when adding a target. */
   knownModelIds: string[];
+  /** Per-integration routes offered as explicit ``provider::model`` targets. */
+  integrationTargets: IntegrationModelTarget[];
   catalogEntry?: CustomAliasCatalogEntry;
   /** Server rejection for the last save of this row, shown inline. */
   error?: ModelAliasRowError;
@@ -88,11 +92,174 @@ function TargetHealthBadge({ health }: { health: AliasPoolTargetHealth | undefin
   );
 }
 
+type TargetOption = {
+  /** Value inserted into the input when picked. */
+  value: string;
+  /** Primary label: the model id. */
+  label: string;
+  /** Secondary label: the integration that serves it, when named. */
+  detail: string | null;
+};
+
+function targetOptions(knownModelIds: string[], integrationTargets: IntegrationModelTarget[]): TargetOption[] {
+  const integration: TargetOption[] = integrationTargets.map((entry) => ({
+    value: entry.target,
+    label: entry.model,
+    detail: entry.integrationName,
+  }));
+  const explicitModels = new Set(
+    integrationTargets.map((entry) => entry.model.trim().toLowerCase()),
+  );
+  const direct: TargetOption[] = knownModelIds
+    .filter((id) => !explicitModels.has(id.trim().toLowerCase()))
+    .map((id) => ({ value: id, label: id, detail: null }));
+  return [...integration, ...direct];
+}
+
+/**
+ * Searchable target picker for alias pools.
+ *
+ * Free text stays commitable (bare ids, prefixes, custom targets); the list
+ * overlays per-integration routes first, then bare model ids, filtered by a
+ * case-insensitive substring over both labels. Arrow keys explicitly move the
+ * highlight; Enter commits the typed text unless the user moved the highlight
+ * with the keyboard, so typing a custom id that partially matches a
+ * suggestion and pressing Enter saves what was typed, not the suggestion.
+ * Clicking an option always picks it. Escape closes. Handles long catalogs
+ * via a max-height scroll region.
+ */
+function TargetPicker({
+  value,
+  options,
+  disabled,
+  ariaLabel,
+  placeholder,
+  onChange,
+  onCommit,
+}: {
+  value: string;
+  options: TargetOption[];
+  disabled: boolean;
+  ariaLabel: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+  onCommit: () => void;
+}) {
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  // True only after the user moved the highlight with the keyboard, so Enter
+  // commits typed free text unless a suggestion was deliberately highlighted.
+  const [navigated, setNavigated] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const query = value.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!query) {
+      return options;
+    }
+    return options.filter(
+      (option) =>
+        option.label.toLowerCase().includes(query) || (option.detail?.toLowerCase().includes(query) ?? false),
+    );
+  }, [options, query]);
+  const clampedActive = Math.min(activeIndex, Math.max(filtered.length - 1, 0));
+
+  const pick = (option: TargetOption) => {
+    onChange(option.value);
+    setNavigated(false);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <Input
+          ref={inputRef}
+          value={value}
+          disabled={disabled}
+          role="combobox"
+          aria-expanded={open && filtered.length > 0}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          onChange={(event) => {
+            onChange(event.target.value);
+            setActiveIndex(0);
+            setNavigated(false);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" && open && filtered.length > 0) {
+              event.preventDefault();
+              setActiveIndex((index) => Math.min(index + 1, filtered.length - 1));
+              setNavigated(true);
+            } else if (event.key === "ArrowUp" && open && filtered.length > 0) {
+              event.preventDefault();
+              setActiveIndex((index) => Math.max(index - 1, 0));
+              setNavigated(true);
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              if (open && navigated && filtered[clampedActive]) {
+                pick(filtered[clampedActive]);
+              } else {
+                onCommit();
+              }
+            } else if (event.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+          className="h-8 flex-1 text-xs"
+          aria-label={ariaLabel}
+          placeholder={placeholder}
+        />
+      </PopoverAnchor>
+      {open && filtered.length > 0 ? (
+        <PopoverContent
+          id={listId}
+          role="listbox"
+          aria-label={ariaLabel}
+          align="start"
+          sideOffset={4}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          className="max-h-64 w-[var(--radix-popover-trigger-width)] min-w-56 overflow-y-auto p-1"
+        >
+          {filtered.map((option, index) => (
+            <button
+              key={`${option.value}`}
+              type="button"
+              role="option"
+              aria-selected={index === clampedActive}
+              className={cn(
+                "flex w-full items-baseline gap-2 rounded-sm px-2 py-1.5 text-left text-xs",
+                index === clampedActive ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+              )}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseDown={(event) => {
+                // Prevent the input's blur from closing the popover first.
+                event.preventDefault();
+                pick(option);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate font-mono">{option.label}</span>
+              {option.detail ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{option.detail}</span>
+              ) : null}
+            </button>
+          ))}
+        </PopoverContent>
+      ) : null}
+    </Popover>
+  );
+}
+
 export function ModelAliasRow({
   alias,
   targets,
   health,
   knownModelIds,
+  integrationTargets,
   catalogEntry,
   error,
   busy,
@@ -103,9 +270,9 @@ export function ModelAliasRow({
   const { t } = useTranslation();
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [newTarget, setNewTarget] = useState("");
-  const datalistId = useId();
   const advancedId = useId();
   const selection = contextLengthSelectionFromValue(catalogEntry?.contextLength);
+  const options = useMemo(() => targetOptions(knownModelIds, integrationTargets), [integrationTargets, knownModelIds]);
 
   const trimmedNewTarget = newTarget.trim();
   const newTargetDuplicate = targets.some(
@@ -194,26 +361,15 @@ export function ModelAliasRow({
             })}
           </ol>
           <div className="flex items-center gap-1">
-            <Input
+            <TargetPicker
               value={newTarget}
+              options={options}
               disabled={busy || poolFull}
-              list={datalistId}
-              onChange={(event) => setNewTarget(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  addTarget();
-                }
-              }}
-              className="h-8 flex-1 text-xs"
-              aria-label={t("settings.routing.modelAliases.addTargetFor", { alias })}
+              ariaLabel={t("settings.routing.modelAliases.addTargetFor", { alias })}
               placeholder={t("settings.routing.modelAliases.addTargetPlaceholder")}
+              onChange={setNewTarget}
+              onCommit={addTarget}
             />
-            <datalist id={datalistId}>
-              {knownModelIds.map((id) => (
-                <option key={id} value={id} />
-              ))}
-            </datalist>
             <Button
               type="button"
               size="sm"

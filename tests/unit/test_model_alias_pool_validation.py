@@ -240,3 +240,41 @@ def test_update_request_rejects_malformed_pool_value() -> None:
         DashboardSettingsUpdateRequest.model_validate({"modelAliases": {"pooled": {"targets": "or/a"}}})
     with pytest.raises(ValueError):
         DashboardSettingsUpdateRequest.model_validate({"modelAliases": {"pooled": 7}})
+
+
+def test_accepts_pool_chaining_one_model_across_two_cards_via_explicit_targets() -> None:
+    """The alias-pool use case for duplicate full models across cards.
+
+    ``glm-5.3`` sits on both OpenRouter and OrcaRouter; the pool names each
+    card explicitly so both entries are reachable, which bare targets cannot
+    express (they all resolve to the starred card).
+    """
+
+    payload = replace(
+        _settings_update(
+            openrouter_models=["z-ai/glm-5.3"],
+            orcarouter_models=["z-ai/glm-5.3"],
+        ),
+        openrouter_sidecar_enabled=True,
+        orcarouter_sidecar_enabled=True,
+        model_aliases={"pooled/glm": _pool("openrouter::z-ai/glm-5.3", "orcarouter::z-ai/glm-5.3")},  # type: ignore[arg-type]
+    )
+
+    _validate_model_alias_pools(payload)
+
+
+def test_rejects_explicit_target_when_the_named_provider_cannot_route_it() -> None:
+    payload = replace(
+        _settings_update(
+            openrouter_models=["z-ai/glm-5.3"],
+            orcarouter_models=["z-ai/glm-5.3"],
+        ),
+        openrouter_sidecar_enabled=True,
+        orcarouter_sidecar_enabled=True,
+        model_aliases={"pooled/glm": _pool("orcarouter::z-ai/glm-5.3", "ollama::z-ai/glm-5.3")},  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ModelAliasPoolError) as exc_info:
+        _validate_model_alias_pools(payload)
+
+    assert exc_info.value.target == "ollama::z-ai/glm-5.3"

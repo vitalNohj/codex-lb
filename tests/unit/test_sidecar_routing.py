@@ -6,6 +6,9 @@ from app.core.clients.claude_sidecar import SidecarPrefix
 from app.modules.proxy.sidecar_routing import (
     SIDECAR_PROVIDER_ORDER,
     SidecarRoutingEntry,
+    apply_full_model_stars,
+    parse_explicit_pool_target,
+    resolve_sidecar_pool_target,
     resolve_sidecar_route,
 )
 
@@ -252,3 +255,228 @@ def test_orcarouter_auto_is_forwarded_unstripped() -> None:
     assert decision is not None
     assert decision.provider == "orcarouter"
     assert decision.wire_model == "orcarouter/auto"
+
+
+def test_starred_integration_wins_when_two_cards_list_the_same_full_model() -> None:
+    entries = (
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+    )
+    starred = apply_full_model_stars(entries, {"z-ai/glm-5.3": "orcarouter"})
+
+    decision = resolve_sidecar_route("Z-AI/GLM-5.3", starred)
+
+    assert decision is not None
+    assert decision.provider == "orcarouter"
+    # Full models are forwarded as-is, preserving the requested case.
+    assert decision.wire_model == "Z-AI/GLM-5.3"
+
+
+def test_unstarred_duplicate_is_unroutable_for_bare_requests() -> None:
+    """The same full model on several cards with no star is ambiguous.
+
+    The star names the integration a bare request goes to; without it the bare
+    id has no default route, so it stays unroutable instead of silently
+    redirecting to the provider-rank winner. Alias pools must target it
+    explicitly via ``<provider>::<model>``.
+    """
+
+    entries = (
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+    )
+
+    decision = resolve_sidecar_route("z-ai/glm-5.3", entries)
+
+    assert decision is None
+
+
+def test_star_that_names_a_card_not_listing_the_model_keeps_sole_card_routing() -> None:
+    """The star map is advisory: a star only applies to the card it names.
+
+    Here the star names orcarouter, which does not list the model, so the
+    openrouter copy stays unstarred - and because it is the only enabled card
+    listing the model, it keeps routing (the starless-sole-card compatibility
+    rule) instead of becoming unroutable.
+    """
+
+    entries = (
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+        _entry("orcarouter", full_models=("other/model",)),
+    )
+    starred = apply_full_model_stars(entries, {"z-ai/glm-5.3": "orcarouter"})
+
+    decision = resolve_sidecar_route("z-ai/glm-5.3", starred)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+
+
+def test_starless_duplicate_with_one_card_disabled_keeps_the_remaining_card() -> None:
+    """A sole remaining card routes even starless (compatibility rule)."""
+
+    entries = (
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+    )
+    # Simulate orcarouter being disabled: only openrouter remains enabled.
+    remaining = (_entry("openrouter", full_models=("z-ai/glm-5.3",)),)
+
+    assert resolve_sidecar_route("z-ai/glm-5.3", entries) is None
+    decision = resolve_sidecar_route("z-ai/glm-5.3", remaining)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+
+
+def test_apply_full_model_stars_leaves_unnamed_entries_untouched() -> None:
+    entries = (
+        _entry("openrouter", full_models=("a",)),
+        _entry("orcarouter", full_models=("b",)),
+    )
+
+    starred = apply_full_model_stars(entries, {"a": "openrouter"})
+
+    assert starred[0].starred_full_models == frozenset({"a"})
+    assert starred[1].starred_full_models == frozenset()
+
+
+def test_explicit_pool_target_resolves_within_the_named_provider() -> None:
+    entries = (
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+    )
+
+    decision = resolve_sidecar_route("orcarouter::z-ai/glm-5.3", entries)
+
+    assert decision is not None
+    assert decision.provider == "orcarouter"
+    assert decision.wire_model == "z-ai/glm-5.3"
+
+
+def test_explicit_pool_target_with_prefix_routes_and_strips_within_the_provider() -> None:
+    entries = (
+        _entry("openrouter", prefixes=(SidecarPrefix(prefix="or/", strip=True),)),
+        _entry("ollama", prefixes=(SidecarPrefix(prefix="or/", strip=True),)),
+    )
+
+    decision = resolve_sidecar_route("ollama::or/llama3", entries)
+
+    assert decision is not None
+    assert decision.provider == "ollama"
+    assert decision.wire_model == "llama3"
+
+
+def test_explicit_pool_target_for_unknown_provider_is_unroutable() -> None:
+    entries = (_entry("openrouter", full_models=("z-ai/glm-5.3",)),)
+
+    decision = resolve_sidecar_route("orcarouter::z-ai/glm-5.3", entries)
+
+    assert decision is None
+
+
+def test_explicit_target_for_known_but_absent_provider_never_falls_through() -> None:
+    """A target naming a known integration without an enabled entry is unroutable.
+
+    Falling through to bare-model matching would let another integration claim
+    the literal target - here the openrouter prefix ``orcarouter::`` would
+    otherwise strip the target and serve it, defeating the explicit route.
+    """
+
+    entries = (_entry("openrouter", prefixes=(SidecarPrefix(prefix="orcarouter::", strip=True),)),)
+
+    decision = resolve_sidecar_route("orcarouter::z-ai/glm-5.3", entries)
+
+    assert decision is None
+
+
+def test_full_model_id_containing_the_separator_resolves_as_a_bare_model() -> None:
+    """A configured full-model id that itself contains ``::`` wins exactly.
+
+    The full-model pass runs before explicit-target parsing, so a bare request
+    for ``openrouter::weird/id`` resolves against the configured id instead of
+    being parsed as the pool target ``openrouter::weird/id`` (whose model part
+    matches nothing on the openrouter card).
+    """
+
+    entries = (
+        _entry("openrouter", full_models=("openrouter::weird/id",)),
+        _entry("orcarouter", prefixes=(SidecarPrefix(prefix="openrouter/", strip=True),)),
+    )
+
+    decision = resolve_sidecar_route("openrouter::weird/id", entries)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+    assert decision.wire_model == "openrouter::weird/id"
+
+
+def test_double_colon_id_with_unknown_provider_prefix_falls_through_to_prefix_pass() -> None:
+    """``::`` ids whose leading segment names no known provider stay bare ids."""
+
+    entries = (_entry("openrouter", prefixes=(SidecarPrefix(prefix="a", strip=False),)),)
+
+    decision = resolve_sidecar_route("a::b/c", entries)
+
+    assert decision is not None
+    assert decision.provider == "openrouter"
+    assert decision.wire_model == "a::b/c"
+
+
+def test_pool_target_is_not_shadowed_by_another_cards_literal_full_model() -> None:
+    """A stored pool target resolves within the integration it names.
+
+    OrcaRouter lists the literal full model ``openrouter::foo``; the bare
+    exact-match rule would route the string there, but the pool target names
+    OpenRouter, so ``resolve_sidecar_pool_target`` applies the explicit rule
+    first. A bare request for the same string keeps the exact-match rule.
+    """
+
+    entries = (
+        _entry("openrouter", full_models=("foo",)),
+        _entry("orcarouter", full_models=("openrouter::foo",)),
+    )
+
+    target = resolve_sidecar_pool_target("openrouter::foo", entries)
+
+    assert target is not None
+    assert target.provider == "openrouter"
+    assert target.wire_model == "foo"
+
+    bare = resolve_sidecar_route("openrouter::foo", entries)
+
+    assert bare is not None
+    assert bare.provider == "orcarouter"
+    assert bare.wire_model == "openrouter::foo"
+
+
+def test_pool_target_without_separator_resolves_like_a_bare_model() -> None:
+    """A bare pool target (legacy configs) still resolves to the starred card."""
+
+    entries = (
+        _entry("openrouter", full_models=("z-ai/glm-5.3",)),
+        _entry("orcarouter", full_models=("z-ai/glm-5.3",)),
+    )
+    starred = apply_full_model_stars(entries, {"z-ai/glm-5.3": "orcarouter"})
+
+    decision = resolve_sidecar_pool_target("z-ai/glm-5.3", starred)
+
+    assert decision is not None
+    assert decision.provider == "orcarouter"
+
+
+def test_pool_target_for_known_but_absent_provider_is_unroutable() -> None:
+    entries = (_entry("openrouter", prefixes=(SidecarPrefix(prefix="orcarouter::", strip=True),)),)
+
+    decision = resolve_sidecar_pool_target("orcarouter::z-ai/glm-5.3", entries)
+
+    assert decision is None
+
+
+def test_parse_explicit_pool_target_splits_and_normalizes() -> None:
+    assert parse_explicit_pool_target("OrcaRouter::Z-AI/GLM-5.3") == ("orcarouter", "Z-AI/GLM-5.3")
+    assert parse_explicit_pool_target(" openrouter :: model ") == ("openrouter", "model")
+    assert parse_explicit_pool_target("z-ai/glm-5.3") is None
+    assert parse_explicit_pool_target("::model") is None
+    assert parse_explicit_pool_target("provider::") is None
+    assert parse_explicit_pool_target("a::b::c") == ("a", "b::c")

@@ -1268,6 +1268,16 @@ class DashboardSettings(Base):
         server_default=text("'{}'"),
         nullable=False,
     )
+    # Maps a lower-cased full model to the provider key of the integration that
+    # is starred as the model's default route. At most one entry per model:
+    # when the same full model is configured on several integrations, the star
+    # names the card a bare full-model request routes to.
+    sidecar_full_model_stars_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+        nullable=False,
+    )
     custom_alias_catalog_json: Mapped[str] = mapped_column(
         Text,
         default="{}",

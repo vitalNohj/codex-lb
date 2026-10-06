@@ -1,0 +1,324 @@
+"""Behavioral tests for the full-model stars migration.
+
+The migration adds ``sidecar_full_model_stars_json`` and seeds it so every
+full model configured before the upgrade becomes starred on the card that
+already owned it: pre-stars, the save-time uniqueness check guaranteed at most
+one card per full model, so this changes no routing. A row that already
+carries a star map (replayed legacy remap) must keep it byte-identical.
+
+These drive the real ``upgrade()`` against a synthetic SQLite database, the
+same pattern as ``test_single_active_discovery_run_migration.py``.
+"""
+
+from __future__ import annotations
+
+import json
+from importlib import import_module
+from pathlib import Path
+from typing import Any
+
+import pytest
+import sqlalchemy as sa
+
+migration = import_module("app.db.alembic.versions.20261005_000000_add_full_model_stars")
+
+pytestmark = pytest.mark.unit
+
+_TABLE = "dashboard_settings"
+_STARS = "sidecar_full_model_stars_json"
+
+_CREATE_TABLE = f"""
+CREATE TABLE {_TABLE} (
+    id VARCHAR NOT NULL PRIMARY KEY,
+    claude_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
+    openrouter_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
+    orcarouter_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
+    opencode_go_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
+    omniroute_sidecar_selected_models_json TEXT NOT NULL DEFAULT '[]',
+    ollama_sidecar_full_models_json TEXT NOT NULL DEFAULT '[]',
+    openai_compat_endpoints_json TEXT NOT NULL DEFAULT '[]',
+    {_STARS} TEXT NOT NULL DEFAULT '{{}}'
+)
+"""
+
+
+def _seed_row(con: Any, row_id: str, **columns: str) -> None:
+    names = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    con.execute(
+        f"INSERT INTO {_TABLE} (id, {names}) VALUES (?, {placeholders})",
+        (row_id, *columns.values()),
+    )
+
+
+def _run_upgrade(db_path: Path) -> None:
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as connection:
+            context = MigrationContext.configure(connection)
+            with Operations.context(context):
+                migration.upgrade()
+    finally:
+        engine.dispose()
+
+
+def _stars(db_path: Path, row_id: str) -> dict[str, str]:
+    con = sa.create_engine(f"sqlite:///{db_path}")
+    try:
+        with con.connect() as connection:
+            raw = connection.execute(
+                sa.text(f"SELECT {_STARS} FROM {_TABLE} WHERE id = :id"),
+                {"id": row_id},
+            ).scalar_one()
+        return json.loads(raw)
+    finally:
+        con.dispose()
+
+
+def _seeded_db(tmp_path: Path) -> Path:
+    db_path = tmp_path / "settings.db"
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        raw_con.execute(_CREATE_TABLE)
+        raw_con.commit()
+    finally:
+        raw_con.close()
+    return db_path
+
+
+def test_upgrade_seeds_every_existing_full_model_with_its_current_card(tmp_path: Path) -> None:
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(
+            raw_con,
+            "row-1",
+            openrouter_sidecar_full_models_json=json.dumps(["z-ai/glm-5.3", "DeepSeek/Chat"]),
+            orcarouter_sidecar_full_models_json=json.dumps(["ollama/cloud/gpt-oss"]),
+            ollama_sidecar_full_models_json=json.dumps(["llama3:70b"]),
+            openai_compat_endpoints_json=json.dumps(
+                [{"id": "ep-1", "name": "Vast", "full_models": ["Qwen/Qwen2.5-7B"]}]
+            ),
+        )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    # Pre-stars, at most one card could own each model, so the seeded star is
+    # that card and today's routing is unchanged after the upgrade.
+    assert _stars(db_path, "row-1") == {
+        "z-ai/glm-5.3": "openrouter",
+        "deepseek/chat": "openrouter",
+        "ollama/cloud/gpt-oss": "orcarouter",
+        "llama3:70b": "ollama",
+        "qwen/qwen2.5-7b": "openai_compat:ep-1",
+    }
+
+
+def test_upgrade_stars_openai_compat_models_stored_as_an_embedded_list(tmp_path: Path) -> None:
+    """openai_compat endpoints are one JSON document, so ``full_models`` is a
+    parsed list inside it, not a JSON-encoded string.
+
+    The real persistence shape (settings/api.py serializes
+    ``full_models=list(endpoint.full_models)`` before the whole list is dumped)
+    must star those models, not silently skip them.
+    """
+
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(
+            raw_con,
+            "row-1",
+            openai_compat_endpoints_json=json.dumps(
+                [
+                    {"id": "ep-1", "name": "Vast", "full_models": ["Qwen/Qwen2.5-7B", "Mistral/Mixtral-8x7B"]},
+                    {"id": "ep-2", "name": "vLLM", "full_models": []},
+                ]
+            ),
+        )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {
+        "qwen/qwen2.5-7b": "openai_compat:ep-1",
+        "mistral/mixtral-8x7b": "openai_compat:ep-1",
+    }
+
+
+def test_upgrade_stars_omniroute_models_from_the_selected_models_column(tmp_path: Path) -> None:
+    """OmniRoute persists its list in ``omniroute_sidecar_selected_models_json``.
+
+    Reading a nonexistent ``omniroute_sidecar_full_models_json`` column left
+    every OmniRoute model unstarred after the upgrade.
+    """
+
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(raw_con, "row-1", omniroute_sidecar_selected_models_json=json.dumps(["z-ai/glm-5.3", "GLM-5.3"]))
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {"z-ai/glm-5.3": "omniroute", "glm-5.3": "omniroute"}
+
+
+def test_upgrade_keeps_an_existing_star_map_byte_identical(tmp_path: Path) -> None:
+    db_path = _seeded_db(tmp_path)
+    existing = json.dumps({"z-ai/glm-5.3": "orcarouter"}, sort_keys=True, separators=(",", ":"))
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(
+            raw_con,
+            "row-1",
+            openrouter_sidecar_full_models_json=json.dumps(["z-ai/glm-5.3"]),
+            **{_STARS: existing},
+        )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {"z-ai/glm-5.3": "orcarouter"}
+
+
+def test_upgrade_leaves_a_row_without_full_models_alone(tmp_path: Path) -> None:
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        raw_con.execute(f"INSERT INTO {_TABLE} (id) VALUES ('row-1')")
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {}
+
+
+def test_upgrade_adds_the_missing_column(tmp_path: Path) -> None:
+    db_path = tmp_path / "settings.db"
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        raw_con.execute(f"CREATE TABLE {_TABLE} (id VARCHAR NOT NULL PRIMARY KEY)")
+        raw_con.execute(f"INSERT INTO {_TABLE} (id) VALUES ('row-1')")
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    assert _stars(db_path, "row-1") == {}
+
+
+def test_upgrade_seeds_rows_across_page_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The upgrade pages by id, so seeding must survive batch boundaries.
+
+    With a batch size smaller than the row count, every row - including ones
+    in later pages - still gets its stars.
+    """
+
+    monkeypatch.setattr(migration, "_BATCH_SIZE", 2)
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        for index in range(5):
+            _seed_row(
+                raw_con,
+                f"row-{index}",
+                openrouter_sidecar_full_models_json=json.dumps([f"model-{index}"]),
+            )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    for index in range(5):
+        assert _stars(db_path, f"row-{index}") == {f"model-{index}": "openrouter"}
+
+
+def test_upgrade_processes_rows_in_batches_smaller_than_the_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No single SELECT or UPDATE ever spans the whole table.
+
+    With a batch size of 1, the paging loop still reaches every row, proving
+    the id-ordered pagination drives the seed rather than one bulk pass.
+    """
+
+    monkeypatch.setattr(migration, "_BATCH_SIZE", 1)
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        for index in range(3):
+            _seed_row(
+                raw_con,
+                f"row-{index}",
+                ollama_sidecar_full_models_json=json.dumps([f"llama{index}"]),
+            )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    _run_upgrade(db_path)
+
+    for index in range(3):
+        assert _stars(db_path, f"row-{index}") == {f"llama{index}": "ollama"}
+
+
+def test_downgrade_preserves_the_stars_column(tmp_path: Path) -> None:
+    """Downgrade keeps the column: it holds routing preferences the
+    application keeps writing, and no provenance separates those from seeded
+    values, so dropping it would destroy live state.
+    """
+
+    db_path = _seeded_db(tmp_path)
+    raw_con = __import__("sqlite3").connect(db_path)
+    try:
+        _seed_row(
+            raw_con,
+            "row-1",
+            openrouter_sidecar_full_models_json=json.dumps(["z-ai/glm-5.3"]),
+            **{_STARS: json.dumps({"z-ai/glm-5.3": "openrouter"})},
+        )
+        raw_con.commit()
+    finally:
+        raw_con.close()
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as connection:
+            context = MigrationContext.configure(connection)
+            with Operations.context(context):
+                migration.downgrade()
+    finally:
+        engine.dispose()
+
+    con = sa.create_engine(f"sqlite:///{db_path}")
+    try:
+        with con.connect() as connection:
+            columns = {str(column["name"]) for column in sa.inspect(connection).get_columns(_TABLE)}
+            assert _STARS in columns
+            raw = connection.execute(
+                sa.text(f"SELECT {_STARS} FROM {_TABLE} WHERE id = :id"),
+                {"id": "row-1"},
+            ).scalar_one()
+        assert json.loads(raw) == {"z-ai/glm-5.3": "openrouter"}
+    finally:
+        con.dispose()

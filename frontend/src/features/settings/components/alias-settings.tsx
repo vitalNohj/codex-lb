@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowRightLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,7 @@ import { useModels } from "@/features/api-keys/hooks/use-models";
 import { ModelAliasRow, type ModelAliasRowError } from "@/features/settings/components/model-alias-row";
 import { SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 import { useAliasPoolsHealth } from "@/features/settings/hooks/use-alias-pools-health";
+import { listIntegrationModelTargets } from "@/features/settings/integration-targets";
 import type { DashboardSettings, ModelAliasPool, SettingsUpdateRequest } from "@/features/settings/schemas";
 import { ApiError } from "@/lib/api-client";
 
@@ -68,6 +69,9 @@ export function AliasSettings({ settings, busy, onSave }: AliasSettingsProps) {
   const savedModelAliases = settings.modelAliases ?? EMPTY_MODEL_ALIASES;
   const modelsQuery = useModels();
   const knownModelIds = modelsQuery.data?.map((model) => model.id) ?? [];
+  // Per-integration routes, so a model carried by more than one card can be
+  // picked explicitly (``openrouter::z-ai/glm-5.3`` vs ``orcarouter::...``).
+  const integrationTargets = useMemo(() => listIntegrationModelTargets(settings), [settings]);
   const aliasHealth = useAliasPoolsHealth({ enabled: Object.keys(savedModelAliases).length > 0 });
 
   const save = (patch: Partial<SettingsUpdateRequest>) =>
@@ -157,6 +161,7 @@ export function AliasSettings({ settings, busy, onSave }: AliasSettingsProps) {
               targets={targets}
               health={aliasHealth.data?.aliases[alias]}
               knownModelIds={knownModelIds}
+              integrationTargets={integrationTargets}
               catalogEntry={settings.customAliasCatalog?.[alias]}
               error={aliasErrors[alias]}
               busy={busy}
