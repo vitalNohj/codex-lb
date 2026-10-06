@@ -97,6 +97,11 @@ Pool targets and bare requests therefore differ when a card literally lists a
 string resolves to the card that lists it exactly, while a stored **pool
 target** with the same string resolves within the integration it names.
 
+The same holds when an API key enforces a model: enforcement replaces whatever
+the client asked for, alias included, so an enforced `<provider>::<model>`
+resolves by the bare-request rule — the card that lists it exactly — and never
+rides the alias's pool-target rule.
+
 ## What failover covers
 
 Failover happens **before the first byte** of a response. Once an upstream has

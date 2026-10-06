@@ -5216,8 +5216,10 @@ async def v1_chat_completions(
     # ``payload.model``, so that string resolves by the pool-target rule: a
     # literal full-model id on another card cannot shadow the integration the
     # alias's target names. Bare (unaliased) requests keep the exact-match
-    # rule.
-    alias_resolved = resolved_alias is not None and resolved_alias.alias is not None
+    # rule. An enforced model replaces the alias entirely, so it must take the
+    # exact-match rule too: ``alias_pool`` is cleared in that case, and
+    # ``resolved_alias`` alone cannot tell the two apart.
+    alias_resolved = alias_pool is not None
     decision = (
         resolve_sidecar_pool_target(effective_model, tuple(routing_entries))
         if alias_resolved
