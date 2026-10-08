@@ -18,6 +18,8 @@ from app.db.session import SessionLocal
 from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarModelQuota,
+    SidecarOAuthUsage,
+    SidecarOAuthUsageBucket,
     SidecarQuotaSnapshot,
     snapshot_to_json,
 )
@@ -348,6 +350,120 @@ async def test_sidecar_quota_endpoint_reports_disabled_then_unknown_then_snapsho
     assert account["primaryUsedTokens"] == 25
     assert account["primaryTokenBudget"] == 100
     assert account["confidence"] == "estimated"
+
+
+@pytest.mark.asyncio
+async def test_expired_weekly_quota_recovers_across_dashboard_endpoints_during_usage_429(async_client, monkeypatch):
+    from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
+
+    _reset_fake_sidecar_client()
+    monkeypatch.setattr(
+        _FakeSidecarClient,
+        "auth_files",
+        [{"name": "claude-a@example.com.json", "auth_index": "0", "email": "a@example.com", "provider": "claude"}],
+    )
+
+    class RateLimitedUsageClient(_FakeSidecarClient):
+        async def api_call(self, **kwargs):
+            raise ClaudeSidecarError(429, "Rate limited. Please try again later.")
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+            "claudeSidecarAuthPlans": [
+                {
+                    "authIndex": "0",
+                    "email": "a@example.com",
+                    "planType": "custom",
+                    "primaryTokenBudget": 100,
+                    "secondaryTokenBudget": 700,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    now = datetime.now(timezone.utc)
+    reset_at = now - timedelta(hours=1)
+    fresh = now - timedelta(minutes=30)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=reset_at - timedelta(minutes=1),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="claude-a@example.com.json",
+                auth_index="0",
+                email="a@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=1,
+                failed=0,
+                last_refresh=None,
+                oauth_usage=SidecarOAuthUsage(
+                    five_hour=SidecarOAuthUsageBucket(remaining_percent=100.0, resets_at=None),
+                    seven_day=SidecarOAuthUsageBucket(remaining_percent=2.0, resets_at=reset_at),
+                ),
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(claude_sidecar_quota_state_json=snapshot_to_json(snapshot))
+        for index, (timestamp, tokens) in enumerate([(reset_at - timedelta(minutes=1), 686), (fresh, 7)]):
+            session.add(
+                ClaudeSidecarUsageEvent(
+                    request_id=f"weekly-reset-{index}",
+                    timestamp=timestamp,
+                    auth_index="0",
+                    source="a@example.com",
+                    provider="claude",
+                    model="claude-sonnet",
+                    alias="claude",
+                    endpoint="POST /v1/chat/completions",
+                    auth_type="oauth",
+                    total_tokens=tokens,
+                    input_tokens=tokens,
+                    output_tokens=0,
+                    reasoning_tokens=0,
+                    cached_tokens=0,
+                    failed=False,
+                )
+            )
+        await session.commit()
+
+    poller = ClaudeSidecarQuotaPoller(
+        interval_seconds=60,
+        enabled=True,
+        _client_factory=cast(type[ClaudeSidecarClient], RateLimitedUsageClient),
+    )
+    for _ in range(2):
+        await poller._poll_locked()
+        response = await async_client.get("/api/claude-sidecar/quota")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "healthy"
+        account = payload["accounts"][0]
+        assert account["primaryRemainingPercent"] == 100.0
+        assert account["secondaryRemainingPercent"] == 99.0
+        assert account["secondaryUsedTokens"] == 7
+        assert account["resetAtSecondary"] == (fresh + timedelta(days=7)).isoformat().replace("+00:00", "Z")
+        assert account["usageSource"] == "usage_queue"
+        assert account["confidence"] == "estimated"
+
+        for endpoint in ("/api/accounts", "/api/dashboard/overview"):
+            response = await async_client.get(endpoint)
+            assert response.status_code == 200
+            sidecar = next(row for row in response.json()["accounts"] if row.get("provider") == "claude")
+            assert sidecar["usage"]["secondaryRemainingPercent"] == 99.0
+            assert sidecar["sidecarAuths"][0]["secondaryRemainingPercent"] == 99.0
+            assert sidecar["sidecarAuths"][0]["confidence"] == "estimated"
 
 
 @pytest.mark.asyncio

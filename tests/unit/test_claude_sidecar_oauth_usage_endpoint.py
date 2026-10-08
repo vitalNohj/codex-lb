@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -108,8 +108,8 @@ def _auth(
         failed=0,
         last_refresh=NOW,
         oauth_usage=SidecarOAuthUsage(
-            five_hour=SidecarOAuthUsageBucket(remaining_percent=remaining_primary, resets_at=NOW),
-            seven_day=SidecarOAuthUsageBucket(remaining_percent=remaining_secondary, resets_at=NOW),
+            five_hour=SidecarOAuthUsageBucket(remaining_percent=remaining_primary, resets_at=NOW + timedelta(hours=5)),
+            seven_day=SidecarOAuthUsageBucket(remaining_percent=remaining_secondary, resets_at=NOW + timedelta(days=7)),
         ),
     )
 
@@ -146,7 +146,13 @@ def test_auth_identity_keys_match_source_only_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pooled_oauth_usage_excludes_paused_auths() -> None:
+async def test_pooled_oauth_usage_excludes_paused_auths(monkeypatch) -> None:
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr("app.modules.claude_sidecar.service.datetime", Clock)
     settings = _settings(
         accounts=(
             _auth("paused", disabled=True, remaining_primary=10.0, remaining_secondary=10.0),
