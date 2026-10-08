@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import heapq
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -105,7 +106,7 @@ class ClaudeUsageEventCache:
                 fresh = await self._load(session, database_key, state.since, min_id=state.max_id, max_id=max_id)
                 _merge(state, fresh)
             _prune(state, since - _WINDOW_SLACK)
-        if _count_since(state, since) != count:
+        if not _matches_fingerprint(state, since, count=count, max_id=max_id):
             state = await self._load(session, database_key, since - _WINDOW_SLACK, min_id=None, max_id=max_id)
         self._state = state
         return state
@@ -154,16 +155,24 @@ def _merge(state: _WindowState, fresh: _WindowState) -> None:
     """Fold newly inserted rows into the window, keeping (timestamp, id) order.
 
     New rows almost always sort after everything cached, so the common case is
-    an append; an out-of-order timestamp falls back to an insort.
+    an append. When a late-arriving row sorts inside the cached range, both
+    sorted sequences are merged in one linear pass rather than inserting row
+    by row, which would shift the cached lists once per late row.
     """
-    for key, event in zip(fresh.sort_keys, fresh.events, strict=True):
-        if not state.sort_keys or key > state.sort_keys[-1]:
-            state.sort_keys.append(key)
-            state.events.append(event)
+    if fresh.sort_keys:
+        if not state.sort_keys or fresh.sort_keys[0] > state.sort_keys[-1]:
+            state.sort_keys.extend(fresh.sort_keys)
+            state.events.extend(fresh.events)
         else:
-            index = bisect.bisect_left(state.sort_keys, key)
-            state.sort_keys.insert(index, key)
-            state.events.insert(index, event)
+            merged = list(
+                heapq.merge(
+                    zip(state.sort_keys, state.events, strict=True),
+                    zip(fresh.sort_keys, fresh.events, strict=True),
+                    key=lambda pair: pair[0],
+                )
+            )
+            state.sort_keys = [key for key, _ in merged]
+            state.events = [event for _, event in merged]
     state.max_id = fresh.max_id
 
 
@@ -177,8 +186,17 @@ def _prune(state: _WindowState, since: datetime) -> None:
     state.since = since
 
 
-def _count_since(state: _WindowState, since: datetime) -> int:
-    return len(state.sort_keys) - bisect.bisect_left(state.sort_keys, (since, -1))
+def _matches_fingerprint(state: _WindowState, since: datetime, *, count: int, max_id: int) -> bool:
+    """Whether the cached rows at or after ``since`` match the database window.
+
+    Count alone misses a swapped database holding the same number of rows (for
+    example a restored backup), so the largest cached id must match too.
+    """
+    start = bisect.bisect_left(state.sort_keys, (since, -1))
+    if len(state.sort_keys) - start != count:
+        return False
+    cached_max_id = max((event_id for _, event_id in state.sort_keys[start:]), default=0)
+    return cached_max_id == max_id
 
 
 _cache = ClaudeUsageEventCache()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete, event
+from sqlalchemy import delete, event, update
 
 from app.core.utils.time import utcnow
 from app.db.models import ClaudeSidecarUsageEvent
@@ -158,3 +158,57 @@ async def test_estimate_events_clear_forces_full_reload(db_setup):
 
     assert [tokens for _, _, tokens, _ in events] == [4]
     assert len(loads.full_loads) == 1
+
+
+@pytest.mark.asyncio
+async def test_estimate_events_reload_when_same_count_has_lower_max_id(db_setup):
+    now = utcnow()
+    await _insert(
+        _record("a", now - timedelta(hours=3), tokens=1),
+        _record("b", now - timedelta(hours=2), tokens=2),
+        _record("c", now - timedelta(hours=1), tokens=3),
+    )
+    async with SessionLocal() as session:
+        await session.execute(delete(ClaudeSidecarUsageEvent).where(ClaudeSidecarUsageEvent.request_id == "a"))
+        await session.commit()
+    assert [tokens for _, _, tokens, _ in await _read(now - timedelta(days=7))] == [2, 3]
+
+    # Same row count, lower max id: what a restored backup looks like. Row "c"
+    # moves to the freed lower id and carries different usage.
+    async with SessionLocal() as session:
+        first_id = (
+            await session.execute(
+                ClaudeSidecarUsageEvent.__table__.select()
+                .with_only_columns(ClaudeSidecarUsageEvent.id)
+                .where(ClaudeSidecarUsageEvent.request_id == "b")
+            )
+        ).scalar_one() - 1
+        await session.execute(
+            update(ClaudeSidecarUsageEvent)
+            .where(ClaudeSidecarUsageEvent.request_id == "c")
+            .values(id=first_id, total_tokens=9)
+        )
+        await session.commit()
+    with _EventRowLoads() as loads:
+        events = await _read(now - timedelta(days=7))
+
+    assert [tokens for _, _, tokens, _ in events] == [2, 9]
+    assert len(loads.full_loads) == 1
+
+
+@pytest.mark.asyncio
+async def test_estimate_events_merge_many_late_rows_in_order(db_setup):
+    now = utcnow()
+    await _insert(*(_record(f"cached-{i}", now - timedelta(minutes=10 * i), tokens=i) for i in range(1, 6)))
+    await _read(now - timedelta(days=7))
+
+    late = [_record(f"late-{i}", now - timedelta(minutes=10 * i + 5), tokens=100 + i) for i in range(1, 6)]
+    await _insert(*late)
+    with _EventRowLoads() as loads:
+        events = await _read(now - timedelta(days=7))
+
+    timestamps = [timestamp for _, timestamp, _, _ in events]
+    assert timestamps == sorted(timestamps)
+    assert len(events) == 10
+    assert [tokens for _, _, tokens, _ in events][:2] == [105, 5]
+    assert loads.full_loads == []
