@@ -4149,7 +4149,7 @@ async def test_claude_opus_5_5_pin_readded_by_the_operator_survives_downgrade(tm
                 {"value": '["claude-opus-5"]'},
             )
         await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
-        assert await stored_models() == ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5"]
+        assert await stored_models() == ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
 
         async def owners() -> int:
             async with engine.connect() as conn:
@@ -4326,7 +4326,10 @@ async def test_claude_sonnet_5_5_pin_replays_over_its_own_ownership_table(tmp_pa
 
 @pytest.mark.asyncio
 async def test_claude_sonnet_5_5_pin_readded_by_the_operator_survives_downgrade(tmp_path):
-    """A pin the operator removed and then added back is theirs, not the migration's."""
+    """A pin the operator removed and then added back is theirs, not the migration's.
+
+    Upgrades run to head: SettingsRepository maps every current settings column.
+    """
     from alembic import command
 
     from app.db.migrate import _build_alembic_config
@@ -4334,7 +4337,6 @@ async def test_claude_sonnet_5_5_pin_readded_by_the_operator_survives_downgrade(
 
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-sonnet-5-5-readded.sqlite'}"
     parent_revision = "20260925_010000_add_api_key_rate_limit_payment_required"
-    pin_revision = "20260928_000000_pin_claude_sonnet_5_5_full_model"
 
     await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
     engine = create_async_engine(db_url, future=True)
@@ -4357,8 +4359,8 @@ async def test_claude_sonnet_5_5_pin_readded_by_the_operator_survives_downgrade(
                 text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
                 {"value": '["claude-sonnet-5"]'},
             )
-        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
-        assert await stored_models() == ["claude-sonnet-5", "claude-sonnet-5-5"]
+        await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+        assert await stored_models() == ["claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
 
         async def owners() -> int:
             async with engine.connect() as conn:
@@ -4366,7 +4368,7 @@ async def test_claude_sonnet_5_5_pin_readded_by_the_operator_survives_downgrade(
 
         async def replay() -> None:
             await to_thread.run_sync(lambda: command.stamp(_build_alembic_config(db_url), parent_revision))
-            await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+            await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
 
         await save_models(["claude-sonnet-5", "claude-sonnet-5-5"])
         assert await owners() == 1
@@ -4382,6 +4384,213 @@ async def test_claude_sonnet_5_5_pin_readded_by_the_operator_survives_downgrade(
 
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
         assert await stored_models() == ["claude-sonnet-5", "Claude-Sonnet-5-5"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claude_haiku_5_5_full_model_pin_appends_and_downgrades(tmp_path):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-haiku-5-5-full-model.sqlite'}"
+    parent_revision = "20261005_000000_add_full_model_stars"
+    pin_revision = "20261007_000000_pin_claude_haiku_5_5_full_model"
+    original = '["claude-opus-5","claude-sonnet-5"]'
+    pinned = '["claude-opus-5","claude-sonnet-5","claude-haiku-5-5"]'
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": original},
+            )
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+            owned = (await conn.execute(text("SELECT settings_id FROM claude_haiku_5_5_pin_ownership"))).scalar_one()
+        assert stored == pinned
+        assert owned == 1
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == pinned
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert json.loads(stored) == ["claude-opus-5", "claude-sonnet-5"]
+        async with engine.connect() as conn:
+            ownership = (
+                await conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'claude_haiku_5_5_pin_ownership'"
+                    )
+                )
+            ).first()
+        assert ownership is None
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": '["claude-sonnet-5","Claude-Haiku-5-5"]'},
+            )
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == '["claude-sonnet-5","Claude-Haiku-5-5"]'
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == '["claude-sonnet-5","Claude-Haiku-5-5"]'
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": "not-json"},
+            )
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            stored = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert stored == "not-json"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claude_haiku_5_5_pin_replays_over_its_own_ownership_table(tmp_path):
+    """The legacy-revision remap re-runs migrations the schema already has.
+
+    A second pass must neither fail on the ownership table nor re-add a pin
+    the operator removed after the first pass.
+    """
+
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-haiku-5-5-replay.sqlite'}"
+    parent_revision = "20261005_000000_add_full_model_stars"
+    pin_revision = "20261007_000000_pin_claude_haiku_5_5_full_model"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            pinned = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+            owners = (await conn.execute(text("SELECT COUNT(*) FROM claude_haiku_5_5_pin_ownership"))).scalar_one()
+        assert "claude-haiku-5-5" in json.loads(pinned)
+        assert owners == 1
+
+        async def replay() -> tuple[str, int]:
+            await to_thread.run_sync(lambda: command.stamp(_build_alembic_config(db_url), parent_revision))
+            result = await to_thread.run_sync(lambda: run_upgrade(db_url, pin_revision, bootstrap_legacy=False))
+            assert result.current_revision == pin_revision
+            async with engine.connect() as conn:
+                stored = (
+                    await conn.execute(
+                        text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1")
+                    )
+                ).scalar_one()
+                owners = (await conn.execute(text("SELECT COUNT(*) FROM claude_haiku_5_5_pin_ownership"))).scalar_one()
+            return stored, owners
+
+        assert await replay() == (pinned, 1)
+
+        unpinned = json.dumps([model for model in json.loads(pinned) if model != "claude-haiku-5-5"])
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": unpinned},
+            )
+        assert await replay() == (unpinned, 1)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claude_haiku_5_5_pin_readded_by_the_operator_survives_downgrade(tmp_path):
+    """A pin the operator removed and then added back is theirs, not the migration's.
+
+    Upgrades run to head: SettingsRepository maps every current settings column.
+    """
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+    from app.modules.settings.repository import SettingsRepository
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'claude-haiku-5-5-readded.sqlite'}"
+    parent_revision = "20261005_000000_add_full_model_stars"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def stored_models() -> list[str]:
+        async with engine.connect() as conn:
+            raw = (
+                await conn.execute(text("SELECT claude_sidecar_full_models_json FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        return json.loads(raw)
+
+    async def save_models(models: list[str]) -> None:
+        async with sessions() as session:
+            await SettingsRepository(session).update(claude_sidecar_full_models_json=json.dumps(models))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE dashboard_settings SET claude_sidecar_full_models_json = :value WHERE id = 1"),
+                {"value": '["claude-sonnet-5"]'},
+            )
+        await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+        assert await stored_models() == ["claude-sonnet-5", "claude-haiku-5-5"]
+
+        async def owners() -> int:
+            async with engine.connect() as conn:
+                return (await conn.execute(text("SELECT COUNT(*) FROM claude_haiku_5_5_pin_ownership"))).scalar_one()
+
+        async def replay() -> None:
+            await to_thread.run_sync(lambda: command.stamp(_build_alembic_config(db_url), parent_revision))
+            await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+
+        await save_models(["claude-sonnet-5", "claude-haiku-5-5"])
+        assert await owners() == 1
+
+        await save_models(["claude-sonnet-5"])
+        await replay()
+        assert await stored_models() == ["claude-sonnet-5"]
+
+        await save_models(["claude-sonnet-5", "Claude-Haiku-5-5"])
+        assert await owners() == 0
+        await replay()
+        assert await stored_models() == ["claude-sonnet-5", "Claude-Haiku-5-5"]
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        assert await stored_models() == ["claude-sonnet-5", "Claude-Haiku-5-5"]
     finally:
         await engine.dispose()
 
