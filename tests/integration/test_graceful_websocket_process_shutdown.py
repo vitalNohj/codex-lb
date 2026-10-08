@@ -31,9 +31,15 @@ def _unused_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# The fixture imports the full app before it binds, which takes about 2 s on
+# a loaded host, so readiness is bounded by wall-clock time, not poll count.
+_READY_TIMEOUT_SECONDS = 15.0
+
+
 async def _wait_until_ready(server: _RunningServer) -> None:
+    deadline = time.monotonic() + _READY_TIMEOUT_SECONDS
     async with httpx.AsyncClient(timeout=0.2) as client:
-        for _ in range(100):
+        while time.monotonic() < deadline:
             if server.process.returncode is not None:
                 output = await server.process.stdout.read() if server.process.stdout is not None else b""
                 raise AssertionError(f"fixture server exited early: {output.decode(errors='replace')}")
