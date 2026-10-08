@@ -1750,6 +1750,18 @@ class ClaudeSonnet55PinOwnership(Base):
     settings_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
 
 
+class ClaudeHaiku55PinOwnership(Base):
+    """Settings rows whose full-model list the Haiku 5.5 pin migration appended.
+
+    Downgrade removes ``claude-haiku-5-5`` only from these rows. ``settings_id``
+    stores the dashboard settings id that was updated.
+    """
+
+    __tablename__ = "claude_haiku_5_5_pin_ownership"
+
+    settings_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+
+
 class RuntimeSentinel(Base):
     """Cross-replica consistency sentinels stamped into the shared database.
 

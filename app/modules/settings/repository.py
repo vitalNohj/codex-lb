@@ -18,16 +18,23 @@ from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
-from app.db.models import ClaudeOpus55PinOwnership, ClaudeSonnet55PinOwnership, DashboardSettings
+from app.db.models import (
+    ClaudeHaiku55PinOwnership,
+    ClaudeOpus55PinOwnership,
+    ClaudeSonnet55PinOwnership,
+    DashboardSettings,
+)
 
 _SETTINGS_ID = 1
 _UNSET = object()
 # Pinned onto the CLIProxyAPI full-model list by
-# 20260923_000000_pin_claude_opus_5_5_full_model and
-# 20260928_000000_pin_claude_sonnet_5_5_full_model.
+# 20260923_000000_pin_claude_opus_5_5_full_model,
+# 20260928_000000_pin_claude_sonnet_5_5_full_model, and
+# 20261007_000000_pin_claude_haiku_5_5_full_model.
 _CLAUDE_OPUS_5_5_PIN = "claude-opus-5-5"
 _CLAUDE_SONNET_5_5_PIN = "claude-sonnet-5-5"
-_PinOwnership = type[ClaudeOpus55PinOwnership] | type[ClaudeSonnet55PinOwnership]
+_CLAUDE_HAIKU_5_5_PIN = "claude-haiku-5-5"
+_PinOwnership = type[ClaudeOpus55PinOwnership] | type[ClaudeSonnet55PinOwnership] | type[ClaudeHaiku55PinOwnership]
 
 
 def _lists_full_model(full_models_json: str, model_id: str) -> bool:
@@ -710,6 +717,12 @@ class SettingsRepository:
                 ClaudeSonnet55PinOwnership,
                 had_pin=_lists_full_model(previous_full_models, _CLAUDE_SONNET_5_5_PIN),
                 has_pin=_lists_full_model(claude_sidecar_full_models_json, _CLAUDE_SONNET_5_5_PIN),
+            )
+            await self._track_full_model_pin(
+                settings.id,
+                ClaudeHaiku55PinOwnership,
+                had_pin=_lists_full_model(previous_full_models, _CLAUDE_HAIKU_5_5_PIN),
+                has_pin=_lists_full_model(claude_sidecar_full_models_json, _CLAUDE_HAIKU_5_5_PIN),
             )
         if claude_sidecar_connect_timeout_seconds is not None:
             settings.claude_sidecar_connect_timeout_seconds = claude_sidecar_connect_timeout_seconds

@@ -389,6 +389,21 @@ def test_build_sidecar_chat_payload_forwards_sonnet_5_5_wire_model() -> None:
     assert payload.body["max_tokens"] == 32_768
 
 
+def test_build_sidecar_chat_payload_forwards_haiku_5_5_wire_model() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "cc/claude-haiku-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4096,
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-haiku-5-5", _config())
+
+    assert payload.body["model"] == "claude-haiku-5-5"
+    assert payload.body["max_tokens"] == 32_768
+
+
 def test_build_sidecar_chat_payload_leaves_opus_5_max_tokens_unchanged() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
@@ -515,6 +530,7 @@ def test_build_sidecar_chat_payload_does_not_borrow_bounds_for_a_suffixed_id() -
         ("claude-opus-4-6", 128_000),
         ("claude-sonnet-5", 128_000),
         ("claude-sonnet-5-5", 128_000),
+        ("claude-haiku-5-5", 128_000),
         ("claude-sonnet-4-6", 64_000),
         ("claude-sonnet-4-5", 64_000),
         ("claude-haiku-4-5", 64_000),

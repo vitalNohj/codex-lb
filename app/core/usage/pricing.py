@@ -471,11 +471,13 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         cached_input_per_1m=0.2,
         output_per_1m=10.0,
     ),
-    # Sonnet 5.5 stores the same $2 / $0.20 / $10 fields as Sonnet 5.
+    # Sonnet 5.5: $2 input / $10 output, same as Sonnet 5. The cache hit is 5% of input
+    # ($0.10), not the usual 10%. Anthropic's pricing page (checked 2026-10-07) lists the
+    # 5% cache-read rate for Opus 5.5 and Sonnet 5.5.
     # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
     "claude-sonnet-5-5": ModelPrice(
         input_per_1m=2.0,
-        cached_input_per_1m=0.2,
+        cached_input_per_1m=0.1,
         output_per_1m=10.0,
     ),
     "claude-sonnet-4-6": ModelPrice(
@@ -497,6 +499,28 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         input_per_1m=3.0,
         cached_input_per_1m=0.3,
         output_per_1m=15.0,
+    ),
+    # Haiku 5.5 (claude-haiku-5-5, released 2026-10-07) is priced by prompt length.
+    # Rates from Anthropic's pricing page, checked 2026-10-07, USD per 1M tokens:
+    #   prompt <= 100,000 tokens: $0.10 input, $0.01 cache read, $0.50 output
+    #   prompt  > 100,000 tokens: $0.50 input, $0.05 cache read, $2.50 output
+    # The prompt length decides the rate for the whole request, output included.
+    # It counts every input token, cached ones too. That matches _effective_rates,
+    # which compares total input_tokens (cached included) to the threshold.
+    # Not stored, because the table has no field for them: 5m cache write
+    # $0.125 / $0.625, 1h cache write $0.20 / $1.00. Batch API is 50% off.
+    # Anthropic did not mark any Haiku 5.5 rate as introductory or limited-time
+    # (the only introductory note on the page is the expired Sonnet 5 one). If a
+    # promotional rate appears later, recheck these numbers.
+    # The new tokenizer counts about 30% more tokens than Haiku 4.5 for the same text.
+    "claude-haiku-5-5": ModelPrice(
+        input_per_1m=0.10,
+        cached_input_per_1m=0.01,
+        output_per_1m=0.50,
+        long_context_threshold_tokens=100_000,
+        long_context_input_per_1m=0.50,
+        long_context_cached_input_per_1m=0.05,
+        long_context_output_per_1m=2.50,
     ),
     "claude-haiku-4-5": ModelPrice(
         input_per_1m=1.0,

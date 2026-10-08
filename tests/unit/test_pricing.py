@@ -263,7 +263,7 @@ def test_get_pricing_for_model_claude_sonnet_5_5_does_not_collapse_to_sonnet_5()
     model, price = result
     assert model == "claude-sonnet-5-5"
     assert price.input_per_1m == 2.0
-    assert price.cached_input_per_1m == 0.2
+    assert price.cached_input_per_1m == 0.1
     assert price.output_per_1m == 10.0
 
     dotted = get_pricing_for_model("claude-sonnet-5.5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
@@ -277,7 +277,53 @@ def test_get_pricing_for_model_claude_sonnet_5_5_does_not_collapse_to_sonnet_5()
 
     assert get_pricing_for_model("claude-sonnet-5-50", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
     assert get_pricing_for_model("not-claude-sonnet-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
-    assert get_pricing_for_model("claude-haiku-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+
+
+@pytest.mark.parametrize("requested", ["claude-haiku-5-5", "cc/claude-haiku-5-5", "cp-claude-haiku-5-5"])
+def test_get_pricing_for_model_claude_haiku_5_5_has_its_own_row(requested: str):
+    result = get_pricing_for_model(requested, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    assert result is not None
+    model, price = result
+    assert model == "claude-haiku-5-5"
+    assert price.input_per_1m == 0.10
+    assert price.cached_input_per_1m == 0.01
+    assert price.output_per_1m == 0.50
+    assert price.long_context_threshold_tokens == 100_000
+    assert price.long_context_input_per_1m == 0.50
+    assert price.long_context_cached_input_per_1m == 0.05
+    assert price.long_context_output_per_1m == 2.50
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["claude-haiku-5.5", "claude-haiku-5-5-20261007", "claude-haiku-5-50", "not-claude-haiku-5-5", "claude-haiku-5"],
+)
+def test_get_pricing_for_model_claude_haiku_5_5_lookalikes_stay_unpriced(requested: str):
+    assert get_pricing_for_model(requested, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None
+
+
+def test_claude_haiku_5_5_cost_at_the_100k_prompt_boundary():
+    _, price = get_pricing_for_model("claude-haiku-5-5", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) or (None, None)
+    assert price is not None
+
+    # Exactly 100,000 prompt tokens is still the short-prompt tier.
+    short = calculate_cost_breakdown_from_usage(
+        UsageTokens(input_tokens=100_000.0, output_tokens=10_000.0, cached_input_tokens=60_000.0), price
+    )
+    assert short is not None
+    assert short.input_usd == pytest.approx(40_000 / 1_000_000 * 0.10)
+    assert short.cached_input_usd == pytest.approx(60_000 / 1_000_000 * 0.01)
+    assert short.output_usd == pytest.approx(10_000 / 1_000_000 * 0.50)
+
+    # One token over moves the whole request, output included, to the long-prompt tier.
+    # Cached tokens count toward the prompt length.
+    long = calculate_cost_breakdown_from_usage(
+        UsageTokens(input_tokens=100_001.0, output_tokens=10_000.0, cached_input_tokens=60_000.0), price
+    )
+    assert long is not None
+    assert long.input_usd == pytest.approx(40_001 / 1_000_000 * 0.50)
+    assert long.cached_input_usd == pytest.approx(60_000 / 1_000_000 * 0.05)
+    assert long.output_usd == pytest.approx(10_000 / 1_000_000 * 2.50)
 
 
 def test_get_pricing_for_model_claude_versioned_beats_family():
