@@ -154,7 +154,8 @@ async def test_openai_compat_synthetic_account_uses_operator_name(async_client):
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_full_model_conflict_with_openrouter_is_rejected(async_client):
+async def test_openai_compat_full_model_shared_with_openrouter_is_accepted(async_client):
+    # Alias pools (#119) made one full model on several integrations legal.
     response = await async_client.put(
         "/api/settings",
         json={
@@ -163,8 +164,10 @@ async def test_openai_compat_full_model_conflict_with_openrouter_is_rejected(asy
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "sidecar_routing_conflict"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["openrouterSidecarFullModels"] == ["z-ai/glm-5.3"]
+    assert body["openaiCompatEndpoints"][0]["fullModels"] == ["z-ai/glm-5.3"]
 
 
 @pytest.mark.asyncio
