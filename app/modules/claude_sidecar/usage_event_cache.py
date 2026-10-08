@@ -9,12 +9,14 @@ every dashboard refresh.
 ``claude_sidecar_usage_events`` is append-only: the usage collector inserts
 rows and nothing updates them. The cache keeps the window's events in memory
 as compact records and, on each read, pulls only rows above its id watermark.
-A fingerprint of the window, read in the same transaction, guards everything
-the watermark cannot see (a manual delete, a reused id, a restored backup):
-any mismatch triggers a full reload. The fingerprint aggregates the ids, the
-token totals and the newest timestamp, so a change has to keep all of them
-identical at once to go unnoticed. Another database behind the same process
-is caught separately by the engine URL.
+
+The watermark is exact only while no row is updated or deleted, so the cache
+also records the trigger-maintained mutation generation and reloads in full
+whenever it moves. A ``count``/``max(id)`` check of the window, read in the
+same transaction, additionally catches a store swapped underneath the process
+(for example a restored backup) and any gap the watermark reasoning missed.
+Without the triggers (PostgreSQL, or a store the migration never reached)
+nothing vouches for the watermark, so every read loads the window in full.
 """
 
 from __future__ import annotations
@@ -25,11 +27,11 @@ import heapq
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.utils.time import to_utc_naive
-from app.db.models import ClaudeSidecarUsageEvent
+from app.db.models import CLAUDE_SIDECAR_USAGE_EVENT_MUTATION_TRIGGERS, ClaudeSidecarUsageEvent
 
 # Rows kept below the requested window start. Concurrent readers each compute
 # their own ``now``, so a reader arriving a moment behind the last sync asks
@@ -50,18 +52,10 @@ class ClaudeUsageEstimateEvent:
     failed: bool
 
 
-@dataclass(frozen=True, slots=True)
-class _Fingerprint:
-    count: int
-    max_id: int
-    id_sum: int
-    token_sum: int
-    newest: datetime | None
-
-
 @dataclass(slots=True)
 class _WindowState:
     database_key: str
+    generation: int | None
     since: datetime
     max_id: int
     events: list[ClaudeUsageEstimateEvent] = field(default_factory=list)
@@ -98,36 +92,39 @@ class ClaudeUsageEventCache:
         database_key = str(session.get_bind().engine.url)
         # One snapshot: the fingerprint and any row fetch below run in the
         # session's transaction, so they agree with each other.
-        row = (
+        count, max_id = (
             await session.execute(
-                select(
-                    func.count(ClaudeSidecarUsageEvent.id),
-                    func.max(ClaudeSidecarUsageEvent.id),
-                    func.sum(ClaudeSidecarUsageEvent.id),
-                    func.sum(ClaudeSidecarUsageEvent.total_tokens),
-                    func.max(ClaudeSidecarUsageEvent.timestamp),
-                ).where(ClaudeSidecarUsageEvent.timestamp >= since)
+                select(func.count(ClaudeSidecarUsageEvent.id), func.max(ClaudeSidecarUsageEvent.id)).where(
+                    ClaudeSidecarUsageEvent.timestamp >= since
+                )
             )
         ).one()
-        fingerprint = _Fingerprint(
-            count=int(row[0] or 0),
-            max_id=int(row[1] or 0),
-            id_sum=int(row[2] or 0),
-            token_sum=int(row[3] or 0),
-            newest=to_utc_naive(row[4]) if row[4] is not None else None,
-        )
-        max_id = fingerprint.max_id
+        count = int(count or 0)
+        max_id = int(max_id or 0)
+        generation = await _mutation_generation(session)
 
         state = self._state
-        if state is None or state.database_key != database_key or since < state.since:
-            state = await self._load(session, database_key, since - _WINDOW_SLACK, min_id=None, max_id=max_id)
+        if (
+            state is None
+            or generation is None
+            or state.generation != generation
+            or state.database_key != database_key
+            or since < state.since
+        ):
+            state = await self._load(
+                session, database_key, generation, since - _WINDOW_SLACK, min_id=None, max_id=max_id
+            )
         else:
             if max_id > state.max_id:
-                fresh = await self._load(session, database_key, state.since, min_id=state.max_id, max_id=max_id)
+                fresh = await self._load(
+                    session, database_key, generation, state.since, min_id=state.max_id, max_id=max_id
+                )
                 _merge(state, fresh)
             _prune(state, since - _WINDOW_SLACK)
-        if _fingerprint(state, since) != fingerprint:
-            state = await self._load(session, database_key, since - _WINDOW_SLACK, min_id=None, max_id=max_id)
+            if not _matches_fingerprint(state, since, count=count, max_id=max_id):
+                state = await self._load(
+                    session, database_key, generation, since - _WINDOW_SLACK, min_id=None, max_id=max_id
+                )
         self._state = state
         return state
 
@@ -135,6 +132,7 @@ class ClaudeUsageEventCache:
         self,
         session: AsyncSession,
         database_key: str,
+        generation: int | None,
         since: datetime,
         *,
         min_id: int | None,
@@ -151,7 +149,7 @@ class ClaudeUsageEventCache:
         if min_id is not None:
             statement = statement.where(ClaudeSidecarUsageEvent.id > min_id)
         rows = (await session.execute(statement)).all()
-        state = _WindowState(database_key=database_key, since=since, max_id=max_id)
+        state = _WindowState(database_key=database_key, generation=generation, since=since, max_id=max_id)
         records = sorted(
             (
                 (to_utc_naive(timestamp), event_id),
@@ -169,6 +167,32 @@ class ClaudeUsageEventCache:
         state.sort_keys = [key for key, _ in records]
         state.events = [event for _, event in records]
         return state
+
+
+async def _mutation_generation(session: AsyncSession) -> int | None:
+    """Return the trigger-maintained mutation generation, read in the session's transaction.
+
+    ``None`` when it cannot be trusted to have seen every UPDATE and DELETE:
+    not SQLite, or the state row or either trigger is missing.
+    """
+    if session.get_bind().dialect.name != "sqlite":
+        return None
+    placeholders = ",".join(f":t{index}" for index in range(len(CLAUDE_SIDECAR_USAGE_EVENT_MUTATION_TRIGGERS)))
+    trigger_count = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                f"AND tbl_name = 'claude_sidecar_usage_events' AND name IN ({placeholders})"
+            ),
+            {f"t{index}": name for index, name in enumerate(CLAUDE_SIDECAR_USAGE_EVENT_MUTATION_TRIGGERS)},
+        )
+    ).scalar_one()
+    if trigger_count != len(CLAUDE_SIDECAR_USAGE_EVENT_MUTATION_TRIGGERS):
+        return None
+    generation = (
+        await session.execute(text("SELECT generation FROM claude_sidecar_usage_event_mutation_state WHERE id = 1"))
+    ).scalar_one_or_none()
+    return None if generation is None else int(generation)
 
 
 def _merge(state: _WindowState, fresh: _WindowState) -> None:
@@ -206,18 +230,17 @@ def _prune(state: _WindowState, since: datetime) -> None:
     state.since = since
 
 
-def _fingerprint(state: _WindowState, since: datetime) -> _Fingerprint:
-    """The same aggregates the database fingerprint reads, over cached rows at or after ``since``."""
+def _matches_fingerprint(state: _WindowState, since: datetime, *, count: int, max_id: int) -> bool:
+    """Whether the cached rows at or after ``since`` match the database window.
+
+    Count alone misses a swapped database holding the same number of rows (for
+    example a restored backup), so the largest cached id must match too.
+    """
     start = bisect.bisect_left(state.sort_keys, (since, -1))
-    keys = state.sort_keys[start:]
-    events = state.events[start:]
-    return _Fingerprint(
-        count=len(keys),
-        max_id=max((event_id for _, event_id in keys), default=0),
-        id_sum=sum(event_id for _, event_id in keys),
-        token_sum=sum(event.total_tokens for event in events),
-        newest=keys[-1][0] if keys else None,
-    )
+    if len(state.sort_keys) - start != count:
+        return False
+    cached_max_id = max((event_id for _, event_id in state.sort_keys[start:]), default=0)
+    return cached_max_id == max_id
 
 
 _cache = ClaudeUsageEventCache()

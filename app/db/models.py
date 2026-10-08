@@ -267,6 +267,54 @@ def _install_usage_history_mutation_triggers(target, connection, **kw) -> None:
 event.listen(Base.metadata, "after_create", _install_usage_history_mutation_triggers)
 
 
+class ClaudeSidecarUsageEventMutationState(Base):
+    """Generation counter for in-place changes to ``claude_sidecar_usage_events``.
+
+    The table is append-only in normal operation. On SQLite, triggers bump the
+    single row's ``generation`` on every UPDATE or DELETE (inserts do not fire
+    them), so the quota-estimate event cache can trust its id watermark while
+    the generation holds and reload in full the moment anything else changes
+    a row. Without the triggers (PostgreSQL, or a store the migration never
+    reached) the cache reads the window in full every time.
+    """
+
+    __tablename__ = "claude_sidecar_usage_event_mutation_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+
+#: Trigger names the Claude usage-event cache checks for before trusting the generation.
+CLAUDE_SIDECAR_USAGE_EVENT_MUTATION_TRIGGERS = (
+    "claude_sidecar_usage_event_mutation_after_update",
+    "claude_sidecar_usage_event_mutation_after_delete",
+)
+
+
+def _install_claude_sidecar_usage_event_mutation_triggers(target, connection, **kw) -> None:
+    """Give ``create_all`` (tests, fresh SQLite stores) the seed row and the
+    triggers the migration installs."""
+    if connection.dialect.name != "sqlite":
+        return
+    inspector = inspect(connection)
+    if not (
+        inspector.has_table("claude_sidecar_usage_events")
+        and inspector.has_table("claude_sidecar_usage_event_mutation_state")
+    ):
+        return
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO claude_sidecar_usage_event_mutation_state (id, generation) VALUES (1, 0)"
+    )
+    for name, operation in zip(CLAUDE_SIDECAR_USAGE_EVENT_MUTATION_TRIGGERS, ("UPDATE", "DELETE"), strict=True):
+        connection.exec_driver_sql(
+            f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {operation} ON claude_sidecar_usage_events "
+            "BEGIN UPDATE claude_sidecar_usage_event_mutation_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+
+
+event.listen(Base.metadata, "after_create", _install_claude_sidecar_usage_event_mutation_triggers)
+
+
 class AccountUsageRollup(Base):
     """Folded lifetime request-usage sums per account.
 
