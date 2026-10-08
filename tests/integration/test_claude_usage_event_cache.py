@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import delete, event, update
 
-from app.core.utils.time import utcnow
+from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import ClaudeSidecarUsageEvent
 from app.db.session import SessionLocal, engine
 from app.modules.claude_sidecar.usage_event_cache import get_claude_usage_event_cache
@@ -63,7 +63,10 @@ class _EventRowLoads:
         event.remove(engine.sync_engine, "before_cursor_execute", self._capture)
 
     def _capture(self, conn, cursor, statement, parameters, context, executemany) -> None:
-        if "claude_sidecar_usage_events.total_tokens" in statement:
+        # Row reads select columns; the fingerprint only aggregates them.
+        if "claude_sidecar_usage_events.total_tokens" in statement and not statement.lstrip().startswith(
+            "SELECT count("
+        ):
             self.statements.append(" ".join(statement.split()))
 
     @property
@@ -212,3 +215,28 @@ async def test_estimate_events_merge_many_late_rows_in_order(db_setup):
     assert len(events) == 10
     assert [tokens for _, _, tokens, _ in events][:2] == [105, 5]
     assert loads.full_loads == []
+
+
+@pytest.mark.asyncio
+async def test_estimate_events_reload_when_newest_row_is_replaced_at_same_id(db_setup):
+    now = utcnow()
+    await _insert(
+        _record("a", now - timedelta(hours=2), tokens=1),
+        _record("b", now - timedelta(hours=1), tokens=2),
+    )
+    assert [tokens for _, _, tokens, _ in await _read(now - timedelta(days=7))] == [1, 2]
+
+    # Same count, same max id, different row: SQLite can hand a deleted
+    # newest id to the next insert.
+    async with SessionLocal() as session:
+        await session.execute(
+            update(ClaudeSidecarUsageEvent)
+            .where(ClaudeSidecarUsageEvent.request_id == "b")
+            .values(request_id="b2", total_tokens=7, timestamp=to_utc_naive(now - timedelta(minutes=30)))
+        )
+        await session.commit()
+    with _EventRowLoads() as loads:
+        events = await _read(now - timedelta(days=7))
+
+    assert [tokens for _, _, tokens, _ in events] == [1, 7]
+    assert len(loads.full_loads) == 1

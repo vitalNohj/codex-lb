@@ -9,11 +9,12 @@ every dashboard refresh.
 ``claude_sidecar_usage_events`` is append-only: the usage collector inserts
 rows and nothing updates them. The cache keeps the window's events in memory
 as compact records and, on each read, pulls only rows above its id watermark.
-A ``count``/``max(id)`` fingerprint of the window, read in the same
-transaction, guards everything the watermark cannot see (a manual delete, a
-restored backup, another database behind the same process): any mismatch
-triggers a full reload, so a read never serves rows the database no longer
-holds or misses rows it does.
+A fingerprint of the window, read in the same transaction, guards everything
+the watermark cannot see (a manual delete, a reused id, a restored backup):
+any mismatch triggers a full reload. The fingerprint aggregates the ids, the
+token totals and the newest timestamp, so a change has to keep all of them
+identical at once to go unnoticed. Another database behind the same process
+is caught separately by the engine URL.
 """
 
 from __future__ import annotations
@@ -47,6 +48,15 @@ class ClaudeUsageEstimateEvent:
     source: str | None
     total_tokens: int
     failed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _Fingerprint:
+    count: int
+    max_id: int
+    id_sum: int
+    token_sum: int
+    newest: datetime | None
 
 
 @dataclass(slots=True)
@@ -88,15 +98,25 @@ class ClaudeUsageEventCache:
         database_key = str(session.get_bind().engine.url)
         # One snapshot: the fingerprint and any row fetch below run in the
         # session's transaction, so they agree with each other.
-        count, max_id = (
+        row = (
             await session.execute(
-                select(func.count(ClaudeSidecarUsageEvent.id), func.max(ClaudeSidecarUsageEvent.id)).where(
-                    ClaudeSidecarUsageEvent.timestamp >= since
-                )
+                select(
+                    func.count(ClaudeSidecarUsageEvent.id),
+                    func.max(ClaudeSidecarUsageEvent.id),
+                    func.sum(ClaudeSidecarUsageEvent.id),
+                    func.sum(ClaudeSidecarUsageEvent.total_tokens),
+                    func.max(ClaudeSidecarUsageEvent.timestamp),
+                ).where(ClaudeSidecarUsageEvent.timestamp >= since)
             )
         ).one()
-        count = int(count or 0)
-        max_id = int(max_id or 0)
+        fingerprint = _Fingerprint(
+            count=int(row[0] or 0),
+            max_id=int(row[1] or 0),
+            id_sum=int(row[2] or 0),
+            token_sum=int(row[3] or 0),
+            newest=to_utc_naive(row[4]) if row[4] is not None else None,
+        )
+        max_id = fingerprint.max_id
 
         state = self._state
         if state is None or state.database_key != database_key or since < state.since:
@@ -106,7 +126,7 @@ class ClaudeUsageEventCache:
                 fresh = await self._load(session, database_key, state.since, min_id=state.max_id, max_id=max_id)
                 _merge(state, fresh)
             _prune(state, since - _WINDOW_SLACK)
-        if not _matches_fingerprint(state, since, count=count, max_id=max_id):
+        if _fingerprint(state, since) != fingerprint:
             state = await self._load(session, database_key, since - _WINDOW_SLACK, min_id=None, max_id=max_id)
         self._state = state
         return state
@@ -186,17 +206,18 @@ def _prune(state: _WindowState, since: datetime) -> None:
     state.since = since
 
 
-def _matches_fingerprint(state: _WindowState, since: datetime, *, count: int, max_id: int) -> bool:
-    """Whether the cached rows at or after ``since`` match the database window.
-
-    Count alone misses a swapped database holding the same number of rows (for
-    example a restored backup), so the largest cached id must match too.
-    """
+def _fingerprint(state: _WindowState, since: datetime) -> _Fingerprint:
+    """The same aggregates the database fingerprint reads, over cached rows at or after ``since``."""
     start = bisect.bisect_left(state.sort_keys, (since, -1))
-    if len(state.sort_keys) - start != count:
-        return False
-    cached_max_id = max((event_id for _, event_id in state.sort_keys[start:]), default=0)
-    return cached_max_id == max_id
+    keys = state.sort_keys[start:]
+    events = state.events[start:]
+    return _Fingerprint(
+        count=len(keys),
+        max_id=max((event_id for _, event_id in keys), default=0),
+        id_sum=sum(event_id for _, event_id in keys),
+        token_sum=sum(event.total_tokens for event in events),
+        newest=keys[-1][0] if keys else None,
+    )
 
 
 _cache = ClaudeUsageEventCache()
