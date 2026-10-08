@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from app.modules.claude_sidecar.quota import SidecarOAuthUsage, SidecarQuotaSnapshot
+from app.modules.claude_sidecar.quota import SidecarOAuthUsage, SidecarOAuthUsageBucket, SidecarQuotaSnapshot
 from app.modules.settings.service import ClaudeSidecarAuthPlanData
 
 PRIMARY_WINDOW = timedelta(hours=5)
@@ -125,29 +125,39 @@ def build_claude_usage_estimates(
         timeline = _AuthTimeline.from_events(
             sorted(events_by_key.get(key, []), key=lambda event: _utc(event.timestamp))
         )
-        primary_start = _active_window_start(timeline, PRIMARY_WINDOW, reference_time)
-        secondary_start = _active_window_start(timeline, SECONDARY_WINDOW, reference_time)
+        oauth_usage = oauth_usage_by_key.get(key)
+        primary_expired_at = _expired_reset_at(oauth_usage.five_hour, reference_time) if oauth_usage else None
+        secondary_expired_at = _expired_reset_at(oauth_usage.seven_day, reference_time) if oauth_usage else None
+        # A retained OAuth sample only describes its original window. Once its
+        # reset passes, estimate the new window using events since that boundary,
+        # not the previous week's events or its last-known remaining percentage.
+        primary_start = _active_window_start(timeline, PRIMARY_WINDOW, reference_time, not_before=primary_expired_at)
+        secondary_start = _active_window_start(
+            timeline, SECONDARY_WINDOW, reference_time, not_before=secondary_expired_at
+        )
         primary_reset = primary_start + PRIMARY_WINDOW if primary_start else None
         secondary_reset = secondary_start + SECONDARY_WINDOW if secondary_start else None
         primary_used = _used_tokens(timeline, primary_start, primary_reset)
         secondary_used = _used_tokens(timeline, secondary_start, secondary_reset)
         primary_remaining = _remaining_percent(primary_used, primary_budget)
         secondary_remaining = _remaining_percent(secondary_used, secondary_budget)
-        usage_source = "usage_queue"
-        oauth_usage = oauth_usage_by_key.get(key)
+        has_expired_window = primary_expired_at is not None or secondary_expired_at is not None
+        oauth_is_authoritative = oauth_usage is not None and not has_expired_window
+        # The source/confidence describes both bars, so do not label a post-reset
+        # fallback as authoritative OAuth even if the other bucket is still valid.
+        usage_source = "oauth_usage" if oauth_is_authoritative else "usage_queue"
         if oauth_usage is not None:
-            usage_source = "oauth_usage"
-            if oauth_usage.five_hour is not None:
+            if oauth_usage.five_hour is not None and primary_expired_at is None:
                 primary_remaining = oauth_usage.five_hour.remaining_percent
                 primary_reset = oauth_usage.five_hour.resets_at
-            if oauth_usage.seven_day is not None:
+            if oauth_usage.seven_day is not None and secondary_expired_at is None:
                 secondary_remaining = oauth_usage.seven_day.remaining_percent
                 secondary_reset = oauth_usage.seven_day.resets_at
         if key in exceeded_keys:
             primary_remaining = 0.0
             if key in recover_at_by_key:
                 primary_reset = recover_at_by_key[key]
-        if oauth_usage is not None:
+        if oauth_is_authoritative:
             confidence = "oauth"
         elif primary_budget or secondary_budget:
             confidence = "estimated"
@@ -172,6 +182,13 @@ def build_claude_usage_estimates(
             )
         )
     return ClaudeUsageEstimates(accounts=estimates, aggregate=_aggregate(estimates))
+
+
+def _expired_reset_at(bucket: SidecarOAuthUsageBucket | None, now: datetime) -> datetime | None:
+    if bucket is None or bucket.resets_at is None:
+        return None
+    reset_at = _utc(bucket.resets_at)
+    return reset_at if reset_at <= now else None
 
 
 def _budgets_for_plan(plan: ClaudeSidecarAuthPlanData | None) -> tuple[int | None, int | None, str | None]:
@@ -219,18 +236,21 @@ def _active_window_start(
     timeline: _AuthTimeline,
     window: timedelta,
     now: datetime,
+    *,
+    not_before: datetime | None = None,
 ) -> datetime | None:
     """Return the start of the window still open at ``now``, if any.
 
     Windows chain: the first successful event opens one, and the first
     successful event at or after a window's end opens the next. Events after
-    ``now`` are ignored.
+    ``now`` or before a known OAuth reset boundary are ignored.
     """
     succeeded = timeline.succeeded
     end = bisect.bisect_right(succeeded, now)
-    if end == 0:
+    first = bisect.bisect_left(succeeded, not_before, 0, end) if not_before is not None else 0
+    if first == end:
         return None
-    start = succeeded[0]
+    start = succeeded[first]
     while True:
         next_index = bisect.bisect_left(succeeded, start + window, 0, end)
         if next_index >= end:
