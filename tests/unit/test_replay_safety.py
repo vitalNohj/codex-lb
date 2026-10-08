@@ -2613,3 +2613,55 @@ def test_account_neutral_replay_marker_requires_tagged_existing_hard_kind() -> N
 def test_account_neutral_replay_marker_rejects_empty_nonce() -> None:
     with pytest.raises(ValueError, match="nonce"):
         make_http_bridge_account_neutral_replay_key("")
+
+
+def _pi_store_false_full_resend_input(*, annotations: list[JsonValue]) -> list[JsonValue]:
+    # Shape produced by pi (openai-responses, store=false): history is echoed
+    # back with reasoning items, item ids, and empty output_text annotations.
+    user_turn: dict[str, JsonValue] = {"role": "user", "content": [{"type": "input_text", "text": "next"}]}
+    return [
+        {"role": "developer", "content": "system prompt"},
+        {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAA"},
+        {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "bash", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "id": "msg_1",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "done", "annotations": annotations}],
+        },
+        user_turn,
+    ]
+
+
+def test_account_neutral_replay_accepts_empty_output_text_annotations_from_store_false_clients() -> None:
+    input_items = _pi_store_false_full_resend_input(annotations=[])
+    projection = project_responses_input_for_account_neutral_fresh_replay(input_items, stored_count=6)
+    assert projection is not None
+
+    assert responses_payload_is_account_neutral_fresh_replay(
+        {
+            "model": "gpt-5.1",
+            "store": False,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"effort": "high", "summary": "auto"},
+            "input": projection.input_items,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "annotations",
+    [
+        [{"type": "file_citation", "file_id": "file_owned_by_account", "index": 0}],
+        [{"type": "url_citation", "url": "https://example.com", "start_index": 0, "end_index": 1}],
+    ],
+)
+def test_account_neutral_replay_rejects_nonempty_output_text_annotations(annotations: list[JsonValue]) -> None:
+    input_items = _pi_store_false_full_resend_input(annotations=annotations)
+    projection = project_responses_input_for_account_neutral_fresh_replay(input_items, stored_count=6)
+    assert projection is not None
+
+    assert not responses_payload_is_account_neutral_fresh_replay({"model": "gpt-5.1", "input": projection.input_items})

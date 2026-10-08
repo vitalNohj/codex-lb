@@ -59,7 +59,10 @@ _ACCOUNT_NEUTRAL_CONTENT_FIELDS = {
     "input_file": frozenset({"file_data", "file_id", "file_url", "filename", "type"}),
     "input_image": frozenset({"detail", "file_id", "image_url", "type"}),
     "input_text": frozenset({"text", "type"}),
-    "output_text": frozenset({"text", "type"}),
+    # Clients replaying store=false history (for example pi) echo the empty
+    # citation list the upstream returned. Non-empty annotations can cite
+    # account-scoped files, so only an empty list is accepted below.
+    "output_text": frozenset({"annotations", "text", "type"}),
     "refusal": frozenset({"refusal", "type"}),
     "text": frozenset({"text", "type"}),
 }
@@ -978,7 +981,9 @@ def _input_content_part_is_self_contained(
         return False
     if any(key not in _ACCOUNT_NEUTRAL_CONTENT_FIELDS[cast(str, part_type)] for key in part):
         return False
-    if part_type in {"input_text", "text"} or (allow_output and part_type == "output_text"):
+    if allow_output and part_type == "output_text":
+        return _is_nonblank_string(part.get("text")) and part.get("annotations", []) == []
+    if part_type in {"input_text", "text"}:
         return _is_nonblank_string(part.get("text"))
     if allow_output and part_type == "refusal":
         return _is_nonblank_string(part.get("refusal"))
