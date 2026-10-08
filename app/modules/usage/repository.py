@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import bisect
 import sqlite3
 from collections.abc import Collection
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from threading import RLock
 from typing import Any, Callable, cast
@@ -33,7 +34,7 @@ from app.core.config.settings import get_settings
 from app.core.usage.types import UsageAggregateRow, UsageTrendBucket
 from app.core.utils.time import utcnow
 from app.db.account_identity_lock import lock_postgresql_account_identities
-from app.db.models import Account, AdditionalUsageHistory, UsageHistory
+from app.db.models import USAGE_HISTORY_MUTATION_TRIGGERS, Account, AdditionalUsageHistory, UsageHistory
 from app.db.session import relax_commit_durability, sqlite_writer_section
 from app.db.sqlite_utils import sqlite_db_path_from_url
 from app.modules.usage.additional_quota_keys import (
@@ -108,10 +109,19 @@ class _BulkHistoryCacheEntry:
     max_id: int
     metadata: _BulkHistoryCacheMetadata
     rows_by_account: dict[str, list[UsageHistorySnapshot]]
+    #: ``usage_history`` mutation generation the entry was last validated at,
+    #: or ``None`` when the store has no trustworthy generation (see
+    #: ``_usage_history_mutation_generation``).
+    generation: int | None = None
 
 
 _BULK_HISTORY_SQLITE_CACHE: dict[tuple[str, tuple[str, ...], str], _BulkHistoryCacheEntry] = {}
 _BULK_HISTORY_SQLITE_CACHE_LOCK = RLock()
+# Callers ask for a window that slides forward with the clock, so a cache entry
+# drops rows that fell out of the requested window once it lags by this much.
+# Without it the entry kept every row since its first fill: memory and the
+# per-hit digest validation grew for as long as the process ran.
+_BULK_HISTORY_PRUNE_SLACK = timedelta(minutes=15)
 _EMPTY_BULK_HISTORY_DIGEST = sha256().hexdigest()
 
 
@@ -481,6 +491,77 @@ def _additional_latest_by_account_sqlite(
     return latest
 
 
+def _usage_history_mutation_generation(conn: sqlite3.Connection) -> int | None:
+    """Return the trigger-maintained ``usage_history`` mutation generation.
+
+    ``None`` when it cannot be trusted to have seen every UPDATE and DELETE:
+    the state table, its row, or either trigger is missing (a store the
+    migration never reached, or a hand-built table).
+    """
+    try:
+        trigger_count = conn.execute(
+            "select count(*) from sqlite_master where type = 'trigger' and tbl_name = 'usage_history' "
+            f"and name in ({','.join('?' for _ in USAGE_HISTORY_MUTATION_TRIGGERS)})",
+            USAGE_HISTORY_MUTATION_TRIGGERS,
+        ).fetchone()[0]
+        if trigger_count != len(USAGE_HISTORY_MUTATION_TRIGGERS):
+            return None
+        row = conn.execute("select generation from usage_history_mutation_state where id = 1").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return None if row is None else int(row[0])
+
+
+def _query_bulk_history_shape_sqlite(
+    conn: sqlite3.Connection,
+    account_ids: list[str],
+    window: str,
+    since: datetime,
+    *,
+    max_id: int,
+) -> tuple[int, int]:
+    """``(row count, max id)`` of the cached range, read from the covering index."""
+    placeholders = ",".join("?" for _ in account_ids)
+    params: list[object]
+    if window == "primary":
+        window_clause = "coalesce(window, 'primary') = 'primary'"
+        params = [*account_ids, since.isoformat(sep=" "), max_id]
+    else:
+        window_clause = "window = ?"
+        params = [*account_ids, window, since.isoformat(sep=" "), max_id]
+    row = conn.execute(
+        f"""
+        select count(*), coalesce(max(id), 0)
+        from usage_history
+        where account_id in ({placeholders})
+          and {window_clause}
+          and recorded_at >= ?
+          and id <= ?
+        """,
+        params,
+    ).fetchone()
+    return int(row[0]), int(row[1])
+
+
+def _bulk_history_shape_metadata(grouped: dict[str, list[UsageHistorySnapshot]]) -> _BulkHistoryCacheMetadata:
+    """Row count and max id only. Entries validated by the mutation generation
+    carry no content digest; if the generation later moves, the digest
+    comparison cannot match and the entry reloads."""
+    return _BulkHistoryCacheMetadata(
+        row_count=sum(len(rows) for rows in grouped.values()),
+        max_id=max((row.id for rows in grouped.values() for row in rows), default=0),
+        content_digest="",
+    )
+
+
+def _bulk_history_entry_metadata(
+    grouped: dict[str, list[UsageHistorySnapshot]], generation: int | None
+) -> _BulkHistoryCacheMetadata:
+    if generation is None:
+        return _bulk_history_metadata_from_grouped(grouped)
+    return _bulk_history_shape_metadata(grouped)
+
+
 def _bulk_history_since_sqlite(
     db_path: str,
     account_ids: list[str],
@@ -492,21 +573,39 @@ def _bulk_history_since_sqlite(
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=30000")
         with _BULK_HISTORY_SQLITE_CACHE_LOCK:
+            # Read before any row: a change committed after this read moves the
+            # generation, so the next call revalidates.
+            generation = _usage_history_mutation_generation(conn)
             cached = _BULK_HISTORY_SQLITE_CACHE.get(cache_key)
             if cached is not None and cached.since <= since:
-                metadata = _query_bulk_history_metadata_sqlite(
-                    conn,
-                    account_ids,
-                    window,
-                    cached.since,
-                    max_id=cached.max_id,
-                )
-                if metadata != cached.metadata:
-                    grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, cached.since)
-                    cached.metadata = _bulk_history_metadata_from_grouped(grouped)
+                if (
+                    generation is not None
+                    and generation == cached.generation
+                    and _query_bulk_history_shape_sqlite(conn, account_ids, window, cached.since, max_id=cached.max_id)
+                    == (cached.metadata.row_count, cached.metadata.max_id)
+                ):
+                    # No UPDATE or DELETE since the last validation, and no row
+                    # appeared below the watermark: the cached rows are current
+                    # without re-hashing them.
+                    unchanged = True
+                else:
+                    metadata = _query_bulk_history_metadata_sqlite(
+                        conn,
+                        account_ids,
+                        window,
+                        cached.since,
+                        max_id=cached.max_id,
+                    )
+                    unchanged = metadata == cached.metadata
+                if not unchanged:
+                    grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, since)
+                    cached.since = since
+                    cached.metadata = _bulk_history_entry_metadata(grouped, generation)
                     cached.max_id = cached.metadata.max_id
                     cached.rows_by_account = grouped
+                    cached.generation = generation
                     return _clone_filtered_history(grouped, since)
+                cached.generation = generation
 
                 new_rows = _query_bulk_history_since_sqlite(
                     conn,
@@ -517,19 +616,58 @@ def _bulk_history_since_sqlite(
                 )
                 if new_rows:
                     _append_grouped_history(cached.rows_by_account, new_rows)
-                    cached.metadata = _bulk_history_metadata_from_grouped(cached.rows_by_account)
+                pruned = since - cached.since >= _BULK_HISTORY_PRUNE_SLACK
+                if pruned:
+                    # Rows below ``since`` can never be requested again. Any
+                    # row above the recomputed ``max_id`` that was dropped here
+                    # sits below the new ``since``, so the next append query
+                    # (bounded by ``since``) cannot pull it back in twice.
+                    cached.rows_by_account = _clone_filtered_history(cached.rows_by_account, since)
+                    cached.since = since
+                if new_rows or pruned:
+                    cached.metadata = _bulk_history_entry_metadata(cached.rows_by_account, generation)
                     cached.max_id = cached.metadata.max_id
                 return _clone_filtered_history(cached.rows_by_account, since)
 
             grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, since)
-            metadata = _bulk_history_metadata_from_grouped(grouped)
+            metadata = _bulk_history_entry_metadata(grouped, generation)
             _BULK_HISTORY_SQLITE_CACHE[cache_key] = _BulkHistoryCacheEntry(
                 since=since,
                 max_id=metadata.max_id,
                 metadata=metadata,
                 rows_by_account=grouped,
+                generation=generation,
             )
             return _clone_filtered_history(grouped, since)
+
+
+def _cap_grouped_history(
+    grouped: dict[str, list[UsageHistorySnapshot]],
+    since: datetime,
+    *,
+    cutoffs: dict[str, datetime] | None,
+    per_account_row_cap: int,
+    uncapped_recent_floor: datetime | None,
+) -> dict[str, list[UsageHistorySnapshot]]:
+    """Apply the PostgreSQL capped fetch's row selection to oldest-first slices.
+
+    Per account: rows at or after ``max(cutoff, since)``; every row at or after
+    the uncapped floor, plus the newest ``per_account_row_cap`` rows between
+    the cutoff and that floor.
+    """
+    capped: dict[str, list[UsageHistorySnapshot]] = {}
+    for account_id, rows in grouped.items():
+        cutoff = max(cutoffs.get(account_id, since), since) if cutoffs else since
+        recorded = [row.recorded_at for row in rows]
+        start = bisect.bisect_left(recorded, cutoff)
+        floor_index = len(rows)
+        if uncapped_recent_floor is not None:
+            floor_index = bisect.bisect_left(recorded, max(cutoff, uncapped_recent_floor), start)
+        older_start = max(start, floor_index - per_account_row_cap)
+        selected = rows[older_start:]
+        if selected:
+            capped[account_id] = selected
+    return capped
 
 
 def _resolve_additional_quota_key(
@@ -961,13 +1099,14 @@ class UsageRepository:
         bound here only changes how many rows are read, never the result.
 
         ``per_account_row_cap`` additionally bounds each account's slice to
-        its newest rows inside the cutoff (PostgreSQL only). Live snapshot
-        ingestion appends usage rows per proxied request, so a busy account's
-        7-day window can hold tens of thousands of rows while the projection
-        consumers (EWMA depletion, weekly-pace burn/smoothing) only read the
-        recent tail. Each capped slice keeps oldest-first ordering. The
-        SQLite snapshot-cache path ignores the cap the same way it ignores
-        ``cutoffs``.
+        its newest rows inside the cutoff. Live snapshot ingestion appends
+        usage rows per proxied request, so a busy account's 7-day window can
+        hold tens of thousands of rows while the projection consumers (EWMA
+        depletion, weekly-pace burn/smoothing) only read the recent tail.
+        Each capped slice keeps oldest-first ordering. PostgreSQL applies the
+        cap in SQL; the SQLite path reads its snapshot cache and applies the
+        same per-account cutoff and cap to the result, so both backends hand
+        the consumers the same rows.
 
         ``uncapped_recent_floor`` exempts rows at or after the given time
         from the row cap: every in-cutoff row newer than the floor is always
@@ -976,7 +1115,7 @@ class UsageRepository:
         weekly-pace smoothing mean) pass their window start here so a
         write-rate burst can never silently truncate that window, while
         tail-weighted consumers (EWMA) stay covered by the cap alone.
-        Ignored unless ``per_account_row_cap`` is set on PostgreSQL.
+        Ignored unless ``per_account_row_cap`` is set.
         """
         if not account_ids:
             return {}
@@ -984,12 +1123,21 @@ class UsageRepository:
         dialect = bind.dialect.name if bind else "sqlite"
         sqlite_path = _sqlite_path_from_bind(bind) if dialect == "sqlite" else None
         if sqlite_path is not None:
-            return await to_thread.run_sync(
+            grouped = await to_thread.run_sync(
                 _bulk_history_since_sqlite,
                 str(sqlite_path),
                 list(account_ids),
                 window,
                 since,
+            )
+            if per_account_row_cap is None:
+                return grouped
+            return _cap_grouped_history(
+                grouped,
+                since,
+                cutoffs=cutoffs,
+                per_account_row_cap=per_account_row_cap,
+                uncapped_recent_floor=uncapped_recent_floor,
             )
 
         if per_account_row_cap is not None and dialect == "postgresql":

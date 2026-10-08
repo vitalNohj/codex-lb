@@ -15,10 +15,14 @@ from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal, engine
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.usage.repository import (
+    _BULK_HISTORY_SQLITE_CACHE,
     AdditionalUsageRepository,
+    UsageHistorySnapshot,
     UsageRepository,
     _additional_latest_by_account_sqlite,
+    _bulk_history_cache_key,
     _bulk_history_since_sqlite,
+    _cap_grouped_history,
     _clear_bulk_history_since_sqlite_cache,
     _latest_by_account_sqlite,
     _resolve_additional_quota_query_scope,
@@ -639,6 +643,252 @@ def test_bulk_history_since_sqlite_cache_reuses_superset_and_picks_up_appends(tm
     assert [row.id for row in second["acc2"]] == [3]
 
     _clear_bulk_history_since_sqlite_cache()
+
+
+def test_bulk_history_since_sqlite_cache_prunes_rows_behind_sliding_window(tmp_path):
+    db_path = tmp_path / "usage.db"
+    _clear_bulk_history_since_sqlite_cache()
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            create table usage_history (
+                id integer primary key,
+                account_id text not null,
+                used_percent real not null,
+                recorded_at text not null,
+                reset_at real,
+                window_minutes integer,
+                window text
+            )
+            """
+        )
+        conn.executemany(
+            """
+            insert into usage_history
+                (id, account_id, used_percent, recorded_at, reset_at, window_minutes, window)
+            values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "acc1", 10.0, "2026-01-01 00:00:00", 1000.0, 10080, "secondary"),
+                (2, "acc1", 20.0, "2026-01-01 00:30:00", 1000.0, 10080, "secondary"),
+                (3, "acc1", 30.0, "2026-01-01 01:00:00", 1000.0, 10080, "secondary"),
+            ],
+        )
+        conn.commit()
+
+    _bulk_history_since_sqlite(str(db_path), ["acc1"], "secondary", datetime(2026, 1, 1, 0, 0, 0))
+    cache_key = _bulk_history_cache_key(str(db_path), ["acc1"], "secondary")
+    assert [row.id for row in _BULK_HISTORY_SQLITE_CACHE[cache_key].rows_by_account["acc1"]] == [1, 2, 3]
+
+    # The window slid forward by more than the prune slack: rows behind it are
+    # dropped from the entry, not kept for the life of the process.
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            insert into usage_history
+                (id, account_id, used_percent, recorded_at, reset_at, window_minutes, window)
+            values (4, 'acc1', 40.0, '2026-01-01 01:30:00', 1000.0, 10080, 'secondary')
+            """
+        )
+        conn.commit()
+    slid = _bulk_history_since_sqlite(str(db_path), ["acc1"], "secondary", datetime(2026, 1, 1, 0, 45, 0))
+
+    assert [row.id for row in slid["acc1"]] == [3, 4]
+    entry = _BULK_HISTORY_SQLITE_CACHE[cache_key]
+    assert entry.since == datetime(2026, 1, 1, 0, 45, 0)
+    assert [row.id for row in entry.rows_by_account["acc1"]] == [3, 4]
+
+    # The pruned entry still validates and serves later reads, and a same-id
+    # correction inside the remaining window is still detected.
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("update usage_history set used_percent = 35.0 where id = 3")
+        conn.commit()
+    corrected = _bulk_history_since_sqlite(str(db_path), ["acc1"], "secondary", datetime(2026, 1, 1, 0, 50, 0))
+    assert [(row.id, row.used_percent) for row in corrected["acc1"]] == [(3, 35.0), (4, 40.0)]
+
+    _clear_bulk_history_since_sqlite_cache()
+
+
+_USAGE_HISTORY_DDL = """
+    create table usage_history (
+        id integer primary key,
+        account_id text not null,
+        used_percent real not null,
+        recorded_at text not null,
+        reset_at real,
+        window_minutes integer,
+        window text
+    )
+"""
+
+
+def _usage_history_with_mutation_triggers(db_path) -> None:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(_USAGE_HISTORY_DDL)
+        conn.execute("create table usage_history_mutation_state (id integer primary key, generation integer not null)")
+        conn.execute("insert into usage_history_mutation_state (id, generation) values (1, 0)")
+        for name, operation in (
+            ("usage_history_mutation_after_update", "UPDATE"),
+            ("usage_history_mutation_after_delete", "DELETE"),
+        ):
+            conn.execute(
+                f"create trigger {name} after {operation} on usage_history "
+                "begin update usage_history_mutation_state set generation = generation + 1 where id = 1; end"
+            )
+        conn.executemany(
+            """
+            insert into usage_history
+                (id, account_id, used_percent, recorded_at, reset_at, window_minutes, window)
+            values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "acc1", 10.0, "2026-01-01 00:00:00", 1000.0, 10080, "secondary"),
+                (2, "acc1", 20.0, "2026-01-01 00:01:00", 1000.0, 10080, "secondary"),
+                (3, "acc2", 30.0, "2026-01-01 00:01:00", 1000.0, 10080, "secondary"),
+            ],
+        )
+        conn.commit()
+
+
+def _trace_statements(monkeypatch) -> list[str]:
+    statements: list[str] = []
+    original_connect = sqlite3.connect
+
+    def connect_with_trace(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+        conn.set_trace_callback(lambda statement: statements.append(" ".join(statement.lower().split())))
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", connect_with_trace)
+    return statements
+
+
+def test_bulk_history_since_sqlite_unchanged_generation_skips_digest(tmp_path, monkeypatch):
+    db_path = tmp_path / "usage.db"
+    _clear_bulk_history_since_sqlite_cache()
+    _usage_history_with_mutation_triggers(db_path)
+    since = datetime(2026, 1, 1, 0, 0, 0)
+
+    first = _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+    statements = _trace_statements(monkeypatch)
+    second = _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    assert {key: [row.id for row in rows] for key, rows in second.items()} == {
+        key: [row.id for row in rows] for key, rows in first.items()
+    }
+    assert not any("clb_bulk_history_digest" in statement for statement in statements)
+    _clear_bulk_history_since_sqlite_cache()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "update usage_history set used_percent = 25.0 where id = 2",
+        "delete from usage_history where id = 1",
+    ],
+)
+def test_bulk_history_since_sqlite_generation_change_revalidates(tmp_path, mutation):
+    db_path = tmp_path / "usage.db"
+    _clear_bulk_history_since_sqlite_cache()
+    _usage_history_with_mutation_triggers(db_path)
+    since = datetime(2026, 1, 1, 0, 0, 0)
+    _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(mutation)
+        conn.commit()
+    refreshed = _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        expected = conn.execute(
+            "select id, used_percent from usage_history where account_id = 'acc1' order by recorded_at, id"
+        ).fetchall()
+    assert [(row.id, row.used_percent) for row in refreshed["acc1"]] == expected
+    _clear_bulk_history_since_sqlite_cache()
+
+
+def test_bulk_history_since_sqlite_detects_insert_below_watermark(tmp_path):
+    """Inserts do not move the generation; a row slipped in under the cached
+    max id is still caught by the row-count check."""
+    db_path = tmp_path / "usage.db"
+    _clear_bulk_history_since_sqlite_cache()
+    _usage_history_with_mutation_triggers(db_path)
+    since = datetime(2026, 1, 1, 0, 0, 0)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("delete from usage_history where id = 2")
+        conn.commit()
+    _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            insert into usage_history
+                (id, account_id, used_percent, recorded_at, reset_at, window_minutes, window)
+            values (2, 'acc1', 20.0, '2026-01-01 00:01:00', 1000.0, 10080, 'secondary')
+            """
+        )
+        conn.commit()
+    refreshed = _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    assert [row.id for row in refreshed["acc1"]] == [1, 2]
+    _clear_bulk_history_since_sqlite_cache()
+
+
+def test_bulk_history_since_sqlite_missing_trigger_falls_back_to_digest(tmp_path, monkeypatch):
+    db_path = tmp_path / "usage.db"
+    _clear_bulk_history_since_sqlite_cache()
+    _usage_history_with_mutation_triggers(db_path)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("drop trigger usage_history_mutation_after_update")
+        conn.commit()
+    since = datetime(2026, 1, 1, 0, 0, 0)
+    _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("update usage_history set used_percent = 25.0 where id = 2")
+        conn.commit()
+    statements = _trace_statements(monkeypatch)
+    refreshed = _bulk_history_since_sqlite(str(db_path), ["acc1", "acc2"], "secondary", since)
+
+    assert any("clb_bulk_history_digest" in statement for statement in statements)
+    assert [(row.id, row.used_percent) for row in refreshed["acc1"]] == [(1, 10.0), (2, 25.0)]
+    _clear_bulk_history_since_sqlite_cache()
+
+
+def _snapshot(row_id: int, minute: int, account_id: str = "acc1") -> UsageHistorySnapshot:
+    return UsageHistorySnapshot(
+        id=row_id,
+        account_id=account_id,
+        used_percent=float(row_id),
+        recorded_at=datetime(2026, 1, 1, 0, minute, 0),
+        reset_at=None,
+        window_minutes=None,
+    )
+
+
+def test_cap_grouped_history_mirrors_postgresql_capped_fetch():
+    rows = [_snapshot(row_id, minute) for row_id, minute in enumerate(range(0, 50, 5), start=1)]
+    grouped = {"acc1": rows, "acc2": [_snapshot(99, 1, "acc2")]}
+    since = datetime(2026, 1, 1, 0, 0, 0)
+
+    capped = _cap_grouped_history(
+        grouped,
+        since,
+        cutoffs={"acc1": datetime(2026, 1, 1, 0, 10, 0), "acc2": datetime(2026, 1, 1, 0, 30, 0)},
+        per_account_row_cap=2,
+        uncapped_recent_floor=datetime(2026, 1, 1, 0, 35, 0),
+    )
+
+    # acc1: rows at/after the floor (35, 40, 45) in full, plus the newest two
+    # of the in-cutoff remainder before it (25, 30); acc2 falls before its cutoff.
+    assert [row.recorded_at.minute for row in capped["acc1"]] == [25, 30, 35, 40, 45]
+    assert "acc2" not in capped
+
+    uncapped_floor = _cap_grouped_history(
+        grouped, since, cutoffs=None, per_account_row_cap=3, uncapped_recent_floor=None
+    )
+    assert [row.recorded_at.minute for row in uncapped_floor["acc1"]] == [35, 40, 45]
+    assert [row.id for row in uncapped_floor["acc2"]] == [99]
 
 
 def test_latest_by_account_sqlite_closes_direct_connection(tmp_path, monkeypatch):
@@ -1301,9 +1551,9 @@ async def test_bulk_history_since_per_account_cutoffs_parity(db_setup):
 
 @pytest.mark.asyncio
 async def test_bulk_history_since_per_account_row_cap_keeps_newest_rows(db_setup):
-    """The PostgreSQL row cap keeps each account's newest in-cutoff rows in
-    oldest-first order; under-cap accounts are unaffected and SQLite ignores
-    the cap entirely (snapshot-cache path, like ``cutoffs``)."""
+    """The row cap keeps each account's newest in-cutoff rows in oldest-first
+    order on every backend (SQLite applies it to its snapshot-cache result);
+    under-cap accounts are unaffected."""
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
@@ -1330,16 +1580,9 @@ async def test_bulk_history_since_per_account_row_cap_keeps_newest_rows(db_setup
         )
         uncapped = await repo.bulk_history_since(["acc-dense", "acc-sparse"], "secondary", since)
 
-    dialect = "postgresql" if str(engine.url).startswith("postgresql") else "sqlite"
-    if dialect == "postgresql":
-        # Newest three rows, still oldest-first.
-        assert [snapshot.used_percent for snapshot in capped["acc-dense"]] == [15.0, 16.0, 17.0]
-        assert capped["acc-dense"] == uncapped["acc-dense"][-3:]
-    else:
-        # SQLite serves the shared-floor snapshot cache; the cap is ignored.
-        assert [snapshot.used_percent for snapshot in capped["acc-dense"]] == [
-            snapshot.used_percent for snapshot in uncapped["acc-dense"]
-        ]
+    # Newest three rows, still oldest-first.
+    assert [snapshot.used_percent for snapshot in capped["acc-dense"]] == [15.0, 16.0, 17.0]
+    assert capped["acc-dense"] == uncapped["acc-dense"][-3:]
     # Under-cap accounts return their full in-cutoff slice on every backend.
     assert [snapshot.used_percent for snapshot in capped["acc-sparse"]] == [90.0, 95.0]
 

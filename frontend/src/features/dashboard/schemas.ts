@@ -155,6 +155,10 @@ export const DashboardOverviewSchema = z.object({
   weeklyCreditPace: WeeklyCreditPaceSchema.nullable().optional(),
 });
 
+export const DashboardSyncStatusSchema = z.object({
+  lastSyncAt: z.iso.datetime({ offset: true }).nullable(),
+});
+
 export const DashboardProjectionsSchema = z.object({
   depletionPrimary: DepletionSchema.nullable().optional(),
   depletionSecondary: DepletionSchema.nullable().optional(),

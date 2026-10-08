@@ -124,10 +124,15 @@ _EMPTY_REQUEST_USAGE_SUMMARY = AccountRequestUsageSummary(
 # COUNT cache (issue #1340 / PRINCIPLES.md P2); the test suite patches the
 # TTL to 0 so summaries stay exact within a test. Account deletion and
 # duplicate-identity consolidation clear the cache because they re-attribute
-# usage rather than merely append to it.
+# usage rather than merely append to it. The per-source lifetime totals the
+# synthetic sidecar accounts show share the cache under their own key space:
+# the same all-time aggregate, scanned once per sidecar on every overview and
+# accounts load.
 _SUMMARY_CACHE_TTL_SECONDS = 30.0
 _SUMMARY_CACHE_MAX_ENTRIES = 64
-_request_usage_summary_cache: dict[tuple[str, ...] | None, tuple[dict[str, AccountRequestUsageSummary], float]] = {}
+#: ``("account", account ids)`` or ``("source", sources)``; ``None`` ids mean every account.
+_SummaryCacheKey = tuple[str, tuple[str, ...] | None]
+_request_usage_summary_cache: dict[_SummaryCacheKey, tuple[dict[str, AccountRequestUsageSummary], float]] = {}
 # Invalidation generation: a fill that was already computing when a clear
 # happened must not re-populate the cache with its pre-clear result. Fills
 # capture the generation before their first await and stores are discarded
@@ -144,7 +149,7 @@ def _clear_request_usage_summary_cache() -> None:
 
 
 def _cached_request_usage_summaries(
-    key: tuple[str, ...] | None,
+    key: _SummaryCacheKey,
 ) -> dict[str, AccountRequestUsageSummary] | None:
     entry = _request_usage_summary_cache.get(key)
     if entry is None:
@@ -157,7 +162,7 @@ def _cached_request_usage_summaries(
 
 
 def _store_request_usage_summaries(
-    key: tuple[str, ...] | None,
+    key: _SummaryCacheKey,
     summaries: dict[str, AccountRequestUsageSummary],
     ttl_seconds: float,
     generation: int,
@@ -240,7 +245,7 @@ class AccountsRepository:
         account_ids: list[str] | None = None,
     ) -> dict[str, AccountRequestUsageSummary]:
         ttl_seconds = _SUMMARY_CACHE_TTL_SECONDS
-        cache_key = tuple(sorted(account_ids)) if account_ids is not None else None
+        cache_key: _SummaryCacheKey = ("account", tuple(sorted(account_ids)) if account_ids is not None else None)
         generation = _summary_cache_generation
         if ttl_seconds > 0:
             cached = _cached_request_usage_summaries(cache_key)
@@ -318,6 +323,13 @@ class AccountsRepository:
         requested = list(dict.fromkeys(sources))
         if not requested:
             return {}
+        ttl_seconds = _SUMMARY_CACHE_TTL_SECONDS
+        cache_key: _SummaryCacheKey = ("source", tuple(sorted(requested)))
+        generation = _summary_cache_generation
+        if ttl_seconds > 0:
+            cached = _cached_request_usage_summaries(cache_key)
+            if cached is not None:
+                return dict(cached)
         output_tokens_expr = func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)
         conditions = [
             RequestLog.request_kind.not_in(("warmup", "limit_warmup")),
@@ -367,6 +379,9 @@ class AccountsRepository:
                 total_cost_usd=round(float(row.total_cost_usd or 0.0), 6),
                 total_savings_usd=round(float(row.total_savings_usd or 0.0), 6),
             )
+        if ttl_seconds > 0:
+            _store_request_usage_summaries(cache_key, summaries, ttl_seconds, generation)
+            return dict(summaries)
         return summaries
 
     async def exists_active_chatgpt_account_id(self, chatgpt_account_id: str) -> bool:

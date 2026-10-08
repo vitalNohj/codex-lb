@@ -6,6 +6,7 @@ import {
   DEFAULT_OVERVIEW_TIMEFRAME,
   DashboardOverviewSchema,
   DashboardProjectionsSchema,
+  DashboardSyncStatusSchema,
   RequestLogFilterOptionsSchema,
   RequestLogsResponseSchema,
   type ConversationTimeframe,
@@ -60,6 +61,10 @@ export function getDashboardOverview(params: DashboardOverviewParams = {}) {
 
 export function getDashboardProjections() {
   return get(`${DASHBOARD_PATH}/projections`, DashboardProjectionsSchema);
+}
+
+export function getDashboardSyncStatus() {
+  return get(`${DASHBOARD_PATH}/sync-status`, DashboardSyncStatusSchema);
 }
 
 export function getRequestLogs(params: RequestLogsListFilters = {}) {

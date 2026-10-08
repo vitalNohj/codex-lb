@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -542,3 +543,68 @@ async def test_request_logs_options_unfiltered_issues_no_distinct_statements(asy
     assert options_statements, "expected captured facet statements"
     assert not any(re.search(r"SELECT\s+DISTINCT\b", stmt, re.IGNORECASE) for stmt in options_statements)
     assert any("facet_skip" in stmt for stmt in options_statements)
+
+
+@pytest.mark.asyncio
+async def test_request_logs_options_unfiltered_probes_walk_facet_indexes_sqlite(async_client, db_setup):
+    """Each skip-scan probe must walk its facet column's index on SQLite.
+
+    The planner otherwise picks the equality-indexed baseline filter
+    (``deleted_at IS NULL``, which nearly every row matches) and every probe
+    becomes a full pass over request_logs: seconds per facet on a production
+    sized table.
+    """
+    import re
+
+    from sqlalchemy import event
+
+    if engine.dialect.name != "sqlite":
+        pytest.skip("SQLite planner regression")
+
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+        await accounts_repo.upsert(_make_account("acc_plan", "plan@example.com"))
+        for index, model in enumerate(("gpt-4o", "gpt-5.1", "o4-mini")):
+            await logs_repo.add_log(
+                account_id="acc_plan",
+                request_id=f"req_plan_{index}",
+                model=model,
+                input_tokens=10,
+                output_tokens=10,
+                latency_ms=100,
+                status="success" if index else "error",
+                error_code=None if index else "upstream_error",
+                requested_at=now,
+            )
+
+    captured: list[tuple[str, Any]] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if "facet_skip" in statement:
+            captured.append((statement, parameters))
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        response = await async_client.get("/api/request-logs/options")
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+
+    assert response.status_code == 200
+    assert len(response.json()["modelOptions"]) == 3
+    assert captured, "expected skip-scan facet statements"
+    async with engine.connect() as conn:
+        for statement, parameters in captured:
+            facet_match = re.search(r"min\(request_logs\.(\w+)\)", statement)
+            assert facet_match is not None
+            facet = facet_match.group(1)
+            plan = (await conn.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}", parameters)).all()
+            searches = [str(row[3]) for row in plan if "request_logs" in str(row[3])]
+            assert searches
+            for detail in searches:
+                assert "deleted_at=?" not in detail, (facet, detail)
+                # The status facet and its error_code pair probe legitimately
+                # seek the (status, error_code) index by status.
+                if facet not in {"status", "error_code"}:
+                    assert "status=?" not in detail, (facet, detail)

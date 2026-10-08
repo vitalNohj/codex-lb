@@ -116,6 +116,10 @@ class DashboardOverviewResponse(DashboardModel):
     weekly_credit_pace: WeeklyCreditPaceResponse | None = None
 
 
+class DashboardSyncStatusResponse(DashboardModel):
+    last_sync_at: datetime | None = None
+
+
 class DashboardProjectionsResponse(DashboardModel):
     depletion_primary: DepletionResponse | None = None
     depletion_secondary: DepletionResponse | None = None

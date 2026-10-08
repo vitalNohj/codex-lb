@@ -45,7 +45,20 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import BigInteger, ColumnElement, Integer, Select, and_, cast, func, literal, or_, select, union_all
+from sqlalchemy import (
+    BigInteger,
+    ColumnElement,
+    Integer,
+    Select,
+    and_,
+    case,
+    cast,
+    func,
+    literal,
+    or_,
+    select,
+    union_all,
+)
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import CompoundSelect
@@ -251,6 +264,11 @@ def _least_fn(session: AsyncSession):
     return func.least if session.get_bind().dialect.name == "postgresql" else func.min
 
 
+def _greatest_fn(session: AsyncSession):
+    # SQLite's two-argument max() scalar function is its greatest().
+    return func.greatest if session.get_bind().dialect.name == "postgresql" else func.max
+
+
 def _conversation_folded_select(
     session: AsyncSession,
     since: datetime,
@@ -288,45 +306,57 @@ def _conversation_folded_select(
     )
 
 
-def _conversation_raw_complement_clause(
-    session: AsyncSession, lo: datetime, hi: datetime | None
-) -> ColumnElement[bool]:
-    """Rows NOT covered by the folded segment ``[lo, min(W, hi))``: below the
-    ceil-grid start, or at/above the watermark-clamped end. A NULL watermark
-    (state row missing — the callers OUTER-join it) or an epoch watermark
-    degrades to the caller's full window."""
+def _conversation_raw_tail_start(session: AsyncSession, lo: datetime, hi: datetime | None) -> ColumnElement:
+    """Where the raw tail after the folded segment ``[lo, min(W, hi))`` starts.
+
+    An uncorrelated scalar subquery on the state row: it reads the same
+    watermark as the folded side of the same statement, and as a constant
+    bound it lets the planner range-scan ``requested_at`` from the tail
+    instead of filtering every row since the window start. A missing state
+    row or NULL watermark degrades the tail to ``lo``, so the raw side then
+    covers the caller's full window.
+    """
     watermark = AccountUsageRollupState.conversation_folded_through
-    tail_start = watermark if hi is None else _least_fn(session)(watermark, hi)
-    return or_(watermark.is_(None), RequestLog.requested_at < lo, RequestLog.requested_at >= tail_start)
+    lo_bound = literal(lo, type_=RequestLog.requested_at.type)
+    clamped = watermark if hi is None else _least_fn(session)(watermark, hi)
+    tail_start = (
+        select(case((watermark.is_(None), lo_bound), else_=clamped))
+        .where(AccountUsageRollupState.id == _STATE_ROW_ID)
+        .scalar_subquery()
+    )
+    return _greatest_fn(session)(lo_bound, func.coalesce(tail_start, lo_bound))
 
 
-def _conversation_raw_select(
+def _conversation_raw_selects(
     session: AsyncSession,
     since: datetime,
     until: datetime | None,
     *,
     raw_conditions: Sequence[ColumnElement[bool]],
     display_bucket_seconds: int | None,
-) -> Select:
+) -> list[Select]:
+    """The raw complement of the folded segment ``[lo, min(W, hi))`` as two
+    disjoint ``requested_at`` ranges: the partial hour below the ceil-grid
+    start ``lo``, and the tail from the watermark-clamped end.
+
+    A single read with ``ts < lo OR ts >= W`` against an outer-joined state
+    row cannot use a range bound, so it walked every row since ``since`` (a
+    30-day dashboard window read ~100k rows to keep a few hundred).
+    """
     lo = ceil_to_grid(since, HOURLY_BUCKET_SECONDS)
     hi = None if until is None else floor_to_grid(until, HOURLY_BUCKET_SECONDS)
-    conditions: list[ColumnElement[bool]] = [
-        RequestLog.requested_at >= since,
-        _conversation_raw_complement_clause(session, lo, hi),
-        conversation_id_expr().is_not(None),
-        *raw_conditions,
-    ]
+    shared: list[ColumnElement[bool]] = [conversation_id_expr().is_not(None), *raw_conditions]
     if until is not None:
-        conditions.append(RequestLog.requested_at < until)
+        shared.append(RequestLog.requested_at < until)
     columns: list = [conversation_id_expr().label("cid"), literal(1).label("request_count")]
     if display_bucket_seconds is not None:
         columns.insert(0, _requested_at_epoch_bucket_expr(session, display_bucket_seconds).label("bucket_epoch"))
-    return (
-        select(*columns)
-        .select_from(RequestLog)
-        .outerjoin(AccountUsageRollupState, AccountUsageRollupState.id == _STATE_ROW_ID)
-        .where(and_(*conditions))
+    head = select(*columns).where(RequestLog.requested_at >= since, RequestLog.requested_at < lo, *shared)
+    tail = select(*columns).where(
+        RequestLog.requested_at >= _conversation_raw_tail_start(session, lo, hi),
+        *shared,
     )
+    return [head, tail]
 
 
 def conversation_presence_union(
@@ -353,7 +383,7 @@ def conversation_presence_union(
         _conversation_folded_select(
             session, since, until, include_deleted=include_deleted, display_bucket_seconds=display_bucket_seconds
         ),
-        _conversation_raw_select(
+        *_conversation_raw_selects(
             session, since, until, raw_conditions=raw_conditions, display_bucket_seconds=display_bucket_seconds
         ),
     )

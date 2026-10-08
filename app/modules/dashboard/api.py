@@ -19,6 +19,7 @@ from app.modules.dashboard.schemas import (
     DashboardOverviewResponse,
     DashboardOverviewTimeframeKey,
     DashboardProjectionsResponse,
+    DashboardSyncStatusResponse,
 )
 from app.modules.model_sources.catalog import source_models_to_upstream_models
 from app.modules.model_sources.repository import ModelSourcesRepository
@@ -48,6 +49,13 @@ async def get_overview(
     context: DashboardContext = Depends(get_dashboard_context),
 ) -> DashboardOverviewResponse:
     return await context.service.get_overview(timeframe)
+
+
+@router.get("/dashboard/sync-status", response_model=DashboardSyncStatusResponse)
+async def get_sync_status(
+    context: DashboardContext = Depends(get_dashboard_context),
+) -> DashboardSyncStatusResponse:
+    return await context.service.get_sync_status()
 
 
 @router.get("/dashboard/projections", response_model=DashboardProjectionsResponse)

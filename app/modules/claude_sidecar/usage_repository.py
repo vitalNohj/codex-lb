@@ -8,6 +8,7 @@ from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ClaudeSidecarUsageEvent
+from app.modules.claude_sidecar.usage_event_cache import ClaudeUsageEstimateEvent, get_claude_usage_event_cache
 from app.modules.claude_sidecar.usage_queue import ClaudeSidecarUsageRecord
 
 
@@ -142,18 +143,13 @@ class ClaudeSidecarUsageRepository:
         ).all()
         return {(row[0], row[1]): row[2] for row in rows if row[2] is not None}
 
-    async def list_events_since(self, since: datetime) -> list[ClaudeSidecarUsageEvent]:
-        return (
-            (
-                await self._session.execute(
-                    select(ClaudeSidecarUsageEvent)
-                    .where(ClaudeSidecarUsageEvent.timestamp >= since)
-                    .order_by(ClaudeSidecarUsageEvent.timestamp.asc(), ClaudeSidecarUsageEvent.id.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    async def list_estimate_events_since(self, since: datetime) -> list[ClaudeUsageEstimateEvent]:
+        """Return the quota-estimate columns of every event at or after ``since``.
+
+        Served from the process-wide window cache, which only reads rows newer
+        than its watermark; ordered by (timestamp, id).
+        """
+        return await get_claude_usage_event_cache().events_since(self._session, since)
 
     async def delete_older_than(self, cutoff: datetime) -> int:
         result = await self._session.execute(

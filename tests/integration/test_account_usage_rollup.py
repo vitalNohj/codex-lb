@@ -608,3 +608,56 @@ async def test_summary_cache_fill_discarded_when_invalidated_mid_flight(db_setup
     assert first["acc_racefill"].request_count == 1
     # The interleaved clear must have won: nothing was cached.
     assert accounts_repository_module._request_usage_summary_cache == {}
+
+
+async def _source_summaries(sources: list[str]):
+    async with SessionLocal() as session:
+        return await AccountsRepository(session).request_usage_summaries_for_sources(sources)
+
+
+@pytest.mark.asyncio
+async def test_source_summary_cache_serves_within_ttl_and_clears_with_account_cache(db_setup, monkeypatch):
+    import app.modules.accounts.repository as accounts_repository_module
+
+    monkeypatch.setattr(accounts_repository_module, "_SUMMARY_CACHE_TTL_SECONDS", 30.0)
+    accounts_repository_module._clear_request_usage_summary_cache()
+    now = utcnow()
+    async with SessionLocal() as session:
+        await RequestLogsRepository(session).add_log(
+            account_id=None,
+            request_id="req_src_1",
+            model="claude-opus",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now - timedelta(minutes=5),
+            source="claude_sidecar",
+        )
+
+    assert (await _source_summaries(["claude_sidecar"]))["claude_sidecar"].request_count == 1
+
+    async with SessionLocal() as session:
+        await RequestLogsRepository(session).add_log(
+            account_id=None,
+            request_id="req_src_2",
+            model="claude-opus",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now - timedelta(minutes=1),
+            source="claude_sidecar",
+        )
+
+    # Same source set within the TTL: served from cache, staleness tolerated.
+    assert (await _source_summaries(["claude_sidecar"]))["claude_sidecar"].request_count == 1
+    # A different source set is its own entry and never collides with account keys.
+    widened = await _source_summaries(["claude_sidecar", "openrouter_sidecar"])
+    assert widened["claude_sidecar"].request_count == 2
+    assert "claude_sidecar" not in await _summaries()
+
+    accounts_repository_module._clear_request_usage_summary_cache()
+    assert (await _source_summaries(["claude_sidecar"]))["claude_sidecar"].request_count == 2

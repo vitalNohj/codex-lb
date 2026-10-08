@@ -175,7 +175,7 @@ def compute_aggregate_depletion(
 
     # Use all fields from the worst-case account so that risk, safe-line,
     # burn rate, and exhaustion ETA are internally consistent.
-    worst = max(valid, key=lambda m: m.risk)
+    worst = max(valid, key=_worst_case_key)
 
     return AggregateDepletionMetrics(
         risk=worst.risk,
@@ -184,6 +184,26 @@ def compute_aggregate_depletion(
         safe_usage_percent=worst.safe_usage_percent,
         projected_exhaustion_at=worst.projected_exhaustion_at,
         seconds_until_exhaustion=worst.seconds_until_exhaustion,
+    )
+
+
+def _worst_case_key(metrics: DepletionMetrics) -> tuple[float, float, float, float]:
+    """Order accounts from least to most at risk, with no ties left to input order.
+
+    Risk saturates at 1.0, so several accounts often tie on it; picking by
+    risk alone let the caller's iteration order (a hash-seeded set of account
+    ids) decide which account's safe line and ETA the dashboard showed, and
+    the answer changed across restarts. Among equal risk the account that
+    runs out soonest is the worse case (one projected to last past its reset
+    sorts below any that will not), then the faster burn, then the one with
+    the least of its window elapsed, which has the most exposure left.
+    """
+    exhaustion = metrics.seconds_until_exhaustion
+    return (
+        metrics.risk,
+        -exhaustion if exhaustion is not None else float("-inf"),
+        metrics.burn_rate,
+        -metrics.safe_usage_percent,
     )
 
 

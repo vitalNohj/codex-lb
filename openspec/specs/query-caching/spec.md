@@ -64,7 +64,7 @@ Selector and dashboard hot-path reads MUST avoid unbounded SQL window-ranking ov
 
 ### Requirement: Dashboard overview memoizes per-account depletion EWMA state
 
-`GET /api/dashboard/overview` MUST cache per-account EWMA depletion state in memory so repeated polls do not re-walk the full in-window `usage_history` slice in the depletion cache check when its content is unchanged. SQLite bulk history cache hits MUST avoid rebuilding or materializing the full cached history window when compact digest metadata proves older rows are unchanged; they MUST append newly inserted rows by monotonic row ID and reuse the cached grouped history for older rows. Repository-owned mutations that reassign or delete usage-history rows MUST clear the SQLite bulk history cache.
+`GET /api/dashboard/overview` MUST cache per-account EWMA depletion state in memory so repeated polls do not re-walk the full in-window `usage_history` slice in the depletion cache check when its content is unchanged. SQLite bulk history cache hits MUST avoid rebuilding or materializing the full cached history window when compact digest metadata proves older rows are unchanged; they MUST append newly inserted rows by monotonic row ID and reuse the cached grouped history for older rows. Repository-owned mutations that reassign or delete usage-history rows MUST clear the SQLite bulk history cache. Once a later request's `since` has advanced past the cached window start by more than a fixed slack, the cache entry MUST drop the rows behind the new `since` and validate only the remaining window from then on. On SQLite, `usage_history` MUST carry AFTER UPDATE and AFTER DELETE triggers that bump a single-row mutation generation; a cache hit whose generation is unchanged since its last validation, and whose cached range still matches the database's row count and max id, MUST be served without recomputing the content digest. A changed generation, or a store without both triggers and the generation row, MUST fall back to the content-digest validation. Projection history reads with a per-account row cap MUST return the same rows on SQLite as on PostgreSQL: rows at or after the per-account cutoff, every row at or after the uncapped recent floor, and the newest capped rows between them.
 
 #### Scenario: Repeated polls with unchanged history reuse cached EWMA state
 - **GIVEN** the dashboard service has previously computed depletion for an account
@@ -99,6 +99,31 @@ Selector and dashboard hot-path reads MUST avoid unbounded SQL window-ranking ov
 #### Scenario: Usage-history ownership mutation clears SQLite bulk history cache
 - **WHEN** an account merge or delete operation updates or deletes `usage_history` rows
 - **THEN** the repository clears the SQLite bulk history cache before serving future cached dashboard history reads
+
+#### Scenario: SQLite bulk history cache window slides with the requested window
+- **GIVEN** a SQLite bulk usage-history cache entry filled from an earlier `since`
+- **WHEN** a later query's `since` is past the entry's window start by more than the prune slack
+- **THEN** the entry MUST drop the rows recorded before the new `since` and adopt it as its window start
+- **AND** a later same-id correction inside the remaining window MUST still invalidate the cached rows
+
+#### Scenario: Unchanged mutation generation skips the content digest
+- **GIVEN** a SQLite store with the usage-history mutation triggers and a cached bulk-history entry
+- **WHEN** a later read finds the same generation and the same row count and max id for the cached range
+- **THEN** the repository serves the cached rows without computing the content digest
+
+#### Scenario: An in-place change or delete revalidates the cache
+- **GIVEN** a cached bulk-history entry on a SQLite store with the mutation triggers
+- **WHEN** a usage-history row in the cached range is updated or deleted
+- **THEN** the next read observes a new generation and returns the database's current rows
+
+#### Scenario: A row inserted below the cached max id is detected
+- **GIVEN** a cached bulk-history entry
+- **WHEN** a row is inserted with an id below the cached max id
+- **THEN** the row-count check fails and the next read returns the inserted row
+
+#### Scenario: SQLite applies the projection row cap
+- **WHEN** projections read usage history with a per-account row cap and an uncapped recent floor on SQLite
+- **THEN** each account's rows are those PostgreSQL's capped fetch would return, oldest first
 
 ### Requirement: Selector retry hint is bounded by the auto-recovery window
 
@@ -307,7 +332,7 @@ could cause one conversation to be counted more than once in a bucket. For
 hour-multiple display buckets the count MUST merge the conversation presence
 rollup with the raw live tail through a UNION before the distinct count, so a
 conversation appearing in both the folded segment and the raw tail of one
-display bucket still counts once.
+display bucket still counts once. The raw side MUST read `request_logs` as two `requested_at` ranges, the partial hour below the first whole folded hour and the tail from the watermark-clamped end, with the tail bound taken from the rollup state row in the same statement, so the read touches only un-folded rows instead of every row since the window start.
 
 #### Scenario: One conversation across model groups counts once per bucket
 
@@ -323,6 +348,12 @@ display bucket still counts once.
 - **WHEN** the dashboard conversation trend aggregate is calculated
 - **THEN** that bucket's conversation count counts `conv-a` once
 
+#### Scenario: The raw tail read starts at the conversation watermark
+- **GIVEN** a 30-day window whose conversation presence is folded through one hour ago
+- **WHEN** the dashboard conversation metrics are calculated
+- **THEN** the raw side reads only rows below the first whole folded hour and rows at or after the watermark
+- **AND** the counts equal the unfolded raw computation
+
 ### Requirement: Additional usage latest reads avoid SQLite window scans
 
 Additional usage latest-per-account reads on SQLite MUST avoid `row_number()` window-function scans over the full `additional_usage_history` table. They MUST select matching accounts, then use indexed latest-row lookups ordered by `recorded_at DESC, used_percent DESC, id DESC` while preserving canonical quota-key and alias matching semantics. Non-SQLite dialects MAY keep the set-based window-function query.
@@ -334,7 +365,7 @@ Additional usage latest-per-account reads on SQLite MUST avoid `row_number()` wi
 
 ### Requirement: Unfiltered request-log filter options avoid full DISTINCT passes
 
-When `GET /api/request-logs/options` is requested without user-supplied filters, each facet (account ids, model/reasoning-effort pairs, api-key ids, status/error-code pairs) MUST be computed with loose-index-scan probes bounded by the facet's distinct-value count, not by the size of `request_logs`. The returned option sets, their ordering, and the soft-delete/status-facet semantics MUST be identical to the unbounded `DISTINCT` results.
+When `GET /api/request-logs/options` is requested without user-supplied filters, each facet (account ids, model/reasoning-effort pairs, api-key ids, status/error-code pairs) MUST be computed with loose-index-scan probes bounded by the facet's distinct-value count, not by the size of `request_logs`. The returned option sets, their ordering, and the soft-delete/status-facet semantics MUST be identical to the unbounded `DISTINCT` results. On SQLite, the baseline facet filters (soft-delete exclusion and the status allow-list) MUST be disqualified from index selection so that every probe seeks the facet column's own index instead of an index on a baseline-filter column.
 
 #### Scenario: Unfiltered facets return identical option sets via bounded probes
 
@@ -349,10 +380,12 @@ When `GET /api/request-logs/options` is requested without user-supplied filters,
 - **WHEN** the options endpoint is called with no filters
 - **THEN** values appearing only on soft-deleted rows MUST NOT appear in any facet
 
-#### Scenario: Filtered requests keep bounded DISTINCT semantics
+#### Scenario: SQLite probes seek the facet index rather than a baseline-filter index
 
-- **WHEN** the options endpoint is called with any user filter (`since`, `until`, account, api-key, model, or reasoning-effort constraints)
-- **THEN** the facets MUST apply those filters with unchanged semantics and results
+- **GIVEN** a SQLite store
+- **WHEN** the options endpoint is called with no filters
+- **THEN** no skip-scan probe's query plan MUST search `request_logs` by `deleted_at`
+- **AND** only the status facet and its error-code pair probes MAY search `request_logs` by `status`
 
 ### Requirement: Proxy API-key auth caching is invalidation-driven with a TTL backstop
 
@@ -835,4 +868,58 @@ single-session ownership constraint.
 - **WHEN** the proxy constructs the aggregate `/api/codex/usage` payload for a request that does not resolve to a codex-lb API key, using usage windows, credits, and additional limits
 - **THEN** each database read MUST complete before the next read starts on the shared session
 - **AND** the returned payload remains schema- and value-compatible for equivalent rows
+
+### Requirement: Claude sidecar quota estimates read a cached usage-event window
+
+Every read that builds Claude sidecar quota estimates (dashboard overview, accounts list, sidecar quota panel, pooled OAuth usage) MUST obtain the seven-day `claude_sidecar_usage_events` window from a process-wide in-memory cache rather than materializing the window per request. Each read MUST fetch only rows whose id exceeds the cache's watermark, MUST validate the cached window against a count and max-id fingerprint read in the same transaction, and MUST reload the whole window when the fingerprint disagrees. Reads MUST return exactly the events at or after the requested `since`, ordered by timestamp then id. The Claude sidecar usage collector MUST refresh the cache after each drain. Estimate results MUST be identical to computing them from a fresh read of the window.
+
+#### Scenario: Appended events are fetched incrementally
+- **GIVEN** the cache already holds the window
+- **WHEN** new usage events are inserted, including one with an earlier timestamp than cached events
+- **AND** an estimate read follows
+- **THEN** the read MUST fetch only the rows above the watermark
+- **AND** the returned events MUST include the new rows in timestamp order
+
+#### Scenario: Rows missing from the store force a reload
+- **GIVEN** the cache holds the window
+- **WHEN** an event inside the window is deleted outside the cache's knowledge
+- **AND** an estimate read follows
+- **THEN** the fingerprint MUST disagree and the cache MUST reload the window
+- **AND** the deleted event MUST NOT be returned
+
+#### Scenario: A slightly earlier window start reuses the cache
+- **GIVEN** the cache was synced for a window start computed moments later than the next reader's
+- **WHEN** the next reader asks for a `since` within the cache's slack below its window start
+- **THEN** the read MUST be served without fetching event rows
+- **AND** it MUST include the events between the earlier `since` and the previous window start
+
+### Requirement: Synthetic sidecar account usage totals share the request-usage summary cache
+
+Per-source lifetime request-usage totals shown on synthetic sidecar account entries MUST be cached in the request-usage summary cache under a key space distinct from per-account summaries, with the same fixed TTL, generation fence, and invalidation as the per-account summaries. Account deletion and identity consolidation MUST clear them together with the per-account summaries.
+
+#### Scenario: Per-source totals are served from cache within the TTL
+- **GIVEN** per-source totals for a source set were computed
+- **WHEN** a new request log for that source is written and the same source set is read again within the TTL
+- **THEN** the cached totals MUST be returned
+- **AND** reading a different source set MUST compute fresh totals
+- **AND** clearing the request-usage summary cache MUST make the next read reflect the new log
+
+### Requirement: Dashboard sync status endpoint
+
+The dashboard MUST expose `GET /api/dashboard/sync-status` behind the dashboard session, returning `{lastSyncAt}` computed exactly as the overview's `lastSyncAt` (the newest primary, secondary, monthly, or additional usage sample), without computing any other overview data.
+
+#### Scenario: Sync status matches the overview
+- **GIVEN** usage samples across primary, secondary, and monthly windows
+- **WHEN** a client requests `GET /api/dashboard/sync-status`
+- **THEN** `lastSyncAt` equals the overview's `lastSyncAt`
+- **AND** it is `null` when no usage sample exists
+
+### Requirement: Aggregate depletion picks the worst case deterministically
+
+The aggregate depletion reported for a usage window MUST select the account with the highest risk and, among equal risk, the soonest projected exhaustion (accounts that do not exhaust before reset rank below any that do), then the highest burn rate, then the lowest safe-usage percent. The selection MUST NOT depend on the order accounts are iterated.
+
+#### Scenario: Saturated risk ties resolve the same way every time
+- **GIVEN** several accounts whose risk is saturated at 1.0 with different exhaustion times and safe lines
+- **WHEN** projections are computed in any account order, or in processes with different hash seeds
+- **THEN** the reported safe line, burn rate, and exhaustion time come from the same account every time
 

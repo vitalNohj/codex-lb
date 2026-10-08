@@ -161,6 +161,53 @@ def test_aggregate_depletion_max_risk() -> None:
     assert result.risk_level == "danger"
 
 
+def _metrics(
+    *,
+    risk: float = 1.0,
+    burn_rate: float = 2.0,
+    safe_usage_percent: float = 50.0,
+    seconds_until_exhaustion: float | None = None,
+) -> DepletionMetrics:
+    return DepletionMetrics(
+        risk=risk,
+        risk_level="critical",
+        rate_per_second=0.01,
+        burn_rate=burn_rate,
+        safe_usage_percent=safe_usage_percent,
+        projected_exhaustion_at=None
+        if seconds_until_exhaustion is None
+        else BASE_TIME + timedelta(seconds=seconds_until_exhaustion),
+        seconds_until_exhaustion=seconds_until_exhaustion,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_aggregate_depletion_breaks_risk_ties_by_soonest_exhaustion(reverse: bool) -> None:
+    metrics = [
+        _metrics(seconds_until_exhaustion=None, safe_usage_percent=10.0),
+        _metrics(seconds_until_exhaustion=600.0, safe_usage_percent=20.0),
+        _metrics(seconds_until_exhaustion=60.0, safe_usage_percent=30.0),
+    ]
+    result = compute_aggregate_depletion(list(reversed(metrics)) if reverse else metrics)
+    assert result is not None
+    assert result.seconds_until_exhaustion == pytest.approx(60.0)
+    assert result.safe_usage_percent == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_aggregate_depletion_full_risk_tie_is_independent_of_input_order(reverse: bool) -> None:
+    metrics = [
+        _metrics(safe_usage_percent=62.5),
+        _metrics(safe_usage_percent=3.1),
+        _metrics(burn_rate=1.0, safe_usage_percent=0.5),
+    ]
+    result = compute_aggregate_depletion(list(reversed(metrics)) if reverse else metrics)
+    assert result is not None
+    # Equal risk and no exhaustion: the faster burn wins, then the least elapsed window.
+    assert result.burn_rate == pytest.approx(2.0)
+    assert result.safe_usage_percent == pytest.approx(3.1)
+
+
 def test_aggregate_depletion_empty_returns_none() -> None:
     result = compute_aggregate_depletion([])
     assert result is None

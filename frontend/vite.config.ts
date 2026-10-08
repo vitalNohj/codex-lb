@@ -75,6 +75,19 @@ export default defineConfig({
     exclude: ["browser-smoke/**", "screenshots/**", "node_modules/**"],
     fileParallelism: false,
     testTimeout: 15_000,
+    deps: {
+      optimizer: {
+        // date-fns (via react-day-picker) ships a ~200 KB package.json
+        // exports map that Node's ESM resolver re-reads for each of its
+        // hundreds of modules: rendering any page with a date picker stalled
+        // jsdom for ~5 s and pushed the settings/API-key flows past their
+        // timeouts. Pre-bundling both turns that into one module load.
+        client: {
+          enabled: true,
+          include: ["react-day-picker", "date-fns"],
+        },
+      },
+    },
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],
