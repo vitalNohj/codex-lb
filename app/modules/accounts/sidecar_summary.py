@@ -152,6 +152,11 @@ def _build_auth_rows(
         if key is not None:
             seen.add(key)
         rows.append(_auth_row(auth, estimate, holds))
+    # A healthy poll lists every auth CLIProxyAPI still has. Usage events for an
+    # index it no longer reports (for example, the auth replaced by a re-auth)
+    # must not resurface as a second row for the same account.
+    if snapshot.status == "healthy":
+        return rows
     for key, estimate in estimates_by_key.items():
         if key not in seen:
             rows.append(_auth_row_from_estimate(estimate))

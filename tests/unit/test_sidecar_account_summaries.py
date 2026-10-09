@@ -718,3 +718,44 @@ def test_snapshot_backed_auth_row_reports_the_read_result(tmp_path, monkeypatch)
     assert fresh.sidecar_auths[0].excluded_models == ["fresh-*"]
     assert fresh.sidecar_auths[0].excluded_models_state == "available"
     assert states["claude-b@example.com.json"] == "unreadable"
+
+
+def test_reauthed_claude_auth_does_not_leave_a_stale_duplicate_row() -> None:
+    """Re-auth replaces the auth file and its index, but old usage events remain.
+
+    The live snapshot is the source of truth for which auths exist, so the
+    retired index must not resurface as a second row for the same email.
+    """
+    live = _claude_auth(name="claude-c4342a99-jvwarrior@gmail.com.json", auth_index="new")
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 10, 8, 19, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(live,),
+    )
+    estimates = ClaudeUsageEstimates(
+        accounts=[
+            _estimate(auth_index="new", email="jvwarrior@gmail.com", source="jvwarrior@gmail.com"),
+            _estimate(auth_index="old", email=None, source="jvwarrior@gmail.com"),
+        ],
+        aggregate=ClaudeAggregateUsageEstimate(
+            primary_remaining_percent=75.0,
+            secondary_remaining_percent=96.0,
+            primary_used_tokens=0,
+            secondary_used_tokens=0,
+            primary_token_budget=None,
+            secondary_token_budget=None,
+            reset_at_primary=None,
+            reset_at_secondary=None,
+            confidence="oauth",
+        ),
+    )
+
+    summary = build_claude_sidecar_summary(
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)),
+        request_usage=None,
+        usage_estimates=estimates,
+    )
+
+    assert summary is not None
+    assert [row.auth_index for row in summary.sidecar_auths] == ["new"]
