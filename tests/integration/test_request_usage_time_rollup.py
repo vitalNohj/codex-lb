@@ -1926,6 +1926,85 @@ async def test_upgrade_repair_mirrors_into_folded_daily_rows_and_daily_fold_paus
 
 
 @pytest.mark.asyncio
+async def test_upgrade_repair_daily_mirror_streams_in_batches(db_setup, monkeypatch):
+    """The repair's daily mirror fetches and applies the grouped rows in
+    bounded batches (Kody rule: Bound Database Backfills by Batch Size and
+    Parameter Limits): with the shared merge batch constant forced below the
+    repair window's dimension-group count, the mirrored daily rollups are
+    exactly what a whole-window delta would produce — repriced groups show
+    the corrected measures, and a group whose raw rows vanished between the
+    original fold and the repair is subtracted down to zero (the subtract-
+    only path a post-side-only delta silently kept stale)."""
+    del db_setup
+    # Force batch boundaries mid-window: 10 dimension groups over batches
+    # of 3 groups each.
+    monkeypatch.setattr(time_rollup_module, "_UPSERT_CHUNK_ROWS", 3)
+    now = utcnow().replace(hour=10, minute=0, second=0, microsecond=0)
+    hour = floor_to_hour(now - timedelta(hours=70))
+    day_epoch = epoch_seconds(floor_to_day(hour))
+    models = [f"batch-model-{index}" for index in range(10)]
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_bstream", "batch-stream@example.com"))
+        logs = RequestLogsRepository(session)
+        for index, model in enumerate(models):
+            await _add_log(
+                logs,
+                account_id="acc_bstream",
+                request_id=f"r_bs_{index}",
+                requested_at=hour + timedelta(minutes=index + 1),
+                cost_usd=1.0 + index,
+                model=model,
+            )
+        # History behind the repriced hour keeps the repair's raw clamp at
+        # `hour` (it never deletes buckets it cannot recompute from raw).
+        await _add_log(
+            logs,
+            account_id="acc_bstream",
+            request_id="r_bs_history",
+            requested_at=floor_to_day(hour) - timedelta(hours=5),
+            cost_usd=0.05,
+        )
+        await session.commit()
+
+    time_rollup_module._upgrade_repair_done = True  # fold first, without any repair
+    assert await run_hourly_fold_pass(now=now) >= 1
+    assert await run_daily_fold_pass() >= 1
+
+    # Reprice half the models; delete one group's raw rows entirely so its
+    # hourly rows vanish in the refold (subtract-only group); arm the marker.
+    async with SessionLocal() as session:
+        for index in range(5):
+            await session.execute(
+                update(RequestLog).where(RequestLog.request_id == f"r_bs_{index}").values(cost_usd=100.0 + index)
+            )
+        await session.execute(delete(RequestLog).where(RequestLog.request_id == "r_bs_9"))
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=hour))
+        await session.commit()
+
+    for _ in range(5):
+        _hourly_wm, _daily_wm, marker = await _fold_state_watermarks()
+        if marker is None:
+            break
+        await run_hourly_fold_pass(now=now)
+    hourly_wm_after, daily_wm_after, marker = await _fold_state_watermarks()
+    assert marker is None
+    assert hourly_wm_after is not None
+    assert daily_wm_after == floor_to_day(hourly_wm_after)
+
+    mirrored = await _daily_rows_for_day(day_epoch)
+    assert set(mirrored) == set(models)
+    for index, model in enumerate(models):
+        if index == 9:
+            # Raw rows vanished: the subtract-only path zeroes the group.
+            assert mirrored[model] == pytest.approx((0.0, 0, 0), abs=1e-9)
+        elif index < 5:
+            assert mirrored[model] == pytest.approx((100.0 + index, 1, 1), abs=1e-9)
+        else:
+            assert mirrored[model] == pytest.approx((1.0 + index, 1, 1), abs=1e-9)
+
+
+@pytest.mark.asyncio
 async def test_marker_cleared_between_unlocked_and_locked_read_does_not_refold_trailing_window(db_setup):
     """A marker that clears mid-check must not fall back to the 48h window.
 
