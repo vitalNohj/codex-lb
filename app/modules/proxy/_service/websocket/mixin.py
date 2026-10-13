@@ -489,7 +489,11 @@ from app.modules.proxy.request_policy import (
     validate_model_access,
     validate_top_level_compaction_trigger_input_shape,
 )
-from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
+from app.modules.proxy.selection_errors import (
+    USAGE_LIMIT_REACHED,
+    previous_response_owner_unavailable_error,
+    selection_failure_response,
+)
 from app.modules.proxy.tool_call_dedupe import (
     mark_duplicate_tool_call_downstream_event,
     rewrite_parallel_tool_call_text,
@@ -3874,6 +3878,7 @@ class _WebSocketMixin:
                     error_message=error_message,
                 )
                 return None
+            hold_expired = bool(selection.owner_hold_expired)
             message = "Previous response owner account is unavailable; retry later."
             _record_continuity_fail_closed(
                 surface="websocket_connect",
@@ -3882,18 +3887,25 @@ class _WebSocketMixin:
                 session_id=request_state.session_id,
                 upstream_error_code=error_code,
             )
+            if hold_expired:
+                hold_error = previous_response_owner_unavailable_error(hold_expired=True)
+                status_code, payload = hold_error.status_code, hold_error.payload
+                message = str(payload["error"]["message"])
+            else:
+                status_code = 502
+                payload = openai_error(
+                    "previous_response_owner_unavailable",
+                    message,
+                    error_type="server_error",
+                )
             await proxy._emit_websocket_connect_failure(
                 websocket,
                 client_send_lock=client_send_lock,
                 account_id=preferred_account_id,
                 api_key=api_key,
                 request_state=request_state,
-                status_code=502,
-                payload=openai_error(
-                    "previous_response_owner_unavailable",
-                    message,
-                    error_type="server_error",
-                ),
+                status_code=status_code,
+                payload=payload,
                 error_code="previous_response_owner_unavailable",
                 error_message=message,
             )

@@ -83,7 +83,12 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
 from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
-from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
+from app.modules.proxy.selection_errors import (
+    USAGE_LIMIT_REACHED,
+    previous_response_owner_unavailable_error,
+    previous_response_owner_unavailable_failed_event,
+    selection_failure_response,
+)
 
 _REQUEST_TRANSPORT_HTTP = "http"
 _REQUEST_TRANSPORT_WEBSOCKET = "websocket"
@@ -1510,6 +1515,7 @@ class _StreamingRetryMixin:
                         )
                         return
                     if require_preferred_account and preferred_account_id is not None:
+                        hold_expired = bool(selection.owner_hold_expired)
                         message = "Previous response owner account is unavailable; retry later."
                         _record_continuity_fail_closed(
                             surface="http_stream",
@@ -1518,10 +1524,15 @@ class _StreamingRetryMixin:
                             session_id=headers.get("x-codex-turn-state") or headers.get("session_id"),
                             upstream_error_code="no_accounts",
                         )
-                        event = response_failed_event(
-                            "previous_response_owner_unavailable",
-                            message,
+                        if hold_expired and propagate_http_errors:
+                            # The bounded transient-drain hold ran to expiry:
+                            # answer 503 + Retry-After with the stable error
+                            # body instead of the instant 502.
+                            raise previous_response_owner_unavailable_error(hold_expired=True)
+                        event = previous_response_owner_unavailable_failed_event(
                             response_id=request_id,
+                            hold_expired=hold_expired,
+                            message=None if hold_expired else message,
                         )
                         yield format_sse_event(event)
                         await proxy._write_request_log(

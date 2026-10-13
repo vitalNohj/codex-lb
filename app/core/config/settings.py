@@ -545,6 +545,16 @@ class Settings(BaseSettings):
     proxy_account_inflight_penalty_pct: float = Field(default=2.5, ge=0)
     proxy_account_lease_token_weight: float = Field(default=1.0, ge=0)
     proxy_account_lease_ttl_seconds: float = Field(default=900.0, gt=0)
+    # Bounded hold for continuity-bound follow-ups whose required owner account
+    # is unavailable only because it is transiently drained/probing. While the
+    # hold runs, the required-owner selection is re-checked and the request
+    # never moves to a different account; when the hold expires the request
+    # answers 503 with ``Retry-After`` and the stable
+    # ``previous_response_owner_unavailable`` body instead of an instant 502.
+    # Permanently unavailable owners (removed, deactivated, paused, re-auth,
+    # rate-limited, quota-exhausted) keep the instant fail-closed behavior.
+    # 0 disables the hold.
+    proxy_continuity_owner_hold_seconds: float = Field(default=10.0, ge=0)
     proxy_account_caps_scope: Literal["partitioned", "replica"] = "partitioned"
     proxy_account_cap_partition_scale_down_seconds: int = Field(default=60, ge=30)
     # Explicit operator declaration of how many worker processes

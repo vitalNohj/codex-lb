@@ -36,6 +36,7 @@ import app.core.clients.proxy as proxy_module
 import app.core.openai.requests as openai_requests_module
 import app.core.resilience.network_recovery as network_recovery_module
 import app.modules.proxy.load_balancer as load_balancer_module
+import app.modules.proxy.owner_drain as owner_drain_module
 from app.core import shutdown as shutdown_state
 from app.core.auth.refresh import RefreshError
 from app.core.balancer.types import UpstreamError
@@ -72,6 +73,7 @@ from app.modules.proxy import request_policy as proxy_request_policy
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._service import compact as proxy_compact_service
 from app.modules.proxy._service import file_ops as proxy_file_ops
+from app.modules.proxy._service import selection_hold as proxy_selection_hold
 from app.modules.proxy._service import support as proxy_support
 from app.modules.proxy._service import warmup as proxy_warmup_service
 from app.modules.proxy._service.http_bridge import request_submit as proxy_http_bridge_request_submit
@@ -39898,6 +39900,563 @@ async def test_select_account_with_budget_forwards_estimated_lease_tokens(monkey
     assert selection.account == account
     assert select_account.await_args is not None
     assert select_account.await_args.kwargs["estimated_lease_tokens"] == 1234.0
+
+
+def _make_hold_settings(**overrides: object) -> SimpleNamespace:
+    """Dashboard settings row (``get_settings_cache().get()``) for hold tests.
+
+    Deliberately carries NO ``proxy_continuity_owner_hold_seconds``: the
+    field lives on core ``Settings`` only, and the hold must read it from
+    core ``get_settings()`` — never from the dashboard settings row the
+    request carries.
+    """
+    settings = _make_proxy_settings()
+    return SimpleNamespace(**{**vars(settings), **overrides})
+
+
+def _make_hold_core_settings(**overrides: object) -> SimpleNamespace:
+    """Distinct core settings stub (``get_settings()``) carrying the hold config."""
+    return SimpleNamespace(
+        **{
+            "proxy_continuity_owner_hold_seconds": 0.05,
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_holds_transient_drained_owner_until_recovered(monkeypatch):
+    settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_owner")
+    select_account = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(account=account, error_message=None),
+        ]
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        AsyncMock(return_value=30.0),
+    )
+    monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    selection = await service._select_account_with_budget(
+        deadline=123.0,
+        request_id="req-owner-hold-recovered",
+        kind="stream",
+        model="gpt-5.1",
+        preferred_account_id="acc_owner",
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account == account
+    assert selection.owner_hold_expired is False
+    assert select_account.await_count == 3
+    for selection_call in select_account.await_args_list:
+        assert selection_call.kwargs["required_account_id"] == "acc_owner"
+        assert selection_call.kwargs["required_continuity_owner"] is True
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_hold_expiry_marks_owner_hold_expired(monkeypatch):
+    settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    select_account = AsyncMock(
+        return_value=AccountSelection(
+            account=None,
+            error_message="No available accounts",
+            error_code="continuity_owner_unavailable",
+        )
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        AsyncMock(return_value=30.0),
+    )
+    monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    selection = await service._select_account_with_budget(
+        deadline=123.0,
+        request_id="req-owner-hold-expired",
+        kind="stream",
+        model="gpt-5.1",
+        preferred_account_id="acc_owner",
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account is None
+    assert selection.owner_hold_expired is True
+    assert selection.error_code == "continuity_owner_unavailable"
+    assert select_account.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_permanent_owner_unavailability_skips_hold(monkeypatch):
+    settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    select_account = AsyncMock(
+        return_value=AccountSelection(
+            account=None,
+            error_message="Required continuity owner account no longer exists",
+            error_code="continuity_owner_unavailable",
+        )
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    required_owner_transient_drain_seconds = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        required_owner_transient_drain_seconds,
+    )
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    selection = await service._select_account_with_budget(
+        deadline=123.0,
+        request_id="req-owner-permanent",
+        kind="stream",
+        model="gpt-5.1",
+        preferred_account_id="acc_owner",
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account is None
+    assert selection.owner_hold_expired is False
+    assert select_account.await_count == 1
+    assert required_owner_transient_drain_seconds.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_hold_aborts_when_owner_becomes_permanent(monkeypatch):
+    settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    select_account = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(
+                account=None,
+                error_message="Required continuity owner account no longer exists",
+                error_code="continuity_owner_unavailable",
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        AsyncMock(side_effect=[30.0, None]),
+    )
+    monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    selection = await service._select_account_with_budget(
+        deadline=123.0,
+        request_id="req-owner-hold-abort",
+        kind="stream",
+        model="gpt-5.1",
+        preferred_account_id="acc_owner",
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account is None
+    assert selection.owner_hold_expired is False
+    assert select_account.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_hold_respects_client_cancel(monkeypatch):
+    settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings(proxy_continuity_owner_hold_seconds=5.0)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    select_account = AsyncMock(
+        return_value=AccountSelection(
+            account=None,
+            error_message="No available accounts",
+            error_code="continuity_owner_unavailable",
+        )
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        AsyncMock(return_value=30.0),
+    )
+    monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 5.0)
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    task = asyncio.create_task(
+        service._select_account_with_budget(
+            deadline=123.0,
+            request_id="req-owner-hold-cancel",
+            kind="stream",
+            model="gpt-5.1",
+            preferred_account_id="acc_owner",
+            preferred_account_is_continuity_owner=True,
+            fallback_on_preferred_account_unavailable=False,
+        )
+    )
+    await asyncio.sleep(0.02)
+    assert select_account.await_count == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert select_account.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_hold_reads_core_settings_not_dashboard_row(monkeypatch):
+    # Regression: ``proxy_continuity_owner_hold_seconds`` lives on core
+    # Settings, not on the dashboard settings row the selection carries. The
+    # dashboard row here explicitly disables the hold (0.0) while core
+    # settings enable it — the hold must engage from core settings anyway.
+    settings = _make_hold_settings(proxy_continuity_owner_hold_seconds=0.0)
+    core_settings = _make_hold_core_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_owner")
+    select_account = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(account=account, error_message=None),
+        ]
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        AsyncMock(return_value=30.0),
+    )
+    monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    selection = await service._select_account_with_budget(
+        deadline=123.0,
+        request_id="req-owner-hold-core-settings",
+        kind="stream",
+        model="gpt-5.1",
+        preferred_account_id="acc_owner",
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account == account
+    assert selection.owner_hold_expired is False
+    assert select_account.await_count == 3
+    for selection_call in select_account.await_args_list:
+        assert selection_call.kwargs["required_account_id"] == "acc_owner"
+
+
+@pytest.mark.asyncio
+async def test_select_websocket_connect_account_owner_hold_expired_emits_503(monkeypatch, caplog):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_owner_hold_expired",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        previous_response_id="resp_prev_owner",
+        preferred_account_id="acc_owner",
+        session_id="turn_ws_owner_hold_expired",
+    )
+    counter = _ObservedCounter()
+
+    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(proxy_service, "continuity_fail_closed_total", counter, raising=False)
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(
+            return_value=AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+                owner_hold_expired=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
+
+    caplog.set_level(logging.WARNING, logger="app.modules.proxy.service")
+    websocket_send = AsyncMock()
+    result = await service._select_websocket_connect_account(
+        10_000.0,
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        prefer_earlier_reset_window="secondary",
+        routing_strategy="usage_weighted",
+        model="gpt-5.1",
+        request_state=request_state,
+        api_key=None,
+        client_send_lock=anyio.Lock(),
+        websocket=cast(WebSocket, SimpleNamespace(send_text=websocket_send)),
+        reallocate_sticky=False,
+        sticky_max_age_seconds=None,
+        exclude_account_ids=set(),
+        preferred_account_id="acc_owner",
+        require_preferred_account=True,
+    )
+
+    assert result is None
+    await_args = websocket_send.await_args
+    assert await_args is not None
+    sent_payload = json.loads(await_args.args[0])
+    assert sent_payload["status"] == 503
+    assert sent_payload["error"]["code"] == "previous_response_owner_unavailable"
+    assert "temporarily draining" in sent_payload["error"]["message"]
+    assert sent_payload["error"]["resets_at"] > int(time.time())
+    assert request_logs.calls[0]["error_code"] == "previous_response_owner_unavailable"
+    assert "continuity_fail_closed surface=websocket_connect reason=owner_account_unavailable" in caplog.text
+    assert counter.samples == [
+        {
+            "labels": {"surface": "websocket_connect", "reason": "owner_account_unavailable"},
+            "value": 1.0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_previous_response_owner_hold_expired_emits_retryable_event(monkeypatch):
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_owner = _make_account("acc_prev_owner_stream")
+    request_logs.response_owner_by_id[("resp_prev_anchor", None, "sid-stream")] = account_owner.id
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(
+            return_value=AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+                owner_hold_expired=True,
+            )
+        ),
+    )
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [],
+            "stream": True,
+            "previous_response_id": "resp_prev_anchor",
+        }
+    )
+
+    chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": "sid-stream"})]
+
+    event = json.loads(chunks[0].split("data: ", 1)[1])
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "previous_response_owner_unavailable"
+    assert "temporarily draining" in event["response"]["error"]["message"]
+    assert event["response"]["error"]["resets_at"] > int(time.time())
+    assert request_logs.lookup_calls == [("resp_prev_anchor", None, "sid-stream")]
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
+    assert request_logs.calls[0]["error_code"] == "previous_response_owner_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_stream_previous_response_owner_hold_expired_propagates_http_503(monkeypatch):
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_owner = _make_account("acc_prev_owner_stream")
+    request_logs.response_owner_by_id[("resp_prev_anchor", None, "sid-stream")] = account_owner.id
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(
+            return_value=AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+                owner_hold_expired=True,
+            )
+        ),
+    )
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [],
+            "stream": True,
+            "previous_response_id": "resp_prev_anchor",
+        }
+    )
+
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        chunks_iter = service.stream_responses(payload, {"session_id": "sid-stream"}, propagate_http_errors=True)
+        [chunk async for chunk in chunks_iter]
+
+    exc = _assert_proxy_response_error(exc_info.value)
+    assert exc.status_code == 503
+    assert exc.retry_after_seconds == 15
+    assert _proxy_error_code(exc) == "previous_response_owner_unavailable"
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_stream_previous_response_owner_hold_disabled_keeps_instant_502_event(monkeypatch):
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_owner = _make_account("acc_prev_owner_stream")
+    request_logs.response_owner_by_id[("resp_prev_anchor", None, "sid-stream")] = account_owner.id
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(
+            return_value=AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            )
+        ),
+    )
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [],
+            "stream": True,
+            "previous_response_id": "resp_prev_anchor",
+        }
+    )
+
+    chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": "sid-stream"})]
+
+    event = json.loads(chunks[0].split("data: ", 1)[1])
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "previous_response_owner_unavailable"
+    assert event["response"]["error"]["message"] == "Previous response owner account is unavailable; retry later."
+    assert "resets_at" not in event["response"]["error"]
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
+
+
+def test_required_owner_transient_drain_seconds_classification():
+    state_backoff = load_balancer_module.AccountState(
+        account_id="acc_owner",
+        status=load_balancer_module.AccountStatus.ACTIVE,
+        error_count=3,
+        last_error_at=time.time() - 10.0,
+    )
+    remaining = owner_drain_module._required_owner_transient_drain_seconds(state_backoff, now=time.time())
+    assert remaining is not None
+    assert 0 < remaining <= 30.0
+
+    state_drained = load_balancer_module.AccountState(
+        account_id="acc_owner",
+        status=load_balancer_module.AccountStatus.ACTIVE,
+        error_count=1,
+        last_error_at=time.time() - 5.0,
+        health_tier=load_balancer_module.HEALTH_TIER_DRAINING,
+    )
+    remaining = owner_drain_module._required_owner_transient_drain_seconds(state_drained, now=time.time())
+    assert remaining is not None
+    assert 0 < remaining <= 60.0
+
+    state_backoff_expired = load_balancer_module.AccountState(
+        account_id="acc_owner",
+        status=load_balancer_module.AccountStatus.ACTIVE,
+        error_count=3,
+        last_error_at=time.time() - 400.0,
+    )
+    assert owner_drain_module._required_owner_transient_drain_seconds(state_backoff_expired, now=time.time()) is None
+
+    state_healthy = load_balancer_module.AccountState(
+        account_id="acc_owner",
+        status=load_balancer_module.AccountStatus.ACTIVE,
+        error_count=0,
+    )
+    assert owner_drain_module._required_owner_transient_drain_seconds(state_healthy, now=time.time()) is None
+
+    state_rate_limited = load_balancer_module.AccountState(
+        account_id="acc_owner",
+        status=load_balancer_module.AccountStatus.RATE_LIMITED,
+        error_count=3,
+        last_error_at=time.time() - 10.0,
+    )
+    assert owner_drain_module._required_owner_transient_drain_seconds(state_rate_limited, now=time.time()) is None
 
 
 @pytest.mark.asyncio
