@@ -1525,5 +1525,12 @@
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
   "modelSources.fields.defaultReasoningEffort": "기본 추론 수준",
   "dashboard.requests.aliasedFrom": "aliased from {{model}}",
-  "dashboard.requestDetails.aliasedFrom": "별칭 출처"
+  "dashboard.requestDetails.aliasedFrom": "별칭 출처",
+  "reports.filters.allTime": "전체 기간",
+  "reports.charts.monthlyUsage": "월별 비용",
+  "reports.notices.rawMetrics": "요청별 지표(Time to First Token, Tokens per Second, Queue Wait)와 User Agent 분포는 {{since}} 이후 기록된 요청만 다룹니다. 더 오래된 원본 요청 로그는 정리되었습니다. 총계, 비용, token은 전체 범위를 다룹니다.",
+  "reports.monthly.requests": "요청",
+  "reports.monthly.inputTokens": "Input token",
+  "reports.monthly.cachedTokens": "캐시 Input token",
+  "reports.monthly.outputTokens": "Output token"
 }

@@ -68,6 +68,7 @@ from app.db.models import (
     RequestConversationHourlyRollup,
     RequestDemandQuarterRollup,
     RequestLog,
+    RequestUsageDailyRollup,
     RequestUsageHourlyRollup,
 )
 from app.modules.accounts.usage_time_rollup import (
@@ -82,17 +83,13 @@ from app.modules.accounts.usage_time_rollup import (
     _requested_at_epoch_bucket_expr,
     conversation_id_expr,
     epoch_seconds,
+    epoch_to_datetime,
 )
 
 _EPOCH = datetime(1970, 1, 1)
 
 # A raw request_logs window: half-open [start, end), end=None meaning +inf.
 RawWindow = tuple[datetime, datetime | None]
-
-
-def epoch_to_datetime(epoch: int) -> datetime:
-    """Unix epoch seconds to the naive-UTC datetime domain of requested_at."""
-    return _EPOCH + timedelta(seconds=epoch)
 
 
 def floor_to_grid(value: datetime, grid_seconds: int) -> datetime:
@@ -452,12 +449,103 @@ def conversation_labeled_presence_union(
     return union_all(folded, raw)
 
 
+def conversation_labeled_day_counts_stmt(
+    session: AsyncSession,
+    windows: Sequence[tuple[str, datetime, datetime]],
+    *,
+    offset_seconds: int,
+    raw_conditions: Sequence[ColumnElement[bool]] = (),
+) -> Select | None:
+    """Flat ``(day_index, conversation_count)`` equivalent of grouping
+    :func:`conversation_labeled_presence_union` by label and counting
+    ``DISTINCT cid`` — for batches of contiguous, exactly-24h, hour-grid
+    aligned local-day windows under a whole-hour UTC offset (the shape the
+    reports per-day series generates). Returns ``None`` when the shape does
+    not apply so the caller falls back to the per-window union, whose
+    literal windows CTE scales linearly in window count and dominates long
+    All-time reads (measured 8.8s vs 0.3s at 401 windows on SQLite).
+
+    ``day_index`` carries the same local-day label the measures unions emit
+    (``floor((epoch + offset) / 86400)`` — the local date's own UTC-midnight
+    day count; see ``history_series_union``), so callers recover the date
+    with ``date.fromtimestamp(day_index * 86400, tz=UTC)``.
+    """
+    if offset_seconds % 3600 != 0 or not windows:
+        return None
+    if any(
+        (window_end - window_start).total_seconds() != 86400.0
+        or (index + 1 < len(windows) and window_end != windows[index + 1][1])
+        for index, (_label, window_start, window_end) in enumerate(windows)
+    ):
+        return None
+    first_start, last_end = windows[0][1], windows[-1][2]
+    if epoch_seconds(ceil_to_grid(first_start, HOURLY_BUCKET_SECONDS)) != epoch_seconds(first_start) or epoch_seconds(
+        floor_to_grid(last_end, HOURLY_BUCKET_SECONDS)
+    ) != epoch_seconds(last_end):
+        return None
+
+    # Scalar watermark: NULL (no state row / never folded) disables the
+    # folded arm and lets the raw arm count everything — the same semantics
+    # as the union's INNER/OUTER join pair.
+    watermark_sq = (
+        select(_conversation_watermark_epoch_expr(session))
+        .where(AccountUsageRollupState.id == _STATE_ROW_ID)
+        .scalar_subquery()
+    )
+
+    def day_index_expr(epoch_expr: ColumnElement) -> ColumnElement:
+        if session.get_bind().dialect.name == "postgresql":
+            return cast(func.floor((epoch_expr + offset_seconds) / 86400), BigInteger)
+        return cast((epoch_expr + offset_seconds) / 86400, Integer)
+
+    satellite = RequestConversationHourlyRollup
+    folded = select(
+        day_index_expr(cast(satellite.bucket_epoch, BigInteger)).label("day_index"),
+        satellite.conversation_id.label("cid"),
+    ).where(
+        satellite.bucket_epoch >= epoch_seconds(first_start),
+        satellite.bucket_epoch < epoch_seconds(last_end),
+        satellite.bucket_epoch < watermark_sq,
+    )
+    requested_epoch = _requested_at_epoch_bucket_expr(session, 1)
+    raw = select(
+        day_index_expr(requested_epoch).label("day_index"),
+        conversation_id_expr().label("cid"),
+    ).where(
+        RequestLog.requested_at >= first_start,
+        RequestLog.requested_at < last_end,
+        conversation_id_expr().is_not(None),
+        *raw_conditions,
+        # Per window this is exactly the union's raw complement of the
+        # folded span: hour-grid aligned windows make the ``t < fold_lo``
+        # disjunct unreachable inside a window, and ``t >= least(watermark,
+        # fold_hi)`` reduces to ``t >= watermark`` (the ``watermark >=
+        # window end`` case contributes nothing on either side).
+        or_(watermark_sq.is_(None), requested_epoch >= watermark_sq),
+    )
+    pairs = union_all(folded, raw).subquery()
+    distinct_pairs = select(pairs.c.day_index, pairs.c.cid).group_by(pairs.c.day_index, pairs.c.cid).subquery()
+    return select(distinct_pairs.c.day_index, func.count()).group_by(distinct_pairs.c.day_index)
+
+
 async def earliest_hourly_bucket_at(session: AsyncSession) -> datetime | None:
     """Hour-precision earliest countable activity according to the rollups
     (warmup kinds excluded, mirroring the raw earliest-activity filter).
     Used as a fallback when retention has pruned raw below the watermark."""
     stmt = select(func.min(RequestUsageHourlyRollup.bucket_epoch)).where(
         RequestUsageHourlyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS)
+    )
+    earliest = (await session.execute(stmt)).scalar_one_or_none()
+    return None if earliest is None else epoch_to_datetime(int(earliest))
+
+
+async def earliest_daily_bucket_at(session: AsyncSession) -> datetime | None:
+    """Day-precision earliest countable activity according to the daily
+    lifetime store (same warmup filter). Covers history older than any
+    hourly retention window; callers guard it against raw's own floor the
+    same way as :func:`earliest_hourly_bucket_at`."""
+    stmt = select(func.min(RequestUsageDailyRollup.day_epoch)).where(
+        RequestUsageDailyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS)
     )
     earliest = (await session.execute(stmt)).scalar_one_or_none()
     return None if earliest is None else epoch_to_datetime(int(earliest))

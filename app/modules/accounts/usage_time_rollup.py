@@ -1,10 +1,16 @@
 """Time-axis request-usage rollups: schema primitives and repository.
 
-Four permanent aggregate tables serve the dashboard/statistics read paths
+Five permanent aggregate tables serve the dashboard/statistics read paths
 without scanning raw ``request_logs``:
 
 - ``request_usage_hourly_rollups`` — UTC hour buckets x (account_id,
   api_key_id, model, service_tier, request_kind, is_deleted).
+- ``request_usage_daily_rollups`` — UTC day buckets x the SAME dimensions,
+  folded FROM the hourly rollups (never from raw) below the
+  ``daily_folded_through`` watermark. This is the bounded-grain lifetime
+  store: a decade of history is a few thousand rows, so the reports
+  All-time/monthly reads aggregate it without touching the (raw-retention
+  pruned) request logs or scanning the ~24x larger hourly table.
 - ``request_usage_hourly_error_rollups`` — UTC hour buckets x (account_id,
   error_code); the top-error satellite (unbounded cardinality isolated).
 - ``request_demand_quarter_rollups`` — 900s slots x (account_id, api_key_id,
@@ -23,10 +29,14 @@ without scanning raw ``request_logs``:
 Watermark contract: ``account_usage_rollup_state.hourly_folded_through`` and
 ``conversation_folded_through`` (the same single state row as the lifetime
 fold, so one ``FOR UPDATE`` row lock serializes every fold and lifecycle
-mutation) are ALWAYS aligned to a whole UTC hour. Raw rows with
+mutation) are ALWAYS aligned to a whole UTC hour;
+``daily_folded_through`` is ALWAYS aligned to UTC midnight. Raw rows with
 ``requested_at < watermark`` are fully folded by that watermark's tables;
 rows at or above it are the live tail. Buckets are half-open ``[start,
-end)``.
+end)``. The daily watermark's SOURCE is the hourly table (which raw
+retention never touches), so it is independent of raw retention: the daily
+fold target is ``floor_day(hourly_folded_through)`` — every whole UTC day
+whose every hour the hourly fold had already covered.
 
 NULL-dimension sentinel: nullable raw dimensions (account_id, api_key_id,
 service_tier, reasoning_effort) are stored as ``'\\x1f'`` so they can
@@ -50,7 +60,10 @@ into every rollup table that folded it or skip the pre-watermark rows
 (folded buckets are never recomputed from raw — raw may already be pruned by
 retention). ``RequestLogsRepository.update_model_for_request`` takes the
 skip route (and needs no conversation-satellite bound at all: neither
-``model`` nor ``cost_usd`` is folded there).
+``model`` nor ``cost_usd`` is folded there). The lifecycle mirrors rekey the
+daily table alongside the hourly one (same dimensions), so a mirror that
+lands after the daily fold keeps both stores consistent, and one that lands
+before it is simply re-folded from the (already rekeyed) hourly rows.
 """
 
 from __future__ import annotations
@@ -70,6 +83,7 @@ from app.db.models import (
     RequestConversationHourlyRollup,
     RequestDemandQuarterRollup,
     RequestLog,
+    RequestUsageDailyRollup,
     RequestUsageHourlyErrorRollup,
     RequestUsageHourlyRollup,
 )
@@ -87,6 +101,7 @@ logger = logging.getLogger(__name__)
 
 HOURLY_BUCKET_SECONDS = 3600
 QUARTER_SLOT_SECONDS = 900
+DAILY_BUCKET_SECONDS = 86400
 
 # Historical backfill folds at most this much history per slice transaction
 # and at most TS_MAX_SLICES_PER_PASS slices per pass, so the initial backfill
@@ -94,6 +109,12 @@ QUARTER_SLOT_SECONDS = 900
 # occupancy across scheduler ticks instead of one giant catch-up.
 TS_FOLD_SLICE = timedelta(hours=48)
 TS_MAX_SLICES_PER_PASS = 20
+# The daily fold's source is the hourly rollup table (never raw), so its
+# slices scan a ~24x smaller and never-pruned store; 30-day day-aligned
+# slices keep the DELETE-then-INSERT re-fold converged on whole UTC days.
+# The full live-instance backfill (~4.5 months of hourly history) is three
+# slices; TS_MAX_SLICES_PER_PASS still bounds each pass.
+DAILY_FOLD_SLICE = timedelta(days=30)
 
 # Rolling-upgrade repair (#1552): the cancelled_count migration runs before
 # old replicas drain, so a legacy leader can still fold hours with the old
@@ -220,6 +241,28 @@ class HourlyUsageRollupRow:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyUsageRollupRow:
+    day_epoch: int
+    account_id: str
+    api_key_id: str
+    model: str
+    service_tier: str
+    request_kind: str
+    is_deleted: bool
+    request_count: int = 0
+    error_count: int = 0
+    cancelled_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    output_or_reasoning_tokens: int = 0
+    cached_input_tokens: int = 0
+    cached_input_tokens_clamped: int = 0
+    cost_usd: float = 0.0
+    cost_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class HourlyErrorRollupRow:
     bucket_epoch: int
     account_id: str
@@ -275,6 +318,16 @@ _HOURLY_MEASURE_COLUMNS = (
     "cost_usd",
     "cost_count",
 )
+_DAILY_KEY_COLUMNS = (
+    "day_epoch",
+    "account_id",
+    "api_key_id",
+    "model",
+    "service_tier",
+    "request_kind",
+    "is_deleted",
+)
+_DAILY_MEASURE_COLUMNS = _HOURLY_MEASURE_COLUMNS
 _ERROR_KEY_COLUMNS = ("bucket_epoch", "account_id", "error_code")
 _ERROR_MEASURE_COLUMNS = ("error_count",)
 _QUARTER_KEY_COLUMNS = (
@@ -371,6 +424,19 @@ class RequestUsageTimeRollupRepository:
             HourlyUsageRollupRow,
         )
 
+    async def add_daily(self, rows: Sequence[DailyUsageRollupRow]) -> None:
+        """Merge-add daily rows. Used by lifecycle mirrors and tests; the
+        daily fold pass itself writes via DELETE-then-INSERT..SELECT from
+        the hourly rollups."""
+        await _merge_add(
+            self._session,
+            RequestUsageDailyRollup,
+            rows,
+            _DAILY_KEY_COLUMNS,
+            _DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS,
+            DailyUsageRollupRow,
+        )
+
     async def add_errors(self, rows: Sequence[HourlyErrorRollupRow]) -> None:
         await _merge_add(
             self._session,
@@ -418,6 +484,24 @@ class RequestUsageTimeRollupRepository:
             filters,
         )
 
+    async def read_daily(
+        self,
+        *,
+        since_epoch: int | None = None,
+        until_epoch: int | None = None,
+        filters: Sequence[ColumnElement[bool]] = (),
+    ) -> tuple[list[DailyUsageRollupRow], datetime | None]:
+        return await self._read(
+            RequestUsageDailyRollup,
+            RequestUsageDailyRollup.day_epoch,
+            _DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS,
+            DailyUsageRollupRow,
+            since_epoch,
+            until_epoch,
+            filters,
+            watermark_column=AccountUsageRollupState.daily_folded_through,
+        )
+
     async def read_errors(
         self,
         *,
@@ -453,7 +537,15 @@ class RequestUsageTimeRollupRepository:
         )
 
     async def _read(
-        self, model, epoch_column, columns: tuple[str, ...], row_type, since_epoch, until_epoch, filters=()
+        self,
+        model,
+        epoch_column,
+        columns: tuple[str, ...],
+        row_type,
+        since_epoch,
+        until_epoch,
+        filters=(),
+        watermark_column=AccountUsageRollupState.hourly_folded_through,
     ):
         join_conditions = list(filters)
         if since_epoch is not None:
@@ -462,7 +554,7 @@ class RequestUsageTimeRollupRepository:
             join_conditions.append(epoch_column < until_epoch)
         stmt = (
             select(
-                AccountUsageRollupState.hourly_folded_through,
+                watermark_column,
                 *(getattr(model, column) for column in columns),
             )
             .select_from(AccountUsageRollupState)
@@ -481,9 +573,19 @@ def epoch_seconds(value: datetime) -> int:
     return int((value - _EPOCH).total_seconds())
 
 
+def epoch_to_datetime(epoch: int) -> datetime:
+    """Unix epoch seconds to the naive-UTC datetime domain of requested_at."""
+    return _EPOCH + timedelta(seconds=epoch)
+
+
 def floor_to_hour(value: datetime) -> datetime:
     """Floor a naive-UTC datetime to its whole UTC hour."""
     return _EPOCH + timedelta(seconds=(epoch_seconds(value) // HOURLY_BUCKET_SECONDS) * HOURLY_BUCKET_SECONDS)
+
+
+def floor_to_day(value: datetime) -> datetime:
+    """Floor a naive-UTC datetime to its whole UTC day (midnight)."""
+    return _EPOCH + timedelta(seconds=(epoch_seconds(value) // DAILY_BUCKET_SECONDS) * DAILY_BUCKET_SECONDS)
 
 
 def _requested_at_epoch_bucket_expr(session: AsyncSession, bucket_seconds: int) -> ColumnElement:
@@ -635,6 +737,182 @@ def _conversation_fold_insert(session: AsyncSession, window: tuple[ColumnElement
     )
     return insert(RequestConversationHourlyRollup).from_select(
         list(_CONVERSATION_KEY_COLUMNS + _CONVERSATION_MEASURE_COLUMNS), stmt
+    )
+
+
+def _day_bucket_from_hourly_expr(session: AsyncSession) -> ColumnElement:
+    """UTC-day bucket of an hourly bucket epoch, dialect-split like
+    ``_requested_at_epoch_bucket_expr`` (SQLAlchemy renders ``/`` as true
+    division, which PostgreSQL then ROUNDS on the bigint cast — floor
+    explicitly there; SQLite integer division already truncates, and every
+    epoch involved is positive so truncation equals flooring)."""
+    column = RequestUsageHourlyRollup.bucket_epoch
+    if session.get_bind().dialect.name == "postgresql":
+        return cast(func.floor(column / DAILY_BUCKET_SECONDS) * DAILY_BUCKET_SECONDS, BigInteger)
+    return cast(column / DAILY_BUCKET_SECONDS, Integer) * DAILY_BUCKET_SECONDS
+
+
+def _daily_fold_insert(session: AsyncSession, window: tuple[int, int]):
+    """Fold the hourly rollups' window ``[start_epoch, end_epoch)`` into
+    whole-UTC-day rows.
+
+    The source is ``request_usage_hourly_rollups`` — never raw (raw may be
+    retention-pruned; the hourly table is permanent). Dimensions are already
+    sentinel-encoded on the hourly side and copied verbatim; measures are
+    summed per day bucket. Every hourly row folds (no filter): warmup kinds
+    are folded verbatim as dimensions exactly as the hourly fold does, and
+    readers exclude them bucket-side.
+    """
+    start_epoch, end_epoch = window
+    day_bucket = _day_bucket_from_hourly_expr(session).label("day_epoch")
+    hourly = RequestUsageHourlyRollup
+    stmt = (
+        select(
+            day_bucket,
+            hourly.account_id,
+            hourly.api_key_id,
+            hourly.model,
+            hourly.service_tier,
+            hourly.request_kind,
+            hourly.is_deleted,
+            func.coalesce(func.sum(hourly.request_count), 0),
+            func.coalesce(func.sum(hourly.error_count), 0),
+            func.coalesce(func.sum(hourly.cancelled_count), 0),
+            func.coalesce(func.sum(hourly.input_tokens), 0),
+            func.coalesce(func.sum(hourly.output_tokens), 0),
+            func.coalesce(func.sum(hourly.reasoning_tokens), 0),
+            func.coalesce(func.sum(hourly.output_or_reasoning_tokens), 0),
+            func.coalesce(func.sum(hourly.cached_input_tokens), 0),
+            func.coalesce(func.sum(hourly.cached_input_tokens_clamped), 0),
+            func.coalesce(func.sum(hourly.cost_usd), 0.0),
+            func.coalesce(func.sum(hourly.cost_count), 0),
+        )
+        .where(
+            hourly.bucket_epoch >= start_epoch,
+            hourly.bucket_epoch < end_epoch,
+        )
+        .group_by(
+            day_bucket,
+            hourly.account_id,
+            hourly.api_key_id,
+            hourly.model,
+            hourly.service_tier,
+            hourly.request_kind,
+            hourly.is_deleted,
+        )
+    )
+    return insert(RequestUsageDailyRollup).from_select(list(_DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS), stmt)
+
+
+async def run_daily_fold_pass() -> int:
+    """Advance the daily watermark toward ``floor_day(hourly watermark)``.
+
+    Same slice/transaction/crash-safety contract as ``run_hourly_fold_pass``
+    (DELETE-then-INSERT slices, bounded per pass, watermark advance committed
+    atomically with the slice), folding the hourly rollups into
+    ``request_usage_daily_rollups``. The pass derives its target from the
+    CURRENT hourly watermark (re-read under the state lock each slice), so a
+    concurrently advancing hourly fold is absorbed slice-by-slice and the
+    daily backfill never races ahead of its source.
+
+    The hourly watermark is ALWAYS a whole hour and the daily watermark a
+    whole day, so ``floor_day`` of the former is exact: a day is foldable
+    precisely when its every hour is below the hourly watermark.
+    """
+    committed = 0
+    while committed < TS_MAX_SLICES_PER_PASS:
+        async with get_background_session() as session:
+            status, wrote = await _fold_next_daily_slice(session)
+        if wrote:
+            committed += 1
+        if status is _FoldStatus.DONE:
+            break
+    return committed
+
+
+async def _fold_next_daily_slice(session: AsyncSession) -> tuple[_FoldStatus, bool]:
+    async with sqlite_writer_section():
+        # Same state row (id=1) as every other fold: one FOR UPDATE row lock
+        # serializes daily slices against hourly/conversation/lifetime folds
+        # and the lifecycle mirrors — the hourly rows read as this slice's
+        # source cannot mutate mid-slice.
+        state = await _locked_state(session)
+        if state is None:
+            await session.execute(_state_bootstrap_stmt(session))
+            await session.commit()
+            state = await _locked_state(session)
+        if state is None:
+            logger.warning("account_usage_rollup_state row missing; skipping daily fold pass")
+            return _FoldStatus.DONE, False
+        target = floor_to_day(state.hourly_folded_through)
+        watermark = state.daily_folded_through
+        if watermark >= target:
+            return _FoldStatus.DONE, False
+
+        # Next populated hourly bucket in [watermark, target): jumps the
+        # empty prefix on first backfill and any mid-history gap (days with
+        # no hourly rows) on later slices, and guarantees the slice's first
+        # day actually holds rows. Unlike the conversation fold there is no
+        # filtered variant: every hourly row folds (warmup kinds included as
+        # dimensions).
+        watermark_epoch = epoch_seconds(watermark)
+        next_populated = (
+            await session.execute(
+                select(func.min(RequestUsageHourlyRollup.bucket_epoch)).where(
+                    RequestUsageHourlyRollup.bucket_epoch >= watermark_epoch,
+                    RequestUsageHourlyRollup.bucket_epoch < epoch_seconds(target),
+                )
+            )
+        ).scalar_one_or_none()
+        if next_populated is None:
+            # Nothing left below the target: advance (rather than leaving the
+            # watermark behind) so readers' rolled-window bounds and the
+            # hourly-retention fold gate stay current. Hourly rows landing
+            # below the advanced watermark later are impossible for a given
+            # day: the day only completes when the hourly watermark passed
+            # its end, and the hourly watermark never rewinds (operator
+            # escape-hatch resets are the documented forbidden state — the
+            # defensive DELETE below converges them whenever the hourly
+            # source still covers the rewound window).
+            await _advance_daily_watermark(session, target)
+            await session.commit()
+            logger.info("Folded daily usage rollups through %s (no rows below target)", target.isoformat())
+            return _FoldStatus.DONE, True
+
+        start = max(watermark_epoch, epoch_seconds(floor_to_day(epoch_to_datetime(next_populated))))
+        slice_end = min(start + int(DAILY_FOLD_SLICE.total_seconds()), epoch_seconds(target))
+
+        # Defensive DELETE: zero rows on the normal path (the watermark only
+        # moves forward), but makes an operator watermark reset (escape
+        # hatch) converge — a re-fold can never double-count or leave rows
+        # from a previous fold generation behind. The source (hourly) is
+        # never pruned below the daily watermark: hourly-rollup retention,
+        # when enabled, prunes only hours strictly below the daily watermark
+        # (already folded here), and this slice's window is entirely at or
+        # above it. Days the min()-jump skips are deliberately NOT cleared —
+        # same preservation trade-off as the hourly slice.
+        await session.execute(
+            delete(RequestUsageDailyRollup).where(
+                RequestUsageDailyRollup.day_epoch >= start,
+                RequestUsageDailyRollup.day_epoch < slice_end,
+            )
+        )
+
+        # Half-open [start, slice_end): day-aligned bounds, so a display
+        # bucket is never split between the folded side and the hourly/raw
+        # tail.
+        await session.execute(_daily_fold_insert(session, (start, slice_end)))
+        await _advance_daily_watermark(session, epoch_to_datetime(slice_end))
+        await session.commit()
+        logger.info("Folded daily usage rollups through %s", epoch_to_datetime(slice_end).isoformat())
+        return (_FoldStatus.DONE if slice_end >= epoch_seconds(target) else _FoldStatus.CONTINUE), True
+
+
+async def _advance_daily_watermark(session: AsyncSession, value: datetime) -> None:
+    await session.execute(
+        update(AccountUsageRollupState)
+        .where(AccountUsageRollupState.id == _STATE_ROW_ID)
+        .values(daily_folded_through=value)
     )
 
 
@@ -1037,6 +1315,11 @@ async def _advance_conversation_watermark(session: AsyncSession, value: datetime
 
 _ROLLUP_TABLES = (
     (RequestUsageHourlyRollup, _HOURLY_KEY_COLUMNS + _HOURLY_MEASURE_COLUMNS, HourlyUsageRollupRow, "add_hourly"),
+    # The daily lifetime store shares the hourly table's dimensions, so the
+    # same rekey mirrors it: a mirror landing after the daily fold moves the
+    # day rows the way it moves the hour rows, and one landing before it is
+    # re-folded from the (already rekeyed) hourly rows.
+    (RequestUsageDailyRollup, _DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS, DailyUsageRollupRow, "add_daily"),
     (RequestUsageHourlyErrorRollup, _ERROR_KEY_COLUMNS + _ERROR_MEASURE_COLUMNS, HourlyErrorRollupRow, "add_errors"),
     (RequestDemandQuarterRollup, _QUARTER_KEY_COLUMNS + _QUARTER_MEASURE_COLUMNS, QuarterDemandRollupRow, "add_demand"),
     (

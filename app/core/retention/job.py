@@ -9,9 +9,16 @@ from sqlalchemy import delete, func, select
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.utils.time import utcnow
-from app.db.models import AccountUsageRollupState, AdditionalUsageHistory, RequestLog, UsageHistory
+from app.db.models import (
+    AccountUsageRollupState,
+    AdditionalUsageHistory,
+    RequestLog,
+    RequestUsageHourlyRollup,
+    UsageHistory,
+)
 from app.db.session import get_background_session, sqlite_writer_section
 from app.modules.accounts.usage_rollup import FOLD_LAG
+from app.modules.accounts.usage_time_rollup import epoch_seconds
 from app.modules.usage.repository import _clear_bulk_history_since_sqlite_cache
 
 logger = logging.getLogger(__name__)
@@ -58,7 +65,7 @@ async def run_retention_pass(*, now: datetime | None = None) -> dict[str, int]:
     """Prune aged rows per the effective retention settings. Returns rows deleted per table."""
     retention = await get_effective_retention()
     now = now or utcnow()
-    deleted = {"request_logs": 0, "usage_history": 0, "additional_usage_history": 0}
+    deleted = {"request_logs": 0, "usage_history": 0, "additional_usage_history": 0, "hourly_rollups": 0}
     if retention.request_log_days:
         cutoff = now - timedelta(days=retention.request_log_days)
         deleted["request_logs"] = await _prune_request_logs(cutoff, now=now)
@@ -66,15 +73,84 @@ async def run_retention_pass(*, now: datetime | None = None) -> dict[str, int]:
         cutoff = now - timedelta(days=retention.usage_history_days)
         deleted["usage_history"] = await _prune_usage_history(cutoff)
         deleted["additional_usage_history"] = await _prune_additional_usage_history(cutoff)
+    deleted["hourly_rollups"] = await _prune_hourly_rollups(now=now)
     total = sum(deleted.values())
     if total:
         logger.info(
-            "Retention pruned rows request_logs=%s usage_history=%s additional_usage_history=%s",
+            "Retention pruned rows request_logs=%s usage_history=%s additional_usage_history=%s hourly_rollups=%s",
             deleted["request_logs"],
             deleted["usage_history"],
             deleted["additional_usage_history"],
+            deleted["hourly_rollups"],
         )
     return deleted
+
+
+async def _prune_hourly_rollups(*, now: datetime) -> int:
+    """Prune main hourly-rollup rows per the optional hourly retention.
+
+    Off by default (the hourly rollups are permanent, like every other
+    rollup). When enabled:
+
+    - The effective window is the MAX of the hourly setting and the
+      request-log window, so the hourly rollups always outlive raw (a
+      shorter-than-raw hourly history would leave the upgrade repair and
+      the rollup-served dashboard reads with statistics raw cannot recompute).
+    - Only hours STRICTLY below the daily watermark are pruned: those whole
+      UTC days are already folded into ``request_usage_daily_rollups``,
+      whose fold never revisits them (it only moves forward, and its
+      re-fold windows start at its own watermark), so the pruned hours can
+      never be re-read by the daily fold. The error satellite and the
+      demand rollups have no coarser store and are never pruned here.
+
+    No watermark means nothing is folded — skip entirely.
+    """
+    env = get_settings()
+    hourly_days = env.hourly_rollup_retention_days
+    if not hourly_days:
+        return 0
+    # With raw retention disabled (0) the hourly setting applies alone; with
+    # both set the LONGER window wins so the hourly rollups never prune
+    # history raw still keeps.
+    effective_days = max(hourly_days, (await get_effective_retention()).request_log_days)
+    cutoff = now - timedelta(days=effective_days)
+    cutoff_epoch = epoch_seconds(cutoff)
+    total = 0
+    while True:
+        async with get_background_session() as session:
+            async with sqlite_writer_section():
+                # FOR UPDATE: the prune gate must serialize with fold-state
+                # mutations (watermark advances, escape-hatch resets) — same
+                # discipline as the request-log prune.
+                state = (
+                    await session.execute(
+                        select(AccountUsageRollupState.daily_folded_through)
+                        .where(AccountUsageRollupState.id == 1)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if state is None:
+                    return total
+                daily_watermark_epoch = epoch_seconds(state)
+                batch_ids = (
+                    select(RequestUsageHourlyRollup.bucket_epoch)
+                    .where(
+                        RequestUsageHourlyRollup.bucket_epoch < cutoff_epoch,
+                        RequestUsageHourlyRollup.bucket_epoch < daily_watermark_epoch,
+                    )
+                    .order_by(RequestUsageHourlyRollup.bucket_epoch.asc())
+                    .limit(BATCH_SIZE)
+                ).scalar_subquery()
+                result = await session.execute(
+                    delete(RequestUsageHourlyRollup)
+                    .where(RequestUsageHourlyRollup.bucket_epoch.in_(batch_ids))
+                    .returning(RequestUsageHourlyRollup.bucket_epoch)
+                )
+                await session.commit()
+        deleted = len(result.scalars().all())
+        total += deleted
+        if deleted < BATCH_SIZE:
+            return total
 
 
 async def _prune_request_logs(cutoff: datetime, *, now: datetime) -> int:

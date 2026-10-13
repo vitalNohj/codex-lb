@@ -440,6 +440,136 @@ describe("ReportsPage", () => {
     );
   });
 
+  it("disables All time while no earliest activity is known", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-15T12:00:00Z"));
+
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: EMPTY_REPORT,
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(screen.getByRole("button", { name: "All time" })).toBeDisabled();
+  });
+
+  it("resets the range to the earliest activity when All time is selected", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-15T12:00:00Z"));
+
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: { ...EMPTY_REPORT, earliestActivityAt: "2026-05-27" },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    const allTimeButton = screen.getByRole("button", { name: "All time" });
+    expect(allTimeButton).toBeEnabled();
+    fireEvent.click(allTimeButton);
+
+    expect(allTimeButton).toHaveAttribute("aria-pressed", "true");
+    expect(useReportsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        startDate: "2026-05-27",
+        endDate: "2030-01-15",
+      }),
+      "America/Los_Angeles",
+    );
+  });
+
+  it("keeps the All time anchoring when filters change under it", async () => {
+    const user = userEvent.setup();
+    useReportsMock.mockImplementation((filters) =>
+      asUseReportsResult({
+        data: {
+          ...EMPTY_REPORT,
+          earliestActivityAt: filters.model ? "2026-06-10" : "2026-05-27",
+          byModel: [{ model: "gpt-5.1", costUsd: 1, requests: 1, percentage: 100 }],
+          byUseragent: [],
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    await user.click(screen.getByRole("button", { name: "All time" }));
+    await waitFor(() => {
+      expect(useReportsMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ startDate: "2026-05-27" }),
+        "America/Los_Angeles",
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: "Model" }));
+    await user.click(
+      await screen.findByRole("menuitemcheckbox", { name: /^gpt-5\.1$/i }),
+    );
+
+    // The All-time origin precedes any filtered earliest, so the anchored
+    // range keeps covering everything; only the filter itself changes.
+    expect(screen.getByRole("button", { name: "All time" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await waitFor(() => {
+      expect(useReportsMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ startDate: "2026-05-27", model: "gpt-5.1" }),
+        "America/Los_Angeles",
+      );
+    });
+  });
+
+  it("discloses the raw-metrics window when the range reaches past it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-15T12:00:00Z"));
+
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: { ...EMPTY_REPORT, rawMetricsSince: "2030-01-12" },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(
+      screen.getByText(/only cover requests logged since 2030-01-12/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the raw-metrics notice hidden while the range stays inside the raw window", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-15T12:00:00Z"));
+
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: { ...EMPTY_REPORT, rawMetricsSince: "2030-01-05" },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(screen.queryByText(/only cover requests logged since/)).not.toBeInTheDocument();
+  });
+
   it("shows an error when report loading fails", async () => {
     useReportsMock.mockImplementation((filters) =>
       filters.model
@@ -575,7 +705,7 @@ describe("ReportsPage", () => {
     }
   });
 
-  it("renders all five line charts by default", async () => {
+  it("renders all six usage charts by default", async () => {
     useReportsMock.mockReturnValue(
       asUseReportsResult({
         data: EMPTY_REPORT,
@@ -590,6 +720,7 @@ describe("ReportsPage", () => {
     for (const heading of [
       "Cost by Day",
       "Tokens by Day",
+      "Cost per Month",
       "Time to First Token",
       "Tokens per Second",
       "Queue Wait",
@@ -634,7 +765,7 @@ describe("ReportsPage", () => {
 
     renderWithProviders(<ReportsPage />);
 
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
+    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
     for (const chartOption of screen.getAllByRole("menuitemcheckbox")) {
       await user.click(chartOption);
     }
@@ -674,7 +805,7 @@ describe("ReportsPage", () => {
     const callsBeforeToggle = useReportsMock.mock.calls.slice(-2).map(
       ([filters, timeZone]) => [filters, timeZone],
     );
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
+    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
     await user.click(
       screen.getByRole("menuitemcheckbox", { name: "Queue Wait" }),
     );

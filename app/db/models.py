@@ -389,6 +389,19 @@ class AccountUsageRollupState(Base):
         nullable=False,
         server_default=text("'1970-01-01 00:00:00'"),
     )
+    # Day-aligned watermark for the daily lifetime store. Separate (same
+    # alignment/lock discipline as the hourly watermark): the daily fold
+    # reads the HOURLY rollups — never raw — so it is independent of raw
+    # retention, and backfills from epoch without rewinding the other
+    # watermarks. Invariant: always UTC midnight (epoch % 86400 == 0); every
+    # whole UTC day strictly below it is fully folded into
+    # `request_usage_daily_rollups` from hours the hourly fold had already
+    # covered (day end <= hourly watermark).
+    daily_folded_through: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=text("'1970-01-01 00:00:00'"),
+    )
     # Start of the hourly range a legacy (pre-cancelled_count) fold pass may
     # have written after the migration ran (#1552 rolling-upgrade fence).
     # The migration stamps existing rows with their hourly_folded_through;
@@ -458,6 +471,49 @@ class RequestUsageHourlyRollup(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0"), nullable=False)
     # count(cost_usd IS NOT NULL) — preserves the "all-NULL model excluded"
     # rule of cost-by-model aggregations.
+    cost_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+
+
+class RequestUsageDailyRollup(Base):
+    """UTC-day-bucketed request-usage sums (the lifetime store).
+
+    One row per UTC midnight epoch x the SAME dimensions and measures as
+    ``request_usage_hourly_rollups``. Folded FROM the hourly rollups (never
+    from raw) below the ``daily_folded_through`` watermark by the daily fold
+    pass (DELETE-then-INSERT..SELECT per slice, so re-folds always converge);
+    mutated afterwards only by the account lifecycle mirrors — never
+    recomputed from raw. This is the permanent, bounded-grain store the
+    reports lifetime reads serve from: a decade of history is a few thousand
+    rows instead of the hourly table's ~24x that (or raw's ~86400x).
+
+    Dimension encoding matches the hourly table (NULL-sentinel via
+    ``usage_time_rollup.to_dimension``; warmup request kinds folded verbatim,
+    readers filter them). No FKs: rows must outlive account deletion.
+    """
+
+    __tablename__ = "request_usage_daily_rollups"
+
+    day_epoch: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    api_key_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model: Mapped[str] = mapped_column(String, primary_key=True)
+    service_tier: Mapped[str] = mapped_column(String, primary_key=True)
+    request_kind: Mapped[str] = mapped_column(String, primary_key=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=False, server_default=false())
+    request_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    error_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    cancelled_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    reasoning_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    output_or_reasoning_tokens: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+    cached_input_tokens_clamped: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0"), nullable=False)
     cost_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
 
 

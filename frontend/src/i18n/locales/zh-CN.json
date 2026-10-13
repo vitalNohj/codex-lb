@@ -1525,5 +1525,12 @@
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
   "modelSources.fields.defaultReasoningEffort": "默认推理级别",
   "dashboard.requests.aliasedFrom": "别名自 {{model}}",
-  "dashboard.requestDetails.aliasedFrom": "别名来源"
+  "dashboard.requestDetails.aliasedFrom": "别名来源",
+  "reports.filters.allTime": "全部时间",
+  "reports.charts.monthlyUsage": "按月费用",
+  "reports.notices.rawMetrics": "单请求指标（首 token 时间、每秒 token、队列等待）和 User Agent 分布仅覆盖 {{since}} 起记录的请求；更早的原始请求日志已被清理。总量、费用和 token 仍覆盖完整范围。",
+  "reports.monthly.requests": "请求",
+  "reports.monthly.inputTokens": "输入 token",
+  "reports.monthly.cachedTokens": "缓存输入 token",
+  "reports.monthly.outputTokens": "输出 token"
 }

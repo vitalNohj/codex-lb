@@ -18,6 +18,7 @@ const ALL_CHART_IDS = REPORT_CHART_DEFINITIONS.map(({ id }) => id);
 const ALL_CHART_LABELS = [
   "Cost by Day",
   "Tokens by Day",
+  "Cost per Month",
   "Time to First Token",
   "Tokens per Second",
   "Queue Wait",
@@ -40,6 +41,9 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={onFiltersChange}
@@ -64,6 +68,9 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={onFiltersChange}
@@ -91,6 +98,9 @@ describe("ReportsFilters", () => {
         ]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={onFiltersChange}
@@ -121,6 +131,9 @@ describe("ReportsFilters", () => {
           { value: "SDK", label: "SDK" },
         ]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={onFiltersChange}
@@ -149,6 +162,9 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={onPresetSelect}
         onFiltersChange={onFiltersChange}
@@ -168,6 +184,55 @@ describe("ReportsFilters", () => {
     expect(onPresetSelect).toHaveBeenCalledWith(90);
   });
 
+  it("renders the All time preset as pressed and forwards its selection", () => {
+    const onAllTimeSelect = vi.fn();
+
+    render(
+      <ReportsFilters
+        filters={FILTERS}
+        selectedPresetDays={null}
+        accountOptions={[]}
+        apiKeyOptions={[]}
+        modelOptions={[]}
+        useragentOptions={[]}
+        visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected
+        allTimeAvailable
+        onAllTimeSelect={onAllTimeSelect}
+        onFiltersChange={vi.fn()}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "All time" });
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(button).toHaveAttribute("data-variant", "default");
+    expect(button).not.toBeDisabled();
+
+    fireEvent.click(button);
+
+    expect(onAllTimeSelect).toHaveBeenCalledOnce();
+  });
+
+  it("disables the All time preset while the earliest activity is unknown", () => {
+    render(
+      <ReportsFilters
+        filters={FILTERS}
+        selectedPresetDays={7}
+        accountOptions={[]}
+        apiKeyOptions={[]}
+        modelOptions={[]}
+        useragentOptions={[]}
+        visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable={false}
+        onAllTimeSelect={vi.fn()}
+        onFiltersChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "All time" })).toBeDisabled();
+  });
+
   it("applies reciprocal bounds while keeping today as the end-date ceiling", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-12T12:00:00"));
@@ -181,6 +246,9 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
@@ -207,6 +275,9 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
@@ -227,6 +298,9 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
@@ -255,13 +329,16 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Charts (5)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Charts (6)" })).toBeInTheDocument();
   });
 
   it("places the chart selector before the start date", () => {
@@ -274,13 +351,16 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
       />,
     );
 
-    const chartButton = screen.getByRole("button", { name: "Charts (5)" });
+    const chartButton = screen.getByRole("button", { name: "Charts (6)" });
     const startDate = container.querySelector('input[name="report-start-date"]');
 
     expect(startDate).not.toBeNull();
@@ -300,20 +380,23 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={vi.fn()}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
+    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
 
     expect(screen.getAllByRole("menuitemcheckbox").map((item) => item.textContent)).toEqual(
       ALL_CHART_LABELS,
     );
   });
 
-  it("returns the other four chart IDs when Queue Wait is toggled off", async () => {
+  it("returns the other five chart IDs when Queue Wait is toggled off", async () => {
     const user = userEvent.setup();
     const onVisibleChartIdsChange = vi.fn();
     render(
@@ -325,13 +408,16 @@ describe("ReportsFilters", () => {
         modelOptions={[]}
         useragentOptions={[]}
         visibleChartIds={ALL_CHART_IDS}
+        allTimeSelected={false}
+        allTimeAvailable
+        onAllTimeSelect={vi.fn()}
         onVisibleChartIdsChange={onVisibleChartIdsChange}
         onPresetSelect={vi.fn()}
         onFiltersChange={vi.fn()}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
+    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
     await user.click(screen.getByRole("menuitemcheckbox", { name: "Queue Wait" }));
 
     expect(onVisibleChartIdsChange).toHaveBeenCalledWith(

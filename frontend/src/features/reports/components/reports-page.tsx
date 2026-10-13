@@ -13,6 +13,7 @@ import { ReportsFilters, type ReportsFiltersState } from "./reports-filters";
 import { ReportsSummaryCards } from "./reports-summary-cards";
 import type { CostPerDayChartProps } from "./cost-per-day-chart";
 import type { TokensPerDayChartProps } from "./tokens-per-day-chart";
+import type { MonthlyUsageChartProps } from "./monthly-usage-chart";
 import type { TimeToFirstTokenChartProps } from "./time-to-first-token-chart";
 import type { TokensPerSecondChartProps } from "./tokens-per-second-chart";
 import type { QueueWaitChartProps } from "./queue-wait-chart";
@@ -34,6 +35,11 @@ const CostPerDayChart = lazy(() =>
 const TokensPerDayChart = lazy(() =>
   import("./tokens-per-day-chart").then((module) => ({
     default: (props: TokensPerDayChartProps) => <module.TokensPerDayChart {...props} />,
+  })),
+);
+const MonthlyUsageChart = lazy(() =>
+  import("./monthly-usage-chart").then((module) => ({
+    default: (props: MonthlyUsageChartProps) => <module.MonthlyUsageChart {...props} />,
   })),
 );
 const TimeToFirstTokenChart = lazy(() =>
@@ -86,7 +92,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
     ...createDefaultFilters(),
     ...initialFilters,
   }));
-  const [selectedPresetDays, setSelectedPresetDays] = useState<number | null>(
+  const [selectedPreset, setSelectedPreset] = useState<number | "all" | null>(
     DEFAULT_PRESET_DAYS,
   );
   const [reportsTimeZone, setReportsTimeZone] = useState<string | undefined>(() =>
@@ -186,6 +192,15 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
   const accountOptionsError = getErrorMessageOrNull(accountsError);
   const apiKeyOptionsError = getErrorMessageOrNull(apiKeysError);
 
+  const earliestActivityAt =
+    reportsQuery.data?.earliestActivityAt ??
+    filterCatalogQuery.data?.earliestActivityAt ??
+    null;
+  const rawMetricsSince = reportsQuery.data?.rawMetricsSince ?? null;
+  // Raw-only measures (per-request speed medians, the user-agent
+  // distribution) cover exactly the request-log window; disclose its start
+  // instead of silently showing less whenever the range reaches past it.
+  const showRawMetricsNotice = Boolean(rawMetricsSince && filters.startDate < rawMetricsSince);
   const hasAnyError = Boolean(
     mainReportsError || sharedOptionsError || accountOptionsError || apiKeyOptionsError,
   );
@@ -205,10 +220,22 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
   };
 
   const handlePresetSelect = (days: number) => {
-    setSelectedPresetDays(days);
+    setSelectedPreset(days);
     setFilters((current) => ({
       ...current,
       startDate: daysAgoLocalISO(days - 1),
+      endDate: localDateISO(),
+    }));
+  };
+
+  const handleAllTimeSelect = () => {
+    setSelectedPreset("all");
+    // Anchor the range at the earliest countable activity known at click
+    // time (rollup-backed once raw is pruned) — it precedes any filtered
+    // earliest, so the range keeps covering everything if filters change.
+    setFilters((current) => ({
+      ...current,
+      startDate: earliestActivityAt ?? current.startDate,
       endDate: localDateISO(),
     }));
   };
@@ -218,7 +245,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
       nextFilters.startDate !== filters.startDate ||
       nextFilters.endDate !== filters.endDate
     ) {
-      setSelectedPresetDays(null);
+      setSelectedPreset(null);
     }
     setFilters(nextFilters);
   };
@@ -236,13 +263,16 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
 
       <ReportsFilters
         filters={filters}
-        selectedPresetDays={selectedPresetDays}
+        selectedPresetDays={typeof selectedPreset === "number" ? selectedPreset : null}
         accountOptions={accountOptions}
         apiKeyOptions={apiKeyOptions}
         modelOptions={modelOptions}
         useragentOptions={useragentOptions}
         visibleChartIds={visibleChartIds}
+        allTimeSelected={selectedPreset === "all"}
+        allTimeAvailable={earliestActivityAt !== null}
         onPresetSelect={handlePresetSelect}
+        onAllTimeSelect={handleAllTimeSelect}
         onFiltersChange={handleFiltersChange}
         onVisibleChartIdsChange={setVisibleChartIds}
       />
@@ -310,6 +340,11 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
         </div>
       ) : reportsQuery.data ? (
         <>
+          {showRawMetricsNotice ? (
+            <AlertMessage variant="warning">
+              {t("reports.notices.rawMetrics", { since: rawMetricsSince })}
+            </AlertMessage>
+          ) : null}
           <ReportsSummaryCards
             summary={reportsQuery.data.summary}
             comparison={reportsQuery.data.comparison}
@@ -332,6 +367,11 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
                   />
+                </Suspense>
+              ) : null}
+              {visibleChartIds.includes("monthlyUsage") ? (
+                <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
+                  <MonthlyUsageChart data={reportsQuery.data.monthly ?? []} />
                 </Suspense>
               ) : null}
               {visibleChartIds.includes("timeToFirstToken") ? (

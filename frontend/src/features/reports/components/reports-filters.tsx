@@ -28,7 +28,10 @@ export type ReportsFiltersProps = {
   modelOptions: MultiSelectOption[];
   useragentOptions: MultiSelectOption[];
   visibleChartIds: ReportChartId[];
+  allTimeSelected: boolean;
+  allTimeAvailable: boolean;
   onPresetSelect: (days: number) => void;
+  onAllTimeSelect: () => void;
   onFiltersChange: (filters: ReportsFiltersState) => void;
   onVisibleChartIdsChange: (ids: string[]) => void;
 };
@@ -47,7 +50,10 @@ export function ReportsFilters({
   modelOptions,
   useragentOptions,
   visibleChartIds,
+  allTimeSelected,
+  allTimeAvailable,
   onPresetSelect,
+  onAllTimeSelect,
   onFiltersChange,
   onVisibleChartIdsChange,
 }: ReportsFiltersProps) {
@@ -82,6 +88,16 @@ export function ReportsFilters({
           </Button>
         );
       })}
+
+      <Button
+        variant={allTimeSelected ? "default" : "outline"}
+        size="sm"
+        aria-pressed={allTimeSelected}
+        disabled={!allTimeAvailable}
+        onClick={onAllTimeSelect}
+      >
+        {t("reports.filters.allTime")}
+      </Button>
 
       <MultiSelectFilter
         label={t("dashboard.filters.accounts")}

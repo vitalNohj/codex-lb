@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
-from sqlalchemy import Delete, select, update
+from sqlalchemy import Delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.modules.accounts.usage_time_rollup as time_rollup_module
@@ -22,24 +23,32 @@ from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.usage_rollup import FOLD_LAG, lock_fold_state
 from app.modules.accounts.usage_time_rollup import (
+    DAILY_BUCKET_SECONDS,
     DIMENSION_SENTINEL,
     HOURLY_BUCKET_SECONDS,
     QUARTER_SLOT_SECONDS,
     TS_FOLD_SLICE,
     TS_MAX_SLICES_PER_PASS,
+    DailyUsageRollupRow,
     HourlyErrorRollupRow,
     HourlyUsageRollupRow,
     QuarterDemandRollupRow,
     RequestUsageTimeRollupRepository,
     epoch_seconds,
+    epoch_to_datetime,
     floor_to_hour,
     from_dimension,
     mirror_account_soft_delete_into_time_rollups,
     run_conversation_fold_pass,
+    run_daily_fold_pass,
     run_hourly_fold_pass,
     to_dimension,
 )
-from app.modules.reports.repository import ReportsRepository
+from app.modules.accounts.usage_time_rollup_read import (
+    conversation_labeled_day_counts_stmt,
+    conversation_labeled_presence_union,
+)
+from app.modules.reports.repository import ReportsRepository, _daily_bucket_ranges
 from app.modules.request_logs.repository import RequestLogsRepository
 
 pytestmark = pytest.mark.integration
@@ -2001,3 +2010,353 @@ async def test_incomplete_marker_repair_resumes_from_the_persisted_marker(db_set
     # Strictly monotonic progress while unfinished.
     advanced = [m for m in markers if m is not None]
     assert advanced == sorted(advanced) and len(set(advanced)) == len(advanced)
+
+
+# ---------------------------------------------------------------------------
+# Daily fold pass: the hourly rollups folded into the daily lifetime store.
+# ---------------------------------------------------------------------------
+
+_DAY1 = _HOUR - (_HOUR % DAILY_BUCKET_SECONDS)  # 2025-07-23T00:00:00Z
+
+
+def _daily_row(*, day_epoch: int = _DAY1, **kwargs) -> DailyUsageRollupRow:
+    values: dict[str, Any] = dict(
+        account_id="acc_a",
+        api_key_id=_S,
+        model="gpt-5.1-codex",
+        service_tier=_S,
+        request_kind="normal",
+        is_deleted=False,
+    )
+    values.update(kwargs)
+    return DailyUsageRollupRow(day_epoch=day_epoch, **values)
+
+
+async def _dump_daily() -> tuple[list[DailyUsageRollupRow], datetime | None]:
+    async with SessionLocal() as session:
+        repo = RequestUsageTimeRollupRepository(session)
+        rows, watermark = await repo.read_daily()
+
+    def _sort_key(r: DailyUsageRollupRow) -> tuple:
+        return (r.day_epoch, r.account_id, r.api_key_id, r.model, r.service_tier, r.request_kind, r.is_deleted)
+
+    return sorted(rows, key=_sort_key), watermark
+
+
+async def _set_watermarks(**values: datetime) -> None:
+    async with SessionLocal() as session:
+        await session.execute(update(AccountUsageRollupState).where(AccountUsageRollupState.id == 1).values(**values))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_daily_fold_folds_hourly_dimensions_and_measures(db_setup):
+    """Two same-day hourly rows collapse into one daily row per dimension
+    set; the watermark lands on floor_day(hourly watermark) and a second
+    pass is a no-op (idempotent)."""
+    await _bootstrap_state()
+    async with SessionLocal() as session:
+        repo = RequestUsageTimeRollupRepository(session)
+        await repo.add_hourly(
+            [
+                # Day 1, same dimensions across two hours: fold to one row.
+                _hourly_row(
+                    _DAY1 + 20 * HOURLY_BUCKET_SECONDS,
+                    request_count=2,
+                    input_tokens=10,
+                    output_tokens=6,
+                    reasoning_tokens=2,
+                    output_or_reasoning_tokens=6,
+                    cached_input_tokens=3,
+                    cached_input_tokens_clamped=2,
+                    cost_usd=0.1,
+                    cost_count=1,
+                ),
+                _hourly_row(
+                    _DAY1 + 21 * HOURLY_BUCKET_SECONDS,
+                    request_count=3,
+                    input_tokens=15,
+                    output_tokens=9,
+                    reasoning_tokens=3,
+                    output_or_reasoning_tokens=9,
+                    cached_input_tokens=4,
+                    cached_input_tokens_clamped=4,
+                    cost_usd=0.2,
+                    cost_count=1,
+                ),
+                # Day 2, distinct model dimension: its own daily row.
+                _hourly_row(
+                    _DAY1 + DAILY_BUCKET_SECONDS + HOURLY_BUCKET_SECONDS,
+                    model="gpt-5.1-mini",
+                    request_count=4,
+                    error_count=1,
+                    cancelled_count=2,
+                    input_tokens=7,
+                    cost_usd=0.05,
+                    cost_count=1,
+                ),
+                # Day 2, warmup kind: folded verbatim as a dimension.
+                _hourly_row(
+                    _DAY1 + DAILY_BUCKET_SECONDS + 2 * HOURLY_BUCKET_SECONDS,
+                    request_kind="limit_warmup",
+                    request_count=1,
+                    input_tokens=1,
+                    cost_usd=0.0,
+                ),
+            ]
+        )
+        await session.commit()
+    hourly_watermark = _DAY1 + 2 * DAILY_BUCKET_SECONDS
+    await _set_watermarks(hourly_folded_through=epoch_to_datetime(hourly_watermark))
+
+    committed = await run_daily_fold_pass()
+    assert committed == 1
+
+    daily, watermark = await _dump_daily()
+    assert watermark == epoch_to_datetime(hourly_watermark)
+    assert [(r.day_epoch, r.account_id, r.model, r.request_kind) for r in daily] == [
+        (_DAY1, "acc_a", "gpt-5.1-codex", "normal"),
+        (_DAY1 + DAILY_BUCKET_SECONDS, "acc_a", "gpt-5.1-codex", "limit_warmup"),
+        (_DAY1 + DAILY_BUCKET_SECONDS, "acc_a", "gpt-5.1-mini", "normal"),
+    ]
+    day1 = daily[0]
+    assert day1.request_count == 5
+    assert day1.input_tokens == 25
+    assert day1.output_tokens == 15
+    assert day1.reasoning_tokens == 5
+    assert day1.output_or_reasoning_tokens == 15
+    assert day1.cached_input_tokens == 7
+    assert day1.cached_input_tokens_clamped == 6
+    assert day1.cost_usd == pytest.approx(0.3)
+    assert day1.cost_count == 2
+    day2_warmup = daily[1]
+    assert day2_warmup.request_count == 1 and day2_warmup.input_tokens == 1
+    day2_mini = daily[2]
+    assert (day2_mini.request_count, day2_mini.error_count, day2_mini.cancelled_count) == (4, 1, 2)
+    assert day2_mini.cost_usd == pytest.approx(0.05)
+
+    # Idempotent: the watermark equals the target, the next pass writes nothing.
+    assert await run_daily_fold_pass() == 0
+    assert (await _dump_daily())[0] == daily
+
+
+@pytest.mark.asyncio
+async def test_daily_fold_refold_after_watermark_reset_converges(db_setup):
+    """The escape-hatch reset (operator rewinds the daily watermark while
+    daily rows survive) must converge on the same rows — the defensive
+    DELETE makes a re-fold replace, never double-count."""
+    await _bootstrap_state()
+    async with SessionLocal() as session:
+        repo = RequestUsageTimeRollupRepository(session)
+        await repo.add_hourly(
+            [
+                _hourly_row(
+                    _DAY1 + HOURLY_BUCKET_SECONDS,
+                    request_count=2,
+                    input_tokens=10,
+                    cost_usd=0.1,
+                    cost_count=1,
+                )
+            ]
+        )
+        await session.commit()
+    hourly_watermark = _DAY1 + DAILY_BUCKET_SECONDS
+    await _set_watermarks(hourly_folded_through=epoch_to_datetime(hourly_watermark))
+    assert await run_daily_fold_pass() == 1
+    before = (await _dump_daily())[0]
+
+    # Reset only the daily watermark (rows deliberately kept).
+    await _set_watermarks(daily_folded_through=_EPOCH)
+    assert await run_daily_fold_pass() == 1
+    after, watermark = await _dump_daily()
+    assert watermark == epoch_to_datetime(hourly_watermark)
+    assert after == before
+    assert all(r.request_count == 2 for r in after)
+
+
+@pytest.mark.asyncio
+async def test_daily_fold_backfill_progresses_across_capped_passes(db_setup, monkeypatch):
+    """The initial backfill folds at most TS_MAX_SLICES_PER_PASS
+    DAILY_FOLD_SLICE slices per pass; each pass commits its watermark
+    advance so progress accumulates across passes until the target."""
+    await _bootstrap_state()
+    monkeypatch.setattr(time_rollup_module, "TS_MAX_SLICES_PER_PASS", 1)
+    days = 70
+    async with SessionLocal() as session:
+        repo = RequestUsageTimeRollupRepository(session)
+        await repo.add_hourly(
+            [
+                _hourly_row(
+                    _DAY1 + day * DAILY_BUCKET_SECONDS + HOURLY_BUCKET_SECONDS,
+                    request_count=1,
+                    input_tokens=2,
+                )
+                for day in range(days)
+            ]
+        )
+        await session.commit()
+    hourly_watermark = _DAY1 + days * DAILY_BUCKET_SECONDS
+    await _set_watermarks(hourly_folded_through=epoch_to_datetime(hourly_watermark))
+
+    slice_seconds = int(time_rollup_module.DAILY_FOLD_SLICE.total_seconds())
+    assert slice_seconds == DAILY_BUCKET_SECONDS * 30
+    assert await run_daily_fold_pass() == 1
+    _, watermark = await _dump_daily()
+    assert watermark == epoch_to_datetime(_DAY1 + 30 * DAILY_BUCKET_SECONDS)
+
+    assert await run_daily_fold_pass() == 1
+    assert (await _dump_daily())[1] == epoch_to_datetime(_DAY1 + 60 * DAILY_BUCKET_SECONDS)
+
+    assert await run_daily_fold_pass() == 1
+    daily, watermark = await _dump_daily()
+    assert watermark == epoch_to_datetime(hourly_watermark)
+    assert len(daily) == days
+    assert sum(r.request_count for r in daily) == days
+    assert await run_daily_fold_pass() == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_fold_empty_history_advances_watermark(db_setup):
+    """No hourly rows below the target: the pass still advances the daily
+    watermark (keeping readers' rolled-window bounds current) and writes
+    nothing."""
+    await _bootstrap_state()
+    hourly_watermark = _DAY1 + 5 * DAILY_BUCKET_SECONDS
+    await _set_watermarks(hourly_folded_through=epoch_to_datetime(hourly_watermark))
+
+    assert await run_daily_fold_pass() == 1
+    daily, watermark = await _dump_daily()
+    assert daily == []
+    assert watermark == epoch_to_datetime(hourly_watermark)
+    assert await run_daily_fold_pass() == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_fold_waits_for_hourly_coverage(db_setup):
+    """The daily target is floor_day(hourly watermark): hours the hourly
+    fold has not covered yet must never leak into the daily store."""
+    await _bootstrap_state()
+    async with SessionLocal() as session:
+        repo = RequestUsageTimeRollupRepository(session)
+        await repo.add_hourly([_hourly_row(_DAY1 + HOURLY_BUCKET_SECONDS, request_count=1, input_tokens=2)])
+        await session.commit()
+    # Hourly watermark mid-day: only the PREVIOUS whole day is foldable.
+    hourly_watermark = _DAY1 + DAILY_BUCKET_SECONDS + 3 * HOURLY_BUCKET_SECONDS
+    await _set_watermarks(hourly_folded_through=epoch_to_datetime(hourly_watermark))
+
+    assert await run_daily_fold_pass() == 1
+    daily, watermark = await _dump_daily()
+    assert watermark == epoch_to_datetime(_DAY1 + DAILY_BUCKET_SECONDS)
+    assert [r.day_epoch for r in daily] == [_DAY1]
+
+
+@pytest.mark.asyncio
+async def test_account_soft_delete_mirrors_daily_rollups(db_setup):
+    """The lifecycle mirror rekeys the daily lifetime store exactly like the
+    hourly table (same dimensions) — the reports lifetime reads depend on
+    it."""
+    now = utcnow()
+    await _seed_account_history("acc_daily_mirror", "daily-mirror@example.com", now)
+    await run_hourly_fold_pass(now=now)
+    assert await run_daily_fold_pass() == 1
+    daily_before, _ = await _dump_daily()
+    assert daily_before
+    assert all(r.account_id == "acc_daily_mirror" and not r.is_deleted for r in daily_before)
+    total_before = sum(r.request_count for r in daily_before)
+
+    async with SessionLocal() as session:
+        assert await AccountsRepository(session).delete("acc_daily_mirror")
+
+    daily, _ = await _dump_daily()
+    assert sum(r.request_count for r in daily) == total_before
+    assert all(r.account_id == _S and r.is_deleted for r in daily)
+
+
+@pytest.mark.asyncio
+async def test_conversation_labeled_day_counts_fast_path_matches_union(db_setup):
+    """The flat per-day conversation fast path must exactly match grouping
+    the labeled presence union for the window shapes it accepts (whole-hour
+    offsets, contiguous exact-24h hour-grid-aligned windows), and must
+    decline (None) the shapes it cannot serve so callers keep the union
+    fallback."""
+    now = utcnow()
+    hour = floor_to_hour(now - timedelta(days=2))
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_cfast", "cfast-ts@example.com"))
+        logs = RequestLogsRepository(session)
+        for index, (offset, conversation_id) in enumerate(
+            [
+                (timedelta(minutes=1), "conv_fast_a"),
+                (timedelta(minutes=2), "conv_fast_a"),
+                (timedelta(hours=12, minutes=1), "conv_fast_b"),
+                (timedelta(hours=23, minutes=59), "conv_fast_c"),
+            ]
+        ):
+            await _add_log(
+                logs,
+                account_id="acc_cfast",
+                request_id=f"r_cfast_{index}",
+                requested_at=hour + offset,
+                conversation_id=conversation_id,
+            )
+    await run_conversation_fold_pass(now=now)
+    # A live-tail row inserted after the fold at the current whole hour is
+    # at or above the conversation watermark (raw complement arm), so the
+    # seeded state stays consistent with the watermark contract.
+    late_at = floor_to_hour(now)
+    async with SessionLocal() as session:
+        await _add_log(
+            RequestLogsRepository(session),
+            account_id="acc_cfast",
+            request_id="r_cfast_late",
+            requested_at=late_at,
+            conversation_id="conv_fast_a",
+        )
+
+    seeded = [
+        (hour + timedelta(minutes=1), "conv_fast_a"),
+        (hour + timedelta(minutes=2), "conv_fast_a"),
+        (hour + timedelta(hours=12, minutes=1), "conv_fast_b"),
+        (hour + timedelta(hours=23, minutes=59), "conv_fast_c"),
+        (late_at, "conv_fast_a"),
+    ]
+    # One extra day covers offsets that shift the tail row's local date.
+    start_date = hour.date()
+    end_date = (now + timedelta(days=1)).date()
+
+    async def _counts(tz: timezone) -> tuple[dict[str, int], bool]:
+        windows = _daily_bucket_ranges(start_date, end_date, tz)
+        offset = int(tz.utcoffset(None).total_seconds())
+        async with SessionLocal() as session:
+            stmt = conversation_labeled_day_counts_stmt(session, windows, offset_seconds=offset)
+            assert stmt is not None, tz
+            fast = {
+                datetime.fromtimestamp(int(day_index) * 86400, tz=timezone.utc).date().isoformat(): int(count)
+                for day_index, count in (await session.execute(stmt)).all()
+            }
+            union = conversation_labeled_presence_union(session, windows).subquery()
+            slow = {
+                label_date: int(count)
+                for label_date, count in (
+                    await session.execute(
+                        select(union.c.label, func.count(func.distinct(union.c.cid))).group_by(union.c.label)
+                    )
+                ).all()
+            }
+        expected: dict[str, set[str]] = {}
+        for requested_at, conversation_id in seeded:
+            epoch = int(requested_at.replace(tzinfo=timezone.utc).timestamp())
+            day = datetime.fromtimestamp((epoch + offset) // 86400 * 86400, tz=timezone.utc).date().isoformat()
+            expected.setdefault(day, set()).add(conversation_id)
+        return fast, fast == slow == {day: len(cids) for day, cids in expected.items()}
+
+    for tz in (timezone.utc, timezone(timedelta(hours=2))):
+        _, matches = await _counts(tz)
+        assert matches, tz
+
+    # Declined shapes: non-whole-hour offset, and non-contiguous windows.
+    windows = _daily_bucket_ranges(start_date, end_date, timezone.utc)
+    async with SessionLocal() as session:
+        assert conversation_labeled_day_counts_stmt(session, windows, offset_seconds=5 * 3600 + 1800) is None
+        assert conversation_labeled_day_counts_stmt(session, windows[1:], offset_seconds=0) is not None
+        assert conversation_labeled_day_counts_stmt(session, [windows[0], windows[2]], offset_seconds=0) is None
