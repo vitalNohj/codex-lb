@@ -62,6 +62,7 @@ async def test_migrated_null_account_caps_inherit_environment(monkeypatch: pytes
                 "proxy_api_key_fair_share_congestion_threshold_pct": 0,
                 "request_log_retention_days": 0,
                 "usage_history_retention_days": 0,
+                "hourly_rollup_retention_days": 0,
             },
         )(),
     )
@@ -97,6 +98,7 @@ async def test_migrated_null_api_key_fair_share_threshold_inherits_environment(
                 "proxy_api_key_fair_share_congestion_threshold_pct": 55,
                 "request_log_retention_days": 0,
                 "usage_history_retention_days": 0,
+                "hourly_rollup_retention_days": 0,
             },
         )(),
     )
@@ -139,6 +141,7 @@ async def test_null_retention_inherits_environment_and_dashboard_value_wins(
                 "proxy_api_key_fair_share_congestion_threshold_pct": 0,
                 "request_log_retention_days": 90,
                 "usage_history_retention_days": 45,
+                "hourly_rollup_retention_days": 7,
             },
         )(),
     )
@@ -149,17 +152,22 @@ async def test_null_retention_inherits_environment_and_dashboard_value_wins(
     settings = await service.get_settings()
     assert settings.request_log_retention_days == 90
     assert settings.usage_history_retention_days == 45
+    assert settings.hourly_rollup_retention_days == 7
     assert settings.request_log_retention_override_days is None
     assert settings.usage_history_retention_override_days is None
+    assert settings.hourly_rollup_retention_override_days is None
 
     # Non-NULL dashboard values win, including 0 (explicitly disabled).
     row.request_log_retention_days = 30
     row.usage_history_retention_days = 0
+    row.hourly_rollup_retention_days = 0
     settings = await service.get_settings()
     assert settings.request_log_retention_days == 30
     assert settings.usage_history_retention_days == 0
+    assert settings.hourly_rollup_retention_days == 0
     assert settings.request_log_retention_override_days == 30
     assert settings.usage_history_retention_override_days == 0
+    assert settings.hourly_rollup_retention_override_days == 0
 
 
 def test_parse_additional_quota_routing_policies_normalizes_aliases_and_policy_case() -> None:

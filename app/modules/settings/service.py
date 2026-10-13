@@ -317,15 +317,18 @@ class DashboardSettingsUpdateData:
     # NULL (inherit the deprecated env alias), neither = leave untouched.
     request_log_retention_override_days: int | None
     usage_history_retention_override_days: int | None
-    hourly_rollup_retention_override_days: int | None
     clear_request_log_retention_override: bool
     clear_usage_history_retention_override: bool
-    clear_hourly_rollup_retention_override: bool
     # Lower-cased full model -> provider key of the integration starred as the
     # model's default route. ``None`` keeps the stored stars, so a client that
     # predates stars cannot erase them by saving; a submitted map replaces the
     # stored one and is re-filtered against the cards in the same save.
     sidecar_full_model_stars: dict[str, str] | None = None
+    # Hourly-rollup retention joins the tri-state retention group; defaulted
+    # so existing update payloads that predate the field keep constructing
+    # the dataclass unchanged (None/False = leave the stored value untouched).
+    hourly_rollup_retention_override_days: int | None = None
+    clear_hourly_rollup_retention_override: bool = False
 
 
 @dataclass(frozen=True, slots=True)
