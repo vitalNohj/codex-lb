@@ -488,6 +488,12 @@ def history_series_union(
     per day while the series SUMS stay exact (the branches are disjoint
     and window-complete, and the window edges themselves are local
     midnights covered by the exact per-request raw branch).
+
+    The offset must be CONSTANT across ``[since, until)``: a caller whose
+    window spans a timezone-offset transition partitions the window at the
+    transition instants and combines the correctly labelled per-segment
+    unions (see ``ReportsRepository._rollup_daily_rows``). The
+    summary/monthly reads are UTC-bucketed and need no partitioning.
     """
     rollup_kwargs = {
         "account_ids": account_ids,

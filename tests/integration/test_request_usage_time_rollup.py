@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import Delete, func, select, update
+from sqlalchemy import Delete, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.modules.accounts.usage_time_rollup as time_rollup_module
@@ -17,6 +17,7 @@ from app.db.models import (
     AccountUsageRollupState,
     RequestConversationHourlyRollup,
     RequestLog,
+    RequestUsageDailyRollup,
     RequestUsageHourlyRollup,
 )
 from app.db.session import SessionLocal
@@ -36,6 +37,7 @@ from app.modules.accounts.usage_time_rollup import (
     RequestUsageTimeRollupRepository,
     epoch_seconds,
     epoch_to_datetime,
+    floor_to_day,
     floor_to_hour,
     from_dimension,
     mirror_account_soft_delete_into_time_rollups,
@@ -1763,6 +1765,164 @@ async def test_armed_upgrade_repair_marker_refolds_backfilled_cost_into_hourly(d
         ).scalar_one()
         # Marker cleared once the suspect range is fully repaired.
         assert state.upgrade_repair_from is None
+
+
+async def _daily_rows_for_day(day_epoch: int) -> dict[str, tuple[float, int, int]]:
+    async with SessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(RequestUsageDailyRollup).where(RequestUsageDailyRollup.day_epoch == day_epoch)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {row.model: (row.cost_usd, row.cost_count, row.request_count) for row in rows}
+
+
+async def _fold_state_watermarks() -> tuple[datetime | None, datetime | None, datetime | None]:
+    async with SessionLocal() as session:
+        state = (
+            await session.execute(select(AccountUsageRollupState).where(AccountUsageRollupState.id == 1))
+        ).scalar_one()
+        return state.hourly_folded_through, state.daily_folded_through, state.upgrade_repair_from
+
+
+@pytest.mark.asyncio
+async def test_upgrade_repair_mirrors_into_folded_daily_rows_and_daily_fold_pauses(db_setup):
+    """F4: the upgrade repair mirrors each rewritten chunk into the
+    already-folded daily rollups (in the repair transaction, as
+    post-refold-minus-pre-refold deltas over the chunk window), and the
+    daily fold pauses while a marker is outstanding.
+
+    Stages the full sequence: rows folded (hourly + daily) while their cost
+    was stale, then repriced underneath both watermarks with a simulated
+    hourly-retention prune of a sibling hour, then a repair pass:
+
+    - the repriced delta lands in the daily row of the already-folded day;
+    - the pruned hour's daily contribution survives untouched (its raw and
+      hourly rows are gone — only the chunk window's delta lands, never a
+      re-fold, and the daily watermark is never rewound);
+    - with the marker set and pending daily work (escape-hatch rewind of
+      the daily watermark), `run_daily_fold_pass` neither folds nor moves
+      its watermark; once the marker clears it resumes.
+    """
+    del db_setup
+    # Pin the wall clock so the seeded geometry is deterministic: 10:00
+    # today; `hour` is 12:00 three days earlier, `pruned_hour` 22:00 the
+    # same day, history the evening before.
+    now = utcnow().replace(hour=10, minute=0, second=0, microsecond=0)
+    hour = floor_to_hour(now - timedelta(hours=70))
+    day_epoch = epoch_seconds(floor_to_day(hour))
+    pruned_hour = hour + timedelta(hours=10)
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_mirror", "repair-mirror@example.com"))
+        logs = RequestLogsRepository(session)
+        # History behind the repriced hour keeps the repair's raw clamp at
+        # `hour` (it never deletes buckets it cannot recompute from raw).
+        await _add_log(
+            logs,
+            account_id="acc_mirror",
+            request_id="r_mir_history",
+            requested_at=floor_to_day(hour) - timedelta(hours=5),
+            cost_usd=0.05,
+        )
+        # Folded while unpriced, repriced underneath the watermark later.
+        await _add_log(
+            logs,
+            account_id="acc_mirror",
+            request_id="r_mir_null",
+            requested_at=hour + timedelta(minutes=1),
+            cost_usd=None,
+            model="gpt-6-astra",
+        )
+        await _add_log(
+            logs,
+            account_id="acc_mirror",
+            request_id="r_mir_priced",
+            requested_at=hour + timedelta(minutes=2),
+            cost_usd=0.25,
+            model="gpt-6-astra",
+        )
+        # A priced sibling hour of the same day, folded into the daily row
+        # and then retention-pruned out of raw + hourly below.
+        await _add_log(
+            logs,
+            account_id="acc_mirror",
+            request_id="r_mir_pruned",
+            requested_at=pruned_hour,
+            cost_usd=0.4,
+        )
+        await session.commit()
+    # `add_log` resolves an Astra price for NULL-cost rows; force the
+    # historical pre-backfill shape this repair exists for (as the armed-marker
+    # test above does).
+    async with SessionLocal() as session:
+        await session.execute(update(RequestLog).where(RequestLog.request_id == "r_mir_null").values(cost_usd=None))
+        await session.commit()
+
+    time_rollup_module._upgrade_repair_done = True  # fold first, without any repair
+    assert await run_hourly_fold_pass(now=now) >= 1
+    assert await run_daily_fold_pass() >= 1
+    hourly_wm, daily_wm, _marker = await _fold_state_watermarks()
+    assert (await _daily_rows_for_day(day_epoch))["gpt-6-astra"] == pytest.approx((0.25, 1, 2), abs=1e-9)
+    assert (await _daily_rows_for_day(day_epoch))["gpt-5.1-codex"] == pytest.approx((0.4, 1, 1), abs=1e-9)
+
+    # Simulate hourly retention pruning the sibling hour (raw goes with it:
+    # hourly always outlives raw), reprice the folded-NULL row, arm the
+    # marker at its hour.
+    async with SessionLocal() as session:
+        await session.execute(delete(RequestLog).where(RequestLog.request_id == "r_mir_pruned"))
+        await session.execute(
+            delete(RequestUsageHourlyRollup).where(RequestUsageHourlyRollup.bucket_epoch == epoch_seconds(pruned_hour))
+        )
+        await session.execute(update(RequestLog).where(RequestLog.request_id == "r_mir_null").values(cost_usd=0.75))
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=hour))
+        await session.commit()
+
+    for _ in range(3):
+        _hourly_wm, _daily_wm, marker = await _fold_state_watermarks()
+        if marker is None:
+            break
+        await run_hourly_fold_pass(now=now)
+    hourly_wm_after, daily_wm_after, marker = await _fold_state_watermarks()
+    assert marker is None
+    # Neither watermark moved: the repair never rewinds (or advances) them.
+    assert hourly_wm_after == hourly_wm
+    assert daily_wm_after == daily_wm
+
+    # The repriced delta mirrored into the already-folded daily row...
+    mirrored = await _daily_rows_for_day(day_epoch)
+    assert mirrored["gpt-6-astra"] == pytest.approx((1.0, 2, 2), abs=1e-9)
+    # ...and the pruned hour's contribution survived (no re-fold of hours
+    # whose hourly rows are gone, no watermark rewind across them).
+    assert mirrored["gpt-5.1-codex"] == pytest.approx((0.4, 1, 1), abs=1e-9)
+
+    # While a marker is outstanding, the daily fold pauses: with pending
+    # daily work (the documented escape-hatch rewind), no slice runs and
+    # the watermark stays put.
+    async with SessionLocal() as session:
+        await session.execute(
+            update(AccountUsageRollupState).values(
+                daily_folded_through=floor_to_day(hour) + timedelta(days=1),
+                upgrade_repair_from=hour,
+            )
+        )
+        await session.commit()
+    assert await run_daily_fold_pass() == 0
+    assert (await _fold_state_watermarks())[1] == floor_to_day(hour) + timedelta(days=1)
+
+    # Once the marker clears, the fold resumes; the already-folded days it
+    # re-visits still carry the mirrored figures.
+    async with SessionLocal() as session:
+        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=None))
+        await session.commit()
+    assert await run_daily_fold_pass() >= 1
+    resumed = await _daily_rows_for_day(day_epoch)
+    assert resumed["gpt-6-astra"] == pytest.approx((1.0, 2, 2), abs=1e-9)
+    assert resumed["gpt-5.1-codex"] == pytest.approx((0.4, 1, 1), abs=1e-9)
 
 
 @pytest.mark.asyncio

@@ -139,5 +139,7 @@ def test_effective_retention_enabled_property() -> None:
     assert EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=0).enabled is False
     assert EffectiveRetention(request_log_days=30, usage_history_days=0, hourly_rollup_days=0).enabled is True
     assert EffectiveRetention(request_log_days=0, usage_history_days=45, hourly_rollup_days=0).enabled is True
-    # The hourly-rollup window alone must wake the retention pass.
-    assert EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=60).enabled is True
+    # Hourly-rollup pruning applies only while request-log retention is
+    # enabled (the hourly rollups must outlive raw), so the hourly window
+    # alone does not wake the retention pass.
+    assert EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=60).enabled is False

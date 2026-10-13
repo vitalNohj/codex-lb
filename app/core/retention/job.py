@@ -36,9 +36,11 @@ class EffectiveRetention:
 
     @property
     def enabled(self) -> bool:
-        # The hourly-rollup window alone must also wake the pass: pruning
-        # hourly rollups is independent of pruning raw/usage-history rows.
-        return bool(self.request_log_days or self.usage_history_days or self.hourly_rollup_days)
+        # The hourly-rollup window alone does not wake the pass: hourly
+        # pruning applies only while request-log retention is enabled (the
+        # hourly rollups must outlive raw; with raw retention disabled they
+        # stay permanent — see _prune_hourly_rollups).
+        return bool(self.request_log_days or self.usage_history_days)
 
 
 async def get_effective_retention() -> EffectiveRetention:
@@ -97,13 +99,17 @@ async def run_retention_pass(*, now: datetime | None = None) -> dict[str, int]:
 async def _prune_hourly_rollups(*, now: datetime) -> int:
     """Prune main hourly-rollup rows per the optional hourly retention.
 
-    Off by default (the hourly rollups are permanent, like every other
-    rollup). When enabled:
+    Off unless request-log retention is enabled. When enabled:
 
     - The effective window is the MAX of the hourly setting and the
       request-log window, so the hourly rollups always outlive raw (a
       shorter-than-raw hourly history would leave the upgrade repair and
       the rollup-served dashboard reads with statistics raw cannot recompute).
+    - With raw retention disabled (0 = unlimited) hourly pruning is skipped
+      entirely: pruning hours raw still holds would leave the upgrade
+      repair and the non-UTC rollup-served history reads with statistics
+      raw cannot recompute, while the hourly table is negligible next to
+      unlimited raw.
     - Only hours STRICTLY below the daily watermark are pruned: those whole
       UTC days are already folded into ``request_usage_daily_rollups``,
       whose fold never revisits them (it only moves forward, and its
@@ -117,8 +123,14 @@ async def _prune_hourly_rollups(*, now: datetime) -> int:
     hourly_days = retention.hourly_rollup_days
     if not hourly_days:
         return 0
-    # With raw retention disabled (0) the hourly setting applies alone; with
-    # both set the LONGER window wins so the hourly rollups never prune
+    if not retention.request_log_days:
+        # Raw retention disabled (0 = unlimited): the hourly rollups stay
+        # permanent. Pruning hours raw still covers would leave the upgrade
+        # repair and the timezone-offset history unions unable to recompute
+        # those statistics, and the hourly table is tiny next to unlimited
+        # raw anyway.
+        return 0
+    # With both set the LONGER window wins so the hourly rollups never prune
     # history raw still keeps.
     effective_days = max(hourly_days, retention.request_log_days)
     cutoff = now - timedelta(days=effective_days)

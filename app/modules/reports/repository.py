@@ -242,6 +242,19 @@ class ReportsRepository:
                 if row is None:
                     continue
                 speed_defaults = speed_values.get(report_date, (0.0, 0.0, 0.0))
+                # Raw-only per-day measures are re-merged from the raw day
+                # row independently of the selected measures row: a
+                # rollup-served row zeroes them (see DailyReportAggregateRow),
+                # but the retention gate can cut a local day mid-way, leaving
+                # raw — and the raw day row — holding the day's surviving
+                # tail. The filtered conversation count therefore reads the
+                # raw aggregate directly and is zero only when raw has no row
+                # for the date at all (the day is fully pruned).
+                raw_day_row = raw_values.get(report_date)
+                if use_satellite:
+                    conversation_count = conversation_values.get(report_date, 0)
+                else:
+                    conversation_count = int(raw_day_row.conversation_count or 0) if raw_day_row is not None else 0
                 rows.append(
                     DailyReportAggregateRow(
                         date=report_date,
@@ -257,11 +270,7 @@ class ReportsRepository:
                         median_ttft_ms=speed_defaults[0],
                         median_tps=speed_defaults[1],
                         median_queue_ms=speed_defaults[2],
-                        conversation_count=(
-                            conversation_values.get(report_date, 0)
-                            if use_satellite
-                            else int(row.conversation_count or 0)
-                        ),
+                        conversation_count=conversation_count,
                     )
                 )
         return rows
@@ -275,37 +284,82 @@ class ReportsRepository:
         api_key_ids: list[str] | None,
     ) -> dict[str, DailyReportAggregateRow]:
         """Per-local-day measures served from the rollup/history union
-        (one SQL statement over the whole window; rows grouped by local-day
-        index entirely in SQL). Raw-only per-day measures (speed medians,
-        filtered conversation counts) are absent here — the caller merges
-        them from the raw day rows or leaves them zeroed for pruned days."""
-        first_date_iso, window_start, window_end = day_ranges[0][0], day_ranges[0][1], day_ranges[-1][2]
-        first_date = date.fromisoformat(first_date_iso)
-        offset_seconds = int(
-            (timezone_info.utcoffset(datetime.combine(first_date, datetime.min.time())) or timedelta(0)).total_seconds()
-        )
-        union = history.history_series_union(
-            self._session,
-            window_start,
-            window_end,
-            offset_seconds=offset_seconds,
-            account_ids=account_ids,
-            model=model,
-            api_key_ids=api_key_ids,
-        ).subquery()
+        (one grouped statement over per-segment unions; rows grouped by
+        local-day index entirely in SQL). Raw-only per-day measures (speed
+        medians, filtered conversation counts) are absent here — the caller
+        merges them from the raw day rows or leaves them zeroed for pruned
+        days."""
+        window_start, window_end = day_ranges[0][1], day_ranges[-1][2]
+        # One history union per constant-offset segment: the unions label
+        # rows by floor((epoch + offset) / 86400), a local-day key that is
+        # only stable while the offset is constant — a timezone-offset
+        # transition inside the window would mislabel every post-transition
+        # row under the leading offset. The window is partitioned at the
+        # transition instants and each segment carries the offset in effect
+        # on it. A transition that falls inside a local day splits that
+        # day's rows between two segments whose labels agree (the shifted
+        # timeline crosses the same midnight on both sides), and the grouped
+        # aggregation below runs over the COMBINED segment rows, so per-day
+        # sums stay exact and count(DISTINCT account_id) still counts each
+        # account once per local day across the split. No transitions — a
+        # single segment and the same statement shape as before the
+        # partitioning.
+        bounds = [window_start, *_offset_transition_instants(window_start, window_end, timezone_info), window_end]
+        segment_unions = [
+            history.history_series_union(
+                self._session,
+                seg_start,
+                seg_end,
+                offset_seconds=int(
+                    (
+                        seg_start.replace(tzinfo=timezone.utc).astimezone(timezone_info).utcoffset() or timedelta(0)
+                    ).total_seconds()
+                ),
+                account_ids=account_ids,
+                model=model,
+                api_key_ids=api_key_ids,
+            )
+            for seg_start, seg_end in zip(bounds, bounds[1:])
+            if seg_end > seg_start
+        ]
+        if len(segment_unions) == 1:
+            combined = segment_unions[0].subquery()
+        else:
+            # SQLite rejects parenthesized compound members, so flatten the
+            # per-segment compounds through subqueries into ONE compound of
+            # plain pass-through selects; the grouping below still runs over
+            # the combined rows, so per-day sums and distinct-account counts
+            # stay exact across segment boundaries.
+            combined = union_all(
+                *(
+                    select(
+                        segment.c.day_index,
+                        segment.c.requests,
+                        segment.c.input_tokens,
+                        segment.c.output_tokens,
+                        segment.c.reasoning_tokens,
+                        segment.c.cached_tokens,
+                        segment.c.cost_usd,
+                        segment.c.errors,
+                        segment.c.cancelled,
+                        segment.c.account_id,
+                    )
+                    for segment in (segment_union.subquery() for segment_union in segment_unions)
+                )
+            ).subquery()
         result = await self._session.execute(
             select(
-                union.c.day_index,
-                func.coalesce(func.sum(union.c.requests), 0).label("requests"),
-                func.coalesce(func.sum(union.c.input_tokens), 0).label("input_tokens"),
-                func.coalesce(func.sum(union.c.output_tokens), 0).label("output_tokens"),
-                func.coalesce(func.sum(union.c.reasoning_tokens), 0).label("reasoning_tokens"),
-                func.coalesce(func.sum(union.c.cached_tokens), 0).label("cached_tokens"),
-                func.coalesce(func.sum(union.c.cost_usd), 0.0).label("cost_usd"),
-                func.coalesce(func.sum(union.c.errors), 0).label("errors"),
-                func.coalesce(func.sum(union.c.cancelled), 0).label("cancelled"),
-                func.count(func.distinct(union.c.account_id)).label("active_accounts"),
-            ).group_by(union.c.day_index)
+                combined.c.day_index,
+                func.coalesce(func.sum(combined.c.requests), 0).label("requests"),
+                func.coalesce(func.sum(combined.c.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(combined.c.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(combined.c.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(combined.c.cached_tokens), 0).label("cached_tokens"),
+                func.coalesce(func.sum(combined.c.cost_usd), 0.0).label("cost_usd"),
+                func.coalesce(func.sum(combined.c.errors), 0).label("errors"),
+                func.coalesce(func.sum(combined.c.cancelled), 0).label("cancelled"),
+                func.count(func.distinct(combined.c.account_id)).label("active_accounts"),
+            ).group_by(combined.c.day_index)
         )
         rows: dict[str, DailyReportAggregateRow] = {}
         for row in result.all():
@@ -1047,6 +1101,47 @@ def _daily_rows_stmt(
         .group_by(day_ranges_cte.c.report_date)
         .order_by(day_ranges_cte.c.report_date)
     )
+
+
+def _offset_transition_instants(
+    window_start: datetime,
+    window_end: datetime,
+    timezone_info: ZoneInfo | timezone,
+) -> list[datetime]:
+    """Naive-UTC instants in ``(window_start, window_end)`` where the zone's
+    UTC offset changes.
+
+    The rollup-served history unions label rows by
+    ``floor((epoch + offset) / 86400)`` — a stable local-day key only while
+    the offset is constant — so the caller partitions the window at these
+    instants and labels each segment with its own offset. Consecutive UTC
+    midnights whose offsets differ bracket a transition; a one-second binary
+    search pins the exact instant (real zone rules transition at whole
+    minutes, so second resolution is exact).
+    """
+
+    def offset_at(instant: datetime) -> timedelta:
+        return instant.replace(tzinfo=timezone.utc).astimezone(timezone_info).utcoffset() or timedelta(0)
+
+    transitions: list[datetime] = []
+    day_start = window_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day_start < window_end:
+        next_day_start = day_start + timedelta(days=1)
+        old_offset = offset_at(day_start)
+        if offset_at(next_day_start) != old_offset:
+            # Invariant: offset_at(lo) is the old offset, offset_at(hi) the
+            # new one. Narrow to the first second carrying the new offset.
+            lo, hi = day_start, next_day_start
+            while hi - lo > timedelta(seconds=1):
+                mid = lo + (hi - lo) // 2
+                if offset_at(mid) == old_offset:
+                    lo = mid
+                else:
+                    hi = mid
+            if window_start < hi < window_end:
+                transitions.append(hi)
+        day_start = next_day_start
+    return transitions
 
 
 def _daily_bucket_ranges(

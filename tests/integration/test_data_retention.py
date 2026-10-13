@@ -812,10 +812,13 @@ async def test_hourly_rollup_retention_resolves_dashboard_first(db_setup, monkey
 
 @pytest.mark.asyncio
 async def test_hourly_rollup_pruning_prunes_only_past_dashboard_window(db_setup, monkeypatch):
-    """With the dashboard window at 45d, an hourly bucket at 100d is pruned
-    while the 40d and 10d buckets survive, and the pruned range remains
-    queryable from the daily lifetime store."""
+    """With raw retention at 30d and the dashboard window at 45d, an hourly
+    bucket at 100d is pruned while the 40d and 10d buckets survive, and the
+    pruned range remains queryable from the daily lifetime store. (Hourly
+    pruning only runs while request-log retention is enabled — with raw
+    retention disabled the hourly store is kept at full precision.)"""
     now = utcnow()
+    _set_retention(monkeypatch, request_logs=30)
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -884,5 +887,40 @@ async def test_hourly_rollup_pruning_never_cuts_below_raw_window(db_setup, monke
         assert deleted == {"request_logs": 0, "usage_history": 0, "additional_usage_history": 0, "hourly_rollups": 0}
         async with SessionLocal() as session:
             assert (await session.execute(select(RequestUsageHourlyRollup.request_count))).scalars().all() == [1]
+    finally:
+        await _set_dashboard_hourly_retention(None)
+
+
+@pytest.mark.asyncio
+async def test_hourly_rollup_pruning_skipped_while_raw_retention_disabled(db_setup, monkeypatch):
+    """F3: with raw retention disabled (0 = unlimited) hourly pruning is
+    skipped entirely, even with an hourly window set. The rollup-served
+    history reads label their local days from the hourly table wherever the
+    UTC offset is non-zero, so pruning hours raw keeps would leave days
+    raw cannot recompute; the hourly table is tiny next to unlimited raw
+    and simply stays permanent."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        logs_repo = RequestLogsRepository(session)
+        await accounts_repo.upsert(_make_account("acc_hrz", "hrz@example.com"))
+        await _add_log(
+            logs_repo, account_id="acc_hrz", request_id="req_hrz_100", requested_at=now - timedelta(days=100)
+        )
+
+    await run_fold_pass(now=now)
+    await run_hourly_fold_pass(now=now)
+    await run_conversation_fold_pass(now=now)
+    await run_daily_fold_pass()
+
+    _set_retention(monkeypatch, request_logs=0)
+    await _set_dashboard_hourly_retention(10)
+    try:
+        deleted = await run_retention_pass(now=now)
+        assert deleted == {"request_logs": 0, "usage_history": 0, "additional_usage_history": 0, "hourly_rollups": 0}
+        async with SessionLocal() as session:
+            assert (await session.execute(select(RequestUsageHourlyRollup.request_count))).scalars().all() == [1]
+        # Idempotent: the gate keeps the pass a no-op.
+        assert (await run_retention_pass(now=now))["hourly_rollups"] == 0
     finally:
         await _set_dashboard_hourly_retention(None)

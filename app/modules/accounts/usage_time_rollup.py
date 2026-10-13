@@ -72,6 +72,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import astuple, dataclass, replace
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import BigInteger, ColumnElement, Integer, and_, case, cast, delete, func, insert, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -752,9 +753,11 @@ def _day_bucket_from_hourly_expr(session: AsyncSession) -> ColumnElement:
     return cast(column / DAILY_BUCKET_SECONDS, Integer) * DAILY_BUCKET_SECONDS
 
 
-def _daily_fold_insert(session: AsyncSession, window: tuple[int, int]):
-    """Fold the hourly rollups' window ``[start_epoch, end_epoch)`` into
-    whole-UTC-day rows.
+def _daily_grouped_from_hourly_stmt(session: AsyncSession, window: tuple[int, int]):
+    """Aggregate the hourly usage rollups over ``window`` into whole-UTC-day
+    rows grouped by (day, dimensions) — the SELECT ``_daily_fold_insert``
+    folds from, and the two sides of the upgrade-repair daily mirror's
+    delta (see ``_repair_next_upgrade_chunk``).
 
     The source is ``request_usage_hourly_rollups`` — never raw (raw may be
     retention-pruned; the hourly table is permanent). Dimensions are already
@@ -763,10 +766,9 @@ def _daily_fold_insert(session: AsyncSession, window: tuple[int, int]):
     are folded verbatim as dimensions exactly as the hourly fold does, and
     readers exclude them bucket-side.
     """
-    start_epoch, end_epoch = window
     day_bucket = _day_bucket_from_hourly_expr(session).label("day_epoch")
     hourly = RequestUsageHourlyRollup
-    stmt = (
+    return (
         select(
             day_bucket,
             hourly.account_id,
@@ -788,8 +790,8 @@ def _daily_fold_insert(session: AsyncSession, window: tuple[int, int]):
             func.coalesce(func.sum(hourly.cost_count), 0),
         )
         .where(
-            hourly.bucket_epoch >= start_epoch,
-            hourly.bucket_epoch < end_epoch,
+            hourly.bucket_epoch >= window[0],
+            hourly.bucket_epoch < window[1],
         )
         .group_by(
             day_bucket,
@@ -801,6 +803,12 @@ def _daily_fold_insert(session: AsyncSession, window: tuple[int, int]):
             hourly.is_deleted,
         )
     )
+
+
+def _daily_fold_insert(session: AsyncSession, window: tuple[int, int]):
+    """Fold the hourly rollups' window ``[start_epoch, end_epoch)`` into
+    whole-UTC-day rows."""
+    stmt = _daily_grouped_from_hourly_stmt(session, window)
     return insert(RequestUsageDailyRollup).from_select(list(_DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS), stmt)
 
 
@@ -843,6 +851,16 @@ async def _fold_next_daily_slice(session: AsyncSession) -> tuple[_FoldStatus, bo
             state = await _locked_state(session)
         if state is None:
             logger.warning("account_usage_rollup_state row missing; skipping daily fold pass")
+            return _FoldStatus.DONE, False
+        if state.upgrade_repair_from is not None:
+            # An upgrade repair is pending: the hourly rows below the hourly
+            # watermark are not final (the repair deletes and refolds them),
+            # and this fold is forward-only — folding them into daily rows
+            # now would copy pre-repair measures into the daily store for
+            # good. The repair transaction itself mirrors each rewritten
+            # chunk into the already-folded daily rows (see
+            # _repair_next_upgrade_chunk); once the marker clears, this fold
+            # simply resumes from its own watermark.
             return _FoldStatus.DONE, False
         target = floor_to_day(state.hourly_folded_through)
         watermark = state.daily_folded_through
@@ -1037,6 +1055,39 @@ async def _run_upgrade_repair(*, marker_only: bool = False) -> bool:
     return False
 
 
+def _daily_repair_deltas(
+    pre_refold: Sequence[Sequence[Any]], post_refold: Sequence[Sequence[Any]]
+) -> list[DailyUsageRollupRow]:
+    """Post-refold minus pre-refold per (day, dimensions) — the exact change
+    a repair chunk made to the hourly table, expressed as daily-row measure
+    deltas.
+
+    Both sides come from ``_daily_grouped_from_hourly_stmt`` over the same
+    window, so the delta tracks exactly what the DELETE-then-refold rewrote.
+    Zero deltas are skipped, and a dimension group that appears only after
+    the refold contributes its full content (the daily table has no row to
+    subtract from — it is inserted whole).
+    """
+    key_width = len(_DAILY_KEY_COLUMNS)
+    measure_width = len(_DAILY_MEASURE_COLUMNS)
+    pre_by_key = {tuple(row[:key_width]): row for row in pre_refold}
+    deltas: list[DailyUsageRollupRow] = []
+    for row in post_refold:
+        key = tuple(row[:key_width])
+        previous = pre_by_key.pop(key, None)
+        measures = [
+            new - (old if old is not None else 0)
+            for old, new in zip(
+                previous[key_width:] if previous is not None else (None,) * measure_width,
+                row[key_width:],
+                strict=True,
+            )
+        ]
+        if any(measures):
+            deltas.append(DailyUsageRollupRow(*key, *measures))
+    return deltas
+
+
 async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool = False) -> bool:
     """Refold the next chunk of the legacy-suspect range; True when none left.
 
@@ -1059,6 +1110,20 @@ async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool
     with the chunk's commit), or recomputing an already-correct window are
     the same recomputation. The conversation satellite is untouched: its
     fold never involved status.
+
+    The daily rollups are mirrored in the same transaction: days below the
+    daily watermark are already folded and the forward-only daily fold never
+    revisits them (the daily fold pauses while the marker is set), so each
+    chunk adds ``post-refold - pre-refold`` per (day, dimensions) — both
+    sides aggregated from the hourly table over exactly this chunk's window.
+    Daily rows whose hourly source was retention-pruned keep those pruned
+    contributions: only this window's delta lands, never a re-fold of hours
+    whose hourly rows are gone. (Retention keeps the hourly table intact
+    wherever raw survives — see _prune_hourly_rollups — so the chunk's
+    pre-refold side is always complete.) Deltas for days at or above the
+    daily watermark insert rows the fold has not reached yet; reads bind
+    ``day_epoch < daily watermark`` and the daily fold's defensive DELETE
+    re-folds them from the corrected hourly rows when it catches up.
     """
     async with sqlite_writer_section():
         state = await _locked_state(session)
@@ -1083,6 +1148,9 @@ async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool
             return True
         chunk_end = min(start + TS_FOLD_SLICE, watermark)
         start_epoch, end_epoch = epoch_seconds(start), epoch_seconds(chunk_end)
+        # Pre-refold daily aggregates over this chunk's window, read BEFORE
+        # the hourly DELETE — the subtrahend of the daily mirror's delta.
+        pre_refold = (await session.execute(_daily_grouped_from_hourly_stmt(session, (start_epoch, end_epoch)))).all()
         await session.execute(
             delete(RequestUsageHourlyRollup).where(
                 RequestUsageHourlyRollup.bucket_epoch >= start_epoch,
@@ -1105,6 +1173,19 @@ async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool
         await session.execute(_hourly_fold_insert(session, window))
         await session.execute(_error_fold_insert(session, window))
         await session.execute(_demand_fold_insert(session, window))
+        # Mirror the refold into the daily rollups (same transaction, see the
+        # docstring): the minuend is re-read from the corrected hourly rows.
+        post_refold = (await session.execute(_daily_grouped_from_hourly_stmt(session, (start_epoch, end_epoch)))).all()
+        deltas = _daily_repair_deltas(pre_refold, post_refold)
+        if deltas:
+            await _merge_add(
+                session,
+                RequestUsageDailyRollup,
+                deltas,
+                _DAILY_KEY_COLUMNS,
+                _DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS,
+                DailyUsageRollupRow,
+            )
         done = chunk_end >= watermark
         if marker is not None:
             await _set_upgrade_repair_marker(session, None if done else chunk_end)

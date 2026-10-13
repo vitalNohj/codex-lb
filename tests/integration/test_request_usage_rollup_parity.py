@@ -926,3 +926,178 @@ async def test_filtered_earliest_activity_keeps_the_rollup_backed_origin(db_setu
     assert mixed_filtered == day_floor
     # UA filtering cannot ride the rollups: with raw gone it reports nothing.
     assert ua_filtered is None
+
+
+@pytest.mark.asyncio
+async def test_filtered_daily_reports_keep_raw_conversation_counts_on_pruned_days(db_setup, monkeypatch):
+    """F1: on filtered reads the per-day conversation count is raw-only —
+    the merge takes it from the raw day row independently of the selected
+    measures row. The 5-day gate (NOW - 5d = BASE+5d00:37) cuts BASE+5d
+    mid-way: that day is rollup-served for its measures while raw still
+    holds its surviving tail, so its conversation count must be the tail's,
+    not the rollup-served row's zero. Fully pruned days have no raw
+    aggregate at all and report zero; the surviving days keep the exact raw
+    counts."""
+    from types import SimpleNamespace
+
+    from app.modules.reports import repository as reports_repository_module
+
+    await _seed_corpus()
+    await run_hourly_fold_pass(now=NOW)
+    await run_conversation_fold_pass(now=NOW)
+    assert await run_daily_fold_pass() == 1
+
+    async with SessionLocal() as session:
+        pre_prune = await ReportsRepository(session).aggregate_daily_rows(
+            BASE.date(),
+            (BASE + timedelta(days=9)).date(),
+            timezone.utc,
+            account_ids=["acc_par_a"],
+        )
+
+    # Retention prunes raw strictly below the gate — which lands mid-day, so
+    # BASE+5d keeps its surviving tail raw.
+    prune_cutoff = NOW - timedelta(days=5)
+    async with SessionLocal() as session:
+        await session.execute(delete(RequestLog).where(RequestLog.requested_at < prune_cutoff))
+        await session.commit()
+
+    async def _retained_retention():
+        return SimpleNamespace(request_log_days=5, usage_history_days=0)
+
+    monkeypatch.setattr(reports_repository_module, "get_effective_retention", _retained_retention)
+    monkeypatch.setattr(reports_repository_module, "utcnow", lambda: NOW)
+
+    async with SessionLocal() as session:
+        post_prune = await ReportsRepository(session).aggregate_daily_rows(
+            BASE.date(),
+            (BASE + timedelta(days=9)).date(),
+            timezone.utc,
+            account_ids=["acc_par_a"],
+        )
+
+    partial_date = prune_cutoff.date().isoformat()
+    # Hand-rolled surviving-raw expectation for the partially pruned day
+    # (its day window clamped to the prune gate), mirroring the raw daily
+    # statement's predicates. The corpus guarantees acc_par_a conversations
+    # in the surviving tail — exactly the count a rollup-served row zeroes.
+    async with SessionLocal() as session:
+        expected_partial = int(
+            (
+                await session.execute(
+                    select(
+                        func.count(func.distinct(reports_repository_module.ReportsRepository._conversation_id_expr()))
+                    ).where(
+                        RequestLog.requested_at >= prune_cutoff,
+                        RequestLog.requested_at < prune_cutoff.replace(hour=0, minute=0, second=0) + timedelta(days=1),
+                        reports_repository_module._normal_traffic_clause(),
+                        RequestLog.account_id.in_(["acc_par_a"]),
+                    )
+                )
+            ).scalar_one()
+        )
+    assert expected_partial >= 1
+
+    pre = {row.date: row for row in pre_prune}
+    post = {row.date: row for row in post_prune}
+    assert post.keys() == pre.keys()
+    for report_date, post_row in post.items():
+        if report_date < partial_date:
+            expected_conversations = 0  # fully pruned: no raw aggregate at all
+        elif report_date == partial_date:
+            expected_conversations = expected_partial
+        else:
+            expected_conversations = pre[report_date].conversation_count
+        assert post_row.conversation_count == expected_conversations, report_date
+        # Measures stay parity-served on the pruned days: the rollup-side row
+        # (hourly sums) differs from the raw reference only in reasoning's
+        # NULL-vs-0 convention and float summation order, so normalize both.
+        pre_row = pre[report_date]
+        assert replace(
+            post_row, conversation_count=0, reasoning_tokens=post_row.reasoning_tokens or 0, cost_usd=0.0
+        ) == replace(pre_row, conversation_count=0, reasoning_tokens=pre_row.reasoning_tokens or 0, cost_usd=0.0), (
+            report_date
+        )
+        assert post_row.cost_usd == pytest.approx(pre_row.cost_usd, rel=1e-9, abs=1e-12), report_date
+
+
+@pytest.mark.asyncio
+async def test_daily_history_labels_dst_transition_days_exactly(db_setup, monkeypatch):
+    """F2: the rollup-served per-day union labels rows by a single UTC
+    offset — a stable local-day key only while the offset is constant.
+    Across Europe/Berlin's spring-forward night the window is partitioned
+    at the transition instant and the per-segment unions combined, so every
+    local day's measures — and its DISTINCT accounts — match the raw
+    reference labelled by actual local-day bounds. Under a single leading
+    offset each post-transition local day's first hour (its midnight sits
+    one hour earlier than the leading offset's day boundary) bleeds into
+    the previous day."""
+    from datetime import date
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from app.modules.reports import repository as reports_repository_module
+
+    berlin = ZoneInfo("Europe/Berlin")
+    # Spring-forward: 2025-03-30 01:00 UTC (02:00 CET -> 03:00 CEST). The
+    # Berlin local days 03-28..03-31 span [03-27 23:00, 03-31 22:00) UTC,
+    # with 03-30 a 23h day whose midnight straddles the transition instant.
+    fold_now = datetime(2025, 4, 2)
+    seed = [
+        (datetime(2025, 3, 27, 23, 30), "acc_seg_a", 10),
+        (datetime(2025, 3, 28, 12, 0), "acc_seg_b", 20),
+        (datetime(2025, 3, 29, 6, 0), "acc_seg_a", 30),
+        # 03-30 (Berlin): rows on BOTH sides of the 01:00 UTC split, with
+        # both accounts so the per-day DISTINCT spans the segment boundary.
+        (datetime(2025, 3, 29, 23, 30), "acc_seg_a", 40),
+        (datetime(2025, 3, 30, 0, 30), "acc_seg_b", 50),
+        (datetime(2025, 3, 30, 1, 30), "acc_seg_a", 60),
+        (datetime(2025, 3, 30, 12, 0), "acc_seg_b", 70),
+        # 03-31 starts one hour before the leading offset's day boundary —
+        # exactly the rows a single-offset labelling would misdate.
+        (datetime(2025, 3, 30, 22, 30), "acc_seg_a", 80),
+        (datetime(2025, 3, 31, 6, 0), "acc_seg_b", 90),
+    ]
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        for account_id in ("acc_seg_a", "acc_seg_b"):
+            await accounts_repo.upsert(_make_account(account_id))
+        session.add_all(
+            _log(at, request_id_suffix=f"seg{index}", account_id=account_id, input_tokens=tokens)
+            for index, (at, account_id, tokens) in enumerate(seed)
+        )
+        await session.commit()
+
+    await run_hourly_fold_pass(now=fold_now)
+
+    # Retention gates the rollup-served path: raw's guaranteed floor is one
+    # day before `fold_now`, so every Berlin day of the window is served
+    # from the rollups (no raw rows actually live below the floor — the
+    # gate merely treats them as pruned).
+    async def _retained_retention():
+        return SimpleNamespace(request_log_days=1, usage_history_days=0)
+
+    monkeypatch.setattr(reports_repository_module, "get_effective_retention", _retained_retention)
+    monkeypatch.setattr(reports_repository_module, "utcnow", lambda: datetime(2025, 4, 2, 12))
+
+    async with SessionLocal() as session:
+        rows = await ReportsRepository(session).aggregate_daily_rows(
+            date(2025, 3, 28),
+            date(2025, 3, 31),
+            berlin,
+        )
+
+    expected: dict[str, dict] = {}
+    for requested_at, account_id, tokens in seed:
+        local_date = requested_at.replace(tzinfo=timezone.utc).astimezone(berlin).date().isoformat()
+        values = expected.setdefault(local_date, {"requests": 0, "input_tokens": 0, "accounts": set()})
+        values["requests"] += 1
+        values["input_tokens"] += tokens
+        values["accounts"].add(account_id)
+    actual = {row.date: row for row in rows}
+    assert set(actual) == set(expected)
+    for local_date, values in expected.items():
+        row = actual[local_date]
+        assert row.requests == values["requests"], local_date
+        assert row.input_tokens == values["input_tokens"], local_date
+        assert row.active_accounts == len(values["accounts"]), local_date

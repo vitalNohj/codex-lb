@@ -80,7 +80,10 @@ class AccountUsageRollupScheduler:
                 logger.exception("Hourly usage rollup fold pass failed")
             # After the hourly fold: the daily fold's source is the hourly
             # table, so each pass folds the hours the hourly fold just
-            # completed into whole days.
+            # completed into whole days. While an upgrade repair is pending
+            # the daily fold pauses itself under the state lock (the repair
+            # mirrors its rewrites into the already-folded daily rows), so
+            # this call is a cheap no-op then.
             try:
                 await run_daily_fold_pass()
             except Exception:
