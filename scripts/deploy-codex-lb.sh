@@ -9,7 +9,13 @@
 #   CODEX_LB_DEPLOY_BRANCH         Branch to deploy (default: main)
 #   CODEX_LB_DEPLOY_REMOTE         Git remote (default: origin)
 #   CODEX_LB_DEPLOY_LOG_DIR        Log directory (default: ~/.local/state/codex-lb/deploy)
-#   CODEX_LB_DEPLOY_ALLOW_DIRTY    Set to 1 to allow uncommitted changes (default: refuse)
+#   CODEX_LB_DEPLOY_LOCK           Lock file (default: $LOG_DIR/deploy.lock)
+#   CODEX_LB_DEPLOY_LOCK_WAIT      Seconds to wait for a concurrent deploy to finish before
+#                                  running (default 900: a merge that arrives while another
+#                                  deploy runs is deployed right after it; 0 fails fast
+#                                  instead of waiting)
+#   CODEX_LB_DEPLOY_ALLOW_DIRTY    Set to 1 to allow uncommitted changes in place
+#                                  (default: stash them first — see below)
 #   CODEX_LB_DEPLOY_SWITCH_BRANCH  Set to 1 to checkout BRANCH when the clone is elsewhere
 #   CODEX_LB_HEALTH_URL            Post-restart probe (default: http://127.0.0.1:2455/health/live)
 #   CODEX_LB_SKIP_FRONTEND         Set to 1 to skip bun install/build
@@ -23,6 +29,17 @@
 #   CODEX_LB_SKIP_RESTART          Set to 1 to pull/build only (no systemd restart)
 #   CODEX_LB_DEPLOY_LAUNCHER       Path to refresh after a successful pull
 #
+# Local-state safety (never discards work): if the deploy clone is dirty, or
+# its BRANCH has commits not on REMOTE/BRANCH (ahead or diverged), the script
+# preserves that state BEFORE touching anything — a branch
+# backup/deploy-preserved-<UTC stamp> is created at the old HEAD and a dirty
+# tree is stashed with message deploy-preserved-<UTC stamp>
+# (--include-untracked) — and everything preserved is logged. Then the branch
+# is reset to REMOTE/BRANCH and the deploy continues, so every merge deploys
+# and no local work is lost. With CODEX_LB_DEPLOY_ALLOW_DIRTY=1 the script
+# keeps uncommitted changes in place instead and still refuses (loudly) to
+# leave HEAD off REMOTE/BRANCH.
+#
 set -euo pipefail
 
 DEPLOY_DIR="${CODEX_LB_DEPLOY_DIR:-/home/nohj/personal/codex-lb}"
@@ -31,6 +48,7 @@ BRANCH="${CODEX_LB_DEPLOY_BRANCH:-main}"
 REMOTE="${CODEX_LB_DEPLOY_REMOTE:-origin}"
 LOG_DIR="${CODEX_LB_DEPLOY_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-lb/deploy}"
 LOCK_FILE="${CODEX_LB_DEPLOY_LOCK:-$LOG_DIR/deploy.lock}"
+LOCK_WAIT="${CODEX_LB_DEPLOY_LOCK_WAIT:-900}"
 ALLOW_DIRTY="${CODEX_LB_DEPLOY_ALLOW_DIRTY:-0}"
 SWITCH_BRANCH="${CODEX_LB_DEPLOY_SWITCH_BRANCH:-0}"
 HEALTH_URL="${CODEX_LB_HEALTH_URL:-http://127.0.0.1:2455/health/live}"
@@ -102,6 +120,7 @@ dump_diagnostics() {
 die() {
   log "ERROR: $*"
   dump_diagnostics
+  log "=== codex-lb deploy failed ==="
   exit 1
 }
 
@@ -110,6 +129,7 @@ on_err() {
   local line=${1:-?}
   log "FAILED at line ${line} (exit ${exit_code})"
   dump_diagnostics
+  log "=== codex-lb deploy failed ==="
   exit "$exit_code"
 }
 trap 'on_err $LINENO' ERR
@@ -154,12 +174,21 @@ ensure_user_systemd() {
 }
 
 acquire_lock() {
+  local waited_from=$SECONDS
   mkdir -p "$(dirname "$LOCK_FILE")"
   exec 9>"$LOCK_FILE"
-  if ! flock -n 9; then
-    die "another deploy holds $LOCK_FILE — aborting"
+  if flock -n 9; then
+    log "acquired lock $LOCK_FILE"
+    return 0
   fi
-  log "acquired lock $LOCK_FILE"
+  if ((LOCK_WAIT <= 0)); then
+    die "another deploy holds $LOCK_FILE — aborting (set CODEX_LB_DEPLOY_LOCK_WAIT>0 to queue behind it)"
+  fi
+  log "another deploy holds $LOCK_FILE — waiting up to ${LOCK_WAIT}s so this push deploys right after the current one"
+  if ! flock -w "$LOCK_WAIT" 9; then
+    die "another deploy still held $LOCK_FILE after waiting ${LOCK_WAIT}s — this push has NOT been deployed; inspect the running deploy, then re-run"
+  fi
+  log "acquired lock $LOCK_FILE (waited $((SECONDS - waited_from))s for the previous deploy to finish)"
 }
 
 prune_logs() {
@@ -221,17 +250,44 @@ wait_healthy() {
   die "service did not become healthy at $HEALTH_URL after $HEALTH_RETRIES attempts"
 }
 
+stash_dirty_tree() {
+  local msg="deploy-preserved-$TS"
+  local stashed
+  if ! stashed="$(git stash push --include-untracked -m "$msg")"; then
+    die "working tree was dirty but 'git stash push' failed — refusing to continue; nothing was discarded"
+  fi
+  log "PRESERVED dirty working tree: stash '${stashed}' (message: $msg)"
+  local stash_files
+  if stash_files="$(git stash show --include-untracked --name-status "stash@{0}" 2>/dev/null)"; then
+    [[ -z "$stash_files" ]] || printf '%s\n' "$stash_files" | sed 's/^/  stashed: /'
+  fi
+}
+
+preserve_local_commits() {
+  local old_sha=$1
+  local backup_branch="backup/deploy-preserved-$TS"
+  git branch "$backup_branch" "$old_sha"
+  log "PRESERVED local commits: branch $backup_branch at $old_sha (the reset below will not discard them)"
+  git log --oneline --no-decorate "$old_sha" --not "$REMOTE/$BRANCH" | sed 's/^/  preserved: /'
+}
+
 sync_git() {
-  local current remote_sha
+  local current remote_sha ahead behind dirty=0 preserved=0
   log "pre-deploy git state:"
   git status --short --branch
   BEFORE_SHA="$(git rev-parse HEAD)"
   log "BEFORE_SHA=$BEFORE_SHA"
 
-  if [[ "$ALLOW_DIRTY" != "1" ]]; then
-    if [[ -n "$(git status --porcelain)" ]]; then
-      die "working tree dirty under $DEPLOY_DIR — commit/stash/move WIP, or set CODEX_LB_DEPLOY_ALLOW_DIRTY=1"
-    fi
+  if [[ -n "$(git status --porcelain)" ]]; then
+    dirty=1
+  fi
+
+  if ((dirty)) && [[ "$ALLOW_DIRTY" != "1" ]]; then
+    log "working tree dirty under $DEPLOY_DIR — preserving it before deploying"
+    stash_dirty_tree
+    preserved=1
+  elif ((dirty)); then
+    log "working tree dirty under $DEPLOY_DIR (CODEX_LB_DEPLOY_ALLOW_DIRTY=1: keeping uncommitted changes in place)"
   fi
 
   log "fetching $REMOTE $BRANCH"
@@ -252,14 +308,34 @@ sync_git() {
     fi
   fi
 
-  log "fast-forward $BRANCH to $REMOTE/$BRANCH"
-  git merge --ff-only "$REMOTE/$BRANCH"
+  local counts
+  if ! counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"; then
+    die "cannot compare $BRANCH with $REMOTE/$BRANCH — is the branch deleted on $REMOTE? refusing to guess the deploy state"
+  fi
+  read -r ahead behind <<<"$counts"
+  if ((ahead > 0)) && [[ "$ALLOW_DIRTY" != "1" ]]; then
+    log "local $BRANCH has $ahead commit(s) not on $REMOTE/$BRANCH (ahead=$ahead behind=$behind) — preserving before reset"
+    preserve_local_commits "$BEFORE_SHA"
+    preserved=1
+  fi
+
+  if ((preserved)); then
+    log "resetting $BRANCH to $REMOTE/$BRANCH ($remote_sha)"
+    git reset --hard "$REMOTE/$BRANCH"
+  else
+    log "fast-forward $BRANCH to $REMOTE/$BRANCH"
+    git merge --ff-only "$REMOTE/$BRANCH"
+  fi
+
+  if [[ "$(git rev-parse HEAD)" != "$remote_sha" ]]; then
+    die "deploy dir HEAD $(git rev-parse HEAD) does not match $REMOTE/$BRANCH ($remote_sha) after sync — deploy aborted"
+  fi
 }
 
 # Prints "changed" or "unchanged" for frontend/ between the last successfully
 # built SHA (from STAMP_FILE) and AFTER_SHA. The baseline is the stamp, not the
-# pre-pull HEAD: sync_git fast-forwards HEAD before the build, so a failed or
-# skipped build must not let the next run skip the rebuild. Missing/empty stamp,
+# pre-pull HEAD: sync_git moves HEAD to REMOTE/BRANCH before the build, so a
+# failed or skipped build must not let the next run skip the rebuild. Missing/empty stamp,
 # uncommitted edits under frontend/ (reachable with ALLOW_DIRTY=1), or any git
 # error (including an invalid SHA) count as changed so a bad baseline can never
 # skip a needed build. Diagnostics go to stderr because the caller captures
@@ -328,6 +404,7 @@ require_int HEALTH_RETRIES "$HEALTH_RETRIES"
 require_int HEALTH_SLEEP_SECS "$HEALTH_SLEEP_SECS"
 require_int ACTIVE_RETRIES "$ACTIVE_RETRIES"
 require_int LOG_KEEP "$LOG_KEEP"
+[[ "$LOCK_WAIT" =~ ^[0-9]+$ ]] || die "CODEX_LB_DEPLOY_LOCK_WAIT must be a non-negative integer (got ${LOCK_WAIT@Q})"
 
 acquire_lock
 prune_logs
