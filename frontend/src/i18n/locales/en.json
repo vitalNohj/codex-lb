@@ -1525,5 +1525,16 @@
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
   "modelSources.fields.defaultReasoningEffort": "Default reasoning effort",
   "dashboard.requests.aliasedFrom": "aliased from {{model}}",
-  "dashboard.requestDetails.aliasedFrom": "Aliased from"
+  "dashboard.requestDetails.aliasedFrom": "Aliased from",
+  "reports.filters.allTime": "All time",
+  "reports.charts.monthlyUsage": "Cost per Month",
+  "reports.notices.rawMetrics": "Per-request metrics (time to first token, tokens per second, queue wait) and the user-agent distribution only cover requests logged since {{since}}; older raw request logs have been pruned. Totals, cost and tokens still cover the full range.",
+  "reports.notices.hourlyCoverage": "Day-by-day history in this timezone only covers usage retained since {{since}}; older hourly rollups have been pruned. Totals, cost and tokens still cover the full range.",
+  "reports.monthly.requests": "Requests",
+  "reports.monthly.inputTokens": "Input tokens",
+  "reports.monthly.cachedTokens": "Cached input tokens",
+  "reports.monthly.outputTokens": "Output tokens",
+  "reports.charts.rawWindowBadge": "Since {{since}}",
+  "reports.charts.rawWindowHint": "Per-request data is only kept from {{since}}; older raw request logs have been pruned.",
+  "reports.charts.rawWindowTooltip": "No per-request data: raw request logs for this day were pruned."
 }

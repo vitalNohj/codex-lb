@@ -250,6 +250,7 @@ class SettingsRepository:
             limit_warmup_staggered_idle_enabled=False,
             request_log_retention_days=None,
             usage_history_retention_days=None,
+            hourly_rollup_retention_days=None,
         )
         self._session.add(row)
         try:
@@ -582,8 +583,10 @@ class SettingsRepository:
         limit_warmup_staggered_idle_enabled: bool | None = None,
         request_log_retention_days: int | None = None,
         usage_history_retention_days: int | None = None,
+        hourly_rollup_retention_days: int | None = None,
         clear_request_log_retention: bool = False,
         clear_usage_history_retention: bool = False,
+        clear_hourly_rollup_retention: bool = False,
         expected_version: int | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
@@ -893,6 +896,10 @@ class SettingsRepository:
             settings.usage_history_retention_days = None
         elif usage_history_retention_days is not None:
             settings.usage_history_retention_days = usage_history_retention_days
+        if clear_hourly_rollup_retention:
+            settings.hourly_rollup_retention_days = None
+        elif hourly_rollup_retention_days is not None:
+            settings.hourly_rollup_retention_days = hourly_rollup_retention_days
         # Force the optimistic-version CAS to run even when the payload makes no
         # net change. `version_id_col` only raises `StaleDataError` when the
         # flush emits an ORM UPDATE; a full-row save that assigns values all

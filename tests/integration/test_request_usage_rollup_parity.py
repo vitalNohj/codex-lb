@@ -18,7 +18,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, func, select, update
 
 import app.modules.request_logs.repository as request_logs_repository_module
 from app.core.crypto import TokenEncryptor
@@ -36,8 +36,10 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.usage_time_rollup import (
+    floor_to_day,
     floor_to_hour,
     run_conversation_fold_pass,
+    run_daily_fold_pass,
     run_hourly_fold_pass,
 )
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -315,6 +317,7 @@ async def _snapshot(*, lead_since: datetime = SINCE_UNALIGNED) -> dict:
             "reports_daily_offset": await reports.aggregate_daily_rows(
                 BASE.date(), (BASE + timedelta(days=9)).date(), timezone(timedelta(hours=5, minutes=30))
             ),
+            "reports_monthly": await reports.aggregate_monthly(SINCE_ALIGNED, UNTIL_UNALIGNED),
             "activity_since": await logs.aggregate_activity_since(lead_since),
             "activity_between": await logs.aggregate_activity_between(lead_since, UNTIL_UNALIGNED),
             "activity_folded_only": await logs.aggregate_activity_between(*FOLDED_ONLY_WINDOW),
@@ -420,6 +423,11 @@ def _assert_snapshots_equal(actual: dict, expected: dict, *, skip_keys: tuple[st
                 assert [getattr(row, field) for row in actual_value] == pytest.approx(
                     [getattr(row, field) for row in expected_value], rel=1e-9, abs=1e-9
                 ), (key, field)
+        elif key.startswith("reports_monthly"):
+            assert len(actual_value) == len(expected_value), key
+            for actual_row, expected_row in zip(actual_value, expected_value, strict=True):
+                assert replace(actual_row, cost_usd=0.0) == replace(expected_row, cost_usd=0.0), key
+                assert actual_row.cost_usd == pytest.approx(expected_row.cost_usd, rel=1e-9, abs=1e-12), key
         elif key.startswith("trends"):
             assert [(row.bucket_epoch, row.total_tokens) for row in actual_value] == [
                 (row.bucket_epoch, row.total_tokens) for row in expected_value
@@ -630,10 +638,14 @@ async def test_statistics_survive_retention_pruning_folded_raw(db_setup, monkeyp
             # (documented non-goal); the satellite-served conversation counts
             # are asserted to survive below. The half-hour-offset local days
             # additionally lose their pruned partial leading half hours.
+            # (The retention-AWARE reports parity — raw_floor inside the
+            # corpus, daily rollups carrying the pruned prefix — is
+            # test_reports_history_reads_match_raw_within_retained_window.)
             "reports_summary",
             "reports_summary_filtered",
             "reports_daily_utc",
             "reports_daily_offset",
+            "reports_monthly",
             "listing_totals",  # tracks listable rows (asserted below)
         ),
     )
@@ -739,3 +751,353 @@ async def test_listing_total_accepts_offset_aware_bounds(db_setup):
         )
     assert aware.total == naive.total
     assert naive.total > 0
+
+
+@pytest.mark.asyncio
+async def test_reports_history_reads_match_raw_within_retained_window(db_setup, monkeypatch):
+    """The brief's headline guarantee for the reports lifetime reads: where
+    raw still survives (>= the retention gate), the rollup-served numbers
+    MATCH RAW exactly; the history raw has already lost (pruned below the
+    gate) stays visible via the daily/hourly rollups.
+
+    The 5-day retention gate lands mid-corpus (NOW - 5d = BASE+5d00:37), so
+    the summary window [BASE+2d, BASE+8d05:45) straddles it. Totals, the
+    monthly view and whole UTC days must be IDENTICAL to the pre-prune
+    raw-served reference; only the per-raw-row measures (reasoning-known
+    count, filtered conversation count) drop to the surviving rows — that
+    shrinkage is the disclosed raw_metrics_since boundary, asserted here
+    against hand-rolled surviving-raw counts.
+    """
+    from types import SimpleNamespace
+
+    from app.modules.reports import repository as reports_repository_module
+    from app.modules.reports.repository import _report_conditions
+
+    await _seed_corpus()
+    reference = await _snapshot()
+
+    # Fold everything (hourly -> conversation -> daily); the daily watermark
+    # then covers every whole UTC day below floor_day(TARGET_W) = BASE+9d.
+    await run_hourly_fold_pass(now=NOW)
+    await run_conversation_fold_pass(now=NOW)
+    assert await run_daily_fold_pass() == 1
+
+    # Retention prunes raw strictly below the gate.
+    prune_cutoff = NOW - timedelta(days=5)
+    async with SessionLocal() as session:
+        await session.execute(delete(RequestLog).where(RequestLog.requested_at < prune_cutoff))
+        await session.commit()
+
+    # The reports repository must now treat raw as pruned below the gate.
+    async def _retained_retention():
+        return SimpleNamespace(request_log_days=5, usage_history_days=0)
+
+    monkeypatch.setattr(reports_repository_module, "get_effective_retention", _retained_retention)
+    monkeypatch.setattr(reports_repository_module, "utcnow", lambda: NOW)
+
+    pruned = await _snapshot()
+    async with SessionLocal() as session:
+        pruned_earliest = await ReportsRepository(session).earliest_report_activity_at()
+
+    async with SessionLocal() as session:
+        # Hand-rolled expected surviving-raw counts, mirroring the summary's
+        # raw predicates (window + filters + normal-traffic clause, plus the
+        # prune gate).
+        expected: dict[str, tuple[int, int | None]] = {}
+        for key, account_ids in (
+            ("reports_summary", None),
+            ("reports_summary_filtered", ["acc_par_a"]),
+        ):
+            conditions = _report_conditions(SINCE_ALIGNED, UNTIL_UNALIGNED, account_ids, None, None, None)
+            surviving = [RequestLog.requested_at >= prune_cutoff]
+            known = (
+                await session.execute(
+                    select(func.count(RequestLog.reasoning_tokens)).where(and_(*conditions, *surviving))
+                )
+            ).scalar_one()
+            # Unfiltered conversation counts are satellite-served (they cover
+            # pruned history) — None marks "not a surviving-raw expectation".
+            conversations: int | None = None
+            if account_ids:
+                conversations = int(
+                    (
+                        await session.execute(
+                            select(
+                                func.count(
+                                    func.distinct(reports_repository_module.ReportsRepository._conversation_id_expr())
+                                )
+                            ).where(and_(*conditions, *surviving))
+                        )
+                    ).scalar_one()
+                )
+            expected[key] = (int(known or 0), conversations)
+
+        # Summary equality: every union-served measure is unchanged; the
+        # raw-only measures equal the hand-rolled surviving-raw counts (the
+        # unfiltered conversation count is satellite-served and survives
+        # pruning exactly, so only its reasoning-known count drops).
+        for key in ("reports_summary", "reports_summary_filtered"):
+            known, conversations = expected[key]
+            actual_summary = pruned[key]
+            reference_summary = reference[key]
+            assert replace(actual_summary, reasoning_usage_known_requests=0, conversation_count=0) == replace(
+                reference_summary, reasoning_usage_known_requests=0, conversation_count=0
+            ), key
+            assert actual_summary.reasoning_usage_known_requests == known, key
+            if conversations is None:
+                assert actual_summary.conversation_count == reference_summary.conversation_count, key
+            else:
+                assert actual_summary.conversation_count == conversations, key
+
+    # Whole UTC day rows survive pruning exactly (the daily rollups carry
+    # the pruned days; raw serves the surviving tail days).
+    assert pruned["reports_daily_utc"] == reference["reports_daily_utc"]
+    # The monthly lifetime view is unchanged by pruning (union-served).
+    assert len(pruned["reports_monthly"]) == len(reference["reports_monthly"])
+    for actual_row, expected_row in zip(pruned["reports_monthly"], reference["reports_monthly"], strict=True):
+        assert replace(actual_row, cost_usd=0.0) == replace(expected_row, cost_usd=0.0)
+        assert actual_row.cost_usd == pytest.approx(expected_row.cost_usd, rel=1e-9, abs=1e-12)
+
+    # All-time origin: day-precision rollup fallback once raw's first row is
+    # pruned (the corpus's raw-min earliest is the exact pre-prune earliest).
+    assert pruned_earliest == floor_to_day(reference["earliest"])
+
+    # Offset local-day series: raw labels each request exactly, but the
+    # rollup-served (pruned) days are hour-grain — with the 5:30 offset a
+    # local midnight falls inside a UTC hour (18:00-19:00), so that whole
+    # hour's content lands on the earlier local day (hour-start labelling).
+    # Per-day identity is therefore only promised for UTC days (asserted
+    # above at daily-table grain); the offset series promises the SUMS: the
+    # union is disjoint and window-complete, and the boundary shift only
+    # moves content between ADJACENT day rows inside the window (the
+    # window's own edges are local midnights covered by the exact raw
+    # branch), so every request is counted exactly once somewhere.
+    for field in (
+        "requests",
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "error_count",
+        "cancelled_count",
+        "cost_usd",
+    ):
+        assert sum(getattr(row, field) for row in pruned["reports_daily_offset"]) == pytest.approx(
+            sum(getattr(row, field) for row in reference["reports_daily_offset"])
+        ), field
+    # Each day row keeps its date key and non-negative measures.
+    for actual_row in pruned["reports_daily_offset"]:
+        assert actual_row.date in {row.date for row in reference["reports_daily_offset"]}
+        assert actual_row.requests >= 0 and actual_row.cost_usd >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_filtered_earliest_activity_keeps_the_rollup_backed_origin(db_setup):
+    """Filtered earliest-activity reads must keep the lifetime origin once
+    raw is pruned: account/model/api-key filters map onto rollup dimensions
+    (a filtered All-time anchor must not shrink back to surviving raw
+    history), while the UA-filtered read stays raw-exact — the rollups hold
+    no user-agent dimension."""
+    await _seed_corpus()
+    await run_hourly_fold_pass(now=NOW)
+    assert await run_daily_fold_pass() == 1
+
+    async with SessionLocal() as session:
+        await session.execute(delete(RequestLog))
+        await session.commit()
+
+    async with SessionLocal() as session:
+        repo = ReportsRepository(session)
+        unfiltered = await repo.earliest_report_activity_at()
+        account_filtered = await repo.earliest_report_activity_at(account_ids=["acc_par_a"])
+        model_filtered = await repo.earliest_report_activity_at(model=_MODELS[0])
+        key_filtered = await repo.earliest_report_activity_at(api_key_ids=["key_1"])
+        mixed_filtered = await repo.earliest_report_activity_at(account_ids=["acc_par_a"], model=_MODELS[0])
+        ua_filtered = await repo.earliest_report_activity_at(useragent_group="no-such-group")
+
+    # The corpus' earliest row (the unaligned BASE-23min one) carries the
+    # first account/model/key, so every dimension-filtered minimum floors to
+    # that row's UTC day bucket — exactly like the unfiltered fallback
+    # (day precision, the documented rollup behaviour).
+    day_floor = BASE - timedelta(days=1)
+    assert unfiltered == day_floor
+    assert account_filtered == day_floor
+    assert model_filtered == day_floor
+    assert key_filtered == day_floor
+    assert mixed_filtered == day_floor
+    # UA filtering cannot ride the rollups: with raw gone it reports nothing.
+    assert ua_filtered is None
+
+
+@pytest.mark.asyncio
+async def test_filtered_daily_reports_keep_raw_conversation_counts_on_pruned_days(db_setup, monkeypatch):
+    """F1: on filtered reads the per-day conversation count is raw-only —
+    the merge takes it from the raw day row independently of the selected
+    measures row. The 5-day gate (NOW - 5d = BASE+5d00:37) cuts BASE+5d
+    mid-way: that day is rollup-served for its measures while raw still
+    holds its surviving tail, so its conversation count must be the tail's,
+    not the rollup-served row's zero. Fully pruned days have no raw
+    aggregate at all and report zero; the surviving days keep the exact raw
+    counts."""
+    from types import SimpleNamespace
+
+    from app.modules.reports import repository as reports_repository_module
+
+    await _seed_corpus()
+    await run_hourly_fold_pass(now=NOW)
+    await run_conversation_fold_pass(now=NOW)
+    assert await run_daily_fold_pass() == 1
+
+    async with SessionLocal() as session:
+        pre_prune = await ReportsRepository(session).aggregate_daily_rows(
+            BASE.date(),
+            (BASE + timedelta(days=9)).date(),
+            timezone.utc,
+            account_ids=["acc_par_a"],
+        )
+
+    # Retention prunes raw strictly below the gate — which lands mid-day, so
+    # BASE+5d keeps its surviving tail raw.
+    prune_cutoff = NOW - timedelta(days=5)
+    async with SessionLocal() as session:
+        await session.execute(delete(RequestLog).where(RequestLog.requested_at < prune_cutoff))
+        await session.commit()
+
+    async def _retained_retention():
+        return SimpleNamespace(request_log_days=5, usage_history_days=0)
+
+    monkeypatch.setattr(reports_repository_module, "get_effective_retention", _retained_retention)
+    monkeypatch.setattr(reports_repository_module, "utcnow", lambda: NOW)
+
+    async with SessionLocal() as session:
+        post_prune = await ReportsRepository(session).aggregate_daily_rows(
+            BASE.date(),
+            (BASE + timedelta(days=9)).date(),
+            timezone.utc,
+            account_ids=["acc_par_a"],
+        )
+
+    partial_date = prune_cutoff.date().isoformat()
+    # Hand-rolled surviving-raw expectation for the partially pruned day
+    # (its day window clamped to the prune gate), mirroring the raw daily
+    # statement's predicates. The corpus guarantees acc_par_a conversations
+    # in the surviving tail — exactly the count a rollup-served row zeroes.
+    async with SessionLocal() as session:
+        expected_partial = int(
+            (
+                await session.execute(
+                    select(
+                        func.count(func.distinct(reports_repository_module.ReportsRepository._conversation_id_expr()))
+                    ).where(
+                        RequestLog.requested_at >= prune_cutoff,
+                        RequestLog.requested_at < prune_cutoff.replace(hour=0, minute=0, second=0) + timedelta(days=1),
+                        reports_repository_module._normal_traffic_clause(),
+                        RequestLog.account_id.in_(["acc_par_a"]),
+                    )
+                )
+            ).scalar_one()
+        )
+    assert expected_partial >= 1
+
+    pre = {row.date: row for row in pre_prune}
+    post = {row.date: row for row in post_prune}
+    assert post.keys() == pre.keys()
+    for report_date, post_row in post.items():
+        if report_date < partial_date:
+            expected_conversations = 0  # fully pruned: no raw aggregate at all
+        elif report_date == partial_date:
+            expected_conversations = expected_partial
+        else:
+            expected_conversations = pre[report_date].conversation_count
+        assert post_row.conversation_count == expected_conversations, report_date
+        # Measures stay parity-served on the pruned days: the rollup-side row
+        # (hourly sums) differs from the raw reference only in reasoning's
+        # NULL-vs-0 convention and float summation order, so normalize both.
+        pre_row = pre[report_date]
+        assert replace(
+            post_row, conversation_count=0, reasoning_tokens=post_row.reasoning_tokens or 0, cost_usd=0.0
+        ) == replace(pre_row, conversation_count=0, reasoning_tokens=pre_row.reasoning_tokens or 0, cost_usd=0.0), (
+            report_date
+        )
+        assert post_row.cost_usd == pytest.approx(pre_row.cost_usd, rel=1e-9, abs=1e-12), report_date
+
+
+@pytest.mark.asyncio
+async def test_daily_history_labels_dst_transition_days_exactly(db_setup, monkeypatch):
+    """F2: the rollup-served per-day union labels rows by a single UTC
+    offset — a stable local-day key only while the offset is constant.
+    Across Europe/Berlin's spring-forward night the window is partitioned
+    at the transition instant and the per-segment unions combined, so every
+    local day's measures — and its DISTINCT accounts — match the raw
+    reference labelled by actual local-day bounds. Under a single leading
+    offset each post-transition local day's first hour (its midnight sits
+    one hour earlier than the leading offset's day boundary) bleeds into
+    the previous day."""
+    from datetime import date
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from app.modules.reports import repository as reports_repository_module
+
+    berlin = ZoneInfo("Europe/Berlin")
+    # Spring-forward: 2025-03-30 01:00 UTC (02:00 CET -> 03:00 CEST). The
+    # Berlin local days 03-28..03-31 span [03-27 23:00, 03-31 22:00) UTC,
+    # with 03-30 a 23h day whose midnight straddles the transition instant.
+    fold_now = datetime(2025, 4, 2)
+    seed = [
+        (datetime(2025, 3, 27, 23, 30), "acc_seg_a", 10),
+        (datetime(2025, 3, 28, 12, 0), "acc_seg_b", 20),
+        (datetime(2025, 3, 29, 6, 0), "acc_seg_a", 30),
+        # 03-30 (Berlin): rows on BOTH sides of the 01:00 UTC split, with
+        # both accounts so the per-day DISTINCT spans the segment boundary.
+        (datetime(2025, 3, 29, 23, 30), "acc_seg_a", 40),
+        (datetime(2025, 3, 30, 0, 30), "acc_seg_b", 50),
+        (datetime(2025, 3, 30, 1, 30), "acc_seg_a", 60),
+        (datetime(2025, 3, 30, 12, 0), "acc_seg_b", 70),
+        # 03-31 starts one hour before the leading offset's day boundary —
+        # exactly the rows a single-offset labelling would misdate.
+        (datetime(2025, 3, 30, 22, 30), "acc_seg_a", 80),
+        (datetime(2025, 3, 31, 6, 0), "acc_seg_b", 90),
+    ]
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        for account_id in ("acc_seg_a", "acc_seg_b"):
+            await accounts_repo.upsert(_make_account(account_id))
+        session.add_all(
+            _log(at, request_id_suffix=f"seg{index}", account_id=account_id, input_tokens=tokens)
+            for index, (at, account_id, tokens) in enumerate(seed)
+        )
+        await session.commit()
+
+    await run_hourly_fold_pass(now=fold_now)
+
+    # Retention gates the rollup-served path: raw's guaranteed floor is one
+    # day before `fold_now`, so every Berlin day of the window is served
+    # from the rollups (no raw rows actually live below the floor — the
+    # gate merely treats them as pruned).
+    async def _retained_retention():
+        return SimpleNamespace(request_log_days=1, usage_history_days=0)
+
+    monkeypatch.setattr(reports_repository_module, "get_effective_retention", _retained_retention)
+    monkeypatch.setattr(reports_repository_module, "utcnow", lambda: datetime(2025, 4, 2, 12))
+
+    async with SessionLocal() as session:
+        rows = await ReportsRepository(session).aggregate_daily_rows(
+            date(2025, 3, 28),
+            date(2025, 3, 31),
+            berlin,
+        )
+
+    expected: dict[str, dict] = {}
+    for requested_at, account_id, tokens in seed:
+        local_date = requested_at.replace(tzinfo=timezone.utc).astimezone(berlin).date().isoformat()
+        values = expected.setdefault(local_date, {"requests": 0, "input_tokens": 0, "accounts": set()})
+        values["requests"] += 1
+        values["input_tokens"] += tokens
+        values["accounts"].add(account_id)
+    actual = {row.date: row for row in rows}
+    assert set(actual) == set(expected)
+    for local_date, values in expected.items():
+        row = actual[local_date]
+        assert row.requests == values["requests"], local_date
+        assert row.input_tokens == values["input_tokens"], local_date
+        assert row.active_accounts == len(values["accounts"]), local_date

@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.core.retention.job import get_effective_retention
 from app.core.utils.time import to_utc_naive, utcnow
 from app.modules.reports.repository import MAX_DAILY_REPORT_DAYS, DailyReportRangeTooLargeError, ReportsRepository
 from app.modules.reports.schemas import (
     AccountCostEntry,
     DailyReportRow,
     ModelCostEntry,
+    MonthlyModelEntry,
+    MonthlyUsageEntry,
     ReportComparison,
     ReportComparisonPrevious,
     ReportsResponse,
@@ -110,9 +113,58 @@ class ReportsService:
             useragent_group,
             api_key_ids,
         )
+        monthly_rows = await self._repository.aggregate_monthly(
+            start_at, end_at, account_ids, model, useragent_group, api_key_ids
+        )
+
+        monthly: list[MonthlyUsageEntry] = []
+        monthly_by_month: dict[str, MonthlyUsageEntry] = {}
+        for row in monthly_rows:
+            entry = monthly_by_month.get(row.month)
+            if entry is None:
+                entry = MonthlyUsageEntry(month=row.month)
+                monthly_by_month[row.month] = entry
+                monthly.append(entry)
+            entry.requests += row.requests
+            entry.input_tokens += row.input_tokens
+            entry.output_tokens += row.output_tokens
+            entry.cached_input_tokens += row.cached_input_tokens
+            entry.cost_usd += row.cost_usd
+            if row.model is not None:
+                entry.models.append(
+                    MonthlyModelEntry(
+                        model=row.model,
+                        cost_usd=round(row.cost_usd, 4),
+                        requests=row.requests,
+                    )
+                )
+        for entry in monthly:
+            entry.cost_usd = round(entry.cost_usd, 4)
+            model_total = sum(model_entry.cost_usd for model_entry in entry.models)
+            for model_entry in entry.models:
+                model_entry.percentage = round(model_entry.cost_usd / model_total * 100, 1) if model_total > 0 else 0
 
         model_total = sum(m.cost_usd for m in by_model)
         useragent_total = sum(u.cost_usd for u in by_useragent)
+        # The raw-only measures (speed medians, user-agent distribution, the
+        # reasoning-usage-known count) cover exactly the request-log window;
+        # disclose its inclusive start so the UI can say so instead of
+        # silently showing less. None when retention is disabled.
+        effective_retention = await get_effective_retention()
+        retention_days = effective_retention.request_log_days
+        raw_metrics_since = (utcnow() - timedelta(days=retention_days)).date().isoformat() if retention_days else None
+        # The per-day series is served at hour grain from the hourly rollups
+        # whenever the report timezone is not UTC (see history_series_union),
+        # so hourly-rollup retention trims it; disclose the inclusive UTC
+        # date of the guaranteed window. UTC-offset series keep the
+        # rollup-backed lifetime daily arm, so no disclosure is needed.
+        offset_seconds = int(
+            (timezone_info.utcoffset(datetime.combine(start_date, datetime.min.time())) or timedelta(0)).total_seconds()
+        )
+        hourly_days = effective_retention.hourly_rollup_days
+        hourly_coverage_since = (
+            (utcnow() - timedelta(days=hourly_days)).date().isoformat() if hourly_days and offset_seconds != 0 else None
+        )
         comparison = ReportComparison(
             can_compare=earliest_activity_at is not None and earliest_activity_at <= previous_start_at,
             previous=ReportComparisonPrevious(
@@ -167,6 +219,12 @@ class ReportsService:
                 )
                 for u in by_useragent
             ],
+            monthly=monthly,
+            raw_metrics_since=raw_metrics_since,
+            hourly_coverage_since=hourly_coverage_since,
+            earliest_activity_at=(
+                earliest_activity_at.date().isoformat() if earliest_activity_at is not None else None
+            ),
         )
 
 

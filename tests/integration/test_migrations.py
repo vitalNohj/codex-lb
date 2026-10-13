@@ -2876,8 +2876,26 @@ async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(
     async def _drift() -> tuple[str, ...]:
         return await to_thread.run_sync(lambda: check_schema_drift(db_url))
 
+    def _sidecar_drift(items: tuple[str, ...]) -> tuple[str, ...]:
+        """Drop expected drift from tables added after the pinned revision.
+
+        ORM metadata always reflects head, so at parent_revision the
+        later-added request_usage_daily_rollups table, the
+        account_usage_rollup_state.daily_folded_through watermark column,
+        and the dashboard_settings.hourly_rollup_retention_days column show
+        up as add-table/add-column drift that is irrelevant to the sidecar
+        default under test.
+        """
+        return tuple(
+            item
+            for item in items
+            if "request_usage_daily_rollups" not in item
+            and "daily_folded_through" not in item
+            and "hourly_rollup_retention_days" not in item
+        )
+
     try:
-        drift = await _drift()
+        drift = _sidecar_drift(await _drift())
         assert len(drift) == 1
         assert "'modify_default'" in drift[0]
         assert "claude_sidecar_model_prefixes_json" in drift[0]
@@ -2886,7 +2904,7 @@ async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(
         assert stored[1] == declared
 
         await to_thread.run_sync(lambda: run_upgrade(db_url, default_revision, bootstrap_legacy=False))
-        assert await _drift() == ()
+        assert _sidecar_drift(await _drift()) == ()
         assert await _stored_prefixes() == stored
         assert await _insert_without_prefixes(3) == declared
         stored = await _stored_prefixes()
@@ -4844,5 +4862,65 @@ async def test_fold_nvidia_into_openai_compat_skips_an_unconfigured_integration(
             columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()}
         assert json.loads(stored) == []
         assert not any(column.startswith("nvidia_sidecar_") for column in columns)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lifetime_rollup_migrations_downgrades_are_non_destructive(tmp_path):
+    """The daily-rollup and hourly-retention downgrades refuse to destroy
+    data (Do Not Destructively Downgrade Data Without Write Provenance):
+    stepping back through both revisions keeps the lifetime daily store
+    (with any folded rows) and operator dashboard settings, and
+    re-upgrading to head round-trips cleanly on the single-head graph."""
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'lifetime-rollup-downgrades.sqlite'}"
+    parent_revision = "20261008_020000_restore_claude_sidecar_prefix_default"
+    retention_revision = "20261013_000000_add_dashboard_hourly_rollup_retention"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, retention_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        # Operator data written after the upgrade: one folded daily row and
+        # an hourly-retention dashboard setting.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO request_usage_daily_rollups "
+                    "(day_epoch, account_id, api_key_id, model, service_tier, request_kind, is_deleted) "
+                    "VALUES (0, 'acc', 'key', 'm', 'flex', 'normal', 0)"
+                )
+            )
+            await conn.execute(text("UPDATE dashboard_settings SET hourly_rollup_retention_days = 7 WHERE id = 1"))
+
+        config = _build_alembic_config(db_url)
+        # Stepping back across the settings migration keeps the column and
+        # its configured value (documented no-op downgrade).
+        await to_thread.run_sync(lambda: command.downgrade(config, "20261012_000000_add_daily_usage_rollups"))
+        async with engine.connect() as conn:
+            setting = (
+                await conn.execute(text("SELECT hourly_rollup_retention_days FROM dashboard_settings WHERE id = 1"))
+            ).scalar_one()
+        assert setting == 7
+
+        # Stepping back across the daily-store migration keeps the lifetime
+        # table with its folded rows and the fold watermark column (also a
+        # documented no-op downgrade).
+        await to_thread.run_sync(lambda: command.downgrade(config, parent_revision))
+        async with engine.connect() as conn:
+            daily_rows = (await conn.execute(text("SELECT count(*) FROM request_usage_daily_rollups"))).scalar_one()
+            state_columns = {
+                row[1] for row in (await conn.execute(text("PRAGMA table_info(account_usage_rollup_state)"))).fetchall()
+            }
+        assert daily_rows == 1
+        assert "daily_folded_through" in state_columns
+
+        # Round-trip: the guarded upgrades tolerate the surviving objects
+        # and the walk to head still succeeds.
+        result = await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+        assert result.current_revision == _HEAD_REVISION
     finally:
         await engine.dispose()

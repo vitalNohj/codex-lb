@@ -72,7 +72,7 @@ export function ModelDistributionDonut({ data }: ModelDistributionDonutProps) {
             ? props.outerRadius + (isHighlighted ? ACTIVE_RADIUS_OFFSET : 0)
             : 65 + (isHighlighted ? ACTIVE_RADIUS_OFFSET : 0)
         }
-        stroke={isHighlighted ? "hsl(var(--background))" : "none"}
+        stroke={isHighlighted ? "var(--background)" : "none"}
         strokeWidth={isHighlighted ? 2 : 0}
       />
     );

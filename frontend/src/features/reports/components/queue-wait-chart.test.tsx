@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { QueueWaitChart } from "./queue-wait-chart";
@@ -76,5 +76,53 @@ describe("QueueWaitChart", () => {
       { date: "07-15", queue: 90 },
       { date: "07-16", queue: 0 },
     ]);
+  });
+});
+
+describe("QueueWaitChart raw window", () => {
+  beforeEach(() => {
+    capturedProps = null;
+  });
+
+  it("plots pruned days as gaps and labels the raw window", () => {
+    render(
+      <QueueWaitChart
+        startDate="2026-07-14"
+        endDate="2026-07-16"
+        rawMetricsSince="2026-07-15"
+        data={[
+          { ...BASE_ROW, date: "2026-07-14", medianQueueMs: 0 },
+          { ...BASE_ROW, date: "2026-07-15", medianQueueMs: 90 },
+        ]}
+      />,
+    );
+
+    expect(capturedProps?.data).toEqual([
+      { date: "07-14", queue: null },
+      { date: "07-15", queue: 90 },
+      { date: "07-16", queue: 0 },
+    ]);
+    expect(screen.getByText("Since 2026-07-15")).toBeInTheDocument();
+  });
+
+  it("omits the raw-window badge when the range stays inside it", () => {
+    render(
+      <QueueWaitChart
+        startDate="2026-07-15"
+        endDate="2026-07-16"
+        rawMetricsSince="2026-07-15"
+        data={[{ ...BASE_ROW, date: "2026-07-15", medianQueueMs: 90 }]}
+      />,
+    );
+
+    expect(screen.queryByText(/^Since /)).not.toBeInTheDocument();
+  });
+
+  it("hides the raw-window badge on an empty chart", () => {
+    render(
+      <QueueWaitChart startDate="2026-07-14" endDate="2026-07-16" rawMetricsSince="2026-07-15" data={[]} />,
+    );
+
+    expect(screen.queryByText(/^Since /)).not.toBeInTheDocument();
   });
 });

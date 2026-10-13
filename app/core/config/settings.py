@@ -428,6 +428,20 @@ class Settings(BaseSettings):
     # will be removed in a later phase.
     request_log_retention_days: int = Field(default=0, ge=0, le=3650)
     usage_history_retention_days: int = Field(default=0, ge=0, le=3650)
+    # Optional retention for the main hourly usage rollup table (0 = off,
+    # the default — the hourly rollups are permanent like every other
+    # rollup). When enabled, prunes only hours already folded into the daily
+    # lifetime store (bucket < daily watermark), and the effective window is
+    # never shorter than the request-log window (max of the two), so the
+    # hourly rollups always outlive raw. Dashboard/report reads serving
+    # folded history from the hourly table lose the pruned range — the daily
+    # store keeps it; the error-code satellite and quota-planner demand
+    # rollups are NOT pruned (no coarser store covers them).
+    # DEPRECATED: retention is managed from the dashboard runtime settings
+    # (`dashboard_settings.hourly_rollup_retention_days`); a non-NULL
+    # dashboard value wins. This env field remains one release as an alias
+    # for an unset dashboard value and will be removed in a later phase.
+    hourly_rollup_retention_days: int = Field(default=0, ge=0, le=3650)
     quota_planner_scheduler_enabled: bool = True
     automations_scheduler_enabled: bool = True
     telemetry_enabled: bool | None = None

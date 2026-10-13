@@ -3,6 +3,8 @@ import type { TooltipContentProps } from "recharts";
 export type ChartTooltipProps = Partial<TooltipContentProps<number, string>> & {
   formatValue?: (value: number, dataKey: string) => string;
   names?: Record<string, string>;
+  /** Shown instead of rows when every series is a gap (null) at this point. */
+  emptyLabel?: string;
 };
 
 export function ChartTooltip({
@@ -11,8 +13,12 @@ export function ChartTooltip({
   label,
   formatValue,
   names,
+  emptyLabel,
 }: ChartTooltipProps) {
-  if (!active || !payload?.length) return null;
+  if (!active) return null;
+  // Recharts may omit null (gap) points from the payload entirely.
+  const entries = (payload ?? []).filter((entry) => entry.value != null);
+  if (entries.length === 0 && !emptyLabel) return null;
 
   return (
     <div className="rounded-xl border border-border bg-popover p-2.5 shadow-md">
@@ -21,8 +27,11 @@ export function ChartTooltip({
           {label}
         </p>
       )}
+      {entries.length === 0 ? (
+        <p className="max-w-[14rem] px-2 pb-0.5 text-xs text-muted-foreground">{emptyLabel}</p>
+      ) : null}
       <div className="space-y-1">
-        {payload.map((entry, i) => {
+        {entries.map((entry, i) => {
           const color = entry.color ?? "#888";
           const rawName = String(entry.name ?? entry.dataKey ?? "");
           const name = names?.[rawName] ?? rawName;
@@ -44,7 +53,7 @@ export function ChartTooltip({
                 style={{ backgroundColor: color }}
               />
               <span className="text-xs text-popover-foreground">{name}</span>
-              <span className="ml-auto pl-2 text-xs font-semibold text-popover-foreground">
+              <span className="ml-auto pl-2 text-xs font-semibold tabular-nums text-popover-foreground">
                 {value}
               </span>
             </div>

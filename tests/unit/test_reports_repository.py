@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.crypto import TokenEncryptor
+from app.core.retention.job import EffectiveRetention
 from app.db.models import Account, AccountStatus, Base, RequestLog
 from app.modules.reports.repository import (
     DailyReportRangeTooLargeError,
@@ -19,6 +20,18 @@ from app.modules.reports.repository import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _retention_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reports readers consult the effective raw-retention window (the
+    fill-the-gaps rollup merge); unit tests run the legacy raw paths with
+    retention off and keep the settings cache out of the in-memory engine."""
+
+    async def _zero_retention() -> EffectiveRetention:
+        return EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=0)
+
+    monkeypatch.setattr("app.modules.reports.repository.get_effective_retention", _zero_retention)
 
 
 class ReportAggregateFilters(TypedDict, total=False):
@@ -784,9 +797,9 @@ async def test_aggregate_daily_rows_rejects_ranges_over_supported_window(
 ) -> None:
     repo = ReportsRepository(async_session)
 
-    with pytest.raises(DailyReportRangeTooLargeError, match="730 days or less"):
+    with pytest.raises(DailyReportRangeTooLargeError, match="3650 days or less"):
         await repo.aggregate_daily_rows(
-            date(2024, 1, 1),
+            date(2015, 1, 1),
             date(2026, 1, 1),
             timezone.utc,
         )

@@ -13,12 +13,14 @@ import { ReportsFilters, type ReportsFiltersState } from "./reports-filters";
 import { ReportsSummaryCards } from "./reports-summary-cards";
 import type { CostPerDayChartProps } from "./cost-per-day-chart";
 import type { TokensPerDayChartProps } from "./tokens-per-day-chart";
+import type { MonthlyUsageChartProps } from "./monthly-usage-chart";
 import type { TimeToFirstTokenChartProps } from "./time-to-first-token-chart";
 import type { TokensPerSecondChartProps } from "./tokens-per-second-chart";
 import type { QueueWaitChartProps } from "./queue-wait-chart";
 import type { ModelDistributionDonutProps } from "./model-distribution-donut";
 import type { UseragentDistributionDonutProps } from "./useragent-distribution-donut";
 import { DailyDetailTable } from "./daily-detail-table";
+import { ReportsSkeleton } from "./reports-skeleton";
 import {
   daysAgoLocalISO,
   getBrowserReportsTimeZone,
@@ -34,6 +36,11 @@ const CostPerDayChart = lazy(() =>
 const TokensPerDayChart = lazy(() =>
   import("./tokens-per-day-chart").then((module) => ({
     default: (props: TokensPerDayChartProps) => <module.TokensPerDayChart {...props} />,
+  })),
+);
+const MonthlyUsageChart = lazy(() =>
+  import("./monthly-usage-chart").then((module) => ({
+    default: (props: MonthlyUsageChartProps) => <module.MonthlyUsageChart {...props} />,
   })),
 );
 const TimeToFirstTokenChart = lazy(() =>
@@ -86,7 +93,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
     ...createDefaultFilters(),
     ...initialFilters,
   }));
-  const [selectedPresetDays, setSelectedPresetDays] = useState<number | null>(
+  const [selectedPreset, setSelectedPreset] = useState<number | "all" | null>(
     DEFAULT_PRESET_DAYS,
   );
   const [reportsTimeZone, setReportsTimeZone] = useState<string | undefined>(() =>
@@ -186,6 +193,26 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
   const accountOptionsError = getErrorMessageOrNull(accountsError);
   const apiKeyOptionsError = getErrorMessageOrNull(apiKeysError);
 
+  // The All-time origin comes from the unfiltered (model/useragent-blanked)
+  // catalog query first: its earliestActivityAt is rollup-backed lifetime
+  // history, while a filtered reports response can carry only surviving
+  // raw history for its filters. The filtered response is only a fallback.
+  const earliestActivityAt =
+    filterCatalogQuery.data?.earliestActivityAt ??
+    reportsQuery.data?.earliestActivityAt ??
+    null;
+  const rawMetricsSince = reportsQuery.data?.rawMetricsSince ?? null;
+  const hourlyCoverageSince = reportsQuery.data?.hourlyCoverageSince ?? null;
+  // Raw-only measures (per-request speed medians, the user-agent
+  // distribution) cover exactly the request-log window; disclose its start
+  // instead of silently showing less whenever the range reaches past it.
+  const showRawMetricsNotice = Boolean(rawMetricsSince && filters.startDate < rawMetricsSince);
+  // In a non-UTC timezone the per-day series is served at hour grain from
+  // the hourly rollups, so hourly-rollup retention trims it; disclose the
+  // guaranteed window whenever the range reaches past it.
+  const showHourlyCoverageNotice = Boolean(
+    hourlyCoverageSince && filters.startDate < hourlyCoverageSince,
+  );
   const hasAnyError = Boolean(
     mainReportsError || sharedOptionsError || accountOptionsError || apiKeyOptionsError,
   );
@@ -205,10 +232,22 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
   };
 
   const handlePresetSelect = (days: number) => {
-    setSelectedPresetDays(days);
+    setSelectedPreset(days);
     setFilters((current) => ({
       ...current,
       startDate: daysAgoLocalISO(days - 1),
+      endDate: localDateISO(),
+    }));
+  };
+
+  const handleAllTimeSelect = () => {
+    setSelectedPreset("all");
+    // Anchor the range at the earliest countable activity known at click
+    // time (rollup-backed once raw is pruned) — it precedes any filtered
+    // earliest, so the range keeps covering everything if filters change.
+    setFilters((current) => ({
+      ...current,
+      startDate: earliestActivityAt ?? current.startDate,
       endDate: localDateISO(),
     }));
   };
@@ -218,7 +257,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
       nextFilters.startDate !== filters.startDate ||
       nextFilters.endDate !== filters.endDate
     ) {
-      setSelectedPresetDays(null);
+      setSelectedPreset(null);
     }
     setFilters(nextFilters);
   };
@@ -236,13 +275,16 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
 
       <ReportsFilters
         filters={filters}
-        selectedPresetDays={selectedPresetDays}
+        selectedPresetDays={typeof selectedPreset === "number" ? selectedPreset : null}
         accountOptions={accountOptions}
         apiKeyOptions={apiKeyOptions}
         modelOptions={modelOptions}
         useragentOptions={useragentOptions}
         visibleChartIds={visibleChartIds}
+        allTimeSelected={selectedPreset === "all"}
+        allTimeAvailable={earliestActivityAt !== null}
         onPresetSelect={handlePresetSelect}
+        onAllTimeSelect={handleAllTimeSelect}
         onFiltersChange={handleFiltersChange}
         onVisibleChartIdsChange={setVisibleChartIds}
       />
@@ -305,11 +347,19 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
       ) : null}
 
       {reportsQuery.isLoading ? (
-        <div className="flex items-center justify-center py-20 text-sm text-muted-foreground">
-          {t("common.loading")}
-        </div>
+        <ReportsSkeleton chartCount={visibleChartIds.length} />
       ) : reportsQuery.data ? (
         <>
+          {showRawMetricsNotice ? (
+            <AlertMessage variant="warning">
+              {t("reports.notices.rawMetrics", { since: rawMetricsSince })}
+            </AlertMessage>
+          ) : null}
+          {showHourlyCoverageNotice ? (
+            <AlertMessage variant="warning">
+              {t("reports.notices.hourlyCoverage", { since: hourlyCoverageSince })}
+            </AlertMessage>
+          ) : null}
           <ReportsSummaryCards
             summary={reportsQuery.data.summary}
             comparison={reportsQuery.data.comparison}
@@ -334,12 +384,18 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                   />
                 </Suspense>
               ) : null}
+              {visibleChartIds.includes("monthlyUsage") ? (
+                <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
+                  <MonthlyUsageChart data={reportsQuery.data.monthly ?? []} />
+                </Suspense>
+              ) : null}
               {visibleChartIds.includes("timeToFirstToken") ? (
                 <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
                   <TimeToFirstTokenChart
                     startDate={filters.startDate}
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
+                    rawMetricsSince={rawMetricsSince}
                   />
                 </Suspense>
               ) : null}
@@ -349,6 +405,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                     startDate={filters.startDate}
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
+                    rawMetricsSince={rawMetricsSince}
                   />
                 </Suspense>
               ) : null}
@@ -358,6 +415,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                     startDate={filters.startDate}
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
+                    rawMetricsSince={rawMetricsSince}
                   />
                 </Suspense>
               ) : null}
@@ -369,7 +427,10 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                 <ModelDistributionDonut data={reportsQuery.data.byModel} />
               </Suspense>
               <Suspense fallback={<div className="h-[220px] rounded-xl border bg-card" />}>
-                <UseragentDistributionDonut data={reportsQuery.data.byUseragent} />
+                <UseragentDistributionDonut
+                  data={reportsQuery.data.byUseragent}
+                  rawMetricsSince={showRawMetricsNotice ? rawMetricsSince : null}
+                />
               </Suspense>
             </div>
             <div className="lg:col-span-2">

@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 from typing import Protocol, TypeVar, cast
 
 from app.modules.accounts.usage_rollup import run_fold_pass
-from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
+from app.modules.accounts.usage_time_rollup import (
+    run_conversation_fold_pass,
+    run_daily_fold_pass,
+    run_hourly_fold_pass,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,16 @@ class AccountUsageRollupScheduler:
                 await run_hourly_fold_pass()
             except Exception:
                 logger.exception("Hourly usage rollup fold pass failed")
+            # After the hourly fold: the daily fold's source is the hourly
+            # table, so each pass folds the hours the hourly fold just
+            # completed into whole days. While an upgrade repair is pending
+            # the daily fold pauses itself under the state lock (the repair
+            # mirrors its rewrites into the already-folded daily rows), so
+            # this call is a cheap no-op then.
+            try:
+                await run_daily_fold_pass()
+            except Exception:
+                logger.exception("Daily usage rollup fold pass failed")
             try:
                 await run_conversation_fold_pass()
             except Exception:

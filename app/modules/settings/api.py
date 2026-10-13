@@ -305,8 +305,10 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         limit_warmup_staggered_idle_enabled=settings.limit_warmup_staggered_idle_enabled,
         request_log_retention_days=settings.request_log_retention_days,
         usage_history_retention_days=settings.usage_history_retention_days,
+        hourly_rollup_retention_days=settings.hourly_rollup_retention_days,
         request_log_retention_override_days=settings.request_log_retention_override_days,
         usage_history_retention_override_days=settings.usage_history_retention_override_days,
+        hourly_rollup_retention_override_days=settings.hourly_rollup_retention_override_days,
         version=settings.version,
     )
 
@@ -1467,6 +1469,11 @@ async def update_settings(
                     if "usage_history_retention_override_days" in payload.model_fields_set
                     else None
                 ),
+                hourly_rollup_retention_override_days=(
+                    payload.hourly_rollup_retention_override_days
+                    if "hourly_rollup_retention_override_days" in payload.model_fields_set
+                    else None
+                ),
                 clear_request_log_retention_override=(
                     "request_log_retention_override_days" in payload.model_fields_set
                     and payload.request_log_retention_override_days is None
@@ -1474,6 +1481,10 @@ async def update_settings(
                 clear_usage_history_retention_override=(
                     "usage_history_retention_override_days" in payload.model_fields_set
                     and payload.usage_history_retention_override_days is None
+                ),
+                clear_hourly_rollup_retention_override=(
+                    "hourly_rollup_retention_override_days" in payload.model_fields_set
+                    and payload.hourly_rollup_retention_override_days is None
                 ),
                 sidecar_full_model_stars=(
                     payload.sidecar_full_model_stars if "sidecar_full_model_stars" in payload.model_fields_set else None
@@ -1658,6 +1669,7 @@ async def update_settings(
             "limit_warmup_staggered_idle_enabled",
             "request_log_retention_override_days",
             "usage_history_retention_override_days",
+            "hourly_rollup_retention_override_days",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

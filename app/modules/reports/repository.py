@@ -8,18 +8,27 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.retention.job import get_effective_retention
 from app.core.usage.logs import CANCELLED_STATUS, NON_ERROR_STATUSES
+from app.core.utils.time import utcnow
 from app.db.models import Account, RequestLog
 from app.modules.accounts.usage_time_rollup import conversation_id_expr
 from app.modules.accounts.usage_time_rollup_read import (
+    conversation_labeled_day_counts_stmt,
     conversation_labeled_presence_union,
     conversation_presence_union,
+    earliest_daily_bucket_at,
+    earliest_hourly_bucket_at,
 )
+from app.modules.reports import history
 
 _INTERNAL_LIMIT_WARMUP_SOURCE = "limit_warmup"
 _INTERNAL_WARMUP_REQUEST_KINDS = ("warmup", "limit_warmup")
 _SQLITE_COMPOUND_SELECT_LIMIT = 500
-MAX_DAILY_REPORT_DAYS = 730
+# Generous enough for the All-time range (a decade of daily rows is a few
+# thousand); the rollup-served day rows are grouped by day index in a single
+# statement, and the raw-only per-day statements are chunked below.
+MAX_DAILY_REPORT_DAYS = 3650
 UNKNOWN_USERAGENT_GROUP = "Unknown"
 MISSING_USERAGENT_GROUP = "Missing User-Agent"
 
@@ -39,9 +48,11 @@ class DailyReportAggregateRow:
     cost_usd: float
     active_accounts: int
     error_count: int
-    median_ttft_ms: float
-    median_tps: float
-    median_queue_ms: float
+    # Raw-only per-day measures: zeroed on rollup-served rows (pruned days)
+    # and re-merged from the raw day rows by the caller.
+    median_ttft_ms: float = 0.0
+    median_tps: float = 0.0
+    median_queue_ms: float = 0.0
     conversation_count: int = 0
     cancelled_count: int = 0
 
@@ -83,6 +94,20 @@ class UserAgentAggregateRow:
     request_count: int
 
 
+@dataclass(frozen=True)
+class MonthlyAggregateRow:
+    """One (UTC month, model) group of the lifetime monthly view; model is
+    None for rows the model split filters out but monthly totals include."""
+
+    month: str
+    model: str | None
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    cost_usd: float
+
+
 class ReportsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -112,7 +137,23 @@ class ReportsRepository:
         # unfiltered per-day conversation counts are served from the
         # conversation satellite (one extra statement per batch, replacing
         # the raw COUNT(DISTINCT ...) column in the main statement).
-        use_rollup = not (account_ids or model or useragent_group or api_key_ids)
+        use_satellite = not (account_ids or model or useragent_group or api_key_ids)
+        raw_floor = await _raw_retention_floor()
+        # Rollup-served per-day rows are only needed where raw retention cuts
+        # into the window (they fill the pruned days); a user-agent filter
+        # pins the whole read to raw (not a rollup dimension). The union is
+        # bounded to the pruned PREFIX (contiguous days starting before the
+        # floor) so rollup-served day rows never extend over a raw-served
+        # neighbour day: hour-grain local-day labelling shifts boundary-hour
+        # content between adjacent rows, and a rollup row reaching into a
+        # raw-served day would double-count that day's boundary content.
+        rollup_days: dict[str, DailyReportAggregateRow] = {}
+        if raw_floor is not None and not useragent_group:
+            pruned_ranges = [day_range for day_range in day_ranges if day_range[1] < raw_floor]
+            if pruned_ranges:
+                rollup_days = await self._rollup_daily_rows(
+                    pruned_ranges, timezone_info, account_ids, model, api_key_ids
+                )
         rows: list[DailyReportAggregateRow] = []
         # SQLite caps compound SELECTs at 500 terms, so long report ranges are
         # executed in chunks instead of building a single oversized UNION ALL.
@@ -130,47 +171,213 @@ class ReportsRepository:
                 for speed_row in speed_result.all()
             }
             conversation_values: dict[str, int] = {}
-            if use_rollup:
-                union = conversation_labeled_presence_union(
+            if use_satellite:
+                # Same offset the rollup/history unions label their local
+                # days with (see _rollup_daily_rows), so both label spaces
+                # agree on which date a window maps to.
+                first_date = date.fromisoformat(day_ranges_list[0][0])
+                offset_seconds = int(
+                    (
+                        timezone_info.utcoffset(datetime.combine(first_date, datetime.min.time())) or timedelta(0)
+                    ).total_seconds()
+                )
+                day_counts_stmt = conversation_labeled_day_counts_stmt(
                     self._session,
                     day_ranges_list,
+                    offset_seconds=offset_seconds,
                     raw_conditions=(_normal_traffic_clause(),),
-                ).subquery()
-                conversation_result = await self._session.execute(
-                    select(union.c.label, func.count(func.distinct(union.c.cid))).group_by(union.c.label)
                 )
-                conversation_values = {label: int(count) for label, count in conversation_result.all()}
+                if day_counts_stmt is not None:
+                    # Flat fast path for the per-day series shape (contiguous
+                    # exact-24h hour-grid-aligned windows under a whole-hour
+                    # offset): one grouped scan instead of a per-window
+                    # compound union, whose literal windows CTE dominates
+                    # long All-time reads (measured 8.8s vs 0.3s at 401
+                    # windows on SQLite).
+                    day_counts = await self._session.execute(day_counts_stmt)
+                    conversation_values = {
+                        datetime.fromtimestamp(int(day_index) * 86400, tz=timezone.utc).date().isoformat(): int(count)
+                        for day_index, count in day_counts.all()
+                    }
+                else:
+                    conv_union = conversation_labeled_presence_union(
+                        self._session,
+                        day_ranges_list,
+                        raw_conditions=(_normal_traffic_clause(),),
+                    ).subquery()
+                    conversation_result = await self._session.execute(
+                        select(conv_union.c.label, func.count(func.distinct(conv_union.c.cid))).group_by(
+                            conv_union.c.label
+                        )
+                    )
+                    conversation_values = {label: int(count) for label, count in conversation_result.all()}
 
-            result = await self._session.execute(
-                _daily_rows_stmt(
-                    day_ranges_list,
-                    account_ids,
-                    model,
-                    useragent_group,
-                    api_key_ids,
-                    include_conversations=not use_rollup,
+            raw_values = {
+                row.report_date: row
+                for row in (
+                    await self._session.execute(
+                        _daily_rows_stmt(
+                            day_ranges_list,
+                            account_ids,
+                            model,
+                            useragent_group,
+                            api_key_ids,
+                            include_conversations=not use_satellite,
+                        )
+                    )
+                ).all()
+            }
+            for report_date, day_start, _day_end in day_ranges_list:
+                # Fill-the-gaps merge: raw day rows are exact (local-day
+                # buckets, medians, filtered conversation counts) wherever raw
+                # still holds the whole day; only days raw retention has cut
+                # into (day starts before the raw floor) fall back to the
+                # rollup-served union row, which is complete for the whole
+                # day (rolled segments from daily/hourly rollups, the live
+                # tail from raw — see app/modules/reports/history.py). With
+                # retention disabled `rollup_days` is empty and every day is
+                # the exact legacy raw row.
+                rollup_row = rollup_days.get(report_date) if raw_floor is not None and day_start < raw_floor else None
+                row = rollup_row if rollup_row is not None else raw_values.get(report_date)
+                if row is None:
+                    continue
+                speed_defaults = speed_values.get(report_date, (0.0, 0.0, 0.0))
+                # Raw-only per-day measures are re-merged from the raw day
+                # row independently of the selected measures row: a
+                # rollup-served row zeroes them (see DailyReportAggregateRow),
+                # but the retention gate can cut a local day mid-way, leaving
+                # raw — and the raw day row — holding the day's surviving
+                # tail. The filtered conversation count therefore reads the
+                # raw aggregate directly and is zero only when raw has no row
+                # for the date at all (the day is fully pruned).
+                raw_day_row = raw_values.get(report_date)
+                if use_satellite:
+                    conversation_count = conversation_values.get(report_date, 0)
+                else:
+                    conversation_count = int(raw_day_row.conversation_count or 0) if raw_day_row is not None else 0
+                rows.append(
+                    DailyReportAggregateRow(
+                        date=report_date,
+                        requests=int(row.requests or 0),
+                        input_tokens=int(row.input_tokens or 0),
+                        output_tokens=int(row.output_tokens or 0),
+                        reasoning_tokens=int(row.reasoning_tokens) if row.reasoning_tokens is not None else None,
+                        cached_input_tokens=int(row.cached_input_tokens or 0),
+                        cost_usd=float(row.cost_usd or 0.0),
+                        active_accounts=int(row.active_accounts or 0),
+                        error_count=int(row.error_count or 0),
+                        cancelled_count=int(row.cancelled_count or 0),
+                        median_ttft_ms=speed_defaults[0],
+                        median_tps=speed_defaults[1],
+                        median_queue_ms=speed_defaults[2],
+                        conversation_count=conversation_count,
+                    )
                 )
+        return rows
+
+    async def _rollup_daily_rows(
+        self,
+        day_ranges: list[tuple[str, datetime, datetime]],
+        timezone_info: ZoneInfo | timezone,
+        account_ids: list[str] | None,
+        model: str | None,
+        api_key_ids: list[str] | None,
+    ) -> dict[str, DailyReportAggregateRow]:
+        """Per-local-day measures served from the rollup/history union
+        (one grouped statement over per-segment unions; rows grouped by
+        local-day index entirely in SQL). Raw-only per-day measures (speed
+        medians, filtered conversation counts) are absent here — the caller
+        merges them from the raw day rows or leaves them zeroed for pruned
+        days."""
+        window_start, window_end = day_ranges[0][1], day_ranges[-1][2]
+        # One history union per constant-offset segment: the unions label
+        # rows by floor((epoch + offset) / 86400), a local-day key that is
+        # only stable while the offset is constant — a timezone-offset
+        # transition inside the window would mislabel every post-transition
+        # row under the leading offset. The window is partitioned at the
+        # transition instants and each segment carries the offset in effect
+        # on it. A transition that falls inside a local day splits that
+        # day's rows between two segments whose labels agree (the shifted
+        # timeline crosses the same midnight on both sides), and the grouped
+        # aggregation below runs over the COMBINED segment rows, so per-day
+        # sums stay exact and count(DISTINCT account_id) still counts each
+        # account once per local day across the split. No transitions — a
+        # single segment and the same statement shape as before the
+        # partitioning.
+        bounds = [window_start, *_offset_transition_instants(window_start, window_end, timezone_info), window_end]
+        segment_unions = [
+            history.history_series_union(
+                self._session,
+                seg_start,
+                seg_end,
+                offset_seconds=int(
+                    (
+                        seg_start.replace(tzinfo=timezone.utc).astimezone(timezone_info).utcoffset() or timedelta(0)
+                    ).total_seconds()
+                ),
+                account_ids=account_ids,
+                model=model,
+                api_key_ids=api_key_ids,
             )
-            rows.extend(
-                DailyReportAggregateRow(
-                    date=row.report_date,
-                    requests=int(row.requests or 0),
-                    input_tokens=int(row.input_tokens or 0),
-                    output_tokens=int(row.output_tokens or 0),
-                    reasoning_tokens=int(row.reasoning_tokens) if row.reasoning_tokens is not None else None,
-                    cached_input_tokens=int(row.cached_input_tokens or 0),
-                    cost_usd=float(row.cost_usd or 0.0),
-                    active_accounts=int(row.active_accounts or 0),
-                    error_count=int(row.error_count or 0),
-                    cancelled_count=int(row.cancelled_count or 0),
-                    median_ttft_ms=speed_values.get(row.report_date, (0.0, 0.0, 0.0))[0],
-                    median_tps=speed_values.get(row.report_date, (0.0, 0.0, 0.0))[1],
-                    median_queue_ms=speed_values.get(row.report_date, (0.0, 0.0, 0.0))[2],
-                    conversation_count=(
-                        conversation_values.get(row.report_date, 0) if use_rollup else int(row.conversation_count or 0)
-                    ),
+            for seg_start, seg_end in zip(bounds, bounds[1:])
+            if seg_end > seg_start
+        ]
+        if len(segment_unions) == 1:
+            combined = segment_unions[0].subquery()
+        else:
+            # SQLite rejects parenthesized compound members, so flatten the
+            # per-segment compounds through subqueries into ONE compound of
+            # plain pass-through selects; the grouping below still runs over
+            # the combined rows, so per-day sums and distinct-account counts
+            # stay exact across segment boundaries.
+            combined = union_all(
+                *(
+                    select(
+                        segment.c.day_index,
+                        segment.c.requests,
+                        segment.c.input_tokens,
+                        segment.c.output_tokens,
+                        segment.c.reasoning_tokens,
+                        segment.c.cached_tokens,
+                        segment.c.cost_usd,
+                        segment.c.errors,
+                        segment.c.cancelled,
+                        segment.c.account_id,
+                    )
+                    for segment in (segment_union.subquery() for segment_union in segment_unions)
                 )
-                for row in result.all()
+            ).subquery()
+        result = await self._session.execute(
+            select(
+                combined.c.day_index,
+                func.coalesce(func.sum(combined.c.requests), 0).label("requests"),
+                func.coalesce(func.sum(combined.c.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(combined.c.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(combined.c.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(combined.c.cached_tokens), 0).label("cached_tokens"),
+                func.coalesce(func.sum(combined.c.cost_usd), 0.0).label("cost_usd"),
+                func.coalesce(func.sum(combined.c.errors), 0).label("errors"),
+                func.coalesce(func.sum(combined.c.cancelled), 0).label("cancelled"),
+                func.count(func.distinct(combined.c.account_id)).label("active_accounts"),
+            ).group_by(combined.c.day_index)
+        )
+        rows: dict[str, DailyReportAggregateRow] = {}
+        for row in result.all():
+            # day_index is the local date's own UTC-midnight day count
+            # (floor((epoch + offset) / 86400) — see history_series_union),
+            # so the local date is the UTC date of day_index * 86400.
+            local_date = datetime.fromtimestamp(int(row.day_index) * 86400, tz=timezone.utc).date()
+            rows[local_date.isoformat()] = DailyReportAggregateRow(
+                date=local_date.isoformat(),
+                requests=int(row.requests or 0),
+                input_tokens=int(row.input_tokens or 0),
+                output_tokens=int(row.output_tokens or 0),
+                reasoning_tokens=int(row.reasoning_tokens or 0),
+                cached_input_tokens=int(row.cached_tokens or 0),
+                cost_usd=float(row.cost_usd or 0.0),
+                active_accounts=int(row.active_accounts or 0),
+                error_count=int(row.errors or 0),
+                cancelled_count=int(row.cancelled or 0),
             )
         return rows
 
@@ -189,45 +396,102 @@ class ReportsRepository:
         # and pre-merges accounts, so only the unfiltered read is served from
         # it (rollup + raw tail, split out of the single statement the same
         # way the dashboard activity read splits its conversation metrics);
-        # filtered summaries keep the legacy raw single statement.
-        use_rollup = not (account_ids or model or useragent_group or api_key_ids)
-        columns = [
-            func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
-            func.coalesce(func.sum(RequestLog.input_tokens), 0).label("total_input_tokens"),
-            func.coalesce(
-                func.sum(func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)),
-                0,
-            ).label("total_output_tokens"),
-            func.coalesce(func.sum(RequestLog.reasoning_tokens), 0).label("total_reasoning_tokens"),
-            func.count(RequestLog.reasoning_tokens).label("reasoning_usage_known_requests"),
-            func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("total_cached_tokens"),
-            func.count().label("total_requests"),
-            func.coalesce(
-                func.sum(case((RequestLog.status.not_in(NON_ERROR_STATUSES), 1), else_=0)),
-                0,
-            ).label("total_errors"),
-            func.coalesce(
-                func.sum(case((RequestLog.status == CANCELLED_STATUS, 1), else_=0)),
-                0,
-            ).label("total_cancelled"),
-            func.count(func.distinct(RequestLog.account_id)).label("active_accounts"),
-        ]
-        if not use_rollup:
-            columns.append(func.count(func.distinct(self._conversation_id_expr())).label("conversation_count"))
-        row = (await self._session.execute(select(*columns).where(and_(*conditions)))).one()
-        if use_rollup:
-            union = conversation_presence_union(
+        # filtered summaries keep the legacy raw count for conversations.
+        use_satellite = not (account_ids or model or useragent_group or api_key_ids)
+
+        if useragent_group:
+            # The user-agent group is a raw-only dimension: a UA-filtered
+            # summary keeps the exact legacy raw single statement (its
+            # coverage is disclosed to the client via raw_metrics_since).
+            columns = [
+                func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
+                func.coalesce(func.sum(RequestLog.input_tokens), 0).label("total_input_tokens"),
+                func.coalesce(
+                    func.sum(func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)),
+                    0,
+                ).label("total_output_tokens"),
+                func.coalesce(func.sum(RequestLog.reasoning_tokens), 0).label("total_reasoning_tokens"),
+                func.count(RequestLog.reasoning_tokens).label("reasoning_usage_known_requests"),
+                func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("total_cached_tokens"),
+                func.count().label("total_requests"),
+                func.coalesce(
+                    func.sum(case((RequestLog.status.not_in(NON_ERROR_STATUSES), 1), else_=0)),
+                    0,
+                ).label("total_errors"),
+                func.coalesce(
+                    func.sum(case((RequestLog.status == CANCELLED_STATUS, 1), else_=0)),
+                    0,
+                ).label("total_cancelled"),
+                func.count(func.distinct(RequestLog.account_id)).label("active_accounts"),
+                func.count(func.distinct(self._conversation_id_expr())).label("conversation_count"),
+            ]
+            row = (await self._session.execute(select(*columns).where(and_(*conditions)))).one()
+            conversation_count = row.conversation_count
+        else:
+            # History-served summary: the union splits the window into daily
+            # rollups / hourly rollups / raw tail (exact, disjoint — see
+            # app/modules/reports/history.py) and aggregates it in SQL; the
+            # reasoning-known count is a per-RAW-row predicate the rollups do
+            # not hold, so it keeps a legacy raw count over the window (its
+            # coverage beyond raw retention is disclosed via raw_metrics_since).
+            union = history.history_window_union(
                 self._session,
                 start_date,
                 end_date,
-                include_deleted=True,
-                raw_conditions=(_normal_traffic_clause(),),
+                account_ids=account_ids,
+                model=model,
+                api_key_ids=api_key_ids,
             ).subquery()
-            conversation_count = (
-                await self._session.execute(select(func.count(func.distinct(union.c.cid))))
+            row = (
+                await self._session.execute(
+                    select(
+                        func.coalesce(func.sum(union.c.cost_usd), 0.0).label("total_cost_usd"),
+                        func.coalesce(func.sum(union.c.input_tokens), 0).label("total_input_tokens"),
+                        func.coalesce(func.sum(union.c.output_tokens), 0).label("total_output_tokens"),
+                        func.coalesce(func.sum(union.c.reasoning_tokens), 0).label("total_reasoning_tokens"),
+                        func.coalesce(func.sum(union.c.reasoning_known), 0).label("reasoning_known_rollup"),
+                        func.coalesce(func.sum(union.c.cached_tokens), 0).label("total_cached_tokens"),
+                        func.coalesce(func.sum(union.c.requests), 0).label("total_requests"),
+                        func.coalesce(func.sum(union.c.errors), 0).label("total_errors"),
+                        func.coalesce(func.sum(union.c.cancelled), 0).label("total_cancelled"),
+                        func.count(func.distinct(union.c.account_id)).label("active_accounts"),
+                    )
+                )
+            ).one()
+            reasoning_known_count = (
+                await self._session.execute(select(func.count(RequestLog.reasoning_tokens)).where(and_(*conditions)))
             ).scalar_one()
-        else:
-            conversation_count = row.conversation_count
+            conversation_count = 0
+            if use_satellite:
+                conv_union = conversation_presence_union(
+                    self._session,
+                    start_date,
+                    end_date,
+                    include_deleted=True,
+                    raw_conditions=(_normal_traffic_clause(),),
+                ).subquery()
+                conversation_count = (
+                    await self._session.execute(select(func.count(func.distinct(conv_union.c.cid))))
+                ).scalar_one()
+            else:
+                conversation_count = (
+                    await self._session.execute(
+                        select(func.count(func.distinct(self._conversation_id_expr()))).where(and_(*conditions))
+                    )
+                ).scalar_one()
+            return SummaryAggregateRow(
+                total_cost_usd=float(row.total_cost_usd),
+                total_input_tokens=int(row.total_input_tokens),
+                total_output_tokens=int(row.total_output_tokens),
+                total_reasoning_tokens=int(row.total_reasoning_tokens),
+                reasoning_usage_known_requests=int(reasoning_known_count or 0),
+                total_cached_tokens=int(row.total_cached_tokens),
+                total_requests=int(row.total_requests),
+                total_errors=int(row.total_errors),
+                active_accounts=int(row.active_accounts),
+                conversation_count=int(conversation_count or 0),
+                total_cancelled=int(row.total_cancelled),
+            )
         return SummaryAggregateRow(
             total_cost_usd=float(row.total_cost_usd),
             total_input_tokens=int(row.total_input_tokens),
@@ -251,6 +515,39 @@ class ReportsRepository:
         useragent_group: str | None = None,
         api_key_ids: list[str] | None = None,
     ) -> list[ModelAggregateRow]:
+        if not useragent_group:
+            # History-served model breakdown: the union covers the window
+            # exactly (daily/hourly rollups + raw tail); NULL models are
+            # filtered on the union subquery, mirroring the legacy
+            # `model IS NOT NULL` condition.
+            union = history.history_window_union(
+                self._session,
+                start_date,
+                end_date,
+                account_ids=account_ids,
+                model=model,
+                api_key_ids=api_key_ids,
+            ).subquery()
+            stmt = (
+                select(
+                    union.c.model,
+                    func.coalesce(func.sum(union.c.cost_usd), 0.0).label("cost_usd"),
+                    func.coalesce(func.sum(union.c.requests), 0).label("request_count"),
+                )
+                .where(union.c.model.is_not(None))
+                .group_by(union.c.model)
+                .order_by(func.coalesce(func.sum(union.c.cost_usd), 0.0).desc())
+            )
+            result = await self._session.execute(stmt)
+            return [
+                ModelAggregateRow(
+                    model=row.model,
+                    cost_usd=float(row.cost_usd),
+                    request_count=int(row.request_count),
+                )
+                for row in result.all()
+            ]
+
         conditions = [
             *_report_conditions(start_date, end_date, account_ids, model, useragent_group, api_key_ids),
             RequestLog.model.is_not(None),
@@ -285,20 +582,43 @@ class ReportsRepository:
         useragent_group: str | None = None,
         api_key_ids: list[str] | None = None,
     ) -> list[AccountAggregateRow]:
-        conditions = _report_conditions(start_date, end_date, account_ids, model, useragent_group, api_key_ids)
-
-        stmt = (
-            select(
-                RequestLog.account_id,
-                func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
-                func.count().label("request_count"),
+        if not useragent_group:
+            # History-served account breakdown (same union as by-model; NULL
+            # accounts are a legitimate group and stay included).
+            union = history.history_window_union(
+                self._session,
+                start_date,
+                end_date,
+                account_ids=account_ids,
+                model=model,
+                api_key_ids=api_key_ids,
+            ).subquery()
+            stmt = (
+                select(
+                    union.c.account_id,
+                    func.coalesce(func.sum(union.c.cost_usd), 0.0).label("cost_usd"),
+                    func.coalesce(func.sum(union.c.requests), 0).label("request_count"),
+                )
+                .group_by(union.c.account_id)
+                .order_by(func.coalesce(func.sum(union.c.cost_usd), 0.0).desc())
             )
-            .where(and_(*conditions))
-            .group_by(RequestLog.account_id)
-            .order_by(func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
-        )
-        result = await self._session.execute(stmt)
-        rows = result.all()
+            result = await self._session.execute(stmt)
+            rows = result.all()
+        else:
+            conditions = _report_conditions(start_date, end_date, account_ids, model, useragent_group, api_key_ids)
+
+            stmt = (
+                select(
+                    RequestLog.account_id,
+                    func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+                    func.count().label("request_count"),
+                )
+                .where(and_(*conditions))
+                .group_by(RequestLog.account_id)
+                .order_by(func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
+            )
+            result = await self._session.execute(stmt)
+            rows = result.all()
 
         account_ids_found = [row.account_id for row in rows if row.account_id]
         alias_map: dict[str | None, str | None] = {}
@@ -316,6 +636,90 @@ class ReportsRepository:
                 request_count=int(row.request_count),
             )
             for row in rows
+        ]
+
+    async def aggregate_monthly(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        account_ids: list[str] | None = None,
+        model: str | None = None,
+        useragent_group: str | None = None,
+        api_key_ids: list[str] | None = None,
+    ) -> list[MonthlyAggregateRow]:
+        """Per-UTC-month x model measures over the window (the lifetime
+        monthly view), history-served from the daily rollups like the other
+        breakdowns. Rows with ``model=None`` are kept so monthly totals can
+        include NULL-model cost; the model split filters them out. A
+        user-agent filter (raw-only dimension) keeps the legacy raw path."""
+        if useragent_group:
+            month_bucket = history.month_label_expr(self._session, datetime_column=RequestLog.requested_at)
+            conditions = _report_conditions(start_date, end_date, account_ids, model, useragent_group, api_key_ids)
+            stmt = (
+                select(
+                    month_bucket.label("month"),
+                    RequestLog.model,
+                    func.count().label("requests"),
+                    func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
+                    func.coalesce(
+                        func.sum(func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)),
+                        0,
+                    ).label("output_tokens"),
+                    func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_tokens"),
+                    func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+                )
+                .where(and_(*conditions))
+                .group_by(month_bucket, RequestLog.model)
+                .order_by(month_bucket.asc(), func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
+            )
+            result = await self._session.execute(stmt)
+            return [
+                MonthlyAggregateRow(
+                    month=row.month,
+                    model=row.model,
+                    requests=int(row.requests or 0),
+                    input_tokens=int(row.input_tokens or 0),
+                    output_tokens=int(row.output_tokens or 0),
+                    cached_input_tokens=int(row.cached_tokens or 0),
+                    cost_usd=float(row.cost_usd or 0.0),
+                )
+                for row in result.all()
+            ]
+
+        union = history.history_window_union(
+            self._session,
+            start_date,
+            end_date,
+            account_ids=account_ids,
+            model=model,
+            api_key_ids=api_key_ids,
+            month=True,
+        ).subquery()
+        stmt = (
+            select(
+                union.c.month,
+                union.c.model,
+                func.coalesce(func.sum(union.c.requests), 0).label("requests"),
+                func.coalesce(func.sum(union.c.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(union.c.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(union.c.cached_tokens), 0).label("cached_tokens"),
+                func.coalesce(func.sum(union.c.cost_usd), 0.0).label("cost_usd"),
+            )
+            .group_by(union.c.month, union.c.model)
+            .order_by(union.c.month.asc(), func.coalesce(func.sum(union.c.cost_usd), 0.0).desc())
+        )
+        result = await self._session.execute(stmt)
+        return [
+            MonthlyAggregateRow(
+                month=row.month,
+                model=row.model,
+                requests=int(row.requests or 0),
+                input_tokens=int(row.input_tokens or 0),
+                output_tokens=int(row.output_tokens or 0),
+                cached_input_tokens=int(row.cached_tokens or 0),
+                cost_usd=float(row.cost_usd or 0.0),
+            )
+            for row in result.all()
         ]
 
     async def aggregate_by_useragent(
@@ -392,7 +796,47 @@ class ReportsRepository:
 
         result = await self._session.execute(select(func.min(RequestLog.requested_at)).where(and_(*conditions)))
         value = result.scalar_one_or_none()
-        return value if isinstance(value, datetime) else None
+        earliest = value if isinstance(value, datetime) else None
+        if useragent_group:
+            # UA-filtered reads keep exact raw semantics — the rollups hold
+            # no user-agent dimension, so a rollup fallback would ignore the
+            # filter and report too-early activity.
+            return earliest
+        if account_ids or model or api_key_ids:
+            # Every other filter maps onto rollup dimensions (account,
+            # api-key, model — sentinel-encoded, see
+            # ``_rollup_bucket_filter_clauses``), so filtered reads fall
+            # back to the permanent rollups at day/hour precision once raw
+            # is pruned, exactly like the unfiltered All-time origin below.
+            for rollup_earliest in (
+                await earliest_daily_bucket_at(
+                    self._session, account_ids=account_ids, model=model, api_key_ids=api_key_ids
+                ),
+                await earliest_hourly_bucket_at(
+                    self._session, account_ids=account_ids, model=model, api_key_ids=api_key_ids
+                ),
+            ):
+                if rollup_earliest is not None and (earliest is None or rollup_earliest < earliest):
+                    earliest = rollup_earliest
+            return earliest
+        for rollup_earliest in (
+            await earliest_daily_bucket_at(self._session),
+            await earliest_hourly_bucket_at(self._session),
+        ):
+            if rollup_earliest is not None and (earliest is None or rollup_earliest < earliest):
+                earliest = rollup_earliest
+        return earliest
+
+
+async def _raw_retention_floor() -> datetime | None:
+    """Oldest ``requested_at`` raw retention still guarantees (None when
+    retention is disabled — raw then covers everything it ever held). Rows
+    below the floor are pruned (or will be at the next retention pass); the
+    daily/hourly rollups are the only store covering them."""
+    retention_days = (await get_effective_retention()).request_log_days
+    if not retention_days:
+        return None
+    return utcnow() - timedelta(days=retention_days)
 
 
 def _report_conditions(
@@ -657,6 +1101,47 @@ def _daily_rows_stmt(
         .group_by(day_ranges_cte.c.report_date)
         .order_by(day_ranges_cte.c.report_date)
     )
+
+
+def _offset_transition_instants(
+    window_start: datetime,
+    window_end: datetime,
+    timezone_info: ZoneInfo | timezone,
+) -> list[datetime]:
+    """Naive-UTC instants in ``(window_start, window_end)`` where the zone's
+    UTC offset changes.
+
+    The rollup-served history unions label rows by
+    ``floor((epoch + offset) / 86400)`` — a stable local-day key only while
+    the offset is constant — so the caller partitions the window at these
+    instants and labels each segment with its own offset. Consecutive UTC
+    midnights whose offsets differ bracket a transition; a one-second binary
+    search pins the exact instant (real zone rules transition at whole
+    minutes, so second resolution is exact).
+    """
+
+    def offset_at(instant: datetime) -> timedelta:
+        return instant.replace(tzinfo=timezone.utc).astimezone(timezone_info).utcoffset() or timedelta(0)
+
+    transitions: list[datetime] = []
+    day_start = window_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day_start < window_end:
+        next_day_start = day_start + timedelta(days=1)
+        old_offset = offset_at(day_start)
+        if offset_at(next_day_start) != old_offset:
+            # Invariant: offset_at(lo) is the old offset, offset_at(hi) the
+            # new one. Narrow to the first second carrying the new offset.
+            lo, hi = day_start, next_day_start
+            while hi - lo > timedelta(seconds=1):
+                mid = lo + (hi - lo) // 2
+                if offset_at(mid) == old_offset:
+                    lo = mid
+                else:
+                    hi = mid
+            if window_start < hi < window_end:
+                transitions.append(hi)
+        day_start = next_day_start
+    return transitions
 
 
 def _daily_bucket_ranges(

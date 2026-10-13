@@ -13,6 +13,19 @@ from app.modules.reports.service import InvalidReportDateRangeError, ReportsServ
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _retention_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the service's raw-retention disclosure off (and the settings
+    cache out of unit tests); disclosure behavior has its own test."""
+
+    from app.core.retention.job import EffectiveRetention
+
+    async def _zero_retention() -> EffectiveRetention:
+        return EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=0)
+
+    monkeypatch.setattr("app.modules.reports.service.get_effective_retention", _zero_retention)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("start_date", "end_date", "report_timezone"),
@@ -65,6 +78,7 @@ async def test_get_reports_averages_use_inclusive_local_calendar_days(
     repo = SimpleNamespace(
         aggregate_summary=AsyncMock(side_effect=[summary, summary]),
         aggregate_daily_rows=AsyncMock(return_value=[]),
+        aggregate_monthly=AsyncMock(return_value=[]),
         aggregate_by_model=AsyncMock(return_value=[]),
         aggregate_by_account=AsyncMock(return_value=[]),
         aggregate_by_useragent=AsyncMock(return_value=[]),
@@ -89,6 +103,7 @@ async def test_get_reports_rejects_oversized_range_after_applying_default_end_da
     repo = SimpleNamespace(
         aggregate_summary=AsyncMock(),
         aggregate_daily_rows=AsyncMock(),
+        aggregate_monthly=AsyncMock(return_value=[]),
         aggregate_by_model=AsyncMock(),
         aggregate_by_account=AsyncMock(),
         earliest_report_activity_at=AsyncMock(),
@@ -97,8 +112,8 @@ async def test_get_reports_rejects_oversized_range_after_applying_default_end_da
     fixed_now = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
     monkeypatch.setattr("app.modules.reports.service.utcnow", lambda: fixed_now)
 
-    with pytest.raises(DailyReportRangeTooLargeError, match="730 days or less"):
-        await service.get_reports(start_date=date(2020, 1, 1))
+    with pytest.raises(DailyReportRangeTooLargeError, match="3650 days or less"):
+        await service.get_reports(start_date=date(2015, 1, 1))
 
     repo.aggregate_summary.assert_not_awaited()
     repo.aggregate_daily_rows.assert_not_awaited()
@@ -114,6 +129,7 @@ async def test_get_reports_rejects_inverted_defaulted_range_before_repository_wo
     repo = SimpleNamespace(
         aggregate_summary=AsyncMock(),
         aggregate_daily_rows=AsyncMock(),
+        aggregate_monthly=AsyncMock(return_value=[]),
         aggregate_by_model=AsyncMock(),
         aggregate_by_account=AsyncMock(),
         aggregate_by_useragent=AsyncMock(),
@@ -190,6 +206,7 @@ async def test_get_reports_serializes_conversation_and_breakdown_request_counts(
                 )
             ]
         ),
+        aggregate_monthly=AsyncMock(return_value=[]),
         aggregate_by_model=AsyncMock(return_value=[SimpleNamespace(model="gpt-5.1", cost_usd=1.2, request_count=2)]),
         aggregate_by_account=AsyncMock(
             return_value=[SimpleNamespace(account_id="acc_reports", alias="Reports", cost_usd=1.2, request_count=2)]
@@ -264,3 +281,61 @@ async def test_get_reports_serializes_conversation_and_breakdown_request_counts(
     assert result.by_useragent[0].useragent == "opencode"
     assert result.by_useragent[0].requests == 2
     assert result.by_useragent[0].percentage == 100.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("report_timezone", "hourly_days", "expected_since"),
+    [
+        ("Asia/Kolkata", 30, "2026-05-13"),
+        ("Asia/Kolkata", 0, None),
+        ("UTC", 30, None),
+    ],
+)
+async def test_hourly_coverage_since_discloses_non_utc_hourly_pruning(
+    monkeypatch: pytest.MonkeyPatch,
+    report_timezone: str,
+    hourly_days: int,
+    expected_since: str | None,
+) -> None:
+    """The per-day series is hour-grain (hourly-rollup-backed) only for
+    non-UTC report timezones; the disclosure must fire exactly when hourly
+    retention can have trimmed it, and never for the UTC-day-grain series."""
+    summary = SimpleNamespace(
+        total_cost_usd=60.0,
+        total_input_tokens=0,
+        total_output_tokens=0,
+        total_reasoning_tokens=0,
+        reasoning_usage_known_requests=0,
+        total_cached_tokens=0,
+        total_requests=30,
+        conversation_count=0,
+        total_errors=0,
+        total_cancelled=0,
+        active_accounts=1,
+    )
+    repo = SimpleNamespace(
+        aggregate_summary=AsyncMock(side_effect=[summary, summary]),
+        aggregate_daily_rows=AsyncMock(return_value=[]),
+        aggregate_monthly=AsyncMock(return_value=[]),
+        aggregate_by_model=AsyncMock(return_value=[]),
+        aggregate_by_account=AsyncMock(return_value=[]),
+        aggregate_by_useragent=AsyncMock(return_value=[]),
+        earliest_report_activity_at=AsyncMock(return_value=None),
+    )
+    service = ReportsService(cast(ReportsRepository, repo))
+    fixed_now = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.modules.reports.service.utcnow", lambda: fixed_now)
+    monkeypatch.setattr(
+        "app.modules.reports.service.get_effective_retention",
+        AsyncMock(return_value=SimpleNamespace(request_log_days=0, hourly_rollup_days=hourly_days)),
+    )
+
+    result = await service.get_reports(
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 12),
+        report_timezone=report_timezone,
+    )
+
+    assert result.hourly_coverage_since == expected_since
+    assert result.raw_metrics_since is None
