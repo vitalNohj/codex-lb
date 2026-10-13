@@ -1533,5 +1533,8 @@
   "reports.monthly.requests": "Requests",
   "reports.monthly.inputTokens": "Input tokens",
   "reports.monthly.cachedTokens": "Cached input tokens",
-  "reports.monthly.outputTokens": "Output tokens"
+  "reports.monthly.outputTokens": "Output tokens",
+  "reports.charts.rawWindowBadge": "Since {{since}}",
+  "reports.charts.rawWindowHint": "Per-request data is only kept from {{since}}; older raw request logs have been pruned.",
+  "reports.charts.rawWindowTooltip": "No per-request data: raw request logs for this day were pruned."
 }

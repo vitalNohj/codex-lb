@@ -7,15 +7,20 @@ import { EmptyState } from "@/components/empty-state";
 export type ReportChartCardProps = {
   title: string;
   empty: boolean;
+  /** Optional element shown at the right of the title row (badge, legend). */
+  aside?: ReactNode;
   children: ReactNode;
 };
 
-export function ReportChartCard({ title, empty, children }: ReportChartCardProps) {
+export function ReportChartCard({ title, empty, aside, children }: ReportChartCardProps) {
   const { t } = useTranslation();
 
   return (
     <div className="rounded-xl border bg-card p-5">
-      <div className="text-sm font-semibold text-foreground">{title}</div>
+      <div className="flex min-h-6 flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        {empty ? null : aside}
+      </div>
       {empty ? (
         <div className="mt-4">
           <EmptyState

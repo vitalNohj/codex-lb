@@ -49,7 +49,7 @@ export function TokensPerDayChart({ startDate, endDate, data }: TokensPerDayChar
                 <stop offset="100%" stopColor="#ec4899" stopOpacity={0.05} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
             <XAxis
               dataKey="date"
               tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
@@ -72,7 +72,7 @@ export function TokensPerDayChart({ startDate, endDate, data }: TokensPerDayChar
               strokeWidth={2}
               fill="url(#inputGrad)"
               dot={false}
-              activeDot={{ r: 4, strokeWidth: 1.5, fill: "hsl(var(--popover))" }}
+              activeDot={{ r: 4, strokeWidth: 1.5, fill: "var(--popover)" }}
             />
             <Area
               type="monotone"
@@ -81,7 +81,7 @@ export function TokensPerDayChart({ startDate, endDate, data }: TokensPerDayChar
               strokeWidth={2}
               fill="url(#outputGrad)"
               dot={false}
-              activeDot={{ r: 4, strokeWidth: 1.5, fill: "hsl(var(--popover))" }}
+              activeDot={{ r: 4, strokeWidth: 1.5, fill: "var(--popover)" }}
             />
           </AreaChart>
         </ResponsiveContainer>
