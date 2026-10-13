@@ -320,6 +320,31 @@ def test_branch_mismatch_abort_leaves_ignored_files_untouched(tmp_path: Path) ->
     assert "PRESERVED ignored file" not in log
 
 
+def test_ahead_with_allow_dirty_refuses_before_any_mutation(tmp_path: Path) -> None:
+    origin, seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    local_sha = _commit_all(deploy, "local-only commit", "local.txt", "local")
+    # An ignored file that the remote tree does not track: if any preservation
+    # ran before the refusal, this file would be moved aside for nothing.
+    (deploy / ".git" / "info" / "exclude").write_text("wip.yaml\n", encoding="utf-8")
+    (deploy / "wip.yaml").write_text("LOCAL SECRET", encoding="utf-8")
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env={"CODEX_LB_DEPLOY_ALLOW_DIRTY": "1"})
+
+    # ALLOW_DIRTY=1 cannot converge with a locally ahead branch: refuse
+    # loudly BEFORE stashing, moving ignored files, or touching the tree.
+    assert result.returncode != 0
+    assert _git(deploy, "rev-parse", "HEAD") == local_sha
+    assert (deploy / "wip.yaml").read_text(encoding="utf-8") == "LOCAL SECRET"
+    assert not list((tmp_path / "deploy-logs").glob("ignored-preserved-*"))
+    assert _backup_branches(deploy) == {}
+    assert _git(deploy, "stash", "list") == ""
+    log = _read_latest_log(tmp_path)
+    assert "ERROR: local main is ahead of origin/main" in log
+    assert "the deploy cannot converge" in log
+    assert "=== codex-lb deploy failed ===" in log
+
+
 def test_dirty_and_diverged_state_is_fully_preserved(tmp_path: Path) -> None:
     origin, seed, deploy = _make_deploy_fixture(tmp_path)
     bin_dir = _stub_bin(tmp_path)
@@ -412,5 +437,6 @@ def test_allow_dirty_keeps_uncommitted_changes_and_fails_loudly_when_ahead(tmp_p
     assert _backup_branches(deploy) == {}
     assert _git(deploy, "stash", "list") == ""
     log = _read_latest_log(tmp_path)
-    assert "ERROR: deploy dir HEAD" in log
+    assert "ERROR: local main is ahead of origin/main" in log
+    assert "the deploy cannot converge" in log
     assert "=== codex-lb deploy failed ===" in log

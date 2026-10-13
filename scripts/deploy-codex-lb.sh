@@ -311,6 +311,36 @@ sync_git() {
     dirty=1
   fi
 
+  log "fetching $REMOTE $BRANCH"
+  git fetch --prune "$REMOTE" "$BRANCH"
+  remote_sha="$(git rev-parse "$REMOTE/$BRANCH")"
+  log "REMOTE_SHA=$remote_sha"
+
+  # Refuse states this run cannot converge on BEFORE touching the working
+  # tree: every die below leaves the deploy dir exactly as it was found.
+  current="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "$current" != "$BRANCH" && "$SWITCH_BRANCH" != "1" ]]; then
+    die "deploy dir is on '$current', not '$BRANCH'. Use a dedicated clone, or set CODEX_LB_DEPLOY_SWITCH_BRANCH=1"
+  fi
+
+  local counts
+  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    if ! counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"; then
+      die "cannot compare $BRANCH with $REMOTE/$BRANCH — is the branch deleted on $REMOTE? refusing to guess the deploy state"
+    fi
+    read -r ahead behind <<<"$counts"
+  else
+    # No local $BRANCH yet: the checkout below creates it from $REMOTE/$BRANCH,
+    # so there is nothing local to preserve or refuse.
+    ahead=0
+    behind=0
+  fi
+
+  if ((ahead > 0)) && [[ "$ALLOW_DIRTY" == "1" ]]; then
+    die "local $BRANCH is ahead of $REMOTE/$BRANCH by $ahead commit(s) and CODEX_LB_DEPLOY_ALLOW_DIRTY=1 keeps local changes in place — the deploy cannot converge; push or rebase the ahead commits, then re-run"
+  fi
+
+  # Every refusal cleared. Preserve local state first, then mutate.
   if ((dirty)) && [[ "$ALLOW_DIRTY" != "1" ]]; then
     log "working tree dirty under $DEPLOY_DIR — preserving it before deploying"
     stash_dirty_tree
@@ -319,17 +349,6 @@ sync_git() {
     log "working tree dirty under $DEPLOY_DIR (CODEX_LB_DEPLOY_ALLOW_DIRTY=1: keeping uncommitted changes in place)"
   fi
 
-  log "fetching $REMOTE $BRANCH"
-  git fetch --prune "$REMOTE" "$BRANCH"
-  remote_sha="$(git rev-parse "$REMOTE/$BRANCH")"
-  log "REMOTE_SHA=$remote_sha"
-
-  current="$(git rev-parse --abbrev-ref HEAD)"
-  if [[ "$current" != "$BRANCH" && "$SWITCH_BRANCH" != "1" ]]; then
-    die "deploy dir is on '$current', not '$BRANCH'. Use a dedicated clone, or set CODEX_LB_DEPLOY_SWITCH_BRANCH=1"
-  fi
-
-  # Only mutate the working tree once every refusal above has been cleared.
   protect_ignored_files "$REMOTE/$BRANCH"
 
   if [[ "$current" != "$BRANCH" ]]; then
@@ -350,14 +369,9 @@ sync_git() {
   # The reset below moves $BRANCH, so back up ITS tip — not BEFORE_SHA: with
   # CODEX_LB_DEPLOY_SWITCH_BRANCH=1, BEFORE_SHA is the pre-checkout ref's tip
   # (kept reachable by its own branch), and backing that up instead would let
-  # the reset drop local $BRANCH commits.
+  # the reset drop local $BRANCH commits. The checkout above never moves
+  # refs, so the ahead/behind counts validated earlier still hold.
   branch_tip="$(git rev-parse HEAD)"
-
-  local counts
-  if ! counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"; then
-    die "cannot compare $BRANCH with $REMOTE/$BRANCH — is the branch deleted on $REMOTE? refusing to guess the deploy state"
-  fi
-  read -r ahead behind <<<"$counts"
   if ((ahead > 0)) && [[ "$ALLOW_DIRTY" != "1" ]]; then
     log "local $BRANCH has $ahead commit(s) not on $REMOTE/$BRANCH (ahead=$ahead behind=$behind) — preserving before reset"
     preserve_local_commits "$branch_tip"
