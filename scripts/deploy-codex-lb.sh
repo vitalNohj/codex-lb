@@ -324,13 +324,15 @@ sync_git() {
   remote_sha="$(git rev-parse "$REMOTE/$BRANCH")"
   log "REMOTE_SHA=$remote_sha"
 
+  current="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "$current" != "$BRANCH" && "$SWITCH_BRANCH" != "1" ]]; then
+    die "deploy dir is on '$current', not '$BRANCH'. Use a dedicated clone, or set CODEX_LB_DEPLOY_SWITCH_BRANCH=1"
+  fi
+
+  # Only mutate the working tree once every refusal above has been cleared.
   protect_ignored_files "$REMOTE/$BRANCH"
 
-  current="$(git rev-parse --abbrev-ref HEAD)"
   if [[ "$current" != "$BRANCH" ]]; then
-    if [[ "$SWITCH_BRANCH" != "1" ]]; then
-      die "deploy dir is on '$current', not '$BRANCH'. Use a dedicated clone, or set CODEX_LB_DEPLOY_SWITCH_BRANCH=1"
-    fi
     # A named branch keeps its commits reachable through the checkout, but a
     # detached HEAD does not — back it up before leaving it.
     if [[ "$current" == "HEAD" ]]; then

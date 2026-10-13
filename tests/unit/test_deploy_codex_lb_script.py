@@ -287,6 +287,39 @@ def test_ignored_file_colliding_with_target_tree_is_preserved(tmp_path: Path) ->
     assert "secrets.yaml" in log
 
 
+def test_branch_mismatch_abort_leaves_ignored_files_untouched(tmp_path: Path) -> None:
+    origin, seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    # The clone sits on a non-deploy branch with no SWITCH_BRANCH=1, and an
+    # ignored file collides with the target tree.
+    _git(deploy, "checkout", "-b", "feature")
+    (deploy / ".git" / "info" / "exclude").write_text("secrets.yaml\n", encoding="utf-8")
+    (deploy / "secrets.yaml").write_text("LOCAL SECRET", encoding="utf-8")
+    pusher = tmp_path / "pusher"
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(pusher)],
+        check=True,
+        capture_output=True,
+    )
+    _git(pusher, "config", "user.email", "deploy-test@example.com")
+    _git(pusher, "config", "user.name", "deploy-test")
+    (pusher / "secrets.yaml").write_text("REMOTE TRACKED", encoding="utf-8")
+    _git(pusher, "add", "-f", "secrets.yaml")
+    _git(pusher, *_GIT_IDENTITY, "commit", "-m", "track secrets.yaml")
+    _push_seed_to_origin(pusher)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir)
+
+    # The deploy must refuse on the branch mismatch WITHOUT mutating the
+    # working tree first: the ignored file stays exactly where it was.
+    assert result.returncode != 0
+    assert (deploy / "secrets.yaml").read_text(encoding="utf-8") == "LOCAL SECRET"
+    assert not list((tmp_path / "deploy-logs").glob("ignored-preserved-*"))
+    log = _read_latest_log(tmp_path)
+    assert "deploy dir is on 'feature', not 'main'" in log
+    assert "PRESERVED ignored file" not in log
+
+
 def test_dirty_and_diverged_state_is_fully_preserved(tmp_path: Path) -> None:
     origin, seed, deploy = _make_deploy_fixture(tmp_path)
     bin_dir = _stub_bin(tmp_path)
