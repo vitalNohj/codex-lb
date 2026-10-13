@@ -190,8 +190,10 @@ class DashboardSettingsData:
     limit_warmup_staggered_idle_enabled: bool
     request_log_retention_days: int
     usage_history_retention_days: int
+    hourly_rollup_retention_days: int
     request_log_retention_override_days: int | None
     usage_history_retention_override_days: int | None
+    hourly_rollup_retention_override_days: int | None
     version: int
 
 
@@ -315,8 +317,10 @@ class DashboardSettingsUpdateData:
     # NULL (inherit the deprecated env alias), neither = leave untouched.
     request_log_retention_override_days: int | None
     usage_history_retention_override_days: int | None
+    hourly_rollup_retention_override_days: int | None
     clear_request_log_retention_override: bool
     clear_usage_history_retention_override: bool
+    clear_hourly_rollup_retention_override: bool
     # Lower-cased full model -> provider key of the integration starred as the
     # model's default route. ``None`` keeps the stored stars, so a client that
     # predates stars cannot erase them by saving; a submitted map replaces the
@@ -589,8 +593,10 @@ class SettingsService:
             limit_warmup_staggered_idle_enabled=payload.limit_warmup_staggered_idle_enabled,
             request_log_retention_days=payload.request_log_retention_override_days,
             usage_history_retention_days=payload.usage_history_retention_override_days,
+            hourly_rollup_retention_days=payload.hourly_rollup_retention_override_days,
             clear_request_log_retention=payload.clear_request_log_retention_override,
             clear_usage_history_retention=payload.clear_usage_history_retention_override,
+            clear_hourly_rollup_retention=payload.clear_hourly_rollup_retention_override,
             sidecar_full_model_stars_json=_dump_full_model_stars(effective_full_model_stars),
         )
         return self._to_data(row)
@@ -765,8 +771,10 @@ class SettingsService:
             limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
             request_log_retention_days=_effective_request_log_retention(row.request_log_retention_days),
             usage_history_retention_days=_effective_usage_history_retention(row.usage_history_retention_days),
+            hourly_rollup_retention_days=_effective_hourly_rollup_retention(row.hourly_rollup_retention_days),
             request_log_retention_override_days=row.request_log_retention_days,
             usage_history_retention_override_days=row.usage_history_retention_days,
+            hourly_rollup_retention_override_days=row.hourly_rollup_retention_days,
             version=row.version,
         )
 
@@ -802,6 +810,10 @@ def _effective_request_log_retention(value: int | None) -> int:
 
 def _effective_usage_history_retention(value: int | None) -> int:
     return get_settings().usage_history_retention_days if value is None else value
+
+
+def _effective_hourly_rollup_retention(value: int | None) -> int:
+    return get_settings().hourly_rollup_retention_days if value is None else value
 
 
 def _normalize_additional_quota_key(raw_quota_key: str) -> str | None:

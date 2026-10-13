@@ -21,7 +21,7 @@ def _retention_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core.retention.job import EffectiveRetention
 
     async def _zero_retention() -> EffectiveRetention:
-        return EffectiveRetention(request_log_days=0, usage_history_days=0)
+        return EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=0)
 
     monkeypatch.setattr("app.modules.reports.service.get_effective_retention", _zero_retention)
 

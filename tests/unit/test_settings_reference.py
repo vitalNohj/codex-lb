@@ -75,7 +75,7 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # dashboard settings row on first start) and its proxy/bridge tuning, so the
 # test had been red on main. Set to the current count so it ratchets again
 # from here; lower it when fields are removed.
-MAX_SETTINGS_FIELDS = 179
+MAX_SETTINGS_FIELDS = 180
 
 
 def test_generated_settings_reference_matches_code() -> None:

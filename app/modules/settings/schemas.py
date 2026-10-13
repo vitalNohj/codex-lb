@@ -395,8 +395,10 @@ class DashboardSettingsResponse(DashboardModel):
     limit_warmup_staggered_idle_enabled: bool
     request_log_retention_days: int = Field(ge=0, le=3650)
     usage_history_retention_days: int = Field(ge=0, le=3650)
+    hourly_rollup_retention_days: int = Field(ge=0, le=3650)
     request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
+    hourly_rollup_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     additional_quota_routing_policies: dict[str, str] = Field(default_factory=dict)
     model_aliases: dict[str, ModelAliasPoolSchema] = Field(default_factory=dict)
     custom_alias_catalog: dict[str, CustomAliasCatalogEntrySchema] = Field(default_factory=dict)
@@ -643,6 +645,9 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     # value = store the override.
     request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
+    # No floor validator for the hourly window: anything below the raw
+    # request-log window is clamped up at resolution time (max of the two).
+    hourly_rollup_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     # Tri-state star map: absent = keep the stored stars (an older client
     # saving without star knowledge cannot erase them), present map = replace
     # the stored one, filtered against the cards this save configures.

@@ -1857,6 +1857,10 @@ class DashboardSettings(Base):
         Integer,
         nullable=True,
     )
+    hourly_rollup_retention_days: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     version: Mapped[int] = mapped_column(
         Integer,
         default=1,

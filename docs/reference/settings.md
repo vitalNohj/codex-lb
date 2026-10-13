@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 179 settings. Every setting is an environment
+codex-lb currently exposes 180 settings. Every setting is an environment
 variable with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process). All defaults work with zero configuration —
 start from [Configuration](../configuration.md) for the handful that matter,
@@ -264,6 +264,7 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_CLAUDE_SIDECAR_USAGE_POLL_INTERVAL_SECONDS` | `float` | `15.0` |
 | `CODEX_LB_CLAUDE_SIDECAR_USAGE_QUEUE_BATCH_SIZE` | `int` | `100` |
 | `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
+| `CODEX_LB_HOURLY_ROLLUP_RETENTION_DAYS` | `int` | `0` |
 | `CODEX_LB_OLLAMA_SIDECAR_API_KEY` | `str` | `''` |
 | `CODEX_LB_OLLAMA_SIDECAR_BASE_URL` | `str` | `'https://ollama.com'` |
 | `CODEX_LB_OLLAMA_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
@@ -310,6 +311,7 @@ the host side of the compose `ports` mapping instead.
 Deprecated env aliases (still functional for one release; the dashboard
 runtime value wins when set):
 
+- `CODEX_LB_HOURLY_ROLLUP_RETENTION_DAYS`
 - `CODEX_LB_REQUEST_LOG_RETENTION_DAYS`
 - `CODEX_LB_USAGE_HISTORY_RETENTION_DAYS`
 

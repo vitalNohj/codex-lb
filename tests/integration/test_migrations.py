@@ -2876,8 +2876,26 @@ async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(
     async def _drift() -> tuple[str, ...]:
         return await to_thread.run_sync(lambda: check_schema_drift(db_url))
 
+    def _sidecar_drift(items: tuple[str, ...]) -> tuple[str, ...]:
+        """Drop expected drift from tables added after the pinned revision.
+
+        ORM metadata always reflects head, so at parent_revision the
+        later-added request_usage_daily_rollups table, the
+        account_usage_rollup_state.daily_folded_through watermark column,
+        and the dashboard_settings.hourly_rollup_retention_days column show
+        up as add-table/add-column drift that is irrelevant to the sidecar
+        default under test.
+        """
+        return tuple(
+            item
+            for item in items
+            if "request_usage_daily_rollups" not in item
+            and "daily_folded_through" not in item
+            and "hourly_rollup_retention_days" not in item
+        )
+
     try:
-        drift = await _drift()
+        drift = _sidecar_drift(await _drift())
         assert len(drift) == 1
         assert "'modify_default'" in drift[0]
         assert "claude_sidecar_model_prefixes_json" in drift[0]
@@ -2886,7 +2904,7 @@ async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(
         assert stored[1] == declared
 
         await to_thread.run_sync(lambda: run_upgrade(db_url, default_revision, bootstrap_legacy=False))
-        assert await _drift() == ()
+        assert _sidecar_drift(await _drift()) == ()
         assert await _stored_prefixes() == stored
         assert await _insert_without_prefixes(3) == declared
         stored = await _stored_prefixes()

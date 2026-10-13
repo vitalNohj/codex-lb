@@ -32,10 +32,13 @@ BATCH_SIZE = 10_000
 class EffectiveRetention:
     request_log_days: int
     usage_history_days: int
+    hourly_rollup_days: int
 
     @property
     def enabled(self) -> bool:
-        return bool(self.request_log_days or self.usage_history_days)
+        # The hourly-rollup window alone must also wake the pass: pruning
+        # hourly rollups is independent of pruning raw/usage-history rows.
+        return bool(self.request_log_days or self.usage_history_days or self.hourly_rollup_days)
 
 
 async def get_effective_retention() -> EffectiveRetention:
@@ -57,6 +60,11 @@ async def get_effective_retention() -> EffectiveRetention:
             env.usage_history_retention_days
             if dashboard.usage_history_retention_days is None
             else dashboard.usage_history_retention_days
+        ),
+        hourly_rollup_days=(
+            env.hourly_rollup_retention_days
+            if dashboard.hourly_rollup_retention_days is None
+            else dashboard.hourly_rollup_retention_days
         ),
     )
 
@@ -105,14 +113,14 @@ async def _prune_hourly_rollups(*, now: datetime) -> int:
 
     No watermark means nothing is folded — skip entirely.
     """
-    env = get_settings()
-    hourly_days = env.hourly_rollup_retention_days
+    retention = await get_effective_retention()
+    hourly_days = retention.hourly_rollup_days
     if not hourly_days:
         return 0
     # With raw retention disabled (0) the hourly setting applies alone; with
     # both set the LONGER window wins so the hourly rollups never prune
     # history raw still keeps.
-    effective_days = max(hourly_days, (await get_effective_retention()).request_log_days)
+    effective_days = max(hourly_days, retention.request_log_days)
     cutoff = now - timedelta(days=effective_days)
     cutoff_epoch = epoch_seconds(cutoff)
     total = 0

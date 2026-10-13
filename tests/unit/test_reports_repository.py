@@ -29,7 +29,7 @@ def _retention_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     retention off and keep the settings cache out of the in-memory engine."""
 
     async def _zero_retention() -> EffectiveRetention:
-        return EffectiveRetention(request_log_days=0, usage_history_days=0)
+        return EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=0)
 
     monkeypatch.setattr("app.modules.reports.repository.get_effective_retention", _zero_retention)
 

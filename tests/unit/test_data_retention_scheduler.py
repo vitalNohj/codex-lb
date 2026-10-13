@@ -34,9 +34,13 @@ class _GateLeader:
         raise AssertionError("retention scheduler must gate via run_if_leader, not try_acquire")
 
 
-def _set_effective_retention(monkeypatch, *, request_log: int = 0, usage_history: int = 0) -> None:
+def _set_effective_retention(
+    monkeypatch, *, request_log: int = 0, usage_history: int = 0, hourly_rollup: int = 0
+) -> None:
     async def _resolve() -> EffectiveRetention:
-        return EffectiveRetention(request_log_days=request_log, usage_history_days=usage_history)
+        return EffectiveRetention(
+            request_log_days=request_log, usage_history_days=usage_history, hourly_rollup_days=hourly_rollup
+        )
 
     monkeypatch.setattr(retention_scheduler, "get_effective_retention", _resolve)
 
@@ -132,6 +136,8 @@ async def test_prune_once_survives_settings_resolution_failure(monkeypatch) -> N
 
 
 def test_effective_retention_enabled_property() -> None:
-    assert EffectiveRetention(request_log_days=0, usage_history_days=0).enabled is False
-    assert EffectiveRetention(request_log_days=30, usage_history_days=0).enabled is True
-    assert EffectiveRetention(request_log_days=0, usage_history_days=45).enabled is True
+    assert EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=0).enabled is False
+    assert EffectiveRetention(request_log_days=30, usage_history_days=0, hourly_rollup_days=0).enabled is True
+    assert EffectiveRetention(request_log_days=0, usage_history_days=45, hourly_rollup_days=0).enabled is True
+    # The hourly-rollup window alone must wake the retention pass.
+    assert EffectiveRetention(request_log_days=0, usage_history_days=0, hourly_rollup_days=60).enabled is True
