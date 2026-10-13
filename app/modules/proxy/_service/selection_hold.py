@@ -15,7 +15,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from app.core.config.settings import get_settings
 from app.modules.proxy.owner_drain import required_owner_transient_drain_seconds
@@ -48,7 +48,6 @@ async def hold_for_transient_required_owner(
     model: str | None,
     service_tier: str | None = None,
     additional_limit_name: str | None = None,
-    settings: Any | None = None,
 ) -> AccountSelection:
     """Hold a required-owner failure while the owner is only transiently drained.
 
@@ -63,13 +62,17 @@ async def hold_for_transient_required_owner(
     an instant 502. Permanent unavailability returns the failure
     unmarked, keeping today's behavior.
 
+    The hold config is read from core settings (``get_settings()``):
+    ``proxy_continuity_owner_hold_seconds`` lives on core ``Settings`` and
+    not on the dashboard settings row the caller holds, so it must never
+    be taken from the request-scoped settings object.
+
     Poll waits are plain ``asyncio.sleep`` so client cancellation
     propagates, and no account lease or stream slot is held while
     waiting (failed selections carry no lease; one acquired by a poll is
     released immediately).
     """
-    settings = settings or get_settings()
-    hold_seconds = float(getattr(settings, "proxy_continuity_owner_hold_seconds", 0.0))
+    hold_seconds = float(getattr(get_settings(), "proxy_continuity_owner_hold_seconds", 0.0))
     last_failure = failed_selection
     if hold_seconds <= 0:
         return last_failure

@@ -1943,7 +1943,6 @@ class ProxyService(
                             model=model,
                             service_tier=service_tier,
                             additional_limit_name=additional_limit_name,
-                            settings=settings,
                         )
                 selection = await self._load_balancer.select_account(
                     sticky_key=sticky_key,

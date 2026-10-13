@@ -39903,10 +39903,21 @@ async def test_select_account_with_budget_forwards_estimated_lease_tokens(monkey
 
 
 def _make_hold_settings(**overrides: object) -> SimpleNamespace:
+    """Dashboard settings row (``get_settings_cache().get()``) for hold tests.
+
+    Deliberately carries NO ``proxy_continuity_owner_hold_seconds``: the
+    field lives on core ``Settings`` only, and the hold must read it from
+    core ``get_settings()`` — never from the dashboard settings row the
+    request carries.
+    """
     settings = _make_proxy_settings()
+    return SimpleNamespace(**{**vars(settings), **overrides})
+
+
+def _make_hold_core_settings(**overrides: object) -> SimpleNamespace:
+    """Distinct core settings stub (``get_settings()``) carrying the hold config."""
     return SimpleNamespace(
         **{
-            **vars(settings),
             "proxy_continuity_owner_hold_seconds": 0.05,
             **overrides,
         }
@@ -39916,6 +39927,7 @@ def _make_hold_settings(**overrides: object) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_select_account_with_budget_holds_transient_drained_owner_until_recovered(monkeypatch):
     settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_owner")
@@ -39936,6 +39948,7 @@ async def test_select_account_with_budget_holds_transient_drained_owner_until_re
     )
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(
         proxy_selection_hold,
@@ -39967,6 +39980,7 @@ async def test_select_account_with_budget_holds_transient_drained_owner_until_re
 @pytest.mark.asyncio
 async def test_select_account_with_budget_hold_expiry_marks_owner_hold_expired(monkeypatch):
     settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     select_account = AsyncMock(
@@ -39978,6 +39992,7 @@ async def test_select_account_with_budget_hold_expiry_marks_owner_hold_expired(m
     )
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(
         proxy_selection_hold,
@@ -40007,6 +40022,7 @@ async def test_select_account_with_budget_hold_expiry_marks_owner_hold_expired(m
 @pytest.mark.asyncio
 async def test_select_account_with_budget_permanent_owner_unavailability_skips_hold(monkeypatch):
     settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     select_account = AsyncMock(
@@ -40018,6 +40034,7 @@ async def test_select_account_with_budget_permanent_owner_unavailability_skips_h
     )
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     required_owner_transient_drain_seconds = AsyncMock(return_value=None)
     monkeypatch.setattr(
@@ -40047,6 +40064,7 @@ async def test_select_account_with_budget_permanent_owner_unavailability_skips_h
 @pytest.mark.asyncio
 async def test_select_account_with_budget_hold_aborts_when_owner_becomes_permanent(monkeypatch):
     settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings()
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     select_account = AsyncMock(
@@ -40065,6 +40083,7 @@ async def test_select_account_with_budget_hold_aborts_when_owner_becomes_permane
     )
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(
         proxy_selection_hold,
@@ -40092,7 +40111,8 @@ async def test_select_account_with_budget_hold_aborts_when_owner_becomes_permane
 
 @pytest.mark.asyncio
 async def test_select_account_with_budget_hold_respects_client_cancel(monkeypatch):
-    settings = _make_hold_settings(proxy_continuity_owner_hold_seconds=5.0)
+    settings = _make_hold_settings()
+    core_settings = _make_hold_core_settings(proxy_continuity_owner_hold_seconds=5.0)
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     select_account = AsyncMock(
@@ -40104,6 +40124,7 @@ async def test_select_account_with_budget_hold_respects_client_cancel(monkeypatc
     )
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(
         proxy_selection_hold,
@@ -40131,6 +40152,62 @@ async def test_select_account_with_budget_hold_respects_client_cancel(monkeypatc
     with pytest.raises(asyncio.CancelledError):
         await task
     assert select_account.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_hold_reads_core_settings_not_dashboard_row(monkeypatch):
+    # Regression: ``proxy_continuity_owner_hold_seconds`` lives on core
+    # Settings, not on the dashboard settings row the selection carries. The
+    # dashboard row here explicitly disables the hold (0.0) while core
+    # settings enable it — the hold must engage from core settings anyway.
+    settings = _make_hold_settings(proxy_continuity_owner_hold_seconds=0.0)
+    core_settings = _make_hold_core_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_owner")
+    select_account = AsyncMock(
+        side_effect=[
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="continuity_owner_unavailable",
+            ),
+            AccountSelection(account=account, error_message=None),
+        ]
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_selection_hold, "get_settings", lambda: core_settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(
+        proxy_selection_hold,
+        "required_owner_transient_drain_seconds",
+        AsyncMock(return_value=30.0),
+    )
+    monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
+
+    selection = await service._select_account_with_budget(
+        deadline=123.0,
+        request_id="req-owner-hold-core-settings",
+        kind="stream",
+        model="gpt-5.1",
+        preferred_account_id="acc_owner",
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account == account
+    assert selection.owner_hold_expired is False
+    assert select_account.await_count == 3
+    for selection_call in select_account.await_args_list:
+        assert selection_call.kwargs["required_account_id"] == "acc_owner"
 
 
 @pytest.mark.asyncio
