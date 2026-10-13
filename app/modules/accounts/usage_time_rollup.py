@@ -1056,13 +1056,18 @@ async def _run_upgrade_repair(*, marker_only: bool = False) -> bool:
 
 async def _apply_daily_grouped_batches(session: AsyncSession, window: tuple[int, int], *, sign: int) -> None:
     """Apply ``sign *`` the window's daily-grouped hourly aggregates to the
-    daily rollups, fetching the grouped rows in bounded batches
-    (``_UPSERT_CHUNK_ROWS`` — the same parameter-limit-bound batch the fold
-    merges insert with) and merging each batch before fetching the next, so
-    memory does not grow with the window's dimension-group count (a bounded
-    time window does not bound the group count). Only one batch is retained
-    at a time; the pagination ORDER BY is the key itself and each group is
-    exactly one row, so no key can straddle a batch boundary.
+    daily rollups, consuming ONE streamed execution of the grouped query in
+    bounded batches (``_UPSERT_CHUNK_ROWS`` — the same parameter-limit-bound
+    batch the fold merges insert with) and merging each batch before
+    consuming more, so memory does not grow with the window's
+    dimension-group count (a bounded time window does not bound the group
+    count). The grouped statement is a whole-window hourly GROUP BY, so it
+    runs exactly once per side — re-running it per OFFSET page (once per
+    batch, per side) would re-aggregate the whole window each time while
+    the fold lock is held. ``yield_per`` streams the result through a
+    server-side cursor where the backend supports one (SQLite steps its
+    VM incrementally regardless), and each group is exactly one row, so a
+    group can never straddle a batch boundary.
 
     ``sign=-1`` subtracts a side's contribution (the pre-refold state, read
     before the hourly DELETE); ``sign=+1`` adds it (the post-refold content,
@@ -1074,28 +1079,36 @@ async def _apply_daily_grouped_batches(session: AsyncSession, window: tuple[int,
     """
     stmt = _daily_grouped_from_hourly_stmt(session, window)
     key_width = len(_DAILY_KEY_COLUMNS)
-    # Deterministic pagination: order by the key columns themselves (each
-    # group is one row of the grouped statement).
-    paginated = stmt.order_by(*list(stmt.selected_columns)[:key_width])
-    offset = 0
-    while True:
-        batch = (await session.execute(paginated.limit(_UPSERT_CHUNK_ROWS).offset(offset))).all()
-        if not batch:
-            return
-        rows = [
-            DailyUsageRollupRow(*row[:key_width], *(sign * measure for measure in row[key_width:])) for row in batch
-        ]
+    # Deterministic streaming order: by the key columns themselves (each
+    # group is one row of the grouped statement). ``session.stream`` turns
+    # on the server-side-cursor flag where the backend supports one (SQLite
+    # steps its VM incrementally regardless) and ``yield_per`` bounds the
+    # rows buffered per fetch.
+    result = await session.stream(
+        stmt.order_by(*list(stmt.selected_columns)[:key_width]).execution_options(yield_per=_UPSERT_CHUNK_ROWS)
+    )
+    batch: list[DailyUsageRollupRow] = []
+    async for row in result:
+        batch.append(DailyUsageRollupRow(*row[:key_width], *(sign * measure for measure in row[key_width:])))
+        if len(batch) >= _UPSERT_CHUNK_ROWS:
+            await _merge_add(
+                session,
+                RequestUsageDailyRollup,
+                batch,
+                _DAILY_KEY_COLUMNS,
+                _DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS,
+                DailyUsageRollupRow,
+            )
+            batch = []
+    if batch:
         await _merge_add(
             session,
             RequestUsageDailyRollup,
-            rows,
+            batch,
             _DAILY_KEY_COLUMNS,
             _DAILY_KEY_COLUMNS + _DAILY_MEASURE_COLUMNS,
             DailyUsageRollupRow,
         )
-        if len(batch) < _UPSERT_CHUNK_ROWS:
-            return
-        offset += _UPSERT_CHUNK_ROWS
 
 
 async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool = False) -> bool:
@@ -1126,10 +1139,11 @@ async def _repair_next_upgrade_chunk(session: AsyncSession, *, marker_only: bool
     revisits them (the daily fold pauses while the marker is set), so each
     chunk subtracts the pre-refold contribution (read before the hourly
     DELETE) and adds the post-refold content (re-read after) — together the
-    exact per-group delta, with both sides applied in bounded batches of
-    grouped rows (see _apply_daily_grouped_batches: memory does not grow
-    with the window's dimension-group count). Daily rows whose hourly
-    source was retention-pruned keep those pruned contributions: only this
+    exact per-group delta, each side read through ONE streamed execution
+    consumed in bounded batches of grouped rows (see
+    _apply_daily_grouped_batches: one whole-window aggregation per side,
+    memory does not grow with the window's dimension-group count). Daily
+    rows whose hourly source was retention-pruned keep those pruned contributions: only this
     window's contribution lands, never a re-fold of hours whose hourly rows
     are gone. (Retention keeps the hourly table intact wherever raw
     survives — see _prune_hourly_rollups — so the subtracted pre-refold

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import Delete, delete, func, select, update
+from sqlalchemy import Delete, delete, event, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.modules.accounts.usage_time_rollup as time_rollup_module
@@ -21,6 +21,7 @@ from app.db.models import (
     RequestUsageHourlyRollup,
 )
 from app.db.session import SessionLocal
+from app.db.session import engine as fold_engine
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.usage_rollup import FOLD_LAG, lock_fold_state
 from app.modules.accounts.usage_time_rollup import (
@@ -1927,18 +1928,39 @@ async def test_upgrade_repair_mirrors_into_folded_daily_rows_and_daily_fold_paus
 
 @pytest.mark.asyncio
 async def test_upgrade_repair_daily_mirror_streams_in_batches(db_setup, monkeypatch):
-    """The repair's daily mirror fetches and applies the grouped rows in
-    bounded batches (Kody rule: Bound Database Backfills by Batch Size and
-    Parameter Limits): with the shared merge batch constant forced below the
-    repair window's dimension-group count, the mirrored daily rollups are
-    exactly what a whole-window delta would produce — repriced groups show
-    the corrected measures, and a group whose raw rows vanished between the
-    original fold and the repair is subtracted down to zero (the subtract-
-    only path a post-side-only delta silently kept stale)."""
+    """The repair's daily mirror reads each side through ONE streamed
+    execution of the grouped query, consumed in bounded batches (Kody rule:
+    Bound Database Backfills by Batch Size and Parameter Limits): with the
+    shared merge batch constant forced below the repair window's
+    dimension-group count, the whole-window hourly GROUP BY runs exactly
+    once per repair side (no OFFSET re-execution of the aggregation while
+    the fold lock is held), and the mirrored daily rollups are exactly what
+    a whole-window delta would produce — repriced groups show the corrected
+    measures, and a group whose raw rows vanished between the original fold
+    and the repair is subtracted down to zero (the subtract-only path a
+    post-side-only delta silently kept stale)."""
     del db_setup
     # Force batch boundaries mid-window: 10 dimension groups over batches
     # of 3 groups each.
     monkeypatch.setattr(time_rollup_module, "_UPSERT_CHUNK_ROWS", 3)
+    # One repair chunk: the 48h default slice would split the ~70h window
+    # (and the grouped-query execution count with it).
+    monkeypatch.setattr(time_rollup_module, "TS_FOLD_SLICE", timedelta(days=7))
+    # Count the mirror's whole-window aggregations: pure SELECTs over the
+    # hourly rollups carrying a GROUP BY (the fold's INSERT..SELECT folds
+    # read the same table but start with INSERT INTO, and every other
+    # statement in the pass is either DML or a different source table).
+    grouped_statements: list[str] = []
+
+    def _capture_grouped(_conn, _cursor, statement, *_rest):
+        normalized = " ".join(statement.split()).upper()
+        if (
+            normalized.startswith("SELECT")
+            and "FROM REQUEST_USAGE_HOURLY_ROLLUPS" in normalized
+            and "GROUP BY" in normalized
+        ):
+            grouped_statements.append(statement)
+
     now = utcnow().replace(hour=10, minute=0, second=0, microsecond=0)
     hour = floor_to_hour(now - timedelta(hours=70))
     day_epoch = epoch_seconds(floor_to_day(hour))
@@ -1971,26 +1993,36 @@ async def test_upgrade_repair_daily_mirror_streams_in_batches(db_setup, monkeypa
     assert await run_hourly_fold_pass(now=now) >= 1
     assert await run_daily_fold_pass() >= 1
 
-    # Reprice half the models; delete one group's raw rows entirely so its
-    # hourly rows vanish in the refold (subtract-only group); arm the marker.
-    async with SessionLocal() as session:
-        for index in range(5):
-            await session.execute(
-                update(RequestLog).where(RequestLog.request_id == f"r_bs_{index}").values(cost_usd=100.0 + index)
-            )
-        await session.execute(delete(RequestLog).where(RequestLog.request_id == "r_bs_9"))
-        await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=hour))
-        await session.commit()
+    # From here on, count the repair's whole-window aggregations: the
+    # listener is registered only now so the seeding passes above (the
+    # daily fold runs the same grouped statement) are not counted.
+    event.listen(fold_engine.sync_engine, "before_cursor_execute", _capture_grouped)
+    try:
+        # Reprice half the models; delete one group's raw rows entirely so its
+        # hourly rows vanish in the refold (subtract-only group); arm the marker.
+        async with SessionLocal() as session:
+            for index in range(5):
+                await session.execute(
+                    update(RequestLog).where(RequestLog.request_id == f"r_bs_{index}").values(cost_usd=100.0 + index)
+                )
+            await session.execute(delete(RequestLog).where(RequestLog.request_id == "r_bs_9"))
+            await session.execute(update(AccountUsageRollupState).values(upgrade_repair_from=hour))
+            await session.commit()
 
-    for _ in range(5):
-        _hourly_wm, _daily_wm, marker = await _fold_state_watermarks()
-        if marker is None:
-            break
-        await run_hourly_fold_pass(now=now)
+        for _ in range(5):
+            _hourly_wm, _daily_wm, marker = await _fold_state_watermarks()
+            if marker is None:
+                break
+            await run_hourly_fold_pass(now=now)
+    finally:
+        event.remove(fold_engine.sync_engine, "before_cursor_execute", _capture_grouped)
     hourly_wm_after, daily_wm_after, marker = await _fold_state_watermarks()
     assert marker is None
     assert hourly_wm_after is not None
     assert daily_wm_after == floor_to_day(hourly_wm_after)
+    # Exactly one streamed whole-window aggregation per repair side (two
+    # total, single chunk) — no OFFSET re-execution of the grouped query.
+    assert len(grouped_statements) == 2, len(grouped_statements)
 
     mirrored = await _daily_rows_for_day(day_epoch)
     assert set(mirrored) == set(models)
