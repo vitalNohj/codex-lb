@@ -1761,7 +1761,9 @@ class _HTTPBridgeMixin(
                     and preferred_account_is_continuity_owner
                     and selection.error_code == CONTINUITY_OWNER_UNAVAILABLE
                 ):
-                    raise _http_bridge_previous_response_owner_unavailable_error()
+                    raise _http_bridge_previous_response_owner_unavailable_error(
+                        hold_expired=bool(selection.owner_hold_expired)
+                    )
                 status_code, error_payload = selection_failure_response(selection)
                 raise ProxyResponseError(status_code, error_payload)
             if require_preferred_account and preferred_account_id is not None and account.id != preferred_account_id:
@@ -2181,7 +2183,9 @@ class _HTTPBridgeMixin(
                     raise
                 if account_neutral_recovery and selection.error_code == CONTINUITY_OWNER_UNAVAILABLE:
                     complete_failed_handoff()
-                    raise _http_bridge_previous_response_owner_unavailable_error()
+                    raise _http_bridge_previous_response_owner_unavailable_error(
+                        hold_expired=bool(selection.owner_hold_expired)
+                    )
                 if (
                     reuse_current_account_lease
                     and not hard_close_account_bound

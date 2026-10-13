@@ -198,6 +198,11 @@ class AccountSelection:
     resets_at: int | None = None
     lease: AccountLease | None = None
     catalog_omission_quota_admission: CatalogOmissionQuotaAdmission | None = None
+    # Set when the bounded transient owner-drain hold ran to expiry for this
+    # required-owner failure. Callers translate it into the 503 + Retry-After
+    # ``previous_response_owner_unavailable`` response instead of an instant
+    # 502; a plain failure (no hold warranted) keeps the existing behavior.
+    owner_hold_expired: bool = False
 
 
 @dataclass(frozen=True, slots=True)

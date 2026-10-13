@@ -192,7 +192,10 @@ from app.modules.proxy.ring_membership import (
     RING_STALE_THRESHOLD_SECONDS,
     RingMembershipService,
 )
-from app.modules.proxy.selection_errors import selection_failure_response
+from app.modules.proxy.selection_errors import (
+    previous_response_owner_unavailable_error,
+    selection_failure_response,
+)
 
 logger = logging.getLogger("app.modules.proxy.service")
 _TASK_CANCEL_TIMEOUT_SECONDS = 1.0
@@ -2732,7 +2735,14 @@ def _mark_http_bridge_reader_handoff_reconnect_failed(session: Any, old_reader: 
         session.closed = True
 
 
-def _http_bridge_previous_response_owner_unavailable_error() -> ProxyResponseError:
+def _http_bridge_previous_response_owner_unavailable_error(
+    *,
+    hold_expired: bool = False,
+) -> ProxyResponseError:
+    if hold_expired:
+        # The bounded transient-drain hold ran to expiry: same stable error
+        # body/code, delivered as a retryable 503 with Retry-After.
+        return previous_response_owner_unavailable_error(hold_expired=True)
     return ProxyResponseError(
         502,
         openai_error(
@@ -2748,7 +2758,9 @@ def _http_bridge_reconnect_selection_failure(
     required_preferred_account_id: str | None,
 ) -> ProxyResponseError:
     if required_preferred_account_id is not None:
-        return _http_bridge_previous_response_owner_unavailable_error()
+        return _http_bridge_previous_response_owner_unavailable_error(
+            hold_expired=bool(getattr(selection, "owner_hold_expired", False)),
+        )
     status_code, error_payload = selection_failure_response(selection)
     return ProxyResponseError(status_code, error_payload)
 
