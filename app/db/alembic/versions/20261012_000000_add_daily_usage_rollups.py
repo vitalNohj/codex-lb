@@ -78,11 +78,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-
-    if _WATERMARK_COLUMN in _columns(bind, _STATE_TABLE):
-        with op.batch_alter_table(_STATE_TABLE) as batch_op:
-            batch_op.drop_column(_WATERMARK_COLUMN)
-
-    if sa.inspect(bind).has_table(_TABLE):
-        op.drop_table(_TABLE)
+    # Non-destructive no-op (Kody rule: Do Not Destructively Downgrade Data
+    # Without Write Provenance). The daily table is the permanent lifetime
+    # usage store and the watermark drives the daily fold; this downgrade
+    # cannot distinguish migration-created objects from data the runtime
+    # fold has written since the upgrade, and dropping either would destroy
+    # operator history that has no other backing store. Both objects are
+    # inert at older revisions (the ORM there simply does not know them).
+    pass

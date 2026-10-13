@@ -37,10 +37,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    dashboard_columns = _columns(bind, "dashboard_settings")
-    if not dashboard_columns:
-        return
-    with op.batch_alter_table("dashboard_settings") as batch_op:
-        if _COLUMN_NAME in dashboard_columns:
-            batch_op.drop_column(_COLUMN_NAME)
+    # Preserve configured values; this downgrade cannot distinguish
+    # migration-owned data from legitimate application settings (Kody rule:
+    # Do Not Destructively Downgrade Data Without Write Provenance). The
+    # column is nullable and inert at older revisions, so leaving it in
+    # place keeps operator settings intact without schema drift for the
+    # current ORM.
+    pass

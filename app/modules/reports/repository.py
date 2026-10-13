@@ -743,11 +743,27 @@ class ReportsRepository:
         result = await self._session.execute(select(func.min(RequestLog.requested_at)).where(and_(*conditions)))
         value = result.scalar_one_or_none()
         earliest = value if isinstance(value, datetime) else None
-        if useragent_group or account_ids or model or api_key_ids:
-            # Filtered reads keep exact raw semantics (the rollup fallbacks
-            # cannot express the filters); the unfiltered earliest — the
-            # All-time range origin — may fall back to the permanent
-            # rollups at day/hour precision once raw is pruned.
+        if useragent_group:
+            # UA-filtered reads keep exact raw semantics — the rollups hold
+            # no user-agent dimension, so a rollup fallback would ignore the
+            # filter and report too-early activity.
+            return earliest
+        if account_ids or model or api_key_ids:
+            # Every other filter maps onto rollup dimensions (account,
+            # api-key, model — sentinel-encoded, see
+            # ``_rollup_bucket_filter_clauses``), so filtered reads fall
+            # back to the permanent rollups at day/hour precision once raw
+            # is pruned, exactly like the unfiltered All-time origin below.
+            for rollup_earliest in (
+                await earliest_daily_bucket_at(
+                    self._session, account_ids=account_ids, model=model, api_key_ids=api_key_ids
+                ),
+                await earliest_hourly_bucket_at(
+                    self._session, account_ids=account_ids, model=model, api_key_ids=api_key_ids
+                ),
+            ):
+                if rollup_earliest is not None and (earliest is None or rollup_earliest < earliest):
+                    earliest = rollup_earliest
             return earliest
         for rollup_earliest in (
             await earliest_daily_bucket_at(self._session),

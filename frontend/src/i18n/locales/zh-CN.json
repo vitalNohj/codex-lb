@@ -1529,6 +1529,7 @@
   "reports.filters.allTime": "全部时间",
   "reports.charts.monthlyUsage": "按月费用",
   "reports.notices.rawMetrics": "单请求指标（首 token 时间、每秒 token、队列等待）和 User Agent 分布仅覆盖 {{since}} 起记录的请求；更早的原始请求日志已被清理。总量、费用和 token 仍覆盖完整范围。",
+  "reports.notices.hourlyCoverage": "此时区的逐日历史仅覆盖 {{since}} 起保留的使用量；更早的小时粒度汇总已被清理。总量、费用和 token 仍覆盖完整范围。",
   "reports.monthly.requests": "请求",
   "reports.monthly.inputTokens": "输入 token",
   "reports.monthly.cachedTokens": "缓存输入 token",

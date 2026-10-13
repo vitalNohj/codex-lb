@@ -888,3 +888,41 @@ async def test_reports_history_reads_match_raw_within_retained_window(db_setup, 
     for actual_row in pruned["reports_daily_offset"]:
         assert actual_row.date in {row.date for row in reference["reports_daily_offset"]}
         assert actual_row.requests >= 0 and actual_row.cost_usd >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_filtered_earliest_activity_keeps_the_rollup_backed_origin(db_setup):
+    """Filtered earliest-activity reads must keep the lifetime origin once
+    raw is pruned: account/model/api-key filters map onto rollup dimensions
+    (a filtered All-time anchor must not shrink back to surviving raw
+    history), while the UA-filtered read stays raw-exact — the rollups hold
+    no user-agent dimension."""
+    await _seed_corpus()
+    await run_hourly_fold_pass(now=NOW)
+    assert await run_daily_fold_pass() == 1
+
+    async with SessionLocal() as session:
+        await session.execute(delete(RequestLog))
+        await session.commit()
+
+    async with SessionLocal() as session:
+        repo = ReportsRepository(session)
+        unfiltered = await repo.earliest_report_activity_at()
+        account_filtered = await repo.earliest_report_activity_at(account_ids=["acc_par_a"])
+        model_filtered = await repo.earliest_report_activity_at(model=_MODELS[0])
+        key_filtered = await repo.earliest_report_activity_at(api_key_ids=["key_1"])
+        mixed_filtered = await repo.earliest_report_activity_at(account_ids=["acc_par_a"], model=_MODELS[0])
+        ua_filtered = await repo.earliest_report_activity_at(useragent_group="no-such-group")
+
+    # The corpus' earliest row (the unaligned BASE-23min one) carries the
+    # first account/model/key, so every dimension-filtered minimum floors to
+    # that row's UTC day bucket — exactly like the unfiltered fallback
+    # (day precision, the documented rollup behaviour).
+    day_floor = BASE - timedelta(days=1)
+    assert unfiltered == day_floor
+    assert account_filtered == day_floor
+    assert model_filtered == day_floor
+    assert key_filtered == day_floor
+    assert mixed_filtered == day_floor
+    # UA filtering cannot ride the rollups: with raw gone it reports nothing.
+    assert ua_filtered is None

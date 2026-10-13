@@ -150,8 +150,21 @@ class ReportsService:
         # reasoning-usage-known count) cover exactly the request-log window;
         # disclose its inclusive start so the UI can say so instead of
         # silently showing less. None when retention is disabled.
-        retention_days = (await get_effective_retention()).request_log_days
+        effective_retention = await get_effective_retention()
+        retention_days = effective_retention.request_log_days
         raw_metrics_since = (utcnow() - timedelta(days=retention_days)).date().isoformat() if retention_days else None
+        # The per-day series is served at hour grain from the hourly rollups
+        # whenever the report timezone is not UTC (see history_series_union),
+        # so hourly-rollup retention trims it; disclose the inclusive UTC
+        # date of the guaranteed window. UTC-offset series keep the
+        # rollup-backed lifetime daily arm, so no disclosure is needed.
+        offset_seconds = int(
+            (timezone_info.utcoffset(datetime.combine(start_date, datetime.min.time())) or timedelta(0)).total_seconds()
+        )
+        hourly_days = effective_retention.hourly_rollup_days
+        hourly_coverage_since = (
+            (utcnow() - timedelta(days=hourly_days)).date().isoformat() if hourly_days and offset_seconds != 0 else None
+        )
         comparison = ReportComparison(
             can_compare=earliest_activity_at is not None and earliest_activity_at <= previous_start_at,
             previous=ReportComparisonPrevious(
@@ -208,6 +221,7 @@ class ReportsService:
             ],
             monthly=monthly,
             raw_metrics_since=raw_metrics_since,
+            hourly_coverage_since=hourly_coverage_since,
             earliest_activity_at=(
                 earliest_activity_at.date().isoformat() if earliest_activity_at is not None else None
             ),

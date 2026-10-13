@@ -84,6 +84,7 @@ from app.modules.accounts.usage_time_rollup import (
     conversation_id_expr,
     epoch_seconds,
     epoch_to_datetime,
+    to_dimension,
 )
 
 _EPOCH = datetime(1970, 1, 1)
@@ -528,24 +529,70 @@ def conversation_labeled_day_counts_stmt(
     return select(distinct_pairs.c.day_index, func.count()).group_by(distinct_pairs.c.day_index)
 
 
-async def earliest_hourly_bucket_at(session: AsyncSession) -> datetime | None:
+def _rollup_bucket_filter_clauses(
+    table,
+    *,
+    account_ids: list[str] | None,
+    model: str | None,
+    api_key_ids: list[str] | None,
+) -> list[ColumnElement[bool]]:
+    """Report filters mapped onto a rollup table's dimension columns
+    (sentinel-encoded at the fold boundary, mirror of the reports reads'
+    ``_rollup_dimension_filters``). User-agent filtering is absent on
+    purpose — the rollups hold no user-agent dimension."""
+    clauses: list[ColumnElement[bool]] = []
+    if account_ids:
+        clauses.append(table.account_id.in_([to_dimension(account_id) for account_id in account_ids]))
+    if model:
+        clauses.append(table.model == to_dimension(model))
+    if api_key_ids:
+        clauses.append(table.api_key_id.in_([to_dimension(api_key_id) for api_key_id in api_key_ids]))
+    return clauses
+
+
+async def earliest_hourly_bucket_at(
+    session: AsyncSession,
+    *,
+    account_ids: list[str] | None = None,
+    model: str | None = None,
+    api_key_ids: list[str] | None = None,
+) -> datetime | None:
     """Hour-precision earliest countable activity according to the rollups
-    (warmup kinds excluded, mirroring the raw earliest-activity filter).
-    Used as a fallback when retention has pruned raw below the watermark."""
+    (warmup kinds excluded, mirroring the raw earliest-activity filter),
+    optionally scoped to report dimension filters. Used as a fallback when
+    retention has pruned raw below the watermark."""
     stmt = select(func.min(RequestUsageHourlyRollup.bucket_epoch)).where(
-        RequestUsageHourlyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS)
+        RequestUsageHourlyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS),
+        *_rollup_bucket_filter_clauses(
+            RequestUsageHourlyRollup,
+            account_ids=account_ids,
+            model=model,
+            api_key_ids=api_key_ids,
+        ),
     )
     earliest = (await session.execute(stmt)).scalar_one_or_none()
     return None if earliest is None else epoch_to_datetime(int(earliest))
 
 
-async def earliest_daily_bucket_at(session: AsyncSession) -> datetime | None:
+async def earliest_daily_bucket_at(
+    session: AsyncSession,
+    *,
+    account_ids: list[str] | None = None,
+    model: str | None = None,
+    api_key_ids: list[str] | None = None,
+) -> datetime | None:
     """Day-precision earliest countable activity according to the daily
-    lifetime store (same warmup filter). Covers history older than any
-    hourly retention window; callers guard it against raw's own floor the
-    same way as :func:`earliest_hourly_bucket_at`."""
+    lifetime store (same warmup filter and optional dimension scoping).
+    Covers history older than any hourly retention window; callers guard it
+    against raw's own floor the same way as :func:`earliest_hourly_bucket_at`."""
     stmt = select(func.min(RequestUsageDailyRollup.day_epoch)).where(
-        RequestUsageDailyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS)
+        RequestUsageDailyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS),
+        *_rollup_bucket_filter_clauses(
+            RequestUsageDailyRollup,
+            account_ids=account_ids,
+            model=model,
+            api_key_ids=api_key_ids,
+        ),
     )
     earliest = (await session.execute(stmt)).scalar_one_or_none()
     return None if earliest is None else epoch_to_datetime(int(earliest))

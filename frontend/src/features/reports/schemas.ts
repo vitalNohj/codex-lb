@@ -95,6 +95,11 @@ export const ReportsResponseSchema = z.object({
   // Inclusive UTC date from which raw-only measures are guaranteed (null
   // when request-log retention is disabled).
   rawMetricsSince: z.string().nullable().optional(),
+  // Inclusive UTC date from which the hourly-rollup window is guaranteed
+  // (null when hourly retention is disabled or the per-day series is
+  // served at UTC-day grain) — a non-UTC timezone's per-day series is
+  // served at hour grain, so hourly-rollup pruning shrinks it.
+  hourlyCoverageSince: z.string().nullable().optional(),
   // Inclusive UTC date of the earliest countable activity (rollup-backed
   // once raw is pruned); the All-time range origin.
   earliestActivityAt: z.string().nullable().optional(),

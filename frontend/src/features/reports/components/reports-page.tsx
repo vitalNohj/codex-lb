@@ -192,15 +192,26 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
   const accountOptionsError = getErrorMessageOrNull(accountsError);
   const apiKeyOptionsError = getErrorMessageOrNull(apiKeysError);
 
+  // The All-time origin comes from the unfiltered (model/useragent-blanked)
+  // catalog query first: its earliestActivityAt is rollup-backed lifetime
+  // history, while a filtered reports response can carry only surviving
+  // raw history for its filters. The filtered response is only a fallback.
   const earliestActivityAt =
-    reportsQuery.data?.earliestActivityAt ??
     filterCatalogQuery.data?.earliestActivityAt ??
+    reportsQuery.data?.earliestActivityAt ??
     null;
   const rawMetricsSince = reportsQuery.data?.rawMetricsSince ?? null;
+  const hourlyCoverageSince = reportsQuery.data?.hourlyCoverageSince ?? null;
   // Raw-only measures (per-request speed medians, the user-agent
   // distribution) cover exactly the request-log window; disclose its start
   // instead of silently showing less whenever the range reaches past it.
   const showRawMetricsNotice = Boolean(rawMetricsSince && filters.startDate < rawMetricsSince);
+  // In a non-UTC timezone the per-day series is served at hour grain from
+  // the hourly rollups, so hourly-rollup retention trims it; disclose the
+  // guaranteed window whenever the range reaches past it.
+  const showHourlyCoverageNotice = Boolean(
+    hourlyCoverageSince && filters.startDate < hourlyCoverageSince,
+  );
   const hasAnyError = Boolean(
     mainReportsError || sharedOptionsError || accountOptionsError || apiKeyOptionsError,
   );
@@ -343,6 +354,11 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
           {showRawMetricsNotice ? (
             <AlertMessage variant="warning">
               {t("reports.notices.rawMetrics", { since: rawMetricsSince })}
+            </AlertMessage>
+          ) : null}
+          {showHourlyCoverageNotice ? (
+            <AlertMessage variant="warning">
+              {t("reports.notices.hourlyCoverage", { since: hourlyCoverageSince })}
             </AlertMessage>
           ) : null}
           <ReportsSummaryCards

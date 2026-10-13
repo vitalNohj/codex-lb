@@ -1529,6 +1529,7 @@
   "reports.filters.allTime": "전체 기간",
   "reports.charts.monthlyUsage": "월별 비용",
   "reports.notices.rawMetrics": "요청별 지표(Time to First Token, Tokens per Second, Queue Wait)와 User Agent 분포는 {{since}} 이후 기록된 요청만 다룹니다. 더 오래된 원본 요청 로그는 정리되었습니다. 총계, 비용, token은 전체 범위를 다룹니다.",
+  "reports.notices.hourlyCoverage": "이 시간대의 일별 기록은 {{since}} 이후 유지된 사용량만 다룹니다. 더 오래된 시간 단위 롤업은 정리되었습니다. 총계, 비용, token은 전체 범위를 다룹니다.",
   "reports.monthly.requests": "요청",
   "reports.monthly.inputTokens": "Input token",
   "reports.monthly.cachedTokens": "캐시 Input token",

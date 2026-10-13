@@ -575,6 +575,44 @@ describe("ReportsPage", () => {
     expect(screen.queryByText(/only cover requests logged since/)).not.toBeInTheDocument();
   });
 
+  it("discloses the hourly-rollup window when the range reaches past it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-15T12:00:00Z"));
+
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: { ...EMPTY_REPORT, hourlyCoverageSince: "2030-01-12" },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(
+      screen.getByText(/only covers usage retained since 2030-01-12/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the hourly-coverage notice hidden while the range stays inside the hourly window", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-15T12:00:00Z"));
+
+    useReportsMock.mockReturnValue(
+      asUseReportsResult({
+        data: { ...EMPTY_REPORT, hourlyCoverageSince: "2030-01-05" },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    );
+
+    renderWithProviders(<ReportsPage />);
+
+    expect(screen.queryByText(/only covers usage retained since/)).not.toBeInTheDocument();
+  });
+
   it("shows an error when report loading fails", async () => {
     useReportsMock.mockImplementation((filters) =>
       filters.model

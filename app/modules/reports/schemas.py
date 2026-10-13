@@ -106,6 +106,14 @@ class ReportsResponse(DashboardModel):
     # speed medians, the user-agent distribution, the reasoning-usage-known
     # request count — cover this window and are disclosed as such.
     raw_metrics_since: str | None = None
+    # Inclusive UTC date from which the hourly-rollup window is guaranteed
+    # (None when hourly retention is disabled or the per-day series is
+    # served at UTC-day grain): a non-UTC report timezone serves the
+    # per-day series at hour grain (a UTC-day rollup row cannot be split
+    # across local midnights — see history_series_union), so hourly-rollup
+    # pruning shrinks that series and is disclosed as such. Totals and
+    # monthly views stay lifetime for every timezone.
+    hourly_coverage_since: str | None = None
     # Inclusive UTC date of the earliest countable activity (rollup-backed
     # once raw is pruned); the All-time range origin.
     earliest_activity_at: str | None = None
