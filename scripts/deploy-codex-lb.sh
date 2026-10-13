@@ -36,7 +36,9 @@
 # being reset (a detached pre-checkout HEAD gets a
 # backup/deploy-preserved-<UTC stamp>-pre branch before the checkout) and a
 # dirty tree is stashed with message deploy-preserved-<UTC stamp>
-# (--include-untracked) — and everything preserved is logged. Then the branch
+# (--include-untracked) — and everything preserved is logged. Ignored files
+# that the incoming tree would silently overwrite are moved aside to
+# ignored-preserved-<UTC stamp>/ under the log dir. Then the branch
 # is reset to REMOTE/BRANCH and the deploy continues, so every merge deploys
 # and no local work is lost. With CODEX_LB_DEPLOY_ALLOW_DIRTY=1 the script
 # keeps uncommitted changes in place instead and still refuses (loudly) to
@@ -273,6 +275,31 @@ preserve_local_commits() {
   git log --oneline --no-decorate "$old_sha" --not "$REMOTE/$BRANCH" | sed 's/^/  preserved: /'
 }
 
+# Ignored files are expendable to git: a checkout/merge/reset that brings in
+# a tracked file at the same path silently overwrites them (an ignored file
+# never shows up in `git status --porcelain`, so the stash above never sees
+# it). Move any that collide with REMOTE/BRANCH's tree aside — never discard.
+protect_ignored_files() {
+  local target_tree="$1"
+  local ignored_dir="$LOG_DIR/ignored-preserved-$TS"
+  local ignored target_files collisions path dest
+  ignored="$(git -c core.quotePath=false ls-files --others -i --exclude-standard | sort)" ||
+    die "cannot list ignored files — refusing to update the tree (reset/merge could overwrite them)"
+  target_files="$(git -c core.quotePath=false ls-tree -r --name-only "$target_tree" | sort)" ||
+    die "cannot list $target_tree — refusing to update the tree (reset/merge could overwrite ignored files)"
+  [[ -z "$ignored" || -z "$target_files" ]] && return 0
+  collisions="$(comm -12 <(printf '%s\n' "$ignored") <(printf '%s\n' "$target_files") || true)"
+  [[ -z "$collisions" ]] && return 0
+  mkdir -p "$ignored_dir"
+  while IFS= read -r path; do
+    [[ -n "$path" && (-e "$path" || -L "$path") ]] || continue
+    dest="$ignored_dir/$path"
+    mkdir -p -- "$(dirname -- "$dest")"
+    mv -- "$path" "$dest"
+    log "PRESERVED ignored file in the way of the target tree: $path -> $dest"
+  done <<<"$collisions"
+}
+
 sync_git() {
   local current remote_sha ahead behind branch_tip dirty=0 preserved=0
   log "pre-deploy git state:"
@@ -296,6 +323,8 @@ sync_git() {
   git fetch --prune "$REMOTE" "$BRANCH"
   remote_sha="$(git rev-parse "$REMOTE/$BRANCH")"
   log "REMOTE_SHA=$remote_sha"
+
+  protect_ignored_files "$REMOTE/$BRANCH"
 
   current="$(git rev-parse --abbrev-ref HEAD)"
   if [[ "$current" != "$BRANCH" ]]; then

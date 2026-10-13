@@ -253,6 +253,40 @@ def test_switch_branch_from_detached_head_preserves_pre_checkout_commits(tmp_pat
     assert "PRESERVED detached HEAD" in _read_latest_log(tmp_path)
 
 
+def test_ignored_file_colliding_with_target_tree_is_preserved(tmp_path: Path) -> None:
+    origin, seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    # A local ignored file that the remote starts tracking at the same path.
+    (deploy / ".git" / "info" / "exclude").write_text("secrets.yaml\n", encoding="utf-8")
+    (deploy / "secrets.yaml").write_text("LOCAL SECRET", encoding="utf-8")
+    pusher = tmp_path / "pusher"
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(pusher)],
+        check=True,
+        capture_output=True,
+    )
+    _git(pusher, "config", "user.email", "deploy-test@example.com")
+    _git(pusher, "config", "user.name", "deploy-test")
+    (pusher / "secrets.yaml").write_text("REMOTE TRACKED", encoding="utf-8")
+    _git(pusher, "add", "-f", "secrets.yaml")
+    _git(pusher, *_GIT_IDENTITY, "commit", "-m", "track secrets.yaml")
+    _push_seed_to_origin(pusher)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_deployed_to_origin_main(deploy)
+    # The tracked content is checked out, but the local ignored file's
+    # contents were moved aside first, not silently overwritten.
+    assert (deploy / "secrets.yaml").read_text(encoding="utf-8") == "REMOTE TRACKED"
+    preserved = list((tmp_path / "deploy-logs" / "ignored-preserved-").parent.glob("ignored-preserved-*/secrets.yaml"))
+    assert len(preserved) == 1
+    assert preserved[0].read_text(encoding="utf-8") == "LOCAL SECRET"
+    log = _read_latest_log(tmp_path)
+    assert "PRESERVED ignored file" in log
+    assert "secrets.yaml" in log
+
+
 def test_dirty_and_diverged_state_is_fully_preserved(tmp_path: Path) -> None:
     origin, seed, deploy = _make_deploy_fixture(tmp_path)
     bin_dir = _stub_bin(tmp_path)
