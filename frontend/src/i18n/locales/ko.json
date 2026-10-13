@@ -1533,5 +1533,8 @@
   "reports.monthly.requests": "요청",
   "reports.monthly.inputTokens": "Input token",
   "reports.monthly.cachedTokens": "캐시 Input token",
-  "reports.monthly.outputTokens": "Output token"
+  "reports.monthly.outputTokens": "Output token",
+  "reports.charts.rawWindowBadge": "{{since}} 이후",
+  "reports.charts.rawWindowHint": "요청별 데이터는 {{since}}부터만 보관됩니다. 더 오래된 원본 요청 로그는 정리되었습니다.",
+  "reports.charts.rawWindowTooltip": "요청별 데이터 없음: 이 날의 원본 요청 로그가 정리되었습니다."
 }

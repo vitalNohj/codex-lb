@@ -4,9 +4,12 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Sector, type PieSectorShapePr
 import type { UseragentCostEntry } from "../schemas";
 import { DistributionMetricToggle, type DistributionMetric } from "./distribution-metric-toggle";
 import { formatDistributionMetricValue } from "./distribution-metric-format";
+import { RawWindowBadge } from "./raw-window-indicators";
 
 export type UseragentDistributionDonutProps = {
   data: UseragentCostEntry[];
+  /** Set when the range reaches before the raw request-log window. */
+  rawMetricsSince?: string | null;
 };
 
 const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6", "#06b6d4"];
@@ -29,7 +32,7 @@ function getUseragentColor(useragent: string, index: number) {
   return useragent === MISSING_USERAGENT_LABEL ? UNKNOWN_COLOR : COLORS[index % COLORS.length];
 }
 
-export function UseragentDistributionDonut({ data }: UseragentDistributionDonutProps) {
+export function UseragentDistributionDonut({ data, rawMetricsSince }: UseragentDistributionDonutProps) {
   const { t } = useTranslation();
   const [metric, setMetric] = useState<DistributionMetric>("cost");
   const [activeLegendId, setActiveLegendId] = useState<string | null>(null);
@@ -84,7 +87,7 @@ export function UseragentDistributionDonut({ data }: UseragentDistributionDonutP
             ? props.outerRadius + (isHighlighted ? ACTIVE_RADIUS_OFFSET : 0)
             : 65 + (isHighlighted ? ACTIVE_RADIUS_OFFSET : 0)
         }
-        stroke={isHighlighted ? "hsl(var(--background))" : "none"}
+        stroke={isHighlighted ? "var(--background)" : "none"}
         strokeWidth={isHighlighted ? 2 : 0}
       />
     );
@@ -93,7 +96,10 @@ export function UseragentDistributionDonut({ data }: UseragentDistributionDonutP
   return (
     <div className="rounded-xl border bg-card p-5">
       <div className="flex items-start justify-between gap-3">
-        <div className="text-sm font-semibold text-foreground">{t("reports.distribution.byUserAgent")}</div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <div className="text-sm font-semibold text-foreground">{t("reports.distribution.byUserAgent")}</div>
+          {rawMetricsSince ? <RawWindowBadge since={rawMetricsSince} /> : null}
+        </div>
         <DistributionMetricToggle metric={metric} onChange={setMetric} />
       </div>
       <div className="mt-4 flex items-center gap-4">

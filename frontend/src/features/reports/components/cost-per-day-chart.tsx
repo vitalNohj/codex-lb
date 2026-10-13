@@ -38,7 +38,7 @@ export function CostPerDayChart({ startDate, endDate, data }: CostPerDayChartPro
                 <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
             <XAxis
               dataKey="date"
               tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
@@ -61,7 +61,7 @@ export function CostPerDayChart({ startDate, endDate, data }: CostPerDayChartPro
               strokeWidth={2}
               fill="url(#costGrad)"
               dot={false}
-              activeDot={{ r: 4, strokeWidth: 1.5, fill: "hsl(var(--popover))" }}
+              activeDot={{ r: 4, strokeWidth: 1.5, fill: "var(--popover)" }}
             />
           </AreaChart>
         </ResponsiveContainer>

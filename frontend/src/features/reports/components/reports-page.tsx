@@ -20,6 +20,7 @@ import type { QueueWaitChartProps } from "./queue-wait-chart";
 import type { ModelDistributionDonutProps } from "./model-distribution-donut";
 import type { UseragentDistributionDonutProps } from "./useragent-distribution-donut";
 import { DailyDetailTable } from "./daily-detail-table";
+import { ReportsSkeleton } from "./reports-skeleton";
 import {
   daysAgoLocalISO,
   getBrowserReportsTimeZone,
@@ -346,9 +347,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
       ) : null}
 
       {reportsQuery.isLoading ? (
-        <div className="flex items-center justify-center py-20 text-sm text-muted-foreground">
-          {t("common.loading")}
-        </div>
+        <ReportsSkeleton chartCount={visibleChartIds.length} />
       ) : reportsQuery.data ? (
         <>
           {showRawMetricsNotice ? (
@@ -396,6 +395,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                     startDate={filters.startDate}
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
+                    rawMetricsSince={rawMetricsSince}
                   />
                 </Suspense>
               ) : null}
@@ -405,6 +405,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                     startDate={filters.startDate}
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
+                    rawMetricsSince={rawMetricsSince}
                   />
                 </Suspense>
               ) : null}
@@ -414,6 +415,7 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                     startDate={filters.startDate}
                     endDate={filters.endDate}
                     data={reportsQuery.data.daily}
+                    rawMetricsSince={rawMetricsSince}
                   />
                 </Suspense>
               ) : null}
@@ -425,7 +427,10 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                 <ModelDistributionDonut data={reportsQuery.data.byModel} />
               </Suspense>
               <Suspense fallback={<div className="h-[220px] rounded-xl border bg-card" />}>
-                <UseragentDistributionDonut data={reportsQuery.data.byUseragent} />
+                <UseragentDistributionDonut
+                  data={reportsQuery.data.byUseragent}
+                  rawMetricsSince={showRawMetricsNotice ? rawMetricsSince : null}
+                />
               </Suspense>
             </div>
             <div className="lg:col-span-2">

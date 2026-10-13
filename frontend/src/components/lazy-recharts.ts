@@ -31,6 +31,7 @@ export const Cell = lazyRechartsComponent("Cell");
 export const Line = lazyRechartsComponent("Line");
 export const Pie = lazyRechartsComponent("Pie");
 export const PieChart = lazyRechartsComponent("PieChart");
+export const ReferenceArea = lazyRechartsComponent("ReferenceArea");
 export const ResponsiveContainer = lazyRechartsComponent("ResponsiveContainer");
 export const Sector = lazyRechartsComponent("Sector");
 export const Tooltip = lazyRechartsComponent("Tooltip");

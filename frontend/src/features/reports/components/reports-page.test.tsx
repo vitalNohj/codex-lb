@@ -167,6 +167,7 @@ describe("ReportsPage", () => {
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
     expect(screen.queryByText("Loading......")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true");
   });
 
   it("uses the live valid timezone for reports queries even when a cached value exists", async () => {

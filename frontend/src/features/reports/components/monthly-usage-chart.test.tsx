@@ -1,5 +1,5 @@
 import { cloneElement, type ReactElement, type ReactNode } from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MonthlyUsageChart } from "./monthly-usage-chart";
@@ -8,7 +8,7 @@ import type { MonthlyUsageEntry } from "../schemas";
 type ChartProps = { children: ReactNode; margin?: unknown; data?: unknown };
 
 let capturedProps: ChartProps | null = null;
-let capturedBars: Array<{ dataKey?: string; fill?: string }> = [];
+let capturedBars: Array<{ dataKey?: string; fill?: string; radius?: unknown }> = [];
 
 function findTooltipContent(node: ReactNode): ReactElement | null {
   if (!node || typeof node !== "object") return null;
@@ -35,7 +35,7 @@ vi.mock("@/components/lazy-recharts", async (importOriginal) => {
       capturedProps = props;
       return <div data-testid="monthly-bar-chart">{props.children}</div>;
     },
-    Bar: (props: { dataKey?: string; fill?: string }) => {
+    Bar: (props: { dataKey?: string; fill?: string; radius?: unknown }) => {
       capturedBars.push(props);
       return null;
     },
@@ -98,7 +98,7 @@ describe("MonthlyUsageChart", () => {
 
     const tooltip = findTooltipContent(capturedProps?.children);
     expect(tooltip).not.toBeNull();
-    render(
+    const { container: tooltipContainer } = render(
       cloneElement(tooltip!, {
         active: true,
         label: "2026-06",
@@ -109,7 +109,7 @@ describe("MonthlyUsageChart", () => {
       }),
     );
 
-    expect(screen.getByText("2026-06")).toBeInTheDocument();
+    expect(screen.getByText("June 2026")).toBeInTheDocument();
     expect(screen.getByText("Requests")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText("Input tokens")).toBeInTheDocument();
@@ -120,9 +120,9 @@ describe("MonthlyUsageChart", () => {
     expect(screen.getByText("40")).toBeInTheDocument();
     expect(screen.getAllByText("Cost").length).toBeGreaterThan(0);
     expect(screen.getByText("$1.50")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.1")).toBeInTheDocument();
+    expect(within(tooltipContainer).getByText("gpt-5.1")).toBeInTheDocument();
     expect(screen.getByText("$1.00")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.2")).toBeInTheDocument();
+    expect(within(tooltipContainer).getByText("gpt-5.2")).toBeInTheDocument();
     expect(screen.getByText("$0.50")).toBeInTheDocument();
   });
 
@@ -133,5 +133,45 @@ describe("MonthlyUsageChart", () => {
     expect(screen.getByText("No usage recorded for the selected range.")).toBeInTheDocument();
     expect(capturedProps).toBeNull();
     expect(screen.queryByTestId("monthly-bar-chart")).not.toBeInTheDocument();
+  });
+
+  it("lists every model in a legend, in lifetime-cost order", () => {
+    render(<MonthlyUsageChart data={DATA} />);
+
+    const legend = screen.getByRole("list");
+    expect(legend.textContent).toBe("gpt-5.1gpt-5.2");
+  });
+
+  it("rounds only the top segment of each stacked bar", () => {
+    render(<MonthlyUsageChart data={DATA} />);
+
+    expect(capturedBars.map((bar) => bar.radius)).toEqual([undefined, [4, 4, 0, 0]]);
+  });
+
+  it("orders tooltip models by that month's cost and hides models with no cost", () => {
+    render(<MonthlyUsageChart data={DATA} />);
+
+    const tooltip = findTooltipContent(capturedProps?.children);
+    const { container } = render(
+      cloneElement(tooltip!, {
+        active: true,
+        label: "2026-07",
+        payload: [
+          { dataKey: "gpt-5.2", value: 0, color: "#10b981" },
+          { dataKey: "gpt-5.1", value: 0.9, color: "#3b82f6" },
+        ],
+      }),
+    );
+
+    expect(screen.getByText("July 2026")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("gpt-5.2");
+    expect(container.textContent).toContain("gpt-5.1");
+  });
+
+  it("renders a single month as one stacked bar", () => {
+    render(<MonthlyUsageChart data={[DATA[0]]} />);
+
+    expect((capturedProps?.data as unknown[]).length).toBe(1);
+    expect(capturedBars).toHaveLength(2);
   });
 });
