@@ -204,6 +204,55 @@ def test_dirty_tree_is_stashed_and_never_discarded(tmp_path: Path) -> None:
     assert "deploy-preserved-" in log
 
 
+def test_switch_branch_preserves_local_main_tip_not_the_pre_checkout_tip(tmp_path: Path) -> None:
+    origin, seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    # Local main gets a commit that origin/main does not have.
+    local_main_tip = _commit_all(deploy, "local commit on deploy main", "main-local.txt", "main-local")
+    # Then the clone switches to a local feature branch with its own commit,
+    # so the deploy must switch back to main (CODEX_LB_DEPLOY_SWITCH_BRANCH=1).
+    _git(deploy, "checkout", "-b", "feature")
+    feature_tip = _commit_all(deploy, "local commit on feature", "feature.txt", "feature")
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env={"CODEX_LB_DEPLOY_SWITCH_BRANCH": "1"})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_deployed_to_origin_main(deploy)
+    backups = _backup_branches(deploy)
+    assert len(backups) == 1
+    [(branch_name, branch_sha)] = backups.items()
+    assert branch_name.startswith("backup/deploy-preserved-")
+    # The backup must point at the deployment branch tip (local main), not the
+    # pre-checkout feature tip — otherwise the reset orphans main's commits.
+    assert branch_sha == local_main_tip
+    assert branch_sha != feature_tip
+    # The feature branch and its commit stay reachable through the checkout.
+    assert _git(deploy, "rev-parse", "--verify", "refs/heads/feature") == feature_tip
+    log = _read_latest_log(tmp_path)
+    assert "PRESERVED local commits" in log
+    assert local_main_tip in log
+
+
+def test_switch_branch_from_detached_head_preserves_pre_checkout_commits(tmp_path: Path) -> None:
+    origin, seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    # Detach first so the commit is on no branch at all, then commit.
+    _git(deploy, "checkout", "--quiet", "--detach", "origin/main")
+    detached_tip = _commit_all(deploy, "local commit while detached", "detached.txt", "detached")
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env={"CODEX_LB_DEPLOY_SWITCH_BRANCH": "1"})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_deployed_to_origin_main(deploy)
+    backups = _backup_branches(deploy)
+    assert len(backups) == 1
+    [(branch_name, branch_sha)] = backups.items()
+    assert branch_name.startswith("backup/deploy-preserved-")
+    assert branch_name.endswith("-pre")
+    assert branch_sha == detached_tip
+    assert "PRESERVED detached HEAD" in _read_latest_log(tmp_path)
+
+
 def test_dirty_and_diverged_state_is_fully_preserved(tmp_path: Path) -> None:
     origin, seed, deploy = _make_deploy_fixture(tmp_path)
     bin_dir = _stub_bin(tmp_path)

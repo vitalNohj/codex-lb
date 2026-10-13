@@ -32,8 +32,10 @@
 # Local-state safety (never discards work): if the deploy clone is dirty, or
 # its BRANCH has commits not on REMOTE/BRANCH (ahead or diverged), the script
 # preserves that state BEFORE touching anything — a branch
-# backup/deploy-preserved-<UTC stamp> is created at the old HEAD and a dirty
-# tree is stashed with message deploy-preserved-<UTC stamp>
+# backup/deploy-preserved-<UTC stamp> is created at the tip of the branch
+# being reset (a detached pre-checkout HEAD gets a
+# backup/deploy-preserved-<UTC stamp>-pre branch before the checkout) and a
+# dirty tree is stashed with message deploy-preserved-<UTC stamp>
 # (--include-untracked) — and everything preserved is logged. Then the branch
 # is reset to REMOTE/BRANCH and the deploy continues, so every merge deploys
 # and no local work is lost. With CODEX_LB_DEPLOY_ALLOW_DIRTY=1 the script
@@ -272,7 +274,7 @@ preserve_local_commits() {
 }
 
 sync_git() {
-  local current remote_sha ahead behind dirty=0 preserved=0
+  local current remote_sha ahead behind branch_tip dirty=0 preserved=0
   log "pre-deploy git state:"
   git status --short --branch
   BEFORE_SHA="$(git rev-parse HEAD)"
@@ -300,6 +302,12 @@ sync_git() {
     if [[ "$SWITCH_BRANCH" != "1" ]]; then
       die "deploy dir is on '$current', not '$BRANCH'. Use a dedicated clone, or set CODEX_LB_DEPLOY_SWITCH_BRANCH=1"
     fi
+    # A named branch keeps its commits reachable through the checkout, but a
+    # detached HEAD does not — back it up before leaving it.
+    if [[ "$current" == "HEAD" ]]; then
+      git branch "backup/deploy-preserved-$TS-pre" "$BEFORE_SHA"
+      log "PRESERVED detached HEAD: branch backup/deploy-preserved-$TS-pre at $BEFORE_SHA (before switching to $BRANCH)"
+    fi
     log "switching $current -> $BRANCH (CODEX_LB_DEPLOY_SWITCH_BRANCH=1)"
     if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
       git checkout "$BRANCH"
@@ -308,6 +316,12 @@ sync_git() {
     fi
   fi
 
+  # The reset below moves $BRANCH, so back up ITS tip — not BEFORE_SHA: with
+  # CODEX_LB_DEPLOY_SWITCH_BRANCH=1, BEFORE_SHA is the pre-checkout ref's tip
+  # (kept reachable by its own branch), and backing that up instead would let
+  # the reset drop local $BRANCH commits.
+  branch_tip="$(git rev-parse HEAD)"
+
   local counts
   if ! counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"; then
     die "cannot compare $BRANCH with $REMOTE/$BRANCH — is the branch deleted on $REMOTE? refusing to guess the deploy state"
@@ -315,7 +329,7 @@ sync_git() {
   read -r ahead behind <<<"$counts"
   if ((ahead > 0)) && [[ "$ALLOW_DIRTY" != "1" ]]; then
     log "local $BRANCH has $ahead commit(s) not on $REMOTE/$BRANCH (ahead=$ahead behind=$behind) — preserving before reset"
-    preserve_local_commits "$BEFORE_SHA"
+    preserve_local_commits "$branch_tip"
     preserved=1
   fi
 
