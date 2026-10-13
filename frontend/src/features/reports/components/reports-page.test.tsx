@@ -517,6 +517,10 @@ describe("ReportsPage", () => {
     await user.click(
       await screen.findByRole("menuitemcheckbox", { name: /^gpt-5\.1$/i }),
     );
+    // The multi-select menu stays open after a selection, and radix marks
+    // the page aria-hidden while a menu is open, so close it before
+    // querying the filter buttons again.
+    await user.keyboard("{Escape}");
 
     // The All-time origin precedes any filtered earliest, so the anchored
     // range keeps covering everything; only the filter itself changes.
@@ -524,12 +528,13 @@ describe("ReportsPage", () => {
       "aria-pressed",
       "true",
     );
-    await waitFor(() => {
-      expect(useReportsMock).toHaveBeenLastCalledWith(
-        expect.objectContaining({ startDate: "2026-05-27", model: "gpt-5.1" }),
-        "America/Los_Angeles",
-      );
-    });
+    // The page drives two useReports calls per render (main query, then the
+    // filter catalog with model/useragent blanked), so assert that the main
+    // query call happened rather than that it was the last one.
+    expect(useReportsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ startDate: "2026-05-27", model: "gpt-5.1" }),
+      "America/Los_Angeles",
+    );
   });
 
   it("discloses the raw-metrics window when the range reaches past it", () => {
