@@ -759,3 +759,106 @@ def test_reauthed_claude_auth_does_not_leave_a_stale_duplicate_row() -> None:
 
     assert summary is not None
     assert [row.auth_index for row in summary.sidecar_auths] == ["new"]
+
+
+def test_healthy_poll_hides_retired_estimate_but_keeps_hold_and_reauth_badges() -> None:
+    """The healthy-poll shortcut must not wash out the newer row statuses.
+
+    A live auth on a rate-limited hold still badges `rate_limited`, a live
+    auth with a dead refresh still badges `reauth_required`, and only the
+    retired index's usage-estimate row is dropped.
+    """
+    held = _claude_auth(name="claude-held.json", auth_index="held", email="held@example.com", disabled=True)
+    dead = _claude_auth(
+        name="claude-dead.json",
+        auth_index="dead",
+        email="dead@example.com",
+        status="error",
+        status_message="unauthorized",
+        unavailable=True,
+    )
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 10, 8, 19, 0, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(held, dead),
+        rate_limit_holds=(
+            SidecarRateLimitHold(
+                name=held.name,
+                until=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                released=False,
+            ),
+        ),
+    )
+    estimates = ClaudeUsageEstimates(
+        accounts=[
+            _estimate(auth_index="held", email="held@example.com", source="held@example.com"),
+            _estimate(auth_index="dead", email="dead@example.com", source="dead@example.com"),
+            _estimate(auth_index="old", email=None, source="held@example.com"),
+        ],
+        aggregate=ClaudeAggregateUsageEstimate(
+            primary_remaining_percent=75.0,
+            secondary_remaining_percent=96.0,
+            primary_used_tokens=0,
+            secondary_used_tokens=0,
+            primary_token_budget=None,
+            secondary_token_budget=None,
+            reset_at_primary=None,
+            reset_at_secondary=None,
+            confidence="oauth",
+        ),
+    )
+
+    summary = build_claude_sidecar_summary(
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)),
+        request_usage=None,
+        usage_estimates=estimates,
+    )
+
+    assert summary is not None
+    assert [row.auth_index for row in summary.sidecar_auths] == ["held", "dead"]
+    by_index = {row.auth_index: row for row in summary.sidecar_auths}
+    assert by_index["held"].status == "rate_limited"
+    assert by_index["dead"].status == "reauth_required"
+
+
+def test_unhealthy_poll_still_surfaces_retired_index_estimate() -> None:
+    """The healthy-poll shortcut must not eat the fallback for a dead poll.
+
+    When CLIProxyAPI is unreachable its account list is not trustworthy, so a
+    usage-estimate row for a retired index still resurfaces until the poll
+    recovers.
+    """
+    live = _claude_auth(name="claude-c4342a99-jvwarrior@gmail.com.json", auth_index="new")
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 10, 8, 19, 0, tzinfo=timezone.utc),
+        status="unreachable",
+        message="connection refused",
+        accounts=(live,),
+    )
+    estimates = ClaudeUsageEstimates(
+        accounts=[
+            _estimate(auth_index="new", email="jvwarrior@gmail.com", source="jvwarrior@gmail.com"),
+            _estimate(auth_index="old", email=None, source="jvwarrior@gmail.com"),
+        ],
+        aggregate=ClaudeAggregateUsageEstimate(
+            primary_remaining_percent=75.0,
+            secondary_remaining_percent=96.0,
+            primary_used_tokens=0,
+            secondary_used_tokens=0,
+            primary_token_budget=None,
+            secondary_token_budget=None,
+            reset_at_primary=None,
+            reset_at_secondary=None,
+            confidence="oauth",
+        ),
+    )
+
+    summary = build_claude_sidecar_summary(
+        _claude_settings(claude_sidecar_quota_state_json=snapshot_to_json(snapshot)),
+        request_usage=None,
+        usage_estimates=estimates,
+    )
+
+    assert summary is not None
+    assert [row.auth_index for row in summary.sidecar_auths] == ["new", "old"]
