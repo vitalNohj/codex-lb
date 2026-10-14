@@ -208,6 +208,10 @@ _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 # the configured stuck-gate threshold when it is shorter.
 _HTTP_BRIDGE_EVENTLESS_RESPONSE_CREATED_MAX_SECONDS = 60.0
 _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL = "missing_response_created_timeout"
+# Detail tag for anchor invalidation triggered by a definitive upstream
+# `previous_response_not_found` verdict (as opposed to the eventless
+# response-create timeout that invalidates the same durable anchor).
+_HTTP_BRIDGE_UPSTREAM_ANCHOR_NOT_FOUND_DETAIL = "upstream_previous_response_not_found"
 T = TypeVar("T")
 
 _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR = "_codex_lb_started_at"
@@ -2812,6 +2816,29 @@ def _http_bridge_should_attempt_local_previous_response_recovery(exc: ProxyRespo
     message_value = error.get("message")
     message = message_value.strip() if isinstance(message_value, str) and message_value.strip() else None
     return _is_previous_response_not_found_error(code=code, param=param, message=message)
+
+
+def _http_bridge_error_is_previous_response_not_found(exc: ProxyResponseError) -> bool:
+    """Classify a failure as a definitive upstream ``previous_response_not_found``.
+
+    Only the normalized codes that upstream emits when the stored response is
+    gone count here. Codes such as ``bridge_owner_unreachable`` or
+    ``bridge_instance_mismatch`` describe a transport/ownership problem where
+    the stored response may still exist and a local rebind can legitimately
+    succeed, so they deliberately stay ``False``.
+    """
+    payload = exc.payload
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    code_value = error.get("code")
+    raw_code = code_value.strip() if isinstance(code_value, str) and code_value.strip() else None
+    type_value = error.get("type")
+    error_type = type_value.strip() if isinstance(type_value, str) and type_value.strip() else None
+    code = _normalize_error_code(raw_code, error_type)
+    return code in {"bridge_previous_response_not_found", "previous_response_not_found"}
 
 
 def _http_bridge_is_previous_response_owner_unavailable(exc: ProxyResponseError) -> bool:

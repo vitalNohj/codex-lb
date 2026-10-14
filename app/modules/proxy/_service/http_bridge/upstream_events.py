@@ -60,6 +60,7 @@ from app.modules.proxy._service.compact import (
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+    _HTTP_BRIDGE_UPSTREAM_ANCHOR_NOT_FOUND_DETAIL,
     _await_task_deferring_cancellation,
     _http_bridge_durable_lease_ttl_seconds,
     _http_bridge_eventless_precreated_deadline,
@@ -1041,8 +1042,10 @@ async def _cancel_http_bridge_reader_child(
 async def _clear_durable_http_bridge_response_anchor(
     service: Any,
     session: "_HTTPBridgeSession",
+    *,
+    detail: str = _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
 ) -> None:
-    """Invalidate a durable proxy-injected anchor that proved eventless.
+    """Invalidate a durable proxy-injected anchor that proved dead.
 
     Runs while ``session`` still owns the durable row (before retirement
     releases the lease), so the fenced write lands under the session's own
@@ -1071,7 +1074,61 @@ async def _clear_durable_http_bridge_response_anchor(
         session.key,
         account_id=session.account.id,
         model=session.request_model,
-        detail=_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+        detail=detail,
+        cache_key_family=session.key.affinity_kind,
+        model_class=_extract_model_class(session.request_model) if session.request_model else None,
+    )
+
+
+async def _invalidate_http_bridge_anchor_after_not_found(
+    service: Any,
+    session: "_HTTPBridgeSession",
+    request_state: "_WebSocketRequestState",
+) -> None:
+    """Drop a proxy-injected anchor that upstream proved dead.
+
+    When upstream rejects the anchored ``previous_response_id`` with a
+    definitive ``previous_response_not_found`` verdict, keeping the anchor
+    (durable row and in-memory completion state) makes every following turn
+    re-inject the same dead id: the session loops on
+    ``bridge_previous_response_not_found`` forever. This is only safe when the
+    proxy itself injected the anchor on top of a preserved full resend payload
+    — the client's own full history is still on the wire, so dropping the
+    anchor leaves the next turn an unanchored request upstream accepts.
+    Client-supplied anchors and delta-only injections are left untouched
+    (documented invariant: a delta-only client has no other way to convey
+    context, so clearing its anchor would silently lose history).
+    """
+    if not (
+        request_state.previous_response_not_found_rewritten
+        and request_state.proxy_injected_previous_response_id
+        and request_state.proxy_injected_anchor_had_full_resend_payload
+    ):
+        return
+    response_id = request_state.previous_response_id
+    if session.durable_session_id and session.durable_owner_epoch:
+        try:
+            await _clear_durable_http_bridge_response_anchor(
+                service,
+                session,
+                detail=_HTTP_BRIDGE_UPSTREAM_ANCHOR_NOT_FOUND_DETAIL,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to clear durable HTTP bridge response anchor after upstream previous_response_not_found",
+                exc_info=True,
+            )
+    session.last_completed_response_id = None
+    session.last_completed_response_account_id = None
+    session.last_completed_input_count = 0
+    session.last_completed_input_prefix_fingerprint = None
+    session.last_pending_tool_calls.clear()
+    _log_http_bridge_event(
+        "session_anchor_invalidated",
+        session.key,
+        account_id=session.account.id,
+        model=session.request_model,
+        detail=f"reason=previous_response_not_found response_id={response_id}",
         cache_key_family=session.key.affinity_kind,
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
     )
@@ -2409,6 +2466,13 @@ class _HTTPBridgeUpstreamEventsMixin:
                 original_text=text,
             )
             event_block = f"data: {rewritten_text}\n\n"
+            # Upstream definitively told us the anchored previous response no
+            # longer exists. When the anchor was injected by the proxy on top
+            # of a preserved full resend, the durable + in-memory anchors
+            # would otherwise re-inject the same dead id on every following
+            # turn (bridge_previous_response_not_found loop). Clear them once,
+            # here, so the next turn dispatches the unanchored full resend.
+            await _invalidate_http_bridge_anchor_after_not_found(self, session, status_request_state)
 
         retry_error_code = _websocket_precreated_retry_error_code(
             status_request_state,
