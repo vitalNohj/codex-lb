@@ -9383,7 +9383,17 @@ async def test_select_account_with_budget_classifies_continuity_owner_outside_as
             error_code="continuity_owner_policy_conflict",
         )
     )
-    service._load_balancer = cast(Any, SimpleNamespace(select_account=select_account))
+    service._load_balancer = cast(
+        Any,
+        SimpleNamespace(
+            select_account=select_account,
+            # Hold classification reads selection inputs; a non-None error
+            # code classifies the failure as permanent (no transient hold).
+            _load_selection_inputs=AsyncMock(
+                return_value=SimpleNamespace(error_code="continuity_owner_policy_conflict", accounts=[])
+            ),
+        ),
+    )
     monkeypatch.setattr(
         proxy_service,
         "get_settings_cache",
@@ -11115,7 +11125,17 @@ async def test_select_account_with_budget_required_file_pin_does_not_fallback_on
             ),
         ]
     )
-    service._load_balancer = cast(Any, SimpleNamespace(select_account=select_account))
+    service._load_balancer = cast(
+        Any,
+        SimpleNamespace(
+            select_account=select_account,
+            # Hold classification reads selection inputs; a non-None error
+            # code classifies the failure as permanent (no transient hold).
+            _load_selection_inputs=AsyncMock(
+                return_value=SimpleNamespace(error_code="account_stream_cap", accounts=[])
+            ),
+        ),
+    )
     monkeypatch.setattr(
         proxy_service,
         "get_settings_cache",
@@ -11204,7 +11224,17 @@ async def test_select_account_with_budget_rejects_continuity_owner_outside_singl
             error_code="continuity_owner_policy_conflict",
         )
     )
-    service._load_balancer = cast(Any, SimpleNamespace(select_account=select_account))
+    service._load_balancer = cast(
+        Any,
+        SimpleNamespace(
+            select_account=select_account,
+            # Hold classification reads selection inputs; a non-None error
+            # code classifies the failure as permanent (no transient hold).
+            _load_selection_inputs=AsyncMock(
+                return_value=SimpleNamespace(error_code="continuity_owner_policy_conflict", accounts=[])
+            ),
+        ),
+    )
     monkeypatch.setattr(
         proxy_service,
         "get_settings_cache",
