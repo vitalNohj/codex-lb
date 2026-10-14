@@ -3316,8 +3316,9 @@ class _HTTPBridgeStreamingMixin:
             # injected by the proxy on top of a preserved full resend. Retrying
             # the same trimmed payload against the same dead anchor can only
             # fail identically (previous_response_recover_local re-arms it);
-            # the reader already invalidated the anchor, so let the original
-            # error surface once and let the next turn dispatch unanchored.
+            # the reader already invalidated the anchor, so the anchored local
+            # rebind is skipped and the unanchored fresh resend below replays
+            # the client's own full payload once instead of surfacing a 502.
             dead_upstream_anchor_not_found = (
                 request_state.proxy_injected_previous_response_id
                 and request_state.proxy_injected_anchor_had_full_resend_payload
@@ -3348,6 +3349,7 @@ class _HTTPBridgeStreamingMixin:
                 and not should_rollover_after_context_overflow
                 and not should_attempt_context_overflow_fresh_turn_recovery
                 and not durable_recovery_fresh_replay
+                and not dead_upstream_anchor_not_found
             ):
                 if is_context_overflow:
                     _log_http_bridge_event(
@@ -3364,6 +3366,33 @@ class _HTTPBridgeStreamingMixin:
 
             if durable_recovery_fresh_replay:
                 pass
+            elif dead_upstream_anchor_not_found:
+                # Nothing reached the client yet and the reader already
+                # invalidated the dead proxy-injected anchor. Re-send the
+                # client's own full, untrimmed payload without the anchor once
+                # on the same bridge session - the same turn the client's next
+                # manual retry would have produced, minus the visible 502.
+                # The guard above already bounds this to proxy-injected
+                # anchors whose payload was full-resend shaped; a second
+                # not-found on this retry propagates (no loop).
+                if PROMETHEUS_AVAILABLE and bridge_durable_recover_total is not None:
+                    bridge_durable_recover_total.labels(path="previous_response_fresh_resend").inc()
+                _log_http_bridge_event(
+                    "previous_response_recover_fresh_resend",
+                    bridge_session_key,
+                    account_id=None,
+                    model=effective_payload.model,
+                    detail="reason=previous_response_not_found outcome=retry_unanchored_full_resend",
+                    cache_key_family=bridge_session_key.affinity_kind,
+                    model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                    owner_check_applied=True,
+                )
+                recovery_path = "previous_response_fresh_resend"
+                retry_payload = _http_bridge_payload_without_previous_response_id(untrimmed_effective_payload)
+                retry_previous_response_id = None
+                retry_request_stage = "previous_response_fresh_resend"
+                retry_preferred_account_id = request_state.preferred_account_id
+                allow_previous_response_recovery_rebind = False
             elif should_attempt_context_overflow_fresh_turn_recovery:
                 if PROMETHEUS_AVAILABLE and bridge_durable_recover_total is not None:
                     bridge_durable_recover_total.labels(path="context_overflow_fresh_turn").inc()
@@ -3547,7 +3576,7 @@ class _HTTPBridgeStreamingMixin:
                     reservation=retry_api_key_reservation,
                 )
                 if (
-                    recovery_path == "local_previous_response_error"
+                    recovery_path in {"local_previous_response_error", "previous_response_fresh_resend"}
                     and request_state.operation_registered
                     and request_state.operation_id is not None
                     and session.durable_session_id is not None
@@ -3585,10 +3614,16 @@ class _HTTPBridgeStreamingMixin:
                 retry_request_state.operation_attempt_generation = request_state.operation_attempt_generation
                 retry_request_state.operation_persisted_response_id = request_state.operation_persisted_response_id
                 retry_request_state.operation_rebind_required = request_state.operation_rebind_required
-                if recovery_path == "local_previous_response_error":
+                if recovery_path in {"local_previous_response_error", "previous_response_fresh_resend"}:
                     # The prior response.failed/error made the operation
-                    # terminal. Re-enter record_operation so its owner fence
-                    # atomically moves it back to submitted before send.
+                    # terminal - a local continuity error for the local rebind
+                    # and the rewritten definitive not-found for the unanchored
+                    # fresh resend. Re-enter record_operation so its owner
+                    # fence atomically moves the row back to submitted and
+                    # clears the failed attempt's stale spool before send;
+                    # without it a successful retry would append its transcript
+                    # after the persisted failure and a later durable replay
+                    # would return the failure first.
                     retry_request_state.operation_rebind_required = True
                 retry_request_state.enforce_openai_sdk_contract = enforce_openai_sdk_contract
                 if durable_recovery_fresh_replay and durable_recovery_attempt_fingerprint is not None:
