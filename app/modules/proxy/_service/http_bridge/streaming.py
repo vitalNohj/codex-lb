@@ -3576,7 +3576,7 @@ class _HTTPBridgeStreamingMixin:
                     reservation=retry_api_key_reservation,
                 )
                 if (
-                    recovery_path == "local_previous_response_error"
+                    recovery_path in {"local_previous_response_error", "previous_response_fresh_resend"}
                     and request_state.operation_registered
                     and request_state.operation_id is not None
                     and session.durable_session_id is not None
@@ -3614,10 +3614,16 @@ class _HTTPBridgeStreamingMixin:
                 retry_request_state.operation_attempt_generation = request_state.operation_attempt_generation
                 retry_request_state.operation_persisted_response_id = request_state.operation_persisted_response_id
                 retry_request_state.operation_rebind_required = request_state.operation_rebind_required
-                if recovery_path == "local_previous_response_error":
+                if recovery_path in {"local_previous_response_error", "previous_response_fresh_resend"}:
                     # The prior response.failed/error made the operation
-                    # terminal. Re-enter record_operation so its owner fence
-                    # atomically moves it back to submitted before send.
+                    # terminal - a local continuity error for the local rebind
+                    # and the rewritten definitive not-found for the unanchored
+                    # fresh resend. Re-enter record_operation so its owner
+                    # fence atomically moves the row back to submitted and
+                    # clears the failed attempt's stale spool before send;
+                    # without it a successful retry would append its transcript
+                    # after the persisted failure and a later durable replay
+                    # would return the failure first.
                     retry_request_state.operation_rebind_required = True
                 retry_request_state.enforce_openai_sdk_contract = enforce_openai_sdk_contract
                 if durable_recovery_fresh_replay and durable_recovery_attempt_fingerprint is not None:
