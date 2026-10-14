@@ -20977,6 +20977,257 @@ async def test_process_http_bridge_upstream_text_masks_single_previous_response_
 
 
 @pytest.mark.asyncio
+async def test_process_http_bridge_upstream_text_invalidates_proxy_injected_anchor_after_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A dead proxy-injected anchor is cleared, so the next turn recovers.
+
+    Regression: upstream rejects the anchored previous_response_id with a
+    definitive not-found verdict, but the proxy kept re-injecting the same
+    dead id (durable anchor + in-memory completion state) on every following
+    turn while trimming the client's full history, so the session looped on
+    bridge_previous_response_not_found forever.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-dead-anchor",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        previous_response_id="resp_dead_anchor",
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+        proxy_injected_previous_response_id=True,
+        proxy_injected_anchor_had_full_resend_payload=True,
+    )
+    session = proxy_service._HTTPBridgeSession(
+        key=proxy_service._HTTPBridgeSessionKey("session_header", "sid-dead-anchor", None),
+        headers={"x-codex-session-id": "sid-dead-anchor"},
+        affinity=proxy_service._AffinityPolicy(
+            key="sid-dead-anchor",
+            kind=proxy_service.StickySessionKind.CODEX_SESSION,
+        ),
+        request_model="gpt-5.4",
+        account=cast(Any, SimpleNamespace(id="acc-1", status=AccountStatus.ACTIVE)),
+        upstream=cast(UpstreamWebSocket, SimpleNamespace(close=AsyncMock())),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque([request_state]),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=1,
+        last_used_at=1.0,
+        idle_ttl_seconds=120.0,
+    )
+    session.durable_session_id = "durable-session-1"
+    session.durable_owner_epoch = 3
+    session.last_completed_response_id = "resp_dead_anchor"
+    session.last_completed_response_account_id = "acc-1"
+    session.last_completed_input_count = 190
+    session.last_completed_input_prefix_fingerprint = "fp-dead"
+    session.last_pending_tool_calls["fc_1"] = "call_1"
+
+    settings = _make_app_settings()
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    cleared_lookup = DurableBridgeLookup(
+        session_id="durable-session-1",
+        canonical_kind="session_header",
+        canonical_key="sid-dead-anchor",
+        api_key_scope="__anonymous__",
+        account_id="acc-1",
+        owner_instance_id=settings.http_responses_session_bridge_instance_id,
+        owner_epoch=3,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        state=HttpBridgeSessionState.ACTIVE,
+        latest_turn_state=None,
+        latest_response_id=None,
+    )
+    clear_anchor = AsyncMock(return_value=cleared_lookup)
+    monkeypatch.setattr(service._durable_bridge, "clear_live_session_response_anchor", clear_anchor)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "previous_response_not_found",
+                    "message": "Previous response with id 'resp_dead_anchor' not found.",
+                    "param": "previous_response_id",
+                },
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    event_block = await event_queue.get()
+    assert await event_queue.get() is None
+    assert event_block is not None
+    payload = proxy_service.parse_sse_data_json(event_block)
+    assert isinstance(payload, dict)
+    response = payload.get("response")
+    assert isinstance(response, dict)
+    error = response.get("error")
+    assert isinstance(error, dict)
+
+    assert payload["type"] == "response.failed"
+    assert error["code"] == "stream_incomplete"
+    assert error["message"] == "Upstream websocket closed before response.completed"
+    assert request_state.previous_response_not_found_rewritten is True
+
+    clear_anchor.assert_awaited_once()
+    assert clear_anchor.await_args is not None
+    assert clear_anchor.await_args.kwargs["session_id"] == "durable-session-1"
+    assert clear_anchor.await_args.kwargs["owner_epoch"] == 3
+    assert "event=durable_anchor_invalidated" in caplog.text
+    assert "detail=upstream_previous_response_not_found" in caplog.text
+    assert "event=session_anchor_invalidated" in caplog.text
+    assert "response_id=resp_dead_anchor" in caplog.text
+
+    assert session.last_completed_response_id is None
+    assert session.last_completed_response_account_id is None
+    assert session.last_completed_input_count == 0
+    assert session.last_completed_input_prefix_fingerprint is None
+    assert session.last_pending_tool_calls == {}
+    assert session.pending_requests == deque()
+    assert session.queued_request_count == 0
+
+
+@pytest.mark.asyncio
+async def test_process_http_bridge_upstream_text_keeps_client_supplied_anchor_after_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client-supplied anchor is never cleared on upstream not-found."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-client-anchor",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        previous_response_id="resp_client_anchor",
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+        proxy_injected_previous_response_id=False,
+        proxy_injected_anchor_had_full_resend_payload=True,
+    )
+    session = _make_bridge_session(
+        key_value="client-anchor-kept",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    session.last_completed_response_id = "resp_client_anchor"
+    session.last_completed_input_count = 42
+    clear_anchor = AsyncMock()
+    monkeypatch.setattr(service._durable_bridge, "clear_live_session_response_anchor", clear_anchor)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "previous_response_not_found",
+                    "message": "Previous response with id 'resp_client_anchor' not found.",
+                    "param": "previous_response_id",
+                },
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    clear_anchor.assert_not_awaited()
+    assert session.last_completed_response_id == "resp_client_anchor"
+    assert session.last_completed_input_count == 42
+    assert request_state.previous_response_not_found_rewritten is True
+
+
+@pytest.mark.asyncio
+async def test_process_http_bridge_upstream_text_keeps_delta_only_injected_anchor_after_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delta-only injected anchor is kept (documented fail-closed invariant)."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-delta-anchor",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        previous_response_id="resp_delta_anchor",
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+        proxy_injected_previous_response_id=True,
+        proxy_injected_anchor_had_full_resend_payload=False,
+    )
+    session = _make_bridge_session(
+        key_value="delta-anchor-kept",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    session.last_completed_response_id = "resp_delta_anchor"
+    session.last_completed_input_count = 42
+    clear_anchor = AsyncMock()
+    monkeypatch.setattr(service._durable_bridge, "clear_live_session_response_anchor", clear_anchor)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "previous_response_not_found",
+                    "message": "Previous response with id 'resp_delta_anchor' not found.",
+                    "param": "previous_response_id",
+                },
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    clear_anchor.assert_not_awaited()
+    assert session.last_completed_response_id == "resp_delta_anchor"
+    assert session.last_completed_input_count == 42
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("bridge_previous_response_not_found", True),
+        ("previous_response_not_found", True),
+        ("bridge_owner_unreachable", False),
+        ("bridge_instance_mismatch", False),
+        ("stream_incomplete", False),
+    ],
+)
+def test_http_bridge_error_is_previous_response_not_found(code: str, expected: bool) -> None:
+    exc = ProxyResponseError(
+        502,
+        openai_error(code, "Upstream websocket closed before response.completed"),
+    )
+    assert http_bridge_helpers_module._http_bridge_error_is_previous_response_not_found(exc) is expected
+
+
+@pytest.mark.asyncio
 async def test_process_http_bridge_upstream_text_masks_previous_response_not_found_when_anchor_was_lost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -75,6 +75,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _effective_http_bridge_idle_ttl_seconds,
     _http_bridge_durable_lease_ttl_seconds,
     _http_bridge_durable_lookup_allows_turn_state_takeover,
+    _http_bridge_error_is_previous_response_not_found,
     _http_bridge_is_context_overflow_error,
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_models_compatible,
@@ -3306,9 +3307,36 @@ class _HTTPBridgeStreamingMixin:
                 exc,
                 key=bridge_session_key,
             )
-            should_attempt_previous_response_recovery = (
+            local_previous_response_recovery_applicable = (
                 effective_payload.previous_response_id is not None
                 and _http_bridge_should_attempt_local_previous_response_recovery(exc)
+            )
+            # Upstream definitively rejected this turn's anchored previous
+            # response with previous_response_not_found, and that anchor was
+            # injected by the proxy on top of a preserved full resend. Retrying
+            # the same trimmed payload against the same dead anchor can only
+            # fail identically (previous_response_recover_local re-arms it);
+            # the reader already invalidated the anchor, so let the original
+            # error surface once and let the next turn dispatch unanchored.
+            dead_upstream_anchor_not_found = (
+                request_state.proxy_injected_previous_response_id
+                and request_state.proxy_injected_anchor_had_full_resend_payload
+                and request_state.previous_response_not_found_rewritten
+                and _http_bridge_error_is_previous_response_not_found(exc)
+            )
+            if local_previous_response_recovery_applicable and dead_upstream_anchor_not_found:
+                _log_http_bridge_event(
+                    "previous_response_recover_skipped",
+                    bridge_session_key,
+                    account_id=session.account.id,
+                    model=effective_payload.model,
+                    detail="reason=previous_response_not_found outcome=dead_upstream_anchor",
+                    cache_key_family=bridge_session_key.affinity_kind,
+                    model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                    owner_check_applied=True,
+                )
+            should_attempt_previous_response_recovery = (
+                local_previous_response_recovery_applicable and not dead_upstream_anchor_not_found
             )
             should_attempt_context_overflow_fresh_turn_recovery = (
                 is_context_overflow
