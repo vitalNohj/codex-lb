@@ -17,6 +17,7 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { listAccounts } from "@/features/accounts/api";
 import { getSettings } from "@/features/settings/api";
+import { PAGE_MAX_WIDTH_CLASS } from "@/hooks/use-page-width";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 import { cn } from "@/lib/utils";
@@ -42,6 +43,8 @@ export type AppHeaderProps = {
   showAdminLogin?: boolean;
   showLogout?: boolean;
   className?: string;
+  /** Max-width class for the inner row; matches the page body width. */
+  contentMaxWidthClass?: string;
 };
 
 export function AppHeader({
@@ -50,6 +53,7 @@ export function AppHeader({
   showAdminLogin = false,
   showLogout = true,
   className,
+  contentMaxWidthClass = PAGE_MAX_WIDTH_CLASS,
 }: AppHeaderProps) {
   const { t } = useTranslation();
   const { pathname } = useLocation();
@@ -93,7 +97,7 @@ export function AppHeader({
         className,
       )}
     >
-      <div className="mx-auto flex w-full max-w-[1500px] items-center justify-between gap-4">
+      <div className={cn("mx-auto flex w-full items-center justify-between gap-4", contentMaxWidthClass)}>
         {/* Brand */}
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <Link

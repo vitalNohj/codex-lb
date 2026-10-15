@@ -26,13 +26,20 @@ const COMPARISON_STYLES = {
 
 export type StatsGridProps = {
   stats: DashboardStat[];
+  /**
+   * Size columns from the grid's own width so every tile fits on as few rows
+   * as the space allows. Used by the dashboard split view on wide screens.
+   */
+  fluidColumns?: boolean;
 };
 
-export function StatsGrid({ stats }: StatsGridProps) {
-  const columnsClass = stats.length >= 5 ? "xl:grid-cols-5" : "xl:grid-cols-4";
+export function StatsGrid({ stats, fluidColumns = false }: StatsGridProps) {
+  const columnsClass = fluidColumns
+    ? "grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))]"
+    : cn("sm:grid-cols-2", stats.length >= 5 ? "xl:grid-cols-5" : "xl:grid-cols-4");
 
   return (
-    <div className={cn("grid gap-3 sm:grid-cols-2", columnsClass)}>
+    <div className={cn("grid gap-3", columnsClass)}>
       {stats.map((stat, index) => {
         const Icon = stat.icon;
         const accent = ACCENT_STYLES[index % ACCENT_STYLES.length];

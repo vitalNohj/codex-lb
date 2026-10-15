@@ -302,4 +302,27 @@ describe("useDashboardPreferencesStore", () => {
     useDashboardPreferencesStore.getState().initializePreferences();
     expect(useDashboardPreferencesStore.getState().accountPanelHeight).toBeNull();
   });
+
+  it("defaults split view off and persists toggles", async () => {
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+    expect(useDashboardPreferencesStore.getState().splitViewEnabled).toBe(false);
+
+    useDashboardPreferencesStore.getState().setSplitViewEnabled(true);
+    expect(useDashboardPreferencesStore.getState().splitViewEnabled).toBe(true);
+    expect(window.localStorage.getItem("codex-lb-dashboard-split-view")).toBe("true");
+  });
+
+  it("restores a stored split view and ignores garbage", async () => {
+    window.localStorage.setItem("codex-lb-dashboard-split-view", "true");
+    const { useDashboardPreferencesStore } = await import("@/hooks/use-dashboard-preferences");
+
+    useDashboardPreferencesStore.getState().initializePreferences();
+    expect(useDashboardPreferencesStore.getState().splitViewEnabled).toBe(true);
+
+    window.localStorage.setItem("codex-lb-dashboard-split-view", "yes");
+    useDashboardPreferencesStore.getState().initializePreferences();
+    expect(useDashboardPreferencesStore.getState().splitViewEnabled).toBe(false);
+  });
 });

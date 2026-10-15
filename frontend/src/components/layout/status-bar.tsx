@@ -9,6 +9,8 @@ import { getServiceReadiness } from "@/features/health/api";
 import { getRuntimeVersion } from "@/features/runtime/api";
 import { getSettings } from "@/features/settings/api";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
+import { PAGE_MAX_WIDTH_CLASS } from "@/hooks/use-page-width";
+import { cn } from "@/lib/utils";
 import { formatTimeLong } from "@/utils/formatters";
 
 const GITHUB_REPOSITORY_URL = "https://github.com/soju06/codex-lb";
@@ -18,6 +20,8 @@ export const STATUS_BAR_DEFAULT_HEIGHT_PX = 40;
 
 export interface StatusBarProps {
   onHeightChange?: (height: number) => void;
+  /** Max-width class for the inner row; matches the page body width. */
+  contentMaxWidthClass?: string;
 }
 
 type RoutingStrategy =
@@ -88,7 +92,7 @@ function getRoutingLabel(
   return strategyLabel;
 }
 
-export function StatusBar({ onHeightChange }: StatusBarProps = {}) {
+export function StatusBar({ onHeightChange, contentMaxWidthClass = PAGE_MAX_WIDTH_CLASS }: StatusBarProps = {}) {
   const { t } = useTranslation();
   const footerRef = useRef<HTMLElement>(null);
   const readinessQuery = useQuery({
@@ -177,7 +181,7 @@ export function StatusBar({ onHeightChange }: StatusBarProps = {}) {
       ref={footerRef}
       className="fixed bottom-0 left-0 right-0 z-50 border-t border-white/[0.08] bg-background/50 px-4 py-2 shadow-[0_-1px_12px_rgba(0,0,0,0.06)] backdrop-blur-xl backdrop-saturate-[1.8] supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_-1px_12px_rgba(0,0,0,0.25)]"
     >
-      <div className="mx-auto flex w-full max-w-[1500px] items-center gap-4 text-xs text-muted-foreground">
+      <div className={cn("mx-auto flex w-full items-center gap-4 text-xs text-muted-foreground", contentMaxWidthClass)}>
         <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1">
           <span className="inline-flex items-center gap-1.5">
             <span

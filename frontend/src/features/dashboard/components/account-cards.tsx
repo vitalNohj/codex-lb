@@ -8,6 +8,7 @@ import { AccountCard, ClaudeAuthCard, type AccountCardProps } from "@/features/d
 import type { AccountSummary } from "@/features/dashboard/schemas";
 import { isClaudeSidecar } from "@/features/dashboard/utils";
 import { RESIZABLE_PANEL_TARGET_ATTR } from "@/components/resizable-panel";
+import { cn } from "@/lib/utils";
 
 const ACCOUNT_CARD_VISIBLE_ROWS = 2;
 // Account cards can grow when the optional email row is rendered.
@@ -18,9 +19,14 @@ export type AccountCardsProps = {
   accounts: AccountSummary[];
   readOnly?: boolean;
   onAction?: AccountCardProps["onAction"];
+  /**
+   * Size columns from the panel's own width instead of the viewport. Used by
+   * the dashboard split view, where the panel is a fraction of a wide screen.
+   */
+  fluidColumns?: boolean;
 };
 
-export function AccountCards({ accounts, readOnly = false, onAction }: AccountCardsProps) {
+export function AccountCards({ accounts, readOnly = false, onAction, fluidColumns = false }: AccountCardsProps) {
   const { t } = useTranslation();
 
   if (accounts.length === 0) {
@@ -42,7 +48,10 @@ export function AccountCards({ accounts, readOnly = false, onAction }: AccountCa
     <div
       data-testid="dashboard-account-cards"
       {...{ [RESIZABLE_PANEL_TARGET_ATTR]: "" }}
-      className="grid gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:grid-cols-2 lg:grid-cols-3"
+      className={cn(
+        "grid gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        fluidColumns ? "grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))]" : "sm:grid-cols-2 lg:grid-cols-3",
+      )}
       // `--panel-height` is set by the surrounding ResizablePanel once the
       // operator has dragged the grip; until then the two-row default applies.
       style={{
