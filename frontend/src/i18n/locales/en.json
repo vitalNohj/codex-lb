@@ -715,6 +715,7 @@
   "dashboard.filters.statuses": "Statuses",
   "dashboard.filters.timeframe": "Timeframe",
   "dashboard.page.refresh": "Refresh dashboard",
+  "dashboard.page.splitView": "Split view",
   "dashboard.page.subtitle": "Overview, account health, and recent request logs.",
   "dashboard.page.title": "Dashboard",
   "dashboard.pagination.firstPage": "First page",

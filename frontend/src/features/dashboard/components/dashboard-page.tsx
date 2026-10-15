@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, type CSSProperties } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -23,6 +23,7 @@ import { DashboardViewSelector } from "@/features/dashboard/components/filters/d
 import { OverviewTimeframeSelect } from "@/features/dashboard/components/filters/overview-timeframe-select";
 import { RequestFilters } from "@/features/dashboard/components/filters/request-filters";
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
+import { SplitViewToggle } from "@/features/dashboard/components/split-view-toggle";
 import { StatsGrid } from "@/features/dashboard/components/stats-grid";
 import { UsageDonuts } from "@/features/dashboard/components/usage-donuts";
 import { WeeklyCreditsPaceCard } from "@/features/dashboard/components/weekly-credits-pace-card";
@@ -52,6 +53,8 @@ import { formatModelLabel, formatCurrency, formatSlug } from "@/utils/formatters
 import { usePrivacyStore } from "@/hooks/use-privacy";
 
 const MODEL_OPTION_DELIMITER = ":::";
+/** Split-view accounts panel default: the viewport minus header, overview band, and status bar. */
+const SPLIT_VIEW_ACCOUNT_PANEL_HEIGHT = "max(24rem, calc(100vh - 16rem))";
 
 export function DashboardPage() {
   const { t, i18n } = useTranslation();
@@ -71,6 +74,8 @@ export function DashboardPage() {
   const setAccountListSort = useDashboardPreferencesStore((s) => s.setAccountListSort);
   const accountPanelHeight = useDashboardPreferencesStore((s) => s.accountPanelHeight);
   const setAccountPanelHeight = useDashboardPreferencesStore((s) => s.setAccountPanelHeight);
+  const splitViewEnabled = useDashboardPreferencesStore((s) => s.splitViewEnabled);
+  const setSplitViewEnabled = useDashboardPreferencesStore((s) => s.setSplitViewEnabled);
   const canWrite = useAuthStore((state) => state.canWrite);
   const initialized = useAuthStore((state) => state.initialized);
   const role = useAuthStore((state) => state.role);
@@ -369,6 +374,165 @@ export function DashboardPage() {
     (dashboardView === "request-logs" && optionsQuery.error instanceof Error && optionsQuery.error.message) ||
     null;
 
+  const usageDonuts = view ? (
+    <UsageDonuts
+      primaryItems={view.primaryUsageItems}
+      secondaryItems={view.secondaryUsageItems}
+      primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
+      secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
+      primaryCenterValue={view.primaryTotal}
+      secondaryCenterValue={view.secondaryTotal}
+      safeLinePrimary={view.safeLinePrimary}
+      safeLineSecondary={view.safeLineSecondary}
+    />
+  ) : null;
+
+  const usageBlock = view?.weeklyCreditPace ? (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
+      {usageDonuts}
+      <WeeklyCreditsPaceCard pace={view.weeklyCreditPace} />
+    </div>
+  ) : (
+    usageDonuts
+  );
+
+  const accountsSection = view ? (
+    <section
+      className="space-y-4"
+      // Beside the request log there is room for far more than the default two
+      // rows, so split view seeds the panel height from the viewport. A height
+      // the operator dragged to still wins: ResizablePanel sets the same
+      // variable on a nearer element.
+      style={splitViewEnabled ? ({ "--panel-height": SPLIT_VIEW_ACCOUNT_PANEL_HEIGHT } as CSSProperties) : undefined}
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <h2 className="text-[13px] font-medium uppercase tracking-wider text-muted-foreground">{t("accounts.page.title")}</h2>
+          <AccountSummaryLine accounts={overview?.accounts ?? []} />
+        </div>
+        <div className="h-px min-w-8 flex-1 bg-border" />
+        <AccountTypeFilterToggle
+          value={accountTypeVisibility}
+          onToggle={(key) => setAccountTypeVisibility(key, !accountTypeVisibility[key])}
+        />
+        <AccountViewModeToggle value={accountViewMode} onChange={setAccountViewMode} />
+      </div>
+      <ResizablePanel
+        height={accountPanelHeight}
+        onHeightChange={setAccountPanelHeight}
+        minHeight={ACCOUNT_PANEL_MIN_HEIGHT_PX}
+        maxHeight={ACCOUNT_PANEL_MAX_HEIGHT_PX}
+        label={t("dashboard.accounts.resizeLabel")}
+      >
+        {accountViewMode === "list" ? (
+          <AccountList
+            accounts={visibleAccounts}
+            readOnly={!canWrite}
+            sort={accountListSort}
+            onSortChange={setAccountListSort}
+            onAction={handleAccountAction}
+          />
+        ) : (
+          <AccountCards
+            accounts={visibleAccounts}
+            readOnly={!canWrite}
+            fluidColumns={splitViewEnabled}
+            onAction={handleAccountAction}
+          />
+        )}
+      </ResizablePanel>
+    </section>
+  ) : null;
+
+  const requestsSection = view ? (
+    <section className="min-w-0 space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <DashboardViewSelector
+          value={dashboardView}
+          onChange={handleDashboardViewChange}
+          showConversations={isAdmin}
+        />
+        <div className="h-px min-w-8 flex-1 bg-border" />
+      </div>
+      {isAdmin && dashboardView === "conversations" ? (
+        <ConversationsView state={conversationsState} accounts={overview?.accounts ?? []} />
+      ) : logsQuery.isPending && !logPage ? (
+        <div className="rounded-xl border bg-card py-8">
+          <SpinnerBlock />
+        </div>
+      ) : logsQuery.error ? (
+        <div className="space-y-3 rounded-xl border bg-card p-4">
+          <div role="alert">
+            <AlertMessage variant="error">{logsQuery.error.message}</AlertMessage>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              void logsQuery.refetch();
+            }}
+            disabled={logsQuery.isFetching}
+          >
+            {t("common.actions.retry")}
+          </Button>
+        </div>
+      ) : logPage ? (
+        <>
+          <RequestFilters
+            filters={filters}
+            accountOptions={accountOptions}
+            apiKeyOptions={apiKeyOptions}
+            modelOptions={modelOptions}
+            statusOptions={statusOptions}
+            viewMode={requestLogViewMode}
+            onSearchChange={(search) => updateFilters({ search, offset: 0 })}
+            onTimeframeChange={(timeframe) => updateFilters({ timeframe, offset: 0 })}
+            onViewModeChange={setRequestLogViewMode}
+            onAccountChange={(accountIds) => updateFilters({ accountIds, offset: 0 })}
+            onApiKeyChange={(apiKeyIds) => updateFilters({ apiKeyIds, offset: 0 })}
+            onModelChange={(modelOptionsSelected) =>
+              updateFilters({ modelOptions: modelOptionsSelected, offset: 0 })
+            }
+            onStatusChange={(statuses) => updateFilters({ statuses, offset: 0 })}
+            onConversationDismiss={handleConversationDismiss}
+            onReset={() =>
+              updateFilters({
+                search: "",
+                timeframe: "all",
+                accountIds: [],
+                apiKeyIds: [],
+                modelOptions: [],
+                statuses: [],
+                conversationId: null,
+                offset: 0,
+              })
+            }
+          />
+          {conversationSummary ? (
+            <div className="rounded-xl border bg-card p-4">
+              <p className="text-sm text-muted-foreground">{conversationSummary}</p>
+            </div>
+          ) : null}
+          <div className="transition-opacity duration-200">
+            <RecentRequestsTable
+              requests={view.requestLogs}
+              accounts={overview?.accounts ?? []}
+              total={logPage?.total ?? 0}
+              limit={filters.limit}
+              offset={filters.offset}
+              hasMore={logPage?.hasMore ?? false}
+              viewMode={requestLogViewMode}
+              onLimitChange={(limit) => updateFilters({ limit, offset: 0 })}
+              onOffsetChange={(offset) => updateFilters({ offset })}
+              onConversationClick={handleConversationClick}
+            />
+          </div>
+        </>
+      ) : null}
+    </section>
+  ) : null;
+
   return (
     <div className="animate-fade-in-up space-y-8">
       {/* Page header */}
@@ -392,6 +556,7 @@ export function DashboardPage() {
               onChange={handleConversationTimeframeChange}
             />
           ) : null}
+          <SplitViewToggle pressed={splitViewEnabled} onPressedChange={setSplitViewEnabled} />
           <button
             type="button"
             onClick={handleRefresh}
@@ -409,155 +574,25 @@ export function DashboardPage() {
 
       {!view ? (
         <DashboardSkeleton />
+      ) : splitViewEnabled ? (
+        <div className="space-y-8" data-testid="dashboard-split-view">
+          {/* Overview band: KPIs and usage share one row once the screen is wide enough. */}
+          <div className="grid gap-4 4xl:grid-cols-2 4xl:items-start">
+            <StatsGrid stats={view.stats} fluidColumns />
+            {usageBlock}
+          </div>
+          {/* Accounts on the left, request logs on the right. */}
+          <div className="grid gap-8 3xl:grid-cols-2 3xl:items-start">
+            {accountsSection}
+            {requestsSection}
+          </div>
+        </div>
       ) : (
         <>
           <StatsGrid stats={view.stats} />
-
-          {view.weeklyCreditPace ? (
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
-              <UsageDonuts
-                primaryItems={view.primaryUsageItems}
-                secondaryItems={view.secondaryUsageItems}
-                primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
-                secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
-                primaryCenterValue={view.primaryTotal}
-                secondaryCenterValue={view.secondaryTotal}
-                safeLinePrimary={view.safeLinePrimary}
-                safeLineSecondary={view.safeLineSecondary}
-              />
-              <WeeklyCreditsPaceCard pace={view.weeklyCreditPace} />
-            </div>
-          ) : (
-            <UsageDonuts
-              primaryItems={view.primaryUsageItems}
-              secondaryItems={view.secondaryUsageItems}
-              primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
-              secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
-              primaryCenterValue={view.primaryTotal}
-              secondaryCenterValue={view.secondaryTotal}
-              safeLinePrimary={view.safeLinePrimary}
-              safeLineSecondary={view.safeLineSecondary}
-            />
-          )}
-
-          <section className="space-y-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <h2 className="text-[13px] font-medium uppercase tracking-wider text-muted-foreground">{t("accounts.page.title")}</h2>
-                <AccountSummaryLine accounts={overview?.accounts ?? []} />
-              </div>
-              <div className="h-px min-w-8 flex-1 bg-border" />
-              <AccountTypeFilterToggle
-                value={accountTypeVisibility}
-                onToggle={(key) => setAccountTypeVisibility(key, !accountTypeVisibility[key])}
-              />
-              <AccountViewModeToggle value={accountViewMode} onChange={setAccountViewMode} />
-            </div>
-            <ResizablePanel
-              height={accountPanelHeight}
-              onHeightChange={setAccountPanelHeight}
-              minHeight={ACCOUNT_PANEL_MIN_HEIGHT_PX}
-              maxHeight={ACCOUNT_PANEL_MAX_HEIGHT_PX}
-              label={t("dashboard.accounts.resizeLabel")}
-            >
-              {accountViewMode === "list" ? (
-                <AccountList
-                  accounts={visibleAccounts}
-                  readOnly={!canWrite}
-                  sort={accountListSort}
-                  onSortChange={setAccountListSort}
-                  onAction={handleAccountAction}
-                />
-              ) : (
-                <AccountCards accounts={visibleAccounts} readOnly={!canWrite} onAction={handleAccountAction} />
-              )}
-            </ResizablePanel>
-          </section>
-
-          <section className="space-y-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <DashboardViewSelector
-                value={dashboardView}
-                onChange={handleDashboardViewChange}
-                showConversations={isAdmin}
-              />
-              <div className="h-px min-w-8 flex-1 bg-border" />
-            </div>
-            {isAdmin && dashboardView === "conversations" ? <ConversationsView state={conversationsState} accounts={overview?.accounts ?? []} /> : logsQuery.isPending && !logPage ? (
-              <div className="rounded-xl border bg-card py-8">
-                <SpinnerBlock />
-              </div>
-            ) : logsQuery.error ? (
-              <div className="space-y-3 rounded-xl border bg-card p-4">
-                <div role="alert">
-                  <AlertMessage variant="error">{logsQuery.error.message}</AlertMessage>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void logsQuery.refetch();
-                  }}
-                  disabled={logsQuery.isFetching}
-                >
-                  {t("common.actions.retry")}
-                </Button>
-              </div>
-            ) : logPage ? (
-              <>
-            <RequestFilters
-              filters={filters}
-              accountOptions={accountOptions}
-              apiKeyOptions={apiKeyOptions}
-              modelOptions={modelOptions}
-              statusOptions={statusOptions}
-              viewMode={requestLogViewMode}
-              onSearchChange={(search) => updateFilters({ search, offset: 0 })}
-              onTimeframeChange={(timeframe) => updateFilters({ timeframe, offset: 0 })}
-              onViewModeChange={setRequestLogViewMode}
-              onAccountChange={(accountIds) => updateFilters({ accountIds, offset: 0 })}
-              onApiKeyChange={(apiKeyIds) => updateFilters({ apiKeyIds, offset: 0 })}
-              onModelChange={(modelOptionsSelected) =>
-                updateFilters({ modelOptions: modelOptionsSelected, offset: 0 })
-              }
-              onStatusChange={(statuses) => updateFilters({ statuses, offset: 0 })}
-              onConversationDismiss={handleConversationDismiss}
-              onReset={() =>
-                updateFilters({
-                  search: "",
-                  timeframe: "all",
-                  accountIds: [],
-                  apiKeyIds: [],
-                  modelOptions: [],
-                  statuses: [],
-                  conversationId: null,
-                  offset: 0,
-                })
-              }
-            />
-            {conversationSummary ? (
-              <div className="rounded-xl border bg-card p-4">
-                <p className="text-sm text-muted-foreground">{conversationSummary}</p>
-              </div>
-            ) : null}
-            <div className="transition-opacity duration-200">
-              <RecentRequestsTable
-                requests={view.requestLogs}
-                accounts={overview?.accounts ?? []}
-                total={logPage?.total ?? 0}
-                limit={filters.limit}
-                offset={filters.offset}
-                hasMore={logPage?.hasMore ?? false}
-                viewMode={requestLogViewMode}
-                onLimitChange={(limit) => updateFilters({ limit, offset: 0 })}
-                onOffsetChange={(offset) => updateFilters({ offset })}
-                onConversationClick={handleConversationClick}
-              />
-            </div>
-              </>
-            ) : null}
-          </section>
+          {usageBlock}
+          {accountsSection}
+          {requestsSection}
         </>
       )}
 

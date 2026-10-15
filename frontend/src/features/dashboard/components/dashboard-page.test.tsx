@@ -210,6 +210,7 @@ describe("DashboardPage", () => {
         openai_compat: true,
       },
       accountListSort: null,
+      splitViewEnabled: false,
       initialized: true,
     });
   });
@@ -562,6 +563,34 @@ describe("DashboardPage", () => {
     expect(screen.queryByTestId("account-cards")).not.toBeInTheDocument();
     expect(accountListSpy).toHaveBeenCalledWith({ accounts: overview.accounts, sort: null });
     expect(useDashboardPreferencesStore.getState().accountViewMode).toBe("list");
+  });
+
+  it("toggles split view from the header and persists the choice", async () => {
+    const user = userEvent.setup();
+    mockReadyDashboard();
+
+    renderWithProviders(<DashboardPage />);
+
+    const toggle = screen.getByRole("button", { name: "Split view" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByTestId("dashboard-split-view")).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(useDashboardPreferencesStore.getState().splitViewEnabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Split view" })).toHaveAttribute("aria-pressed", "true");
+    const splitView = screen.getByTestId("dashboard-split-view");
+    // Every section still renders exactly once inside the column layout.
+    expect(within(splitView).getByTestId("stats-grid")).toBeInTheDocument();
+    expect(within(splitView).getByTestId("usage-donuts")).toBeInTheDocument();
+    expect(within(splitView).getByTestId("account-cards")).toBeInTheDocument();
+    expect(within(splitView).getByTestId("recent-requests-table")).toBeInTheDocument();
+    expect(screen.getAllByTestId("recent-requests-table")).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Split view" }));
+
+    expect(useDashboardPreferencesStore.getState().splitViewEnabled).toBe(false);
+    expect(screen.queryByTestId("dashboard-split-view")).not.toBeInTheDocument();
   });
 
   it("hides accounts of a disabled type from the cards while keeping summary counts intact", async () => {

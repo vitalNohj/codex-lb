@@ -715,6 +715,7 @@
   "dashboard.filters.statuses": "상태",
   "dashboard.filters.timeframe": "기간",
   "dashboard.page.refresh": "Dashboard 새로고침",
+  "dashboard.page.splitView": "분할 보기",
   "dashboard.page.subtitle": "실시간 routing, Account 상태, 최근 요청 흐름을 봅니다.",
   "dashboard.page.title": "Dashboard",
   "dashboard.pagination.firstPage": "첫 페이지",

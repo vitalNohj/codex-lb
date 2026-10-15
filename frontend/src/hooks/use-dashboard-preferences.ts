@@ -9,6 +9,7 @@ const REQUEST_LOG_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-request-log-view-m
 const ACCOUNT_TYPE_VISIBILITY_STORAGE_KEY = "codex-lb-dashboard-account-type-visibility";
 const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
 const ACCOUNT_PANEL_HEIGHT_STORAGE_KEY = "codex-lb-dashboard-account-panel-height";
+const SPLIT_VIEW_STORAGE_KEY = "codex-lb-dashboard-split-view";
 
 /** Bounds for the operator-resized accounts panel, in px. */
 export const ACCOUNT_PANEL_MIN_HEIGHT_PX = 160;
@@ -64,6 +65,8 @@ type DashboardPreferencesState = {
   accountListSort: AccountListSort;
   /** Operator-resized accounts panel height in px; `null` = component default. */
   accountPanelHeight: number | null;
+  /** Wide-screen layout: page spans the viewport and sections sit side by side. */
+  splitViewEnabled: boolean;
   initialized: boolean;
   initializePreferences: () => void;
   setAccountBurnrateEnabled: (enabled: boolean) => void;
@@ -72,6 +75,7 @@ type DashboardPreferencesState = {
   setAccountTypeVisibility: (key: AccountTypeKey, enabled: boolean) => void;
   setAccountListSort: (sort: AccountListSort) => void;
   setAccountPanelHeight: (height: number | null) => void;
+  setSplitViewEnabled: (enabled: boolean) => void;
 };
 
 const ACCOUNT_LIST_SORT_KEYS: AccountListSortKey[] = [
@@ -169,6 +173,20 @@ function persistAccountPanelHeight(height: number | null): void {
   window.localStorage.setItem(ACCOUNT_PANEL_HEIGHT_STORAGE_KEY, String(height));
 }
 
+function readStoredSplitViewEnabled(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return window.localStorage.getItem(SPLIT_VIEW_STORAGE_KEY) === "true";
+}
+
+function persistSplitViewEnabled(enabled: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(SPLIT_VIEW_STORAGE_KEY, String(enabled));
+}
+
 function persistAccountBurnrateEnabled(enabled: boolean): void {
   if (typeof window === "undefined") {
     return;
@@ -242,6 +260,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   accountTypeVisibility: defaultAccountTypeVisibility(),
   accountListSort: null,
   accountPanelHeight: null,
+  splitViewEnabled: false,
   initialized: false,
   initializePreferences: () => {
     const accountBurnrateEnabled = readStoredAccountBurnrateEnabled() ?? true;
@@ -250,6 +269,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
     const accountTypeVisibility = readStoredAccountTypeVisibility() ?? defaultAccountTypeVisibility();
     const accountListSort = readStoredAccountListSort();
     const accountPanelHeight = readStoredAccountPanelHeight();
+    const splitViewEnabled = readStoredSplitViewEnabled();
     persistAccountBurnrateEnabled(accountBurnrateEnabled);
     persistAccountViewMode(accountViewMode);
     persistRequestLogViewMode(requestLogViewMode);
@@ -262,6 +282,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
       accountTypeVisibility,
       accountListSort,
       accountPanelHeight,
+      splitViewEnabled,
       initialized: true,
     });
   },
@@ -293,5 +314,9 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
         : Math.min(ACCOUNT_PANEL_MAX_HEIGHT_PX, Math.max(ACCOUNT_PANEL_MIN_HEIGHT_PX, Math.round(height)));
     persistAccountPanelHeight(next);
     set({ accountPanelHeight: next, initialized: true });
+  },
+  setSplitViewEnabled: (enabled) => {
+    persistSplitViewEnabled(enabled);
+    set({ splitViewEnabled: enabled, initialized: true });
   },
 }));

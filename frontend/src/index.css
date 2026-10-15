@@ -36,6 +36,12 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Wide-screen breakpoints used by the dashboard split view (2K and 4K). */
+@theme {
+  --breakpoint-3xl: 112rem;
+  --breakpoint-4xl: 180rem;
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

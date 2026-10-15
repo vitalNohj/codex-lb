@@ -715,6 +715,7 @@
   "dashboard.filters.statuses": "状态",
   "dashboard.filters.timeframe": "时间范围",
   "dashboard.page.refresh": "刷新仪表盘",
+  "dashboard.page.splitView": "分栏视图",
   "dashboard.page.subtitle": "实时路由、账户健康与最近请求流量。",
   "dashboard.page.title": "仪表盘",
   "dashboard.pagination.firstPage": "第一页",

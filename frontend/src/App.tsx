@@ -11,7 +11,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthGate } from "@/features/auth/components/auth-gate";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { TelemetryConsentDialog } from "@/features/settings/components/telemetry-consent-dialog";
+import { usePageMaxWidthClass } from "@/hooks/use-page-width";
 import { useTimeFormatStore } from "@/hooks/use-time-format";
+import { cn } from "@/lib/utils";
 
 // Route-level code splitting: only the visited page's chunk loads, instead
 // of one entry bundle carrying all six pages' code.
@@ -41,6 +43,7 @@ function AppLayout() {
   const timeFormat = useTimeFormatStore((state) => state.timeFormat);
   const isGuest = role === "guest";
   const [statusBarHeight, setStatusBarHeight] = useState(STATUS_BAR_DEFAULT_HEIGHT_PX);
+  const pageMaxWidthClass = usePageMaxWidthClass();
 
   return (
     <div
@@ -55,13 +58,14 @@ function AppLayout() {
         onAdminLogin={startAdminLogin}
         showAdminLogin={isGuest && passwordRequired}
         showLogout={(role === "admin" && passwordRequired) || (isGuest && guestPasswordRequired)}
+        contentMaxWidthClass={pageMaxWidthClass}
       />
-      <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-8 sm:px-6">
+      <main className={cn("mx-auto w-full flex-1 px-4 py-8 sm:px-6", pageMaxWidthClass)}>
         <Suspense fallback={null}>
           <Outlet />
         </Suspense>
       </main>
-      <StatusBar onHeightChange={setStatusBarHeight} />
+      <StatusBar onHeightChange={setStatusBarHeight} contentMaxWidthClass={pageMaxWidthClass} />
       <TelemetryConsentDialog />
     </div>
   );
