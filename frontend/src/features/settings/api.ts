@@ -1,4 +1,4 @@
-import { get, patch, post, put } from "@/lib/api-client";
+import { del, get, patch, post, put } from "@/lib/api-client";
 import {
   AccountProxyBindingRequestSchema,
   AccountProxyBindingSchema,
@@ -7,8 +7,19 @@ import {
   CliproxyAccountsResponseSchema,
   CliproxyCredentialFieldsResponseSchema,
   CliproxyCredentialFieldsUpdateSchema,
+  CliproxyCredentialDeleteRequestSchema,
+  CliproxyCredentialDeleteResponseSchema,
+  CliproxyCredentialRefreshResponseSchema,
   CliproxyCredentialStatusResponseSchema,
   CliproxyCredentialStatusUpdateSchema,
+  CliproxyCredentialUploadRequestSchema,
+  CliproxyCredentialUploadResponseSchema,
+  CliproxyOauthCallbackRequestSchema,
+  CliproxyOauthCallbackResponseSchema,
+  CliproxyOauthCancelResponseSchema,
+  CliproxyOauthProvidersResponseSchema,
+  CliproxyOauthStartResponseSchema,
+  CliproxyOauthStatusResponseSchema,
   ClaudeSidecarQuotaResponseSchema,
   ClaudeSidecarRoutingResponseSchema,
   ClaudeSidecarStatusResponseSchema,
@@ -49,6 +60,7 @@ const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
 const CLIPROXY_ACCOUNTS_PATH = "/api/cliproxy/accounts";
+const CLIPROXY_OAUTH_PATH = "/api/cliproxy/oauth";
 const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
 const OPENAI_COMPAT_PATH = "/api/openai-compat";
 const ORCAROUTER_SIDECAR_PATH = "/api/orcarouter-sidecar";
@@ -145,6 +157,68 @@ export function updateCliproxyCredentialStatus(name: string, payload: unknown) {
     CliproxyCredentialStatusResponseSchema,
     { body: validated },
   );
+}
+
+export function getCliproxyOauthProviders() {
+  return get(`${CLIPROXY_OAUTH_PATH}/providers`, CliproxyOauthProvidersResponseSchema);
+}
+
+export function startCliproxyOauth(provider: string) {
+  return post(
+    `${CLIPROXY_OAUTH_PATH}/${encodeURIComponent(provider)}/authorize`,
+    CliproxyOauthStartResponseSchema,
+  );
+}
+
+export function getCliproxyOauthStatus(state: string) {
+  return get(
+    `${CLIPROXY_OAUTH_PATH}/status?state=${encodeURIComponent(state)}`,
+    CliproxyOauthStatusResponseSchema,
+  );
+}
+
+export function cancelCliproxyOauth(state: string) {
+  return del(
+    `${CLIPROXY_OAUTH_PATH}/session?state=${encodeURIComponent(state)}`,
+    CliproxyOauthCancelResponseSchema,
+  );
+}
+
+export function submitCliproxyOauthCallback(payload: unknown) {
+  const validated = CliproxyOauthCallbackRequestSchema.parse(payload);
+  return post(`${CLIPROXY_OAUTH_PATH}/callback`, CliproxyOauthCallbackResponseSchema, {
+    body: validated,
+  });
+}
+
+export function startCliproxyCredentialRefresh(name: string) {
+  return post(
+    `${CLIPROXY_ACCOUNTS_PATH}/${encodeURIComponent(name)}/refresh`,
+    CliproxyCredentialRefreshResponseSchema,
+  );
+}
+
+export function getCliproxyCredentialRefresh(name: string) {
+  return get(
+    `${CLIPROXY_ACCOUNTS_PATH}/${encodeURIComponent(name)}/refresh`,
+    CliproxyCredentialRefreshResponseSchema,
+  );
+}
+
+export function deleteCliproxyCredential(name: string) {
+  const validated = CliproxyCredentialDeleteRequestSchema.parse({ confirm: true });
+  return del(
+    `${CLIPROXY_ACCOUNTS_PATH}/${encodeURIComponent(name)}`,
+    CliproxyCredentialDeleteResponseSchema,
+    { body: validated },
+  );
+}
+
+export function uploadCliproxyCredential(payload: unknown) {
+  const validated = CliproxyCredentialUploadRequestSchema.parse(payload);
+  return post(`${CLIPROXY_ACCOUNTS_PATH}/upload`, CliproxyCredentialUploadResponseSchema, {
+    body: validated,
+  });
 }
 
 export function getClaudeSidecarStatus() {

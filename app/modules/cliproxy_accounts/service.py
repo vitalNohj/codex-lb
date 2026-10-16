@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import NoReturn
 
 from sqlalchemy.exc import IntegrityError
@@ -32,17 +32,45 @@ from app.modules.claude_sidecar.quota import (
     parse_auth_files,
     snapshot_from_json,
 )
+from app.modules.cliproxy_accounts.management import CliproxyManagement, build_management
+from app.modules.cliproxy_accounts.oauth_flow import (
+    callback_body,
+    claim_oauth_completion,
+    project_callback,
+    project_cancel,
+    project_start,
+    project_status,
+    remember_oauth_provider,
+    remembered_oauth_provider,
+    validate_oauth_state,
+)
 from app.modules.cliproxy_accounts.prefix_lock import PrefixWriteLockTimeout, cliproxy_prefix_write_lock
+from app.modules.cliproxy_accounts.providers import OauthProvider, oauth_provider
+from app.modules.cliproxy_accounts.redaction import public_message
+from app.modules.cliproxy_accounts.refresh_jobs import (
+    RefreshObservation,
+    RefreshStatus,
+    begin_refresh,
+    current_refresh,
+)
 from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.cliproxy_accounts.schemas import (
     CliproxyAccountsResponse,
     CliproxyAccountsStatus,
     CliproxyCredential,
+    CliproxyCredentialDeleteResponse,
     CliproxyCredentialFieldsResponse,
+    CliproxyCredentialRefreshResponse,
     CliproxyCredentialStatusResponse,
+    CliproxyCredentialUploadResponse,
+    CliproxyOauthCallbackResponse,
+    CliproxyOauthCancelResponse,
+    CliproxyOauthStartResponse,
+    CliproxyOauthStatusResponse,
     CliproxyProviderCredentials,
     CliproxyQuotaWindow,
 )
+from app.modules.cliproxy_accounts.upload import normalize_credential_name, prepare_upload_document
 from app.modules.cliproxy_accounts.validation import (
     CredentialFieldChange,
     effective_prefixes,
@@ -167,18 +195,14 @@ class CliproxyAccountsService:
     async def set_credential_disabled(self, name: str, *, disabled: bool) -> CliproxyCredentialStatusResponse:
         """Enable or disable one credential.
 
-        The panel route confirms with the operator before calling this. A
-        later delete flow can call it after its own confirmation, then delete.
+        The panel route confirms with the operator before calling this. Delete
+        uses ``_patch_disabled`` directly so the captain's one delete action
+        does not also write the status audit entry.
         """
 
         settings, account, _raw, _accounts = await self._require_account(name)
         client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        try:
-            await client.patch_auth_file_status(name, disabled=disabled, auth_index=account.auth_index)
-        except ClaudeSidecarUnavailableError as exc:
-            raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
-        except ClaudeSidecarError as exc:
-            _raise_management_error(exc)
+        await _patch_disabled(client, account, disabled=disabled)
         AuditService.log_async(
             "cliproxy_credential_status_updated",
             details={
@@ -188,6 +212,174 @@ class CliproxyAccountsService:
             },
         )
         return CliproxyCredentialStatusResponse(name=account.name, disabled=disabled)
+
+    async def start_oauth(self, provider_slug: str) -> CliproxyOauthStartResponse:
+        provider = _require_oauth_provider(provider_slug)
+        settings = await self._ready_settings()
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        payload = await _management_call(client, lambda management: management.start_oauth(provider.management_path))
+        started = project_start(provider, payload)
+        remember_oauth_provider(started.state, provider.panel)
+        return started
+
+    async def oauth_status(self, state: str) -> CliproxyOauthStatusResponse:
+        safe_state = validate_oauth_state(state)
+        settings = await self._ready_settings()
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        payload = await _management_call(client, lambda management: management.auth_status(safe_state))
+        status = project_status(payload)
+        if status.status == "success" and claim_oauth_completion(safe_state):
+            details: dict[str, str] = {"state": safe_state}
+            provider = remembered_oauth_provider(safe_state)
+            if provider is not None:
+                details["provider"] = provider
+            AuditService.log_async("cliproxy_oauth_completed", details=details)
+        return status
+
+    async def cancel_oauth(self, state: str) -> CliproxyOauthCancelResponse:
+        safe_state = validate_oauth_state(state)
+        settings = await self._ready_settings()
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        payload = await _management_call(client, lambda management: management.cancel_oauth(safe_state))
+        return project_cancel(payload)
+
+    async def submit_oauth_callback(
+        self,
+        *,
+        provider_slug: str,
+        state: str,
+        callback_url: str,
+    ) -> CliproxyOauthCallbackResponse:
+        provider = _require_oauth_provider(provider_slug)
+        safe_state = validate_oauth_state(state)
+        remembered = remembered_oauth_provider(safe_state)
+        if remembered is not None:
+            started = oauth_provider(remembered)
+            if started is None or started.management_path != provider.management_path:
+                raise DashboardBadRequestError("Sign-in provider does not match this session")
+        body = callback_body(provider, safe_state, callback_url)
+        settings = await self._ready_settings()
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        payload = await _management_call(client, lambda management: management.submit_callback(body))
+        return project_callback(payload)
+
+    async def start_refresh(self, name: str) -> CliproxyCredentialRefreshResponse:
+        settings, account, _raw, _accounts = await self._require_account(name)
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        management = build_management(client)
+        credential_name = account.name
+        provider = account.provider or "unknown"
+        auth_index = account.auth_index
+
+        async def runner() -> None:
+            await management.refresh_auth_file(credential_name, auth_index)
+
+        def on_done(status: RefreshStatus, message: str | None) -> None:
+            if status == "pending":
+                return
+            details: dict[str, str] = {
+                "credential_name": credential_name,
+                "provider": provider,
+                "status": status,
+            }
+            if message:
+                details["message"] = message
+            AuditService.log_async("cliproxy_credential_refreshed", details=details)
+
+        observation = await begin_refresh(credential_name, runner, on_done)
+        return _refresh_response(observation)
+
+    async def refresh_status(self, name: str) -> CliproxyCredentialRefreshResponse:
+        safe_name = name.strip()
+        observation = current_refresh(safe_name)
+        if observation is None:
+            raise DashboardNotFoundError("CLIProxyAPI credential refresh was not found")
+        return _refresh_response(observation)
+
+    async def delete_credential(self, name: str) -> CliproxyCredentialDeleteResponse:
+        """Turn the credential off, then delete it.
+
+        Disable and delete are one captain action. A failed disable does not
+        delete. A failed delete leaves the credential disabled and says so.
+        """
+
+        settings, account, _raw, _accounts = await self._require_account(name)
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        await _patch_disabled(client, account, disabled=True)
+        try:
+            await build_management(client).delete_auth_file(account.name)
+        except ClaudeSidecarUnavailableError as exc:
+            _audit_delete(account, deleted=False, message=public_message(exc.message))
+            raise DashboardUpstreamError(_delete_failed_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _audit_delete(account, deleted=False, message=public_message(exc.message))
+            raise DashboardUpstreamError(_delete_failed_message(exc.message)) from exc
+        await self._prefixes.delete(account.name)
+        await self._prefixes.session.flush()
+        await self._prefixes.session.commit()
+        _audit_delete(account, deleted=True, message=None)
+        return CliproxyCredentialDeleteResponse(name=account.name, disabled=True, deleted=True)
+
+    async def upload_credential(self, name: str, document: str) -> CliproxyCredentialUploadResponse:
+        safe_name = normalize_credential_name(name)
+        prepared = prepare_upload_document(document)
+        if prepared.prefix is None:
+            await self._upload_file(safe_name, prepared.provider, prepared.body, prefix=None)
+            return CliproxyCredentialUploadResponse(name=safe_name, provider=prepared.provider, prefix=None)
+        try:
+            async with cliproxy_prefix_write_lock(self._prefixes.session):
+                await self._upload_with_prefix(safe_name, prepared.provider, prepared.body, prepared.prefix)
+        except PrefixWriteLockTimeout as exc:
+            raise DashboardConflictError("Another credential prefix update is in progress") from exc
+        return CliproxyCredentialUploadResponse(
+            name=safe_name,
+            provider=prepared.provider,
+            prefix=prepared.prefix,
+        )
+
+    async def _upload_with_prefix(self, name: str, provider: str, body: bytes, prefix: str) -> None:
+        settings, accounts = await self._load_accounts()
+        stored = await self._stored_prefixes()
+        message = prefix_conflict_message(
+            prefix,
+            credential_name=name,
+            effective=effective_prefixes(accounts, stored),
+            routing_owners=routing_prefix_owners(settings),
+        )
+        if message is not None:
+            raise DashboardConflictError(message)
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        await _upload_auth_file(client, name, body)
+        await self._prefixes.upsert(credential_name=name, auth_index=None, prefix=prefix)
+        await self._prefixes.session.flush()
+        await self._prefixes.session.commit()
+        _audit_upload(name, provider, prefix)
+
+    async def _upload_file(self, name: str, provider: str, body: bytes, *, prefix: str | None) -> None:
+        settings = await self._ready_settings()
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        await _upload_auth_file(client, name, body)
+        _audit_upload(name, provider, prefix)
+
+    async def _ready_settings(self) -> DashboardSettings:
+        settings = await self._settings_repository.get_or_create()
+        guarded = _inventory_guard(settings)
+        if guarded is not None:
+            _status, message = guarded
+            raise DashboardBadRequestError(message)
+        return settings
+
+    async def _load_accounts(self) -> tuple[DashboardSettings, list[SidecarAuthQuota]]:
+        settings = await self._ready_settings()
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            raw_files = await client.list_auth_files()
+        except ClaudeSidecarUnavailableError as exc:
+            raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _raise_management_error(exc)
+        accounts = await asyncio.to_thread(parse_auth_files, raw_files, provider=None)
+        return settings, accounts
 
     async def _require_account(
         self, name: str
@@ -450,4 +642,78 @@ def _raise_management_error(exc: ClaudeSidecarError) -> NoReturn:
 
 
 def _sanitize_message(message: str) -> str:
-    return message.replace("Bearer ", "Bearer [redacted]")
+    return public_message(message)
+
+
+def _require_oauth_provider(slug: str) -> OauthProvider:
+    provider = oauth_provider(slug)
+    if provider is None:
+        raise DashboardBadRequestError("That provider cannot be signed in from the panel")
+    return provider
+
+
+async def _patch_disabled(client: ClaudeSidecarClient, account: SidecarAuthQuota, *, disabled: bool) -> None:
+    try:
+        await client.patch_auth_file_status(account.name, disabled=disabled, auth_index=account.auth_index)
+    except ClaudeSidecarUnavailableError as exc:
+        raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+    except ClaudeSidecarError as exc:
+        _raise_management_error(exc)
+
+
+async def _management_call[T](
+    client: ClaudeSidecarClient,
+    call: Callable[[CliproxyManagement], Awaitable[T]],
+) -> T:
+    try:
+        return await call(build_management(client))
+    except ClaudeSidecarUnavailableError as exc:
+        raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+    except ClaudeSidecarError as exc:
+        _raise_management_error(exc)
+
+
+async def _upload_auth_file(client: ClaudeSidecarClient, name: str, body: bytes) -> None:
+    try:
+        await build_management(client).upload_auth_file(name, body)
+    except ClaudeSidecarUnavailableError as exc:
+        raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+    except ClaudeSidecarError as exc:
+        _raise_management_error(exc)
+
+
+def _refresh_response(observation: RefreshObservation) -> CliproxyCredentialRefreshResponse:
+    return CliproxyCredentialRefreshResponse(
+        name=observation.name,
+        status=observation.status,
+        message=observation.message,
+    )
+
+
+def _delete_failed_message(message: str) -> str:
+    detail = public_message(message)
+    base = "The credential was turned off, but CLIProxyAPI did not delete it. It stays turned off."
+    if not detail or detail in base:
+        return base
+    return f"{base} {detail}"
+
+
+def _audit_delete(account: SidecarAuthQuota, *, deleted: bool, message: str | None) -> None:
+    details: dict[str, str | bool] = {
+        "credential_name": account.name,
+        "provider": account.provider or "unknown",
+        "disabled": True,
+        "deleted": deleted,
+    }
+    if message:
+        details["message"] = message
+    AuditService.log_async("cliproxy_credential_deleted", details=details)
+
+
+def _audit_upload(name: str, provider: str, prefix: str | None) -> None:
+    details: dict[str, str | None] = {
+        "credential_name": name,
+        "provider": provider,
+        "prefix": prefix,
+    }
+    AuditService.log_async("cliproxy_credential_uploaded", details=details)

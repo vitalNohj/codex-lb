@@ -9,12 +9,25 @@ from app.core.auth.dependencies import (
 )
 from app.core.exceptions import DashboardBadRequestError
 from app.dependencies import CliproxyAccountsContext, get_cliproxy_accounts_context
+from app.modules.cliproxy_accounts.providers import panel_oauth_providers
 from app.modules.cliproxy_accounts.schemas import (
     CliproxyAccountsResponse,
+    CliproxyCredentialDeleteRequest,
+    CliproxyCredentialDeleteResponse,
     CliproxyCredentialFieldsResponse,
     CliproxyCredentialFieldsUpdate,
+    CliproxyCredentialRefreshResponse,
     CliproxyCredentialStatusResponse,
     CliproxyCredentialStatusUpdate,
+    CliproxyCredentialUploadRequest,
+    CliproxyCredentialUploadResponse,
+    CliproxyOauthCallbackRequest,
+    CliproxyOauthCallbackResponse,
+    CliproxyOauthCancelResponse,
+    CliproxyOauthProviderOption,
+    CliproxyOauthProvidersResponse,
+    CliproxyOauthStartResponse,
+    CliproxyOauthStatusResponse,
 )
 from app.modules.cliproxy_accounts.validation import (
     CredentialFieldChange,
@@ -74,6 +87,103 @@ async def update_cliproxy_credential_status(
     if not body.confirm:
         raise DashboardBadRequestError("Confirm before enabling or disabling this credential")
     return await context.service.set_credential_disabled(name, disabled=body.disabled)
+
+
+@router.get("/oauth/providers", response_model=CliproxyOauthProvidersResponse)
+async def list_cliproxy_oauth_providers() -> CliproxyOauthProvidersResponse:
+    """Providers the sign-in dialog can start. xAI is one of them and allows many accounts."""
+
+    return CliproxyOauthProvidersResponse(
+        providers=[
+            CliproxyOauthProviderOption(provider=provider.panel, method=provider.method)
+            for provider in panel_oauth_providers()
+        ]
+    )
+
+
+@router.post("/oauth/{provider}/authorize", response_model=CliproxyOauthStartResponse)
+async def start_cliproxy_oauth(
+    provider: str,
+    _write_access=Depends(require_dashboard_write_access),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyOauthStartResponse:
+    """Start a CLIProxyAPI sign-in. Each call adds an account; it does not replace one."""
+
+    return await context.service.start_oauth(provider)
+
+
+@router.get("/oauth/status", response_model=CliproxyOauthStatusResponse)
+async def cliproxy_oauth_status(
+    state: str = Query(),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyOauthStatusResponse:
+    return await context.service.oauth_status(state)
+
+
+@router.delete("/oauth/session", response_model=CliproxyOauthCancelResponse)
+async def cancel_cliproxy_oauth(
+    state: str = Query(),
+    _write_access=Depends(require_dashboard_write_access),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyOauthCancelResponse:
+    return await context.service.cancel_oauth(state)
+
+
+@router.post("/oauth/callback", response_model=CliproxyOauthCallbackResponse)
+async def submit_cliproxy_oauth_callback(
+    body: CliproxyOauthCallbackRequest,
+    _write_access=Depends(require_dashboard_write_access),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyOauthCallbackResponse:
+    """Store a pasted browser callback. The credential appears only after status is success."""
+
+    return await context.service.submit_oauth_callback(
+        provider_slug=body.provider,
+        state=body.state,
+        callback_url=body.callback_url,
+    )
+
+
+@router.post("/accounts/{name}/refresh", response_model=CliproxyCredentialRefreshResponse)
+async def start_cliproxy_credential_refresh(
+    name: str,
+    _write_access=Depends(require_dashboard_write_access),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyCredentialRefreshResponse:
+    return await context.service.start_refresh(name)
+
+
+@router.get("/accounts/{name}/refresh", response_model=CliproxyCredentialRefreshResponse)
+async def cliproxy_credential_refresh_status(
+    name: str,
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyCredentialRefreshResponse:
+    return await context.service.refresh_status(name)
+
+
+@router.delete("/accounts/{name}", response_model=CliproxyCredentialDeleteResponse)
+async def delete_cliproxy_credential(
+    name: str,
+    body: CliproxyCredentialDeleteRequest,
+    _write_access=Depends(require_dashboard_write_access),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyCredentialDeleteResponse:
+    """Turn the credential off, then delete it. One confirmation, one audit entry."""
+
+    if not body.confirm:
+        raise DashboardBadRequestError("Confirm before deleting this credential")
+    return await context.service.delete_credential(name)
+
+
+@router.post("/accounts/upload", response_model=CliproxyCredentialUploadResponse)
+async def upload_cliproxy_credential(
+    body: CliproxyCredentialUploadRequest,
+    _write_access=Depends(require_dashboard_write_access),
+    context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
+) -> CliproxyCredentialUploadResponse:
+    """Upload a credential file. A prefix in the file is stored in codex-lb, not in the file."""
+
+    return await context.service.upload_credential(body.name, body.document)
 
 
 def _field_change(body: CliproxyCredentialFieldsUpdate) -> CredentialFieldChange:

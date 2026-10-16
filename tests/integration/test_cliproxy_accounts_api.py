@@ -22,7 +22,9 @@ from app.modules.claude_sidecar.quota import (
     SidecarRateLimitHold,
     snapshot_to_json,
 )
+from app.modules.cliproxy_accounts.oauth_flow import reset_oauth_completion
 from app.modules.cliproxy_accounts.prefix_lock import cliproxy_prefix_write_lock
+from app.modules.cliproxy_accounts.refresh_jobs import reset_refresh_jobs
 from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
@@ -40,6 +42,7 @@ class _FakeClient:
     models: dict[str, list[str]] = {}
     field_calls: list[dict[str, JsonValue]] = []
     status_calls: list[dict[str, JsonValue]] = []
+    status_error: Exception | None = None
 
     def __init__(self, _config) -> None:
         pass
@@ -64,6 +67,8 @@ class _FakeClient:
         if auth_index:
             payload["auth_index"] = auth_index
         self.status_calls.append(payload)
+        if self.status_error is not None:
+            raise self.status_error
 
 
 def _reset_fake() -> None:
@@ -72,6 +77,7 @@ def _reset_fake() -> None:
     _FakeClient.model_errors = set()
     _FakeClient.field_calls = []
     _FakeClient.status_calls = []
+    _FakeClient.status_error = None
     _FakeClient.files = [
         {
             "name": "claude-a.json",
@@ -116,6 +122,74 @@ def _reset_fake() -> None:
 def _install(monkeypatch: pytest.MonkeyPatch) -> None:
     _reset_fake()
     monkeypatch.setattr("app.modules.cliproxy_accounts.service.ClaudeSidecarClient", _FakeClient)
+
+
+class _FakeManagement:
+    """Stub of CLIProxyAPI's management endpoints. Responses may carry tokens; the panel must drop them."""
+
+    calls: list[tuple[object, ...]] = []
+    start_payload: dict[str, JsonValue] = {}
+    status_script: list[dict[str, JsonValue]] = []
+    delete_error: Exception | None = None
+    refresh_error: Exception | None = None
+    upload_bodies: list[bytes] = []
+
+    def __init__(self, _client: object) -> None:
+        del _client
+
+    async def start_oauth(self, path: str) -> dict[str, JsonValue]:
+        self.calls.append(("start", path))
+        return dict(self.start_payload)
+
+    async def auth_status(self, state: str) -> dict[str, JsonValue]:
+        self.calls.append(("status", state))
+        script = self.status_script
+        if not script:
+            return {"status": "wait"}
+        payload = script.pop(0) if len(script) > 1 else script[0]
+        return dict(payload)
+
+    async def cancel_oauth(self, state: str) -> dict[str, JsonValue]:
+        self.calls.append(("cancel", state))
+        return {"status": "ok", "cancelled": True, "access_token": _ACCESS_TOKEN}
+
+    async def submit_callback(self, payload: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+        self.calls.append(("callback", dict(payload)))
+        return {"status": "ok", "access_token": _ACCESS_TOKEN}
+
+    async def delete_auth_file(self, name: str) -> None:
+        self.calls.append(("delete", name, list(_FakeClient.status_calls)))
+        if self.delete_error is not None:
+            raise self.delete_error
+
+    async def refresh_auth_file(self, name: str, auth_index: str | None) -> dict[str, str]:
+        self.calls.append(("refresh", name, auth_index))
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        return {"access_token": _ACCESS_TOKEN, "refresh_token": _REFRESH_TOKEN}
+
+    async def upload_auth_file(self, name: str, data: bytes) -> None:
+        self.calls.append(("upload", name))
+        self.upload_bodies.append(data)
+
+
+def _reset_management() -> None:
+    _FakeManagement.calls = []
+    _FakeManagement.start_payload = {}
+    _FakeManagement.status_script = []
+    _FakeManagement.delete_error = None
+    _FakeManagement.refresh_error = None
+    _FakeManagement.upload_bodies = []
+
+
+def _install_management(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch)
+    _reset_management()
+    reset_oauth_completion()
+    monkeypatch.setattr(
+        "app.modules.cliproxy_accounts.service.build_management",
+        lambda _client: _FakeManagement(_client),
+    )
 
 
 async def _configure(async_client, **payload) -> None:
@@ -397,6 +471,12 @@ async def _wait_for_audit_log(action: str, *, attempts: int = 20) -> AuditLog:
                 return row
         await asyncio.sleep(0.05)
     raise AssertionError(f"audit log not written for action={action}")
+
+
+async def _audit_rows(action: str) -> list[AuditLog]:
+    async with SessionLocal() as session:
+        result = await session.execute(select(AuditLog).where(AuditLog.action == action))
+        return list(result.scalars().all())
 
 
 @pytest.mark.asyncio
@@ -689,4 +769,332 @@ async def test_guest_cannot_edit_cliproxy_credential_fields(app_instance, monkey
     assert status.status_code == 403
     assert status.json()["error"]["code"] == "read_only_access"
     assert _FakeClient.field_calls == []
+    assert _FakeClient.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_oauth_providers_offer_xai_device_login_once(async_client):
+    response = await async_client.get("/api/cliproxy/oauth/providers")
+
+    assert response.status_code == 200
+    providers = {row["provider"]: row["method"] for row in response.json()["providers"]}
+    assert providers["claude"] == "browser"
+    assert providers["xai"] == "device"
+    assert "anthropic" not in providers
+    assert _ACCESS_TOKEN not in response.text
+
+
+@pytest.mark.asyncio
+async def test_oauth_state_machine_pending_then_ok_then_callback_without_tokens(async_client, monkeypatch):
+    _install_management(monkeypatch)
+    await reset_refresh_jobs()
+    await _ready(async_client)
+    _FakeManagement.start_payload = {
+        "status": "ok",
+        "url": "https://auth.example/device",
+        "state": "xai-device-state",
+        "flow": "device",
+        "user_code": "ABCD-1234",
+        "expires_in": 120,
+        "access_token": _ACCESS_TOKEN,
+    }
+    _FakeManagement.status_script = [
+        {"status": "wait", "access_token": _ACCESS_TOKEN},
+        {"status": "ok", "access_token": _ACCESS_TOKEN, "refresh_token": _REFRESH_TOKEN},
+    ]
+
+    started = await async_client.post("/api/cliproxy/oauth/xai/authorize")
+    assert started.status_code == 200
+    assert started.json() == {
+        "state": "xai-device-state",
+        "provider": "xai",
+        "method": "device",
+        "authorizationUrl": None,
+        "verificationUrl": "https://auth.example/device",
+        "userCode": "ABCD-1234",
+        "intervalSeconds": 2,
+        "expiresInSeconds": 120,
+    }
+    assert _ACCESS_TOKEN not in started.text
+    assert _FakeManagement.calls[0] == ("start", "/v0/management/xai-auth-url")
+
+    pending = await async_client.get("/api/cliproxy/oauth/status", params={"state": "xai-device-state"})
+    assert pending.status_code == 200
+    assert pending.json() == {"status": "pending", "errorMessage": None}
+    assert _ACCESS_TOKEN not in pending.text
+
+    success = await async_client.get("/api/cliproxy/oauth/status", params={"state": "xai-device-state"})
+    assert success.status_code == 200
+    assert success.json()["status"] == "success"
+    assert _ACCESS_TOKEN not in success.text
+    assert _REFRESH_TOKEN not in success.text
+    audit = await _wait_for_audit_log("cliproxy_oauth_completed")
+    assert json.loads(audit.details or "{}") == {"state": "xai-device-state", "provider": "xai"}
+
+    again = await async_client.get("/api/cliproxy/oauth/status", params={"state": "xai-device-state"})
+    assert again.status_code == 200
+    assert again.json()["status"] == "success"
+    matching = [
+        row for row in await _audit_rows("cliproxy_oauth_completed") if "xai-device-state" in (row.details or "")
+    ]
+    assert len(matching) == 1
+
+    _FakeManagement.start_payload = {
+        "status": "ok",
+        "url": "https://auth.example/claude",
+        "state": "browser-state",
+        "access_token": _ACCESS_TOKEN,
+    }
+    browser = await async_client.post("/api/cliproxy/oauth/claude/authorize")
+    assert browser.status_code == 200
+    assert browser.json()["method"] == "browser"
+    assert browser.json()["authorizationUrl"] == "https://auth.example/claude"
+    assert browser.json()["verificationUrl"] is None
+    secret = "super-secret-auth-code"
+    callback = await async_client.post(
+        "/api/cliproxy/oauth/callback",
+        json={
+            "provider": "claude",
+            "state": "browser-state",
+            "callbackUrl": f"http://127.0.0.1:54545/callback?code={secret}&state=browser-state",
+        },
+    )
+    assert callback.status_code == 200
+    assert callback.json() == {"status": "pending", "errorMessage": None}
+    assert secret not in callback.text
+    assert _ACCESS_TOKEN not in callback.text
+    kind, forwarded = _FakeManagement.calls[-1]
+    assert kind == "callback"
+    assert forwarded == {
+        "provider": "anthropic",
+        "state": "browser-state",
+        "redirect_url": f"http://127.0.0.1:54545/callback?code={secret}&state=browser-state",
+    }
+
+
+@pytest.mark.asyncio
+async def test_oauth_status_error_is_redacted_and_cancel_drops_tokens(async_client, monkeypatch):
+    _install_management(monkeypatch)
+    await _ready(async_client)
+    _FakeManagement.start_payload = {
+        "status": "ok",
+        "url": "https://auth.example/device",
+        "state": "xai-error-state",
+        "flow": "device",
+        "user_code": "WXYZ-9999",
+    }
+    _FakeManagement.status_script = [{"status": "error", "error": "code=super-secret-auth-code"}]
+
+    started = await async_client.post("/api/cliproxy/oauth/xai/authorize")
+    assert started.status_code == 200
+    failed = await async_client.get("/api/cliproxy/oauth/status", params={"state": "xai-error-state"})
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "error"
+    assert "super-secret-auth-code" not in failed.text
+    assert "code=[redacted]" in failed.json()["errorMessage"]
+    completed = [
+        row for row in await _audit_rows("cliproxy_oauth_completed") if "xai-error-state" in (row.details or "")
+    ]
+    assert completed == []
+
+    cancelled = await async_client.delete("/api/cliproxy/oauth/session", params={"state": "xai-error-state"})
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"status": "ok", "cancelled": True}
+    assert _ACCESS_TOKEN not in cancelled.text
+    assert ("cancel", "xai-error-state") in _FakeManagement.calls
+
+
+@pytest.mark.asyncio
+async def test_delete_disables_before_delete_and_writes_one_audit(async_client, monkeypatch):
+    _install_management(monkeypatch)
+    await _ready(async_client)
+    saved = await async_client.patch(
+        "/api/cliproxy/accounts/grok-a.json/fields",
+        json={"prefix": "acct9"},
+    )
+    assert saved.status_code == 200
+    assert await _stored_prefixes() == {"grok-a.json": "acct9"}
+    status_audits = len(await _audit_rows("cliproxy_credential_status_updated"))
+
+    refused = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/accounts/grok-a.json",
+        json={"confirm": False},
+    )
+    assert refused.status_code == 400
+    assert _FakeClient.status_calls == []
+    assert [call[0] for call in _FakeManagement.calls] == []
+
+    deleted = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/accounts/grok-a.json",
+        json={"confirm": True},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json() == {"name": "grok-a.json", "disabled": True, "deleted": True}
+    assert _ACCESS_TOKEN not in deleted.text
+    assert _FakeClient.status_calls == [{"name": "grok-a.json", "disabled": True, "auth_index": "x1"}]
+    assert _FakeManagement.calls[-1][0] == "delete"
+    assert _FakeManagement.calls[-1][1] == "grok-a.json"
+    assert _FakeManagement.calls[-1][2] == _FakeClient.status_calls
+    assert await _stored_prefixes() == {}
+    audit = await _wait_for_audit_log("cliproxy_credential_deleted")
+    assert json.loads(audit.details or "{}") == {
+        "credential_name": "grok-a.json",
+        "provider": "xai",
+        "disabled": True,
+        "deleted": True,
+    }
+    matching = [row for row in await _audit_rows("cliproxy_credential_deleted") if "grok-a.json" in (row.details or "")]
+    assert len(matching) == 1
+    assert len(await _audit_rows("cliproxy_credential_status_updated")) == status_audits
+
+
+@pytest.mark.asyncio
+async def test_delete_stops_when_disable_fails_and_reports_a_failed_delete(async_client, monkeypatch):
+    _install_management(monkeypatch)
+    await _ready(async_client)
+    _FakeClient.status_error = ClaudeSidecarError(500, "disable failed")
+
+    blocked = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/accounts/claude-a.json",
+        json={"confirm": True},
+    )
+    assert blocked.status_code == 502
+    assert [call[0] for call in _FakeManagement.calls] == []
+    assert _FakeClient.status_calls == [{"name": "claude-a.json", "disabled": True, "auth_index": "c1"}]
+    deleted_rows = [
+        row for row in await _audit_rows("cliproxy_credential_deleted") if "claude-a.json" in (row.details or "")
+    ]
+    assert deleted_rows == []
+
+    _FakeClient.status_error = None
+    _FakeClient.status_calls = []
+    _FakeManagement.delete_error = ClaudeSidecarError(500, "access_token=cliproxy-test-access-token")
+    failed = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/accounts/claude-a.json",
+        json={"confirm": True},
+    )
+    assert failed.status_code == 502
+    assert failed.json()["error"]["message"].startswith(
+        "The credential was turned off, but CLIProxyAPI did not delete it. It stays turned off."
+    )
+    assert _ACCESS_TOKEN not in failed.text
+    assert _FakeManagement.calls[-1][0] == "delete"
+    audit = await _wait_for_audit_log("cliproxy_credential_deleted")
+    details = json.loads(audit.details or "{}")
+    assert details["credential_name"] == "claude-a.json"
+    assert details["disabled"] is True
+    assert details["deleted"] is False
+    assert _ACCESS_TOKEN not in (audit.details or "")
+    matching = [
+        row for row in await _audit_rows("cliproxy_credential_deleted") if "claude-a.json" in (row.details or "")
+    ]
+    assert len(matching) == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_poll_shows_pending_then_ok_without_tokens(async_client, monkeypatch):
+    _install_management(monkeypatch)
+    await reset_refresh_jobs()
+    await _ready(async_client)
+
+    started = await async_client.post("/api/cliproxy/accounts/claude-a.json/refresh")
+    assert started.status_code == 200
+    assert started.json()["status"] == "pending"
+    assert _ACCESS_TOKEN not in started.text
+
+    observed = started.json()
+    for _ in range(50):
+        if observed["status"] != "pending":
+            break
+        await asyncio.sleep(0.02)
+        polled = await async_client.get("/api/cliproxy/accounts/claude-a.json/refresh")
+        assert polled.status_code == 200
+        assert _ACCESS_TOKEN not in polled.text
+        assert _REFRESH_TOKEN not in polled.text
+        observed = polled.json()
+
+    assert observed == {"name": "claude-a.json", "status": "ok", "message": None}
+    assert ("refresh", "claude-a.json", "c1") in _FakeManagement.calls
+    audit = await _wait_for_audit_log("cliproxy_credential_refreshed")
+    assert json.loads(audit.details or "{}") == {
+        "credential_name": "claude-a.json",
+        "provider": "claude",
+        "status": "ok",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_unknown_fields_and_keeps_prefix_in_the_registry(async_client, monkeypatch):
+    _install_management(monkeypatch)
+    await _ready(async_client)
+    secret = "uploaded-access-token"
+    rejected = await async_client.post(
+        "/api/cliproxy/accounts/upload",
+        json={
+            "name": "grok-b.json",
+            "document": json.dumps({"type": "xai", "access_token": secret, "mystery": True}),
+        },
+    )
+    assert rejected.status_code == 400
+    assert "mystery" in rejected.json()["error"]["message"]
+    assert _FakeManagement.upload_bodies == []
+
+    accepted = await async_client.post(
+        "/api/cliproxy/accounts/upload",
+        json={
+            "name": "grok-b.json",
+            "document": json.dumps({"type": "xai", "access_token": secret, "prefix": "acct8"}),
+        },
+    )
+    assert accepted.status_code == 200
+    assert accepted.json() == {"name": "grok-b.json", "provider": "xai", "prefix": "acct8"}
+    assert secret not in accepted.text
+    uploaded = json.loads(_FakeManagement.upload_bodies[-1])
+    assert uploaded["access_token"] == secret
+    assert "prefix" not in uploaded
+    assert await _stored_prefixes() == {"grok-b.json": "acct8"}
+    audit = await _wait_for_audit_log("cliproxy_credential_uploaded")
+    assert json.loads(audit.details or "{}") == {
+        "credential_name": "grok-b.json",
+        "provider": "xai",
+        "prefix": "acct8",
+    }
+    assert secret not in (audit.details or "")
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_sign_in_refresh_upload_or_delete(app_instance, monkeypatch):
+    _install_management(monkeypatch)
+    async with app_instance.router.lifespan_context(app_instance):
+        local_transport = ASGITransport(app=app_instance, client=("127.0.0.1", 50000))
+        async with AsyncClient(transport=local_transport, base_url="http://localhost") as local_client:
+            await _ready(local_client)
+            current = (await local_client.get("/api/settings")).json()
+            current["guestAccessEnabled"] = True
+            updated = await local_client.put("/api/settings", json=current)
+            assert updated.status_code == 200
+
+        remote_transport = ASGITransport(app=app_instance, client=("203.0.113.20", 50001))
+        async with AsyncClient(transport=remote_transport, base_url="http://lb.example") as remote_client:
+            authorize = await remote_client.post("/api/cliproxy/oauth/xai/authorize")
+            refresh = await remote_client.post("/api/cliproxy/accounts/claude-a.json/refresh")
+            upload = await remote_client.post(
+                "/api/cliproxy/accounts/upload",
+                json={"name": "grok-b.json", "document": "{}"},
+            )
+            delete = await remote_client.request(
+                "DELETE",
+                "/api/cliproxy/accounts/claude-a.json",
+                json={"confirm": True},
+            )
+
+    assert authorize.status_code == 403
+    assert refresh.status_code == 403
+    assert upload.status_code == 403
+    assert delete.status_code == 403
+    assert _FakeManagement.calls == []
     assert _FakeClient.status_calls == []

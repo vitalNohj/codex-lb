@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 
 import {
   AlertDialog,
@@ -14,8 +14,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CliproxyAuthorizeDialog } from "@/features/settings/components/cliproxy-authorize-dialog";
+import { useCliproxyOauth } from "@/features/settings/hooks/use-cliproxy-oauth";
 import { useCliproxyCredentials } from "@/features/settings/hooks/use-settings";
-import type { CliproxyCredential, CliproxyCredentialFieldsUpdate } from "@/features/settings/schemas";
+import type { CliproxyCredential, CliproxyCredentialFieldsUpdate, CliproxyRefreshStatus } from "@/features/settings/schemas";
 import { formatPercentNullable, formatQuotaResetLabel } from "@/utils/formatters";
 
 const HEALTH_LABELS: Record<string, string> = {
@@ -93,14 +95,22 @@ function CredentialEditor({
   credential,
   suggestedPrefix,
   busy,
+  refreshStatus,
+  refreshMessage,
   onSave,
   onStatus,
+  onRefresh,
+  onDelete,
 }: {
   credential: CliproxyCredential;
   suggestedPrefix: string;
   busy: boolean;
+  refreshStatus: CliproxyRefreshStatus | null;
+  refreshMessage: string | null;
   onSave: (body: CliproxyCredentialFieldsUpdate) => void;
   onStatus: (disabled: boolean) => void;
+  onRefresh: () => void;
+  onDelete: () => void;
 }) {
   const label = credentialLabel(credential);
   const excludedEditable = credential.excludedModelsState === "available";
@@ -110,7 +120,16 @@ function CredentialEditor({
   const [excluded, setExcluded] = useState(credential.excludedModels.join(", "));
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingDisabled, setPendingDisabled] = useState<boolean | null>(null);
+  const [pendingDelete, setPendingDelete] = useState(false);
   const statusLabel = credential.disabled ? "Turn on" : "Turn off";
+  const refreshLabel =
+    refreshStatus === "pending"
+      ? "Refreshing"
+      : refreshStatus === "ok"
+        ? "Refreshed"
+        : refreshStatus === "error"
+          ? refreshMessage || "Refresh failed"
+          : null;
 
   function save() {
     const parsedWeight = integerOrEmpty(weight);
@@ -214,7 +233,32 @@ function CredentialEditor({
         >
           {statusLabel}
         </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={busy || refreshStatus === "pending"}
+          aria-label={`Refresh ${label}`}
+          onClick={onRefresh}
+        >
+          Refresh
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          aria-label={`Delete ${label}`}
+          onClick={() => setPendingDelete(true)}
+        >
+          Delete
+        </Button>
       </div>
+      {refreshLabel ? (
+        <p className="text-[13px] text-muted-foreground" aria-live="polite">
+          {refreshLabel}
+        </p>
+      ) : null}
       <AlertDialog open={pendingDisabled !== null} onOpenChange={(open) => { if (!open) setPendingDisabled(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -241,6 +285,20 @@ function CredentialEditor({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={pendingDelete} onOpenChange={setPendingDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {label}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This turns the credential off and deletes it. One confirmation does both.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={onDelete}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -249,14 +307,22 @@ function CredentialRow({
   credential,
   suggestedPrefix,
   busy,
+  refreshStatus,
+  refreshMessage,
   onSave,
   onStatus,
+  onRefresh,
+  onDelete,
 }: {
   credential: CliproxyCredential;
   suggestedPrefix: string;
   busy: boolean;
+  refreshStatus: CliproxyRefreshStatus | null;
+  refreshMessage: string | null;
   onSave: (body: CliproxyCredentialFieldsUpdate) => void;
   onStatus: (disabled: boolean) => void;
+  onRefresh: () => void;
+  onDelete: () => void;
 }) {
   const label = credentialLabel(credential);
   return (
@@ -323,15 +389,30 @@ function CredentialRow({
         credential={credential}
         suggestedPrefix={suggestedPrefix}
         busy={busy}
+        refreshStatus={refreshStatus}
+        refreshMessage={refreshMessage}
         onSave={onSave}
         onStatus={onStatus}
+        onRefresh={onRefresh}
+        onDelete={onDelete}
       />
     </article>
   );
 }
 
 export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
-  const { credentialsQuery, fieldsMutation, statusMutation } = useCliproxyCredentials(enabled);
+  const {
+    credentialsQuery,
+    fieldsMutation,
+    statusMutation,
+    refreshMutation,
+    refreshQuery,
+    deleteMutation,
+    uploadMutation,
+  } = useCliproxyCredentials(enabled);
+  const [authorizeOpen, setAuthorizeOpen] = useState(false);
+  const oauth = useCliproxyOauth(authorizeOpen);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!enabled) {
     return (
@@ -341,43 +422,93 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
     );
   }
 
-  if (credentialsQuery.isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading credentials...</p>;
-  }
-
-  if (credentialsQuery.isError) {
-    return <p className="text-sm text-destructive">Could not load CLIProxyAPI credentials.</p>;
-  }
-
   const payload = credentialsQuery.data;
-  if (!payload || payload.status !== "healthy") {
-    return <p className="text-sm text-muted-foreground">{payload?.message ?? "CLIProxyAPI credentials are unavailable."}</p>;
-  }
-
-  const credentials = payload.providers.flatMap((group) => group.credentials);
-  if (credentials.length === 0) {
-    return <p className="text-sm text-muted-foreground">No CLIProxyAPI credentials.</p>;
-  }
-
+  const healthy = payload?.status === "healthy";
+  const credentials = payload?.status === "healthy" ? payload.providers.flatMap((group) => group.credentials) : [];
   const suggestedPrefix = nextAccountPrefix(credentials.map((credential) => credential.prefix));
   const pendingName = fieldsMutation.isPending
     ? fieldsMutation.variables?.name
     : statusMutation.isPending
       ? statusMutation.variables?.name
-      : null;
+      : deleteMutation.isPending
+        ? deleteMutation.variables
+        : refreshMutation.isPending
+          ? refreshMutation.variables
+          : null;
+  const refreshObservation = refreshQuery.data ?? null;
+
+  async function uploadFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    uploadMutation.mutate({ name: file.name, document: await file.text() });
+  }
 
   return (
-    <div className="@container grid gap-2 @3xl:grid-cols-2">
-      {credentials.map((credential) => (
-        <CredentialRow
-          key={`${credential.provider}:${credential.authIndex ?? credential.name}`}
-          credential={credential}
-          suggestedPrefix={suggestedPrefix}
-          busy={pendingName === credential.name}
-          onSave={(body) => fieldsMutation.mutate({ name: credential.name, body })}
-          onStatus={(disabled) => statusMutation.mutate({ name: credential.name, disabled })}
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" onClick={() => setAuthorizeOpen(true)}>
+          Sign in
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={uploadMutation.isPending}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {uploadMutation.isPending ? "Uploading" : "Upload credential"}
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          aria-label="Upload credential file"
+          onChange={(event) => void uploadFile(event)}
         />
-      ))}
+      </div>
+      {credentialsQuery.isLoading ? <p className="text-sm text-muted-foreground">Loading credentials...</p> : null}
+      {credentialsQuery.isError ? (
+        <p className="text-sm text-destructive">Could not load CLIProxyAPI credentials.</p>
+      ) : null}
+      {!credentialsQuery.isLoading && !credentialsQuery.isError && !healthy ? (
+        <p className="text-sm text-muted-foreground">{payload?.message ?? "CLIProxyAPI credentials are unavailable."}</p>
+      ) : null}
+      {healthy && credentials.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No CLIProxyAPI credentials.</p>
+      ) : null}
+      {healthy && credentials.length > 0 ? (
+        <div className="@container grid gap-2 @3xl:grid-cols-2">
+          {credentials.map((credential) => (
+            <CredentialRow
+              key={`${credential.provider}:${credential.authIndex ?? credential.name}`}
+              credential={credential}
+              suggestedPrefix={suggestedPrefix}
+              busy={pendingName === credential.name}
+              refreshStatus={refreshObservation?.name === credential.name ? refreshObservation.status : null}
+              refreshMessage={refreshObservation?.name === credential.name ? refreshObservation.message ?? null : null}
+              onSave={(body) => fieldsMutation.mutate({ name: credential.name, body })}
+              onStatus={(disabled) => statusMutation.mutate({ name: credential.name, disabled })}
+              onRefresh={() => refreshMutation.mutate(credential.name)}
+              onDelete={() => deleteMutation.mutate(credential.name)}
+            />
+          ))}
+        </div>
+      ) : null}
+      <CliproxyAuthorizeDialog
+        open={authorizeOpen}
+        providers={oauth.providers}
+        providersLoading={oauth.providersLoading}
+        providersError={oauth.providersError}
+        state={oauth.state}
+        onOpenChange={setAuthorizeOpen}
+        onStart={oauth.start}
+        onManualCallback={oauth.manualCallback}
+        onReset={oauth.reset}
+      />
     </div>
   );
 }

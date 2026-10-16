@@ -121,7 +121,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
           </SidecarIntegrationCard.Panel>
           <SidecarIntegrationCard.Panel
             title="Credentials"
-            description="Edit each account's prefix, weight, priority, excluded models, and on/off state. Request routing is unchanged."
+            description="Sign in, upload, refresh, or delete an account. Edit prefix, weight, priority, excluded models, and on/off state. Request routing is unchanged."
             span="full"
           >
             <CliproxyCredentials enabled={managementKeyConfigured} />

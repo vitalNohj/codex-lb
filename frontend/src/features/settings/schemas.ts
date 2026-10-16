@@ -900,10 +900,84 @@ export const CliproxyAccountsResponseSchema = z.object({
   message: z.string().nullable().optional(),
   providers: z.array(CliproxyProviderCredentialsSchema).default([]),
 });
+export const CliproxyOauthMethodSchema = z.enum(["browser", "device"]);
+export const CliproxyOauthStatusSchema = z.enum(["pending", "success", "error"]);
+export const CliproxyRefreshStatusSchema = z.enum(["pending", "ok", "error"]);
+export const CliproxyOauthProviderOptionSchema = z.object({
+  provider: z.string(),
+  method: CliproxyOauthMethodSchema,
+});
+export const CliproxyOauthProvidersResponseSchema = z.object({
+  providers: z.array(CliproxyOauthProviderOptionSchema).default([]),
+});
+export const CliproxyOauthStartResponseSchema = z.object({
+  state: z.string(),
+  provider: z.string(),
+  method: CliproxyOauthMethodSchema,
+  authorizationUrl: z.string().nullish(),
+  verificationUrl: z.string().nullish(),
+  userCode: z.string().nullish(),
+  intervalSeconds: z.number().int(),
+  expiresInSeconds: z.number().int().nullish(),
+});
+export const CliproxyOauthStatusResponseSchema = z.object({
+  status: CliproxyOauthStatusSchema,
+  errorMessage: z.string().nullish(),
+});
+export const CliproxyOauthCancelResponseSchema = z.object({
+  status: z.literal("ok"),
+  cancelled: z.boolean(),
+});
+export const CliproxyOauthCallbackRequestSchema = z.object({
+  provider: z.string(),
+  state: z.string(),
+  callbackUrl: z.string(),
+});
+export const CliproxyOauthCallbackResponseSchema = z.object({
+  status: CliproxyOauthStatusSchema,
+  errorMessage: z.string().nullish(),
+});
+export const CliproxyCredentialRefreshResponseSchema = z.object({
+  name: z.string(),
+  status: CliproxyRefreshStatusSchema,
+  message: z.string().nullish(),
+});
+export const CliproxyCredentialDeleteRequestSchema = z.object({
+  confirm: z.boolean(),
+});
+export const CliproxyCredentialDeleteResponseSchema = z.object({
+  name: z.string(),
+  disabled: z.boolean(),
+  deleted: z.boolean(),
+});
+export const CliproxyCredentialUploadRequestSchema = z.object({
+  name: z.string(),
+  document: z.string(),
+});
+export const CliproxyCredentialUploadResponseSchema = z.object({
+  name: z.string(),
+  provider: z.string(),
+  prefix: z.string().nullish(),
+});
+export const CliproxyOauthStateSchema = z.object({
+  provider: z.string().nullable(),
+  state: z.string().nullable(),
+  status: z.enum(["idle", "starting", "pending", "success", "error"]),
+  method: CliproxyOauthMethodSchema.nullable(),
+  authorizationUrl: z.string().nullable(),
+  verificationUrl: z.string().nullable(),
+  userCode: z.string().nullable(),
+  intervalSeconds: z.number().int().nullable(),
+  expiresInSeconds: z.number().int().nullable(),
+  errorMessage: z.string().nullable(),
+});
 export type CliproxyCredential = z.infer<typeof CliproxyCredentialSchema>;
 export type CliproxyAccountsResponse = z.infer<typeof CliproxyAccountsResponseSchema>;
 export type CliproxyCredentialFieldsUpdate = z.infer<typeof CliproxyCredentialFieldsUpdateSchema>;
 export type CliproxyCredentialStatusUpdate = z.infer<typeof CliproxyCredentialStatusUpdateSchema>;
+export type CliproxyRefreshStatus = z.infer<typeof CliproxyRefreshStatusSchema>;
+export type CliproxyOauthState = z.infer<typeof CliproxyOauthStateSchema>;
+export type CliproxyOauthProvidersResponse = z.infer<typeof CliproxyOauthProvidersResponseSchema>;
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;
 type StickyThresholdPresenceFlags = Pick<
