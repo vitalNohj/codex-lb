@@ -2877,22 +2877,13 @@ async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(
         return await to_thread.run_sync(lambda: check_schema_drift(db_url))
 
     def _sidecar_drift(items: tuple[str, ...]) -> tuple[str, ...]:
-        """Drop expected drift from tables added after the pinned revision.
+        """Keep only drift for the prefix column this revision repairs.
 
-        ORM metadata always reflects head, so at parent_revision the
-        later-added request_usage_daily_rollups table, the
-        account_usage_rollup_state.daily_folded_through watermark column,
-        and the dashboard_settings.hourly_rollup_retention_days column show
-        up as add-table/add-column drift that is irrelevant to the sidecar
-        default under test.
+        ORM metadata always reflects head, so a database pinned at
+        parent_revision also reports every later table and column. Those
+        additions are irrelevant to the sidecar default under test.
         """
-        return tuple(
-            item
-            for item in items
-            if "request_usage_daily_rollups" not in item
-            and "daily_folded_through" not in item
-            and "hourly_rollup_retention_days" not in item
-        )
+        return tuple(item for item in items if "claude_sidecar_model_prefixes_json" in item)
 
     try:
         drift = _sidecar_drift(await _drift())
