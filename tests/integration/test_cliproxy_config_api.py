@@ -508,3 +508,36 @@ async def test_an_unconfirmed_timeout_keeps_the_pre_upload_snapshot(async_client
         snapshot = (await session.execute(select(CliproxyConfigSnapshot))).scalars().one()
     assert snapshot.content_sha256 == _sha(applied)
     assert snapshot.content_sha256 != _sha(_CONFIG)
+    assert snapshot.upstream_key == cliproxy_config_lock_key("http://127.0.0.1:8317")
+
+
+@pytest.mark.asyncio
+async def test_rollback_stays_on_the_upstream_that_saved_it(async_client, monkeypatch) -> None:
+    _install_fake(monkeypatch)
+    await _enable(async_client)
+    current = (await async_client.get("/api/cliproxy/config")).json()
+    submitted = current["yaml"].replace("debug: false", "debug: true", 1)
+    assert (
+        await async_client.put(
+            "/api/cliproxy/config",
+            json={"yaml": submitted, "contentSha256": current["contentSha256"], "confirm": True},
+        )
+    ).status_code == 200
+    puts_before_move = list(_FakeConfigClient.puts)
+
+    moved = await async_client.put("/api/settings", json={"claudeSidecarBaseUrl": "http://127.0.0.1:9999"})
+    assert moved.status_code == 200
+    other = await async_client.get("/api/cliproxy/config")
+    assert other.json()["rollbackAvailable"] is False
+    blocked = await async_client.post("/api/cliproxy/config/rollback", json={"confirm": True})
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "nothing_to_rollback"
+    assert _FakeConfigClient.puts == puts_before_move
+
+    restored_settings = await async_client.put(
+        "/api/settings",
+        json={"claudeSidecarBaseUrl": "http://127.0.0.1:8317"},
+    )
+    assert restored_settings.status_code == 200
+    home = await async_client.get("/api/cliproxy/config")
+    assert home.json()["rollbackAvailable"] is True

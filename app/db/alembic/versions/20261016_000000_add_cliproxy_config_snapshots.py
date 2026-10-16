@@ -2,8 +2,9 @@
 
 The panel keeps the previous config.yaml in codex-lb so a replace can roll
 back without reading a copy off the CLIProxyAPI host. The YAML is Fernet
-ciphertext. A second empty table leases config writes so two workers cannot
-replace that snapshot at the same time.
+ciphertext, and each snapshot is bound to the upstream that produced it. A
+second empty table leases config writes so two workers cannot replace that
+snapshot at the same time.
 
 Revision ID: 20261016_000000_add_cliproxy_config_snapshots
 Revises: 20261013_000000_add_dashboard_hourly_rollup_retention
@@ -32,10 +33,19 @@ def upgrade() -> None:
             _TABLE,
             sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("upstream_key", sa.String(length=64), nullable=False),
             sa.Column("content_sha256", sa.String(length=64), nullable=False),
             sa.Column("yaml_ciphertext", sa.LargeBinary(), nullable=False),
             sa.Column("action", sa.String(length=32), nullable=False),
         )
+    else:
+        columns = {column["name"] for column in inspector.get_columns(_TABLE)}
+        if "upstream_key" not in columns:
+            op.add_column(
+                _TABLE,
+                sa.Column("upstream_key", sa.String(length=64), nullable=False, server_default=""),
+            )
+            op.alter_column(_TABLE, "upstream_key", server_default=None)
     if not inspector.has_table(_CLAIMS):
         op.create_table(
             _CLAIMS,

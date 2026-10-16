@@ -32,6 +32,8 @@ export const CliproxyConfigPreviewSchema = z.object({
 export type CliproxyConfigView = z.infer<typeof CliproxyConfigViewSchema>;
 export type CliproxyConfigPreview = z.infer<typeof CliproxyConfigPreviewSchema>;
 
+export const CLIPROXY_CONFIG_QUERY_KEY = ["cliproxy", "config"] as const;
+
 const CONFIG_PATH = "/api/cliproxy/config";
 
 export function getCliproxyConfig() {

@@ -17,6 +17,7 @@ class StoredConfigSnapshot:
     yaml_text: str
     action: str
     content_sha256: str
+    upstream_key: str
 
 
 class CliproxyConfigSnapshotRepository:
@@ -24,34 +25,41 @@ class CliproxyConfigSnapshotRepository:
         self._session = session
         self._encryptor = encryptor or TokenEncryptor()
 
-    async def latest(self) -> StoredConfigSnapshot | None:
-        row = await self._latest_row()
+    async def latest(self, upstream_key: str) -> StoredConfigSnapshot | None:
+        row = await self._latest_row(upstream_key)
         if row is None:
             return None
         return StoredConfigSnapshot(
             yaml_text=self._encryptor.decrypt(row.yaml_ciphertext),
             action=row.action,
             content_sha256=row.content_sha256,
+            upstream_key=row.upstream_key,
         )
 
-    async def has_snapshot(self) -> bool:
-        return await self._latest_row() is not None
+    async def has_snapshot(self, upstream_key: str) -> bool:
+        return await self._latest_row(upstream_key) is not None
 
-    async def store(self, yaml_text: str, *, action: str) -> None:
-        await self.clear()
+    async def store(self, yaml_text: str, *, action: str, upstream_key: str) -> None:
+        await self.clear(upstream_key)
         self._session.add(
             CliproxyConfigSnapshot(
+                upstream_key=upstream_key,
                 content_sha256=content_sha256(yaml_text),
                 yaml_ciphertext=self._encryptor.encrypt(yaml_text),
                 action=action,
             )
         )
 
-    async def clear(self) -> None:
-        await self._session.execute(delete(CliproxyConfigSnapshot))
+    async def clear(self, upstream_key: str) -> None:
+        await self._session.execute(
+            delete(CliproxyConfigSnapshot).where(CliproxyConfigSnapshot.upstream_key == upstream_key)
+        )
 
-    async def _latest_row(self) -> CliproxyConfigSnapshot | None:
+    async def _latest_row(self, upstream_key: str) -> CliproxyConfigSnapshot | None:
         result = await self._session.execute(
-            select(CliproxyConfigSnapshot).order_by(CliproxyConfigSnapshot.id.desc()).limit(1)
+            select(CliproxyConfigSnapshot)
+            .where(CliproxyConfigSnapshot.upstream_key == upstream_key)
+            .order_by(CliproxyConfigSnapshot.id.desc())
+            .limit(1)
         )
         return result.scalars().first()

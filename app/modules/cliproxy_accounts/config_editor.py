@@ -130,10 +130,8 @@ def _restore(current: str, submitted: str) -> str:
                 f"redacted placeholder has no existing secret to keep at {_format_path(span.path)}"
             )
         original = originals[reference]
-        if not _may_restore(span.path, original.path):
-            raise CliproxyConfigPlaceholderError(
-                f"redacted placeholder cannot be moved onto {_format_path(span.path)}"
-            )
+        if not _may_restore(span.path, original):
+            raise CliproxyConfigPlaceholderError(f"redacted placeholder cannot be moved onto {_format_path(span.path)}")
         replacements.append((span.start, span.end, _restored_slice(current, original, submitted, span)))
     return _apply_replacements(submitted, replacements)
 
@@ -189,8 +187,10 @@ def _walk(
 ) -> None:
     _visit(node, seen)
     if isinstance(node, yaml.ScalarNode):
-        if node.tag != _NULL_TAG and isinstance(node.value, str) and _should_redact(
-            own_key, node.value, ancestors, secret_items, in_ice_server
+        if (
+            node.tag != _NULL_TAG
+            and isinstance(node.value, str)
+            and _should_redact(own_key, node.value, ancestors, secret_items, in_ice_server)
         ):
             start, end = _scalar_span(node)
             spans.append(_SecretSpan(path, start, end, node.value, node.style))
@@ -316,8 +316,24 @@ def _placeholder_reference(value: str) -> int | None:
     return int(match.group(1))
 
 
-def _may_restore(destination: ConfigPath, original: ConfigPath) -> bool:
-    return destination == original or _path_is_secret_destination(destination)
+def _may_restore(destination: ConfigPath, original: _SecretSpan) -> bool:
+    if destination == original.path or _path_is_secret_destination(destination):
+        return True
+    # A credential URL is secret because of its userinfo, not its field name.
+    # Reordering that list changes only the indexes, and the reference still
+    # belongs to the same URL field.
+    return _embeds_userinfo(original.value) and _same_field_ignoring_indexes(destination, original.path)
+
+
+def _same_field_ignoring_indexes(left: ConfigPath, right: ConfigPath) -> bool:
+    if len(left) != len(right):
+        return False
+    for left_part, right_part in zip(left, right, strict=True):
+        if isinstance(left_part, int) and isinstance(right_part, int):
+            continue
+        if left_part != right_part:
+            return False
+    return True
 
 
 def _path_is_secret_destination(path: ConfigPath) -> bool:

@@ -2950,6 +2950,7 @@ class CliproxyConfigSnapshot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
+    upstream_key: Mapped[str] = mapped_column(String(64), nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     yaml_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     action: Mapped[str] = mapped_column(String(32), nullable=False)

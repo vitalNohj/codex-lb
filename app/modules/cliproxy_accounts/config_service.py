@@ -144,7 +144,7 @@ class CliproxyConfigService:
         opened = await self._open()
         if isinstance(opened, CliproxyConfigView):
             return opened
-        snapshot = await self._snapshots.latest()
+        snapshot = await self._snapshots.latest(_upstream_key(opened.settings))
         if snapshot is None:
             raise CliproxyConfigOperationError(409, "nothing_to_rollback", "No CLIProxyAPI config snapshot to restore")
         if snapshot.yaml_text == opened.current:
@@ -199,7 +199,7 @@ class CliproxyConfigService:
 
     async def _open(self) -> _OpenedConfig | CliproxyConfigView:
         settings = await self._settings_repository.get_or_create()
-        rollback_available = await self._snapshots.has_snapshot()
+        rollback_available = await self._snapshots.has_snapshot(_upstream_key(settings))
         guarded = _guard(settings)
         if guarded is not None:
             status, message = guarded
@@ -276,8 +276,9 @@ class CliproxyConfigService:
                 "config_changed",
                 "CLIProxyAPI config changed. Reload it and try again.",
             )
-        previous = await self._snapshots.latest()
-        await self._snapshots.store(opened.current, action=action)
+        upstream_key = _upstream_key(opened.settings)
+        previous = await self._snapshots.latest(upstream_key)
+        await self._snapshots.store(opened.current, action=action, upstream_key=upstream_key)
         await self._session.commit()
         try:
             await client.put_config_yaml(updated)
@@ -287,7 +288,7 @@ class CliproxyConfigService:
                 outcome = await self._reconcile_upload(client, opened.current, updated)
             if outcome != "applied":
                 if outcome == "unchanged":
-                    await self._restore_snapshot(previous)
+                    await self._restore_snapshot(previous, upstream_key)
                 raise _upload_failure(exc) from exc
         self._session.add(
             AuditLog(
@@ -310,11 +311,11 @@ class CliproxyConfigService:
             return "unchanged"
         return "unknown"
 
-    async def _restore_snapshot(self, previous: StoredConfigSnapshot | None) -> None:
+    async def _restore_snapshot(self, previous: StoredConfigSnapshot | None, upstream_key: str) -> None:
         if previous is None:
-            await self._snapshots.clear()
+            await self._snapshots.clear(upstream_key)
         else:
-            await self._snapshots.store(previous.yaml_text, action=previous.action)
+            await self._snapshots.store(previous.yaml_text, action=previous.action, upstream_key=upstream_key)
         await self._session.commit()
 
     def _client(self, settings: DashboardSettings) -> _ConfigTransport:
@@ -339,6 +340,10 @@ def _require_current_sha(current: str, expected_sha256: str) -> None:
             "config_changed",
             "CLIProxyAPI config changed. Reload it and try again.",
         )
+
+
+def _upstream_key(settings: DashboardSettings) -> str:
+    return cliproxy_config_lock_key(settings.claude_sidecar_base_url)
 
 
 def _guard(settings: DashboardSettings) -> tuple[CliproxyConfigStatus, str] | None:

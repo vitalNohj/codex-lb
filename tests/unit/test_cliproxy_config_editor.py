@@ -108,6 +108,60 @@ def test_deleting_one_list_placeholder_keeps_the_other_secret() -> None:
     assert REDACTION_MARK not in edit.restored
 
 
+def test_deleting_a_plain_turn_url_keeps_the_credential_url() -> None:
+    current = """\
+providers:
+  codex:
+    live-media-relay:
+      ice-servers:
+        - urls:
+            - "turn:turn.example.com:3478"
+            - "turn:turn-live-user:turn-live-secret@turn.example.com:3478"
+"""
+    redacted = redact_config_yaml(current)
+    assert "turn-live-secret" not in redacted
+    assert "turn:turn.example.com:3478" in redacted
+    submitted = "".join(line for line in redacted.splitlines(keepends=True) if "turn:turn.example.com:3478" not in line)
+
+    edit = prepare_config_edit(current, submitted)
+
+    assert "turn:turn-live-user:turn-live-secret@turn.example.com:3478" in edit.restored
+    assert "turn:turn.example.com:3478" not in edit.restored
+    assert REDACTION_MARK not in edit.restored
+
+
+def test_reordering_provider_entries_keeps_each_proxy_url() -> None:
+    current = """\
+providers:
+  - name: first
+    proxy-url: "socks5://alpha:alpha-pass@10.0.0.1:1080/"
+  - name: second
+    proxy-url: "socks5://beta:beta-pass@10.0.0.2:1080/"
+"""
+    submitted = f"""\
+providers:
+  - name: second
+    proxy-url: "{REDACTION_MARK}:1»"
+  - name: first
+    proxy-url: "{REDACTION_MARK}:0»"
+"""
+
+    edit = prepare_config_edit(current, submitted)
+
+    assert edit.restored.index("beta-pass") < edit.restored.index("alpha-pass")
+    assert "socks5://beta:beta-pass@10.0.0.2:1080/" in edit.restored
+    assert "socks5://alpha:alpha-pass@10.0.0.1:1080/" in edit.restored
+    assert REDACTION_MARK not in edit.restored
+
+
+def test_a_credential_url_placeholder_cannot_be_pasted_onto_a_plain_field() -> None:
+    current = 'proxy-url: "socks5://alpha:alpha-pass@10.0.0.1:1080/"\n'
+    submitted = f'label: "{REDACTION_MARK}:0»"\n'
+
+    with pytest.raises(CliproxyConfigPlaceholderError, match="cannot be moved"):
+        prepare_config_edit(current, submitted)
+
+
 def test_a_placeholder_cannot_be_moved_onto_a_nonsecret_field() -> None:
     current = 'access:\n  api-keys:\n    - "first-key"\n'
     redacted = redact_config_yaml(current)

@@ -61,6 +61,85 @@ describe("CliproxyConfigEditor", () => {
     expect(toast.success).toHaveBeenCalledWith("CLIProxyAPI config replaced");
   });
 
+  it("does not confirm a draft typed while the preview is in flight", async () => {
+    const user = userEvent.setup();
+    let releasePreview: (() => void) | undefined;
+    const previewGate = new Promise<void>((resolve) => {
+      releasePreview = resolve;
+    });
+    let replaced = false;
+    server.use(
+      http.get("*/api/cliproxy/config", () => HttpResponse.json(VIEW)),
+      http.post("*/api/cliproxy/config/preview", async ({ request }) => {
+        const body = (await request.json()) as { yaml?: string };
+        expect(body.yaml).toBe("debug: true");
+        await previewGate;
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          diff: "--- current\n+++ proposed\n@@\n-debug: false\n+debug: true\n",
+          changed: true,
+          contentSha256: VIEW.contentSha256,
+        });
+      }),
+      http.put("*/api/cliproxy/config", () => {
+        replaced = true;
+        return HttpResponse.json(VIEW);
+      }),
+    );
+    renderWithProviders(<CliproxyConfigEditor />);
+
+    const editor = await screen.findByRole("textbox", { name: "config.yaml" });
+    fireEvent.change(editor, { target: { value: "debug: true" } });
+    await user.click(screen.getByRole("button", { name: "Review changes" }));
+    fireEvent.change(editor, { target: { value: "debug: later" } });
+    releasePreview?.();
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("The draft changed before the preview finished. Review it again."),
+    );
+    expect(screen.queryByRole("button", { name: "Replace config" })).not.toBeInTheDocument();
+    expect(replaced).toBe(false);
+  });
+
+  it("keeps a dirty draft when reload sees a newer file", async () => {
+    const user = userEvent.setup();
+    let current = VIEW;
+    server.use(
+      http.get("*/api/cliproxy/config", () => HttpResponse.json(current)),
+      http.post("*/api/cliproxy/config/preview", async ({ request }) => {
+        const body = (await request.json()) as { yaml?: string; contentSha256?: string };
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          diff: body.yaml ?? "",
+          changed: true,
+          contentSha256: body.contentSha256,
+        });
+      }),
+    );
+    renderWithProviders(<CliproxyConfigEditor />);
+
+    const editor = await screen.findByRole("textbox", { name: "config.yaml" });
+    fireEvent.change(editor, { target: { value: "debug: true" } });
+    current = {
+      ...VIEW,
+      yaml: "port: 8317\ndebug: false\n",
+      contentSha256: "newer-sha",
+    };
+    await user.click(screen.getByRole("button", { name: "Reload" }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "The live config changed. Review your draft against it before replacing.",
+      ),
+    );
+    expect(editor).toHaveValue("debug: true");
+    await user.click(screen.getByRole("button", { name: "Review changes" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("debug: true")).toBeInTheDocument();
+  });
+
   it("rolls back only after confirmation", async () => {
     const user = userEvent.setup();
     let confirmed = false;

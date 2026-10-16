@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
+  CLIPROXY_CONFIG_QUERY_KEY,
   getCliproxyConfig,
   patchCliproxyRoutingFlag,
   previewCliproxyConfig,
@@ -22,7 +23,7 @@ import {
 } from "@/features/cliproxy-accounts/api";
 import { ApiError } from "@/lib/api-client";
 
-const CONFIG_QUERY_KEY = ["cliproxy", "config"] as const;
+type ReviewedDraft = { yaml: string; sha: string };
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -32,16 +33,17 @@ function applyView(
   queryClient: ReturnType<typeof useQueryClient>,
   view: CliproxyConfigView,
 ): void {
-  queryClient.setQueryData(CONFIG_QUERY_KEY, view);
+  queryClient.setQueryData(CLIPROXY_CONFIG_QUERY_KEY, view);
 }
 
 export function CliproxyConfigEditor() {
   const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: CONFIG_QUERY_KEY,
+    queryKey: CLIPROXY_CONFIG_QUERY_KEY,
     queryFn: getCliproxyConfig,
   });
-  const [draft, setDraft] = useState<{ sha: string; yaml: string } | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [reviewed, setReviewed] = useState<ReviewedDraft | null>(null);
   const [dialog, setDialog] = useState<"preview" | "rollback" | null>(null);
   const [diff, setDiff] = useState("");
   const [previewChanged, setPreviewChanged] = useState(false);
@@ -49,19 +51,33 @@ export function CliproxyConfigEditor() {
   const view = query.data;
   const serverYaml = view?.yaml ?? "";
   const serverSha = view?.contentSha256 ?? "";
-  const yaml = draft !== null && draft.sha === serverSha ? draft.yaml : serverYaml;
-  const dirty = yaml !== serverYaml;
+  const yaml = draft ?? serverYaml;
+  const dirty = draft !== null && draft !== serverYaml;
+  const yamlRef = useRef(yaml);
+  const shaRef = useRef(serverSha);
+  const draftRef = useRef(draft);
+  useLayoutEffect(() => {
+    yamlRef.current = yaml;
+    shaRef.current = serverSha;
+    draftRef.current = draft;
+  }, [yaml, serverSha, draft]);
   const healthy = view?.status === "healthy" && serverSha !== "";
   const affinity =
     view?.sessionAffinity === true ? "on" : view?.sessionAffinity === false ? "off" : "unreadable";
 
   const previewMutation = useMutation({
-    mutationFn: () => previewCliproxyConfig({ yaml, contentSha256: serverSha }),
-    onSuccess: (preview) => {
+    mutationFn: (submitted: ReviewedDraft) =>
+      previewCliproxyConfig({ yaml: submitted.yaml, contentSha256: submitted.sha }),
+    onSuccess: (preview, submitted) => {
+      if (submitted.yaml !== yamlRef.current || submitted.sha !== shaRef.current) {
+        toast.error("The draft changed before the preview finished. Review it again.");
+        return;
+      }
       if (preview.status !== "healthy") {
         toast.error(preview.message || "Could not preview the config");
         return;
       }
+      setReviewed(submitted);
       setDiff(preview.diff);
       setPreviewChanged(preview.changed);
       setDialog("preview");
@@ -72,7 +88,8 @@ export function CliproxyConfigEditor() {
   });
 
   const replaceMutation = useMutation({
-    mutationFn: () => replaceCliproxyConfig({ yaml, contentSha256: serverSha, confirm: true }),
+    mutationFn: (submitted: ReviewedDraft) =>
+      replaceCliproxyConfig({ yaml: submitted.yaml, contentSha256: submitted.sha, confirm: true }),
     onSuccess: (next) => {
       if (next.status !== "healthy") {
         toast.error(next.message || "CLIProxyAPI rejected the config");
@@ -80,6 +97,7 @@ export function CliproxyConfigEditor() {
       }
       applyView(queryClient, next);
       setDraft(null);
+      setReviewed(null);
       setDialog(null);
       toast.success("CLIProxyAPI config replaced");
     },
@@ -97,6 +115,7 @@ export function CliproxyConfigEditor() {
       }
       applyView(queryClient, next);
       setDraft(null);
+      setReviewed(null);
       setDialog(null);
       toast.success("CLIProxyAPI config restored");
     },
@@ -115,6 +134,7 @@ export function CliproxyConfigEditor() {
       }
       applyView(queryClient, next);
       setDraft(null);
+      setReviewed(null);
     },
     onError: (error: unknown) => {
       toast.error(errorMessage(error, "Could not update force model prefix"));
@@ -123,6 +143,29 @@ export function CliproxyConfigEditor() {
 
   const busy =
     previewMutation.isPending || replaceMutation.isPending || rollbackMutation.isPending || prefixMutation.isPending;
+
+  async function reload() {
+    setReviewed(null);
+    const previousYaml = serverYaml;
+    const previousSha = serverSha;
+    const result = await query.refetch();
+    const fresh = result.data;
+    if (!fresh || fresh.status !== "healthy") {
+      toast.error(fresh?.message || "Could not reload the config");
+      return;
+    }
+    const freshYaml = fresh.yaml ?? "";
+    const serverChanged = freshYaml !== previousYaml || (fresh.contentSha256 ?? "") !== previousSha;
+    const pending = draftRef.current;
+    if (pending !== null && pending !== freshYaml && serverChanged) {
+      toast.error("The live config changed. Review your draft against it before replacing.");
+      return;
+    }
+    if (pending === null || pending === freshYaml) {
+      setDraft(null);
+    }
+    toast.success("CLIProxyAPI config reloaded");
+  }
 
   return (
     <section aria-label="Config file" className="flex min-w-0 flex-col gap-4 rounded-lg border bg-background/40 p-4">
@@ -155,7 +198,11 @@ export function CliproxyConfigEditor() {
               autoCapitalize="off"
               autoCorrect="off"
               value={yaml}
-              onChange={(event) => setDraft({ sha: serverSha, yaml: event.target.value })}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                setReviewed(null);
+                if (dialog === "preview") setDialog(null);
+              }}
             />
           </label>
           <p className="text-[13px] leading-relaxed text-muted-foreground">
@@ -163,8 +210,22 @@ export function CliproxyConfigEditor() {
             new config file with the same confirmation.
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" disabled={busy} onClick={() => previewMutation.mutate()}>
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              onClick={() => previewMutation.mutate({ yaml, sha: serverSha })}
+            >
               Review changes
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy || query.isFetching}
+              onClick={() => void reload()}
+            >
+              Reload
             </Button>
             <Button
               type="button"
@@ -226,8 +287,10 @@ export function CliproxyConfigEditor() {
               <Button
                 type="button"
                 size="sm"
-                disabled={busy || !previewChanged}
-                onClick={() => replaceMutation.mutate()}
+                disabled={busy || !previewChanged || reviewed === null}
+                onClick={() => {
+                  if (reviewed) replaceMutation.mutate(reviewed);
+                }}
               >
                 Replace config
               </Button>
