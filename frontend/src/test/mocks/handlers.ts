@@ -2240,6 +2240,14 @@ export const handlers = [
     return HttpResponse.json(createOpenCodeGoQuota());
   }),
 
+  http.get("*/api/cliproxy/accounts", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      providers: [],
+    });
+  }),
+
   http.get("*/api/claude-sidecar/routing", () => {
     return HttpResponse.json({
       status: "healthy",

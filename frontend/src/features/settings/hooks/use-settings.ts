@@ -12,6 +12,7 @@ import {
   getClaudeSidecarQuota,
   getClaudeSidecarRouting,
   getClaudeSidecarStatus,
+  getCliproxyAccounts,
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
   getOpenCodeGoSidecarStatus,
@@ -61,6 +62,7 @@ import type {
 
 const SETTINGS_DETAIL_QUERY_KEY = ["settings", "detail"] as const;
 const SETTINGS_UPSTREAM_PROXY_QUERY_KEY = ["settings", "upstream-proxy"] as const;
+const CLIPROXY_ACCOUNTS_QUERY_KEY = ["settings", "cliproxy-accounts"] as const;
 
 let settingsSaveChain: Promise<unknown> = Promise.resolve();
 
@@ -190,6 +192,7 @@ export function useSettings() {
         const saved = await persistSettingsPatch(queryClient, patch);
         await queryClient.invalidateQueries({ queryKey: SETTINGS_DETAIL_QUERY_KEY });
         await queryClient.invalidateQueries({ queryKey: SETTINGS_UPSTREAM_PROXY_QUERY_KEY });
+        await queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
         return saved;
       }),
     onSuccess: () => {
@@ -447,6 +450,7 @@ export function useClaudeSidecarAccountPause() {
       void queryClient.invalidateQueries({ queryKey: ["settings", "claude-sidecar", "quota"] });
       void queryClient.invalidateQueries({ queryKey: ["accounts", "list"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
     },
   });
 }
@@ -591,6 +595,16 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
     sessionAffinityMutation,
     testMutation,
   };
+}
+
+export function useCliproxyCredentials(enabled: boolean) {
+  const credentialsQuery = useQuery({
+    queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY,
+    queryFn: () => getCliproxyAccounts(),
+    enabled,
+    refetchInterval: 60_000,
+  });
+  return { credentialsQuery };
 }
 
 export function useClaudeSidecarQuota() {

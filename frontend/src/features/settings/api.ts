@@ -4,6 +4,7 @@ import {
   AccountProxyBindingSchema,
   AliasPoolsHealthResponseSchema,
   ClaudeSidecarModelsResponseSchema,
+  CliproxyAccountsResponseSchema,
   ClaudeSidecarQuotaResponseSchema,
   ClaudeSidecarRoutingResponseSchema,
   ClaudeSidecarStatusResponseSchema,
@@ -43,6 +44,7 @@ import type { ClaudeSidecarRoutingStrategy } from "@/features/settings/schemas";
 const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
+const CLIPROXY_ACCOUNTS_PATH = "/api/cliproxy/accounts";
 const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
 const OPENAI_COMPAT_PATH = "/api/openai-compat";
 const ORCAROUTER_SIDECAR_PATH = "/api/orcarouter-sidecar";
@@ -116,6 +118,11 @@ export function putAccountProxyBinding(accountId: string, payload: unknown) {
   return put(`${UPSTREAM_PROXY_PATH}/accounts/${encodeURIComponent(accountId)}/binding`, AccountProxyBindingSchema, {
     body: validated,
   });
+}
+
+export function getCliproxyAccounts(provider?: string) {
+  const path = provider ? `${CLIPROXY_ACCOUNTS_PATH}?provider=${encodeURIComponent(provider)}` : CLIPROXY_ACCOUNTS_PATH;
+  return get(path, CliproxyAccountsResponseSchema);
 }
 
 export function getClaudeSidecarStatus() {

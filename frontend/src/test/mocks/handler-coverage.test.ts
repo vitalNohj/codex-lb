@@ -85,6 +85,7 @@ const EXPECTED_ENDPOINTS = [
 	"PUT /api/settings/upstream-proxy/accounts/:accountId/binding",
 	// opencode go
 	"GET */api/opencode-go/quota",
+	"GET */api/cliproxy/accounts",
 	"GET */api/claude-sidecar/status",
 	"GET */api/claude-sidecar/models",
 	"POST */api/claude-sidecar/test",

@@ -10,6 +10,8 @@ import * as settingsApi from "@/features/settings/api";
 import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import {
   useClaudeSidecarAccountExcludedModels,
+  useClaudeSidecarAccountPause,
+  useCliproxyCredentials,
   useSettings,
   useTelemetryConsent,
   useTelemetryPreview,
@@ -36,6 +38,34 @@ function createWrapper(queryClient: QueryClient) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
   };
 }
+
+describe("useClaudeSidecarAccountPause", () => {
+  it("refreshes the credential inventory after a pause", async () => {
+    const queryClient = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useClaudeSidecarAccountPause(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await result.current.mutateAsync({ name: "claude-a@example.com.json", paused: true });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["settings", "cliproxy-accounts"] });
+    });
+  });
+});
+
+describe("useCliproxyCredentials", () => {
+  it("polls the inventory while the panel is enabled", () => {
+    const queryClient = createTestQueryClient();
+    renderHook(() => useCliproxyCredentials(true), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    const query = queryClient.getQueryCache().find({ queryKey: ["settings", "cliproxy-accounts"] });
+    expect(query?.options.refetchInterval).toBe(60_000);
+  });
+});
 
 describe("useSettings", () => {
   it("loads settings and invalidates cache on update", async () => {
@@ -67,6 +97,7 @@ describe("useSettings", () => {
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["settings", "detail"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["settings", "cliproxy-accounts"] });
     });
   });
 
