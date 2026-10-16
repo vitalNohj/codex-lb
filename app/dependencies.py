@@ -50,6 +50,7 @@ from app.modules.proxy.capability_lineage_repository import CapabilityLineageRep
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.proxy.service import ProxyService
 from app.modules.proxy.sticky_repository import StickySessionsRepository
+from app.modules.quota_feed.service import QuotaFeedService
 from app.modules.quota_planner.repository import QuotaPlannerRepository
 from app.modules.reports.repository import ReportsRepository
 from app.modules.reports.service import ReportsService
@@ -527,6 +528,24 @@ def get_reports_context(
     repository = ReportsRepository(session)
     service = ReportsService(repository)
     return ReportsContext(session=session, repository=repository, service=service)
+
+
+@dataclass(slots=True)
+class QuotaFeedContext:
+    session: AsyncSession
+    service: QuotaFeedService
+
+
+def get_quota_feed_context(
+    session: AsyncSession = Depends(get_session),
+) -> QuotaFeedContext:
+    accounts = AccountsRepository(session)
+    usage = UsageRepository(session)
+    prefixes = CliproxyCredentialPrefixRepository(session)
+    return QuotaFeedContext(
+        session=session,
+        service=QuotaFeedService(accounts, usage, prefixes),
+    )
 
 
 def get_automations_context(
