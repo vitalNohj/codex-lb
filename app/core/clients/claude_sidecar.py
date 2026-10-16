@@ -310,6 +310,19 @@ class ClaudeSidecarClient:
             return
         raise ClaudeSidecarError(409, "CLIProxyAPI config changed while updating session affinity")
 
+    async def fetch_config_yaml(self) -> str:
+        return await self._fetch_config_yaml()
+
+    async def put_config_yaml(self, body: str) -> None:
+        await self._management_text(
+            "PUT",
+            "/v0/management/config.yaml",
+            "update CLIProxyAPI config",
+            accept="application/json",
+            content_type="application/yaml; charset=utf-8",
+            body=body,
+        )
+
     async def _fetch_config_yaml(self) -> str:
         return await self._management_text(
             "GET",
