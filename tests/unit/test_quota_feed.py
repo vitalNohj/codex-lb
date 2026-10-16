@@ -125,7 +125,7 @@ def test_codex_windows_match_router_selection_inputs() -> None:
     assert seven_day.percent_remaining == pytest.approx(100.0 - (state.secondary_used_percent or 0.0))
     assert seven_day.resets_at == datetime.fromtimestamp(state.secondary_reset_at, timezone.utc)
     assert feed.per_provider["codex"].accounts_available == 1
-    assert feed.per_provider["codex"].max_headroom_percent == pytest.approx(seven_day.percent_remaining)
+    assert feed.per_provider["codex"].max_headroom_percent == pytest.approx(five_hour.percent_remaining)
     dumped = feed.model_dump_json()
     assert "hidden-codex@example.com" not in dumped
     assert "access-token-secret" not in dumped
@@ -150,6 +150,74 @@ def test_codex_without_usage_is_listed_unknown() -> None:
     assert five_hour.confidence == "unknown"
     assert feed.per_provider["codex"].accounts_available == 1
     assert feed.per_provider["codex"].max_headroom_percent is None
+
+
+def test_exhausted_long_window_limits_provider_headroom() -> None:
+    state = AccountState(
+        "acc-tight",
+        AccountStatus.ACTIVE,
+        used_percent=10.0,
+        primary_reset_at=_PRIMARY_RESET,
+        secondary_used_percent=100.0,
+        secondary_reset_at=_SECONDARY_RESET,
+    )
+    feed = compose_quota_feed(
+        generated_at=_NOW,
+        codex_states=[state],
+        codex_long_window_ids={"acc-tight": "seven_day"},
+        sidecar_accounts=(),
+        holds=(),
+        prefixes_by_name={},
+        prefixes_by_index={},
+        now=_NOW,
+    )
+
+    assert _window(feed, "acc-tight", "five_hour").percent_remaining == pytest.approx(90.0)
+    assert feed.per_provider["codex"].accounts_available == 1
+    assert feed.per_provider["codex"].max_headroom_percent == 0.0
+
+
+def test_non_routing_xai_window_does_not_lower_headroom() -> None:
+    auth = _auth(
+        "grok-product.json",
+        "product-idx",
+        provider="xai",
+        credits=GrokCreditsQuota(
+            windows=(
+                GrokCreditWindow(
+                    id="product:grok",
+                    label="Grok",
+                    kind="product",
+                    percent_used=90.0,
+                    percent_remaining=10.0,
+                ),
+                GrokCreditWindow(
+                    id="credits",
+                    label="credits",
+                    kind="weekly",
+                    percent_used=33.0,
+                    percent_remaining=67.0,
+                    resets_at=_NOW + timedelta(days=3),
+                ),
+            ),
+        ),
+    )
+    state = routing_state_for_auth(auth, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
+    assert state is not None
+    feed = compose_quota_feed(
+        generated_at=_NOW,
+        codex_states=[],
+        codex_long_window_ids={},
+        sidecar_accounts=(auth,),
+        holds=(),
+        prefixes_by_name={},
+        prefixes_by_index={},
+        now=_NOW,
+    )
+
+    assert _window(feed, state.account_id, "product:grok").percent_remaining == 10.0
+    assert feed.per_provider["xai"].max_headroom_percent == pytest.approx(100.0 - (state.used_percent or 0.0))
+    assert feed.per_provider["xai"].max_headroom_percent == pytest.approx(67.0)
 
 
 def test_paused_codex_account_is_listed_and_not_available() -> None:

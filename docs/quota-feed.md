@@ -23,7 +23,9 @@ An API key with account assignment scope sees only its assigned Codex accounts. 
 
 `providers` is one row per account. Each row has `provider`, `accountKey`, and `windows`. `confidence` is `established` (a usage sample or quota poll), `estimated` (a rate-limit hold, or xAI token rollups that have counts but no percent), or `unknown`.
 
-`perProvider` summarizes each provider that has at least one row: `accountsAvailable` is how many of those accounts are not paused, deactivated, reauthing, rate-limited, or quota-exceeded, and `maxHeadroomPercent` is the highest `percentRemaining` among the windows of those available accounts.
+`perProvider` summarizes each provider that has at least one row. `accountsAvailable` is how many of those accounts are not paused, deactivated, reauthing, rate-limited, or quota-exceeded. `maxHeadroomPercent` is the best usable remaining percent among those available accounts. An account's usable remaining is the lower of the windows the router scores (`used` and the long window). A displayed window the selector does not score, such as a non-routing xAI product bucket, does not change that number.
+
+A dashboard guest session is not a credential for this route. Only an admin session, a trusted-header admin identity, or a proxy API key is accepted.
 
 Window `source` values:
 

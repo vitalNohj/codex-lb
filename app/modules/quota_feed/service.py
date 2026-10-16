@@ -325,17 +325,35 @@ def _headroom(
 ) -> ProviderHeadroom:
     available = 0
     remainings: list[float] = []
-    for state, account in rows:
+    for state, _account in rows:
         if not _admitted(state, now_epoch):
             continue
         available += 1
-        remainings.extend(
-            window.percent_remaining for window in account.windows if window.percent_remaining is not None
-        )
+        usable = _usable_remaining(state)
+        if usable is not None:
+            remainings.append(usable)
     return ProviderHeadroom(
         accounts_available=available,
         max_headroom_percent=max(remainings) if remainings else None,
     )
+
+
+def _usable_remaining(state: AccountState) -> float | None:
+    """Tightest window the selector actually scores.
+
+    ``used_percent`` and ``secondary_used_percent`` are the binding inputs.
+    Extra displayed windows, such as a non-routing xAI product bucket, do not
+    change whether the account can serve traffic.
+    """
+
+    known = [
+        remaining
+        for remaining in (_remaining(state.used_percent), _remaining(state.secondary_used_percent))
+        if remaining is not None
+    ]
+    if not known:
+        return None
+    return min(known)
 
 
 def _admitted(state: AccountState, now_epoch: float) -> bool:

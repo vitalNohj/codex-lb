@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.core.auth.dashboard_access import DashboardPrincipal, admin_principal
+from app.core.auth.dashboard_access import DashboardPrincipal, DashboardRole, admin_principal
 from app.core.auth.dashboard_mode import DashboardAuthMode, get_dashboard_request_auth
 from app.core.auth.dependencies import (
     record_authenticated_api_key,
@@ -31,9 +31,10 @@ async def require_quota_feed_caller(request: Request) -> QuotaFeedScope:
 
     A presented ``Authorization`` header is validated as a proxy API key and
     does not fall through to the dashboard session. Passwordless local
-    dashboard access and dashboard auth mode ``disabled`` are not credentials:
-    this route returns 401 unless the caller presents a key, a verified
-    session cookie, or the trusted-header identity the dashboard already uses.
+    dashboard access, dashboard auth mode ``disabled``, and guest sessions
+    are not credentials: this route returns 401 unless the caller presents a
+    key, a verified admin session cookie, or the trusted-header identity the
+    dashboard already uses.
     """
 
     authorization = request.headers.get("authorization")
@@ -46,7 +47,7 @@ async def require_quota_feed_caller(request: Request) -> QuotaFeedScope:
         return QuotaFeedScope(codex_account_ids=None, include_sidecar=True)
 
     principal = await _dashboard_principal(request)
-    if principal is None:
+    if principal is None or principal.role != DashboardRole.ADMIN:
         raise ProxyAuthError("Authentication required")
     return QuotaFeedScope(codex_account_ids=None, include_sidecar=True)
 

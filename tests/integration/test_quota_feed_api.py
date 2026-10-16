@@ -271,6 +271,28 @@ async def test_quota_feed_rejects_missing_and_invalid_credentials(async_client) 
 
 
 @pytest.mark.asyncio
+async def test_quota_feed_rejects_dashboard_guest(async_client) -> None:
+    await _seed_pool()
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(guest_access_enabled=True)
+    await get_settings_cache().invalidate()
+    session_id = get_dashboard_session_store().create(
+        password_verified=False,
+        totp_verified=False,
+        ttl_seconds=3600,
+        role=DashboardRole.GUEST,
+        guest_verified=True,
+    )
+    async_client.cookies.set(DASHBOARD_SESSION_COOKIE, session_id)
+
+    response = await async_client.get("/v1/quota-feed")
+
+    assert response.status_code == 401
+    assert "acc-a" not in response.text
+    assert "claude-idx" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_quota_feed_accepts_proxy_key_and_dashboard_session(async_client) -> None:
     key = await _create_key("feed-open")
 
@@ -313,10 +335,10 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     assert _codex_keys(dashboard.json()) == {"acc-a", "acc-b", "acc-empty"}
 
     assert body_a["perProvider"]["codex"]["accountsAvailable"] == 1
-    assert body_a["perProvider"]["codex"]["maxHeadroomPercent"] == 90.0
+    assert body_a["perProvider"]["codex"]["maxHeadroomPercent"] == 80.0
     assert body_b["perProvider"]["codex"]["accountsAvailable"] == 0
     assert body_all["perProvider"]["codex"]["accountsAvailable"] == 2
-    assert body_all["perProvider"]["codex"]["maxHeadroomPercent"] == 90.0
+    assert body_all["perProvider"]["codex"]["maxHeadroomPercent"] == 80.0
 
     five_hour = _window(body_all, "acc-a", "five_hour")
     seven_day = _window(body_all, "acc-a", "seven_day")
