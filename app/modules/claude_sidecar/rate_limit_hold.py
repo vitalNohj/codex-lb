@@ -192,10 +192,11 @@ def holds_after_operator_change(
     """
     if not name:
         return tuple(holds)
-    kept = tuple(hold for hold in holds if hold.name != name)
+    provider = credential_provider(account.provider) if account is not None else "claude"
+    kept = tuple(hold for hold in holds if hold.name != name or credential_provider(hold.provider) != provider)
     if paused:
         return kept
-    owned = _unreleased(holds, name, provider=None)
+    owned = _unreleased(holds, name, provider=provider)
     if account is None or credential_provider(account.provider) != "claude" or account.oauth_usage is None:
         if owned is None:
             return kept
@@ -255,6 +256,16 @@ def plan_xai_rate_limit_holds(
         observed = account.grok_credits.observed_limit if account.grok_credits is not None else None
         if released is not None:
             holds.append(released)
+            continue
+        if (
+            observed == XAI_LIMIT_BACKOFF
+            and owned is not None
+            and owned.kind == XAI_LIMIT_FREE_USAGE
+            and _as_utc(owned.until) > now_utc
+        ):
+            holds.append(owned)
+            if not account.disabled:
+                disables.append(account.name)
             continue
         if observed in (XAI_LIMIT_FREE_USAGE, XAI_LIMIT_BACKOFF):
             previous_level = owned.backoff_level if owned is not None and owned.kind == XAI_LIMIT_BACKOFF else 0

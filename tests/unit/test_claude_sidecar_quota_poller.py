@@ -1231,6 +1231,30 @@ async def test_poll_holds_only_the_xai_credential_on_free_usage_429(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_poll_does_not_call_grok_for_an_unavailable_credential(monkeypatch) -> None:
+    _enable_xai_quota(monkeypatch)
+    client = _GrokApiClient()
+    client.extra_files = [{**_xai_file(), "unavailable": True, "status": "error"}]
+    client.api_result = _grpc_text(_message(1, _weekly_config()))
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_stored_grok_snapshot()),
+        client,
+        _usage(40.0, 70.0, five_reset=_FUTURE),
+    )
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    assert client.api_calls == []
+    credits = next(account.grok_credits for account in snapshot.accounts if account.provider == "xai")
+    assert credits is not None
+    assert credits.windows[0].percent_remaining == 11.0
+    assert client.patches == []
+
+
+@pytest.mark.asyncio
 async def test_poll_keeps_stored_grok_windows_when_the_passthrough_is_down(monkeypatch) -> None:
     _enable_xai_quota(monkeypatch)
     client = _GrokApiClient()

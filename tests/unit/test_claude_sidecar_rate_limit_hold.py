@@ -377,6 +377,71 @@ def test_a_past_hold_for_the_other_provider_does_not_enable_this_one() -> None:
     assert plan_xai_rate_limit_holds((claude, xai), (claude_hold,), _NOW).enable_names == ()
 
 
+def test_backoff_does_not_shorten_an_active_free_usage_hold() -> None:
+    xai = replace(
+        _auth(name="grok.json", disabled=True),
+        provider="xai",
+        email="grok@example.com",
+        oauth_usage=None,
+        grok_credits=GrokCreditsQuota(observed_limit=XAI_LIMIT_BACKOFF),
+    )
+    owned = SidecarRateLimitHold(
+        name="grok.json",
+        until=_NOW + timedelta(hours=20),
+        released=False,
+        provider="xai",
+        kind=XAI_LIMIT_FREE_USAGE,
+        backoff_level=0,
+    )
+
+    plan = plan_xai_rate_limit_holds((xai,), (owned,), _NOW)
+
+    assert plan.disable_names == ()
+    assert plan.enable_names == ()
+    assert plan.holds == (owned,)
+
+
+@pytest.mark.asyncio
+async def test_claude_pause_leaves_a_same_named_xai_hold(monkeypatch) -> None:
+    from app.modules.claude_sidecar.service import ClaudeSidecarService
+
+    claude = _auth(name="shared.json", disabled=False, five_hour=_bucket(40, _FUTURE), seven_day=_bucket(70, _LATER))
+    xai = replace(claude, provider="xai", email="grok@example.com", oauth_usage=None, disabled=False)
+    xai_hold = SidecarRateLimitHold(
+        name="shared.json",
+        until=_FUTURE,
+        released=False,
+        provider="xai",
+        kind=XAI_LIMIT_FREE_USAGE,
+    )
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=_NOW,
+        status="healthy",
+        message=None,
+        accounts=(claude, xai),
+        rate_limit_holds=(xai_hold,),
+    )
+    settings = SimpleNamespace(claude_sidecar_quota_state_json=snapshot_to_json(snapshot))
+
+    async def update_operational(**kwargs):
+        settings.claude_sidecar_quota_state_json = kwargs["claude_sidecar_quota_state_json"]
+
+    repo = Mock(spec=SettingsRepository)
+    repo.get_fresh = AsyncMock(return_value=settings)
+    repo.update_operational = AsyncMock(side_effect=update_operational)
+    monkeypatch.setattr(
+        "app.modules.claude_sidecar.service.get_settings_cache",
+        lambda: SimpleNamespace(invalidate=AsyncMock()),
+    )
+
+    await ClaudeSidecarService(repo)._patch_snapshot_disabled_locked("shared.json", True)
+
+    loaded = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+    assert loaded is not None
+    assert [account.disabled for account in loaded.accounts] == [True, False]
+    assert loaded.rate_limit_holds == (xai_hold,)
+
+
 def test_same_filename_xai_hold_does_not_flip_the_claude_row() -> None:
     claude = _auth(name="shared.json", five_hour=_bucket(40, _FUTURE), seven_day=_bucket(70, _LATER))
     xai = replace(

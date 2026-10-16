@@ -27,6 +27,7 @@ from app.modules.claude_sidecar.grok_credits import (
     GrokCreditsRateLimit,
     XaiUsageObservation,
     fetch_grok_credits,
+    grok_credential_usable,
     project_xai_usage,
     restore_xai_usage_observations,
     strip_observed_limits,
@@ -447,8 +448,15 @@ async def _attach_grok_credits(
             enriched.append(account)
             continue
         stored = previous_credits.get(_auth_identity_key(account))
+        if not grok_credential_usable(account):
+            enriched.append(replace(account, grok_credits=stored) if stored is not None else account)
+            continue
         try:
-            credits = await fetch_grok_credits(client, account.auth_index)
+            credits = await fetch_grok_credits(
+                client,
+                account.auth_index,
+                credential_usable=True,
+            )
         except GrokCreditsRateLimit as exc:
             base = stored or GrokCreditsQuota()
             enriched.append(replace(account, grok_credits=replace(base, observed_limit=exc.kind)))

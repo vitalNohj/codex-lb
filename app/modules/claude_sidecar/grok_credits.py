@@ -28,6 +28,7 @@ from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
     credential_provider,
+    dashboard_auth_status,
 )
 from app.modules.claude_sidecar.rate_limit_hold import XAI_LIMIT_BACKOFF, XAI_LIMIT_FREE_USAGE
 from app.modules.claude_sidecar.usage_queue import parse_usage_queue_record
@@ -125,14 +126,34 @@ def classify_xai_429(body: str) -> str:
     return XAI_LIMIT_BACKOFF
 
 
+def grok_credential_usable(account: SidecarAuthQuota) -> bool:
+    """Whether GetGrokCreditsConfig may be called for this auth file.
+
+    An empty auth index has nothing to substitute. A login that needs reauth,
+    or an auth CLIProxyAPI has marked unavailable outside a quota cooldown,
+    must not be sent upstream. A quota cooldown also sets ``unavailable`` and
+    still needs this read. A hold only sets ``disabled``, so a paused file
+    stays pollable.
+    """
+
+    if not account.auth_index or not account.auth_index.strip():
+        return False
+    if dashboard_auth_status(account) == "reauth_required":
+        return False
+    return not (account.unavailable and not account.quota_exceeded and not account.disabled)
+
+
 async def fetch_grok_credits(
     client: _ApiCaller,
     auth_index: str,
     *,
+    credential_usable: bool,
     now: datetime | None = None,
 ) -> GrokCreditsQuota:
     """Fetch one credential's consumer quota through the management passthrough."""
 
+    if not auth_index.strip() or not credential_usable:
+        raise GrokCreditsUnavailable("Grok credits credential is not usable")
     try:
         raw = await client.api_call(
             auth_index=auth_index,
@@ -238,14 +259,7 @@ def normalize_grok_consumer_payload(payload: bytes, *, now: datetime | None = No
 def decode_grpc_web_body(body: str) -> bytes:
     """Decode a grpc-web-text body to the single protobuf data frame."""
 
-    text = "".join(body.split())
-    if not text:
-        raise GrokCreditsError("Grok credits body was empty")
-    padding = "=" * ((4 - len(text) % 4) % 4)
-    try:
-        decoded = base64.b64decode(text + padding, validate=False)
-    except (ValueError, TypeError) as exc:
-        raise GrokCreditsError("Grok credits body was not base64") from exc
+    decoded = _decode_grpc_web_text(body)
     if len(decoded) > _RESPONSE_LIMIT_BYTES:
         raise GrokCreditsError("Grok credits body was too large")
     if not decoded or not _looks_framed(decoded[0]):
@@ -498,6 +512,29 @@ def _error_text(body: JsonValue | None) -> str:
         return json.dumps(body)
     except TypeError:
         return ""
+
+
+def _decode_grpc_web_text(body: str) -> bytes:
+    """Decode grpc-web-text, including successive padded base64 chunks.
+
+    A streamed body base64-encodes each chunk on its own, so padding can sit
+    in the middle. Decoding the concatenation as one string stops at the first
+    padded chunk and drops the trailer.
+    """
+
+    text = "".join(body.split())
+    if not text:
+        raise GrokCreditsError("Grok credits body was empty")
+    decoded = bytearray()
+    for start in range(0, len(text), 4):
+        chunk = text[start : start + 4]
+        if len(chunk) < 4:
+            chunk += "=" * (4 - len(chunk))
+        try:
+            decoded.extend(base64.b64decode(chunk, validate=True))
+        except (ValueError, TypeError) as exc:
+            raise GrokCreditsError("Grok credits body was not base64") from exc
+    return bytes(decoded)
 
 
 def _looks_framed(first: int) -> bool:

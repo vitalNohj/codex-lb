@@ -20,6 +20,7 @@ from app.modules.claude_sidecar.quota import (
     SidecarQuotaSnapshot,
     SidecarRateLimitHold,
     claude_quota_snapshot,
+    credential_provider,
     dashboard_status_for_auth,
     snapshot_from_json,
     snapshot_to_json,
@@ -365,8 +366,20 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
-        account = next((auth for auth in snapshot.accounts if auth.name == name), None)
-        updated = [replace(auth, disabled=paused) if auth.name == name else auth for auth in snapshot.accounts]
+        account = next(
+            (
+                auth
+                for auth in snapshot.accounts
+                if auth.name == name and credential_provider(auth.provider) == "claude"
+            ),
+            None,
+        )
+        updated = [
+            replace(auth, disabled=paused)
+            if auth.name == name and credential_provider(auth.provider) == "claude"
+            else auth
+            for auth in snapshot.accounts
+        ]
         holds = holds_after_operator_change(
             snapshot.rate_limit_holds,
             name,

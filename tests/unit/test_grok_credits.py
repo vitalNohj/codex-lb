@@ -173,6 +173,20 @@ def test_parser_rejects_a_prepaid_balance_past_the_safe_integer() -> None:
         normalize_grok_consumer_payload(_message(1, config), now=_NOW)
 
 
+def test_grpc_web_text_joins_padded_chunks_before_reading_the_trailer() -> None:
+    payload = _message(1, _weekly_config())
+    data = b"\x00" + len(payload).to_bytes(4, "big") + payload
+    trailer = b"grpc-status: 8\r\ngrpc-message: free-usage-exhausted\r\nx: yy\r\n"
+    trailer_frame = b"\x80" + len(trailer).to_bytes(4, "big") + trailer
+    data_text = base64.b64encode(data).decode("ascii")
+    trailer_text = base64.b64encode(trailer_frame).decode("ascii")
+    assert data_text.endswith("=") or trailer_text.endswith("=")
+
+    with pytest.raises(GrokCreditsRateLimit) as limited:
+        decode_grpc_web_body(data_text + trailer_text)
+    assert limited.value.kind == XAI_LIMIT_FREE_USAGE
+
+
 def test_grpc_web_text_returns_the_data_frame_and_maps_status_8() -> None:
     payload = _message(1, _weekly_config())
     assert decode_grpc_web_body(_grpc_text(payload, trailer=b"grpc-status: 0\r\n")) == payload
@@ -212,10 +226,22 @@ class _Api:
 
 
 @pytest.mark.asyncio
+async def test_fetch_rejects_an_unusable_credential_before_the_passthrough() -> None:
+    client = _Api(_grpc_text(_message(1, _weekly_config())))
+
+    with pytest.raises(GrokCreditsUnavailable, match="not usable"):
+        await fetch_grok_credits(client, "x1", credential_usable=False, now=_NOW)
+    with pytest.raises(GrokCreditsUnavailable, match="not usable"):
+        await fetch_grok_credits(client, "  ", credential_usable=True, now=_NOW)
+
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_fetch_posts_token_marker_and_parses_grpc_web_text() -> None:
     client = _Api(_grpc_text(_message(1, _weekly_config())))
 
-    parsed = await fetch_grok_credits(client, "x1", now=_NOW)
+    parsed = await fetch_grok_credits(client, "x1", credential_usable=True, now=_NOW)
 
     call = client.calls[0]
     assert call["auth_index"] == "x1"
@@ -234,13 +260,13 @@ async def test_fetch_posts_token_marker_and_parses_grpc_web_text() -> None:
 async def test_fetch_maps_passthrough_429_and_transport_errors() -> None:
     limited = _Api(ClaudeSidecarError(429, "limited", body='{"code":"free-usage-exhausted","token":"secret"}'))
     with pytest.raises(GrokCreditsRateLimit) as exc:
-        await fetch_grok_credits(limited, "x1", now=_NOW)
+        await fetch_grok_credits(limited, "x1", credential_usable=True, now=_NOW)
     assert exc.value.kind == XAI_LIMIT_FREE_USAGE
     assert "secret" not in str(exc.value)
 
     down = _Api(ClaudeSidecarUnavailableError("connection refused"))
     with pytest.raises(GrokCreditsUnavailable):
-        await fetch_grok_credits(down, "x1", now=_NOW)
+        await fetch_grok_credits(down, "x1", credential_usable=True, now=_NOW)
 
 
 def test_usage_queue_rollup_keeps_free_usage_and_drops_the_raw_body(monkeypatch) -> None:
