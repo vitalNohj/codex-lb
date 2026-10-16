@@ -154,6 +154,18 @@ def test_a_root_that_is_not_a_mapping_is_rejected() -> None:
         redact_config_yaml("- just-a-list\n")
 
 
+def test_boolean_like_secrets_are_redacted_and_routing_flags_stay_visible() -> None:
+    current = "password: on\napi-key: true\nrouting:\n  session-affinity: true\n"
+    redacted = redact_config_yaml(current)
+
+    assert "password: on" not in redacted
+    assert "api-key: true" not in redacted
+    assert "session-affinity: true" in redacted
+    edit = prepare_config_edit(current, redacted)
+    assert edit.changed is False
+    assert edit.restored == current
+
+
 def test_routing_flags_read_booleans_and_default_missing_ones_to_false() -> None:
     assert routing_flags(_CONFIG) == (True, False)
     assert routing_flags("routing:\n  force-model-prefix: true\n") == (False, True)

@@ -281,12 +281,14 @@ class CliproxyConfigService:
         await self._session.commit()
         try:
             await client.put_config_yaml(updated)
-        except ClaudeSidecarUnavailableError as exc:
-            await self._restore_snapshot(previous)
-            raise CliproxyConfigOperationError(503, "unreachable", "CLIProxyAPI is unreachable") from exc
         except ClaudeSidecarError as exc:
-            await self._restore_snapshot(previous)
-            raise _upstream_error(exc) from exc
+            outcome = "unchanged"
+            if _write_outcome_unknown(exc):
+                outcome = await self._reconcile_upload(client, opened.current, updated)
+            if outcome != "applied":
+                if outcome == "unchanged":
+                    await self._restore_snapshot(previous)
+                raise _upload_failure(exc) from exc
         self._session.add(
             AuditLog(
                 action=audit_action,
@@ -296,6 +298,17 @@ class CliproxyConfigService:
             )
         )
         await self._session.commit()
+
+    async def _reconcile_upload(self, client: _ConfigTransport, before: str, updated: str) -> str:
+        try:
+            live = await client.fetch_config_yaml()
+        except ClaudeSidecarError:
+            return "unknown"
+        if live == updated:
+            return "applied"
+        if live == before:
+            return "unchanged"
+        return "unknown"
 
     async def _restore_snapshot(self, previous: StoredConfigSnapshot | None) -> None:
         if previous is None:
@@ -372,6 +385,19 @@ def _upstream_view(exc: ClaudeSidecarError, *, rollback_available: bool) -> Clip
         message="CLIProxyAPI config request failed",
         rollback_available=rollback_available,
     )
+
+
+_AMBIGUOUS_UPLOAD_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _write_outcome_unknown(exc: ClaudeSidecarError) -> bool:
+    return isinstance(exc, ClaudeSidecarUnavailableError) or exc.status_code in _AMBIGUOUS_UPLOAD_STATUSES
+
+
+def _upload_failure(exc: ClaudeSidecarError) -> CliproxyConfigOperationError:
+    if isinstance(exc, ClaudeSidecarUnavailableError):
+        return CliproxyConfigOperationError(503, "unreachable", "CLIProxyAPI is unreachable")
+    return _upstream_error(exc)
 
 
 def _upstream_error(exc: ClaudeSidecarError) -> CliproxyConfigOperationError:

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from app.core.clients.claude_sidecar import ClaudeSidecarError
+from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.db.models import AuditLog, CliproxyConfigSnapshot, CliproxyConfigWriteClaim
 from app.db.session import SessionLocal
 from app.modules.cliproxy_accounts.config_editor import REDACTED_CHANGED, REDACTED_PLACEHOLDER, REDACTION_MARK
@@ -59,15 +59,28 @@ class _FakeConfigClient:
     puts: list[str] = []
     fetches = 0
     fail_put = False
+    apply_then_timeout = False
+    timeout_unconfirmed = False
+    fail_next_fetch = False
 
     def __init__(self, _config: object) -> None:
         pass
 
     async def fetch_config_yaml(self) -> str:
         self.__class__.fetches += 1
+        if self.__class__.fail_next_fetch:
+            self.__class__.fail_next_fetch = False
+            raise ClaudeSidecarUnavailableError("timed out")
         return self.__class__.yaml
 
     async def put_config_yaml(self, body: str) -> None:
+        if self.__class__.apply_then_timeout:
+            self.__class__.puts.append(body)
+            self.__class__.yaml = body
+            raise ClaudeSidecarUnavailableError("timed out")
+        if self.__class__.timeout_unconfirmed:
+            self.__class__.fail_next_fetch = True
+            raise ClaudeSidecarUnavailableError("timed out")
         if self.__class__.fail_put:
             raise ClaudeSidecarError(500, "rejected")
         self.__class__.puts.append(body)
@@ -79,6 +92,9 @@ def _reset_fake() -> None:
     _FakeConfigClient.puts = []
     _FakeConfigClient.fetches = 0
     _FakeConfigClient.fail_put = False
+    _FakeConfigClient.apply_then_timeout = False
+    _FakeConfigClient.timeout_unconfirmed = False
+    _FakeConfigClient.fail_next_fetch = False
 
 
 def _install_fake(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -422,3 +438,73 @@ async def test_a_live_write_lease_rejects_a_second_replace(async_client, monkeyp
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "config_write_busy"
     assert _FakeConfigClient.puts == []
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_after_the_file_changes_keeps_that_rollback_point(async_client, monkeypatch) -> None:
+    _install_fake(monkeypatch)
+    await _enable(async_client)
+    current = (await async_client.get("/api/cliproxy/config")).json()
+    first = current["yaml"].replace("debug: false", "debug: true", 1)
+    assert (
+        await async_client.put(
+            "/api/cliproxy/config",
+            json={"yaml": first, "contentSha256": current["contentSha256"], "confirm": True},
+        )
+    ).status_code == 200
+    applied = _FakeConfigClient.yaml
+
+    edited = (await async_client.get("/api/cliproxy/config")).json()
+    _FakeConfigClient.apply_then_timeout = True
+    timed_out = await async_client.put(
+        "/api/cliproxy/config",
+        json={
+            "yaml": edited["yaml"].replace("port: 8317", "port: 9999", 1),
+            "contentSha256": edited["contentSha256"],
+            "confirm": True,
+        },
+    )
+    assert timed_out.status_code == 200
+    assert "port: 9999" in _FakeConfigClient.yaml
+
+    async with SessionLocal() as session:
+        snapshot = (await session.execute(select(CliproxyConfigSnapshot))).scalars().one()
+    assert snapshot.content_sha256 == _sha(applied)
+
+    _FakeConfigClient.apply_then_timeout = False
+    restored = await async_client.post("/api/cliproxy/config/rollback", json={"confirm": True})
+    assert restored.status_code == 200
+    assert _FakeConfigClient.yaml == applied
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_timeout_keeps_the_pre_upload_snapshot(async_client, monkeypatch) -> None:
+    _install_fake(monkeypatch)
+    await _enable(async_client)
+    current = (await async_client.get("/api/cliproxy/config")).json()
+    first = current["yaml"].replace("debug: false", "debug: true", 1)
+    assert (
+        await async_client.put(
+            "/api/cliproxy/config",
+            json={"yaml": first, "contentSha256": current["contentSha256"], "confirm": True},
+        )
+    ).status_code == 200
+    applied = _FakeConfigClient.yaml
+
+    edited = (await async_client.get("/api/cliproxy/config")).json()
+    _FakeConfigClient.timeout_unconfirmed = True
+    failed = await async_client.put(
+        "/api/cliproxy/config",
+        json={
+            "yaml": edited["yaml"].replace("port: 8317", "port: 9999", 1),
+            "contentSha256": edited["contentSha256"],
+            "confirm": True,
+        },
+    )
+    assert failed.status_code == 503
+    assert _FakeConfigClient.yaml == applied
+
+    async with SessionLocal() as session:
+        snapshot = (await session.execute(select(CliproxyConfigSnapshot))).scalars().one()
+    assert snapshot.content_sha256 == _sha(applied)
+    assert snapshot.content_sha256 != _sha(_CONFIG)
