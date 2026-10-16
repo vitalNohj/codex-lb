@@ -226,6 +226,49 @@ async def test_request_logs_api_returns_claude_sidecar_account_label(async_clien
     latest = response.json()["requests"][0]
     assert latest["source"] == "claude_sidecar"
     assert latest["sidecarAccountLabel"] == "claude@example.com"
+    assert latest["sidecarProvider"] is None
+    assert latest["sidecarAuthIndex"] is None
+
+
+@pytest.mark.asyncio
+async def test_request_logs_api_prefers_dispatch_credential_over_usage_event(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="codexlb-uuid-dispatch-credential",
+            model="grok-4",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            transport="http",
+            source="claude_sidecar",
+            sidecar_provider="xai",
+            sidecar_auth_index="idx-2",
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="cpa-other",
+                timestamp=now + timedelta(seconds=1),
+                auth_index="0",
+                source="claude@example.com",
+                total_tokens=15,
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=1")
+    assert response.status_code == 200
+    latest = response.json()["requests"][0]
+    assert latest["sidecarProvider"] == "xai"
+    assert latest["sidecarAuthIndex"] == "idx-2"
+    assert latest["sidecarAccountLabel"] == "xai/idx-2"
 
 
 @pytest.mark.asyncio

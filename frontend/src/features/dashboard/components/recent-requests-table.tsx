@@ -105,6 +105,18 @@ function sidecarSourceDisplay(source: string | null | undefined, accountLabel?: 
   return SIDECAR_SOURCE_LABELS[source] ?? source;
 }
 
+function credentialFacet(request: RequestLog | null | undefined): string | null {
+  if (!request) {
+    return null;
+  }
+  const provider = request.sidecarProvider?.trim() ?? "";
+  const authIndex = request.sidecarAuthIndex?.trim() ?? "";
+  if (provider && authIndex) {
+    return `${provider}/${authIndex}`;
+  }
+  return provider || authIndex || null;
+}
+
 function sidecarAccountLabel(request: RequestLog): string | null {
   const source = request.source;
   if (!source || isDisabledCapabilityRequestSource(source)) {
@@ -116,6 +128,10 @@ function sidecarAccountLabel(request: RequestLog): string | null {
   const providerLabel = SIDECAR_ACCOUNT_LABELS[source];
   if (!providerLabel) {
     return null;
+  }
+  const facet = credentialFacet(request);
+  if (source === "claude_sidecar" && facet) {
+    return `${providerLabel}: ${facet}`;
   }
   if (source === "claude_sidecar" && request.sidecarAccountLabel) {
     return `${providerLabel}: ${request.sidecarAccountLabel}`;
@@ -415,7 +431,9 @@ export function RecentRequestsTable({
               const time = formatTimeLong(request.requestedAt);
               const sidecarLabel = sidecarAccountLabel(request);
               const sidecarIdentity =
-                request.source === "claude_sidecar" ? request.sidecarAccountLabel : null;
+                request.source === "claude_sidecar"
+                  ? credentialFacet(request) ?? request.sidecarAccountLabel
+                  : null;
               const accountLabel = sidecarLabel
                 ? sidecarLabel
                 : request.accountId
@@ -685,6 +703,9 @@ export function RecentRequestsTable({
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
                 <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source, selectedRequest?.sidecarAccountLabel) ?? "—"} />
+                {credentialFacet(selectedRequest) ? (
+                  <RequestDetailField label="Credential" value={credentialFacet(selectedRequest) ?? ""} mono />
+                ) : null}
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequestError.errorCode ?? "—"} mono />
               </div>

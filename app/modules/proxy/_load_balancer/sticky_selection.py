@@ -1144,6 +1144,36 @@ async def run_sticky_selection_path(
     )
 
 
+_BOUNDED_SIDECAR_STICKY_KINDS = frozenset(
+    {
+        StickySessionKind.PROMPT_CACHE,
+        StickySessionKind.STICKY_THREAD,
+    }
+)
+
+
+def _is_sidecar_pool_account(account_id: str, sidecar_account_ids: Collection[str] | None) -> bool:
+    return sidecar_account_ids is not None and account_id in sidecar_account_ids
+
+
+def _sidecar_sticky_persist_allowed(
+    account_id: str,
+    *,
+    sidecar_account_ids: Collection[str] | None,
+    sticky_kind: StickySessionKind | None,
+) -> bool:
+    """Sidecar credentials may pin only bounded-TTL sticky kinds.
+
+    A hard ``CODEX_SESSION`` row is an account foreign key. CLIProxyAPI
+    credential ids are not ``accounts`` rows, so they must not be written
+    into that kind. Codex accounts (absent from the sidecar set) are unchanged.
+    """
+
+    if not _is_sidecar_pool_account(account_id, sidecar_account_ids):
+        return True
+    return sticky_kind in _BOUNDED_SIDECAR_STICKY_KINDS
+
+
 async def _select_with_stickiness(
     *,
     states: list[AccountState],
@@ -1169,6 +1199,7 @@ async def _select_with_stickiness(
     allow_usage_exhaustion_error: bool = True,
     usage_exhaustion_states: Iterable[AccountState] | None = None,
     sticky_refresh_skip_deadline: datetime | None = None,
+    sidecar_account_ids: Collection[str] | None = None,
 ) -> _StickySelectionOutcome:
     if not sticky_key or not sticky_repo:
         return _StickySelectionOutcome(
@@ -1198,6 +1229,12 @@ async def _select_with_stickiness(
         persist_account_id: str | None = None,
         refresh_skip_deadline: datetime | None = None,
     ) -> _StickySelectionOutcome:
+        if persist_account_id is not None and not _sidecar_sticky_persist_allowed(
+            persist_account_id,
+            sidecar_account_ids=sidecar_account_ids,
+            sticky_kind=sticky_kind,
+        ):
+            persist_account_id = None
         mutation = pending_mutation
         if persist_account_id is not None:
             mutation = _StickyMutation(
@@ -1218,6 +1255,14 @@ async def _select_with_stickiness(
         sticky_refresh_skip_deadline = None
     else:
         existing = sticky_existing_account_id if isinstance(sticky_existing_account_id, str) else None
+    if (
+        isinstance(existing, str)
+        and sticky_kind == StickySessionKind.CODEX_SESSION
+        and _is_sidecar_pool_account(existing, sidecar_account_ids)
+    ):
+        # A hard session pin cannot name a CLIProxyAPI credential. Ignore it
+        # and do not overwrite a Codex mapping with that id.
+        existing = None
     # When the pinned account is temporarily unavailable (rate-limited,
     # error backoff) but still in the pool, pick a fallback WITHOUT
     # overwriting the sticky mapping so the next request returns to the
@@ -1450,8 +1495,14 @@ async def _select_with_stickiness(
         allow_usage_exhaustion_error=allow_usage_exhaustion_error,
         usage_exhaustion_states=usage_exhaustion_states,
     )
-    if persist_fallback and chosen.account is not None and chosen.account.account_id in account_map:
-        return finish_selection(chosen, persist_account_id=chosen.account.account_id)
+    chosen_id = chosen.account.account_id if chosen.account is not None else None
+    sidecar_ttl_persist = (
+        chosen_id is not None
+        and _is_sidecar_pool_account(chosen_id, sidecar_account_ids)
+        and sticky_kind in _BOUNDED_SIDECAR_STICKY_KINDS
+    )
+    if persist_fallback and chosen_id is not None and (chosen_id in account_map or sidecar_ttl_persist):
+        return finish_selection(chosen, persist_account_id=chosen_id)
     if preserve_existing_mapping_on_fallback and chosen.account is not None and existing is not None:
         # Spillover is deliberately request-local. The alternate may create
         # its own hard response/file/bridge owner, but local cap pressure

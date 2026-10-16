@@ -590,6 +590,39 @@ describe("RecentRequestsTable", () => {
     expect(bareCell.querySelector(".privacy-blur")).toBeNull();
   });
 
+  it("shows the dispatch credential instead of the usage-event label", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={1}
+        accounts={[]}
+        requests={[
+          {
+            ...VIEW_MODE_REQUEST,
+            accountId: null,
+            planType: null,
+            requestId: "req-credential",
+            model: "grok-4",
+            source: "claude_sidecar",
+            sidecarAccountLabel: "claude@example.com",
+            sidecarProvider: "xai",
+            sidecarAuthIndex: "idx-2",
+            apiKeyName: "xAI Key",
+          },
+        ]}
+      />,
+    );
+
+    const row = screen.getByText("grok-4").closest("tr");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getAllByRole("cell")[1]).toHaveTextContent("CLIProxyAPI: xai/idx-2");
+    expect(within(row as HTMLElement).getAllByRole("cell")[1]).not.toHaveTextContent("claude@example.com");
+
+    const dialog = openRequestDetails();
+    expect(within(dialog).getByText("Credential")).toBeInTheDocument();
+    expect(within(dialog).getByText("xai/idx-2")).toBeInTheDocument();
+  });
+
   it("shows TTFT and output-token TPS beside tokens", () => {
     render(
       <RecentRequestsTable

@@ -189,6 +189,8 @@ export const RequestLogSchema = z.object({
   upstreamModel: z.string().nullable().optional().default(null),
   source: z.string().nullable().optional().default(null),
   sidecarAccountLabel: z.string().nullable().optional(),
+  sidecarProvider: z.string().nullable().optional(),
+  sidecarAuthIndex: z.string().nullable().optional(),
   modelSourceId: z.string().nullable().optional(),
   modelSourceKind: z.string().nullable().optional(),
   transport: z.string().nullable().optional().default(null),
