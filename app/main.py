@@ -110,6 +110,7 @@ from app.modules.proxy.ring_membership import (
     RING_STALE_THRESHOLD_SECONDS,
     RingMembershipService,
 )
+from app.modules.quota_feed import api as quota_feed_api
 from app.modules.quota_planner import api as quota_planner_api
 from app.modules.quota_planner.scheduler import build_quota_planner_scheduler
 from app.modules.rate_limit_reset_credits import api as rate_limit_reset_credits_api
@@ -945,6 +946,7 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
     app.include_router(request_logs_api.router)
     app.include_router(request_logs_api.conversations_router)
     app.include_router(quota_planner_api.router)
+    app.include_router(quota_feed_api.router)
     app.include_router(reports_api.router)
     app.include_router(conversation_archive_api.router)
     app.include_router(runtime_api.router)
