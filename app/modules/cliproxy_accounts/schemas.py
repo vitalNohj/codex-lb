@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field
@@ -7,6 +8,16 @@ from pydantic import Field
 from app.modules.shared.schemas import DashboardModel
 
 CliproxyAccountsStatus = Literal["healthy", "not_configured", "unauthorized", "unreachable", "error"]
+
+
+class CliproxyQuotaWindow(DashboardModel):
+    """One Grok consumer window for a credential card."""
+
+    id: str
+    label: str
+    kind: str
+    percent_remaining: float
+    resets_at: datetime | None = None
 
 
 class CliproxyCredential(DashboardModel):
@@ -25,6 +36,10 @@ class CliproxyCredential(DashboardModel):
     prefix: str | None = None
     models: list[str] = Field(default_factory=list)
     models_error: str | None = None
+    quota_windows: list[CliproxyQuotaWindow] = Field(default_factory=list)
+    prepaid_credits: int | None = None
+    usage_tokens: int | None = None
+    usage_requests: int | None = None
 
 
 class CliproxyProviderCredentials(DashboardModel):

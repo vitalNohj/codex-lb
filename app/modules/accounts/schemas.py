@@ -81,6 +81,16 @@ class AccountAdditionalQuota(DashboardModel):
     secondary_window: AccountAdditionalWindow | None = None
 
 
+class SidecarQuotaWindow(DashboardModel):
+    """One provider quota window shown on a credential card."""
+
+    id: str
+    label: str
+    kind: str
+    percent_remaining: float
+    resets_at: datetime | None = None
+
+
 class SidecarAuthAccount(DashboardModel):
     name: str
     auth_index: str | None = None
@@ -99,6 +109,8 @@ class SidecarAuthAccount(DashboardModel):
     usage_source: str | None = None
     primary_remaining_percent: float | None = None
     secondary_remaining_percent: float | None = None
+    quota_windows: list[SidecarQuotaWindow] = Field(default_factory=list)
+    prepaid_credits: int | None = None
     primary_used_tokens: int | None = None
     secondary_used_tokens: int | None = None
     primary_token_budget: int | None = None

@@ -399,7 +399,8 @@ class AccountsService:
         settings = await self._settings_repo.get_or_create()
         snapshot = snapshot_from_json(settings.claude_sidecar_quota_state_json)
         accounts = snapshot.accounts if snapshot is not None else ()
-        return build_cliproxy_provider_summaries(settings, accounts)
+        holds = snapshot.rate_limit_holds if snapshot is not None else ()
+        return build_cliproxy_provider_summaries(settings, accounts, holds)
 
     async def get_account_trends(self, account_id: str) -> AccountTrendsResponse | None:
         account = await self._get_visible_account(account_id)

@@ -13,7 +13,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot, snapshot_from_json
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarQuotaSnapshot,
+    SidecarRateLimitHold,
+    credential_provider,
+    snapshot_from_json,
+)
 
 # CLIProxyAPI's answer when no enabled auth registers the requested model.
 _UNKNOWN_PROVIDER_MARKER = "unknown provider for model"
@@ -31,16 +37,20 @@ def all_claude_auths_held_until(snapshot: SidecarQuotaSnapshot | None) -> dateti
     if not no_claude_auth_enabled(snapshot):
         return None
     assert snapshot is not None
-    names = {account.name for account in snapshot.accounts if account.name}
-    releases = [_as_utc(hold.until) for hold in snapshot.rate_limit_holds if hold.name in names and not hold.released]
+    names = {account.name for account in _claude_accounts(snapshot)}
+    releases = [_as_utc(hold.until) for hold in _claude_holds(snapshot) if hold.name in names and not hold.released]
     return min(releases) if releases else None
 
 
 def no_claude_auth_enabled(snapshot: SidecarQuotaSnapshot | None) -> bool:
-    """Whether a healthy snapshot lists Claude auths and every one is disabled."""
+    """Whether a healthy snapshot lists Claude auths and every one is disabled.
+
+    xAI credentials in the same snapshot do not count. An enabled xAI auth must
+    not hide the fact that every Claude auth is held.
+    """
     if snapshot is None or snapshot.status != "healthy":
         return False
-    named = [account for account in snapshot.accounts if account.name]
+    named = _claude_accounts(snapshot)
     return bool(named) and all(account.disabled for account in named)
 
 
@@ -75,6 +85,16 @@ class StoredSnapshotReader:
             self._snapshot = snapshot_from_json(raw)
             self._raw = raw
         return self._snapshot
+
+
+def _claude_accounts(snapshot: SidecarQuotaSnapshot) -> list[SidecarAuthQuota]:
+    return [
+        account for account in snapshot.accounts if account.name and credential_provider(account.provider) == "claude"
+    ]
+
+
+def _claude_holds(snapshot: SidecarQuotaSnapshot) -> list[SidecarRateLimitHold]:
+    return [hold for hold in snapshot.rate_limit_holds if credential_provider(hold.provider) == "claude"]
 
 
 def _as_utc(value: datetime) -> datetime:

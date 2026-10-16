@@ -68,6 +68,14 @@ export const AccountAdditionalQuotaSchema = z.object({
   secondaryWindow: AccountAdditionalWindowSchema.nullable().optional(),
 });
 
+export const SidecarQuotaWindowSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.string(),
+  percentRemaining: z.number(),
+  resetsAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
 export const SidecarAuthAccountSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
@@ -93,6 +101,8 @@ export const SidecarAuthAccountSchema = z.object({
   resetAtPrimary: z.string().datetime({ offset: true }).nullable().optional(),
   resetAtSecondary: z.string().datetime({ offset: true }).nullable().optional(),
   confidence: z.string().nullable().optional(),
+  quotaWindows: z.array(SidecarQuotaWindowSchema).default([]),
+  prepaidCredits: z.number().int().nullable().optional(),
 });
 
 export const AccountSummarySchema = z.object({

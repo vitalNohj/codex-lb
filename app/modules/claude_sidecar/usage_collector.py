@@ -16,6 +16,7 @@ from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.utils.time import utcnow
 from app.db.session import get_background_session
+from app.modules.claude_sidecar.grok_credits import note_xai_usage_queue
 from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW
 from app.modules.claude_sidecar.usage_queue import parse_usage_queue_records
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
@@ -112,6 +113,7 @@ class ClaudeSidecarUsageCollector:
                     logger.warning("Claude sidecar usage queue error: %s", exc.message)
                 return
             records = parse_usage_queue_records(raw_records)
+            note_xai_usage_queue(raw_records)
             if records:
                 try:
                     async with get_background_session() as session:

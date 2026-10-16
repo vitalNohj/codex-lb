@@ -447,6 +447,8 @@ class ClaudeSidecarClient:
         method: str,
         url: str,
         header: Mapping[str, str],
+        data: str | None = None,
+        decode_json: bool = True,
     ) -> JsonValue:
         """Perform an upstream HTTP request through CLIProxyAPI's management passthrough.
 
@@ -454,6 +456,10 @@ class ClaudeSidecarClient:
         ``$TOKEN$`` marker in headers with that credential's token, and routes the
         request through the account's configured ``proxy-url``. codex-lb therefore
         never reads the credential file nor calls the upstream host directly.
+
+        ``data`` is the raw upstream body (for example a grpc-web-text frame).
+        ``decode_json`` false returns that upstream body as text, which is how a
+        non-JSON quota payload survives the management response.
         """
         endpoint = f"{self.base_url}/v0/management/api-call"
         payload: dict[str, JsonValue] = {
@@ -462,6 +468,8 @@ class ClaudeSidecarClient:
             "url": url,
             "header": dict(header),
         }
+        if data is not None:
+            payload["data"] = data
         try:
             async with lease_http_session() as session:
                 async with session.post(
@@ -493,6 +501,8 @@ class ClaudeSidecarClient:
             )
         if not isinstance(body, str):
             raise ClaudeSidecarError(502, "Missing 'body' in Claude sidecar api-call response", body=data)
+        if not decode_json:
+            return body
         try:
             return cast(JsonValue, json.loads(body))
         except json.JSONDecodeError as exc:

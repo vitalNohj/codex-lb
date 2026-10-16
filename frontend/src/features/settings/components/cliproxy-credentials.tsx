@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { useCliproxyCredentials } from "@/features/settings/hooks/use-settings";
 import type { CliproxyCredential } from "@/features/settings/schemas";
+import { formatPercentNullable, formatQuotaResetLabel } from "@/utils/formatters";
 
 const HEALTH_LABELS: Record<string, string> = {
   active: "Healthy",
@@ -44,6 +45,32 @@ function CredentialRow({ credential }: { credential: CliproxyCredential }) {
       </div>
       {credential.prefix ? (
         <p className="font-mono text-xs text-muted-foreground">prefix {credential.prefix}</p>
+      ) : null}
+      {(credential.quotaWindows?.length ?? 0) > 0 ? (
+        <ul className="space-y-1" aria-label={`Quota for ${label}`}>
+          {credential.quotaWindows.map((window) => (
+            <li key={window.id} className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">{window.label}</span>
+              <span className="tabular-nums font-medium">
+                {formatPercentNullable(window.percentRemaining)} left
+                {window.resetsAt ? ` · resets ${formatQuotaResetLabel(window.resetsAt)}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {credential.prepaidCredits != null ? (
+        <p className="text-xs text-muted-foreground">
+          Prepaid <span className="font-medium tabular-nums text-foreground">{credential.prepaidCredits}</span>
+        </p>
+      ) : null}
+      {credential.usageTokens != null || credential.usageRequests != null ? (
+        <p className="text-xs text-muted-foreground">
+          This window{" "}
+          <span className="font-medium tabular-nums text-foreground">
+            {credential.usageRequests ?? 0} requests · {(credential.usageTokens ?? 0).toLocaleString()} tokens
+          </span>
+        </p>
       ) : null}
       {credential.models.length > 0 ? (
         <ul className="flex flex-wrap gap-1.5" aria-label={`Models for ${label}`}>

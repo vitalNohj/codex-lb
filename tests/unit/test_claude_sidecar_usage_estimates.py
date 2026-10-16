@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -332,3 +333,31 @@ def test_oauth_usage_overrides_aggregate_even_with_plan_budget() -> None:
     assert estimates.aggregate.primary_remaining_percent == 33.0
     assert estimates.aggregate.secondary_remaining_percent == 98.0
     assert estimates.aggregate.confidence == "oauth"
+
+
+def test_xai_row_does_not_change_the_claude_oauth_estimate() -> None:
+    oauth_usage = SidecarOAuthUsage(
+        five_hour=SidecarOAuthUsageBucket(remaining_percent=57.0, resets_at=NOW + timedelta(hours=2)),
+        seven_day=SidecarOAuthUsageBucket(remaining_percent=82.0, resets_at=NOW + timedelta(days=6)),
+    )
+    claude = _snapshot("auth-1", oauth_usage=oauth_usage)
+    xai = replace(
+        claude.accounts[0],
+        provider="xai",
+        name="grok.json",
+        email="grok@example.com",
+        quota_exceeded=True,
+        oauth_usage=None,
+        next_recover_at=NOW + timedelta(hours=1),
+    )
+    estimates = build_claude_usage_estimates(
+        events=[_event("auth-1", 50)],
+        plans=[_plan("auth-1")],
+        snapshot=replace(claude, accounts=(xai, claude.accounts[0])),
+        now=NOW,
+    )
+
+    assert len(estimates.accounts) == 1
+    assert estimates.accounts[0].primary_remaining_percent == 57.0
+    assert estimates.accounts[0].secondary_remaining_percent == 82.0
+    assert estimates.accounts[0].confidence == "oauth"

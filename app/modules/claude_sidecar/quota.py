@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -41,6 +41,47 @@ class SidecarOAuthUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class GrokCreditWindow:
+    """One Grok consumer quota window, in quota-axi's normalized shape."""
+
+    id: str
+    label: str
+    kind: str
+    percent_used: float
+    percent_remaining: float
+    starts_at: datetime | None = None
+    resets_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GrokTokenRollup:
+    """Tokens this process has seen for one xAI auth inside the current window."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+    request_count: int = 0
+    window_start: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GrokCreditsQuota:
+    """Parsed GetGrokCreditsConfig plus a usage-queue token rollup.
+
+    ``observed_limit`` is set only for the poll that just saw a 429. It is not
+    stored, so a later poll does not treat an old signal as a new one.
+    """
+
+    windows: tuple[GrokCreditWindow, ...] = ()
+    prepaid_credits: int | None = None
+    refreshed_at: datetime | None = None
+    token_rollup: GrokTokenRollup | None = None
+    observed_limit: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SidecarAuthQuota:
     name: str
     auth_index: str | None
@@ -62,6 +103,33 @@ class SidecarAuthQuota:
     excluded_models: tuple[str, ...] = ()
     excluded_models_available: bool = False
     prefix: str | None = None
+    grok_credits: GrokCreditsQuota | None = None
+
+
+def credential_provider(value: str | None) -> str:
+    """Return the hold/account provider, treating a missing value as Claude.
+
+    Snapshots written before provider tags existed omit the field. Those rows
+    are Claude holds and must keep matching Claude accounts.
+    """
+
+    text = (value or "").strip().lower()
+    return text or "claude"
+
+
+def claude_quota_snapshot(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:
+    """Return the Claude rows of a mixed snapshot.
+
+    xAI credentials share the stored snapshot once their poll is enabled. Claude
+    quota, estimates, and the Claude account card keep reading only Claude rows,
+    which is every row while that poll is off.
+    """
+
+    accounts = tuple(account for account in snapshot.accounts if credential_provider(account.provider) == "claude")
+    holds = tuple(hold for hold in snapshot.rate_limit_holds if credential_provider(hold.provider) == "claude")
+    if len(accounts) == len(snapshot.accounts) and len(holds) == len(snapshot.rate_limit_holds):
+        return snapshot
+    return replace(snapshot, accounts=accounts, rate_limit_holds=holds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,11 +139,19 @@ class SidecarRateLimitHold:
     ``released`` is set when an operator resumes that auth before ``until``.
     The next poll must not disable the auth again while the exhausted window
     still ends at that same instant.
+
+    ``provider`` keeps an xAI hold from disabling a Claude auth that happens to
+    share a file name, and the reverse. ``kind`` is ``free-usage-exhausted`` or
+    ``backoff`` for xAI; Claude window holds leave it unset. ``backoff_level``
+    is the conductor quota backoff step for a generic xAI 429.
     """
 
     name: str
     until: datetime
     released: bool
+    provider: str = "claude"
+    kind: str | None = None
+    backoff_level: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,7 +280,11 @@ def dashboard_status_for_auth(
     status = dashboard_auth_status(auth, now=now)
     if status == "reauth_required":
         return status
-    if any(hold.name == auth.name and not hold.released for hold in holds):
+    provider = credential_provider(auth.provider)
+    if any(
+        hold.name == auth.name and not hold.released and credential_provider(hold.provider) == provider
+        for hold in holds
+    ):
         return "rate_limited"
     return status
 
@@ -450,17 +530,11 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "excluded_models": list(account.excluded_models),
                 "excluded_models_available": account.excluded_models_available,
                 "prefix": account.prefix,
+                **_grok_credits_json_fields(account.grok_credits),
             }
             for account in snapshot.accounts
         ],
-        "rate_limit_holds": [
-            {
-                "name": hold.name,
-                "until": hold.until.isoformat(),
-                "released": hold.released,
-            }
-            for hold in snapshot.rate_limit_holds
-        ],
+        "rate_limit_holds": [_hold_to_json(hold) for hold in snapshot.rate_limit_holds],
     }
     return json.dumps(payload, separators=(",", ":"))
 
@@ -529,6 +603,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     excluded_models=tuple(normalize_excluded_models(entry.get("excluded_models"))),
                     excluded_models_available=bool(entry.get("excluded_models_available", False)),
                     prefix=_str(entry.get("prefix")),
+                    grok_credits=_grok_credits_from_json(entry.get("grok_credits")),
                 )
             )
     message_field = parsed.get("message")
@@ -558,6 +633,135 @@ def _rate_limit_holds_from_json(raw: JsonValue) -> tuple[SidecarRateLimitHold, .
                 name=name,
                 until=until,
                 released=entry.get("released") is True,
+                provider=credential_provider(_str(entry.get("provider"))),
+                kind=_str(entry.get("kind")),
+                backoff_level=_int(entry.get("backoff_level")) or 0,
             )
         )
     return tuple(holds)
+
+
+def _hold_to_json(hold: SidecarRateLimitHold) -> dict[str, JsonValue]:
+    """Persist a hold. Claude rows stay in the historical three-key shape."""
+
+    payload: dict[str, JsonValue] = {
+        "name": hold.name,
+        "until": hold.until.isoformat(),
+        "released": hold.released,
+    }
+    if credential_provider(hold.provider) != "claude":
+        payload["provider"] = credential_provider(hold.provider)
+    if hold.kind is not None:
+        payload["kind"] = hold.kind
+    if hold.backoff_level != 0:
+        payload["backoff_level"] = hold.backoff_level
+    return payload
+
+
+def _grok_credits_json_fields(credits: GrokCreditsQuota | None) -> dict[str, JsonValue]:
+    encoded = _grok_credits_to_json(credits)
+    if encoded is None:
+        return {}
+    return {"grok_credits": encoded}
+
+
+def _grok_credits_to_json(credits: GrokCreditsQuota | None) -> dict[str, JsonValue] | None:
+    if credits is None:
+        return None
+    if (
+        not credits.windows
+        and credits.prepaid_credits is None
+        and credits.token_rollup is None
+        and credits.refreshed_at is None
+    ):
+        return None
+    return {
+        "windows": [_grok_window_to_json(window) for window in credits.windows],
+        "prepaid_credits": credits.prepaid_credits,
+        "refreshed_at": credits.refreshed_at.isoformat() if credits.refreshed_at else None,
+        "token_rollup": _grok_rollup_to_json(credits.token_rollup),
+    }
+
+
+def _grok_window_to_json(window: GrokCreditWindow) -> dict[str, JsonValue]:
+    return {
+        "id": window.id,
+        "label": window.label,
+        "kind": window.kind,
+        "percent_used": window.percent_used,
+        "percent_remaining": window.percent_remaining,
+        "starts_at": window.starts_at.isoformat() if window.starts_at else None,
+        "resets_at": window.resets_at.isoformat() if window.resets_at else None,
+    }
+
+
+def _grok_rollup_to_json(rollup: GrokTokenRollup | None) -> dict[str, JsonValue] | None:
+    if rollup is None:
+        return None
+    return {
+        "input_tokens": rollup.input_tokens,
+        "output_tokens": rollup.output_tokens,
+        "reasoning_tokens": rollup.reasoning_tokens,
+        "cached_tokens": rollup.cached_tokens,
+        "total_tokens": rollup.total_tokens,
+        "request_count": rollup.request_count,
+        "window_start": rollup.window_start.isoformat() if rollup.window_start else None,
+    }
+
+
+def _grok_credits_from_json(raw: JsonValue) -> GrokCreditsQuota | None:
+    if not is_json_mapping(raw):
+        return None
+    windows_raw = raw.get("windows")
+    windows: list[GrokCreditWindow] = []
+    if isinstance(windows_raw, list):
+        for entry in windows_raw:
+            window = _grok_window_from_json(entry)
+            if window is not None:
+                windows.append(window)
+    prepaid = _int(raw.get("prepaid_credits"))
+    rollup = _grok_rollup_from_json(raw.get("token_rollup"))
+    refreshed_at = _parse_datetime(raw.get("refreshed_at"))
+    if not windows and prepaid is None and rollup is None and refreshed_at is None:
+        return None
+    return GrokCreditsQuota(
+        windows=tuple(windows),
+        prepaid_credits=prepaid,
+        refreshed_at=refreshed_at,
+        token_rollup=rollup,
+    )
+
+
+def _grok_window_from_json(raw: JsonValue) -> GrokCreditWindow | None:
+    if not is_json_mapping(raw):
+        return None
+    window_id = _str(raw.get("id"))
+    label = _str(raw.get("label"))
+    kind = _str(raw.get("kind"))
+    percent_used = _float(raw.get("percent_used"))
+    percent_remaining = _float(raw.get("percent_remaining"))
+    if window_id is None or label is None or kind is None or percent_used is None or percent_remaining is None:
+        return None
+    return GrokCreditWindow(
+        id=window_id,
+        label=label,
+        kind=kind,
+        percent_used=percent_used,
+        percent_remaining=percent_remaining,
+        starts_at=_parse_datetime(raw.get("starts_at")),
+        resets_at=_parse_datetime(raw.get("resets_at")),
+    )
+
+
+def _grok_rollup_from_json(raw: JsonValue) -> GrokTokenRollup | None:
+    if not is_json_mapping(raw):
+        return None
+    return GrokTokenRollup(
+        input_tokens=_int(raw.get("input_tokens")) or 0,
+        output_tokens=_int(raw.get("output_tokens")) or 0,
+        reasoning_tokens=_int(raw.get("reasoning_tokens")) or 0,
+        cached_tokens=_int(raw.get("cached_tokens")) or 0,
+        total_tokens=_int(raw.get("total_tokens")) or 0,
+        request_count=_int(raw.get("request_count")) or 0,
+        window_start=_parse_datetime(raw.get("window_start")),
+    )

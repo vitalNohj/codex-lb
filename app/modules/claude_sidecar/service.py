@@ -19,6 +19,8 @@ from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
     SidecarRateLimitHold,
+    claude_quota_snapshot,
+    credential_provider,
     dashboard_status_for_auth,
     snapshot_from_json,
     snapshot_to_json,
@@ -142,6 +144,7 @@ class ClaudeSidecarService:
                 message="Claude sidecar quota has not been polled yet",
                 checked_at=settings.claude_sidecar_quota_checked_at,
             )
+        snapshot = claude_quota_snapshot(snapshot)
         estimates_by_key: dict[str, ClaudeAuthUsageEstimate] = {}
         if self._usage_repository is not None:
             now = datetime.now(timezone.utc)
@@ -180,6 +183,7 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(settings.claude_sidecar_quota_state_json)
         if snapshot is None:
             return build_anthropic_oauth_usage_payload(None)
+        snapshot = claude_quota_snapshot(snapshot)
 
         active_snapshot = _snapshot_without_paused(snapshot)
         if not active_snapshot.accounts:
@@ -362,8 +366,20 @@ class ClaudeSidecarService:
         snapshot = snapshot_from_json(current.claude_sidecar_quota_state_json)
         if snapshot is None:
             return
-        account = next((auth for auth in snapshot.accounts if auth.name == name), None)
-        updated = [replace(auth, disabled=paused) if auth.name == name else auth for auth in snapshot.accounts]
+        account = next(
+            (
+                auth
+                for auth in snapshot.accounts
+                if auth.name == name and credential_provider(auth.provider) == "claude"
+            ),
+            None,
+        )
+        updated = [
+            replace(auth, disabled=paused)
+            if auth.name == name and credential_provider(auth.provider) == "claude"
+            else auth
+            for auth in snapshot.accounts
+        ]
         holds = holds_after_operator_change(
             snapshot.rate_limit_holds,
             name,
