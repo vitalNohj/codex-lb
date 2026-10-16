@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.clients.claude_sidecar import (
+    ClaudeSidecarClient,
+    ClaudeSidecarConfig,
+    ClaudeSidecarUnavailableError,
+)
 from app.core.exceptions import DashboardBadRequestError
+from app.modules.cliproxy_accounts.management import CliproxyManagement
 from app.modules.cliproxy_accounts.oauth_flow import project_callback, project_cancel, project_start, project_status
 from app.modules.cliproxy_accounts.providers import oauth_provider
 from app.modules.cliproxy_accounts.schemas import (
@@ -104,6 +110,26 @@ def test_oauth_projection_drops_tokens_and_maps_pending_ok_error_cancel():
     callback = project_callback({"status": "ok", "access_token": "cliproxy-test-access-token"})
     assert callback.status == "pending"
     assert "access_token" not in callback.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_management_refuses_a_missing_key_before_any_request(monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise AssertionError("management call reached the network")
+
+    monkeypatch.setattr("app.modules.cliproxy_accounts.management.lease_http_session", explode)
+    client_config = ClaudeSidecarConfig(
+        enabled=False,
+        base_url="http://127.0.0.1:9",
+        api_key=None,
+        prefixes=(),
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        models_cache_ttl_seconds=1,
+        management_key="  ",
+    )
+    with pytest.raises(ClaudeSidecarUnavailableError, match="not configured"):
+        await CliproxyManagement(ClaudeSidecarClient(client_config)).start_oauth("/v0/management/xai-auth-url")
 
 
 def test_upload_rejects_fields_the_panel_cannot_validate_and_strips_prefix():

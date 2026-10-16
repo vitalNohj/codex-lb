@@ -28,6 +28,7 @@ export function useCliproxyOauth(open: boolean) {
   const queryClient = useQueryClient();
   const [state, setState] = useState<CliproxyOauthState>(INITIAL_OAUTH_STATE);
   const stateRef = useRef<CliproxyOauthState>(INITIAL_OAUTH_STATE);
+  const attemptRef = useRef(0);
   const pollTimerRef = useRef<number | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
   const providersQuery = useQuery({
@@ -60,12 +61,16 @@ export function useCliproxyOauth(open: boolean) {
   }, []);
 
   const poll = useCallback(async () => {
+    const attempt = attemptRef.current;
     const current = stateRef.current;
     if (!current.state) {
       return;
     }
     try {
       const status = await getCliproxyOauthStatus(current.state);
+      if (attempt !== attemptRef.current) {
+        return;
+      }
       if (status.status === "success") {
         setOauthState((prev) => CliproxyOauthStateSchema.parse({ ...prev, status: "success", errorMessage: null }));
         clearPollTimer();
@@ -87,6 +92,9 @@ export function useCliproxyOauth(open: boolean) {
       }
       setOauthState((prev) => CliproxyOauthStateSchema.parse({ ...prev, status: "pending", errorMessage: null }));
     } catch (error) {
+      if (attempt !== attemptRef.current) {
+        return;
+      }
       clearPollTimer();
       clearCountdownTimer();
       setOauthState((prev) =>
@@ -126,6 +134,7 @@ export function useCliproxyOauth(open: boolean) {
   }, [clearCountdownTimer, setOauthState]);
 
   const reset = useCallback(() => {
+    attemptRef.current += 1;
     const current = stateRef.current;
     if ((current.status === "pending" || current.status === "starting") && current.state) {
       void cancelCliproxyOauth(current.state).catch(() => undefined);
@@ -136,11 +145,16 @@ export function useCliproxyOauth(open: boolean) {
   }, [clearCountdownTimer, clearPollTimer, setOauthState]);
 
   const start = useCallback(async (provider: string) => {
+    const attempt = ++attemptRef.current;
     clearPollTimer();
     clearCountdownTimer();
     setOauthState((prev) => CliproxyOauthStateSchema.parse({ ...prev, provider, status: "starting", errorMessage: null }));
     try {
       const response = await startCliproxyOauth(provider);
+      if (attempt !== attemptRef.current) {
+        void cancelCliproxyOauth(response.state).catch(() => undefined);
+        return;
+      }
       const method = response.method === "device" ? "device" : "browser";
       const nextState = CliproxyOauthStateSchema.parse({
         provider: response.provider,
@@ -159,6 +173,9 @@ export function useCliproxyOauth(open: boolean) {
       scheduleCountdownTimer(nextState.expiresInSeconds);
       await poll();
     } catch (error) {
+      if (attempt !== attemptRef.current) {
+        return;
+      }
       clearPollTimer();
       clearCountdownTimer();
       setOauthState((prev) =>
@@ -173,6 +190,7 @@ export function useCliproxyOauth(open: boolean) {
   }, [clearCountdownTimer, clearPollTimer, poll, scheduleCountdownTimer, schedulePollTimer, setOauthState]);
 
   const manualCallback = useCallback(async (callbackUrl: string) => {
+    const attempt = attemptRef.current;
     const current = stateRef.current;
     if (!current.state || !current.provider) {
       throw new Error("Sign-in has not started");
@@ -183,6 +201,9 @@ export function useCliproxyOauth(open: boolean) {
         state: current.state,
         callbackUrl,
       });
+      if (attempt !== attemptRef.current) {
+        return;
+      }
       if (response.status === "error") {
         clearPollTimer();
         clearCountdownTimer();
@@ -198,6 +219,9 @@ export function useCliproxyOauth(open: boolean) {
       setOauthState((prev) => CliproxyOauthStateSchema.parse({ ...prev, status: "pending", errorMessage: null }));
       await poll();
     } catch (error) {
+      if (attempt !== attemptRef.current) {
+        return;
+      }
       clearPollTimer();
       clearCountdownTimer();
       setOauthState((prev) =>

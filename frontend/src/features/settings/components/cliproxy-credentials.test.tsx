@@ -413,4 +413,48 @@ describe("CliproxyCredentials", () => {
     expect(cancels).toHaveLength(1);
     expect(cancels[0]).toContain("state=xai-device-state");
   });
+
+  it("cancels a sign-in that finishes after the dialog closes", async () => {
+    const user = userEvent.setup();
+    const cancels: string[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({ status: "healthy", message: null, providers: [] }),
+      ),
+      http.get("*/api/cliproxy/oauth/providers", () =>
+        HttpResponse.json({
+          providers: [{ provider: "xai", method: "device" }],
+        }),
+      ),
+      http.post("*/api/cliproxy/oauth/xai/authorize", async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return HttpResponse.json({
+          state: "xai-late-state",
+          provider: "xai",
+          method: "device",
+          authorizationUrl: null,
+          verificationUrl: "https://auth.example/device",
+          userCode: "LATE-1111",
+          intervalSeconds: 30,
+          expiresInSeconds: null,
+        });
+      }),
+      http.delete("*/api/cliproxy/oauth/session", ({ request }) => {
+        cancels.push(request.url);
+        return HttpResponse.json({ status: "ok", cancelled: true });
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Sign in" }));
+    await user.click(await screen.findByRole("button", { name: /xAI/ }));
+    await user.click(screen.getByRole("button", { name: "Start sign-in" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await screen.findByRole("button", { name: "Sign in" });
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("LATE-1111")).not.toBeInTheDocument();
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toContain("state=xai-late-state");
+  });
 });

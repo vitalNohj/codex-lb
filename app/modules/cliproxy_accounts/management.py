@@ -96,8 +96,9 @@ def _headers(client: ClaudeSidecarClient) -> dict[str, str]:
         "User-Agent": "codex-lb/claude-sidecar-management",
     }
     management_key = (client.config.management_key or "").strip()
-    if management_key:
-        headers["Authorization"] = f"Bearer {management_key}"
+    if not management_key:
+        raise ClaudeSidecarUnavailableError("CLIProxyAPI management key is not configured")
+    headers["Authorization"] = f"Bearer {management_key}"
     return headers
 
 
