@@ -4,6 +4,7 @@ import pytest
 
 from app.core.clients.cliproxy_routing_config import (
     CliproxyRoutingConfigError,
+    apply_routing_bool_yaml,
     apply_session_affinity_yaml,
 )
 
@@ -89,3 +90,23 @@ def test_missing_direct_flag_is_inserted_when_only_a_nested_key_exists() -> None
     assert "\n  session-affinity: true\n" in updated
     assert "\n    session-affinity: false\n" in updated
     assert updated.index("session-affinity: true") < updated.index("debug: true")
+
+
+def test_force_model_prefix_rewrites_only_its_own_line() -> None:
+    updated = apply_routing_bool_yaml(_CONFIG, "force-model-prefix", True)
+
+    assert "\n  force-model-prefix: true\n" in updated
+    assert "session-affinity: true" in updated
+    assert 'session-affinity-ttl: "1h"' in updated
+    assert "debug: true" in updated
+    assert apply_routing_bool_yaml(updated, "force-model-prefix", False).count("force-model-prefix: false") == 1
+    assert "session-affinity: true" in apply_routing_bool_yaml(updated, "force-model-prefix", False)
+
+
+def test_missing_force_model_prefix_stays_unchanged_when_turning_off() -> None:
+    assert apply_routing_bool_yaml(_CONFIG, "force-model-prefix", False) == _CONFIG
+
+
+def test_unsupported_routing_field_is_rejected() -> None:
+    with pytest.raises(CliproxyRoutingConfigError, match="unsupported"):
+        apply_routing_bool_yaml(_CONFIG, "strategy", True)

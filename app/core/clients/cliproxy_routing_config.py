@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 
 _ROUTING_HEADER = re.compile(r"^routing:[ \t]*(?:#.*)?$")
-_AFFINITY_LINE = re.compile(r"^(?P<indent>[ \t]+)session-affinity:[ \t]*(?P<value>\S+)(?P<trail>[ \t]*#.*)?[ \t]*$")
+ROUTING_BOOL_FIELDS = frozenset({"session-affinity", "force-model-prefix"})
+_FLAG_LINE = {
+    field: re.compile(rf"^(?P<indent>[ \t]+){re.escape(field)}:[ \t]*(?P<value>\S+)(?P<trail>[ \t]*#.*)?[ \t]*$")
+    for field in ROUTING_BOOL_FIELDS
+}
 
 
 class CliproxyRoutingConfigError(ValueError):
@@ -17,27 +21,41 @@ def apply_session_affinity_yaml(text: str, enabled: bool) -> str:
     An inline ``routing`` value is rejected so the caller does not upload a damaged file.
     """
 
+    return apply_routing_bool_yaml(text, "session-affinity", enabled)
+
+
+def apply_routing_bool_yaml(text: str, field: str, enabled: bool) -> str:
+    """Set one top-level ``routing`` boolean without rewriting the rest of the file.
+
+    A missing flag is already off, so requesting false leaves the document unchanged.
+    An inline ``routing`` value is rejected so the caller does not upload a damaged file.
+    ``field`` is limited to ``session-affinity`` and ``force-model-prefix``.
+    """
+
+    if field not in ROUTING_BOOL_FIELDS:
+        raise CliproxyRoutingConfigError(f"unsupported CLIProxyAPI routing field: {field}")
     desired = "true" if enabled else "false"
     lines = text.splitlines(keepends=True)
     routing_at = _find_routing_block(lines)
     if routing_at is None:
         if not enabled:
             return text
-        return _append_routing_block(text, desired)
+        return _append_routing_block(text, field, desired)
 
+    flag_line = _FLAG_LINE[field]
     block_end, child_indent = _routing_block_end(lines, routing_at)
     for index in range(routing_at + 1, block_end):
         content = lines[index].rstrip("\r\n")
         if content.lstrip().startswith("#"):
             continue
-        match = _AFFINITY_LINE.match(content)
+        match = flag_line.match(content)
         if match is None or match.group("indent") != child_indent:
             continue
         if match.group("value").lower() == desired:
             return text
         ending = lines[index][len(content) :]
         trail = match.group("trail") or ""
-        lines[index] = f"{match.group('indent')}session-affinity: {desired}{trail}{ending}"
+        lines[index] = f"{match.group('indent')}{field}: {desired}{trail}{ending}"
         return "".join(lines)
 
     if not enabled:
@@ -45,7 +63,7 @@ def apply_session_affinity_yaml(text: str, enabled: bool) -> str:
     ending = _line_ending(lines[routing_at])
     if not lines[routing_at].endswith(("\n", "\r")):
         lines[routing_at] += ending
-    lines.insert(routing_at + 1, f"{child_indent}session-affinity: {desired}{ending}")
+    lines.insert(routing_at + 1, f"{child_indent}{field}: {desired}{ending}")
     return "".join(lines)
 
 
@@ -79,12 +97,12 @@ def _routing_block_end(lines: list[str], routing_at: int) -> tuple[int, str]:
     return block_end, child_indent
 
 
-def _append_routing_block(text: str, desired: str) -> str:
+def _append_routing_block(text: str, field: str, desired: str) -> str:
     ending = "\r\n" if "\r\n" in text else "\n"
     base = text
     if base and not base.endswith(("\n", "\r")):
         base += ending
-    return f"{base}routing:{ending}  session-affinity: {desired}{ending}"
+    return f"{base}routing:{ending}  {field}: {desired}{ending}"
 
 
 def _line_ending(line: str) -> str:

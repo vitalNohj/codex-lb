@@ -80,6 +80,7 @@ from app.modules.claude_sidecar import api as claude_sidecar_api
 from app.modules.claude_sidecar.quota_poller import build_claude_sidecar_quota_poller
 from app.modules.claude_sidecar.usage_collector import build_claude_sidecar_usage_collector
 from app.modules.cliproxy_accounts import api as cliproxy_accounts_api
+from app.modules.cliproxy_accounts import config_api as cliproxy_config_api
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
@@ -924,6 +925,7 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
     app.include_router(dashboard_api.router)
     app.include_router(claude_sidecar_api.router)
     app.include_router(cliproxy_accounts_api.router)
+    app.include_router(cliproxy_config_api.router)
     app.include_router(openrouter_sidecar_api.router)
     app.include_router(openai_compat_api.router)
     app.include_router(orcarouter_sidecar_api.router)

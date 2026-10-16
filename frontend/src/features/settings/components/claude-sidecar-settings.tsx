@@ -1,5 +1,6 @@
 import { Bot } from "lucide-react";
 
+import { CliproxyConfigEditor } from "@/features/cliproxy-accounts/components/config-editor";
 import { CliproxyCredentials } from "@/features/settings/components/cliproxy-credentials";
 import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
@@ -158,10 +159,11 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
                 onExcludedModelsChange={(name: string, excludedModels: string[]) =>
                   excludedModelsMutation.mutate({ name, excludedModels })
                 }
-              />
-            </SidecarIntegrationCard.Panel>
+            />
+          </SidecarIntegrationCard.Panel>
           ) : null}
         </SidecarIntegrationCard.Fields>
+        {managementKeyConfigured ? <CliproxyConfigEditor /> : null}
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>
   );

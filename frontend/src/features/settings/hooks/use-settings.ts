@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { ApiError } from "@/lib/api-client";
 import type { AccountSummary, SidecarAuthAccount } from "@/features/accounts/schemas";
+import { CLIPROXY_CONFIG_QUERY_KEY } from "@/features/cliproxy-accounts/api";
 import type { DashboardOverview } from "@/features/dashboard/schemas";
 import {
   addUpstreamProxyPoolMember,
@@ -533,6 +534,7 @@ function useSessionAffinityMutation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: routingQueryKey });
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_CONFIG_QUERY_KEY });
     },
   });
 }

@@ -2277,6 +2277,68 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/cliproxy/config", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      yaml: "port: 8317\nrouting:\n  session-affinity: false\n  force-model-prefix: false\n",
+      contentSha256: "abc123",
+      sessionAffinity: false,
+      forceModelPrefix: false,
+      rollbackAvailable: false,
+    });
+  }),
+
+  http.post("*/api/cliproxy/config/preview", async ({ request }) => {
+    const body = (await request.json()) as { yaml?: string };
+    const changed = (body.yaml ?? "").includes("debug: true");
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      diff: changed ? "--- current\n+++ proposed\n@@\n-debug: false\n+debug: true\n" : "",
+      changed,
+      contentSha256: "abc123",
+    });
+  }),
+
+  http.put("*/api/cliproxy/config", async ({ request }) => {
+    const body = (await request.json()) as { yaml?: string; confirm?: boolean };
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      yaml: body.yaml ?? "",
+      contentSha256: "def456",
+      sessionAffinity: false,
+      forceModelPrefix: false,
+      rollbackAvailable: body.confirm === true,
+    });
+  }),
+
+  http.post("*/api/cliproxy/config/rollback", () => {
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      yaml: "port: 8317\nrouting:\n  session-affinity: false\n",
+      contentSha256: "abc123",
+      sessionAffinity: false,
+      forceModelPrefix: false,
+      rollbackAvailable: true,
+    });
+  }),
+
+  http.patch("*/api/cliproxy/config/routing/force-model-prefix", async ({ request }) => {
+    const body = (await request.json()) as { enabled?: boolean };
+    return HttpResponse.json({
+      status: "healthy",
+      message: null,
+      yaml: "port: 8317\nrouting:\n  force-model-prefix: true\n",
+      contentSha256: "fed987",
+      sessionAffinity: false,
+      forceModelPrefix: body.enabled === true,
+      rollbackAvailable: true,
+    });
+  }),
+
   http.put("*/api/claude-sidecar/routing/session-affinity", async ({ request }) => {
     const body = (await request.json()) as { sessionAffinity?: boolean };
     return HttpResponse.json({
