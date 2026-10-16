@@ -1,5 +1,5 @@
-"""Read-only CLIProxyAPI credential inventory.
+"""CLIProxyAPI credential inventory and field edits.
 
-Dispatch and routing stay on the existing Claude sidecar path. This package
-only lists credentials.
+Dispatch stays on the existing Claude sidecar path. Prefixes edited here are
+stored in codex-lb and are not used to route requests yet.
 """

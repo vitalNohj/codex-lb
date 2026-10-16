@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from app.modules.claude_sidecar.excluded_models import ExcludedModelsState
 from app.modules.shared.schemas import DashboardModel
 
 CliproxyAccountsStatus = Literal["healthy", "not_configured", "unauthorized", "unreachable", "error"]
@@ -32,8 +33,13 @@ class CliproxyCredential(DashboardModel):
     unavailable: bool = False
     quota_exceeded: bool = False
     # CLIProxyAPI v8.0.30 omits prefix from GET /v0/management/auth-files.
-    # Keep the field so a later build that adds it surfaces without a schema change.
+    # The value shown here comes from codex-lb's prefix registry when one is
+    # stored, and from the auth-file list only when the registry has none.
     prefix: str | None = None
+    weight: int | None = None
+    priority: int | None = None
+    excluded_models: list[str] = Field(default_factory=list)
+    excluded_models_state: ExcludedModelsState = "unreadable"
     models: list[str] = Field(default_factory=list)
     models_error: str | None = None
     quota_windows: list[CliproxyQuotaWindow] = Field(default_factory=list)
@@ -51,3 +57,30 @@ class CliproxyAccountsResponse(DashboardModel):
     status: CliproxyAccountsStatus
     message: str | None = None
     providers: list[CliproxyProviderCredentials] = Field(default_factory=list)
+
+
+class CliproxyCredentialFieldsUpdate(DashboardModel):
+    prefix: str | None = None
+    weight: int | None = None
+    priority: int | None = None
+    excluded_models: list[str] | None = None
+
+
+class CliproxyCredentialFieldsResponse(DashboardModel):
+    name: str
+    prefix: str | None = None
+    weight: int | None = None
+    priority: int | None = None
+    excluded_models: list[str] = Field(default_factory=list)
+    excluded_models_state: ExcludedModelsState = "unreadable"
+    disabled: bool = False
+
+
+class CliproxyCredentialStatusUpdate(DashboardModel):
+    disabled: bool
+    confirm: bool
+
+
+class CliproxyCredentialStatusResponse(DashboardModel):
+    name: str
+    disabled: bool

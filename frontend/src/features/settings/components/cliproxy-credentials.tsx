@@ -1,6 +1,21 @@
+import { useState } from "react";
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useCliproxyCredentials } from "@/features/settings/hooks/use-settings";
-import type { CliproxyCredential } from "@/features/settings/schemas";
+import type { CliproxyCredential, CliproxyCredentialFieldsUpdate } from "@/features/settings/schemas";
 import { formatPercentNullable, formatQuotaResetLabel } from "@/utils/formatters";
 
 const HEALTH_LABELS: Record<string, string> = {
@@ -26,16 +41,237 @@ function healthVariant(health: string): "secondary" | "outline" | "destructive" 
   return "secondary";
 }
 
-function CredentialRow({ credential }: { credential: CliproxyCredential }) {
-  const label = credential.email || credential.name;
+function credentialLabel(credential: CliproxyCredential): string {
+  return credential.email || credential.name;
+}
+
+function fieldSignature(credential: CliproxyCredential): string {
+  return [
+    credential.prefix ?? "",
+    credential.weight ?? "",
+    credential.priority ?? "",
+    credential.excludedModels.join(","),
+    credential.excludedModelsState,
+    String(credential.disabled),
+  ].join("|");
+}
+
+function nextAccountPrefix(prefixes: Array<string | null | undefined>): string {
+  const taken = new Set(prefixes.filter((prefix): prefix is string => Boolean(prefix)).map((prefix) => prefix.toLowerCase()));
+  for (let index = 1; index < 100000; index += 1) {
+    const candidate = `acct${index}`;
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
+  }
+  return "acct1";
+}
+
+function patternsFromInput(value: string): string[] {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function samePatterns(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((pattern, index) => pattern === right[index]);
+}
+
+function integerOrEmpty(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (!/^-?\d+$/.test(trimmed)) {
+    return undefined;
+  }
+  return Number(trimmed);
+}
+
+function CredentialEditor({
+  credential,
+  suggestedPrefix,
+  busy,
+  onSave,
+  onStatus,
+}: {
+  credential: CliproxyCredential;
+  suggestedPrefix: string;
+  busy: boolean;
+  onSave: (body: CliproxyCredentialFieldsUpdate) => void;
+  onStatus: (disabled: boolean) => void;
+}) {
+  const label = credentialLabel(credential);
+  const excludedEditable = credential.excludedModelsState === "available";
+  const [prefix, setPrefix] = useState(credential.prefix ?? "");
+  const [weight, setWeight] = useState(credential.weight == null ? "" : String(credential.weight));
+  const [priority, setPriority] = useState(credential.priority == null ? "" : String(credential.priority));
+  const [excluded, setExcluded] = useState(credential.excludedModels.join(", "));
+  const [formError, setFormError] = useState<string | null>(null);
+  const [pendingDisabled, setPendingDisabled] = useState<boolean | null>(null);
+  const statusLabel = credential.disabled ? "Turn on" : "Turn off";
+
+  function save() {
+    const parsedWeight = integerOrEmpty(weight);
+    const parsedPriority = integerOrEmpty(priority);
+    if (parsedWeight === undefined || parsedPriority === undefined) {
+      setFormError("Weight and priority must be whole numbers.");
+      return;
+    }
+    const body: CliproxyCredentialFieldsUpdate = {};
+    const nextPrefix = prefix.trim();
+    if (nextPrefix !== (credential.prefix ?? "")) {
+      body.prefix = nextPrefix.length === 0 ? null : nextPrefix;
+    }
+    if (parsedWeight !== (credential.weight ?? null)) {
+      body.weight = parsedWeight;
+    }
+    if (parsedPriority !== (credential.priority ?? null)) {
+      body.priority = parsedPriority;
+    }
+    if (excludedEditable) {
+      const patterns = patternsFromInput(excluded);
+      if (!samePatterns(patterns, credential.excludedModels)) {
+        body.excludedModels = patterns;
+      }
+    }
+    if (Object.keys(body).length === 0) {
+      setFormError(null);
+      return;
+    }
+    setFormError(null);
+    onSave(body);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1 sm:col-span-1">
+          <Label htmlFor={`cliproxy-prefix-${credential.name}`}>Prefix</Label>
+          <Input
+            id={`cliproxy-prefix-${credential.name}`}
+            value={prefix}
+            placeholder={suggestedPrefix}
+            aria-label={`Prefix for ${label}`}
+            onChange={(event) => setPrefix(event.target.value)}
+            disabled={busy}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`cliproxy-weight-${credential.name}`}>Weight</Label>
+          <Input
+            id={`cliproxy-weight-${credential.name}`}
+            inputMode="numeric"
+            value={weight}
+            placeholder="1"
+            aria-label={`Weight for ${label}`}
+            onChange={(event) => setWeight(event.target.value)}
+            disabled={busy}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`cliproxy-priority-${credential.name}`}>Priority</Label>
+          <Input
+            id={`cliproxy-priority-${credential.name}`}
+            inputMode="numeric"
+            value={priority}
+            placeholder="0"
+            aria-label={`Priority for ${label}`}
+            onChange={(event) => setPriority(event.target.value)}
+            disabled={busy}
+          />
+        </div>
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor={`cliproxy-excluded-${credential.name}`}>Excluded models</Label>
+        <Input
+          id={`cliproxy-excluded-${credential.name}`}
+          value={excluded}
+          placeholder="model-id, other-*"
+          aria-label={`Excluded models for ${label}`}
+          onChange={(event) => setExcluded(event.target.value)}
+          disabled={busy || !excludedEditable}
+        />
+        <p className="text-[13px] text-muted-foreground">
+          {excludedEditable
+            ? "Comma-separated patterns."
+            : "Excluded models could not be read, so they cannot be replaced."}
+        </p>
+      </div>
+      {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" onClick={save} disabled={busy} aria-label={`Save ${label}`}>
+          Save
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          aria-label={`${statusLabel} ${label}`}
+          onClick={() => setPendingDisabled(!credential.disabled)}
+        >
+          {statusLabel}
+        </Button>
+      </div>
+      <AlertDialog open={pendingDisabled !== null} onOpenChange={(open) => { if (!open) setPendingDisabled(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingDisabled ? `Turn off ${label}?` : `Turn on ${label}?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDisabled
+                ? "This credential stops serving until you turn it back on."
+                : "This credential will serve requests again."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingDisabled !== null) {
+                  onStatus(pendingDisabled);
+                }
+              }}
+            >
+              {pendingDisabled ? "Turn off" : "Turn on"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function CredentialRow({
+  credential,
+  suggestedPrefix,
+  busy,
+  onSave,
+  onStatus,
+}: {
+  credential: CliproxyCredential;
+  suggestedPrefix: string;
+  busy: boolean;
+  onSave: (body: CliproxyCredentialFieldsUpdate) => void;
+  onStatus: (disabled: boolean) => void;
+}) {
+  const label = credentialLabel(credential);
   return (
     <article
-      className="space-y-2 rounded-md border bg-card px-3 py-2.5"
+      className="space-y-3 rounded-md border bg-card px-3 py-2.5"
       aria-label={`${credential.provider} credential ${label}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{label}</p>
+          <p className="flex min-w-0 flex-wrap items-baseline gap-2">
+            <span className="truncate text-sm font-medium">{label}</span>
+            {credential.prefix ? (
+              <span className="font-mono text-xs text-muted-foreground">{credential.prefix}</span>
+            ) : null}
+          </p>
           <p className="truncate font-mono text-xs text-muted-foreground">{credential.name}</p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -43,9 +279,6 @@ function CredentialRow({ credential }: { credential: CliproxyCredential }) {
           <Badge variant={healthVariant(credential.health)}>{healthLabel(credential.health)}</Badge>
         </div>
       </div>
-      {credential.prefix ? (
-        <p className="font-mono text-xs text-muted-foreground">prefix {credential.prefix}</p>
-      ) : null}
       {(credential.quotaWindows?.length ?? 0) > 0 ? (
         <ul className="space-y-1" aria-label={`Quota for ${label}`}>
           {credential.quotaWindows.map((window) => (
@@ -85,12 +318,20 @@ function CredentialRow({ credential }: { credential: CliproxyCredential }) {
           {credential.modelsError ?? "No models reported for this credential."}
         </p>
       )}
+      <CredentialEditor
+        key={fieldSignature(credential)}
+        credential={credential}
+        suggestedPrefix={suggestedPrefix}
+        busy={busy}
+        onSave={onSave}
+        onStatus={onStatus}
+      />
     </article>
   );
 }
 
 export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
-  const { credentialsQuery } = useCliproxyCredentials(enabled);
+  const { credentialsQuery, fieldsMutation, statusMutation } = useCliproxyCredentials(enabled);
 
   if (!enabled) {
     return (
@@ -118,12 +359,23 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
     return <p className="text-sm text-muted-foreground">No CLIProxyAPI credentials.</p>;
   }
 
+  const suggestedPrefix = nextAccountPrefix(credentials.map((credential) => credential.prefix));
+  const pendingName = fieldsMutation.isPending
+    ? fieldsMutation.variables?.name
+    : statusMutation.isPending
+      ? statusMutation.variables?.name
+      : null;
+
   return (
     <div className="@container grid gap-2 @3xl:grid-cols-2">
       {credentials.map((credential) => (
         <CredentialRow
           key={`${credential.provider}:${credential.authIndex ?? credential.name}`}
           credential={credential}
+          suggestedPrefix={suggestedPrefix}
+          busy={pendingName === credential.name}
+          onSave={(body) => fieldsMutation.mutate({ name: credential.name, body })}
+          onStatus={(disabled) => statusMutation.mutate({ name: credential.name, disabled })}
         />
       ))}
     </div>

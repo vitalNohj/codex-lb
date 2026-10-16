@@ -857,12 +857,39 @@ export const CliproxyCredentialSchema = z.object({
   unavailable: z.boolean().default(false),
   quotaExceeded: z.boolean().default(false),
   prefix: z.string().nullable().optional(),
+  weight: z.number().int().nullable().optional(),
+  priority: z.number().int().nullable().optional(),
+  excludedModels: z.array(z.string()).default([]),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
   models: z.array(z.string()).default([]),
   modelsError: z.string().nullable().optional(),
   quotaWindows: z.array(CliproxyQuotaWindowSchema).default([]),
   prepaidCredits: z.number().int().nullable().optional(),
   usageTokens: z.number().int().nonnegative().nullable().optional(),
   usageRequests: z.number().int().nonnegative().nullable().optional(),
+});
+export const CliproxyCredentialFieldsUpdateSchema = z.object({
+  prefix: z.string().nullable().optional(),
+  weight: z.number().int().nullable().optional(),
+  priority: z.number().int().nullable().optional(),
+  excludedModels: z.array(z.string()).optional(),
+});
+export const CliproxyCredentialFieldsResponseSchema = z.object({
+  name: z.string(),
+  prefix: z.string().nullable().optional(),
+  weight: z.number().int().nullable().optional(),
+  priority: z.number().int().nullable().optional(),
+  excludedModels: z.array(z.string()).default([]),
+  excludedModelsState: ExcludedModelsStateSchema.default("unreadable"),
+  disabled: z.boolean(),
+});
+export const CliproxyCredentialStatusUpdateSchema = z.object({
+  disabled: z.boolean(),
+  confirm: z.boolean(),
+});
+export const CliproxyCredentialStatusResponseSchema = z.object({
+  name: z.string(),
+  disabled: z.boolean(),
 });
 export const CliproxyProviderCredentialsSchema = z.object({
   provider: z.string(),
@@ -875,6 +902,8 @@ export const CliproxyAccountsResponseSchema = z.object({
 });
 export type CliproxyCredential = z.infer<typeof CliproxyCredentialSchema>;
 export type CliproxyAccountsResponse = z.infer<typeof CliproxyAccountsResponseSchema>;
+export type CliproxyCredentialFieldsUpdate = z.infer<typeof CliproxyCredentialFieldsUpdateSchema>;
+export type CliproxyCredentialStatusUpdate = z.infer<typeof CliproxyCredentialStatusUpdateSchema>;
 
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;
 type StickyThresholdPresenceFlags = Pick<

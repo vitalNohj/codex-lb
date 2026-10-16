@@ -398,6 +398,47 @@ class ClaudeSidecarClient:
                 _transport_message(exc, "update CLIProxyAPI auth-file disabled state")
             ) from exc
 
+    async def patch_auth_file_fields(self, name: str, fields: Mapping[str, JsonValue]) -> None:
+        """PATCH ``/v0/management/auth-files/fields`` with the given metadata keys."""
+
+        payload: dict[str, JsonValue] = {"name": name}
+        payload.update(fields)
+        await self._patch_management_json(
+            "/v0/management/auth-files/fields",
+            payload,
+            "update CLIProxyAPI auth-file fields",
+        )
+
+    async def patch_auth_file_status(self, name: str, *, disabled: bool, auth_index: str | None = None) -> None:
+        """PATCH ``/v0/management/auth-files/status`` to enable or disable one auth file."""
+
+        payload: dict[str, JsonValue] = {"name": name, "disabled": disabled}
+        if auth_index:
+            payload["auth_index"] = auth_index
+        await self._patch_management_json(
+            "/v0/management/auth-files/status",
+            payload,
+            "update CLIProxyAPI auth-file status",
+        )
+
+    async def _patch_management_json(self, path: str, payload: Mapping[str, JsonValue], action: str) -> None:
+        url = f"{self.base_url}{path}"
+        try:
+            async with lease_http_session() as session:
+                async with session.patch(
+                    url,
+                    headers=self._management_headers(),
+                    json=dict(payload),
+                    timeout=self._timeout(),
+                ) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, action)) from exc
+
     async def patch_auth_file_excluded_models(self, name: str, excluded_models: list[str]) -> None:
         url = f"{self.base_url}/v0/management/auth-files/fields"
         try:
