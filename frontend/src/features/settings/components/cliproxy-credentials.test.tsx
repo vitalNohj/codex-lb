@@ -228,4 +228,233 @@ describe("CliproxyCredentials", () => {
     await user.click(screen.getByRole("button", { name: "Turn off" }));
     expect(statusBodies).toEqual([{ disabled: true, confirm: true }]);
   });
+
+  it("deletes with one confirmation and does not send a separate disable", async () => {
+    const user = userEvent.setup();
+    const statusBodies: unknown[] = [];
+    const deleteBodies: unknown[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "xai",
+              credentials: [
+                {
+                  name: "grok-a.json",
+                  authIndex: "x1",
+                  email: "grok@example.com",
+                  provider: "xai",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: "acct2",
+                  models: ["grok-4"],
+                  modelsError: null,
+                  excludedModels: [],
+                  excludedModelsState: "available",
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+      http.patch("*/api/cliproxy/accounts/grok-a.json/status", async ({ request }) => {
+        statusBodies.push(await request.json());
+        return HttpResponse.json({ name: "grok-a.json", disabled: true });
+      }),
+      http.delete("*/api/cliproxy/accounts/grok-a.json", async ({ request }) => {
+        deleteBodies.push(await request.json());
+        return HttpResponse.json({ name: "grok-a.json", disabled: true, deleted: true });
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Delete grok@example.com" }));
+    expect(deleteBodies).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(deleteBodies).toEqual([{ confirm: true }]);
+    expect(statusBodies).toEqual([]);
+  });
+
+  it("shows refresh status as the poll moves from pending to ok", async () => {
+    const user = userEvent.setup();
+    let polls = 0;
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "claude",
+              credentials: [
+                {
+                  name: "claude-a.json",
+                  authIndex: "c1",
+                  email: "claude@example.com",
+                  provider: "claude",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: null,
+                  models: [],
+                  modelsError: null,
+                  excludedModels: [],
+                  excludedModelsState: "available",
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+      http.post("*/api/cliproxy/accounts/claude-a.json/refresh", () =>
+        HttpResponse.json({ name: "claude-a.json", status: "pending", message: null }),
+      ),
+      http.get("*/api/cliproxy/accounts/claude-a.json/refresh", () => {
+        polls += 1;
+        const status = polls === 1 ? "pending" : "ok";
+        return HttpResponse.json({ name: "claude-a.json", status, message: null });
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Refresh claude@example.com" }));
+    expect(await screen.findByText("Refreshing")).toBeInTheDocument();
+    expect(await screen.findByText("Refreshed", {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(polls).toBeGreaterThan(1);
+  });
+
+  it("shows a device sign-in code and then success", async () => {
+    const user = userEvent.setup();
+    let statusPolls = 0;
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({ status: "healthy", message: null, providers: [] }),
+      ),
+      http.get("*/api/cliproxy/oauth/providers", () =>
+        HttpResponse.json({
+          providers: [{ provider: "xai", method: "device" }],
+        }),
+      ),
+      http.post("*/api/cliproxy/oauth/xai/authorize", () =>
+        HttpResponse.json({
+          state: "xai-device-state",
+          provider: "xai",
+          method: "device",
+          authorizationUrl: null,
+          verificationUrl: "https://auth.example/device",
+          userCode: "ABCD-1234",
+          intervalSeconds: 1,
+          expiresInSeconds: null,
+        }),
+      ),
+      http.get("*/api/cliproxy/oauth/status", () => {
+        statusPolls += 1;
+        return HttpResponse.json(
+          statusPolls === 1
+            ? { status: "pending", errorMessage: null }
+            : { status: "success", errorMessage: null },
+        );
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Sign in" }));
+    await user.click(await screen.findByRole("button", { name: /xAI/ }));
+    await user.click(screen.getByRole("button", { name: "Start sign-in" }));
+    expect(await screen.findByText("ABCD-1234")).toBeInTheDocument();
+    expect(await screen.findByText("Sign-in complete", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText(/access_token/)).not.toBeInTheDocument();
+    expect(statusPolls).toBeGreaterThan(1);
+  });
+
+  it("cancels a pending device sign-in", async () => {
+    const user = userEvent.setup();
+    const cancels: string[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({ status: "healthy", message: null, providers: [] }),
+      ),
+      http.get("*/api/cliproxy/oauth/providers", () =>
+        HttpResponse.json({
+          providers: [{ provider: "xai", method: "device" }],
+        }),
+      ),
+      http.post("*/api/cliproxy/oauth/xai/authorize", () =>
+        HttpResponse.json({
+          state: "xai-device-state",
+          provider: "xai",
+          method: "device",
+          authorizationUrl: null,
+          verificationUrl: "https://auth.example/device",
+          userCode: "ABCD-1234",
+          intervalSeconds: 30,
+          expiresInSeconds: null,
+        }),
+      ),
+      http.get("*/api/cliproxy/oauth/status", () => HttpResponse.json({ status: "pending", errorMessage: null })),
+      http.delete("*/api/cliproxy/oauth/session", ({ request }) => {
+        cancels.push(request.url);
+        return HttpResponse.json({ status: "ok", cancelled: true });
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Sign in" }));
+    await user.click(await screen.findByRole("button", { name: /xAI/ }));
+    await user.click(screen.getByRole("button", { name: "Start sign-in" }));
+    expect(await screen.findByText("ABCD-1234")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toContain("state=xai-device-state");
+  });
+
+  it("cancels a sign-in that finishes after the dialog closes", async () => {
+    const user = userEvent.setup();
+    const cancels: string[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({ status: "healthy", message: null, providers: [] }),
+      ),
+      http.get("*/api/cliproxy/oauth/providers", () =>
+        HttpResponse.json({
+          providers: [{ provider: "xai", method: "device" }],
+        }),
+      ),
+      http.post("*/api/cliproxy/oauth/xai/authorize", async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return HttpResponse.json({
+          state: "xai-late-state",
+          provider: "xai",
+          method: "device",
+          authorizationUrl: null,
+          verificationUrl: "https://auth.example/device",
+          userCode: "LATE-1111",
+          intervalSeconds: 30,
+          expiresInSeconds: null,
+        });
+      }),
+      http.delete("*/api/cliproxy/oauth/session", ({ request }) => {
+        cancels.push(request.url);
+        return HttpResponse.json({ status: "ok", cancelled: true });
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Sign in" }));
+    await user.click(await screen.findByRole("button", { name: /xAI/ }));
+    await user.click(screen.getByRole("button", { name: "Start sign-in" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await screen.findByRole("button", { name: "Sign in" });
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("LATE-1111")).not.toBeInTheDocument();
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toContain("state=xai-late-state");
+  });
 });

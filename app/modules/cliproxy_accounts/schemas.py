@@ -84,3 +84,76 @@ class CliproxyCredentialStatusUpdate(DashboardModel):
 class CliproxyCredentialStatusResponse(DashboardModel):
     name: str
     disabled: bool
+
+
+CliproxyOauthMethod = Literal["browser", "device"]
+CliproxyOauthStatus = Literal["pending", "success", "error"]
+CliproxyRefreshStatus = Literal["pending", "ok", "error"]
+
+
+class CliproxyOauthProviderOption(DashboardModel):
+    provider: str
+    method: CliproxyOauthMethod
+
+
+class CliproxyOauthProvidersResponse(DashboardModel):
+    providers: list[CliproxyOauthProviderOption] = Field(default_factory=list)
+
+
+class CliproxyOauthStartResponse(DashboardModel):
+    state: str
+    provider: str
+    method: CliproxyOauthMethod
+    authorization_url: str | None = None
+    verification_url: str | None = None
+    user_code: str | None = None
+    interval_seconds: int
+    expires_in_seconds: int | None = None
+
+
+class CliproxyOauthStatusResponse(DashboardModel):
+    status: CliproxyOauthStatus
+    error_message: str | None = None
+
+
+class CliproxyOauthCancelResponse(DashboardModel):
+    status: Literal["ok"]
+    cancelled: bool
+
+
+class CliproxyOauthCallbackRequest(DashboardModel):
+    provider: str
+    state: str
+    callback_url: str
+
+
+class CliproxyOauthCallbackResponse(DashboardModel):
+    status: CliproxyOauthStatus
+    error_message: str | None = None
+
+
+class CliproxyCredentialRefreshResponse(DashboardModel):
+    name: str
+    status: CliproxyRefreshStatus
+    message: str | None = None
+
+
+class CliproxyCredentialDeleteRequest(DashboardModel):
+    confirm: bool
+
+
+class CliproxyCredentialDeleteResponse(DashboardModel):
+    name: str
+    disabled: bool
+    deleted: bool
+
+
+class CliproxyCredentialUploadRequest(DashboardModel):
+    name: str
+    document: str
+
+
+class CliproxyCredentialUploadResponse(DashboardModel):
+    name: str
+    provider: str
+    prefix: str | None = None

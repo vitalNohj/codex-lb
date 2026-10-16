@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -13,9 +14,13 @@ import {
   getClaudeSidecarQuota,
   getClaudeSidecarRouting,
   getClaudeSidecarStatus,
+  deleteCliproxyCredential,
   getCliproxyAccounts,
+  getCliproxyCredentialRefresh,
+  startCliproxyCredentialRefresh,
   updateCliproxyCredentialFields,
   updateCliproxyCredentialStatus,
+  uploadCliproxyCredential,
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
   getOpenCodeGoSidecarStatus,
@@ -65,7 +70,7 @@ import type {
 
 const SETTINGS_DETAIL_QUERY_KEY = ["settings", "detail"] as const;
 const SETTINGS_UPSTREAM_PROXY_QUERY_KEY = ["settings", "upstream-proxy"] as const;
-const CLIPROXY_ACCOUNTS_QUERY_KEY = ["settings", "cliproxy-accounts"] as const;
+export const CLIPROXY_ACCOUNTS_QUERY_KEY = ["settings", "cliproxy-accounts"] as const;
 
 let settingsSaveChain: Promise<unknown> = Promise.resolve();
 
@@ -628,7 +633,56 @@ export function useCliproxyCredentials(enabled: boolean) {
       void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
     },
   });
-  return { credentialsQuery, fieldsMutation, statusMutation };
+  const [refreshName, setRefreshName] = useState<string | null>(null);
+  const refreshQuery = useQuery({
+    queryKey: ["settings", "cliproxy-refresh", refreshName],
+    queryFn: () => getCliproxyCredentialRefresh(refreshName ?? ""),
+    enabled: refreshName !== null,
+    refetchInterval: (query) => (query.state.data?.status === "pending" ? 2_000 : false),
+  });
+  const refreshStatus = refreshQuery.data?.status;
+  useEffect(() => {
+    if (refreshStatus === "ok" || refreshStatus === "error") {
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
+    }
+  }, [queryClient, refreshStatus]);
+  const refreshMutation = useMutation({
+    mutationFn: (name: string) => startCliproxyCredentialRefresh(name),
+    onSuccess: (data, name) => {
+      setRefreshName(name);
+      queryClient.setQueryData(["settings", "cliproxy-refresh", name], data);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to refresh the credential");
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => deleteCliproxyCredential(name),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to delete the credential");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
+    },
+  });
+  const uploadMutation = useMutation({
+    mutationFn: (body: { name: string; document: string }) => uploadCliproxyCredential(body),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to upload the credential");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
+    },
+  });
+  return {
+    credentialsQuery,
+    fieldsMutation,
+    statusMutation,
+    refreshMutation,
+    refreshQuery,
+    deleteMutation,
+    uploadMutation,
+  };
 }
 
 export function useClaudeSidecarQuota() {
