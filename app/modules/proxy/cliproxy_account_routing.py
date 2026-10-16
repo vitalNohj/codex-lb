@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.balancer.logic import AccountState
@@ -493,19 +495,26 @@ class _CliproxyStickyRepository:
         if kind == StickySessionKind.CODEX_SESSION:
             return
         now = datetime.now(timezone.utc)
-        row = await self._session.get(CliproxyStickySession, (key, kind.value))
-        if row is None:
-            self._session.add(
-                CliproxyStickySession(
-                    key=key,
-                    kind=kind.value,
-                    account_id=account_id,
-                    updated_at=now,
-                )
-            )
-            return
-        row.account_id = account_id
-        row.updated_at = now
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "postgresql":
+            insert_fn = pg_insert
+        elif dialect == "sqlite":
+            insert_fn = sqlite_insert
+        else:
+            raise RuntimeError(f"CLIProxy sticky upsert unsupported for dialect={dialect!r}")
+        # One statement so two first requests for the same prompt-cache key
+        # cannot both insert and lose the second commit.
+        statement = insert_fn(CliproxyStickySession).values(
+            key=key,
+            kind=kind.value,
+            account_id=account_id,
+            updated_at=now,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[CliproxyStickySession.key, CliproxyStickySession.kind],
+            set_={"account_id": account_id, "updated_at": now},
+        )
+        await self._session.execute(statement)
 
     async def delete(self, key: str, kind: StickySessionKind) -> None:
         row = await self._session.get(CliproxyStickySession, (key, kind.value))

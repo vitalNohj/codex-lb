@@ -286,17 +286,34 @@ async def test_xai_exhaustion_rebinds_and_a_near_limit_does_not_overwrite() -> N
     assert repo.deletes == []
 
 
+class _Dialect:
+    name = "sqlite"
+
+
+class _Bind:
+    dialect = _Dialect()
+
+
 class _Session:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str], object] = {}
 
+    def get_bind(self) -> _Bind:
+        return _Bind()
+
     async def get(self, _model: object, ident: tuple[str, str]) -> object | None:
         return self.rows.get(ident)
 
-    def add(self, row: object) -> None:
-        key = cast(str, getattr(row, "key"))
-        kind = cast(str, getattr(row, "kind"))
-        self.rows[(key, kind)] = row
+    async def execute(self, statement: object) -> None:
+        params = cast(dict[str, object], statement.compile().params)  # type: ignore[attr-defined]
+        key = cast(str, params["key"])
+        kind = cast(str, params["kind"])
+        self.rows[(key, kind)] = SimpleNamespace(
+            key=key,
+            kind=kind,
+            account_id=params["account_id"],
+            updated_at=params["updated_at"],
+        )
 
     async def delete(self, row: object) -> None:
         key = cast(str, getattr(row, "key"))
