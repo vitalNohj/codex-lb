@@ -12,6 +12,7 @@ from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarQuotaSnapshot,
     SidecarRateLimitHold,
+    claude_quota_snapshot,
     dashboard_status_for_auth,
     snapshot_from_json,
 )
@@ -41,7 +42,8 @@ def build_claude_sidecar_summary(
         else "unknown"
     )
 
-    snapshot = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+    stored = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+    snapshot = claude_quota_snapshot(stored) if stored is not None else None
     account_status, reset_at_primary, last_refresh_at = _derive_quota_state(
         snapshot=snapshot,
         health_status=health_status,

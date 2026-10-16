@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -129,6 +129,24 @@ def test_next_hold_release_skips_past_and_released_holds() -> None:
 
     assert next_hold_release(snapshot, NOW) == NOW + timedelta(minutes=3)
     assert next_hold_release(None, NOW) is None
+
+
+def test_an_enabled_xai_auth_does_not_hide_a_claude_hold() -> None:
+    snapshot = _snapshot(
+        (_auth("a.json", disabled=True), replace(_auth("grok.json", disabled=False), provider="xai")),
+        (
+            _hold("a.json", NOW + timedelta(minutes=30)),
+            SidecarRateLimitHold(
+                name="grok.json",
+                until=NOW + timedelta(minutes=1),
+                released=False,
+                provider="xai",
+            ),
+        ),
+    )
+
+    assert no_claude_auth_enabled(snapshot) is True
+    assert all_claude_auths_held_until(snapshot) == NOW + timedelta(minutes=30)
 
 
 def test_unknown_provider_message_match_is_case_insensitive() -> None:

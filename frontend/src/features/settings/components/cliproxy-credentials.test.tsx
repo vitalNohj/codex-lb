@@ -91,6 +91,60 @@ describe("CliproxyCredentials", () => {
     expect(screen.queryByText(/access_token/)).not.toBeInTheDocument();
   });
 
+  it("shows grok quota windows, prepaid credits, and this-window usage", async () => {
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "xai",
+              credentials: [
+                {
+                  name: "grok-a.json",
+                  authIndex: "x1",
+                  email: "grok@example.com",
+                  provider: "xai",
+                  health: "rate_limited",
+                  disabled: true,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: "acct2",
+                  models: ["grok-4"],
+                  modelsError: null,
+                  quotaWindows: [
+                    {
+                      id: "credits",
+                      label: "week",
+                      kind: "weekly",
+                      percentRemaining: 50,
+                      resetsAt: "2099-01-01T00:00:00Z",
+                    },
+                  ],
+                  prepaidCredits: 42,
+                  usageTokens: 1200,
+                  usageRequests: 3,
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderCredentials(true);
+
+    expect(await screen.findByLabelText("Quota for grok@example.com")).toBeInTheDocument();
+    expect(screen.getByText("week")).toBeInTheDocument();
+    expect(screen.getByText(/50% left/)).toBeInTheDocument();
+    expect(screen.getByText(/resets/)).toBeInTheDocument();
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText(/3 requests/)).toBeInTheDocument();
+    expect(screen.getByText(/1,200 tokens|1200 tokens/)).toBeInTheDocument();
+    expect(screen.getByText("Rate limited")).toBeInTheDocument();
+  });
+
   it("shows the management error without a credential list", async () => {
     server.use(
       http.get("*/api/cliproxy/accounts", () =>

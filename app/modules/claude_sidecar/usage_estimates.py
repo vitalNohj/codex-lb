@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from app.modules.claude_sidecar.quota import SidecarOAuthUsage, SidecarOAuthUsageBucket, SidecarQuotaSnapshot
+from app.modules.claude_sidecar.quota import (
+    SidecarOAuthUsage,
+    SidecarOAuthUsageBucket,
+    SidecarQuotaSnapshot,
+    credential_provider,
+)
 from app.modules.settings.service import ClaudeSidecarAuthPlanData
 
 PRIMARY_WINDOW = timedelta(hours=5)
@@ -104,6 +109,8 @@ def build_claude_usage_estimates(
     recover_at_by_key: dict[str, datetime] = {}
     if snapshot is not None:
         for auth in snapshot.accounts:
+            if credential_provider(auth.provider) != "claude":
+                continue
             key = _identity_key(auth.auth_index, auth.email or auth.name)
             if key is None:
                 continue

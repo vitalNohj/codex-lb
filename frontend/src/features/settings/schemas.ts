@@ -840,6 +840,13 @@ export const CliproxyAccountsStatusSchema = z.enum([
   "unreachable",
   "error",
 ]);
+export const CliproxyQuotaWindowSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.string(),
+  percentRemaining: z.number(),
+  resetsAt: z.string().datetime({ offset: true }).nullable().optional(),
+});
 export const CliproxyCredentialSchema = z.object({
   name: z.string(),
   authIndex: z.string().nullable().optional(),
@@ -852,6 +859,10 @@ export const CliproxyCredentialSchema = z.object({
   prefix: z.string().nullable().optional(),
   models: z.array(z.string()).default([]),
   modelsError: z.string().nullable().optional(),
+  quotaWindows: z.array(CliproxyQuotaWindowSchema).default([]),
+  prepaidCredits: z.number().int().nullable().optional(),
+  usageTokens: z.number().int().nonnegative().nullable().optional(),
+  usageRequests: z.number().int().nonnegative().nullable().optional(),
 });
 export const CliproxyProviderCredentialsSchema = z.object({
   provider: z.string(),

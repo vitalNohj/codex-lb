@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.types import JsonValue
 from app.db.session import SessionLocal
-from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarQuotaSnapshot, snapshot_to_json
+from app.modules.claude_sidecar.quota import (
+    GrokCreditsQuota,
+    GrokCreditWindow,
+    GrokTokenRollup,
+    SidecarAuthQuota,
+    SidecarQuotaSnapshot,
+    SidecarRateLimitHold,
+    snapshot_to_json,
+)
 from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
@@ -221,6 +229,21 @@ async def test_provider_account_cards_stay_off_until_the_pool_switch(async_clien
                 success=1,
                 failed=0,
                 last_refresh=None,
+                grok_credits=GrokCreditsQuota(
+                    windows=(
+                        GrokCreditWindow(
+                            id="credits",
+                            label="week",
+                            kind="weekly",
+                            percent_used=37.5,
+                            percent_remaining=62.5,
+                            resets_at=now + timedelta(days=6),
+                        ),
+                    ),
+                    prepaid_credits=42,
+                    refreshed_at=now,
+                    token_rollup=GrokTokenRollup(total_tokens=1200, request_count=3, window_start=now),
+                ),
             ),
         ),
     )
@@ -241,5 +264,84 @@ async def test_provider_account_cards_stay_off_until_the_pool_switch(async_clien
     assert by_id["cliproxy-xai"]["provider"] == "xai"
     assert by_id["cliproxy-xai"]["synthetic"] is True
     assert by_id["cliproxy-xai"]["readOnly"] is True
+    xai_auth = by_id["cliproxy-xai"]["sidecarAuths"][0]
+    assert xai_auth["quotaWindows"][0]["percentRemaining"] == 62.5
+    assert xai_auth["quotaWindows"][0]["label"] == "week"
+    assert xai_auth["prepaidCredits"] == 42
     assert by_id["cliproxy-claude"]["provider"] == "claude"
+    assert by_id["cliproxy-claude"]["sidecarAuths"][0]["quotaWindows"] == []
     assert "claude-sidecar" in by_id
+
+
+@pytest.mark.asyncio
+async def test_inventory_shows_stored_grok_quota_and_an_xai_hold(async_client, monkeypatch):
+    _install(monkeypatch)
+    await _configure(
+        async_client,
+        claudeSidecarEnabled=False,
+        claudeSidecarBaseUrl="http://127.0.0.1:8317",
+        claudeSidecarManagementKey="mgmt-key",
+    )
+    now = datetime(2026, 10, 16, 8, 0, tzinfo=timezone.utc)
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=now,
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="grok-a.json",
+                auth_index="x1",
+                email="grok@example.com",
+                provider="xai",
+                status="active",
+                status_message=None,
+                disabled=True,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                grok_credits=GrokCreditsQuota(
+                    windows=(
+                        GrokCreditWindow(
+                            id="credits",
+                            label="week",
+                            kind="weekly",
+                            percent_used=37.5,
+                            percent_remaining=62.5,
+                            resets_at=now + timedelta(days=6),
+                        ),
+                    ),
+                    prepaid_credits=42,
+                    refreshed_at=now,
+                    token_rollup=GrokTokenRollup(total_tokens=1200, request_count=3),
+                ),
+            ),
+        ),
+        rate_limit_holds=(
+            SidecarRateLimitHold(
+                name="grok-a.json",
+                until=now + timedelta(hours=24),
+                released=False,
+                provider="xai",
+                kind="free-usage-exhausted",
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(claude_sidecar_quota_state_json=snapshot_to_json(snapshot))
+        await session.commit()
+
+    response = await async_client.get("/api/cliproxy/accounts")
+    assert response.status_code == 200
+    by_provider = {group["provider"]: group["credentials"] for group in response.json()["providers"]}
+    xai = by_provider["xai"][0]
+    assert xai["health"] == "rate_limited"
+    assert xai["quotaWindows"][0]["percentRemaining"] == 62.5
+    assert xai["prepaidCredits"] == 42
+    assert xai["usageTokens"] == 1200
+    assert xai["usageRequests"] == 3
+    assert by_provider["claude"][0]["health"] == "active"
+    assert by_provider["claude"][0]["quotaWindows"] == []

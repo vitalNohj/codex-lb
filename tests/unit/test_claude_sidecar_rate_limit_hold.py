@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from app.modules.claude_sidecar.quota import (
+    GrokCreditsQuota,
     SidecarAuthQuota,
     SidecarOAuthUsage,
     SidecarOAuthUsageBucket,
@@ -17,9 +19,13 @@ from app.modules.claude_sidecar.quota import (
     snapshot_to_json,
 )
 from app.modules.claude_sidecar.rate_limit_hold import (
+    XAI_LIMIT_BACKOFF,
+    XAI_LIMIT_FREE_USAGE,
     apply_hold_results,
     plan_rate_limit_holds,
+    plan_xai_rate_limit_holds,
     rate_limit_hold_until,
+    xai_hold_deadline,
 )
 from app.modules.settings.repository import SettingsRepository
 
@@ -292,3 +298,115 @@ async def test_resume_without_usage_releases_the_stored_hold(monkeypatch) -> Non
     loaded = snapshot_from_json(settings.claude_sidecar_quota_state_json)
     assert loaded is not None
     assert loaded.rate_limit_holds == (SidecarRateLimitHold(name=_NAME, until=_FUTURE, released=True),)
+
+
+def test_xai_deadlines_are_24h_or_conductor_backoff() -> None:
+    until, level = xai_hold_deadline(XAI_LIMIT_FREE_USAGE, _NOW, 4)
+    assert until == _NOW + timedelta(hours=24)
+    assert level == 0
+
+    first, first_level = xai_hold_deadline(XAI_LIMIT_BACKOFF, _NOW, 0)
+    assert first == _NOW + timedelta(seconds=1)
+    assert first_level == 1
+    second, second_level = xai_hold_deadline(XAI_LIMIT_BACKOFF, _NOW, first_level)
+    assert second == _NOW + timedelta(seconds=2)
+    assert second_level == 2
+
+
+def test_claude_and_xai_holds_do_not_disable_each_other() -> None:
+    claude = _auth(five_hour=_bucket(0, _FUTURE), seven_day=_bucket(80, _LATER))
+    xai = replace(
+        _auth(name="grok.json", disabled=False),
+        provider="xai",
+        email="grok@example.com",
+        oauth_usage=None,
+        grok_credits=GrokCreditsQuota(observed_limit=XAI_LIMIT_FREE_USAGE),
+    )
+    xai_hold = SidecarRateLimitHold(
+        name="grok.json",
+        until=_PAST,
+        released=False,
+        provider="xai",
+        kind=XAI_LIMIT_BACKOFF,
+        backoff_level=2,
+    )
+
+    claude_plan = plan_rate_limit_holds((claude, xai), (xai_hold,), _NOW)
+    xai_plan = plan_xai_rate_limit_holds((claude, xai), (xai_hold,), _NOW)
+
+    assert claude_plan.disable_names == (_NAME,)
+    assert claude_plan.enable_names == ()
+    assert xai_plan.disable_names == ("grok.json",)
+    assert xai_plan.enable_names == ()
+    assert all(hold.provider == "xai" for hold in xai_plan.holds)
+
+    accounts, holds = apply_hold_results(
+        (claude, xai),
+        (xai_hold,),
+        claude_plan,
+        failed_disables=set(),
+        failed_enables=set(),
+    )
+    assert [account.disabled for account in accounts] == [True, False]
+    assert holds[0].name == _NAME
+    assert holds[1] == xai_hold
+
+    accounts, holds = apply_hold_results(
+        accounts,
+        holds,
+        xai_plan,
+        failed_disables=set(),
+        failed_enables=set(),
+        provider="xai",
+    )
+    assert [account.disabled for account in accounts] == [True, True]
+    assert {(hold.name, hold.provider) for hold in holds} == {(_NAME, "claude"), ("grok.json", "xai")}
+
+
+def test_a_past_hold_for_the_other_provider_does_not_enable_this_one() -> None:
+    claude = _auth(disabled=True, five_hour=_bucket(40, _FUTURE), seven_day=_bucket(70, _LATER))
+    xai = replace(
+        _auth(name="grok.json", disabled=True),
+        provider="xai",
+        oauth_usage=None,
+    )
+    claude_hold = SidecarRateLimitHold(name="grok.json", until=_PAST, released=False)
+    xai_hold = SidecarRateLimitHold(name=_NAME, until=_PAST, released=False, provider="xai")
+
+    assert plan_rate_limit_holds((claude, xai), (xai_hold,), _NOW).enable_names == ()
+    assert plan_xai_rate_limit_holds((claude, xai), (claude_hold,), _NOW).enable_names == ()
+
+
+def test_same_filename_xai_hold_does_not_flip_the_claude_row() -> None:
+    claude = _auth(name="shared.json", five_hour=_bucket(40, _FUTURE), seven_day=_bucket(70, _LATER))
+    xai = replace(
+        claude,
+        provider="xai",
+        email="grok@example.com",
+        oauth_usage=None,
+        grok_credits=GrokCreditsQuota(observed_limit=XAI_LIMIT_FREE_USAGE),
+    )
+    plan = plan_xai_rate_limit_holds((claude, xai), (), _NOW)
+
+    accounts, holds = apply_hold_results(
+        (claude, xai),
+        (),
+        plan,
+        failed_disables=set(),
+        failed_enables=set(),
+        provider="xai",
+    )
+
+    assert accounts[0].disabled is False
+    assert accounts[0].provider is None
+    assert accounts[1].disabled is True
+    assert holds == (
+        SidecarRateLimitHold(
+            name="shared.json",
+            until=_NOW + timedelta(hours=24),
+            released=False,
+            provider="xai",
+            kind=XAI_LIMIT_FREE_USAGE,
+            backoff_level=0,
+        ),
+    )
