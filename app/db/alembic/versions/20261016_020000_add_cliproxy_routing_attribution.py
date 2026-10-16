@@ -6,7 +6,7 @@ account pool is on. Sticky pins for those credential ids live in
 ``accounts.id``.
 
 Revision ID: 20261016_020000_add_cliproxy_routing_attribution
-Revises: 20261016_010000_add_cliproxy_prefix_write_claims
+Revises: 20261016_000000_add_cliproxy_config_snapshots
 Create Date: 2026-10-16
 """
 
@@ -17,7 +17,7 @@ from alembic import op
 from sqlalchemy.engine import Connection
 
 revision = "20261016_020000_add_cliproxy_routing_attribution"
-down_revision = "20261016_010000_add_cliproxy_prefix_write_claims"
+down_revision = "20261016_000000_add_cliproxy_config_snapshots"
 branch_labels = None
 depends_on = None
 
