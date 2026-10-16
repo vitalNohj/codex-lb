@@ -120,7 +120,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
           </SidecarIntegrationCard.Panel>
           <SidecarIntegrationCard.Panel
             title="Credentials"
-            description="Read-only CLIProxyAPI accounts, with health and models. This list does not change routing."
+            description="Edit each account's prefix, weight, priority, excluded models, and on/off state. Request routing is unchanged."
             span="full"
           >
             <CliproxyCredentials enabled={managementKeyConfigured} />

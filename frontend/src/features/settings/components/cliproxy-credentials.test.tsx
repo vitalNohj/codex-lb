@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
@@ -85,7 +86,7 @@ describe("CliproxyCredentials", () => {
     expect(screen.getByText("grok-4-fast")).toBeInTheDocument();
     expect(screen.getAllByText("claude").length).toBeGreaterThan(0);
     expect(screen.getAllByText("xai").length).toBeGreaterThan(0);
-    expect(screen.getByText("prefix acct2")).toBeInTheDocument();
+    expect(screen.getByText("acct2")).toBeInTheDocument();
     expect(screen.getByText("grok-a.json")).toBeInTheDocument();
     expect(screen.queryByText(TOKEN)).not.toBeInTheDocument();
     expect(screen.queryByText(/access_token/)).not.toBeInTheDocument();
@@ -160,5 +161,71 @@ describe("CliproxyCredentials", () => {
 
     expect(await screen.findByText("CLIProxyAPI management key was rejected")).toBeInTheDocument();
     expect(screen.queryByRole("article")).not.toBeInTheDocument();
+  });
+
+  it("saves a prefix and turns a credential off only after confirmation", async () => {
+    const user = userEvent.setup();
+    const fieldBodies: unknown[] = [];
+    const statusBodies: unknown[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "xai",
+              credentials: [
+                {
+                  name: "grok-a.json",
+                  authIndex: "x1",
+                  email: "grok@example.com",
+                  provider: "xai",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: null,
+                  weight: null,
+                  priority: null,
+                  excludedModels: [],
+                  excludedModelsState: "available",
+                  models: ["grok-4"],
+                  modelsError: null,
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+      http.patch("*/api/cliproxy/accounts/grok-a.json/fields", async ({ request }) => {
+        fieldBodies.push(await request.json());
+        return HttpResponse.json({
+          name: "grok-a.json",
+          prefix: "acct1",
+          weight: null,
+          priority: null,
+          excludedModels: [],
+          excludedModelsState: "available",
+          disabled: false,
+        });
+      }),
+      http.patch("*/api/cliproxy/accounts/grok-a.json/status", async ({ request }) => {
+        statusBodies.push(await request.json());
+        return HttpResponse.json({ name: "grok-a.json", disabled: true });
+      }),
+    );
+
+    renderCredentials(true);
+
+    const prefix = await screen.findByRole("textbox", { name: "Prefix for grok@example.com" });
+    await user.type(prefix, "acct1");
+    await user.click(screen.getByRole("button", { name: "Save grok@example.com" }));
+    expect(fieldBodies).toEqual([{ prefix: "acct1" }]);
+
+    await user.click(screen.getByRole("button", { name: "Turn off grok@example.com" }));
+    expect(statusBodies).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Turn off" }));
+    expect(statusBodies).toEqual([{ disabled: true, confirm: true }]);
   });
 });

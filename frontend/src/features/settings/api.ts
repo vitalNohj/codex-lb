@@ -1,10 +1,14 @@
-import { get, post, put } from "@/lib/api-client";
+import { get, patch, post, put } from "@/lib/api-client";
 import {
   AccountProxyBindingRequestSchema,
   AccountProxyBindingSchema,
   AliasPoolsHealthResponseSchema,
   ClaudeSidecarModelsResponseSchema,
   CliproxyAccountsResponseSchema,
+  CliproxyCredentialFieldsResponseSchema,
+  CliproxyCredentialFieldsUpdateSchema,
+  CliproxyCredentialStatusResponseSchema,
+  CliproxyCredentialStatusUpdateSchema,
   ClaudeSidecarQuotaResponseSchema,
   ClaudeSidecarRoutingResponseSchema,
   ClaudeSidecarStatusResponseSchema,
@@ -123,6 +127,24 @@ export function putAccountProxyBinding(accountId: string, payload: unknown) {
 export function getCliproxyAccounts(provider?: string) {
   const path = provider ? `${CLIPROXY_ACCOUNTS_PATH}?provider=${encodeURIComponent(provider)}` : CLIPROXY_ACCOUNTS_PATH;
   return get(path, CliproxyAccountsResponseSchema);
+}
+
+export function updateCliproxyCredentialFields(name: string, payload: unknown) {
+  const validated = CliproxyCredentialFieldsUpdateSchema.parse(payload);
+  return patch(
+    `${CLIPROXY_ACCOUNTS_PATH}/${encodeURIComponent(name)}/fields`,
+    CliproxyCredentialFieldsResponseSchema,
+    { body: validated },
+  );
+}
+
+export function updateCliproxyCredentialStatus(name: string, payload: unknown) {
+  const validated = CliproxyCredentialStatusUpdateSchema.parse(payload);
+  return patch(
+    `${CLIPROXY_ACCOUNTS_PATH}/${encodeURIComponent(name)}/status`,
+    CliproxyCredentialStatusResponseSchema,
+    { body: validated },
+  );
 }
 
 export function getClaudeSidecarStatus() {

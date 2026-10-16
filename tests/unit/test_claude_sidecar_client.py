@@ -257,6 +257,64 @@ async def test_patch_auth_file_disabled_sends_name_and_disabled(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_patch_auth_file_fields_sends_only_the_given_keys(monkeypatch) -> None:
+    session = _FakeSession(patch_response=_FakeResponse(200, json.dumps({"status": "ok"})))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    await client.patch_auth_file_fields(
+        "claude-x.json",
+        {"prefix": "acct1", "weight": 2, "excluded_models": ["haiku"]},
+    )
+
+    assert session.last_url == "http://127.0.0.1:8317/v0/management/auth-files/fields"
+    assert session.last_headers["Authorization"] == "Bearer mgmt"
+    assert session.last_json == {
+        "name": "claude-x.json",
+        "prefix": "acct1",
+        "weight": 2,
+        "excluded_models": ["haiku"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_file_fields_relays_conflict(monkeypatch) -> None:
+    session = _FakeSession(patch_response=_FakeResponse(409, json.dumps({"error": "prefix in use"})))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    with pytest.raises(ClaudeSidecarError) as exc_info:
+        await client.patch_auth_file_fields("claude-x.json", {"prefix": "acct1"})
+
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_file_status_sends_name_disabled_and_auth_index(monkeypatch) -> None:
+    session = _FakeSession(patch_response=_FakeResponse(200, json.dumps({"status": "ok"})))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    await client.patch_auth_file_status("claude-x.json", disabled=True, auth_index="c1")
+
+    assert session.last_url == "http://127.0.0.1:8317/v0/management/auth-files/status"
+    assert session.last_headers["Authorization"] == "Bearer mgmt"
+    assert session.last_json == {"name": "claude-x.json", "disabled": True, "auth_index": "c1"}
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_file_status_omits_blank_auth_index(monkeypatch) -> None:
+    session = _FakeSession(patch_response=_FakeResponse(200, json.dumps({"status": "ok"})))
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    await client.patch_auth_file_status("claude-x.json", disabled=False, auth_index=None)
+
+    assert session.last_url == "http://127.0.0.1:8317/v0/management/auth-files/status"
+    assert session.last_json == {"name": "claude-x.json", "disabled": False}
+
+
+@pytest.mark.asyncio
 async def test_patch_auth_file_disabled_relays_not_found(monkeypatch) -> None:
     session = _FakeSession(patch_response=_FakeResponse(404, json.dumps({"error": "auth file not found"})))
     monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))

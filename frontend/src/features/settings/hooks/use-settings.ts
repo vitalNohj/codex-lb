@@ -13,6 +13,8 @@ import {
   getClaudeSidecarRouting,
   getClaudeSidecarStatus,
   getCliproxyAccounts,
+  updateCliproxyCredentialFields,
+  updateCliproxyCredentialStatus,
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
   getOpenCodeGoSidecarStatus,
@@ -598,13 +600,33 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
 }
 
 export function useCliproxyCredentials(enabled: boolean) {
+  const queryClient = useQueryClient();
   const credentialsQuery = useQuery({
     queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY,
     queryFn: () => getCliproxyAccounts(),
     enabled,
     refetchInterval: 60_000,
   });
-  return { credentialsQuery };
+  const fieldsMutation = useMutation({
+    mutationFn: ({ name, body }: { name: string; body: unknown }) => updateCliproxyCredentialFields(name, body),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update the credential");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
+    },
+  });
+  const statusMutation = useMutation({
+    mutationFn: ({ name, disabled }: { name: string; disabled: boolean }) =>
+      updateCliproxyCredentialStatus(name, { disabled, confirm: true }),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update the credential");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
+    },
+  });
+  return { credentialsQuery, fieldsMutation, statusMutation };
 }
 
 export function useClaudeSidecarQuota() {

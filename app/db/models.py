@@ -1069,6 +1069,39 @@ class AuditLog(Base):
     request_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
+class CliproxyCredentialPrefix(Base):
+    """Prefix codex-lb assigned to one CLIProxyAPI auth file.
+
+    CLIProxyAPI v8.0.30 omits ``prefix`` from GET /v0/management/auth-files.
+    This row is the panel's read source. ``credential_name`` is the auth-file
+    name the management API patches.
+    """
+
+    __tablename__ = "cliproxy_credential_prefixes"
+    __table_args__ = (UniqueConstraint("prefix", name="uq_cliproxy_credential_prefixes_prefix"),)
+
+    credential_name: Mapped[str] = mapped_column(String, primary_key=True)
+    auth_index: Mapped[str | None] = mapped_column(String, nullable=True)
+    prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CliproxyPrefixWriteClaim(Base):
+    """Cross-process lock for CLIProxyAPI prefix writes on SQLite.
+
+    One row (``lock_name`` ``prefixes``) is taken with a conditional upsert
+    so two workers sharing the database file cannot interleave a management
+    PATCH and the registry commit. PostgreSQL uses ``pg_advisory_xact_lock``
+    for the same section instead of this table.
+    """
+
+    __tablename__ = "cliproxy_prefix_write_claims"
+
+    lock_name: Mapped[str] = mapped_column(String, primary_key=True)
+    holder_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SchedulerLeader(Base):
     __tablename__ = "scheduler_leader"
 
