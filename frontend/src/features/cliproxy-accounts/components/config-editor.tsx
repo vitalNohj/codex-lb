@@ -24,6 +24,7 @@ import {
 import { ApiError } from "@/lib/api-client";
 
 type ReviewedDraft = { yaml: string; sha: string };
+type ConfigDraft = { yaml: string; baseSha: string };
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -42,7 +43,7 @@ export function CliproxyConfigEditor() {
     queryKey: CLIPROXY_CONFIG_QUERY_KEY,
     queryFn: getCliproxyConfig,
   });
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<ConfigDraft | null>(null);
   const [reviewed, setReviewed] = useState<ReviewedDraft | null>(null);
   const [dialog, setDialog] = useState<"preview" | "rollback" | null>(null);
   const [diff, setDiff] = useState("");
@@ -51,8 +52,9 @@ export function CliproxyConfigEditor() {
   const view = query.data;
   const serverYaml = view?.yaml ?? "";
   const serverSha = view?.contentSha256 ?? "";
-  const yaml = draft ?? serverYaml;
-  const dirty = draft !== null && draft !== serverYaml;
+  const yaml = draft?.yaml ?? serverYaml;
+  const dirty = draft !== null && draft.yaml !== serverYaml;
+  const draftIsStale = draft !== null && draft.baseSha !== serverSha;
   const yamlRef = useRef(yaml);
   const shaRef = useRef(serverSha);
   const draftRef = useRef(draft);
@@ -156,13 +158,10 @@ export function CliproxyConfigEditor() {
     }
     const freshYaml = fresh.yaml ?? "";
     const serverChanged = freshYaml !== previousYaml || (fresh.contentSha256 ?? "") !== previousSha;
-    const pending = draftRef.current;
-    if (pending !== null && pending !== freshYaml && serverChanged) {
-      toast.error("The live config changed. Review your draft against it before replacing.");
-      return;
-    }
-    if (pending === null || pending === freshYaml) {
+    if (serverChanged && draftRef.current !== null) {
       setDraft(null);
+      toast.error("The live config changed, so the draft was dropped.");
+      return;
     }
     toast.success("CLIProxyAPI config reloaded");
   }
@@ -199,9 +198,14 @@ export function CliproxyConfigEditor() {
               autoCorrect="off"
               value={yaml}
               onChange={(event) => {
-                setDraft(event.target.value);
+                const next = event.target.value;
                 setReviewed(null);
                 if (dialog === "preview") setDialog(null);
+                if (next === serverYaml) {
+                  setDraft(null);
+                  return;
+                }
+                setDraft((current) => ({ yaml: next, baseSha: current?.baseSha ?? serverSha }));
               }}
             />
           </label>
@@ -209,12 +213,17 @@ export function CliproxyConfigEditor() {
             Session affinity is {affinity}. Change it from CLIProxyAPI routing above. Replacing this document creates a
             new config file with the same confirmation.
           </p>
+          {draftIsStale ? (
+            <p className="text-sm text-destructive">
+              The live config changed. Reload to drop this draft before reviewing it.
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               size="sm"
-              disabled={busy}
-              onClick={() => previewMutation.mutate({ yaml, sha: serverSha })}
+              disabled={busy || draftIsStale}
+              onClick={() => previewMutation.mutate({ yaml, sha: draft?.baseSha ?? serverSha })}
             >
               Review changes
             </Button>
