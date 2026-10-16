@@ -126,20 +126,27 @@ describe("CliproxyConfigEditor", () => {
   });
 
   it("refuses to review a draft after the loaded hash changes", async () => {
-    server.use(http.get("*/api/cliproxy/config", () => HttpResponse.json(VIEW)));
+    const user = userEvent.setup();
+    const newer = { ...VIEW, yaml: "port: 1\n", contentSha256: "newer-sha" };
+    let current = VIEW;
+    server.use(http.get("*/api/cliproxy/config", () => HttpResponse.json(current)));
     const { queryClient } = renderWithProviders(<CliproxyConfigEditor />);
 
     const editor = await screen.findByRole("textbox", { name: "config.yaml" });
     fireEvent.change(editor, { target: { value: "debug: true" } });
-    queryClient.setQueryData(CLIPROXY_CONFIG_QUERY_KEY, {
-      ...VIEW,
-      yaml: "port: 1\n",
-      contentSha256: "newer-sha",
-    });
+    current = newer;
+    queryClient.setQueryData(CLIPROXY_CONFIG_QUERY_KEY, newer);
 
     expect(await screen.findByText("The live config changed. Reload to drop this draft before reviewing it.")).toBeInTheDocument();
     expect(editor).toHaveValue("debug: true");
     expect(screen.getByRole("button", { name: "Review changes" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Reload" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("The live config changed, so the draft was dropped."),
+    );
+    expect(editor).toHaveValue(newer.yaml);
+    expect(screen.getByRole("button", { name: "Review changes" })).toBeEnabled();
   });
 
   it("rolls back only after confirmation", async () => {

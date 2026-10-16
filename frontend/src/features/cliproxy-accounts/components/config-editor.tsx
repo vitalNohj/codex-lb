@@ -157,8 +157,10 @@ export function CliproxyConfigEditor() {
       return;
     }
     const freshYaml = fresh.yaml ?? "";
-    const serverChanged = freshYaml !== previousYaml || (fresh.contentSha256 ?? "") !== previousSha;
-    if (serverChanged && draftRef.current !== null) {
+    const freshSha = fresh.contentSha256 ?? "";
+    const serverChanged = freshYaml !== previousYaml || freshSha !== previousSha;
+    const pending = draftRef.current;
+    if (pending !== null && (serverChanged || pending.baseSha !== freshSha)) {
       setDraft(null);
       toast.error("The live config changed, so the draft was dropped.");
       return;
