@@ -297,6 +297,7 @@ class _Bind:
 class _Session:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str], object] = {}
+        self.writes = 0
 
     def get_bind(self) -> _Bind:
         return _Bind()
@@ -305,6 +306,7 @@ class _Session:
         return self.rows.get(ident)
 
     async def execute(self, statement: object) -> None:
+        self.writes += 1
         params = cast(dict[str, object], statement.compile().params)  # type: ignore[attr-defined]
         key = cast(str, params["key"])
         kind = cast(str, params["kind"])
@@ -413,6 +415,35 @@ async def test_two_credential_stub_serves_acct1_then_acct2(monkeypatch: pytest.M
     assert result == {"ok": True}
     assert seen == ["acct1/grok-4", "acct2/grok-4"]
     assert cliproxy_log_attribution() == ("xai", "idx-2")
+
+
+@pytest.mark.asyncio
+async def test_same_owner_refresh_skips_the_sticky_write_inside_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _Pool()
+    pool.accounts = [
+        _auth("grok-a.json", "idx-1", prefix="acct1", percent_used=10.0),
+        _auth("grok-b.json", "idx-2", prefix="acct2", percent_used=40.0),
+    ]
+    pool.install(monkeypatch)
+    body: dict[str, JsonValue] = {"model": "grok-4", "prompt_cache_key": "thread-9"}
+
+    first = await apply_cliproxy_account_route(body, prompt_cache_key="thread-9")
+    assert first is not None
+    assert pool.session.writes == 1
+
+    again = await apply_cliproxy_account_route(body, prompt_cache_key="thread-9")
+    assert again is not None
+    assert again.account_id == first.account_id
+    assert pool.session.writes == 1
+
+    row = next(iter(pool.session.rows.values()))
+    row.updated_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    refreshed = await apply_cliproxy_account_route(body, prompt_cache_key="thread-9")
+    assert refreshed is not None
+    assert refreshed.account_id == first.account_id
+    assert pool.session.writes == 2
 
 
 @pytest.mark.asyncio

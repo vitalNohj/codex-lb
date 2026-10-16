@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.balancer.logic import AccountState
 from app.core.config.settings_cache import get_settings_cache
 from app.core.types import JsonValue
+from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import AccountStatus, CliproxyStickySession, StickySessionKind
 from app.db.session import get_background_session
 from app.modules.claude_sidecar.capacity_hold import StoredSnapshotReader
@@ -36,8 +37,16 @@ from app.modules.claude_sidecar.quota import (
 from app.modules.claude_sidecar.rate_limit_hold import XAI_FREE_USAGE_HOLD, XAI_LIMIT_FREE_USAGE
 from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.cliproxy_accounts.summaries import cliproxy_account_pool_enabled
-from app.modules.proxy._load_balancer.sticky_selection import _select_with_stickiness, _StickyMutation
-from app.modules.proxy.sticky_repository import StickySessionsRepository
+from app.modules.proxy._load_balancer.sticky_selection import (
+    _select_with_stickiness,
+    _sticky_refresh_write_skippable,
+    _StickyMutation,
+)
+from app.modules.proxy.sticky_repository import (
+    _REFRESH_SKIP_MAX_SECONDS,
+    _REFRESH_SKIP_TTL_FRACTION,
+    StickySessionsRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +272,12 @@ async def _select_dispatch(
         states = [state for state, _auth, _prefix in built]
         sidecar_ids = frozenset(state.account_id for state in states)
         repo = _CliproxyStickyRepository(session)
+        existing_id, refresh_skip_deadline = await _observed_sticky_owner(
+            repo,
+            sticky_key,
+            sticky_kind,
+            max_age_seconds=max_age,
+        )
         outcome = await _select_with_stickiness(
             states=states,
             account_map={},
@@ -274,6 +289,8 @@ async def _select_dispatch(
             prefer_earlier_reset_window="secondary",
             routing_strategy="usage_weighted",
             sticky_repo=cast(StickySessionsRepository, repo),
+            sticky_existing_account_id=existing_id,
+            sticky_refresh_skip_deadline=refresh_skip_deadline,
             sidecar_account_ids=sidecar_ids,
         )
         chosen = outcome.selection.account
@@ -480,16 +497,36 @@ class _CliproxyStickyRepository:
         kind: StickySessionKind,
         max_age_seconds: int | None = None,
     ) -> str | None:
+        account_id, _deadline = await self.lookup(key, kind=kind, max_age_seconds=max_age_seconds)
+        return account_id
+
+    async def lookup(
+        self,
+        key: str,
+        *,
+        kind: StickySessionKind,
+        max_age_seconds: int | None = None,
+    ) -> tuple[str | None, datetime | None]:
+        """Return the pinned credential and a same-owner refresh-skip deadline.
+
+        The deadline matches the core sticky window: at most 1% of the TTL and
+        at most 15 seconds. A missing, expired, future-stamped, or hard
+        ``codex_session`` row has no deadline, so the next write is not skipped.
+        """
+
         if kind == StickySessionKind.CODEX_SESSION:
-            return None
+            return None, None
         row = await self._session.get(CliproxyStickySession, (key, kind.value))
         if row is None:
-            return None
+            return None, None
+        updated = to_utc_naive(row.updated_at)
+        now = utcnow()
+        if max_age_seconds is not None and now - updated > timedelta(seconds=max_age_seconds):
+            return None, None
+        deadline = None
         if max_age_seconds is not None:
-            updated = _as_utc(row.updated_at)
-            if datetime.now(timezone.utc) - updated > timedelta(seconds=max_age_seconds):
-                return None
-        return row.account_id
+            deadline = _refresh_skip_deadline(updated, now=now, max_age_seconds=max_age_seconds)
+        return row.account_id, deadline
 
     async def upsert(self, key: str, account_id: str, kind: StickySessionKind) -> None:
         if kind == StickySessionKind.CODEX_SESSION:
@@ -535,4 +572,34 @@ async def _apply_sticky_mutation(
     if mutation.account_id is None:
         await repo.delete(key, kind)
         return
+    if _sticky_refresh_write_skippable(mutation, initialize_seed_key=None):
+        return
     await repo.upsert(key, mutation.account_id, kind)
+
+
+async def _observed_sticky_owner(
+    repo: _CliproxyStickyRepository,
+    key: str | None,
+    kind: StickySessionKind | None,
+    *,
+    max_age_seconds: int | None,
+) -> tuple[str | None, datetime | None]:
+    """Read the pin once so the selector can keep its refresh-skip deadline.
+
+    ``_select_with_stickiness`` drops a deadline it did not receive from the
+    caller, because its own ``get_account_id`` lookup does not observe row age.
+    """
+
+    if key is None or kind is None:
+        return None, None
+    return await repo.lookup(key, kind=kind, max_age_seconds=max_age_seconds)
+
+
+def _refresh_skip_deadline(updated_at: datetime, *, now: datetime, max_age_seconds: int) -> datetime | None:
+    age_seconds = (now - updated_at).total_seconds()
+    if age_seconds < 0:
+        return None
+    skip_window_seconds = min(_REFRESH_SKIP_MAX_SECONDS, max_age_seconds * _REFRESH_SKIP_TTL_FRACTION)
+    if age_seconds > skip_window_seconds:
+        return None
+    return updated_at + timedelta(seconds=skip_window_seconds)
