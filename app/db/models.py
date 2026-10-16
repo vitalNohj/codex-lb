@@ -623,6 +623,7 @@ class RequestLog(Base):
         Index("idx_logs_useragent_group", "useragent_group"),
         Index("idx_logs_conversation_id", "conversation_id"),
         Index("idx_logs_client_ip", "client_ip"),
+        Index("idx_logs_sidecar_credential", "sidecar_provider", "sidecar_auth_index"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -657,6 +658,10 @@ class RequestLog(Base):
     pool_attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plan_type: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Dispatch-time CLIProxyAPI credential. Null while the account pool is off,
+    # which keeps historical Claude sidecar rows on the usage-event label.
+    sidecar_provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    sidecar_auth_index: Mapped[str | None] = mapped_column(String, nullable=True)
     useragent: Mapped[str | None] = mapped_column(Text, nullable=True)
     useragent_group: Mapped[str | None] = mapped_column(String, nullable=True)
     conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1083,6 +1088,22 @@ class CliproxyCredentialPrefix(Base):
     credential_name: Mapped[str] = mapped_column(String, primary_key=True)
     auth_index: Mapped[str | None] = mapped_column(String, nullable=True)
     prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CliproxyStickySession(Base):
+    """Bounded-TTL sticky owner for one CLIProxyAPI credential.
+
+    ``sticky_sessions.account_id`` references ``accounts.id``. CLIProxyAPI
+    credential ids are not account rows, so prompt-cache and thread pins live
+    here. Hard ``codex_session`` rows are never written.
+    """
+
+    __tablename__ = "cliproxy_sticky_sessions"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

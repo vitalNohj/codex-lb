@@ -1063,6 +1063,8 @@ class RequestLogsRepository:
         archive_request_id: str | None = None,
         upstream_model: str | None = None,
         pool_attempts: int | None = None,
+        sidecar_provider: str | None = None,
+        sidecar_auth_index: str | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             # Telemetry write: this transaction only appends one request-log
@@ -1092,6 +1094,8 @@ class RequestLogsRepository:
                 pool_attempts=pool_attempts,
                 plan_type=resolved_plan_type,
                 source=source,
+                sidecar_provider=sidecar_provider,
+                sidecar_auth_index=sidecar_auth_index,
                 transport=transport,
                 upstream_transport=upstream_transport,
                 request_kind=request_kind,
@@ -1799,6 +1803,8 @@ class RequestLogsRepository:
                 RequestLog.model.ilike(search_pattern),
                 RequestLog.reasoning_effort.ilike(search_pattern),
                 RequestLog.source.ilike(search_pattern),
+                RequestLog.sidecar_provider.ilike(search_pattern),
+                RequestLog.sidecar_auth_index.ilike(search_pattern),
                 RequestLog.status.ilike(search_pattern),
                 RequestLog.error_code.ilike(search_pattern),
                 RequestLog.error_message.ilike(search_pattern),

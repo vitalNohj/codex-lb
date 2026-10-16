@@ -2877,22 +2877,13 @@ async def test_claude_sidecar_prefix_default_migration_clears_the_startup_drift(
         return await to_thread.run_sync(lambda: check_schema_drift(db_url))
 
     def _sidecar_drift(items: tuple[str, ...]) -> tuple[str, ...]:
-        """Drop expected drift from tables added after the pinned revision.
+        """Keep only drift for the prefix column this revision repairs.
 
-        ORM metadata always reflects head, so at parent_revision the
-        later-added request_usage_daily_rollups table, the
-        account_usage_rollup_state.daily_folded_through watermark column,
-        and the dashboard_settings.hourly_rollup_retention_days column show
-        up as add-table/add-column drift that is irrelevant to the sidecar
-        default under test.
+        ORM metadata always reflects head, so a database pinned at
+        parent_revision also reports every later table and column. Those
+        additions are irrelevant to the sidecar default under test.
         """
-        return tuple(
-            item
-            for item in items
-            if "request_usage_daily_rollups" not in item
-            and "daily_folded_through" not in item
-            and "hourly_rollup_retention_days" not in item
-        )
+        return tuple(item for item in items if "claude_sidecar_model_prefixes_json" in item)
 
     try:
         drift = _sidecar_drift(await _drift())
@@ -4965,5 +4956,43 @@ async def test_prefix_write_claim_migration_repairs_a_stamped_prefixes_revision(
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
         assert version == claims_revision
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cliproxy_routing_attribution_migration_adds_log_columns_and_sticky_pins(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cliproxy-routing.sqlite'}"
+    parent_revision = "20261016_010000_add_cliproxy_prefix_write_claims"
+    revision = "20261016_020000_add_cliproxy_routing_attribution"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(request_logs)"))).fetchall()}
+            tables = {
+                row[0]
+                for row in (await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))).fetchall()
+            }
+        assert "sidecar_provider" not in columns
+        assert "sidecar_auth_index" not in columns
+        assert "cliproxy_sticky_sessions" not in tables
+
+        result = await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
+        assert result.current_revision == revision
+        async with engine.connect() as conn:
+            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(request_logs)"))).fetchall()}
+            indexes = {row[1] for row in (await conn.execute(text("PRAGMA index_list(request_logs)"))).fetchall()}
+            sticky_columns = {
+                row[1] for row in (await conn.execute(text("PRAGMA table_info(cliproxy_sticky_sessions)"))).fetchall()
+            }
+        assert {"sidecar_provider", "sidecar_auth_index"} <= columns
+        assert "idx_logs_sidecar_credential" in indexes
+        assert sticky_columns == {"key", "kind", "account_id", "updated_at"}
+
+        rerun = await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
+        assert rerun.current_revision == revision
+        assert await to_thread.run_sync(lambda: check_schema_drift(db_url)) == ()
     finally:
         await engine.dispose()

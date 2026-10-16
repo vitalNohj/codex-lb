@@ -10,6 +10,7 @@ from app.modules.openai_compat.endpoints import is_openai_compat_log_source, par
 from app.modules.request_logs.mappers import (
     QUOTA_CODES,
     RATE_LIMIT_CODES,
+    cliproxy_credential_label,
     normalize_log_status,
     to_request_log_entry,
 )
@@ -165,7 +166,8 @@ class RequestLogsService:
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
                 sidecar_account_label=(
-                    sidecar_account_label_by_request_id.get(log.request_id)
+                    cliproxy_credential_label(log.sidecar_provider, log.sidecar_auth_index)
+                    or sidecar_account_label_by_request_id.get(log.request_id)
                     or openai_compat_label_by_source.get(log.source or "")
                 ),
                 display_price_status=(
