@@ -109,7 +109,7 @@ export function CliproxyConfigEditor() {
   });
 
   const rollbackMutation = useMutation({
-    mutationFn: rollbackCliproxyConfig,
+    mutationFn: () => rollbackCliproxyConfig({ contentSha256: serverSha, confirm: true }),
     onSuccess: (next) => {
       if (next.status !== "healthy") {
         toast.error(next.message || "Could not roll back the config");

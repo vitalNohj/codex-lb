@@ -48,8 +48,8 @@ export function replaceCliproxyConfig(body: { yaml: string; contentSha256: strin
   return put(CONFIG_PATH, CliproxyConfigViewSchema, { body });
 }
 
-export function rollbackCliproxyConfig() {
-  return post(`${CONFIG_PATH}/rollback`, CliproxyConfigViewSchema, { body: { confirm: true } });
+export function rollbackCliproxyConfig(body: { contentSha256: string; confirm: true }) {
+  return post(`${CONFIG_PATH}/rollback`, CliproxyConfigViewSchema, { body });
 }
 
 export function patchCliproxyRoutingFlag(field: "force-model-prefix" | "session-affinity", body: {

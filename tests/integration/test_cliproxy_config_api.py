@@ -291,8 +291,19 @@ async def test_rollback_restores_the_snapshotted_file(async_client, monkeypatch)
 
     missing = await async_client.post("/api/cliproxy/config/rollback", json={})
     assert missing.status_code == 422
+    live = (await async_client.get("/api/cliproxy/config")).json()
+    stale = await async_client.post(
+        "/api/cliproxy/config/rollback",
+        json={"confirm": True, "contentSha256": current["contentSha256"]},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "config_changed"
+    assert _FakeConfigClient.yaml != _CONFIG
 
-    restored = await async_client.post("/api/cliproxy/config/rollback", json={"confirm": True})
+    restored = await async_client.post(
+        "/api/cliproxy/config/rollback",
+        json={"confirm": True, "contentSha256": live["contentSha256"]},
+    )
     assert restored.status_code == 200
     assert restored.json()["contentSha256"] == _sha(_CONFIG)
     assert "debug: false" in restored.json()["yaml"]
@@ -334,7 +345,10 @@ async def test_a_failed_upload_does_not_destroy_the_previous_snapshot(async_clie
     assert "port: 8317" in _FakeConfigClient.yaml
 
     _FakeConfigClient.fail_put = False
-    restored = await async_client.post("/api/cliproxy/config/rollback", json={"confirm": True})
+    restored = await async_client.post(
+        "/api/cliproxy/config/rollback",
+        json={"confirm": True, "contentSha256": edited["contentSha256"]},
+    )
     assert restored.status_code == 200
     assert _FakeConfigClient.yaml == _CONFIG
 
@@ -472,7 +486,10 @@ async def test_a_timeout_after_the_file_changes_keeps_that_rollback_point(async_
     assert snapshot.content_sha256 == _sha(applied)
 
     _FakeConfigClient.apply_then_timeout = False
-    restored = await async_client.post("/api/cliproxy/config/rollback", json={"confirm": True})
+    restored = await async_client.post(
+        "/api/cliproxy/config/rollback",
+        json={"confirm": True, "contentSha256": _sha(_FakeConfigClient.yaml)},
+    )
     assert restored.status_code == 200
     assert _FakeConfigClient.yaml == applied
 
@@ -529,7 +546,10 @@ async def test_rollback_stays_on_the_upstream_that_saved_it(async_client, monkey
     assert moved.status_code == 200
     other = await async_client.get("/api/cliproxy/config")
     assert other.json()["rollbackAvailable"] is False
-    blocked = await async_client.post("/api/cliproxy/config/rollback", json={"confirm": True})
+    blocked = await async_client.post(
+        "/api/cliproxy/config/rollback",
+        json={"confirm": True, "contentSha256": other.json()["contentSha256"]},
+    )
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "nothing_to_rollback"
     assert _FakeConfigClient.puts == puts_before_move

@@ -140,10 +140,11 @@ class CliproxyConfigService:
         )
         return _healthy_view(edit.restored, rollback_available=True)
 
-    async def rollback(self, *, actor_ip: str | None) -> CliproxyConfigView:
+    async def rollback(self, expected_sha256: str, *, actor_ip: str | None) -> CliproxyConfigView:
         opened = await self._open()
         if isinstance(opened, CliproxyConfigView):
             return opened
+        _require_current_sha(opened.current, expected_sha256)
         snapshot = await self._snapshots.latest(_upstream_key(opened.settings))
         if snapshot is None:
             raise CliproxyConfigOperationError(409, "nothing_to_rollback", "No CLIProxyAPI config snapshot to restore")

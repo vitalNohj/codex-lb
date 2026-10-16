@@ -26,7 +26,7 @@ _MAX_BYTES = 1_000_000
 _MAX_NODES = 10_000
 _BOOL_TAG = "tag:yaml.org,2002:bool"
 _NULL_TAG = "tag:yaml.org,2002:null"
-_SECRET_PARTS = frozenset({"secret", "token", "password", "passwd", "credential", "apikey"})
+_SECRET_PARTS = frozenset({"secret", "token", "password", "passwd", "credential", "apikey", "authorization", "cookie"})
 _ICE_VALUE_KEYS = frozenset({"username", "credential", "password"})
 
 type ConfigPath = tuple[str | int, ...]

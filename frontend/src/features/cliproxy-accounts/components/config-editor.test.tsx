@@ -155,8 +155,8 @@ describe("CliproxyConfigEditor", () => {
     server.use(
       http.get("*/api/cliproxy/config", () => HttpResponse.json(VIEW)),
       http.post("*/api/cliproxy/config/rollback", async ({ request }) => {
-        const body = (await request.json()) as { confirm?: boolean };
-        confirmed = body.confirm === true;
+        const body = (await request.json()) as { confirm?: boolean; contentSha256?: string };
+        confirmed = body.confirm === true && body.contentSha256 === VIEW.contentSha256;
         return HttpResponse.json({ ...VIEW, yaml: "port: 8317\n", contentSha256: "restored" });
       }),
     );

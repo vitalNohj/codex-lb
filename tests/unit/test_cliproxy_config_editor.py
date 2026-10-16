@@ -228,6 +228,18 @@ def test_a_root_that_is_not_a_mapping_is_rejected() -> None:
         redact_config_yaml("- just-a-list\n")
 
 
+def test_authorization_and_cookie_headers_are_redacted() -> None:
+    current = 'headers:\n  Authorization: "Bearer sk-live"\n  Cookie: "session=abc"\n  Host: example.com\n'
+    redacted = redact_config_yaml(current)
+
+    assert "sk-live" not in redacted
+    assert "session=abc" not in redacted
+    assert "Host: example.com" in redacted
+    edit = prepare_config_edit(current, redacted)
+    assert edit.changed is False
+    assert edit.restored == current
+
+
 def test_boolean_like_secrets_are_redacted_and_routing_flags_stay_visible() -> None:
     current = "password: on\napi-key: true\nrouting:\n  session-affinity: true\n"
     redacted = redact_config_yaml(current)

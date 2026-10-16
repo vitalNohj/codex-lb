@@ -79,9 +79,8 @@ async def rollback_config(
     _write_access: object = Depends(require_dashboard_write_access),
     context: CliproxyConfigContext = Depends(get_cliproxy_config_context),
 ) -> CliproxyConfigView | JSONResponse:
-    del body
     try:
-        return await context.service.rollback(actor_ip=_actor_ip(request))
+        return await context.service.rollback(body.content_sha256, actor_ip=_actor_ip(request))
     except CliproxyConfigOperationError as exc:
         return _failure(exc)
 

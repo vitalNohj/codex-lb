@@ -46,6 +46,7 @@ class CliproxyConfigReplaceRequest(CliproxyConfigDocumentRequest):
 
 class CliproxyConfigRollbackRequest(DashboardModel):
     confirm: Literal[True]
+    content_sha256: str = Field(pattern=_SHA256)
 
 
 class CliproxyConfigRoutingFlagUpdate(DashboardModel):
